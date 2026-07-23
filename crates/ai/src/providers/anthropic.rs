@@ -147,8 +147,11 @@ impl AnthropicProvider {
                             {
                                 continue;
                             }
-                            let content = if let Some(ref image_url) = r.image_url {
-                                let (media_type, data) = parse_data_url(image_url);
+                            let content = if let Some((media_type, data)) = r
+                                .image_url
+                                .as_deref()
+                                .and_then(crate::types::image_source_to_base64)
+                            {
                                 ToolResultContent::Blocks(vec![
                                     ToolResultContentBlock::Text {
                                         text: r.content.clone(),
@@ -873,16 +876,3 @@ struct AnthropicError {
     message: String,
 }
 
-/// Parse a data URL (e.g. `data:image/jpeg;base64,/9j/4AAQ...`) into
-/// (media_type, base64_data). Falls back to `image/png` if the URL
-/// doesn't match the expected format.
-fn parse_data_url(url: &str) -> (String, String) {
-    if let Some(rest) = url.strip_prefix("data:") {
-        if let Some((header, data)) = rest.split_once(",") {
-            let media_type = header.strip_suffix(";base64").unwrap_or(header);
-            return (media_type.to_string(), data.to_string());
-        }
-    }
-    // Bare base64 without data URL prefix — assume PNG
-    ("image/png".to_string(), url.to_string())
-}

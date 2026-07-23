@@ -70,14 +70,14 @@ impl DynTool for DesktopTool {
          - dock: badges, recent, is_running (macOS only)\n\n\
          Workflow: Use capture(action: see) to get a snapshot with element IDs, then reference them in input actions.\n\n\
          Examples:\n  \
-         desktop(resource: \"capture\", action: \"see\", app: \"Safari\") — snapshot + element IDs\n  \
-         desktop(resource: \"input\", action: \"click\", ref: \"B3\") — click element from snapshot\n  \
-         desktop(resource: \"input\", action: \"type\", ref: \"T1\", text: \"hello\") — focus + type\n  \
-         desktop(resource: \"clipboard\", action: \"read\")\n  \
-         desktop(resource: \"window\", action: \"list\")\n  \
-         desktop(resource: \"capture\", action: \"screenshot\", app: \"Safari\")\n  \
-         desktop(resource: \"notification\", action: \"send\", title: \"Done\", message: \"Task complete\")\n  \
-         desktop(resource: \"tts\", action: \"speak\", text: \"Hello world\")"
+         os(resource: \"capture\", action: \"see\", app: \"Safari\") — snapshot + element IDs\n  \
+         os(resource: \"input\", action: \"click\", ref: \"B3\") — click element from snapshot\n  \
+         os(resource: \"input\", action: \"type\", ref: \"T1\", text: \"hello\") — focus + type\n  \
+         os(resource: \"clipboard\", action: \"read\")\n  \
+         os(resource: \"window\", action: \"list\")\n  \
+         os(resource: \"capture\", action: \"screenshot\", app: \"Safari\")\n  \
+         os(resource: \"notification\", action: \"send\", title: \"Done\", message: \"Task complete\")\n  \
+         os(resource: \"tts\", action: \"speak\", text: \"Hello world\")"
             .to_string()
     }
 
@@ -198,21 +198,21 @@ async fn handle_window(action: &str, input: &serde_json::Value) -> ToolResult {
         "focus" => {
             let app = input["app"].as_str().unwrap_or("");
             if app.is_empty() {
-                return ToolResult::error(errors::missing_param("focus", "app", "desktop(resource: \"window\", action: \"focus\", app: \"Safari\")"));
+                return ToolResult::error(errors::missing_param("focus", "app", "os(resource: \"window\", action: \"focus\", app: \"Safari\")"));
             }
             handle_window_focus(app).await
         }
         "minimize" => {
             let app = input["app"].as_str().unwrap_or("");
             if app.is_empty() {
-                return ToolResult::error(errors::missing_param("minimize", "app", "desktop(resource: \"window\", action: \"minimize\", app: \"Safari\")"));
+                return ToolResult::error(errors::missing_param("minimize", "app", "os(resource: \"window\", action: \"minimize\", app: \"Safari\")"));
             }
             handle_window_minimize(app).await
         }
         "maximize" => {
             let app = input["app"].as_str().unwrap_or("");
             if app.is_empty() {
-                return ToolResult::error(errors::missing_param("maximize", "app", "desktop(resource: \"window\", action: \"maximize\", app: \"Safari\")"));
+                return ToolResult::error(errors::missing_param("maximize", "app", "os(resource: \"window\", action: \"maximize\", app: \"Safari\")"));
             }
             handle_window_maximize(app).await
         }
@@ -221,14 +221,14 @@ async fn handle_window(action: &str, input: &serde_json::Value) -> ToolResult {
             let w = input["width"].as_i64().unwrap_or(800);
             let h = input["height"].as_i64().unwrap_or(600);
             if app.is_empty() {
-                return ToolResult::error(errors::missing_param("resize", "app", "desktop(resource: \"window\", action: \"resize\", app: \"Safari\", width: 1024, height: 768)"));
+                return ToolResult::error(errors::missing_param("resize", "app", "os(resource: \"window\", action: \"resize\", app: \"Safari\", width: 1024, height: 768)"));
             }
             handle_window_resize(app, w, h).await
         }
         "close" => {
             let app = input["app"].as_str().unwrap_or("");
             if app.is_empty() {
-                return ToolResult::error(errors::missing_param("close", "app", "desktop(resource: \"window\", action: \"close\", app: \"Safari\")"));
+                return ToolResult::error(errors::missing_param("close", "app", "os(resource: \"window\", action: \"close\", app: \"Safari\")"));
             }
             handle_window_close(app).await
         }
@@ -237,7 +237,7 @@ async fn handle_window(action: &str, input: &serde_json::Value) -> ToolResult {
             let x = input["x"].as_i64().unwrap_or(0);
             let y = input["y"].as_i64().unwrap_or(0);
             if app.is_empty() {
-                return ToolResult::error(errors::missing_param("move", "app", "desktop(resource: \"window\", action: \"move\", app: \"Safari\", x: 100, y: 100)"));
+                return ToolResult::error(errors::missing_param("move", "app", "os(resource: \"window\", action: \"move\", app: \"Safari\", x: 100, y: 100)"));
             }
             handle_window_move(app, x, y).await
         }
@@ -266,7 +266,17 @@ async fn handle_window_list() -> ToolResult {
                 return windowList
             end tell
         "#;
-        return run_osascript(script).await;
+        let result = run_osascript(script).await;
+        // System Events silently yields zero windows when this process lacks
+        // Accessibility/Automation permission — say so instead of "no windows".
+        if !result.is_error && result.content.trim().is_empty() {
+            return ToolResult::ok(
+                "No windows reported. If windows are open, this process likely lacks \
+                 Automation/Accessibility permission for System Events (System Settings \
+                 → Privacy & Security).",
+            );
+        }
+        return result;
     }
     #[cfg(target_os = "linux")]
     {
@@ -640,7 +650,7 @@ async fn handle_input(
         "type" => {
             let text = input["text"].as_str().unwrap_or("");
             if text.is_empty() {
-                return ToolResult::error(errors::missing_param("type", "text", "desktop(resource: \"input\", action: \"type\", text: \"hello\")"));
+                return ToolResult::error(errors::missing_param("type", "text", "os(resource: \"input\", action: \"type\", text: \"hello\")"));
             }
             // If a target was given, click it to focus first, then type.
             if let Some((x, y, label)) = target {
@@ -663,7 +673,7 @@ async fn handle_input(
         "press" => {
             let key = input["key"].as_str().unwrap_or("");
             if key.is_empty() {
-                return ToolResult::error(errors::missing_param("press", "key", "desktop(resource: \"input\", action: \"press\", key: \"return\")"));
+                return ToolResult::error(errors::missing_param("press", "key", "os(resource: \"input\", action: \"press\", key: \"return\")"));
             }
             // A combo (contains '+', e.g. "cmd+shift+s") uses the hotkey path; else a single key.
             if key.contains('+') {
@@ -1152,7 +1162,7 @@ async fn handle_clipboard(action: &str, input: &serde_json::Value) -> ToolResult
         "write" => {
             let text = input["text"].as_str().unwrap_or("");
             if text.is_empty() {
-                return ToolResult::error(errors::missing_param("write", "text", "desktop(resource: \"clipboard\", action: \"write\", text: \"hello\")"));
+                return ToolResult::error(errors::missing_param("write", "text", "os(resource: \"clipboard\", action: \"write\", text: \"hello\")"));
             }
             clipboard_write(text).await
         }
@@ -1213,10 +1223,18 @@ async fn clipboard_write(text: &str) -> ToolResult {
         };
         if let Some(stdin) = child.stdin.as_mut() {
             use tokio::io::AsyncWriteExt;
-            let _ = stdin.write_all(text.as_bytes()).await;
+            if let Err(e) = stdin.write_all(text.as_bytes()).await {
+                return ToolResult::error(format!("Failed to write clipboard: {}", e));
+            }
         }
-        let _ = child.wait().await;
-        return ToolResult::ok("Clipboard updated");
+        return match child.wait().await {
+            Ok(status) if status.success() => ToolResult::ok("Clipboard updated"),
+            Ok(status) => ToolResult::error(format!(
+                "pbcopy exited with {} — clipboard NOT updated",
+                status
+            )),
+            Err(e) => ToolResult::error(format!("Failed to write clipboard: {}", e)),
+        };
     }
     #[cfg(target_os = "linux")]
     {
@@ -1277,7 +1295,7 @@ async fn handle_notification(action: &str, input: &serde_json::Value) -> ToolRes
             let title = input["title"].as_str().unwrap_or("Nebo");
             let message = input["message"].as_str().unwrap_or("");
             if message.is_empty() {
-                return ToolResult::error(errors::missing_param("send", "message", "desktop(resource: \"notification\", action: \"send\", title: \"Done\", message: \"Task complete\")"));
+                return ToolResult::error(errors::missing_param("send", "message", "os(resource: \"notification\", action: \"send\", title: \"Done\", message: \"Task complete\")"));
             }
             notification_send(title, message).await
         }
@@ -1285,7 +1303,7 @@ async fn handle_notification(action: &str, input: &serde_json::Value) -> ToolRes
             let title = input["title"].as_str().unwrap_or("Nebo");
             let message = input["message"].as_str().unwrap_or("");
             if message.is_empty() {
-                return ToolResult::error(errors::missing_param("alert", "message", "desktop(resource: \"notification\", action: \"alert\", title: \"Warning\", message: \"Something happened\")"));
+                return ToolResult::error(errors::missing_param("alert", "message", "os(resource: \"notification\", action: \"alert\", title: \"Warning\", message: \"Something happened\")"));
             }
             notification_alert(title, message).await
         }
@@ -1852,31 +1870,31 @@ async fn handle_ui(action: &str, input: &serde_json::Value) -> ToolResult {
     match action {
         "tree" => {
             if app.is_empty() {
-                return ToolResult::error(errors::missing_param("tree", "app", "desktop(resource: \"ui\", action: \"tree\", app: \"Safari\")"));
+                return ToolResult::error(errors::missing_param("tree", "app", "os(resource: \"ui\", action: \"tree\", app: \"Safari\")"));
             }
             ui_tree(app, role).await
         }
         "find" => {
             if label.is_empty() && role.is_empty() {
-                return ToolResult::error(errors::missing_param("find", "label", "desktop(resource: \"ui\", action: \"find\", app: \"Safari\", label: \"Search\")"));
+                return ToolResult::error(errors::missing_param("find", "label", "os(resource: \"ui\", action: \"find\", app: \"Safari\", label: \"Search\")"));
             }
             ui_find(app, role, label).await
         }
         "click" => {
             if label.is_empty() {
-                return ToolResult::error(errors::missing_param("click", "label", "desktop(resource: \"ui\", action: \"click\", app: \"Safari\", label: \"Submit\")"));
+                return ToolResult::error(errors::missing_param("click", "label", "os(resource: \"ui\", action: \"click\", app: \"Safari\", label: \"Submit\")"));
             }
             ui_click(app, label).await
         }
         "get_value" => {
             if label.is_empty() {
-                return ToolResult::error(errors::missing_param("get_value", "label", "desktop(resource: \"ui\", action: \"get_value\", app: \"Safari\", label: \"URL\")"));
+                return ToolResult::error(errors::missing_param("get_value", "label", "os(resource: \"ui\", action: \"get_value\", app: \"Safari\", label: \"URL\")"));
             }
             ui_get_value(app, label).await
         }
         "set_value" => {
             if label.is_empty() || value.is_empty() {
-                return ToolResult::error(errors::missing_param("set_value", "label/value", "desktop(resource: \"ui\", action: \"set_value\", app: \"Safari\", label: \"URL\", value: \"https://example.com\")"));
+                return ToolResult::error(errors::missing_param("set_value", "label/value", "os(resource: \"ui\", action: \"set_value\", app: \"Safari\", label: \"URL\", value: \"https://example.com\")"));
             }
             ui_set_value(app, label, value).await
         }
@@ -2198,26 +2216,26 @@ async fn handle_menu(action: &str, input: &serde_json::Value) -> ToolResult {
     match action {
         "list" => {
             if app.is_empty() {
-                return ToolResult::error(errors::missing_param("list", "app", "desktop(resource: \"menu\", action: \"list\", app: \"Safari\")"));
+                return ToolResult::error(errors::missing_param("list", "app", "os(resource: \"menu\", action: \"list\", app: \"Safari\")"));
             }
             menu_list(app).await
         }
         "menus" => {
             if app.is_empty() {
-                return ToolResult::error(errors::missing_param("menus", "app", "desktop(resource: \"menu\", action: \"menus\", app: \"Safari\")"));
+                return ToolResult::error(errors::missing_param("menus", "app", "os(resource: \"menu\", action: \"menus\", app: \"Safari\")"));
             }
             menu_menus(app).await
         }
         "click" => {
             if app.is_empty() || name.is_empty() {
-                return ToolResult::error(errors::missing_param("click", "app/name", "desktop(resource: \"menu\", action: \"click\", app: \"Safari\", name: \"File > New Window\")"));
+                return ToolResult::error(errors::missing_param("click", "app/name", "os(resource: \"menu\", action: \"click\", app: \"Safari\", name: \"File > New Window\")"));
             }
             menu_click(app, name).await
         }
         "status" => menu_status_list().await,
         "click_status" => {
             if name.is_empty() {
-                return ToolResult::error(errors::missing_param("click_status", "name", "desktop(resource: \"menu\", action: \"click_status\", name: \"Wi-Fi\")"));
+                return ToolResult::error(errors::missing_param("click_status", "name", "os(resource: \"menu\", action: \"click_status\", name: \"Wi-Fi\")"));
             }
             menu_click_status(name).await
         }
@@ -2438,13 +2456,13 @@ async fn handle_dialog(action: &str, input: &serde_json::Value) -> ToolResult {
         "list" => dialog_list(app).await,
         "click" => {
             if name.is_empty() {
-                return ToolResult::error(errors::missing_param("click", "name", "desktop(resource: \"dialog\", action: \"click\", name: \"OK\")"));
+                return ToolResult::error(errors::missing_param("click", "name", "os(resource: \"dialog\", action: \"click\", name: \"OK\")"));
             }
             dialog_click(app, name).await
         }
         "fill" => {
             if value.is_empty() {
-                return ToolResult::error(errors::missing_param("fill", "value", "desktop(resource: \"dialog\", action: \"fill\", value: \"my input\")"));
+                return ToolResult::error(errors::missing_param("fill", "value", "os(resource: \"dialog\", action: \"fill\", value: \"my input\")"));
             }
             dialog_fill(app, name, value).await
         }
@@ -2702,13 +2720,13 @@ async fn handle_space(action: &str, input: &serde_json::Value) -> ToolResult {
         "list" => space_list().await,
         "switch" => {
             if index == 0 {
-                return ToolResult::error(errors::missing_param("switch", "index", "desktop(resource: \"space\", action: \"switch\", index: 2)"));
+                return ToolResult::error(errors::missing_param("switch", "index", "os(resource: \"space\", action: \"switch\", index: 2)"));
             }
             space_switch(index).await
         }
         "move_window" => {
             if index == 0 {
-                return ToolResult::error(errors::missing_param("move_window", "index", "desktop(resource: \"space\", action: \"move_window\", index: 2)"));
+                return ToolResult::error(errors::missing_param("move_window", "index", "os(resource: \"space\", action: \"move_window\", index: 2)"));
             }
             space_move_window(app, index).await
         }
@@ -2838,7 +2856,7 @@ async fn handle_shortcut(action: &str, input: &serde_json::Value) -> ToolResult 
         "list" => shortcut_list().await,
         "run" => {
             if name.is_empty() {
-                return ToolResult::error(errors::missing_param("run", "name", "desktop(resource: \"shortcut\", action: \"run\", name: \"My Shortcut\")"));
+                return ToolResult::error(errors::missing_param("run", "name", "os(resource: \"shortcut\", action: \"run\", name: \"My Shortcut\")"));
             }
             shortcut_run(name).await
         }
@@ -2919,7 +2937,7 @@ async fn handle_tts(action: &str, input: &serde_json::Value) -> ToolResult {
         "speak" => {
             let text = input["text"].as_str().unwrap_or("");
             if text.is_empty() {
-                return ToolResult::error(errors::missing_param("speak", "text", "desktop(resource: \"tts\", action: \"speak\", text: \"Hello world\")"));
+                return ToolResult::error(errors::missing_param("speak", "text", "os(resource: \"tts\", action: \"speak\", text: \"Hello world\")"));
             }
             let voice = input["voice"].as_str().unwrap_or("");
             let rate = input["rate"].as_i64().unwrap_or(0);
@@ -3013,7 +3031,7 @@ async fn handle_dock(action: &str, input: &serde_json::Value) -> ToolResult {
         "recent" => dock_recent().await,
         "is_running" => {
             if app.is_empty() {
-                return ToolResult::error(errors::missing_param("is_running", "app", "desktop(resource: \"dock\", action: \"is_running\", app: \"Safari\")"));
+                return ToolResult::error(errors::missing_param("is_running", "app", "os(resource: \"dock\", action: \"is_running\", app: \"Safari\")"));
             }
             dock_is_running(app).await
         }

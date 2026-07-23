@@ -87,21 +87,93 @@ pub trait StructuredAgent: Send + Sync {
 /// Trait for hybrid memory search (implemented by agent::search wrapper).
 /// Combines FTS5 text search + vector cosine similarity with adaptive weights.
 pub trait HybridSearcher: Send + Sync {
+    /// `min_score` overrides the searcher's default relevance floor when
+    /// `Some` (the tool uses the default; prompt recall passes `Some(0.0)`
+    /// so FTS-only installs still surface their top-ranked matches).
     fn search<'a>(
         &'a self,
         query: &'a str,
         user_id: &'a str,
         limit: usize,
+        min_score: Option<f64>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<HybridSearchResult>> + Send + 'a>>;
 }
 
 /// Result from hybrid memory search.
 #[derive(Debug, Clone)]
 pub struct HybridSearchResult {
+    /// Backing memory row, when the hit resolves to one (session chunks have
+    /// none). Lets prompt recall dedupe against the identity slice and bump
+    /// access accounting for injected memories.
+    pub memory_id: Option<i64>,
     pub key: String,
     pub value: String,
     pub namespace: String,
     pub score: f64,
+}
+
+/// Fire-and-forget embedding hook for explicitly stored memories (implemented
+/// by `agent::search_adapter::MemoryEmbedAdapter`). Same adapter-injection
+/// pattern as [`HybridSearcher`]: the tools crate cannot depend on the agent
+/// crate (which owns the embedding pipeline), so the server injects this at
+/// wiring time. Keeps explicit `memory store` writes on the SAME chunk+embed
+/// pathway (`agent::memory::embed_memories_async`) as automatic extraction.
+pub trait MemoryEmbedder: Send + Sync {
+    /// Chunk + embed the memory stored at (namespace, key) for `user_id`.
+    /// Must spawn its work in the background — never blocks the tool call.
+    fn embed(&self, namespace: &str, key: &str, user_id: &str);
+}
+
+/// Keychain service name for credential-routed memories (Phase 1 of
+/// docs/plans/memory-rock-solid.md). Account = the memory key.
+const MEMORY_KEYCHAIN_SERVICE: &str = "nebo-memory";
+
+/// OS keychain writer for credential routing on explicit memory stores.
+/// The default implementation delegates to the ONE os keychain pathway
+/// (`keychain_tool::KeychainTool`'s add action) — trait-injected so tests
+/// never write to the real system keychain.
+pub trait KeychainStore: Send + Sync {
+    /// Store `secret` under (service, account). `Err` carries the
+    /// human-readable failure from the platform keychain.
+    fn store<'a>(
+        &'a self,
+        service: &'a str,
+        account: &'a str,
+        secret: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>>;
+}
+
+/// Default [`KeychainStore`] — calls the canonical `KeychainTool` add action
+/// (macOS `security`, Linux `secret-tool`, Windows `cmdkey`); no second
+/// keychain implementation.
+struct OsKeychain;
+
+impl KeychainStore for OsKeychain {
+    fn store<'a>(
+        &'a self,
+        service: &'a str,
+        account: &'a str,
+        secret: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+        Box::pin(async move {
+            let result = crate::keychain_tool::KeychainTool::new()
+                .execute_dyn(
+                    &ToolContext::default(),
+                    serde_json::json!({
+                        "action": "add",
+                        "service": service,
+                        "account": account,
+                        "password": secret,
+                    }),
+                )
+                .await;
+            if result.is_error {
+                Err(result.content)
+            } else {
+                Ok(())
+            }
+        })
+    }
 }
 
 /// AgentTool is the agent's self-management domain tool.
@@ -111,9 +183,11 @@ pub struct AgentTool {
     orchestrator: OrchestratorHandle,
     advisor_runner: Option<Arc<dyn AdvisorDeliberator>>,
     hybrid_searcher: Option<Arc<dyn HybridSearcher>>,
+    memory_embedder: Option<Arc<dyn MemoryEmbedder>>,
     structured_agent: Option<Arc<dyn StructuredAgent>>,
     run_querier: RunQuerierHandle,
     persona: Option<crate::agent_tool::PersonaTool>,
+    keychain: Arc<dyn KeychainStore>,
 }
 
 impl AgentTool {
@@ -123,10 +197,19 @@ impl AgentTool {
             orchestrator,
             advisor_runner: None,
             hybrid_searcher: None,
+            memory_embedder: None,
             structured_agent: None,
             run_querier: crate::run_querier::new_handle(),
             persona: None,
+            keychain: Arc::new(OsKeychain),
         }
+    }
+
+    /// Override the OS keychain used for credential routing (tests inject a
+    /// recording stub; production keeps the [`OsKeychain`] default).
+    pub fn with_keychain(mut self, keychain: Arc<dyn KeychainStore>) -> Self {
+        self.keychain = keychain;
+        self
     }
 
     pub fn with_persona(mut self, persona: crate::agent_tool::PersonaTool) -> Self {
@@ -154,6 +237,11 @@ impl AgentTool {
         self
     }
 
+    pub fn with_memory_embedder(mut self, embedder: Arc<dyn MemoryEmbedder>) -> Self {
+        self.memory_embedder = Some(embedder);
+        self
+    }
+
     fn infer_resource(&self, action: &str) -> &str {
         match action {
             "store" | "save" | "recall" | "search" => "memory",
@@ -173,6 +261,18 @@ impl AgentTool {
 
     async fn handle_memory(&self, input: &serde_json::Value, ctx: &ToolContext) -> ToolResult {
         let action = input["action"].as_str().unwrap_or("");
+
+        // Fail-closed isolation (set by the runner's scope derivation): a
+        // context-isolated agent with no derivable context must not mutate the
+        // shared agent scope. Reads (recall/search/list) still serve the
+        // inherited chain.
+        if ctx.memory_writes_disabled && matches!(action, "store" | "save" | "delete" | "clear") {
+            return ToolResult::error(
+                "Memory writes are disabled for this run: this agent has context-isolated \
+                 memory and no conversation context could be derived. Reads (recall, search, \
+                 list) remain available.",
+            );
+        }
 
         match action {
             // "save" is the most common model misspelling of "store" — accept
@@ -197,34 +297,71 @@ impl AgentTool {
                     return ToolResult::error(errors::missing_param(
                         "store",
                         "key and value",
-                        "bot(resource: \"memory\", action: \"store\", key: \"user/name\", value: \"Alice\")",
+                        "agent(resource: \"memory\", action: \"store\", key: \"user/name\", value: \"Alice\")",
                     ));
                 }
 
-                // Stage-0 write guard — same canonical filter the automatic
-                // extraction path runs. Explicit stores are user-directed, so
-                // explicit=true (short stated facts like "favorite color:
-                // blue" survive the too-thin rule).
-                if let Some(rule) = crate::memory_guard::stage0_reject(key, value, true) {
-                    warn!(rule = rule, key = key, "memory store rejected by stage-0 guard");
-                    return ToolResult::error(format!(
-                        "Memory store rejected ({rule}): this value is not a durable fact worth \
-                         remembering (secrets, bare numbers/times/paths, and session mechanics \
-                         are filtered). Store a self-contained 1-2 sentence fact instead, or skip storing."
-                    ));
-                }
+                // Deterministic credential routing (docs/plans/memory-rock-solid.md
+                // Phase 1): an explicit store of a credential-shaped value is never
+                // refused and never stored plaintext — the secret goes to the OS
+                // keychain and the memory row keeps a pointer. Same pattern list
+                // stage-0 uses to reject inferred secrets on the extraction path
+                // (memory_guard::classify_credential — one classifier, two consumers).
+                let (stored_value, keychain_kind) =
+                    match crate::memory_guard::classify_credential(value) {
+                        Some(kind) => {
+                            if let Err(e) = self
+                                .keychain
+                                .store(MEMORY_KEYCHAIN_SERVICE, key, value)
+                                .await
+                            {
+                                warn!(kind = kind, key = key, error = %e, "credential routing: keychain write failed");
+                                // Never fall back to plaintext after deciding it is
+                                // a credential — refuse this store instead.
+                                return ToolResult::error(format!(
+                                    "Memory store refused: the value is credential-shaped ({kind}) and \
+                                     the OS keychain write failed ({e}), so it cannot be stored safely. \
+                                     Plaintext credentials are never written to memory. Tell the user \
+                                     the keychain write failed; do not retry with the same value."
+                                ));
+                            }
+                            (
+                                format!(
+                                    "(stored in system keychain: {MEMORY_KEYCHAIN_SERVICE}/{key})"
+                                ),
+                                Some(kind),
+                            )
+                        }
+                        None => {
+                            // Stage-0 write guard — same canonical filter the automatic
+                            // extraction path runs. Explicit stores are user-directed, so
+                            // explicit=true (short stated facts like "favorite color:
+                            // blue" survive the too-thin rule).
+                            if let Some(rule) = crate::memory_guard::stage0_reject(key, value, true)
+                            {
+                                warn!(rule = rule, key = key, "memory store rejected by stage-0 guard");
+                                return ToolResult::error(format!(
+                                    "Memory store rejected ({rule}): this value is not a durable fact worth \
+                                     remembering (secrets, bare numbers/times/paths, and session mechanics \
+                                     are filtered). Store a self-contained 1-2 sentence fact instead, or skip storing."
+                                ));
+                            }
+                            (value.to_string(), None)
+                        }
+                    };
+                let stored_value = stored_value.as_str();
 
                 debug!(
                     namespace = namespace,
                     key = key,
-                    value_len = value.len(),
+                    value_len = stored_value.len(),
                     user_id = %ctx.user_id,
                     "memory store attempt"
                 );
 
                 match self
                     .store
-                    .upsert_memory(namespace, key, value, None, None, &ctx.user_id)
+                    .upsert_memory(namespace, key, stored_value, None, None, &ctx.user_id)
                 {
                     Ok(_) => {
                         // Verify the write was persisted by reading it back (different pool connection)
@@ -260,10 +397,25 @@ impl AgentTool {
                                 "memory store verify read failed"
                             ),
                         }
-                        ToolResult::ok(format!(
-                            "Stored memory: [{}] {} = {}",
-                            namespace, key, value
-                        ))
+                        // Explicit stores get the same background chunk+embed
+                        // treatment as automatic extraction, so they surface in
+                        // vector recall too (hook absent = no embedding provider).
+                        if let Some(ref embedder) = self.memory_embedder {
+                            embedder.embed(namespace, key, &ctx.user_id);
+                        }
+                        match keychain_kind {
+                            Some(kind) => ToolResult::ok(format!(
+                                "Stored memory: [{namespace}] {key} = {stored_value}. The value was \
+                                 credential-shaped ({kind}), so the secret was saved to the OS keychain \
+                                 (service \"{MEMORY_KEYCHAIN_SERVICE}\", account \"{key}\") — not plaintext \
+                                 in memory. Tell the user where it lives. Retrieve later with \
+                                 os(resource: \"keychain\", action: \"get\", service: \"{MEMORY_KEYCHAIN_SERVICE}\", account: \"{key}\")."
+                            )),
+                            None => ToolResult::ok(format!(
+                                "Stored memory: [{}] {} = {}",
+                                namespace, key, stored_value
+                            )),
+                        }
                     }
                     Err(e) => ToolResult::error(format!(
                         "Failed to store memory [{}] {}: {}. Do not retry immediately — this is a database error, not a parameter issue.",
@@ -278,7 +430,7 @@ impl AgentTool {
                     return ToolResult::error(errors::missing_param(
                         "recall",
                         "key",
-                        "bot(resource: \"memory\", action: \"recall\", key: \"user/name\")",
+                        "agent(resource: \"memory\", action: \"recall\", key: \"user/name\")",
                     ));
                 }
 
@@ -301,26 +453,41 @@ impl AgentTool {
                         ToolResult::ok(format!("[{}] {}: {}", mem.namespace, mem.key, mem.value))
                     }
                     Ok(None) => {
-                        // Fallback 1: try without user_id filter
-                        let any = self.store.get_memory_by_key(namespace, key);
+                        // Fallback 1: try without user_id filter — but only surface
+                        // rows from ANCESTOR scopes (legacy owner-scoped memories);
+                        // sibling agents and sibling isolation contexts stay
+                        // structurally unreachable.
+                        let any = self
+                            .store
+                            .get_memory_by_key(namespace, key)
+                            .ok()
+                            .flatten()
+                            .filter(|m| scope_is_ancestor(&ctx.user_id, &m.user_id));
                         match any {
-                            Ok(Some(m)) => {
+                            Some(m) => {
                                 warn!(
                                     namespace = namespace,
                                     key = key,
                                     expected_user_id = %ctx.user_id,
                                     actual_user_id = %m.user_id,
-                                    "memory exists but user_id mismatch — returning anyway"
+                                    "memory found under ancestor scope — returning"
                                 );
                                 let _ = self
                                     .store
                                     .increment_memory_access_by_key(namespace, key, &m.user_id);
                                 ToolResult::ok(format!("[{}] {}: {}", m.namespace, m.key, m.value))
                             }
-                            Ok(None) => {
-                                // Fallback 2: try key-only lookup across all namespaces
-                                match self.store.find_memory_by_key(key) {
-                                    Ok(Some(m)) => {
+                            None => {
+                                // Fallback 2: key-only lookup across all namespaces
+                                // (same ancestor-scope guard).
+                                let any = self
+                                    .store
+                                    .find_memory_by_key(key)
+                                    .ok()
+                                    .flatten()
+                                    .filter(|m| scope_is_ancestor(&ctx.user_id, &m.user_id));
+                                match any {
+                                    Some(m) => {
                                         warn!(
                                             expected_namespace = namespace,
                                             actual_namespace = %m.namespace,
@@ -332,18 +499,17 @@ impl AgentTool {
                                             m.namespace, m.key, m.value
                                         ))
                                     }
-                                    _ => {
+                                    None => {
                                         warn!(
                                             namespace = namespace,
                                             key = key,
                                             user_id = %ctx.user_id,
-                                            "memory not found at all — not in DB"
+                                            "memory not found in any readable scope"
                                         );
                                         ToolResult::ok(format!("No memory found for key: {}", key))
                                     }
                                 }
                             }
-                            Err(_) => ToolResult::ok(format!("No memory found for key: {}", key)),
                         }
                     }
                     Err(e) => ToolResult::error(format!(
@@ -360,13 +526,13 @@ impl AgentTool {
                     return ToolResult::error(errors::missing_param(
                         "search",
                         "query",
-                        "bot(resource: \"memory\", action: \"search\", query: \"project deadlines\")",
+                        "agent(resource: \"memory\", action: \"search\", query: \"project deadlines\")",
                     ));
                 }
 
                 // Use hybrid search (FTS5 + vector) when available
                 if let Some(ref searcher) = self.hybrid_searcher {
-                    let results = searcher.search(query, &ctx.user_id, limit).await;
+                    let results = searcher.search(query, &ctx.user_id, limit, None).await;
                     if !results.is_empty() {
                         let lines: Vec<String> = results
                             .iter()
@@ -452,7 +618,7 @@ impl AgentTool {
                     return ToolResult::error(errors::missing_param(
                         "delete",
                         "key",
-                        "bot(resource: \"memory\", action: \"delete\", key: \"user/name\")",
+                        "agent(resource: \"memory\", action: \"delete\", key: \"user/name\")",
                     ));
                 }
                 // Delete scoped to current user/agent only — never cross-agent
@@ -473,7 +639,7 @@ impl AgentTool {
                     return ToolResult::error(errors::missing_param(
                         "clear",
                         "namespace",
-                        "bot(resource: \"memory\", action: \"clear\", namespace: \"tacit/general\")",
+                        "agent(resource: \"memory\", action: \"clear\", namespace: \"tacit/general\")",
                     ));
                 }
                 match self
@@ -503,7 +669,7 @@ impl AgentTool {
                 let agent_type = input["agent_type"].as_str().unwrap_or("general");
                 let description = input["description"]
                     .as_str()
-                    .unwrap_or(&task_prompt[..task_prompt.len().min(80)]);
+                    .unwrap_or(crate::truncate_str(task_prompt, 80));
                 // No explicit override → inherit the parent run's model so the
                 // sub-agent uses the same provider as the conversation that
                 // spawned it (not the global default).
@@ -542,7 +708,7 @@ impl AgentTool {
                     return ToolResult::error(errors::missing_param(
                         "spawn",
                         "prompt",
-                        "bot(resource: \"task\", action: \"spawn\", prompt: \"Research competitor pricing\")",
+                        "agent(resource: \"task\", action: \"spawn\", prompt: \"Research competitor pricing\")",
                     ));
                 }
 
@@ -596,14 +762,14 @@ impl AgentTool {
                     None => return ToolResult::error(errors::missing_param(
                         "spawn_parallel",
                         "tasks",
-                        "bot(resource: \"task\", action: \"spawn_parallel\", tasks: [{\"prompt\": \"task 1\"}, {\"prompt\": \"task 2\"}])",
+                        "agent(resource: \"task\", action: \"spawn_parallel\", tasks: [{\"prompt\": \"task 1\"}, {\"prompt\": \"task 2\"}])",
                     )),
                 };
 
                 if tasks.is_empty() {
                     return ToolResult::error(
                         "tasks array must not be empty. Provide at least one task with a prompt.\n\
-                         Example: bot(resource: \"task\", action: \"spawn_parallel\", tasks: [{\"prompt\": \"task 1\"}, {\"prompt\": \"task 2\"}])",
+                         Example: agent(resource: \"task\", action: \"spawn_parallel\", tasks: [{\"prompt\": \"task 1\"}, {\"prompt\": \"task 2\"}])",
                     );
                 }
 
@@ -632,7 +798,7 @@ impl AgentTool {
                         let prompt = t["prompt"].as_str().unwrap_or("").to_string();
                         let description = t["description"]
                             .as_str()
-                            .unwrap_or(&prompt[..prompt.len().min(80)])
+                            .unwrap_or(crate::truncate_str(&prompt, 80))
                             .to_string();
                         let task_skills: Vec<String> = t["skills"]
                             .as_array()
@@ -691,7 +857,7 @@ impl AgentTool {
                     return ToolResult::error(errors::missing_param(
                         "orchestrate",
                         "prompt",
-                        "bot(resource: \"task\", action: \"orchestrate\", prompt: \"Plan and execute a market analysis\")",
+                        "agent(resource: \"task\", action: \"orchestrate\", prompt: \"Plan and execute a market analysis\")",
                     ));
                 }
 
@@ -736,7 +902,7 @@ impl AgentTool {
                     return ToolResult::error(errors::missing_param(
                         "cancel",
                         "task_id",
-                        "bot(resource: \"task\", action: \"cancel\", task_id: \"abc123\")",
+                        "agent(resource: \"task\", action: \"cancel\", task_id: \"abc123\")",
                     ));
                 }
 
@@ -778,7 +944,7 @@ impl AgentTool {
                     return ToolResult::error(errors::missing_param(
                         "status",
                         "task_id",
-                        "bot(resource: \"task\", action: \"status\", task_id: \"abc123\")",
+                        "agent(resource: \"task\", action: \"status\", task_id: \"abc123\")",
                     ));
                 }
 
@@ -817,7 +983,7 @@ impl AgentTool {
                     return ToolResult::error(errors::missing_param(
                         "create",
                         "subject",
-                        "bot(resource: \"task\", action: \"create\", subject: \"Draft the quarterly report\")",
+                        "agent(resource: \"task\", action: \"create\", subject: \"Draft the quarterly report\")",
                     ));
                 }
                 let description = input["description"].as_str();
@@ -834,7 +1000,7 @@ impl AgentTool {
                     return ToolResult::error(errors::missing_param(
                         "update",
                         "task_id",
-                        "bot(resource: \"task\", action: \"update\", task_id: \"1\", status: \"completed\")",
+                        "agent(resource: \"task\", action: \"update\", task_id: \"1\", status: \"completed\")",
                     ));
                 }
                 let status = input["status"].as_str().unwrap_or("");
@@ -842,7 +1008,7 @@ impl AgentTool {
                     return ToolResult::error(errors::missing_param(
                         "update",
                         "status",
-                        "bot(resource: \"task\", action: \"update\", task_id: \"1\", status: \"completed\")\nValid statuses: pending, in_progress, completed, failed",
+                        "agent(resource: \"task\", action: \"update\", task_id: \"1\", status: \"completed\")\nValid statuses: pending, in_progress, completed, failed",
                     ));
                 }
                 let output = input["output"].as_str();
@@ -888,7 +1054,7 @@ impl AgentTool {
                     return ToolResult::error(errors::missing_param(
                         "get",
                         "task_id",
-                        "bot(resource: \"task\", action: \"get\", task_id: \"1\")",
+                        "agent(resource: \"task\", action: \"get\", task_id: \"1\")",
                     ));
                 }
                 match self.store.get_task_item(task_id) {
@@ -913,7 +1079,7 @@ impl AgentTool {
                     return ToolResult::error(errors::missing_param(
                         "delete",
                         "task_id",
-                        "bot(resource: \"task\", action: \"delete\", task_id: \"1\")",
+                        "agent(resource: \"task\", action: \"delete\", task_id: \"1\")",
                     ));
                 }
                 match self
@@ -959,8 +1125,11 @@ impl AgentTool {
             },
             "history" => {
                 let session_id = input["session_id"].as_str().unwrap_or(&ctx.session_id);
-                // Sessions use chat_messages table with session_id as the chat_id
-                match self.store.get_chat_messages(session_id) {
+                // Messages are stored under the session's active_chat_id (sessions
+                // are decoupled from chats), NOT the session id itself — resolved
+                // by the one canonical derivation in the db crate.
+                let chat_id = self.store.resolve_session_chat_id(session_id);
+                match self.store.get_chat_messages(&chat_id) {
                     Ok(msgs) => {
                         if msgs.is_empty() {
                             return ToolResult::ok(format!(
@@ -1001,7 +1170,7 @@ impl AgentTool {
                     return ToolResult::error(errors::missing_param(
                         "query",
                         "query",
-                        "bot(resource: \"session\", action: \"query\", query: \"meeting notes\")",
+                        "agent(resource: \"session\", action: \"query\", query: \"meeting notes\")",
                     ));
                 }
                 let limit = input["limit"].as_i64().unwrap_or(20) as usize;
@@ -1128,7 +1297,7 @@ impl AgentTool {
                     return ToolResult::error(errors::missing_param(
                         "deliberate",
                         "task",
-                        "bot(resource: \"advisors\", action: \"deliberate\", task: \"Should we use PostgreSQL or SQLite?\")",
+                        "agent(resource: \"advisors\", action: \"deliberate\", task: \"Should we use PostgreSQL or SQLite?\")",
                     ));
                 }
 
@@ -1251,7 +1420,7 @@ impl AgentTool {
                     return ToolResult::error(errors::missing_param(
                         action,
                         "text",
-                        "bot(resource: \"ask\", action: \"prompt\", text: \"What would you like to do?\")",
+                        "agent(resource: \"ask\", action: \"prompt\", text: \"What would you like to do?\")",
                     ));
                 }
 
@@ -1443,7 +1612,7 @@ impl AgentTool {
                     return ToolResult::error(errors::missing_param(
                         "research",
                         "query",
-                        "bot(resource: \"research\", action: \"research\", query: \"What are the latest trends in AI?\")",
+                        "agent(resource: \"research\", action: \"research\", query: \"What are the latest trends in AI?\")",
                     ));
                 }
 
@@ -1476,7 +1645,7 @@ impl AgentTool {
                     return ToolResult::error(errors::missing_param(
                         "submit_findings",
                         "subtask_id",
-                        "bot(resource: \"research\", action: \"submit_findings\", subtask_id: \"sub-1\", findings: [{\"claim\": \"...\", \"source_url\": \"...\"}])",
+                        "agent(resource: \"research\", action: \"submit_findings\", subtask_id: \"sub-1\", findings: [{\"claim\": \"...\", \"source_url\": \"...\"}])",
                     ));
                 }
 
@@ -1486,7 +1655,7 @@ impl AgentTool {
                     None => return ToolResult::error(errors::missing_param(
                         "submit_findings",
                         "findings",
-                        "bot(resource: \"research\", action: \"submit_findings\", subtask_id: \"sub-1\", findings: [{\"claim\": \"...\", \"source_url\": \"...\", \"confidence\": 0.9}])",
+                        "agent(resource: \"research\", action: \"submit_findings\", subtask_id: \"sub-1\", findings: [{\"claim\": \"...\", \"source_url\": \"...\", \"confidence\": 0.9}])",
                     )),
                 };
 
@@ -1533,7 +1702,7 @@ impl AgentTool {
                     None => {
                         return ToolResult::error(
                             "No active research run found. You must start a research run first with:\n\
-                             bot(resource: \"research\", action: \"research\", query: \"your research question\")\n\
+                             agent(resource: \"research\", action: \"research\", query: \"your research question\")\n\
                              Then submit findings from worker sub-agents using submit_findings.",
                         );
                     }
@@ -1568,7 +1737,7 @@ impl AgentTool {
             return ToolResult::error(errors::missing_param(
                 "deep_research",
                 "query",
-                "bot(resource: \"research\", action: \"deep_research\", query: \"How effective is X for Y?\", depth: \"standard\")",
+                "agent(resource: \"research\", action: \"deep_research\", query: \"How effective is X for Y?\", depth: \"standard\")",
             ));
         }
 
@@ -1733,7 +1902,8 @@ impl DynTool for AgentTool {
          - agent(resource: \"memory\", action: \"recall\", key: \"user/name\") — Recall a specific fact\n\
          - agent(resource: \"memory\", action: \"search\", query: \"...\") — Search across all memories\n\
          Layers: \"tacit\" (long-term preferences — MOST COMMON), \"project\" (ongoing work: goals, decisions, status), \"entity\" (people/places/things), or a topic slug your agent declares in agent.json memory.topics\n\
-         For likes/dislikes/working-style facts, store with namespace: \"tacit/preferences\" — those inject into every conversation automatically.\n\n\
+         For likes/dislikes/working-style facts, store with namespace: \"tacit/preferences\" — those inject into every conversation automatically.\n\
+         MEMORY POLICY: when the owner explicitly asks you to remember something, store it — never refuse, filter, or lecture. The request itself is consent, and consent overrides content category: government IDs, financial accounts, health details, and protected attributes all save on explicit request. Do not re-litigate a store on safety grounds. True credentials (API keys, tokens, passwords) are handled by the system: the secret is routed to the OS keychain and the memory keeps a pointer — the tool result tells you what happened so you can tell the user. A recalled pointer row like \"(stored in system keychain: nebo-memory/<key>)\" means the secret lives in the keychain: fetch it via os(resource: \"keychain\", action: \"get\", service: \"nebo-memory\", account: \"<key>\") only when the user asks for the value — never auto-load secrets into context.\n\n\
          Sessions:\n\
          - agent(resource: \"session\", action: \"list\") / history / status / clear / query\n\n\
          Profile:\n\
@@ -1884,6 +2054,15 @@ impl DynTool for AgentTool {
     }
 }
 
+/// True when `found` is `own` itself or an ANCESTOR scope of `own` in the
+/// memory scope chain (`owner` → `owner:agent:X` → `owner:agent:X:ctx:Y` —
+/// scopes nest with `:` separators, so an ancestor is a strict `:`-boundary
+/// prefix). The recall fallbacks may only surface ancestor-scoped rows;
+/// sibling agents and sibling isolation contexts are never readable.
+fn scope_is_ancestor(own: &str, found: &str) -> bool {
+    own == found || own.starts_with(&format!("{found}:"))
+}
+
 /// Open a URL in the system browser (best-effort, cross-platform).
 fn open_url(url: &str) {
     #[cfg(target_os = "macos")]
@@ -1893,4 +2072,371 @@ fn open_url(url: &str) {
     #[cfg(target_os = "windows")]
     let cmd = ("cmd", vec!["/C", "start", url]);
     let _ = std::process::Command::new(cmd.0).args(cmd.1).spawn();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    /// Stub embedder that records every (namespace, key, user_id) it was asked to embed.
+    struct RecordingEmbedder {
+        calls: Mutex<Vec<(String, String, String)>>,
+    }
+
+    impl MemoryEmbedder for RecordingEmbedder {
+        fn embed(&self, namespace: &str, key: &str, user_id: &str) {
+            self.calls.lock().unwrap().push((
+                namespace.to_string(),
+                key.to_string(),
+                user_id.to_string(),
+            ));
+        }
+    }
+
+    /// Stub keychain that records every (service, account, secret) write and
+    /// can be told to fail — explicit-store routing must never touch the real
+    /// system keychain from tests.
+    struct RecordingKeychain {
+        calls: Mutex<Vec<(String, String, String)>>,
+        fail: bool,
+    }
+
+    impl RecordingKeychain {
+        fn new(fail: bool) -> Arc<Self> {
+            Arc::new(Self {
+                calls: Mutex::new(Vec::new()),
+                fail,
+            })
+        }
+    }
+
+    impl KeychainStore for RecordingKeychain {
+        fn store<'a>(
+            &'a self,
+            service: &'a str,
+            account: &'a str,
+            secret: &'a str,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>>
+        {
+            Box::pin(async move {
+                self.calls.lock().unwrap().push((
+                    service.to_string(),
+                    account.to_string(),
+                    secret.to_string(),
+                ));
+                if self.fail {
+                    Err("keychain locked".to_string())
+                } else {
+                    Ok(())
+                }
+            })
+        }
+    }
+
+    /// Temp-file store: the r2d2 pool would give each `:memory:` connection its
+    /// own database, and the store path verifies writes on a second connection.
+    fn agent_tool_with_embedder(
+        name: &str,
+    ) -> (AgentTool, Arc<RecordingEmbedder>, Arc<db::Store>) {
+        let path =
+            std::env::temp_dir().join(format!("nebo-{name}-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let store = Arc::new(db::Store::new(&path.to_string_lossy()).unwrap());
+        let embedder = Arc::new(RecordingEmbedder {
+            calls: Mutex::new(Vec::new()),
+        });
+        let tool = AgentTool::new(store.clone(), crate::orchestrator::new_handle())
+            .with_memory_embedder(embedder.clone());
+        (tool, embedder, store)
+    }
+
+    #[tokio::test]
+    async fn test_explicit_store_invokes_embed_hook() {
+        let (tool, embedder, _store) = agent_tool_with_embedder("embed-hook-test");
+        let ctx = ToolContext {
+            user_id: "user-1".to_string(),
+            ..Default::default()
+        };
+        let input = serde_json::json!({
+            "action": "store",
+            "key": "person/alice",
+            "value": "Alice is the lead engineer on the migration project.",
+        });
+        let result = tool.handle_memory(&input, &ctx).await;
+        assert!(!result.is_error, "store failed: {}", result.content);
+
+        let calls = embedder.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1, "embed hook should fire exactly once");
+        assert_eq!(calls[0].0, "tacit/general");
+        assert_eq!(calls[0].1, "person/alice");
+        assert_eq!(calls[0].2, "user-1");
+    }
+
+    #[tokio::test]
+    async fn test_rejected_store_skips_embed_hook() {
+        let (tool, embedder, _store) = agent_tool_with_embedder("embed-skip-test");
+        let ctx = ToolContext {
+            user_id: "user-1".to_string(),
+            ..Default::default()
+        };
+        // Missing value → parameter error before any store/embed.
+        let input = serde_json::json!({ "action": "store", "key": "person/alice" });
+        let result = tool.handle_memory(&input, &ctx).await;
+        assert!(result.is_error);
+        assert!(embedder.calls.lock().unwrap().is_empty());
+    }
+
+    /// Explicit store of a credential-shaped value routes the secret to the
+    /// keychain (service nebo-memory, account = memory key) and persists a
+    /// pointer row — never the plaintext (memory-rock-solid Phase 1).
+    #[tokio::test]
+    async fn test_credential_store_routes_to_keychain() {
+        let (tool, _embedder, store) = agent_tool_with_embedder("keychain-route-test");
+        let keychain = RecordingKeychain::new(false);
+        let tool = tool.with_keychain(keychain.clone());
+        let ctx = ToolContext {
+            user_id: "user-1".to_string(),
+            ..Default::default()
+        };
+        let secret = "sk-abcdefghijklmnopqrstuvwxyz123456";
+        let input = serde_json::json!({
+            "action": "store",
+            "key": "openai/api-key",
+            "value": secret,
+        });
+        let result = tool.handle_memory(&input, &ctx).await;
+        assert!(!result.is_error, "routed store must succeed: {}", result.content);
+        assert!(
+            result.content.contains("keychain"),
+            "result must tell the model what happened: {}",
+            result.content
+        );
+
+        // Keychain got exactly one write with the canonical service/account.
+        let calls = keychain.calls.lock().unwrap();
+        assert_eq!(
+            calls.as_slice(),
+            &[(
+                "nebo-memory".to_string(),
+                "openai/api-key".to_string(),
+                secret.to_string()
+            )]
+        );
+
+        // The memory row holds the pointer, not the secret.
+        let row = store
+            .get_memory_by_key_and_user("tacit/general", "openai/api-key", "user-1")
+            .unwrap()
+            .expect("pointer row must be stored");
+        assert_eq!(row.value, "(stored in system keychain: nebo-memory/openai/api-key)");
+        assert!(!row.value.contains(secret));
+
+        // Recall returns the pointer text only — no auto-dereference.
+        let result = tool
+            .handle_memory(
+                &serde_json::json!({ "action": "recall", "key": "openai/api-key" }),
+                &ctx,
+            )
+            .await;
+        assert!(result.content.contains("stored in system keychain"));
+        assert!(!result.content.contains(secret));
+    }
+
+    /// If the keychain write fails, the store is refused — never a silent
+    /// plaintext fallback after deciding the value is a credential.
+    #[tokio::test]
+    async fn test_credential_keychain_failure_refuses_store() {
+        let (tool, embedder, store) = agent_tool_with_embedder("keychain-fail-test");
+        let keychain = RecordingKeychain::new(true);
+        let tool = tool.with_keychain(keychain.clone());
+        let ctx = ToolContext {
+            user_id: "user-1".to_string(),
+            ..Default::default()
+        };
+        let input = serde_json::json!({
+            "action": "store",
+            "key": "openai/api-key",
+            "value": "sk-abcdefghijklmnopqrstuvwxyz123456",
+        });
+        let result = tool.handle_memory(&input, &ctx).await;
+        assert!(result.is_error, "keychain failure must refuse the store");
+        assert!(result.content.contains("keychain locked"), "{}", result.content);
+        assert_eq!(keychain.calls.lock().unwrap().len(), 1);
+        // Nothing persisted, nothing embedded.
+        assert_eq!(store.count_memories().unwrap(), 0);
+        assert!(embedder.calls.lock().unwrap().is_empty());
+    }
+
+    /// The live-observed access-code class ("4417-echo-9" style) is a user
+    /// code, not a credential — stored verbatim, keychain untouched.
+    #[tokio::test]
+    async fn test_access_code_stores_plaintext_not_routed() {
+        let (tool, _embedder, store) = agent_tool_with_embedder("access-code-test");
+        let keychain = RecordingKeychain::new(false);
+        let tool = tool.with_keychain(keychain.clone());
+        let ctx = ToolContext {
+            user_id: "user-1".to_string(),
+            ..Default::default()
+        };
+        let input = serde_json::json!({
+            "action": "store",
+            "key": "wine-cellar/access-code",
+            "value": "The wine cellar access code is 4417-echo-9.",
+        });
+        let result = tool.handle_memory(&input, &ctx).await;
+        assert!(!result.is_error, "{}", result.content);
+        assert!(keychain.calls.lock().unwrap().is_empty(), "user code must not be routed");
+        let row = store
+            .get_memory_by_key_and_user("tacit/general", "wine-cellar/access-code", "user-1")
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.value, "The wine cellar access code is 4417-echo-9.");
+    }
+
+    /// Tool parity: an isolated agent's explicit "remember this" lands under
+    /// the exact ctx scope the runner derived (ToolContext.user_id) — and is
+    /// invisible to sibling contexts and the shared agent scope.
+    #[tokio::test]
+    async fn test_isolated_explicit_store_lands_in_ctx_scope() {
+        let (tool, _embedder, store) = agent_tool_with_embedder("ctx-store-test");
+        let ctx = ToolContext {
+            user_id: "local:agent:a1:ctx:chat-A".to_string(),
+            ..Default::default()
+        };
+        let input = serde_json::json!({
+            "action": "store",
+            "key": "case/deadline",
+            "value": "The filing deadline for the Smith matter is March 3, 2027.",
+        });
+        let result = tool.handle_memory(&input, &ctx).await;
+        assert!(!result.is_error, "store failed: {}", result.content);
+
+        let stored = store
+            .get_memory_by_key_and_user(
+                "tacit/general",
+                "case/deadline",
+                "local:agent:a1:ctx:chat-A",
+            )
+            .unwrap();
+        assert!(stored.is_some(), "explicit store must land under the ctx scope");
+        for other in ["local:agent:a1:ctx:chat-B", "local:agent:a1", "local"] {
+            assert!(
+                store
+                    .get_memory_by_key_and_user("tacit/general", "case/deadline", other)
+                    .unwrap()
+                    .is_none(),
+                "explicit store leaked to scope {other}"
+            );
+        }
+    }
+
+    /// Fail-closed: with memory_writes_disabled (context_isolated, no
+    /// derivable context) all memory mutations are refused; reads still work.
+    #[tokio::test]
+    async fn test_memory_writes_disabled_refuses_mutations() {
+        let (tool, embedder, store) = agent_tool_with_embedder("writes-disabled-test");
+        let ctx = ToolContext {
+            user_id: "local:agent:a1".to_string(),
+            memory_writes_disabled: true,
+            ..Default::default()
+        };
+        for action in ["store", "save", "delete", "clear"] {
+            let input = serde_json::json!({
+                "action": action,
+                "key": "case/deadline",
+                "value": "The filing deadline for the Smith matter is March 3, 2027.",
+                "namespace": "tacit/general",
+            });
+            let result = tool.handle_memory(&input, &ctx).await;
+            assert!(result.is_error, "{action} must be refused when writes are disabled");
+        }
+        assert!(embedder.calls.lock().unwrap().is_empty());
+        assert_eq!(store.count_memories().unwrap(), 0);
+
+        // Reads still serve the inherited chain.
+        store
+            .upsert_memory("tacit/general", "owner-fact", "v", None, None, "local")
+            .unwrap();
+        let result = tool
+            .handle_memory(
+                &serde_json::json!({ "action": "recall", "key": "owner-fact" }),
+                &ctx,
+            )
+            .await;
+        assert!(!result.is_error);
+        assert!(result.content.contains("v"), "reads must still work: {}", result.content);
+    }
+
+    /// The recall fallbacks may surface ancestor-scoped rows (legacy owner
+    /// memories) but NEVER sibling isolation contexts or sibling agents.
+    #[tokio::test]
+    async fn test_recall_fallback_never_crosses_sibling_scopes() {
+        let (tool, _embedder, store) = agent_tool_with_embedder("recall-guard-test");
+        // A fact stored in Case B, plus one under another agent.
+        store
+            .upsert_memory(
+                "tacit/general",
+                "case/deadline",
+                "Case B deadline",
+                None,
+                None,
+                "local:agent:a1:ctx:chat-B",
+            )
+            .unwrap();
+        store
+            .upsert_memory("tacit/general", "other-agent", "v", None, None, "local:agent:a2")
+            .unwrap();
+
+        let ctx = ToolContext {
+            user_id: "local:agent:a1:ctx:chat-A".to_string(),
+            ..Default::default()
+        };
+        // Sibling ctx row is structurally unreachable (both fallbacks guarded).
+        let result = tool
+            .handle_memory(
+                &serde_json::json!({ "action": "recall", "key": "case/deadline" }),
+                &ctx,
+            )
+            .await;
+        assert!(
+            result.content.starts_with("No memory found"),
+            "sibling ctx memory leaked through recall fallback: {}",
+            result.content
+        );
+        // Sibling agent row too.
+        let result = tool
+            .handle_memory(
+                &serde_json::json!({ "action": "recall", "key": "other-agent" }),
+                &ctx,
+            )
+            .await;
+        assert!(result.content.starts_with("No memory found"));
+
+        // Ancestor-scoped rows (owner) remain reachable through the fallback.
+        store
+            .upsert_memory("tacit/general", "owner-fact", "owner value", None, None, "local")
+            .unwrap();
+        let result = tool
+            .handle_memory(
+                &serde_json::json!({ "action": "recall", "key": "owner-fact" }),
+                &ctx,
+            )
+            .await;
+        assert!(result.content.contains("owner value"), "{}", result.content);
+    }
+
+    #[test]
+    fn test_scope_is_ancestor() {
+        assert!(scope_is_ancestor("local", "local"));
+        assert!(scope_is_ancestor("local:agent:a1", "local"));
+        assert!(scope_is_ancestor("local:agent:a1:ctx:chat-A", "local:agent:a1"));
+        assert!(scope_is_ancestor("local:agent:a1:ctx:chat-A", "local"));
+        // Siblings and descendants are not ancestors.
+        assert!(!scope_is_ancestor("local:agent:a1:ctx:chat-A", "local:agent:a1:ctx:chat-B"));
+        assert!(!scope_is_ancestor("local:agent:a1", "local:agent:a2"));
+        assert!(!scope_is_ancestor("local", "local:agent:a1"));
+        // Prefix without a `:` boundary is not an ancestor.
+        assert!(!scope_is_ancestor("localx:agent:a1", "local"));
+    }
 }

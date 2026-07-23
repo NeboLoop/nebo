@@ -1,26 +1,23 @@
 <script lang="ts">
+  import { t } from 'svelte-i18n';
   import ChatComposer from './ChatComposer.svelte';
   import WorkViewer from './WorkViewer.svelte';
+  import ShareArtifactModal from './ShareArtifactModal.svelte';
   import AskWidget from './AskWidget.svelte';
   import type { AskWidgetDef } from './AskWidget.svelte';
   import { AGENT_COLORS_MAP } from '$lib/tokens.js';
   import { downloadArtifact } from '$lib/chat/download';
+  import { backendUrl, backendBase } from '$lib/api/base';
+  import { addToast } from '$lib/stores/toast';
+  import { devMode } from '$lib/stores/devmode';
   import { marked } from 'marked';
   import FileText from 'lucide-svelte/icons/file-text';
   import Code from 'lucide-svelte/icons/code';
   import Table from 'lucide-svelte/icons/table';
   import Presentation from 'lucide-svelte/icons/presentation';
   import type { UploadedAttachment } from '$lib/types/attachment';
-  import { getAttachmentType, formatFileSize } from '$lib/types/attachment';
-  import {
-    NEAR_BOTTOM_PX,
-    autoScrollAfterUserScroll,
-    distanceFromBottom,
-    isTrailingUserMessage,
-    messagesScrollKey,
-    shouldFollowMessages,
-    shouldShowScrollButton,
-  } from '$lib/chat/scroll';
+  import { getAttachmentType, formatFileSize, attachmentMediaUrl } from '$lib/types/attachment';
+  import { NEAR_BOTTOM_PX, distanceFromBottom } from '$lib/chat/scroll';
 
   // Configure marked for streaming-friendly rendering
   marked.setOptions({
@@ -101,7 +98,8 @@
 
   let composerRef = $state<{ focus: () => void; focusAndInsert: (char: string) => void; addFiles: (files: File[]) => void } | null>(null);
   let creationsOpen = $state(false);
-  let creationsTitle = $state('Work');
+  // Empty = default panel title ($t('chat.work') at render time).
+  let creationsTitle = $state('');
   let activeArtifactId = $state<string | null>(null);
   // Pinned version of the active document; null = follow the latest version.
   let activeVersion = $state<number | null>(null);
@@ -126,7 +124,7 @@
     const withCopy = html
       .replace(
         /<pre>/g,
-        '<div class="relative group/code"><button type="button" data-code-copy title="Copy code" class="absolute top-2 right-2 z-10 px-2 py-0.5 rounded text-xs font-medium bg-base-100/80 border border-base-content/10 text-base-content/60 opacity-0 group-hover/code:opacity-100 hover:text-base-content hover:bg-base-200 cursor-pointer transition-opacity">Copy</button><pre>'
+        `<div class="relative group/code"><button type="button" data-code-copy title="${$t('chat.copyCode')}" class="absolute top-2 right-2 z-10 px-2 py-0.5 rounded text-xs font-medium bg-base-100/80 border border-base-content/10 text-base-content/60 opacity-0 group-hover/code:opacity-100 hover:text-base-content hover:bg-base-200 cursor-pointer transition-opacity">${$t('common.copy')}</button><pre>`
       )
       .replace(/<\/pre>/g, '</pre></div>');
     return renderMentionChips(withCopy);
@@ -139,7 +137,7 @@
     const code = btn.parentElement?.querySelector('pre code, pre')?.textContent ?? '';
     navigator.clipboard.writeText(code).then(() => {
       const prev = btn.textContent;
-      btn.textContent = 'Copied!';
+      btn.textContent = $t('chat.copied');
       setTimeout(() => { btn.textContent = prev; }, 1200);
     });
     return true;
@@ -235,6 +233,32 @@
   // their source via codeUrl; plain html shows its own markup).
   let viewSource = $state(false);
 
+  // Share dialog for the active artifact (loop channels / members).
+  let shareOpen = $state(false);
+
+  // Text-like formats copy their content; binaries copy the file's URL.
+  const COPYABLE_EXTS = ['md', 'txt', 'html', 'htm', 'csv', 'tsv', 'json', 'js', 'mjs', 'cjs',
+    'ts', 'tsx', 'jsx', 'py', 'rs', 'go', 'sh', 'bash', 'css', 'yaml', 'yml', 'toml', 'sql',
+    'svelte', 'rb', 'java', 'c', 'h', 'cpp', 'xml', 'markdown', 'log'];
+
+  async function copyArtifact() {
+    if (!activeArtifact?.url) return;
+    const src = backendUrl(activeArtifact.url);
+    const ext = (activeArtifact.title.split('.').pop() || '').toLowerCase();
+    try {
+      if (COPYABLE_EXTS.includes(ext)) {
+        const res = await fetch(src);
+        if (!res.ok) throw new Error(`${res.status}`);
+        await navigator.clipboard.writeText(await res.text());
+      } else {
+        await navigator.clipboard.writeText(new URL(src, window.location.origin).href);
+      }
+      addToast($t('chat.copied'), 'success');
+    } catch {
+      addToast($t('chat.copyFailed'), 'error');
+    }
+  }
+
   function openArtifact(id: string) {
     activeArtifactId = id;
     activeVersion = null; // follow latest; the version dropdown pins an older one
@@ -328,6 +352,12 @@
     copiedTimeout = setTimeout(() => { copiedIdx = null; }, 1500);
   }
 
+  /** Loop-uploaded attachments (have a fileId) render through the local
+   *  authenticated proxy; artifact-derived ones keep their local url. */
+  function attSrc(att: UploadedAttachment): string {
+    return att.fileId ? attachmentMediaUrl(att, backendBase()) : att.url;
+  }
+
   function startEdit(idx: number, content: string) {
     editingIdx = idx;
     editText = content;
@@ -390,7 +420,7 @@
     composerRef?.focusAndInsert(e.key);
   }
 
-  export function showCreations(title = 'Work') {
+  export function showCreations(title = '') {
     creationsTitle = title;
     openWorkPanel();
   }
@@ -403,14 +433,69 @@
 
   // Scroll state
   let messagesContainer = $state<HTMLDivElement | null>(null);
+  let messagesContent = $state<HTMLDivElement | null>(null);
   let showScrollButton = $state(false);
   let autoScrollEnabled = $state(true);
   let scrollingProgrammatically = false;
   let programmaticUntil = 0;
-  let pendingScrollRAF: number | null = null;
   let settleRAF: number | null = null;
   let initialScrollDone = false;
   let prevScrollHeight = 0;
+  let lastScrollTop = 0;
+  // Reserved room for the streaming reply (the claude.ai turn model): on send,
+  // the user's message pins to the TOP of the viewport and a trailing spacer
+  // reserves the rest of it. The reply streams INTO the reserved room — the
+  // spacer shrinks 1:1 with content growth, total scroll height stays constant,
+  // and the view is perfectly calm. When the room runs out (spacer hits 0),
+  // normal follow-the-stream pinning takes over.
+  let turnSpacerHeight = $state(0);
+  /// Identity of the latest user message (grouped messages carry no id — key on
+  /// position + content so both new sends and edit-resubmits re-arm the room).
+  let lastUserMsgKey: string | null = null;
+  const TURN_TOP_PAD = 18; // matches the scroller's vertical padding
+
+  /// Recompute the spacer so (last user msg → end of content + spacer) fills
+  /// exactly one viewport. Returns the room left for the reply.
+  function updateTurnSpacer(): number {
+    const scroller = messagesContainer;
+    const content = messagesContent;
+    if (!scroller || !content || lastUserMsgKey === null) return 0;
+    const userEls = content.querySelectorAll<HTMLElement>('[data-user-msg]');
+    const target = userEls[userEls.length - 1];
+    if (!target) {
+      turnSpacerHeight = 0;
+      return 0;
+    }
+    const usedByTurn = content.getBoundingClientRect().bottom - target.getBoundingClientRect().top;
+    const room = Math.max(0, Math.round(scroller.clientHeight - usedByTurn - TURN_TOP_PAD * 2));
+    turnSpacerHeight = room;
+    return room;
+  }
+
+  // A new user message: reserve the room and pin their message to the top.
+  $effect(() => {
+    const users = groupedMessages.filter((m) => m.type === 'user');
+    const last = users[users.length - 1];
+    const key = last ? `${users.length}:${last.content}` : null;
+    if (key === lastUserMsgKey || key === null) return;
+    lastUserMsgKey = key;
+    if (!initialScrollDone) return; // opening an old chat is not a send
+    requestAnimationFrame(() => {
+      const scroller = messagesContainer;
+      const content = messagesContent;
+      if (!scroller || !content) return;
+      updateTurnSpacer();
+      const userEls = content.querySelectorAll<HTMLElement>('[data-user-msg]');
+      const target = userEls[userEls.length - 1];
+      if (!target) return;
+      scrollingProgrammatically = true;
+      scroller.scrollTop +=
+        target.getBoundingClientRect().top - scroller.getBoundingClientRect().top - TURN_TOP_PAD;
+      lastScrollTop = scroller.scrollTop;
+      autoScrollEnabled = true;
+      requestAnimationFrame(() => { scrollingProgrammatically = false; });
+    });
+  });
 
   function isProgrammaticScroll(): boolean {
     return scrollingProgrammatically || performance.now() < programmaticUntil;
@@ -474,31 +559,30 @@
     }
   });
 
-  // Auto-scroll when messages change (length OR streaming content/tools growth).
-  // A trailing user message force-follows even if the user had scrolled up.
+  // Auto-scroll: pin to the bottom whenever the CONTENT grows, not when the
+  // message count changes. Streaming appends tokens to the LAST message (count
+  // constant), and markdown/images/tool blocks grow after insert — a
+  // count-keyed effect misses all of it, which is exactly the "messages stop
+  // following the stream" bug. A ResizeObserver on the inner content sees every
+  // growth source. Pin INSTANTLY (no smooth): a gliding scroll outlives the
+  // programmatic flag and its intermediate positions read as "user scrolled
+  // away", disabling auto-scroll mid-stream.
   $effect(() => {
-    const key = messagesScrollKey(messages);
-    void key;
-    if (!initialScrollDone || !messagesContainer) return;
-    const forceFollow = isTrailingUserMessage(messages);
-    // Read flag before any write so a force-follow re-enable doesn't loop the effect.
-    const follow = shouldFollowMessages({
-      initialScrollDone: true,
-      autoScrollEnabled,
-      forceFollow,
+    if (!messagesContent) return;
+    const ro = new ResizeObserver(() => {
+      const el = messagesContainer;
+      if (!el || !autoScrollEnabled || !initialScrollDone) return;
+      // While the reply still fits in the reserved room, shrink the spacer to
+      // absorb the growth — total height constant, view stays put (calm fill).
+      if (updateTurnSpacer() > 0) return;
+      scrollingProgrammatically = true;
+      programmaticUntil = performance.now() + 100;
+      el.scrollTop = el.scrollHeight;
+      lastScrollTop = el.scrollTop;
+      requestAnimationFrame(() => { scrollingProgrammatically = false; });
     });
-    if (!follow) return;
-    if (forceFollow && !autoScrollEnabled) {
-      autoScrollEnabled = true;
-    }
-    if (pendingScrollRAF) cancelAnimationFrame(pendingScrollRAF);
-    pendingScrollRAF = requestAnimationFrame(() => {
-      pendingScrollRAF = null;
-      if (!messagesContainer) return;
-      // User may have scrolled up between schedule and frame.
-      if (!autoScrollEnabled && !isTrailingUserMessage(messages)) return;
-      pinToBottom(false);
-    });
+    ro.observe(messagesContent);
+    return () => ro.disconnect();
   });
 
   // Initial scroll to bottom. Markdown, tool blocks, and images render
@@ -545,9 +629,19 @@
     if (!messagesContainer) return;
     const programmatic = isProgrammaticScroll();
     const { scrollTop, scrollHeight, clientHeight } = messagesContainer;
-    const m = { scrollTop, scrollHeight, clientHeight };
-    showScrollButton = shouldShowScrollButton(m);
-    autoScrollEnabled = autoScrollAfterUserScroll(autoScrollEnabled, m, { programmatic });
+    const dist = scrollHeight - scrollTop - clientHeight;
+    const scrolledUp = scrollTop < lastScrollTop - 1;
+    lastScrollTop = scrollTop;
+    showScrollButton = dist > NEAR_BOTTOM_PX;
+
+    // Disengage only on genuine user intent — an UPWARD scroll away from the
+    // bottom. Position alone can't distinguish "user scrolled away" from a
+    // pin that hasn't caught up with fresh content yet.
+    if (!programmatic && scrolledUp && dist > NEAR_BOTTOM_PX) {
+      autoScrollEnabled = false;
+    } else if (dist <= NEAR_BOTTOM_PX) {
+      autoScrollEnabled = true;
+    }
 
     // Load older messages when scrolled near top
     if (!programmatic && scrollTop < 100 && hasMore && !isLoadingMore && onloadmore) {
@@ -598,8 +692,8 @@
     const total = tools.reduce((s, t) => s + (t.durationMs ?? 0), 0);
     return total > 0 ? fmtDuration(total) : '';
   }
-  function stepOutcome(t: ToolMsg): string {
-    return t.outcome ?? t.label ?? `Used ${t.name}`;
+  function stepOutcome(tool: ToolMsg): string {
+    return tool.outcome ?? tool.label ?? $t('chat.usedTool', { values: { name: tool.name } });
   }
   // Correct tool signature: MCP → "slug · tool", STRAP → "name · resource.action".
   function strapSig(t: ToolMsg): string {
@@ -614,7 +708,7 @@
     const running = tools.filter((t) => t.status === 'running');
     if (running.length) {
       const cur = running[running.length - 1];
-      return `${cur.label ?? `working with ${cur.name}`}…`;
+      return `${cur.label ?? $t('chat.workingWithTool', { values: { name: cur.name } })}…`;
     }
     // Group completed steps by outcome, preserving first-seen order.
     const groups = new Map<string, number>();
@@ -628,7 +722,7 @@
       return i === 0 ? s : s.charAt(0).toLowerCase() + s.slice(1);
     });
     const line = parts.slice(0, 3).join(', ');
-    return groups.size > 3 ? `${line}, +${groups.size - 3} more` : line;
+    return groups.size > 3 ? `${line}, ${$t('chat.moreCount', { values: { count: groups.size - 3 } })}` : line;
   }
 
   // Tools now live on the assistant message that ran them (msg.tools[]), so there
@@ -689,7 +783,7 @@
   <!-- Dropzone overlay -->
   {#if isDragging}
     <div class="absolute inset-0 z-30 bg-primary/5 border-2 border-dashed border-primary rounded-lg flex items-center justify-center pointer-events-none">
-      <div class="text-primary font-medium text-sm">Drop files here</div>
+      <div class="text-primary font-medium text-sm">{$t('chat.dropFilesHere')}</div>
     </div>
   {/if}
 
@@ -702,7 +796,7 @@
           data-tour="work"
           class="text-sm ml-auto shrink-0 whitespace-nowrap cursor-pointer bg-transparent border-none text-base-content/70 hover:text-base-content transition-colors flex items-center gap-1.5"
           onclick={() => creationsOpen ? (creationsOpen = false) : openWorkPanel()}
-          title={creationsOpen ? 'Close Work panel' : 'Open Work panel'}
+          title={creationsOpen ? $t('chat.closeWorkPanel') : $t('chat.openWorkPanel')}
         >
           {headerRight}
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="{creationsOpen ? 'text-primary' : ''}">
@@ -735,14 +829,14 @@
           type="button"
           onclick={scrollToBottom}
           class="p-2 rounded-full bg-base-200 border border-base-300 text-base-content/90 hover:bg-base-300 hover:text-base-content transition-all shadow-lg cursor-pointer"
-          title="Scroll to bottom"
+          title={$t('chat.scrollToBottom')}
         >
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><polyline points="19 12 12 19 5 12"/></svg>
         </button>
       </div>
     {/if}
   <div bind:this={messagesContainer} onscroll={handleScroll} class="h-full overflow-y-auto p-[18px_24px]">
-  <div class="max-w-3xl mx-auto flex flex-col gap-1" data-selectable>
+  <div bind:this={messagesContent} class="max-w-3xl mx-auto flex flex-col gap-1" data-selectable>
     {#if isLoadingMore}
       <div class="flex justify-center py-3">
         <div class="loading loading-spinner loading-sm text-base-content/30"></div>
@@ -799,24 +893,24 @@
                     {#if isExpanded}
                       <div class="mt-2 rounded-lg border border-base-300 bg-base-100 overflow-hidden">
                         <div class="px-3.5 pt-3 pb-2">
-                          <div class="text-xs font-semibold mb-1.5">Request</div>
+                          <div class="text-xs font-semibold mb-1.5">{$t('chat.request')}</div>
                           <pre class="text-xs font-mono leading-relaxed whitespace-pre-wrap">{JSON.stringify(tool.request, null, 2)}</pre>
                         </div>
                         <div class="px-3.5 pt-2 pb-3 border-t border-base-300">
-                          <div class="text-xs font-semibold mb-1.5">Response</div>
+                          <div class="text-xs font-semibold mb-1.5">{$t('chat.response')}</div>
                           <pre class="text-xs font-mono leading-relaxed whitespace-pre-wrap">{tool.response}</pre>
                         </div>
                       </div>
                       <button
                         class="mt-1.5 py-0.5 px-2 rounded text-xs font-medium bg-base-200 cursor-pointer border-none hover:bg-base-300 transition-colors"
                         onclick={() => toggleResult(resultKey)}
-                      >Hide</button>
+                      >{$t('chat.hide')}</button>
                     {:else}
                       <div class="mt-1">
                         <button
                           class="py-0.5 px-2 rounded text-xs font-medium cursor-pointer border-none transition-colors {tool.status === 'success' ? 'bg-base-200 hover:bg-base-300' : 'bg-error/10 text-error hover:bg-error/20'}"
                           onclick={() => toggleResult(resultKey)}
-                        >Result</button>
+                        >{$t('chat.result')}</button>
                       </div>
                     {/if}
                   {/if}
@@ -831,7 +925,7 @@
                     <path d="M6 9L8.25 11.25L12.25 6.75" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
                   </svg>
                 </div>
-                <span class="text-xs">Done</span>
+                <span class="text-xs">{$t('common.done')}</span>
               </div>
             {/if}
           </div>
@@ -855,23 +949,23 @@
                 oninput={handleEditInput}
               ></textarea>
               <div class="flex items-center justify-between mt-2 pt-2 border-t border-base-content/10">
-                <span class="text-xs text-base-content/50">Enter to submit · Esc to cancel</span>
+                <span class="text-xs text-base-content/50">{$t('chat.enterToSubmit')}</span>
                 <div class="flex items-center gap-2">
                   <button
                     class="py-1.5 px-3 rounded-lg text-xs cursor-pointer border border-base-300 bg-transparent hover:bg-base-200 transition-colors"
                     onclick={cancelEdit}
-                  >Cancel</button>
+                  >{$t('common.cancel')}</button>
                   <button
                     class="py-1.5 px-3 rounded-lg text-xs font-medium cursor-pointer border-none bg-primary text-primary-content hover:opacity-90 transition-opacity disabled:opacity-40 disabled:cursor-not-allowed"
                     disabled={!editText.trim()}
                     onclick={() => saveEdit(origIdx)}
-                  >Save & Submit</button>
+                  >{$t('chat.saveAndSubmit')}</button>
                 </div>
               </div>
             </div>
           </div>
         {:else}
-          <div class="max-w-[640px] self-end mt-3">
+          <div class="max-w-[640px] self-end mt-3" data-user-msg>
             <div class="py-2.5 px-3.5 rounded-xl text-sm leading-relaxed bg-base-200 rounded-br-sm prose prose-sm max-w-none [&_p]:my-0 [&_ul]:my-1 [&_ol]:my-1 [&>:first-child]:mt-0 [&>:last-child]:mb-0">
               {@html renderMarkdown(msg.content)}
               {#if msg.attachments?.length}
@@ -879,9 +973,9 @@
                   {#each msg.attachments as att}
                     {@const attType = getAttachmentType(att.mimeType)}
                     {#if attType === 'image'}
-                      <button type="button" class="block p-0 bg-transparent border-0 cursor-zoom-in" onclick={() => (lightboxUrl = att.url)} aria-label="View image">
+                      <button type="button" class="block p-0 bg-transparent border-0 cursor-zoom-in" onclick={() => (lightboxUrl = attSrc(att))} aria-label={$t('chat.viewImage')}>
                         <img
-                          src={att.thumbnailUrl || att.url}
+                          src={attSrc(att)}
                           alt={att.filename}
                           class="max-w-[240px] max-h-[180px] rounded-lg border border-base-content/15 object-cover"
                           loading="lazy"
@@ -889,16 +983,18 @@
                       </button>
                     {:else if attType === 'video'}
                       <video
-                        src={att.url}
+                        src={attSrc(att)}
                         controls
                         preload="metadata"
                         class="max-w-[320px] max-h-[240px] rounded-lg border border-base-content/15"
                       >
                         <track kind="captions" />
                       </video>
+                    {:else if attType === 'audio'}
+                      <audio src={attSrc(att)} controls preload="metadata" class="max-w-[280px]"></audio>
                     {:else}
                       <a
-                        href={att.url}
+                        href={attSrc(att)}
                         download={att.filename}
                         class="flex items-center gap-2 py-2 px-3 rounded-lg border border-base-content/15 bg-base-200/50 hover:bg-base-200 transition-colors no-underline text-inherit"
                       >
@@ -917,14 +1013,14 @@
               {/if}
               <button
                 class="w-7 h-7 rounded-md grid place-items-center text-base-content/50 hover:text-base-content hover:bg-base-200 cursor-pointer bg-transparent border-none transition-colors"
-                title="Edit & resend"
+                title={$t('chat.editResend')}
                 onclick={() => startEdit(origIdx, msg.content)}
               >
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
               </button>
               <button
                 class="w-7 h-7 rounded-md grid place-items-center {copiedIdx === origIdx ? 'text-success' : 'text-base-content/50 hover:text-base-content hover:bg-base-200'} cursor-pointer bg-transparent border-none transition-colors"
-                title={copiedIdx === origIdx ? 'Copied!' : 'Copy'}
+                title={copiedIdx === origIdx ? $t('chat.copied') : $t('common.copy')}
                 onclick={() => copyMessage(msg.content, origIdx)}
               >
                 {#if copiedIdx === origIdx}
@@ -940,7 +1036,7 @@
       {:else if msg.type === 'thinking'}
         <details class="max-w-[640px] mt-2 mb-1">
           <summary class="text-xs text-base-content/50 cursor-pointer hover:text-base-content/70 transition-colors">
-            Nebo worked for {msg.duration}
+            {$t('chat.workedFor', { values: { duration: msg.duration } })}
           </summary>
           <div class="mt-1.5 py-2 px-3 rounded-box bg-base-200 border-l-2 border-base-content/20 text-xs leading-relaxed font-mono whitespace-pre-wrap">{msg.content}</div>
         </details>
@@ -993,9 +1089,9 @@
               {#each msg.attachments as att}
                 {@const attType = getAttachmentType(att.mimeType)}
                 {#if attType === 'image'}
-                  <button type="button" class="block p-0 bg-transparent border-0 cursor-zoom-in" onclick={() => (lightboxUrl = att.url)} aria-label="View image">
+                  <button type="button" class="block p-0 bg-transparent border-0 cursor-zoom-in" onclick={() => (lightboxUrl = attSrc(att))} aria-label={$t('chat.viewImage')}>
                     <img
-                      src={att.thumbnailUrl || att.url}
+                      src={attSrc(att)}
                       alt={att.filename}
                       class="max-w-[240px] max-h-[180px] rounded-lg border border-base-content/15 object-cover"
                       loading="lazy"
@@ -1003,16 +1099,18 @@
                   </button>
                 {:else if attType === 'video'}
                   <video
-                    src={att.url}
+                    src={attSrc(att)}
                     controls
                     preload="metadata"
                     class="max-w-[320px] max-h-[240px] rounded-lg border border-base-content/15"
                   >
                     <track kind="captions" />
                   </video>
+                {:else if attType === 'audio'}
+                  <audio src={attSrc(att)} controls preload="metadata" class="max-w-[280px]"></audio>
                 {:else}
                   <a
-                    href={att.url}
+                    href={attSrc(att)}
                     download={att.filename}
                     class="flex items-center gap-2 py-2 px-3 rounded-lg border border-base-content/15 bg-base-200/50 hover:bg-base-200 transition-colors no-underline text-inherit"
                   >
@@ -1034,7 +1132,7 @@
               {#if ArtIcon}<ArtIcon class="w-4 h-4 text-base-content/50 shrink-0" />{/if}
               <div class="flex-1 min-w-0">
                 <div class="text-xs font-medium truncate">{artifact.title}</div>
-                <div class="text-xs text-base-content/50">{artifact.kind === 'code' ? 'Code' : artifact.kind === 'table' ? 'Spreadsheet' : artifact.kind === 'slides' ? 'Presentation' : 'Document'}</div>
+                <div class="text-xs text-base-content/50">{artifact.kind === 'code' ? $t('chat.artifactCode') : artifact.kind === 'table' ? $t('chat.artifactSpreadsheet') : artifact.kind === 'slides' ? $t('chat.artifactPresentation') : $t('chat.artifactDocument')}</div>
               </div>
             </button>
           {/each}
@@ -1046,7 +1144,7 @@
               {/if}
               <button
                 class="w-7 h-7 rounded-md grid place-items-center {copiedIdx === origIdx ? 'text-success' : 'text-base-content/50 hover:text-base-content hover:bg-base-200'} cursor-pointer bg-transparent border-none transition-colors"
-                title={copiedIdx === origIdx ? 'Copied!' : 'Copy'}
+                title={copiedIdx === origIdx ? $t('chat.copied') : $t('common.copy')}
                 onclick={() => copyMessage(msg.content, origIdx)}
               >
                 {#if copiedIdx === origIdx}
@@ -1057,7 +1155,7 @@
               </button>
               <button
                 class="w-7 h-7 rounded-md grid place-items-center text-base-content/50 hover:text-base-content hover:bg-base-200 cursor-pointer bg-transparent border-none transition-colors"
-                title="Retry"
+                title={$t('common.retry')}
                 onclick={() => redoMessage(origIdx)}
               >
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
@@ -1068,24 +1166,32 @@
       {/if}
     {/each}
 
-    {#if isLoading && groupedMessages.length > 0 && groupedMessages[groupedMessages.length - 1]?.type !== 'assistant'}
+    <!-- Live working indicator (ChatGPT/Claude style): shown for the WHOLE run,
+         including while the reply text is streaming or a tool grinds after the
+         last text chunk — not only before the first assistant message. -->
+    {#if isLoading && groupedMessages.length > 0}
       <div class="max-w-[640px] mt-3 py-2 flex items-center gap-2">
         <span class="loading loading-spinner loading-xs text-primary"></span>
-        <span class="text-sm text-base-content/50 animate-pulse">{activityStatus || 'Working...'}</span>
+        <span class="text-sm text-base-content/50 animate-pulse">{activityStatus || $t('chat.working')}</span>
       </div>
     {/if}
   </div>
+  <!-- Reserved room for the streaming reply — see turnSpacerHeight. Outside the
+       observed content wrapper so spacer changes don't re-fire the observer. -->
+  {#if turnSpacerHeight > 0}
+    <div style="height: {turnSpacerHeight}px" aria-hidden="true"></div>
+  {/if}
   </div>
   </div>
   {/if}
 
-  <!-- Token usage badge -->
-  {#if tokenUsage}
+  <!-- Token usage badge — dev mode only; regular users don't care about tokens -->
+  {#if tokenUsage && $devMode}
     {@const totalPrompt = tokenUsage.input + (tokenUsage.cacheRead ?? 0) + (tokenUsage.cacheCreation ?? 0)}
     {@const conversationIn = Math.max(0, totalPrompt - (tokenUsage.overhead ?? 0))}
     <div class="max-w-3xl mx-auto w-full shrink-0 px-6 pb-1">
-      <span class="text-xs text-base-content/50 font-mono" title="{totalPrompt.toLocaleString()} total prompt · {(tokenUsage.overhead ?? 0).toLocaleString()} system+tools · {(tokenUsage.cacheRead ?? 0).toLocaleString()} cache read">
-        {conversationIn.toLocaleString()} in · {tokenUsage.output.toLocaleString()} out
+      <span class="text-xs text-base-content/50 font-mono" title={$t('chat.tokenTooltip', { values: { total: totalPrompt.toLocaleString(), overhead: (tokenUsage.overhead ?? 0).toLocaleString(), cacheRead: (tokenUsage.cacheRead ?? 0).toLocaleString() } })}>
+        {$t('chat.tokensInOut', { values: { input: conversationIn.toLocaleString(), output: tokenUsage.output.toLocaleString() } })}
       </span>
     </div>
   {/if}
@@ -1107,14 +1213,14 @@
       <div class="px-3 py-2 rounded-lg bg-error/10 border border-error/30 flex items-center justify-between gap-3">
         <span class="text-xs text-base-content">
           {#if isOutOfBalance}
-            You're out of usage balance — your plan limits, gift tokens, and credits are used up.
+            {$t('chat.outOfBalance')}
           {:else}
             {chatError}
           {/if}
         </span>
         <div class="flex items-center gap-2 shrink-0">
           {#if isOutOfBalance}
-            <a href="/pricing" class="btn btn-primary btn-xs">View plans</a>
+            <a href="/pricing" class="btn btn-primary btn-xs">{$t('chat.viewPlans')}</a>
           {/if}
           <button class="btn btn-ghost btn-xs" onclick={() => ondismisserror?.()}>x</button>
         </div>
@@ -1144,7 +1250,7 @@
 {#if creationsOpen}
   <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
   <div
-    class="w-1.5 shrink-0 cursor-col-resize relative z-10 group bg-base-200 hover:bg-primary/30 transition-colors {resizing ? '!bg-primary/50' : ''}"
+    class="max-md:hidden w-1.5 shrink-0 cursor-col-resize relative z-10 group bg-base-200 hover:bg-primary/30 transition-colors {resizing ? '!bg-primary/50' : ''}"
     onmousedown={startResize}
     role="separator"
     aria-orientation="vertical"
@@ -1163,7 +1269,7 @@
   </div>
   <!-- Creations panel. pointer-events-none while dragging the divider: the
        viewer iframe otherwise swallows mousemove and the resize stalls. -->
-  <div class="flex flex-col bg-base-100 min-h-0 min-w-0 overflow-hidden shrink-0 border-l border-base-300 {resizing ? 'pointer-events-none' : ''}" style="width: {creationsWidth}px">
+  <div class="flex flex-col bg-base-100 min-h-0 min-w-0 overflow-hidden shrink-0 border-l border-base-300 max-md:fixed max-md:inset-0 max-md:z-[70] max-md:!w-full max-md:border-l-0 {resizing ? 'pointer-events-none' : ''}" style="width: {creationsWidth}px">
     <!-- Creations header -->
     <div class="h-11 px-4 border-b border-base-content/10 flex items-center gap-2 shrink-0">
       {#if activeArtifact}
@@ -1181,7 +1287,7 @@
           </div>
           <ul class="dropdown-content menu menu-sm bg-base-100 border border-base-300 rounded-box z-50 w-72 max-h-80 overflow-y-auto flex-nowrap p-1 shadow-md">
             {#if documents.length > 1}
-              <li class="menu-title"><span class="text-xs font-semibold uppercase tracking-wider text-base-content/50">Documents</span></li>
+              <li class="menu-title"><span class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('chat.documents')}</span></li>
             {/if}
             {#each documents as d}
               {@const ArtIcon2 = artifactIcons[d.kind]}
@@ -1196,13 +1302,13 @@
               </li>
             {/each}
             {#if activeVersionList.length > 1}
-              <li class="menu-title"><span class="text-xs font-semibold uppercase tracking-wider text-base-content/50">Versions</span></li>
+              <li class="menu-title"><span class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('chat.versions')}</span></li>
               <li>
                 <button
                   class="flex items-center justify-between gap-2 {activeVersion == null ? 'bg-base-200 font-medium' : ''}"
                   onclick={() => { activeVersion = null; (document.activeElement as HTMLElement | null)?.blur(); }}
                 >
-                  <span class="text-xs">Latest</span>
+                  <span class="text-xs">{$t('chat.latest')}</span>
                   <span class="text-xs text-base-content/50 font-mono">v{activeVersionList.length}</span>
                 </button>
               </li>
@@ -1212,7 +1318,7 @@
                     class="flex items-center justify-between gap-2 {activeVersion === v.version ? 'bg-base-200 font-medium' : ''}"
                     onclick={() => { activeVersion = v.version; (document.activeElement as HTMLElement | null)?.blur(); }}
                   >
-                    <span class="text-xs">Version {v.version}</span>
+                    <span class="text-xs">{$t('chat.versionN', { values: { version: v.version } })}</span>
                     {#if v.time}<span class="text-xs text-base-content/50 font-mono">{v.time}</span>{/if}
                   </button>
                 </li>
@@ -1221,42 +1327,58 @@
           </ul>
         </div>
       {:else}
-        <span class="text-sm font-semibold flex-1 truncate">{creationsTitle}</span>
+        <span class="text-sm font-semibold flex-1 truncate">{creationsTitle || $t('chat.work')}</span>
       {/if}
-      {#if activeArtifact?.url && (activeArtifact.codeUrl || activeArtifact.url.endsWith('.html'))}
+      {#if activeArtifact?.url && (activeArtifact.codeUrl || activeArtifact.url.endsWith('.html') || activeArtifact.url.endsWith('.md') || activeArtifact.url.endsWith('.txt'))}
         <div class="flex items-center rounded-md bg-base-200 p-0.5 shrink-0">
           <button
             class="py-0.5 px-2 rounded text-xs cursor-pointer border-none transition-colors {!viewSource ? 'bg-base-100 font-medium shadow-sm' : 'bg-transparent text-base-content/60 hover:text-base-content'}"
             onclick={() => viewSource = false}
-          >Preview</button>
+          >{$t('chat.preview')}</button>
           <button
             class="py-0.5 px-2 rounded text-xs cursor-pointer border-none transition-colors {viewSource ? 'bg-base-100 font-medium shadow-sm' : 'bg-transparent text-base-content/60 hover:text-base-content'}"
             onclick={() => viewSource = true}
-          >Code</button>
+          >{$t('chat.artifactCode')}</button>
         </div>
       {/if}
       {#if activeArtifact && activeVersion != null && activeVersionList.length > 0 && activeArtifact.version < activeVersionList[activeVersionList.length - 1].version}
         <button
           class="py-1 px-2 rounded-md text-xs font-medium cursor-pointer bg-base-200 hover:bg-base-300 text-base-content/80 hover:text-base-content transition-colors shrink-0 border-none"
           onclick={() => { if (activeArtifact) onrestoreversion?.(activeArtifact.documentId, activeArtifact.version); activeVersion = null; }}
-          title="Make this version current"
-        >Restore</button>
+          title={$t('chat.makeVersionCurrent')}
+        >{$t('chat.restore')}</button>
       {/if}
       {#if activeArtifact?.url}
-        <a
-          href={activeArtifact.url}
-          download={activeArtifact.title}
-          onclick={(e) => downloadArtifact(e, activeArtifact?.url ?? '')}
-          class="w-7 h-7 rounded-md flex items-center justify-center hover:bg-base-200 text-base-content/70 hover:text-base-content transition-colors shrink-0"
-          title="Download {activeArtifact.title}"
-        >
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-        </a>
+        <div class="dropdown dropdown-end shrink-0">
+          <button
+            tabindex="0"
+            class="w-7 h-7 rounded-md flex items-center justify-center hover:bg-base-200 cursor-pointer bg-transparent border-none text-base-content/70 hover:text-base-content transition-colors"
+            title={$t('chat.downloadFile', { values: { title: activeArtifact.title } })}
+          >
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          </button>
+          <ul class="dropdown-content menu menu-sm z-30 mt-1 w-44 rounded-lg bg-base-100 border border-base-300 shadow-lg p-1">
+            <li>
+              <a
+                href={activeArtifact.url}
+                download={activeArtifact.title}
+                onclick={(e) => { downloadArtifact(e, activeArtifact?.url ?? '', activeArtifact?.title); (document.activeElement as HTMLElement | null)?.blur(); }}
+                class="text-xs"
+              >{$t('common.download')}</a>
+            </li>
+            <li>
+              <button class="text-xs" onclick={() => { copyArtifact(); (document.activeElement as HTMLElement | null)?.blur(); }}>{$t('chat.copyContent')}</button>
+            </li>
+            <li>
+              <button class="text-xs" onclick={() => { shareOpen = true; (document.activeElement as HTMLElement | null)?.blur(); }}>{$t('chat.share')}</button>
+            </li>
+          </ul>
+        </div>
       {/if}
       <button
         class="w-7 h-7 rounded-md flex items-center justify-center hover:bg-base-200 cursor-pointer bg-transparent border-none text-base-content/70 hover:text-base-content transition-colors shrink-0"
         onclick={() => creationsOpen = false}
-        title="Close Work panel"
+        title={$t('chat.closeWorkPanel')}
       >
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
       </button>
@@ -1279,7 +1401,7 @@
       {:else if documents.length > 0}
         <!-- No file selected yet: list each distinct document to pick from. -->
         <div class="p-3 flex flex-col gap-1.5">
-          <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 px-1 pt-1 pb-2">Files in this thread</div>
+          <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 px-1 pt-1 pb-2">{$t('chat.filesInThread')}</div>
           {#each documents as a}
             {@const ListIcon = artifactIcons[a.kind]}
             <button
@@ -1289,7 +1411,7 @@
               {#if ListIcon}<ListIcon class="w-4 h-4 text-base-content/50 shrink-0" />{/if}
               <div class="flex-1 min-w-0">
                 <div class="text-sm font-medium truncate">{a.title}</div>
-                <div class="text-xs text-base-content/50">{a.kind === 'code' ? 'Code' : a.kind === 'table' ? 'Spreadsheet' : a.kind === 'slides' ? 'Presentation' : 'Document'}</div>
+                <div class="text-xs text-base-content/50">{a.kind === 'code' ? $t('chat.artifactCode') : a.kind === 'table' ? $t('chat.artifactSpreadsheet') : a.kind === 'slides' ? $t('chat.artifactPresentation') : $t('chat.artifactDocument')}</div>
               </div>
             </button>
           {/each}
@@ -1301,8 +1423,8 @@
             <path d="M9 3v18"/>
             <path d="M14 9l3 3-3 3"/>
           </svg>
-          <div class="text-sm font-medium">Nothing here yet</div>
-          <div class="text-xs text-center max-w-[220px]">When Nebo makes a report, sheet, or design, it'll appear here.</div>
+          <div class="text-sm font-medium">{$t('chat.nothingHereYet')}</div>
+          <div class="text-xs text-center max-w-[220px]">{$t('chat.workEmptyDesc')}</div>
         </div>
       {/if}
     </div>
@@ -1312,11 +1434,15 @@
 {#if lightboxUrl}
   <button
     type="button"
-    class="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 p-6 border-0 cursor-zoom-out"
+    class="fixed inset-0 z-[80] flex items-center justify-center bg-black/80 p-6 border-0 cursor-zoom-out"
     onclick={() => (lightboxUrl = null)}
-    aria-label="Close image"
+    aria-label={$t('chat.closeImage')}
   >
-    <img src={lightboxUrl} alt="Full size" class="max-w-full max-h-full rounded-lg object-contain" />
+    <img src={lightboxUrl} alt={$t('chat.fullSize')} class="max-w-full max-h-full rounded-lg object-contain" />
   </button>
+{/if}
+
+{#if activeArtifact?.url}
+  <ShareArtifactModal bind:show={shareOpen} url={activeArtifact.url} title={activeArtifact.title} />
 {/if}
 </div>

@@ -806,7 +806,11 @@ async fn handle_agent_code(state: &AppState, code: &str) -> Result<CodeHandlerRe
         let _ = deregister_agent_from_loop(state, &existing.name).await;
     }
 
-    // Fetch artifact content from NeboAI and persist to DB + filesystem
+    // Fetch artifact content from NeboAI and persist to DB + filesystem.
+    // A persist failure is an install FAILURE — propagate it so the UI shows the
+    // real error via the code_result event. (This used to be swallowed with a
+    // warn and the handler reported "Installed agent" while nebo/agents/<slug>
+    // sat empty and the marketplace showed the agent as installed.)
     let persist_result =
         match tools::persist_agent_from_api(&api, &artifact_id, &artifact_name, code, &state.store)
             .await
@@ -814,7 +818,9 @@ async fn handle_agent_code(state: &AppState, code: &str) -> Result<CodeHandlerRe
             Ok(result) => Some(result),
             Err(e) => {
                 warn!(code, error = %e, "failed to persist agent artifact after redeem");
-                None
+                return Err(NeboError::Internal(format!(
+                    "install agent '{artifact_name}': {e}"
+                )));
             }
         };
 
@@ -1237,7 +1243,56 @@ pub(crate) async fn fetch_and_install_plugin(
             }
         }
     }
+
+    // The old binary may still be running inside per-agent channel/watch bridges or a
+    // shared bridge. Stop the shared bridge and restart every agent worker that uses
+    // this plugin so their loops respawn against the NEW binary. (child_guard's reaper
+    // skips our own registered children, so cancelling+restarting the owning workers is
+    // the lever — the loops already auto-respawn their child on death.)
+    state.agent_workers.shared_bridges().stop(slug).await;
+    for (agent_id, agent_name) in find_agents_using_plugin(&state.store, slug).await {
+        info!(plugin = %slug, agent = %agent_id, "restarting agent worker after plugin update");
+        state
+            .agent_workers
+            .start_agent(&agent_id, &agent_name, None)
+            .await;
+    }
     Ok(())
+}
+
+/// True if a watch workflow's trigger config targets this plugin slug.
+fn workflow_targets_plugin(trigger_type: &str, trigger_config: &str, slug: &str) -> bool {
+    trigger_type == "watch"
+        && serde_json::from_str::<serde_json::Value>(trigger_config)
+            .ok()
+            .and_then(|v| v.get("plugin").and_then(|p| p.as_str()).map(String::from))
+            .as_deref()
+            == Some(slug)
+}
+
+/// Agents whose triggers reference this plugin slug — channel bindings
+/// (`plugin_slug`) or watch workflows (`trigger_config.plugin`). Returned as
+/// (agent_id, agent_name) so their workers can be restarted after a binary swap.
+async fn find_agents_using_plugin(store: &db::Store, slug: &str) -> Vec<(String, String)> {
+    let mut out: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for agent in store.list_agents(1000, 0).unwrap_or_default() {
+        let uses_channel = store
+            .list_channel_bindings_for_agent(&agent.id)
+            .map(|bs| bs.iter().any(|b| b.plugin_slug == slug))
+            .unwrap_or(false);
+        let uses_watch = !uses_channel
+            && store
+                .list_agent_workflows(&agent.id)
+                .map(|ws| {
+                    ws.iter()
+                        .any(|w| workflow_targets_plugin(&w.trigger_type, &w.trigger_config, slug))
+                })
+                .unwrap_or(false);
+        if uses_channel || uses_watch {
+            out.insert(agent.id.clone(), agent.name.clone());
+        }
+    }
+    out.into_iter().collect()
 }
 
 /// Detect and persist app-specific fields (ui/, bin/, window config) for every
@@ -1621,6 +1676,50 @@ async fn persist_workflow_artifact(
 
 // ── Shared Helpers ──────────────────────────────────────────────────
 
+/// Resolve the current NeboAI bot token: the stored auth profile, overridden
+/// by the rotated-token cache (written immediately on AUTH_OK, so it survives
+/// hot-reload/crash where the DB persist hasn't run yet). Used by both the
+/// comms connect and the management-tunnel watcher — one resolution pathway.
+/// The machine's hostname for the manage console (".local" stripped). Env vars
+/// cover containers/Windows; the `hostname` command covers desktops.
+fn host_label() -> String {
+    let from_env = std::env::var("COMPUTERNAME")
+        .or_else(|_| std::env::var("HOSTNAME"))
+        .ok()
+        .filter(|s| !s.trim().is_empty());
+    let name = from_env.or_else(|| {
+        std::process::Command::new("hostname")
+            .output()
+            .ok()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .filter(|s| !s.is_empty())
+    });
+    name.map(|n| n.trim_end_matches(".local").to_string())
+        .unwrap_or_default()
+}
+
+pub(crate) fn neboai_token(state: &AppState) -> Option<String> {
+    let profiles = state
+        .store
+        .list_all_active_auth_profiles_by_provider("neboai")
+        .unwrap_or_default();
+    let mut token = profiles.first().map(|p| p.api_key.clone())?;
+    if token.is_empty() {
+        return None;
+    }
+    if let Ok(dir) = config::data_dir() {
+        let cache_path = dir.join("neboai_token.cache");
+        if let Ok(cached) = std::fs::read_to_string(&cache_path) {
+            let cached = cached.trim().to_string();
+            if !cached.is_empty() && cached != token {
+                info!("neboai: using cached rotated token (differs from DB)");
+                token = cached;
+            }
+        }
+    }
+    Some(token)
+}
+
 /// Activate the NeboAI connection using stored credentials.
 ///
 /// This is the canonical implementation — called by both startup auto-connect
@@ -1639,24 +1738,8 @@ pub async fn activate_neboai(state: &AppState) -> Result<(), NeboError> {
     let profile = profiles
         .first()
         .ok_or_else(|| NeboError::Internal("no NeboAI credentials".into()))?;
-    let mut token = if profile.api_key.is_empty() {
-        return Err(NeboError::Internal("empty NeboAI token".into()));
-    } else {
-        profile.api_key.clone()
-    };
-
-    // Prefer cached rotated token over DB token — the cache is written immediately
-    // on AUTH_OK, so it survives hot-reload/crash where the DB persist hasn't run yet.
-    if let Ok(dir) = config::data_dir() {
-        let cache_path = dir.join("neboai_token.cache");
-        if let Ok(cached) = std::fs::read_to_string(&cache_path) {
-            let cached = cached.trim().to_string();
-            if !cached.is_empty() && cached != token {
-                info!("neboai: using cached rotated token (differs from DB)");
-                token = cached;
-            }
-        }
-    }
+    let token =
+        neboai_token(state).ok_or_else(|| NeboError::Internal("empty NeboAI token".into()))?;
 
     let mut config = HashMap::new();
     config.insert("gateway".into(), state.config.neboai.comms_url.clone());
@@ -1666,6 +1749,9 @@ pub async fn activate_neboai(state: &AppState) -> Result<(), NeboError> {
     if let Ok(dir) = config::data_dir() {
         config.insert("data_dir".into(), dir.to_string_lossy().to_string());
     }
+    // System info for the owner's manage console — which machine is this bot?
+    config.insert("platform".into(), std::env::consts::OS.to_string());
+    config.insert("hostname".into(), host_label());
 
     // Pin the PRIMARY agent's identity on CONNECT so the loop's default agent is
     // deterministically "Nebo" (the local `assistant` row) and can never be
@@ -2332,6 +2418,31 @@ pub(crate) async fn refresh_license_keys(state: &AppState) -> Result<(), NeboErr
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_workflow_targets_plugin() {
+        // watch trigger whose config names the plugin → match
+        assert!(workflow_targets_plugin(
+            "watch",
+            r#"{"plugin":"gws","command":"watch"}"#,
+            "gws"
+        ));
+        // different plugin → no match
+        assert!(!workflow_targets_plugin(
+            "watch",
+            r#"{"plugin":"slack"}"#,
+            "gws"
+        ));
+        // non-watch trigger type → never matches (channel bindings are matched separately)
+        assert!(!workflow_targets_plugin(
+            "event",
+            r#"{"plugin":"gws"}"#,
+            "gws"
+        ));
+        // malformed / missing plugin field → no match, no panic
+        assert!(!workflow_targets_plugin("watch", "not json", "gws"));
+        assert!(!workflow_targets_plugin("watch", "{}", "gws"));
+    }
 
     #[test]
     fn test_detect_code_valid() {

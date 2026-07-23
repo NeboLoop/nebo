@@ -1,6 +1,8 @@
 <script lang="ts">
-  import { goto } from '$app/navigation';
+  import { goto } from '$lib/nav';
+  import { storage } from '$lib/storage';
   import { onMount } from 'svelte';
+  import { t } from 'svelte-i18n';
   import { completeOnboarding } from '$lib/stores/onboarding';
   import { logger } from '$lib/monitoring';
   import * as api from '$lib/api/nebo';
@@ -117,7 +119,7 @@
       step = 1;
     } else {
       // Skip language step; persist default locale
-      localStorage.setItem('nebo_locale', 'en');
+      storage.set('nebo_locale', 'en');
       try { await api.userUpdatePreferences({ language: 'en' }); } catch {}
       step = 2;
     }
@@ -125,7 +127,7 @@
 
   // Save language preference via backend
   async function saveLocale() {
-    localStorage.setItem('nebo_locale', selectedLocale);
+    storage.set('nebo_locale', selectedLocale);
     try {
       await api.userUpdatePreferences({ language: selectedLocale });
     } catch {
@@ -159,7 +161,7 @@
       neboAITimeout = setTimeout(() => {
         cleanupNeboAIOAuth();
         neboAILoading = false;
-        neboAIError = 'Connection timed out. Please try again.';
+        neboAIError = $t('onboardingPage.connectionTimedOut');
       }, 180_000);
 
       // Poll every 2 seconds for completion
@@ -175,11 +177,11 @@
           } else if (status?.status === 'error') {
             cleanupNeboAIOAuth();
             neboAILoading = false;
-            neboAIError = status.error || 'OAuth failed. Please try again.';
+            neboAIError = status.error || $t('onboardingPage.oauthFailed');
           } else if (status?.status === 'expired') {
             cleanupNeboAIOAuth();
             neboAILoading = false;
-            neboAIError = 'OAuth session expired. Please try again.';
+            neboAIError = $t('onboardingPage.oauthExpired');
           }
           // 'pending' — keep polling
         } catch {
@@ -188,7 +190,7 @@
       }, 2000);
     } catch (err) {
       neboAILoading = false;
-      neboAIError = err instanceof Error ? err.message : 'Failed to start OAuth flow';
+      neboAIError = err instanceof Error ? err.message : $t('onboardingPage.oauthStartFailed');
       logger.error('NeboAI OAuth start failed', err);
     }
   }
@@ -211,6 +213,8 @@
 
   async function finish() {
     await completeOnboarding();
+    // One-shot handoff: the tour runs exactly once, right after onboarding.
+    storage.set('nebo:tour-pending', '1');
     goto('/');
   }
 
@@ -247,7 +251,7 @@
   ];
 </script>
 
-<svelte:head><title>Welcome to Nebo</title></svelte:head>
+<svelte:head><title>{$t('onboarding.welcome.title')}</title></svelte:head>
 
 <!-- Step indicator -->
 <div class="flex items-center justify-center gap-2 mb-10">
@@ -271,20 +275,20 @@
   <!-- Welcome + T&C -->
   <div class="text-center">
     <div class="w-14 h-14 rounded-2xl bg-primary text-primary-content flex items-center justify-center font-mono text-xl font-bold mx-auto mb-5">N</div>
-    <h2 class="text-2xl font-bold mb-2">Welcome to Nebo</h2>
-    <p class="text-xs text-base-content/50 mb-6 max-w-sm mx-auto">Your AI agent team, running locally on your machine. Let's get you set up in under a minute.</p>
+    <h2 class="text-2xl font-bold mb-2">{$t('onboarding.welcome.title')}</h2>
+    <p class="text-xs text-base-content/50 mb-6 max-w-sm mx-auto">{$t('onboardingPage.welcomeDescription')}</p>
 
     <div class="max-w-sm mx-auto rounded-xl border border-base-300 bg-base-200/30 p-4 mb-8 text-left">
       <div class="flex items-start gap-3">
         <Shield class="w-5 h-5 text-warning shrink-0 mt-0.5" />
         <div class="flex-1 min-w-0">
-          <div class="text-sm font-medium mb-1">Terms & Privacy</div>
+          <div class="text-sm font-medium mb-1">{$t('onboardingPage.termsTitle')}</div>
           <p class="text-xs text-base-content/70 leading-relaxed mb-3">
-            Nebo runs AI agents on your machine. Agents can read files, execute commands, and access the web based on the permissions you grant. By continuing, you agree to the <a href="/terms" class="text-primary underline">Terms of Service</a> and <a href="/privacy" class="text-primary underline">Privacy Policy</a>.
+            {$t('onboardingPage.termsBody')} <a href="https://neboai.com/terms" target="_blank" rel="noreferrer" class="text-primary underline">{$t('onboardingPage.termsOfService')}</a> {$t('onboardingPage.termsAnd')} <a href="https://neboai.com/privacy" target="_blank" rel="noreferrer" class="text-primary underline">{$t('onboardingPage.privacyPolicy')}</a>.
           </p>
           <label class="flex items-center gap-2 cursor-pointer">
             <input type="checkbox" class="checkbox checkbox-sm checkbox-primary" bind:checked={tcAccepted} />
-            <span class="text-sm font-medium">I accept the Terms & Conditions</span>
+            <span class="text-sm font-medium">{$t('onboardingPage.acceptTerms')}</span>
           </label>
         </div>
       </div>
@@ -296,7 +300,7 @@
         disabled={!tcAccepted}
         class="inline-flex items-center gap-2 px-6 py-3 rounded-xl bg-primary text-primary-content text-sm font-bold cursor-pointer hover:brightness-110 transition-all border-none disabled:opacity-40 disabled:cursor-not-allowed"
       >
-        Get Started <ArrowRight class="w-4 h-4" />
+        {$t('onboarding.welcome.getStarted')} <ArrowRight class="w-4 h-4" />
       </button>
     </div>
   </div>
@@ -307,8 +311,8 @@
     <div class="w-14 h-14 rounded-2xl bg-primary/10 flex items-center justify-center mx-auto mb-5">
       <Globe class="w-7 h-7 text-primary" />
     </div>
-    <h2 class="text-2xl font-bold mb-2">Choose your language</h2>
-    <p class="text-xs text-base-content/50 mb-6">You can change this later in Settings.</p>
+    <h2 class="text-2xl font-bold mb-2">{$t('onboardingPage.languageTitle')}</h2>
+    <p class="text-xs text-base-content/50 mb-6">{$t('onboardingPage.languageDesc')}</p>
 
     <div class="grid grid-cols-5 gap-1.5 mb-8 max-w-xl mx-auto">
       {#each languages as lang}
@@ -326,13 +330,13 @@
         onclick={() => (step = 0)}
         class="inline-flex items-center gap-2 px-3 py-3 rounded-xl text-sm font-medium text-base-content/60 cursor-pointer hover:text-base-content transition-colors border-none bg-transparent"
       >
-        <ArrowLeft class="w-4 h-4" /> Back
+        <ArrowLeft class="w-4 h-4" /> {$t('common.back')}
       </button>
       <button
         onclick={saveLocale}
         class="inline-flex items-center gap-2 px-6 py-3 rounded-xl bg-primary text-primary-content text-sm font-bold cursor-pointer hover:brightness-110 transition-all border-none"
       >
-        Continue <ArrowRight class="w-4 h-4" />
+        {$t('common.continue')} <ArrowRight class="w-4 h-4" />
       </button>
     </div>
   </div>
@@ -343,15 +347,15 @@
     <div class="w-14 h-14 rounded-2xl bg-primary/10 flex items-center justify-center mx-auto mb-5">
       <Link class="w-7 h-7 text-primary" />
     </div>
-    <h2 class="text-2xl font-bold mb-2">Connect NeboAI</h2>
-    <p class="text-xs text-base-content/50 mb-6">Connect your NeboAI account to access the marketplace, billing, and the Janus AI gateway.</p>
+    <h2 class="text-2xl font-bold mb-2">{$t('onboardingPage.connectTitle')}</h2>
+    <p class="text-xs text-base-content/50 mb-6">{$t('onboardingPage.connectDesc')}</p>
 
     <div class="mb-8">
       {#if neboAIConnected}
         <div class="p-4 rounded-xl border border-success/30 bg-success/5 max-w-sm mx-auto">
           <div class="flex items-center justify-center gap-2">
             <Check class="w-5 h-5 text-success" />
-            <span class="text-sm font-semibold text-success">Connected{neboAIEmail ? ` as ${neboAIEmail}` : ''}</span>
+            <span class="text-sm font-semibold text-success">{neboAIEmail ? $t('onboardingPage.connectedAs', { values: { email: neboAIEmail } }) : $t('common.connected')}</span>
           </div>
         </div>
       {:else if neboAILoading}
@@ -360,9 +364,9 @@
             disabled
             class="inline-flex items-center gap-2 px-6 py-3 rounded-xl bg-primary text-primary-content text-sm font-bold border-none opacity-80 mb-3"
           >
-            <span class="loading loading-spinner loading-sm"></span> Waiting for authorization...
+            <span class="loading loading-spinner loading-sm"></span> {$t('onboardingPage.waitingForAuthorization')}
           </button>
-          <p class="text-xs text-base-content/50">A browser window has been opened. Complete the sign-in there, then return here.</p>
+          <p class="text-xs text-base-content/50">{$t('onboardingPage.browserOpened')}</p>
         </div>
       {:else}
         <div class="max-w-sm mx-auto">
@@ -370,7 +374,7 @@
             onclick={connectNeboAI}
             class="inline-flex items-center gap-2 px-6 py-3 rounded-xl bg-primary text-primary-content text-sm font-bold cursor-pointer hover:brightness-110 transition-all border-none"
           >
-            Connect with NeboAI
+            {$t('onboardingPage.connectWithNeboAI')}
           </button>
           {#if neboAIError}
             <p class="text-xs text-error mt-3">{neboAIError}</p>
@@ -384,21 +388,21 @@
         onclick={() => { cleanupNeboAIOAuth(); step = SHOW_LANGUAGE_STEP ? 1 : 0; }}
         class="inline-flex items-center gap-2 px-3 py-3 rounded-xl text-sm font-medium text-base-content/60 cursor-pointer hover:text-base-content transition-colors border-none bg-transparent"
       >
-        <ArrowLeft class="w-4 h-4" /> Back
+        <ArrowLeft class="w-4 h-4" /> {$t('common.back')}
       </button>
       {#if neboAIConnected}
         <button
           onclick={() => (step = 3)}
           class="inline-flex items-center gap-2 px-6 py-3 rounded-xl bg-primary text-primary-content text-sm font-bold cursor-pointer hover:brightness-110 transition-all border-none"
         >
-          Continue <ArrowRight class="w-4 h-4" />
+          {$t('common.continue')} <ArrowRight class="w-4 h-4" />
         </button>
       {:else}
         <button
           onclick={() => { cleanupNeboAIOAuth(); step = 3; }}
           class="inline-flex items-center gap-2 px-3 py-3 rounded-xl text-sm font-medium text-base-content/60 cursor-pointer hover:text-base-content transition-colors border-none bg-transparent"
         >
-          Skip for now <ArrowRight class="w-4 h-4" />
+          {$t('onboardingPage.skipForNow')} <ArrowRight class="w-4 h-4" />
         </button>
       {/if}
     </div>
@@ -410,23 +414,23 @@
     <div class="w-14 h-14 rounded-2xl bg-primary/10 flex items-center justify-center mx-auto mb-5">
       <Shield class="w-7 h-7 text-primary" />
     </div>
-    <h2 class="text-2xl font-bold mb-2">Permissions</h2>
-    <p class="text-xs text-base-content/50 mb-6">Choose what your agents can access. You can change these later in Settings.</p>
+    <h2 class="text-2xl font-bold mb-2">{$t('commandPalette.permissions')}</h2>
+    <p class="text-xs text-base-content/50 mb-6">{$t('onboardingPage.permissionsDesc')}</p>
 
     <!-- Full Access -->
     <div class="flex items-center justify-between p-4 rounded-xl border border-base-300 mb-5 max-w-md mx-auto text-left">
       <div>
         <div class="text-sm font-semibold flex items-center gap-2">
           {#if fullAccess}<AlertTriangle class="w-4 h-4 text-warning" />{/if}
-          Full Access
+          {$t('onboardingPage.fullAccess')}
         </div>
-        <div class="text-xs text-base-content/70">The agent will execute all tools without asking for permission.</div>
+        <div class="text-xs text-base-content/70">{$t('onboardingPage.fullAccessDesc')}</div>
       </div>
       <button
         type="button"
         role="switch"
         aria-checked={fullAccess}
-        aria-label="Full Access"
+        aria-label={$t('onboardingPage.fullAccess')}
         class="relative inline-flex h-5 w-8 shrink-0 cursor-pointer items-center rounded-full transition-colors {fullAccess ? 'bg-primary' : 'bg-base-300'}"
         onclick={handleFullAccessToggle}
       >
@@ -445,7 +449,7 @@
               <div class="text-xs text-base-content/70">{perm.desc}</div>
             </div>
             {#if perm.locked}
-              <span class="text-xs text-base-content/50 font-mono shrink-0 ml-4">Always on</span>
+              <span class="text-xs text-base-content/50 font-mono shrink-0 ml-4">{$t('onboarding.capabilities.alwaysOn')}</span>
             {:else}
               <input type="checkbox" class="toggle toggle-sm toggle-primary shrink-0 ml-4" bind:checked={capStates[i]} />
             {/if}
@@ -454,8 +458,8 @@
       </div>
     {:else}
       <div class="rounded-xl bg-warning/10 border border-warning/20 px-4 py-3 mb-5 max-w-md mx-auto text-left">
-        <p class="text-xs text-warning font-medium">Full Access is active</p>
-        <p class="text-xs text-base-content/70 mt-0.5">All approval prompts are bypassed. Make sure you trust the prompts you're sending.</p>
+        <p class="text-xs text-warning font-medium">{$t('onboardingPage.fullAccessActive')}</p>
+        <p class="text-xs text-base-content/70 mt-0.5">{$t('settingsPermissions.autonomousActiveDesc')}</p>
       </div>
     {/if}
 
@@ -464,12 +468,12 @@
       onclick={() => showApprovalPreview = true}
       class="inline-flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium text-base-content/60 cursor-pointer hover:text-base-content hover:bg-base-200/50 transition-colors border-none bg-transparent mb-8"
     >
-      <Eye class="w-3.5 h-3.5" /> Preview what agents see when asking for permission
+      <Eye class="w-3.5 h-3.5" /> {$t('onboardingPage.previewApproval')}
     </button>
 
     <ApprovalModal
       bind:show={showApprovalPreview}
-      agent="Research Agent"
+      agent={$t('onboardingPage.previewAgentName')}
       actionType="shell_command"
       actionDetail="curl -s https://api.example.com/data | jq '.results[]'"
       actionKey="preview"
@@ -478,11 +482,11 @@
     <!-- Full Access Activation Modal -->
     {#if showEnableModal}
       <div class="fixed inset-0 z-[80] flex items-center justify-center p-4" role="dialog" aria-modal="true">
-        <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" role="button" tabindex="-1" aria-label="Close" onclick={cancelFullAccessEnable} onkeydown={(e) => { if (e.key === 'Escape') cancelFullAccessEnable(); }}></div>
+        <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" role="button" tabindex="-1" aria-label={$t('common.close')} onclick={cancelFullAccessEnable} onkeydown={(e) => { if (e.key === 'Escape') cancelFullAccessEnable(); }}></div>
         <div class="relative w-full max-w-lg rounded-2xl bg-base-100 border border-base-content/10 shadow-2xl overflow-hidden text-left">
           <!-- Header -->
           <div class="flex items-center justify-between px-5 py-4 border-b border-base-content/10">
-            <h3 class="text-sm font-bold">Enable Full Access</h3>
+            <h3 class="text-sm font-bold">{$t('onboardingPage.enableFullAccess')}</h3>
             <button onclick={cancelFullAccessEnable} class="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-base-200 cursor-pointer transition-colors border-none bg-transparent">
               <X class="w-4 h-4" />
             </button>
@@ -492,38 +496,38 @@
             <div class="flex items-start gap-3">
               <AlertTriangle class="w-5 h-5 text-warning shrink-0 mt-0.5" />
               <p class="text-xs text-base-content leading-relaxed">
-                This will allow your agent to execute all tools — including shell commands, file modifications, and network requests — without asking for permission.
+                {$t('onboardingPage.enableFullAccessDesc')}
               </p>
             </div>
 
             <div class="rounded-xl bg-error/10 border border-error/20 p-4">
-              <p class="text-xs font-semibold text-error mb-2">Risks include:</p>
+              <p class="text-xs font-semibold text-error mb-2">{$t('settingsPermissions.risks')}</p>
               <ul class="text-xs text-base-content/70 space-y-1 list-disc list-inside">
-                <li>The agent may modify or delete files on your system</li>
-                <li>The agent may execute arbitrary shell commands</li>
-                <li>The agent may make network requests and access external services</li>
-                <li>You are solely responsible for any actions taken by the agent</li>
+                <li>{$t('settingsPermissions.risk1')}</li>
+                <li>{$t('settingsPermissions.risk2')}</li>
+                <li>{$t('settingsPermissions.risk3')}</li>
+                <li>{$t('settingsPermissions.risk4')}</li>
               </ul>
             </div>
 
             <div class="rounded-xl bg-base-200 p-4 max-h-28 overflow-y-auto">
               <p class="text-xs text-base-content/70 leading-relaxed">
-                By enabling Full Access, you acknowledge that Nebo Labs, Inc. shall not be liable for any damages, losses, or consequences arising from the unsupervised execution of tools by the agent. You accept full responsibility for all actions taken by the agent while Full Access is enabled.
+                {$t('onboardingPage.fullAccessDisclaimer')}
               </p>
             </div>
 
             <label class="flex items-center gap-3 cursor-pointer">
               <input type="checkbox" class="checkbox checkbox-sm checkbox-warning" bind:checked={termsAccepted} />
-              <span class="text-xs font-medium">I understand the risks and accept full responsibility</span>
+              <span class="text-xs font-medium">{$t('settingsPermissions.acceptRisks')}</span>
             </label>
 
             <div>
-              <label class="block text-xs font-medium mb-1.5" for="onboard-confirm-enable">Type ENABLE to confirm</label>
+              <label class="block text-xs font-medium mb-1.5" for="onboard-confirm-enable">{$t('settingsPermissions.typeEnable')}</label>
               <input
                 id="onboard-confirm-enable"
                 type="text"
                 class="w-full h-9 rounded-lg bg-base-200 border border-base-content/10 px-3 text-sm focus:outline-none focus:border-primary/50 transition-colors"
-                placeholder="ENABLE"
+                placeholder={$t('settingsPermissions.enableWord')}
                 bind:value={confirmText}
                 onkeydown={(e) => { if (e.key === 'Enter') confirmFullAccessEnable(); }}
               />
@@ -535,14 +539,14 @@
               onclick={cancelFullAccessEnable}
               class="px-4 py-2 rounded-lg border border-base-content/10 text-sm font-medium cursor-pointer hover:bg-base-200 transition-colors bg-transparent"
             >
-              Cancel
+              {$t('common.cancel')}
             </button>
             <button
               onclick={confirmFullAccessEnable}
               disabled={!canConfirm}
               class="px-4 py-2 rounded-lg bg-error text-error-content text-sm font-bold cursor-pointer hover:brightness-110 transition-all border-none disabled:opacity-30 disabled:cursor-not-allowed"
             >
-              Enable Full Access
+              {$t('onboardingPage.enableFullAccess')}
             </button>
           </div>
         </div>
@@ -554,13 +558,13 @@
         onclick={() => (step = 2)}
         class="inline-flex items-center gap-2 px-3 py-3 rounded-xl text-sm font-medium text-base-content/60 cursor-pointer hover:text-base-content transition-colors border-none bg-transparent"
       >
-        <ArrowLeft class="w-4 h-4" /> Back
+        <ArrowLeft class="w-4 h-4" /> {$t('common.back')}
       </button>
       <button
         onclick={savePermissions}
         class="inline-flex items-center gap-2 px-6 py-3 rounded-xl bg-primary text-primary-content text-sm font-bold cursor-pointer hover:brightness-110 transition-all border-none"
       >
-        Continue <ArrowRight class="w-4 h-4" />
+        {$t('common.continue')} <ArrowRight class="w-4 h-4" />
       </button>
     </div>
   </div>
@@ -571,15 +575,15 @@
     <div class="w-14 h-14 rounded-2xl bg-success/10 flex items-center justify-center mx-auto mb-5">
       <Check class="w-7 h-7 text-success" />
     </div>
-    <h2 class="text-2xl font-bold mb-2">You're all set!</h2>
-    <p class="text-xs text-base-content/50 mb-6">Nebo is ready. Your agent team is standing by.</p>
+    <h2 class="text-2xl font-bold mb-2">{$t('onboarding.complete.title')}</h2>
+    <p class="text-xs text-base-content/50 mb-6">{$t('onboardingPage.doneDesc')}</p>
 
     <div class="flex items-center justify-center gap-3">
       <button
         onclick={finish}
         class="inline-flex items-center gap-2 px-6 py-3 rounded-xl bg-primary text-primary-content text-sm font-bold cursor-pointer hover:brightness-110 transition-all border-none"
       >
-        Open Nebo <ArrowRight class="w-4 h-4" />
+        {$t('onboardingPage.openNebo')} <ArrowRight class="w-4 h-4" />
       </button>
     </div>
   </div>

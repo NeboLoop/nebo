@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { t } from 'svelte-i18n';
   import { AGENT_COLORS_MAP } from '$lib/tokens.js';
   import { launchApp } from '$lib/apps/launcher.js';
   import type { Agent } from '$lib/api/nebo';
@@ -11,7 +12,7 @@
   import Sparkles from 'lucide-svelte/icons/sparkles';
   import AppWindow from 'lucide-svelte/icons/app-window';
   import EllipsisVertical from 'lucide-svelte/icons/ellipsis-vertical';
-  import { goto } from '$app/navigation';
+  import { goto } from '$lib/nav';
 
   const COLOR_CYCLE = Object.keys(AGENT_COLORS_MAP);
 
@@ -41,14 +42,14 @@
   };
 
   const menuItems = [
-    { id: 'open', label: 'Open App' },
-    { id: 'runs', label: 'Runs' },
-    { id: 'settings', label: 'Settings' },
-    { id: 'workflows', label: 'Workflows' },
-    { id: 'persona', label: 'Persona' },
-    { id: 'skills', label: 'Skills' },
-    { id: 'memory', label: 'Memory' },
-    { id: 'permissions', label: 'Permissions' },
+    { id: 'open', label: 'apps.openApp' },
+    { id: 'runs', label: 'apps.runs' },
+    { id: 'settings', label: 'nav.settings' },
+    { id: 'workflows', label: 'marketplace.workflows' },
+    { id: 'persona', label: 'agent.persona' },
+    { id: 'skills', label: 'commandPalette.skills' },
+    { id: 'memory', label: 'apps.memory' },
+    { id: 'permissions', label: 'commandPalette.permissions' },
   ];
 
   let apps = $state<AppEntry[]>([]);
@@ -102,11 +103,11 @@
 </script>
 
 <svelte:window onclick={closeMenu} />
-<svelte:head><title>Apps - Nebo</title></svelte:head>
+<svelte:head><title>{$t('apps.pageTitle')}</title></svelte:head>
 
 <div class="flex-1 flex flex-col bg-base-100 min-w-0">
   <div class="h-11 px-[18px] border-b border-base-content/10 flex items-center gap-2 shrink-0">
-    <span class="text-sm font-semibold">Apps</span>
+    <span class="text-sm font-semibold">{$t('apps.title')}</span>
   </div>
   <div class="flex-1 overflow-y-auto p-6">
     {#if apps.length === 0}
@@ -114,8 +115,8 @@
         <div class="w-12 h-12 rounded-xl bg-base-200 flex items-center justify-center">
           <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
         </div>
-        <div class="text-sm font-medium">No apps installed</div>
-        <div class="text-xs text-base-content/50">Install apps from the marketplace using an APPX- code</div>
+        <div class="text-sm font-medium">{$t('settingsApps.noApps')}</div>
+        <div class="text-xs text-base-content/50">{$t('apps.installHint')}</div>
       </div>
     {:else}
       <div class="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
@@ -139,7 +140,7 @@
             </div>
             <div class="text-sm font-medium mb-1">{app.name}</div>
             <div class="text-xs text-base-content/70 line-clamp-2">{app.description}</div>
-            <div class="mt-3 text-xs text-primary font-medium opacity-0 group-hover:opacity-100 transition-opacity">Open app</div>
+            <div class="mt-3 text-xs text-primary font-medium opacity-0 group-hover:opacity-100 transition-opacity">{$t('apps.openAppHint')}</div>
 
             {#if openMenuId === app.id}
               <div class="absolute top-12 right-3 z-50 w-44 py-1 rounded-lg border border-base-300 bg-base-100 shadow-lg">
@@ -150,7 +151,7 @@
                   <button
                     class="w-full text-left px-3 py-1.5 text-sm hover:bg-base-200/50 transition-colors cursor-pointer {item.id === 'open' ? 'font-medium' : ''}"
                     onclick={(e) => handleMenuItem(e, app.id, app.name, item.id)}
-                  >{item.label}</button>
+                  >{$t(item.label)}</button>
                 {/each}
               </div>
             {/if}

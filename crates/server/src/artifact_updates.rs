@@ -173,15 +173,28 @@ async fn check_agent(
     api: &comm::api::NeboAIApi,
     agent: &db::models::Agent,
 ) -> Option<serde_json::Value> {
-    // The installed version comes from the loader (reads agent.json off disk), not
-    // the DB napp_path manifest — code-installed agents have no napp_path, so that
-    // path read empty and the agent was never checked.
-    let local_version = state
-        .agent_loader
-        .get_by_name(&agent.name)
-        .await
-        .and_then(|a| a.version)
-        .unwrap_or_default();
+    // The installed version comes from the recorded pref — the SAME source `apply`
+    // writes — so a successful update converges and this check stops re-flagging it.
+    // (Reading the loader's on-disk manifest directly was the re-detection bug: it
+    // never converged to the applied version, unlike plugins/skills/connectors which
+    // read the store `apply` updates.) Fall back to the loader only to SEED a legacy
+    // agent with no pref row yet; the backfill below then records it.
+    let local_version = match state
+        .store
+        .get_artifact_update_pref(&agent.id, "agent")
+        .ok()
+        .flatten()
+        .map(|p| p.local_version)
+        .filter(|v| !v.is_empty())
+    {
+        Some(v) => v,
+        None => state
+            .agent_loader
+            .get_by_name(&agent.name)
+            .await
+            .and_then(|a| a.version)
+            .unwrap_or_default(),
+    };
 
     if local_version.is_empty() {
         return None;
@@ -467,6 +480,23 @@ pub(crate) async fn apply_agent_update_pub(
 
     // Reload agent loader to pick up new version from filesystem
     state.agent_loader.load_all().await;
+
+    // App sidecars: the version dir just changed. Refresh the app's DB paths from the
+    // freshly-loaded filesystem (reconcile_app_fields), then stop + relaunch a running
+    // sidecar so it runs the NEW binary rather than the swapped-out old one.
+    if state
+        .store
+        .get_agent(agent_id)
+        .ok()
+        .flatten()
+        .map(|a| a.is_app.unwrap_or(0) != 0)
+        .unwrap_or(false)
+    {
+        crate::codes::reconcile_app_fields(state).await;
+        if let Ok(Some(app)) = state.store.get_agent(agent_id) {
+            crate::app_lifecycle::relaunch(state, &app).await;
+        }
+    }
 
     // Lifecycle event: agent updated to a new version.
     state.emit_lifecycle(

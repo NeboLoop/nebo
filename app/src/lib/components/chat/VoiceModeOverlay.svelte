@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onDestroy } from 'svelte';
+	import { t } from 'svelte-i18n';
 	import { voiceSession } from '$lib/stores/voiceSession';
 	import { logger } from '$lib/monitoring';
 	import X from 'lucide-svelte/icons/x';
@@ -73,11 +74,11 @@
 
 	// Status display text
 	let statusText = $derived(
-		status === 'connecting' ? 'Connecting...'
-		: status === 'listening' ? (isMuted ? 'Muted' : 'Listening...')
-		: status === 'processing' ? 'Thinking...'
-		: status === 'speaking' ? 'Speaking...'
-		: status === 'error' ? 'Error'
+		status === 'connecting' ? $t('settingsPlugins.connecting')
+		: status === 'listening' ? (isMuted ? $t('chatInput.muted') : $t('chatInput.listening'))
+		: status === 'processing' ? $t('chatInput.thinking')
+		: status === 'speaking' ? $t('chatInput.speaking')
+		: status === 'error' ? $t('common.error')
 		: ''
 	);
 
@@ -108,7 +109,7 @@
 		</div>
 		<button
 			class="w-10 h-10 rounded-lg grid place-items-center text-base-content/60 hover:text-base-content hover:bg-base-200/50 cursor-pointer transition-colors border-none bg-transparent"
-			title="Close voice mode"
+			title={$t('chatInput.closeVoiceMode')}
 			onclick={handleClose}
 		>
 			<X class="w-5 h-5" />
@@ -121,7 +122,7 @@
 		<button
 			class="relative w-32 h-32 rounded-full grid place-items-center cursor-pointer border-none bg-transparent transition-transform duration-150 ease-out"
 			onclick={status === 'speaking' ? handleInterrupt : undefined}
-			title={status === 'speaking' ? 'Tap to interrupt' : ''}
+			title={status === 'speaking' ? $t('chatInput.tapToInterrupt') : ''}
 		>
 			<!-- Outer pulse ring -->
 			<div
@@ -170,7 +171,7 @@
 				class="text-xs text-base-content/50 hover:text-base-content cursor-pointer border-none bg-transparent transition-colors"
 				onclick={handleInterrupt}
 			>
-				Tap to interrupt
+				{$t('chatInput.tapToInterrupt')}
 			</button>
 		{/if}
 	</div>
@@ -184,7 +185,7 @@
 			{#each transcripts as entry, i (i)}
 				<div class="flex flex-col {entry.speaker === 'user' ? 'items-end' : 'items-start'}">
 					<div class="text-xs text-base-content/50 mb-0.5 font-mono">
-						{entry.speaker === 'user' ? 'You' : agentName}
+						{entry.speaker === 'user' ? $t('common.you') : agentName}
 					</div>
 					<div class="text-sm max-w-md {entry.speaker === 'user' ? 'text-base-content' : 'text-base-content/90'}">
 						{entry.text}
@@ -195,7 +196,7 @@
 			<!-- Interim (live) transcript -->
 			{#if interimTranscript}
 				<div class="flex flex-col items-end">
-					<div class="text-xs text-base-content/50 mb-0.5 font-mono">You</div>
+					<div class="text-xs text-base-content/50 mb-0.5 font-mono">{$t('common.you')}</div>
 					<div class="text-sm text-base-content/50 italic max-w-md">
 						{interimTranscript}
 					</div>
@@ -213,7 +214,7 @@
 					? 'bg-error/20 text-error'
 					: 'bg-base-200 text-base-content/70 hover:bg-base-300 hover:text-base-content'
 			}"
-			title={isMuted ? 'Unmute' : 'Mute'}
+			title={isMuted ? $t('chatInput.unmute') : $t('chatInput.mute')}
 			onclick={handleToggleMute}
 			disabled={status === 'connecting' || status === 'idle' || status === 'error'}
 		>
@@ -227,7 +228,7 @@
 		<!-- Stop button -->
 		<button
 			class="w-16 h-16 rounded-full grid place-items-center bg-error text-error-content cursor-pointer transition-colors hover:bg-error/80 border-none"
-			title="End conversation"
+			title={$t('chatInput.endConversation')}
 			onclick={handleStop}
 		>
 			<Square class="w-6 h-6 fill-current" />

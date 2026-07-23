@@ -50,6 +50,26 @@ pub mod vm_tool;
 pub mod web_tool;
 pub mod workflows;
 
+/// True when this Nebo runs as a cloud/container server rather than on a user's
+/// desktop.
+///
+/// Desktop-bound resources (windows, input, screen capture, Mail/Calendar) have
+/// no counterpart here: there is no display, window manager, or PIM app to talk
+/// to. Their platform layers would otherwise fail deep inside with a cryptic
+/// xdotool/Evolution error, so callers use this to refuse with a clear reason.
+///
+/// `NEBO_SERVER_MODE` forces it; otherwise a Linux box with neither `DISPLAY`
+/// nor `WAYLAND_DISPLAY` is headless by definition (a Linux desktop always has
+/// one). macOS/Windows are always treated as desktops.
+pub fn server_mode() -> bool {
+    if std::env::var_os("NEBO_SERVER_MODE").is_some() {
+        return true;
+    }
+    cfg!(target_os = "linux")
+        && std::env::var_os("DISPLAY").is_none()
+        && std::env::var_os("WAYLAND_DISPLAY").is_none()
+}
+
 /// Truncate a string to at most `max_bytes` bytes without splitting a multi-byte
 /// UTF-8 character.
 pub fn truncate_str(s: &str, max_bytes: usize) -> &str {
@@ -70,6 +90,7 @@ pub use agent_tool::{
 pub use app_tool::AppTool;
 pub use bot_tool::{
     AdvisorDeliberator, AgentTool, CodeInstaller, HybridSearchResult, HybridSearcher,
+    MemoryEmbedder,
 };
 pub use channel_bridge::{
     ChannelBridgeHandle, ChannelBridgeRegistry, OpResult, PendingOps, channel_bridge_key,
@@ -437,10 +458,13 @@ pub async fn persist_agent_from_api(
         } else {
             detail.version.clone()
         };
-        let dl = detail
-            .download_url
-            .clone()
-            .or_else(|| Some(format!("/api/v1/apps/{}/download", artifact_id)));
+        // downloadUrl is the API's package contract: present exactly when a
+        // packaged .napp blob exists, absent for content-only agents. Do NOT
+        // fabricate a fallback URL here — for content-only agents the generic
+        // download endpoint 404s "no downloadable package", which used to fail
+        // the whole install even though the full agent content was already in
+        // this manifest response.
+        let dl = detail.download_url.clone();
         (
             md,
             fm,
@@ -476,10 +500,10 @@ pub async fn persist_agent_from_api(
         } else {
             detail.item.version.clone()
         };
-        let dl = detail
-            .download_url
-            .clone()
-            .or_else(|| Some(format!("/api/v1/apps/{}/download", artifact_id)));
+        // Same contract as the /agents branch above: absent downloadUrl means
+        // content-only — materialize from the manifest instead of fabricating a
+        // download URL that 404s.
+        let dl = detail.download_url.clone();
         (
             md,
             fm,
@@ -491,7 +515,154 @@ pub async fn persist_agent_from_api(
         )
     };
 
-    // Persist to DB — create or update if already exists (re-install)
+    // Marketplace artifacts go to nebo/ namespace (installed). ALL filesystem
+    // work happens in a staging dir OUTSIDE the loader's scan roots; the final
+    // agents/<slug>/ directory only ever appears — via one rename — once the
+    // payload is complete and validated. A failed install leaves nothing behind:
+    // no empty agent dir that reads as "installed" in the marketplace, nothing
+    // for the boot sync to trip over, nothing blocking a reinstall.
+    let nebo_dir = config::nebo_dir().map_err(|e| format!("nebo_dir: {e}"))?;
+    let staged = StagedInstall::begin(&nebo_dir, &agent_slug)?;
+    let staged_version_dir = staged.path().join(&version);
+
+    // The API advertises `downloadUrl` exactly when a packaged .napp exists
+    // (sealed paid agents, apps with binaries, file-published agents). Agents
+    // published content-only — AGENT.md persona + agent.json typeConfig in the
+    // manifest, no package blob — have NO downloadUrl, and the generic download
+    // endpoint 404s "no downloadable package" for them. For those, materialize
+    // the loose files the loader reads from the manifest content we already
+    // fetched, instead of failing a download that can never succeed.
+    // (An empty string and a "/{platform}" URL template both mean "use the
+    // per-platform candidate below", not a literal fetchable URL.)
+    let download_url = download_url.filter(|u| !u.is_empty());
+
+    let mut sealed = false;
+    if let Some(ref generic_url) = download_url {
+        // Download the .napp (always wrapped in a signed NAPP envelope).
+        //
+        // Free agents carry a plain tar.gz payload: extract it to loose files so the
+        // loader can read AGENT.md/agent.json from disk. Sealed (paid) agents carry an
+        // encrypted payload: leave the .napp sealed on disk — the loader decrypts it in
+        // memory using the license key — and seed that license key now so the agent
+        // can load immediately after install.
+        // Apps are agents with a UI AND a native sidecar binary, so their package is
+        // per-platform (bin/<name> + AGENT.md + agent.json), exactly like a plugin.
+        // The generic `/download` endpoint serves the universal (UI-only / binary-less)
+        // .napp, which for a sidecar app is missing the binary and the agent files —
+        // that's why app installs landed incomplete. Prefer the per-platform URL and
+        // fall back to the resolved generic URL for binary-less agents (which 404 on
+        // the per-platform path).
+        let platform_url = format!(
+            "/api/v1/apps/{}/download/{}.napp",
+            artifact_id,
+            napp::plugin::current_platform_key()
+        );
+        let mut download_candidates: Vec<String> = vec![platform_url];
+        if !generic_url.contains("{platform}") && !download_candidates.contains(generic_url) {
+            download_candidates.push(generic_url.clone());
+        }
+
+        let napp_path = staged.path().join(format!("{}.napp", version));
+        let mut downloaded: Option<Vec<u8>> = None;
+        let mut last_err = String::new();
+        for candidate in &download_candidates {
+            match api.download_napp(candidate).await {
+                Ok(data) => {
+                    downloaded = Some(data);
+                    break;
+                }
+                Err(e) => {
+                    tracing::debug!(agent = name, url = %candidate, error = %e, "napp download candidate failed, trying next");
+                    last_err = e.to_string();
+                }
+            }
+        }
+        // A failed download of an advertised package is an install FAILURE —
+        // propagate the real error so the UI shows it (staging is dropped clean).
+        let data =
+            downloaded.ok_or_else(|| format!("download agent package for {name}: {last_err}"))?;
+        std::fs::write(&napp_path, &data).map_err(|e| format!("write .napp: {e}"))?;
+        tracing::info!(agent = name, path = %napp_path.display(), size = data.len(), "stored .napp");
+
+        sealed = napp::reader::is_sealed_napp(&napp_path);
+        if sealed {
+            tracing::info!(agent = name, "sealed agent — keeping .napp sealed; seeding license key");
+            match fetch_and_store_license_keys(api, store, &[artifact_id.to_string()], "agent")
+                .await
+            {
+                Ok(keys) => {
+                    // Partial-extract metadata (manifest.json) — not the IP — so the
+                    // loader can resolve the artifact_id and match the license key.
+                    if let Some(key) = keys.get(artifact_id) {
+                        if let Err(e) = napp::reader::partial_extract_sealed_napp(&napp_path, key)
+                        {
+                            tracing::warn!(agent = name, error = %e, "failed to partial-extract sealed agent metadata");
+                        }
+                    } else {
+                        tracing::warn!(agent = name, "no license key returned for sealed agent — it will not load until keys refresh");
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(agent = name, error = %e, "failed to seed license key for sealed agent");
+                }
+            }
+        } else {
+            let extract_dir = napp::reader::extract_napp_alongside(&napp_path)
+                .map_err(|e| format!("extract agent package for {name}: {e}"))?;
+            tracing::info!(agent = name, dir = %extract_dir.display(), "extracted .napp");
+        }
+    } else {
+        // Content-only agent: materialize the loose files the loader reads —
+        // the SAME layout an extracted .napp produces (version dir with
+        // AGENT.md + agent.json + manifest.json carrying the artifact id the
+        // boot fs→DB sync matches on).
+        std::fs::create_dir_all(&staged_version_dir)
+            .map_err(|e| format!("create agent version dir: {e}"))?;
+        std::fs::write(staged_version_dir.join("AGENT.md"), &manifest_text)
+            .map_err(|e| format!("write AGENT.md: {e}"))?;
+        if !frontmatter_str.is_empty() {
+            std::fs::write(staged_version_dir.join("agent.json"), &frontmatter_str)
+                .map_err(|e| format!("write agent.json: {e}"))?;
+        }
+        let manifest = serde_json::json!({
+            "id": artifact_id,
+            "name": name,
+            "slug": agent_slug,
+            "version": version,
+            "type": "agent",
+        });
+        std::fs::write(
+            staged_version_dir.join("manifest.json"),
+            serde_json::to_string_pretty(&manifest).unwrap_or_default(),
+        )
+        .map_err(|e| format!("write manifest.json: {e}"))?;
+        tracing::info!(agent = name, "materialized content-only agent from manifest (no package blob)");
+    }
+
+    // Validate the staged payload BEFORE it can reach the final location.
+    // Free agents: AGENT.md is the loader's discovery marker — without it the
+    // agent can never load. Sealed agents have no loose files (the IP stays
+    // encrypted) and are validated by the loader reading them in memory with
+    // the seeded license key.
+    if !sealed && !staged_version_dir.join("AGENT.md").exists() {
+        tracing::error!(
+            agent = name,
+            "agent package is incomplete — missing AGENT.md"
+        );
+        return Err(format!(
+            "agent package for {name} is incomplete: missing AGENT.md"
+        ));
+    }
+
+    // Atomically publish: the whole slug dir is swapped, which also replaces any
+    // older version dirs/.napp files wholesale (the loader walks every AGENT.md
+    // and last-writes by name, so stale sibling versions must not survive).
+    let version_dir = staged.commit()?.join(&version);
+
+    // Persist to DB — create or update if already exists (re-install). After the
+    // filesystem, matching the system's source-of-truth order: the boot fs→DB
+    // sync recreates a missing row from disk, but nothing recreates missing disk
+    // content from a row.
     if store.get_agent(artifact_id).ok().flatten().is_some() {
         let _ = store.update_agent(
             artifact_id,
@@ -522,135 +693,119 @@ pub async fn persist_agent_from_api(
             .map_err(|e| format!("create_agent: {e}"))?;
     }
 
-    // Marketplace artifacts go to nebo/ namespace (installed)
-    let nebo_dir = config::nebo_dir().map_err(|e| format!("nebo_dir: {e}"))?;
-
-    let napp_dir = nebo_dir.join("agents").join(&agent_slug);
-    std::fs::create_dir_all(&napp_dir).map_err(|e| format!("create agent dir: {e}"))?;
-    let version_dir = napp_dir.join(&version);
-
-    // Download the .napp (always wrapped in a signed NAPP envelope) and extract it.
-    //
-    // Free agents carry a plain tar.gz payload: extract it to loose files so the
-    // loader can read AGENT.md/agent.json from disk. Sealed (paid) agents carry an
-    // encrypted payload: leave the .napp sealed on disk — the loader decrypts it in
-    // memory using the license key — and seed that license key now so the agent
-    // can load immediately after install.
-    // Apps are agents with a UI AND a native sidecar binary, so their package is
-    // per-platform (bin/<name> + AGENT.md + agent.json), exactly like a plugin.
-    // The generic `/download` endpoint serves the universal (UI-only / binary-less)
-    // .napp, which for a sidecar app is missing the binary and the agent files —
-    // that's why app installs landed incomplete. Prefer the per-platform URL and
-    // fall back to the resolved generic URL for binary-less agents (which 404 on
-    // the per-platform path).
-    let platform_url = format!(
-        "/api/v1/apps/{}/download/{}.napp",
-        artifact_id,
-        napp::plugin::current_platform_key()
-    );
-    let download_candidates: Vec<String> = download_url
-        .iter()
-        .cloned()
-        .fold(vec![platform_url], |mut acc, u| {
-            if !acc.contains(&u) {
-                acc.push(u);
-            }
-            acc
-        });
-
-    let mut sealed = false;
-    if !download_candidates.is_empty() {
-        let napp_path = napp_dir.join(format!("{}.napp", version));
-        let mut downloaded: Option<Vec<u8>> = None;
-        for candidate in &download_candidates {
-            match api.download_napp(candidate).await {
-                Ok(data) => {
-                    downloaded = Some(data);
-                    break;
-                }
-                Err(e) => {
-                    tracing::debug!(agent = name, url = %candidate, error = %e, "napp download candidate failed, trying next");
-                }
-            }
-        }
-        match downloaded.ok_or_else(|| "all napp download candidates failed".to_string()) {
-            Ok(data) => {
-                std::fs::write(&napp_path, &data).map_err(|e| format!("write .napp: {e}"))?;
-                tracing::info!(agent = name, path = %napp_path.display(), size = data.len(), "stored .napp");
-
-                sealed = napp::reader::is_sealed_napp(&napp_path);
-                if sealed {
-                    tracing::info!(agent = name, "sealed agent — keeping .napp sealed; seeding license key");
-                    match fetch_and_store_license_keys(
-                        api,
-                        store,
-                        &[artifact_id.to_string()],
-                        "agent",
-                    )
-                    .await
-                    {
-                        Ok(keys) => {
-                            // Partial-extract metadata (manifest.json) — not the IP — so the
-                            // loader can resolve the artifact_id and match the license key.
-                            if let Some(key) = keys.get(artifact_id) {
-                                if let Err(e) =
-                                    napp::reader::partial_extract_sealed_napp(&napp_path, key)
-                                {
-                                    tracing::warn!(agent = name, error = %e, "failed to partial-extract sealed agent metadata");
-                                }
-                            } else {
-                                tracing::warn!(agent = name, "no license key returned for sealed agent — it will not load until keys refresh");
-                            }
-                        }
-                        Err(e) => {
-                            tracing::warn!(agent = name, error = %e, "failed to seed license key for sealed agent");
-                        }
-                    }
-                } else {
-                    match napp::reader::extract_napp_alongside(&napp_path) {
-                        Ok(extract_dir) => {
-                            tracing::info!(agent = name, dir = %extract_dir.display(), "extracted .napp");
-                        }
-                        Err(e) => {
-                            tracing::warn!(agent = name, error = %e, "failed to extract .napp");
-                        }
-                    }
-                }
-            }
-            Err(e) => {
-                tracing::warn!(agent = name, error = %e, "failed to download .napp");
-            }
-        }
-    }
-
-    // Validate: a free agent .napp must extract to AGENT.md + agent.json on disk.
-    // Sealed agents have no loose files (the IP stays encrypted) and are validated
-    // by the loader reading them in memory with the seeded license key.
-    if !sealed {
-        let agent_md_path = version_dir.join("AGENT.md");
-        let agent_json_path = version_dir.join("agent.json");
-        if !agent_md_path.exists() || !agent_json_path.exists() {
-            let missing: Vec<&str> = [
-                (!agent_md_path.exists()).then_some("AGENT.md"),
-                (!agent_json_path.exists()).then_some("agent.json"),
-            ]
-            .into_iter()
-            .flatten()
-            .collect();
-            tracing::error!(
-                agent = name,
-                ?missing,
-                "agent .napp is incomplete — missing required files"
-            );
-            return Err(format!(
-                "agent package for {name} is incomplete: missing {}",
-                missing.join(", ")
-            ));
-        }
-    }
-
     tracing::info!(agent = name, dir = %version_dir.display(), "persisted agent artifact");
     Ok(PersistAgentResult { type_config })
+}
+
+/// Staged atomic install of a marketplace agent's filesystem payload.
+///
+/// All payload work (download, extraction, materialization) happens in a
+/// unique directory under `<nebo_dir>/.staging/` — outside every loader's scan
+/// root — and `agents/<slug>/` only ever appears via [`StagedInstall::commit`]'s
+/// rename once the payload is complete. Dropping without committing (any error
+/// path) removes the staging dir, so a failed install leaves no trace.
+pub struct StagedInstall {
+    staging: std::path::PathBuf,
+    final_dir: std::path::PathBuf,
+    committed: bool,
+}
+
+impl StagedInstall {
+    /// Begin a staged install targeting `<root>/agents/<slug>`.
+    pub fn begin(root: &std::path::Path, slug: &str) -> Result<Self, String> {
+        let staging = root.join(".staging").join(format!(
+            "agent-{}-{}",
+            slug,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default()
+        ));
+        std::fs::create_dir_all(&staging).map_err(|e| format!("create staging dir: {e}"))?;
+        Ok(Self {
+            staging,
+            final_dir: root.join("agents").join(slug),
+            committed: false,
+        })
+    }
+
+    /// The staging directory to build the payload in.
+    pub fn path(&self) -> &std::path::Path {
+        &self.staging
+    }
+
+    /// Publish the staged payload: replaces any previous install wholesale by
+    /// renaming the staging dir into place. Returns the final directory.
+    pub fn commit(mut self) -> Result<std::path::PathBuf, String> {
+        if let Some(parent) = self.final_dir.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| format!("create agents dir: {e}"))?;
+        }
+        if self.final_dir.exists() {
+            std::fs::remove_dir_all(&self.final_dir)
+                .map_err(|e| format!("replace previous install: {e}"))?;
+        }
+        std::fs::rename(&self.staging, &self.final_dir)
+            .map_err(|e| format!("publish staged install: {e}"))?;
+        self.committed = true;
+        Ok(self.final_dir.clone())
+    }
+}
+
+impl Drop for StagedInstall {
+    fn drop(&mut self) {
+        if !self.committed {
+            let _ = std::fs::remove_dir_all(&self.staging);
+        }
+    }
+}
+
+#[cfg(test)]
+mod staged_install_tests {
+    use super::StagedInstall;
+
+    // The failure contract: an install that dies mid-payload (download 404,
+    // extraction error, validation failure) must leave NOTHING behind — no
+    // agents/<slug>/ dir the marketplace would report as "installed", and no
+    // staging debris.
+    #[test]
+    fn failure_leaves_nothing_behind() {
+        let root = tempfile::tempdir().unwrap();
+        let staged = StagedInstall::begin(root.path(), "sdr").unwrap();
+        std::fs::write(staged.path().join("1.0.0.napp"), b"partial").unwrap();
+        drop(staged); // simulated failure: dropped without commit
+
+        assert!(
+            !root.path().join("agents").join("sdr").exists(),
+            "failed install must not create the final agent dir"
+        );
+        let staging_empty = std::fs::read_dir(root.path().join(".staging"))
+            .map(|mut e| e.next().is_none())
+            .unwrap_or(true);
+        assert!(staging_empty, "failed install must not leave staging debris");
+    }
+
+    #[test]
+    fn commit_materializes_content_and_replaces_previous_install() {
+        let root = tempfile::tempdir().unwrap();
+        // Previous install (e.g. an older version, or an empty dir from a failed
+        // pre-atomic install) must be replaced wholesale.
+        let final_dir = root.path().join("agents").join("sdr");
+        std::fs::create_dir_all(final_dir.join("0.9.0")).unwrap();
+        std::fs::write(final_dir.join("0.9.0.napp"), b"old").unwrap();
+
+        let staged = StagedInstall::begin(root.path(), "sdr").unwrap();
+        let vdir = staged.path().join("1.0.0");
+        std::fs::create_dir_all(&vdir).unwrap();
+        std::fs::write(vdir.join("AGENT.md"), "---\nname: Sdr\n---\n").unwrap();
+        let out = staged.commit().unwrap();
+
+        assert_eq!(out, final_dir);
+        assert!(final_dir.join("1.0.0").join("AGENT.md").exists());
+        assert!(
+            !final_dir.join("0.9.0").exists() && !final_dir.join("0.9.0.napp").exists(),
+            "previous install must be replaced wholesale (no stale versions)"
+        );
+    }
 }
 
 /// Generate a minimal AGENT.md from metadata.

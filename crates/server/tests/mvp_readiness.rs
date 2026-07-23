@@ -9,7 +9,6 @@
 //!   cargo test -p nebo-server --test mvp_readiness -- --nocapture
 
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::time::Duration;
 
 use reqwest::Client;

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { t } from 'svelte-i18n';
   import Sidebar from '$lib/components/Sidebar.svelte';
 
   let automations = $state<{ id: string; name: string; trigger: string; schedule?: string; event?: string; agent: string; enabled: boolean }[]>([]);
@@ -31,21 +32,21 @@
   }
 </script>
 
-<svelte:head><title>Automate - Nebo</title></svelte:head>
+<svelte:head><title>{$t('automate.pageTitle')}</title></svelte:head>
 
 <div class="flex h-screen bg-base-100 text-base-content text-sm">
   <Sidebar activePage="chat" />
   <div class="flex-1 flex flex-col min-w-0 min-h-0">
     <div class="h-12 px-5 border-b border-base-content/10 flex items-center gap-3.5 shrink-0">
-      <span class="text-sm font-semibold">Automations</span>
+      <span class="text-sm font-semibold">{$t('automations.title')}</span>
       <div class="ml-auto h-7 w-[200px] rounded-md border border-base-content/10 bg-base-100 flex items-center px-2.5 gap-2 text-sm">
-        <span class="font-mono">⌘K</span><span>Search or run…</span>
+        <span class="font-mono">⌘K</span><span>{$t('nav.searchOrRun')}</span>
       </div>
     </div>
 
     <div class="flex-1 overflow-auto p-6">
       <div class="max-w-[800px]">
-        <h1 class="text-xl font-bold tracking-tight mb-4">Automations</h1>
+        <h1 class="text-xl font-bold tracking-tight mb-4">{$t('automations.title')}</h1>
 
         <div class="flex flex-col gap-2">
           {#each automations as auto}
@@ -61,7 +62,7 @@
           {/each}
         </div>
 
-        <p class="mt-4 text-sm">Browse the <a href="/marketplace" class="text-primary hover:underline">marketplace</a> for available automations.</p>
+        <p class="mt-4 text-sm">{$t('automate.browsePrefix')} <a href="/marketplace" class="text-primary hover:underline">{$t('automate.marketplaceLink')}</a> {$t('automate.browseSuffix')}</p>
       </div>
     </div>
   </div>

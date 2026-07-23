@@ -1,4 +1,4 @@
-use rusqlite::params;
+use rusqlite::{params, OptionalExtension};
 
 use crate::models::{ArtifactUpdateHistoryEntry, ArtifactUpdatePref, ArtifactUpdateSettings};
 use crate::Store;
@@ -34,6 +34,39 @@ impl Store {
             results.push(row.map_err(|e| NeboError::Database(e.to_string()))?);
         }
         Ok(results)
+    }
+
+    /// Fetch a single update-tracking row by (artifact_id, artifact_type).
+    /// The recorded `local_version` is the source of truth for "what's installed"
+    /// — the same value `apply` writes — so the update checker converges instead of
+    /// re-deriving the version from a different source every cycle.
+    pub fn get_artifact_update_pref(
+        &self,
+        artifact_id: &str,
+        artifact_type: &str,
+    ) -> Result<Option<ArtifactUpdatePref>, NeboError> {
+        let conn = self.conn()?;
+        conn.query_row(
+            "SELECT artifact_id, artifact_type, auto_update, local_version,
+                    remote_version, last_checked_at, update_available, name
+             FROM artifact_update_prefs
+             WHERE artifact_id = ?1 AND artifact_type = ?2",
+            params![artifact_id, artifact_type],
+            |row| {
+                Ok(ArtifactUpdatePref {
+                    artifact_id: row.get(0)?,
+                    artifact_type: row.get(1)?,
+                    auto_update: row.get(2)?,
+                    local_version: row.get(3)?,
+                    remote_version: row.get(4)?,
+                    last_checked_at: row.get(5)?,
+                    update_available: row.get(6)?,
+                    name: row.get(7)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(|e| NeboError::Database(e.to_string()))
     }
 
     pub fn list_artifacts_with_updates(&self) -> Result<Vec<ArtifactUpdatePref>, NeboError> {

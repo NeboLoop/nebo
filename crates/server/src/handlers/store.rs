@@ -1,5 +1,7 @@
 //! Store proxy handlers — forward marketplace queries to NeboAI API.
 
+use std::time::{Duration, Instant};
+
 use axum::extract::{Path, Query, State};
 use axum::response::Json;
 use serde::Deserialize;
@@ -8,6 +10,17 @@ use super::{HandlerResult, to_error_response};
 use crate::codes::build_api_client;
 use crate::state::AppState;
 use types::NeboError;
+
+/// TTL for cached raw NeboAI store responses. The marketplace catalog is large
+/// (~400 items, ~600ms per 100-item page over the cloud proxy) and changes
+/// rarely, but the SPA re-fetches it on every marketplace open. Caching the raw
+/// cloud response makes reopens instant; install-state is enriched per request
+/// (below) so the live "Installed" badge is never stale. The cache itself lives
+/// on `AppState::store_cache` (not a global).
+/// ponytail: unbounded map, but keys are the handful of (type,category,page)
+/// combos the UI actually requests — TTL overwrite keeps it tiny. Add LRU only
+/// if the key space ever grows.
+const CATALOG_TTL: Duration = Duration::from_secs(120);
 
 #[derive(Deserialize)]
 pub struct StoreQuery {
@@ -30,22 +43,51 @@ pub async fn list_store_products(
     State(state): State<AppState>,
     Query(params): Query<StoreQuery>,
 ) -> HandlerResult<serde_json::Value> {
-    let api = build_api_client(&state).map_err(to_error_response)?;
-    let resp = api
-        .list_products(
-            params.artifact_type.as_deref(),
-            params.q.as_deref(),
-            params.category.as_deref(),
-            params.page,
-            params.page_size,
-        )
-        .await
-        .map_err(|e| to_error_response(NeboError::Internal(format!("list_products: {e}"))))?;
+    let cache_key = format!(
+        "{}|{}|{}|{}|{}",
+        params.artifact_type.as_deref().unwrap_or(""),
+        params.q.as_deref().unwrap_or(""),
+        params.category.as_deref().unwrap_or(""),
+        params.page.unwrap_or(1),
+        params.page_size.unwrap_or(0),
+    );
 
-    // NeboAI returns the canonical { "products": [...], "total": N } envelope —
-    // pass it through verbatim, only enriching with local install state (which
-    // NeboAI can't know). No client-side key remapping.
-    let mut out = resp;
+    // Serve the raw cloud response from cache when fresh; otherwise fetch it.
+    let cached = {
+        let map = state.store_cache.lock().unwrap();
+        map.get(&cache_key)
+            .filter(|(at, _)| at.elapsed() < CATALOG_TTL)
+            .map(|(_, v)| v.clone())
+    };
+
+    let mut out = match cached {
+        Some(v) => v,
+        None => {
+            let api = build_api_client(&state).map_err(to_error_response)?;
+            let resp = api
+                .list_products(
+                    params.artifact_type.as_deref(),
+                    params.q.as_deref(),
+                    params.category.as_deref(),
+                    params.page,
+                    params.page_size,
+                )
+                .await
+                .map_err(|e| {
+                    to_error_response(NeboError::Internal(format!("list_products: {e}")))
+                })?;
+            state
+                .store_cache
+                .lock()
+                .unwrap()
+                .insert(cache_key, (Instant::now(), resp.clone()));
+            resp
+        }
+    };
+
+    // NeboAI returns the canonical { "products": [...], "total": N } envelope.
+    // Install state is local (NeboAI can't know it) so it's enriched on every
+    // response, cached or not — the "Installed" badge stays live.
     enrich_installed_state(&mut out, &state.store);
 
     Ok(Json(out))
@@ -74,6 +116,36 @@ pub async fn list_store_featured(
         .get_featured(params.artifact_type.as_deref())
         .await
         .map_err(|e| to_error_response(NeboError::Internal(format!("get_featured: {e}"))))?;
+    Ok(Json(resp))
+}
+
+/// GET /store/marketplace-map — the curated Employees/Tools/Collections
+/// placement map, proxied from NeboAI's single source. Cached for 10 min: the
+/// map is static per NeboAI deploy, so the desktop three-view marketplace pays
+/// the cloud round-trip at most once every ten minutes.
+pub async fn list_store_marketplace_map(
+    State(state): State<AppState>,
+) -> HandlerResult<serde_json::Value> {
+    const MAP_KEY: &str = "__marketplace_map__";
+    let cached = {
+        let map = state.store_cache.lock().unwrap();
+        map.get(MAP_KEY)
+            .filter(|(at, _)| at.elapsed() < Duration::from_secs(600))
+            .map(|(_, v)| v.clone())
+    };
+    if let Some(v) = cached {
+        return Ok(Json(v));
+    }
+    let api = build_api_client(&state).map_err(to_error_response)?;
+    let resp = api
+        .get_marketplace_map()
+        .await
+        .map_err(|e| to_error_response(NeboError::Internal(format!("get_marketplace_map: {e}"))))?;
+    state
+        .store_cache
+        .lock()
+        .unwrap()
+        .insert(MAP_KEY.to_string(), (Instant::now(), resp.clone()));
     Ok(Json(resp))
 }
 
@@ -235,6 +307,18 @@ pub(crate) fn is_installed(slug: &str, _name: &str, artifact_type: &str, _store:
         "plugin" => "plugins",
         _ => "skills",
     };
+    if dir_type == "agents" {
+        // Truthful check via the loader's own discovery criteria: the dir must
+        // contain something the agent loader actually loads (an AGENT.md tree
+        // or a sealed .napp). A bare directory left behind by a failed install
+        // used to satisfy the plain `exists()` check and show "Installed" for
+        // an agent that never materialized.
+        let (Ok(user_dir), Ok(nebo_dir)) = (config::user_dir(), config::nebo_dir()) else {
+            return false;
+        };
+        return napp::agent_loader::dir_contains_agent(&user_dir.join("agents").join(slug))
+            || napp::agent_loader::dir_contains_agent(&nebo_dir.join("agents").join(slug));
+    }
     is_locally_installed(slug, dir_type)
 }
 

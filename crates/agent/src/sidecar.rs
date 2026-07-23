@@ -27,25 +27,14 @@ pub async fn verify_screenshot(
     screenshot_b64: &str,
     action_context: &str,
 ) -> Option<String> {
-    let data = screenshot_b64
-        .strip_prefix("data:image/png;base64,")
-        .or_else(|| screenshot_b64.strip_prefix("data:image/jpeg;base64,"))
-        .unwrap_or(screenshot_b64);
-    let media_type = if screenshot_b64.starts_with("data:image/jpeg") {
-        "image/jpeg"
-    } else {
-        "image/png"
-    };
+    let (media_type, data) = ai::image_source_to_base64(screenshot_b64)?;
 
     let req = ChatRequest {
         tool_choice: Default::default(),
         messages: vec![Message {
             role: "user".to_string(),
             content: format!("Action performed: {}", action_context),
-            images: Some(vec![ImageContent {
-                media_type: media_type.to_string(),
-                data: data.to_string(),
-            }]),
+            images: Some(vec![ImageContent { media_type, data }]),
             ..Default::default()
         }],
         tools: vec![],

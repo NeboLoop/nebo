@@ -133,6 +133,13 @@ pub struct ToolContext {
     /// `memory.topics`). The memory tool accepts these as `layer` values in
     /// addition to the built-in layers. Empty for the main bot.
     pub memory_topics: Vec<String>,
+    /// Fail-closed memory isolation (set by the runner's ONE scope
+    /// derivation): the active agent has `memory.context_isolated` but no
+    /// isolation context could be derived for this run, so memory MUTATIONS
+    /// (store/delete/clear) must be refused rather than land in the shared
+    /// agent scope. Reads still serve the inherited chain. `false` for every
+    /// normal run.
+    pub memory_writes_disabled: bool,
     /// Capability categories the runner has cleared for execution this turn —
     /// either pre-granted (capability ON), user-approved via the ApprovalModal,
     /// or bypassed by autonomous mode. The permission gate (registry Phase 1c)

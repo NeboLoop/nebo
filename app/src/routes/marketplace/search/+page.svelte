@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { page } from '$app/stores';
+	import { t } from 'svelte-i18n';
 	import Search from 'lucide-svelte/icons/search';
 	import MarketplaceGrid from '$lib/components/MarketplaceGrid.svelte';
 	import ListCard from '$lib/components/marketplace/ListCard.svelte';
@@ -43,14 +44,14 @@
 	{#if !query}
 		<div class="flex flex-col items-center justify-center py-16 text-center">
 			<Search class="w-10 h-10 text-base-content/40 mb-3" />
-			<p class="text-base font-medium">Search the marketplace</p>
-			<p class="text-xs text-base-content/50 mt-1">Find agents, apps, skills, plugins and connectors by name or what they do.</p>
+			<p class="text-base font-medium">{$t('marketplace.searchPage.title')}</p>
+			<p class="text-xs text-base-content/50 mt-1">{$t('marketplace.searchPage.hint')}</p>
 		</div>
 	{:else}
 		<div class="mb-4">
-			<h1 class="font-display text-xl font-bold">Results for "{query}"</h1>
+			<h1 class="font-display text-xl font-bold">{$t('marketplace.searchPage.resultsFor', { values: { query } })}</h1>
 			{#if !loading}
-				<p class="text-sm text-base-content/70 mt-0.5">{results.length} result{results.length === 1 ? '' : 's'}</p>
+				<p class="text-sm text-base-content/70 mt-0.5">{results.length === 1 ? $t('marketplace.resultCountSingular', { values: { count: results.length } }) : $t('marketplace.resultCount', { values: { count: results.length } })}</p>
 			{/if}
 		</div>
 
@@ -61,8 +62,8 @@
 		{:else if results.length === 0}
 			<div class="flex flex-col items-center justify-center py-16 text-center">
 				<Search class="w-10 h-10 text-base-content/40 mb-3" />
-				<p class="text-base font-medium">No results found</p>
-				<p class="text-xs text-base-content/50 mt-1">Try a different search term.</p>
+				<p class="text-base font-medium">{$t('common.noResultsFound')}</p>
+				<p class="text-xs text-base-content/50 mt-1">{$t('marketplace.searchPage.tryDifferent')}</p>
 			</div>
 		{:else}
 			<MarketplaceGrid>

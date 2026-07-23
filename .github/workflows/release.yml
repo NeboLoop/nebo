@@ -288,6 +288,8 @@ jobs:
     env:
       HAS_NOTARIZE_CREDS: ${{ secrets.APPLE_ID != '' && 'true' || 'false' }}
     steps:
+      - uses: actions/checkout@v4
+
       - name: Restore signed DMG
         uses: actions/cache/restore@v4
         with:
@@ -340,6 +342,26 @@ jobs:
         with:
           key: release-${{ github.run_id }}-nebo-darwin-${{ matrix.arch }}-dmg
           path: dist/
+
+      # Publish the notarized mac assets ourselves. When mac is built in CI the
+      # `release` job doesn't wait for us (it was written for LOCAL mac publish),
+      # so nothing else uploads the DMG — without this the Homebrew cask points at
+      # a release URL that 404s. Reuses the canonical publish-macos.sh: uploads the
+      # DMG to the GitHub release + CDN and merges the mac checksums.
+      - name: Publish notarized mac assets (release + CDN)
+        if: ${{ env.HAS_NOTARIZE_CREDS == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+          DO_SPACES_ACCESS_KEY: ${{ secrets.DO_SPACES_ACCESS_KEY }}
+          DO_SPACES_SECRET_KEY: ${{ secrets.DO_SPACES_SECRET_KEY }}
+        run: |
+          brew list awscli >/dev/null 2>&1 || brew install awscli
+          # publish-macos.sh expects dist/checksums-macos.txt (normally created by
+          # `make release-macos`, which doesn't run in CI). Build it from the
+          # notarized assets we actually have.
+          ( cd dist && for f in Nebo-*.dmg nebo-darwin-arm64 nebo-darwin-amd64; do [ -f "$f" ] && shasum -a 256 "$f"; done > checksums-macos.txt )
+          RELEASE_VERSION="${TAG#v}" TAG="$TAG" bash scripts/publish-macos.sh
 
   # ─── Linux desktop builds (Tauri 2 — WebKitGTK) ──────────────────────
   build-linux:
@@ -814,7 +836,11 @@ jobs:
   # ─── Update Homebrew cask (cross-repo) ────────────────────────────────
   update-homebrew:
     if: ${{ vars.HAS_TAP_TOKEN == 'true' }}
-    needs: release
+    # Must wait for notarize-macos: it saves the DMG cache this job reads, and
+    # `needs: release` alone raced it (release only waits on linux+windows), so
+    # the cache-restore missed and the cask never updated. When mac is built
+    # locally (BUILD_MACOS_IN_CI unset) notarize-macos is skipped and so is this.
+    needs: [release, notarize-macos]
     runs-on: ubuntu-latest
     steps:
       - name: Restore macOS DMGs

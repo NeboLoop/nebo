@@ -13,7 +13,7 @@ use std::sync::OnceLock;
 fn secret_patterns() -> &'static [(&'static str, Regex)] {
     static PATTERNS: OnceLock<Vec<(&str, Regex)>> = OnceLock::new();
     PATTERNS.get_or_init(|| {
-        let raw: [(&str, &str); 15] = [
+        let raw: [(&str, &str); 16] = [
             ("AWS Access Key", r#"AKIA[0-9A-Z]{16}"#),
             ("AWS Secret Key", r#"(?i)aws_secret_access_key\s*=\s*\S{20,}"#),
             ("OpenAI API Key", r#"sk-[A-Za-z0-9]{32,}"#),
@@ -29,6 +29,12 @@ fn secret_patterns() -> &'static [(&'static str, Regex)] {
             ("SendGrid Key", r#"SG\.[A-Za-z0-9\-_.]{22,}\.[A-Za-z0-9\-_.]{43}"#),
             ("npm Token", r#"npm_[A-Za-z0-9]{36}"#),
             ("Heroku API Key", r#"(?i)heroku.*[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"#),
+            // Labeled password/passphrase values ("wifi password: hunter2").
+            // Deliberately NOT included as labels: "code", "pin", "combo" —
+            // those are user codes a person memorizes (gate codes, bike-lock
+            // pins), not machine credentials, and must stay storable. "pwd" is
+            // excluded too (shell working-directory false positives).
+            ("Password", r#"(?i)\b(password|passwd|passphrase)\b\s*[:=]\s*\S{4,}"#),
         ];
         raw.iter()
             .filter_map(|(name, pat)| Regex::new(pat).ok().map(|r| (*name, r)))
@@ -46,6 +52,94 @@ pub fn detect_secret(text: &str) -> Option<&'static str> {
     secret_patterns()
         .iter()
         .find_map(|(name, re)| if re.is_match(text) { Some(*name) } else { None })
+}
+
+/// Minimum length for the high-entropy token check. Shannon entropy of an
+/// n-char string maxes at log2(n), so below ~24 chars the 4.5 threshold is
+/// unreachable anyway — the floor just makes the boundary explicit.
+const HIGH_ENTROPY_MIN_LEN: usize = 24;
+
+/// Bits/char threshold (detect-secrets' base64 default). Measured boundary:
+/// random mixed-case tokens clear it ("Xj9kLq2Vm8Zr4Tb7Nc1Pw5Ys0" ≈ 4.64);
+/// human-readable compounds do not ("Provo-Utah-84604-Building-7" ≈ 4.24,
+/// "Meeting-2026-07-22-agenda-notes" ≈ 3.65, "MyDropboxFolder2026Backup" ≈ 4.21).
+const HIGH_ENTROPY_THRESHOLD: f64 = 4.5;
+
+/// Shannon entropy in bits per character.
+fn shannon_entropy(s: &str) -> f64 {
+    let mut counts: std::collections::HashMap<char, f64> = std::collections::HashMap::new();
+    let mut len = 0f64;
+    for c in s.chars() {
+        *counts.entry(c).or_insert(0.0) += 1.0;
+        len += 1.0;
+    }
+    counts
+        .values()
+        .map(|&c| {
+            let p = c / len;
+            -p * p.log2()
+        })
+        .sum()
+}
+
+/// True when a whitespace-delimited token looks like a machine-generated
+/// secret: ≥24 chars of base64/url-safe charset, at least one digit, and
+/// Shannon entropy ≥ 4.5 bits/char.
+fn is_high_entropy_token(token: &str) -> bool {
+    let t = token.trim_matches(|c: char| matches!(c, '.' | ',' | ';' | ':' | '"' | '\'' | '(' | ')'));
+    if t.len() >= HIGH_ENTROPY_MIN_LEN
+        && t.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '/' | '=' | '_' | '-'))
+        && t.chars().any(|c| c.is_ascii_digit())
+        && shannon_entropy(t) >= HIGH_ENTROPY_THRESHOLD
+    {
+        return true;
+    }
+    // Dot-segmented compound tokens (SendGrid `SG.x.y`, JWT `a.b.c`): the dots
+    // break the contiguous-charset check above, so evaluate the segments —
+    // live-caught gap: a real SendGrid-shaped key stored verbatim. Segments
+    // must be strict base64url (no '/' or ':'), which keeps URLs and prose
+    // out: any scheme/path token fails the charset before entropy is measured.
+    let segments: Vec<&str> = t.split('.').collect();
+    if segments.len() >= 2 && t.len() >= HIGH_ENTROPY_MIN_LEN {
+        let all_base64url = segments.iter().all(|s| {
+            !s.is_empty()
+                && s.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '='))
+        });
+        if all_base64url {
+            let joined: String = segments.concat();
+            if joined.len() >= HIGH_ENTROPY_MIN_LEN
+                && joined.chars().any(|c| c.is_ascii_digit())
+                && shannon_entropy(&joined) >= HIGH_ENTROPY_THRESHOLD
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Credential-shape classification — ONE pattern list, two consumers
+/// (docs/plans/memory-rock-solid.md Phase 1): `stage0_reject` rejects matches
+/// outright on the inferred/extraction path, and the explicit memory store
+/// (`bot_tool::handle_memory`) ROUTES matches to the OS keychain instead of
+/// refusing. Returns the matched pattern name.
+///
+/// The documented boundary: structured API keys/tokens, labeled passwords,
+/// and high-entropy blobs ARE credentials; short human-memorable user codes
+/// ("4417-echo-9", "88-tango-4" — gate codes, bike-lock pins) are NOT — they
+/// fall below every length/entropy floor and carry no credential label.
+/// Unlabeled bare hex (commit SHAs ≈ 3.9 bits/char) also stays below the
+/// threshold on purpose: indistinguishable from checksums.
+pub fn classify_credential(text: &str) -> Option<&'static str> {
+    if let Some(name) = detect_secret(text) {
+        return Some(name);
+    }
+    if text.split_whitespace().any(is_high_entropy_token) {
+        return Some("high-entropy token");
+    }
+    None
 }
 
 /// Detect prompt injection attempts in text.
@@ -126,7 +220,7 @@ pub fn stage0_reject(key: &str, value: &str, explicit: bool) -> Option<&'static 
     let v = value.trim();
     let k = key.trim();
 
-    if contains_secret(v) {
+    if classify_credential(v).is_some() {
         return Some("secret");
     }
     if detect_prompt_injection(k) || detect_prompt_injection(v) {
@@ -288,6 +382,72 @@ mod tests {
                 "expected {key}={value} to pass"
             );
         }
+    }
+
+    // The credential-shape boundary (Phase 1 routing): API keys, labeled
+    // passwords, and high-entropy blobs classify; the access-code style
+    // values observed live ("4417-echo-9", "88-tango-4") must NOT — they are
+    // user codes a person memorizes, not machine secrets.
+    #[test]
+    fn test_classify_credential_positive() {
+        let cases: &[&str] = &[
+            "sk-abcdefghijklmnopqrstuvwxyz123456",
+            "AKIAIOSFODNN7EXAMPLE",
+            "ghp_x7Kq9mL2vR8zT4bN6cP1wY3sA5dF0gH2jK4l",
+            "wifi password: hunter2rocks",
+            "passphrase = correct-horse-battery-staple-9",
+            "Xj9kLq2Vm8Zr4Tb7Nc1Pw5Ys0",
+            "the deploy token is Xj9kLq2Vm8Zr4Tb7Nc1Pw5Ys0.",
+            // Dot-segmented compounds (live-caught gap): SendGrid + JWT shapes
+            "SG.kX9mPqR2vTn4wYz8.aB3cD5eF7gH1jK2LmN4pQ6rS8tU0vW9xY1zA3bC5d",
+            "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dQw4w9WgXcQ5eF7gH1jK2m",
+        ];
+        for v in cases {
+            assert!(classify_credential(v).is_some(), "expected credential: {v}");
+        }
+    }
+
+    #[test]
+    fn test_classify_credential_negative() {
+        let cases: &[&str] = &[
+            // live-observed user codes that must remain storable
+            "4417-echo-9",
+            "88-tango-4",
+            "The wine cellar access code is 4417-echo-9",
+            "Gate code is 88-tango-4, north entrance",
+            // human-readable compounds below the entropy threshold
+            "Meeting-2026-07-22-agenda-notes",
+            "Provo-Utah-84604-Building-7",
+            "MyDropboxFolder2026Backup",
+            "conference-room-building-seven",
+            // dotted but NOT credentials: URLs/hosts fail the strict-base64url
+            // segment charset (':' '/') or the entropy floor
+            "See https://docs.example.com/path/to/page for details",
+            "backup.server.internal",
+            "app.config.production.settings",
+            "version 2.7.1 released on schedule",
+            // bare hex (commit SHA shape) stays below on purpose
+            "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6",
+            // prose mentioning passwords without a labeled value
+            "User keeps all logins in a password manager",
+            "User prefers dark mode in all editors",
+        ];
+        for v in cases {
+            assert_eq!(classify_credential(v), None, "false positive: {v}");
+        }
+    }
+
+    // Extraction path: the expanded classification still rejects outright.
+    #[test]
+    fn test_stage0_rejects_labeled_password_and_high_entropy() {
+        assert_eq!(
+            stage0_reject("wifi", "wifi password: hunter2rocks", false),
+            Some("secret")
+        );
+        assert_eq!(
+            stage0_reject("blob", "Xj9kLq2Vm8Zr4Tb7Nc1Pw5Ys0", false),
+            Some("secret")
+        );
     }
 
     #[test]

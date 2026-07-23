@@ -173,6 +173,12 @@ pub trait DynTool: Send + Sync {
     fn is_concurrent_safe(&self, _input: &serde_json::Value) -> bool {
         false
     }
+    /// For MCP proxy tools: the `(integration_id, original tool name)` this
+    /// proxy forwards to — what the runner's approval gate uses to look up the
+    /// server's tri-state tool permissions. `None` for every built-in tool.
+    fn mcp_proxy_info(&self) -> Option<(String, String)> {
+        None
+    }
     fn execute_dyn<'a>(
         &'a self,
         ctx: &'a ToolContext,
@@ -427,6 +433,14 @@ impl Registry {
         cache.get(name).map(|def| def.description.clone())
     }
 
+    /// The `(integration_id, original tool name)` behind a registered MCP proxy
+    /// tool (`mcp__<server>__<tool>`), or `None` for any other tool. The runner's
+    /// approval gate uses this to resolve the server's tri-state tool permissions.
+    pub async fn mcp_proxy_info(&self, name: &str) -> Option<(String, String)> {
+        let tools = self.tools.read().await;
+        tools.get(name).and_then(|t| t.mcp_proxy_info())
+    }
+
     /// Check whether a tool call is safe to run concurrently with other tools.
     ///
     /// Returns `true` for read-only operations, `false` for writes/mutations.
@@ -612,7 +626,7 @@ impl Registry {
 
         // ── Phase 3: Re-acquire lock and execute ───────────────────
         let tools = self.tools.read().await;
-        match tools
+        let mut result = match tools
             .get(name)
             .or_else(|| tools.get(strip_mcp_prefix(name)))
         {
@@ -621,7 +635,21 @@ impl Registry {
                 "Tool '{}' was unregistered during permit acquisition",
                 name
             )),
+        };
+
+        // Registry-level output backstop (a hard MAX_TOOL_RESULT_BYTES ceiling).
+        // The runner has smarter preview/spill-to-file tiers well below this, so
+        // chat runs never hit it — it protects direct callers (deep research,
+        // workflows) from unbounded multi-MB results.
+        const MAX_RESULT_BYTES: usize = 400_000;
+        if result.content.len() > MAX_RESULT_BYTES {
+            let truncated = crate::truncate_str(&result.content, MAX_RESULT_BYTES);
+            result.content = format!(
+                "{}\n\n[output truncated at 400KB — re-run with a narrower scope]",
+                truncated
+            );
         }
+        result
     }
 
     /// Update the policy.
@@ -677,6 +705,7 @@ impl Registry {
             skill_loader,
             advisor_runner,
             hybrid_searcher,
+            None, // memory_embedder
             None, // structured_agent
             None, // workflow_manager
             None, // permissions
@@ -701,6 +730,7 @@ impl Registry {
         skill_loader: Option<Arc<crate::skills::Loader>>,
         advisor_runner: Option<Arc<dyn crate::bot_tool::AdvisorDeliberator>>,
         hybrid_searcher: Option<Arc<dyn crate::bot_tool::HybridSearcher>>,
+        memory_embedder: Option<Arc<dyn crate::bot_tool::MemoryEmbedder>>,
         structured_agent: Option<Arc<dyn crate::bot_tool::StructuredAgent>>,
         workflow_manager: Option<Arc<dyn crate::workflows::WorkflowManager>>,
         permissions: Option<&HashMap<String, bool>>,
@@ -768,6 +798,9 @@ impl Registry {
         }
         if let Some(searcher) = hybrid_searcher {
             agent_tool = agent_tool.with_hybrid_searcher(searcher);
+        }
+        if let Some(embedder) = memory_embedder {
+            agent_tool = agent_tool.with_memory_embedder(embedder);
         }
         if let Some(sa) = structured_agent {
             agent_tool = agent_tool.with_structured_agent(sa);
@@ -893,7 +926,7 @@ impl Registry {
         self.register_deferred(Box::new(crate::vm_tool::VmTool::new()))
             .await;
 
-        // Loop tool (NeboAI comms: dm, channel, group, topic) — requires "loop" permission.
+        // Loop tool (NeboAI comms: dm, channel, loop, topic) — requires "loop" permission.
         // The comm handle exists from startup; the real LoopTool's per-action
         // `is_connected()` check reflects the live connection state, so it is always
         // registered when the handle is available (even before NeboAI connects).
@@ -934,6 +967,10 @@ impl DynTool for McpProxyTool {
 
     fn requires_approval(&self) -> bool {
         true
+    }
+
+    fn mcp_proxy_info(&self) -> Option<(String, String)> {
+        Some((self.integration_id.clone(), self.original_name.clone()))
     }
 
     fn execute_dyn<'a>(
@@ -1002,6 +1039,35 @@ impl mcp::bridge::ProxyToolRegistry for Registry {
             });
         }
     }
+
+    fn tools_synced(&self, integration_id: &str, tool_names: &[String]) {
+        let store = match self.store.read().unwrap().as_ref() {
+            Some(s) => s.clone(),
+            None => {
+                warn!(
+                    integration = %integration_id,
+                    "cannot sync MCP tool permissions: store not set"
+                );
+                return;
+            }
+        };
+        let mut perms = crate::policy::McpServerPermissions::from_json(
+            store
+                .get_mcp_tool_permissions(integration_id)
+                .ok()
+                .flatten()
+                .as_deref(),
+        );
+        if perms.sync_tools(tool_names) {
+            if let Err(e) = store.set_mcp_tool_permissions(integration_id, &perms.to_json()) {
+                warn!(
+                    integration = %integration_id,
+                    error = %e,
+                    "failed to persist MCP tool permissions after sync"
+                );
+            }
+        }
+    }
 }
 
 // Tool→capability mapping and labels live in `crate::capabilities` — the single
@@ -1024,7 +1090,54 @@ fn strip_mcp_prefix(name: &str) -> &str {
     if parts.len() == 3 { parts[2] } else { name }
 }
 
-/// Resolve flat tool names (Claude Code convention) to STRAP tool + injected params.
+/// The canonical absolute paths an `os` file mutation would touch, or `None`
+/// when the call is anything else.
+///
+/// Returns `Some(paths)` only for the `os` tool with resolved resource "file"
+/// (via [`crate::os_tool::OsTool::resolved_resource`] — the same chain the
+/// approval gate, safeguards, and path scoping use) and a mutating action
+/// (write/edit/delete/move/copy). The target `path` is made absolute; for
+/// move/copy the destination (`destination`/`to`) is included too. A missing
+/// or unresolvable path yields `None` — callers must treat `None` as "not a
+/// path-scoped file mutation" and fall back to their conservative behavior.
+///
+/// Part of the concurrency surface alongside [`Registry::is_concurrent_safe`]:
+/// the runner's tool-call partition uses it to admit path-disjoint file
+/// mutations into the parallel phase.
+pub fn file_mutation_paths(
+    tool_name: &str,
+    input: &serde_json::Value,
+) -> Option<Vec<std::path::PathBuf>> {
+    if tool_name != "os" {
+        return None;
+    }
+    if crate::os_tool::OsTool::resolved_resource(input) != "file" {
+        return None;
+    }
+    let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
+    if !matches!(action, "write" | "edit" | "delete" | "move" | "copy") {
+        return None;
+    }
+    let path = input.get("path").and_then(|v| v.as_str()).unwrap_or("");
+    if path.is_empty() {
+        return None;
+    }
+    let mut paths = vec![std::path::absolute(std::path::Path::new(path)).ok()?];
+    if matches!(action, "move" | "copy") {
+        let dest = input
+            .get("destination")
+            .or_else(|| input.get("to"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if dest.is_empty() {
+            return None;
+        }
+        paths.push(std::path::absolute(std::path::Path::new(dest)).ok()?);
+    }
+    Some(paths)
+}
+
+/// Resolve flat tool names (the model-facing convention) to STRAP tool + injected params.
 /// Returns (strap_tool_name, params_to_inject) or None if not a known alias.
 fn resolve_flat_alias(name: &str) -> Option<(String, Vec<(String, serde_json::Value)>)> {
     let lc = name.to_lowercase();
@@ -1155,6 +1268,46 @@ mod tests {
     }
 
     #[test]
+    fn test_file_mutation_paths() {
+        // Write with explicit resource → its absolute path.
+        let write = serde_json::json!({"resource": "file", "action": "write", "path": "/a/b.txt"});
+        assert_eq!(
+            file_mutation_paths("os", &write),
+            Some(vec![std::path::PathBuf::from("/a/b.txt")])
+        );
+
+        // Inferred resource (write → file) works without an explicit resource.
+        let inferred = serde_json::json!({"action": "write", "path": "/a/b.txt"});
+        assert!(file_mutation_paths("os", &inferred).is_some());
+
+        // Move includes the destination.
+        let mv = serde_json::json!({
+            "resource": "file", "action": "move", "path": "/a/b.txt", "destination": "/c/d.txt"
+        });
+        assert_eq!(
+            file_mutation_paths("os", &mv),
+            Some(vec![
+                std::path::PathBuf::from("/a/b.txt"),
+                std::path::PathBuf::from("/c/d.txt")
+            ])
+        );
+
+        // Move without a destination is unparseable → None.
+        let mv_no_dest =
+            serde_json::json!({"resource": "file", "action": "move", "path": "/a/b.txt"});
+        assert_eq!(file_mutation_paths("os", &mv_no_dest), None);
+
+        // Reads, shell calls, missing paths, and non-os tools are all None.
+        let read = serde_json::json!({"resource": "file", "action": "read", "path": "/a/b.txt"});
+        assert_eq!(file_mutation_paths("os", &read), None);
+        let shell = serde_json::json!({"resource": "shell", "action": "exec", "command": "ls"});
+        assert_eq!(file_mutation_paths("os", &shell), None);
+        let no_path = serde_json::json!({"resource": "file", "action": "write"});
+        assert_eq!(file_mutation_paths("os", &no_path), None);
+        assert_eq!(file_mutation_paths("web", &write), None);
+    }
+
+    #[test]
     fn test_tool_correction() {
         assert!(tool_correction("read").contains("os"));
         assert!(tool_correction("bash").contains("os"));
@@ -1167,5 +1320,52 @@ mod tests {
         assert!(tool_correction("unknown_tool").contains("skill(action: \"discover\""));
         assert!(tool_correction("unknown_tool").contains("tool_search"));
         assert!(tool_correction("mcp__server__tool").contains("mcp(server:"));
+    }
+
+    /// Drift guard for the tool-rename class (TD-001, capability vocabulary,
+    /// the bot() steering sweep): source strings that teach the model a
+    /// deprecated tool name send it into the correction path, wasting a turn.
+    /// Scans this crate and nebo-agent for deprecated call shapes.
+    #[test]
+    fn no_deprecated_tool_calls_in_model_facing_strings() {
+        // Patterns assembled with concat! so this test file never matches itself.
+        const DEPRECATED: &[&str] = &[
+            concat!("bot", "(resource"),
+            concat!("bot", "(action"),
+            concat!("system", "(resource"),
+            concat!("system", "(action"),
+            concat!("desktop", "(resource"),
+            concat!("desktop", "(action"),
+        ];
+        fn scan(dir: &std::path::Path, hits: &mut Vec<String>) {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    scan(&path, hits);
+                } else if matches!(
+                    path.extension().and_then(|e| e.to_str()),
+                    Some("rs" | "md" | "txt")
+                ) {
+                    let content = std::fs::read_to_string(&path).unwrap_or_default();
+                    for pat in DEPRECATED {
+                        if content.contains(pat) {
+                            hits.push(format!("{}: contains `{}`", path.display(), pat));
+                        }
+                    }
+                }
+            }
+        }
+        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut hits = Vec::new();
+        scan(&manifest.join("src"), &mut hits);
+        scan(&manifest.join("../agent/src"), &mut hits);
+        assert!(
+            hits.is_empty(),
+            "deprecated tool names in model-facing strings (use agent/os):\n{}",
+            hits.join("\n")
+        );
     }
 }

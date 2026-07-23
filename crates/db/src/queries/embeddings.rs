@@ -79,6 +79,39 @@ impl Store {
         Ok(())
     }
 
+    /// Delete every chunk for a memory (embeddings follow via the
+    /// `memory_embeddings.chunk_id ON DELETE CASCADE` FK; the FTS index follows
+    /// via the `memory_chunks_ad` trigger). Used by the embedding backfill to
+    /// clear orphaned unembedded chunks before re-chunking.
+    pub fn delete_chunks_for_memory(&self, memory_id: i64) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "DELETE FROM memory_chunks WHERE memory_id = ?1",
+            params![memory_id],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Distinct memory-scope user ids with at least one stored embedding under
+    /// `model` — the boot index prewarm builds one ANN index per entry.
+    pub fn list_embedding_user_ids(&self, model: &str) -> Result<Vec<String>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT DISTINCT mc.user_id
+                 FROM memory_embeddings me
+                 JOIN memory_chunks mc ON mc.id = me.chunk_id
+                 WHERE me.model = ?1",
+            )
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map(params![model], |row| row.get(0))
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
     /// Get all embeddings for a user and model.
     /// Returns (chunk_id, embedding_blob) pairs.
     pub fn get_all_embeddings_by_user(
@@ -98,6 +131,39 @@ impl Store {
         let rows = stmt
             .query_map(params![user_id, model], |row| {
                 Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
+            })
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
+    /// All memory-level embeddings for ONE exact user scope under `model`:
+    /// `(memory_id, memory key, embedding blob)` rows. Exact `user_id` match —
+    /// never a scope chain — so the write-time contradiction check can only
+    /// ever compare within a single isolation scope (a `:ctx:` scope never
+    /// sees a sibling's vectors). Transcript chunks (NULL memory_id) excluded.
+    pub fn list_memory_embeddings_by_user(
+        &self,
+        user_id: &str,
+        model: &str,
+    ) -> Result<Vec<(i64, String, Vec<u8>)>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT mc.memory_id, m.key, me.embedding
+                 FROM memory_embeddings me
+                 JOIN memory_chunks mc ON mc.id = me.chunk_id
+                 JOIN memories m ON m.id = mc.memory_id
+                 WHERE mc.user_id = ?1 AND me.model = ?2",
+            )
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map(params![user_id, model], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Vec<u8>>(2)?,
+                ))
             })
             .map_err(|e| NeboError::Database(e.to_string()))?;
         rows.collect::<Result<Vec<_>, _>>()

@@ -154,7 +154,7 @@ export function attachWebSocketListeners(): void {
   unsubs.push(
     ws.onStatus((status) => {
       if (status === 'error') {
-        addToast('WebSocket connection lost. Reconnecting...', 'warning');
+        addToast('Connection lost — reconnecting…', 'warning');
       }
     })
   );

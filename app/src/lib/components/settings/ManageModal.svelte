@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { t } from 'svelte-i18n';
   import type { Snippet } from 'svelte';
   import X from 'lucide-svelte/icons/x';
 
@@ -44,7 +45,7 @@
           {/if}
         </div>
       </div>
-      <button class="btn btn-ghost btn-sm btn-square" onclick={onClose} aria-label="Close">
+      <button class="btn btn-ghost btn-sm btn-square" onclick={onClose} aria-label={$t('common.close')}>
         <X class="w-4 h-4" />
       </button>
     </div>

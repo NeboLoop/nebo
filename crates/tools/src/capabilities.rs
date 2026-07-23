@@ -104,7 +104,7 @@ pub fn gating_capability(tool: &str, input: &Value) -> Option<&'static str> {
         // capability would block a file move). Ungated: the agent's shell retry
         // gets the correct (Shell) ask.
         "os" if OsTool::is_file_mgmt_redirect(input) => None,
-        "os" => Some(os_capability(input)),
+        "os" => os_capability(input),
         "organizer" => match input.get("resource").and_then(|v| v.as_str()) {
             Some("contacts") => Some("contacts"),
             // mail / calendar / reminders: not behind a coarse toggle
@@ -137,32 +137,23 @@ pub fn whole_tool_capability(tool: &str) -> Option<&'static str> {
 /// is off. Resolve the specific capability from the resource, inferring it from
 /// the action when the model omits `resource` (reusing the tool's own
 /// inference so the gate and the dispatch agree).
-fn os_capability(input: &Value) -> &'static str {
-    let resource = input
-        .get("resource")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| {
-            let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
-            let inferred = OsTool::infer_resource(action);
-            if inferred.is_empty() {
-                OsTool::infer_resource_from_context(input).to_string()
-            } else {
-                inferred.to_string()
-            }
-        });
-
-    match resource.as_str() {
-        "file" => "file",
-        "shell" => "shell",
+fn os_capability(input: &Value) -> Option<&'static str> {
+    match OsTool::resolved_resource(input) {
+        "file" => Some("file"),
+        "shell" => Some("shell"),
         // System information & settings.
-        "settings" | "keychain" | "platform" | "system" => "system",
+        "settings" | "keychain" | "platform" | "system" => Some("system"),
         // Screen / camera / microphone capture.
-        "capture" | "screenshot" | "see" => "media",
+        "capture" | "screenshot" | "see" => Some("media"),
+        // Organizer resources reachable through the os tool — gate exactly like
+        // the `organizer` tool arm above (they were wrongly swallowed by the
+        // desktop catch-all): contacts has its own toggle, the rest are not
+        // behind a coarse toggle.
+        "contacts" => Some("contacts"),
+        "mail" | "calendar" | "reminders" => None,
         // Everything else is desktop control: input, window, ui, menu, dialog,
         // clipboard, space, shortcut, dock, tts, music, app, notification.
-        _ => "desktop",
+        _ => Some("desktop"),
     }
 }
 

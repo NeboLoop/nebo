@@ -8,6 +8,7 @@
   toast, so the run hung with no way to answer). FIFO queue — one modal at a time.
 -->
 <script lang="ts">
+  import { t } from 'svelte-i18n';
   import ApprovalModal from '$lib/components/ApprovalModal.svelte';
   import { onWsEvent } from '$lib/websocket/subscribe';
   import { getWebSocketClient } from '$lib/websocket/client';
@@ -53,7 +54,7 @@
       const { actionType, actionDetail } = describe(d.tool ?? '', d.input);
       queue = [
         ...queue,
-        { requestId: d.request_id, agent: d.agentName ?? 'Your agent', actionType, actionDetail },
+        { requestId: d.request_id, agent: d.agentName ?? $t('components.approvalGate.yourAgent'), actionType, actionDetail },
       ];
     }
   );

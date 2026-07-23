@@ -1,6 +1,7 @@
 <script lang="ts">
   import SettingsHeader from '$lib/components/settings/SettingsHeader.svelte';
   import { onMount } from 'svelte';
+  import { t } from 'svelte-i18n';
   import KeyRound from 'lucide-svelte/icons/key-round';
   import Plus from 'lucide-svelte/icons/plus';
   import Trash2 from 'lucide-svelte/icons/trash-2';
@@ -31,13 +32,13 @@
   let isAdding = $state(false);
   let addError = $state('');
 
-  const providerOptions = [
-    { value: 'anthropic', label: 'Anthropic (Claude)' },
-    { value: 'openai', label: 'OpenAI (GPT)' },
-    { value: 'google', label: 'Google (Gemini)' },
-    { value: 'deepseek', label: 'DeepSeek' },
-    { value: 'ollama', label: 'Ollama (Local)' },
-  ];
+  const providerOptions = $derived([
+    { value: 'anthropic', label: $t('settingsProviders.providerOptions.anthropic') },
+    { value: 'openai', label: $t('settingsProviders.providerOptions.openai') },
+    { value: 'google', label: $t('settingsProviders.providerOptions.google') },
+    { value: 'deepseek', label: $t('settingsProviders.providerOptions.deepseek') },
+    { value: 'ollama', label: $t('settingsProviders.providerOptions.ollama') },
+  ]);
 
   const localProviderTypes = new Set(['ollama']);
   const isLocalProvider = $derived(newProvider.provider === 'ollama');
@@ -115,7 +116,7 @@
       const resp = await api.listProviders();
       providers = resp.profiles || [];
     } catch (err: any) {
-      error = err?.message || 'Failed to load providers';
+      error = err?.message || $t('settingsProviders.loadFailed');
     } finally { loading = false; }
   }
 
@@ -136,7 +137,7 @@
       const resp = await api.testProvider(id);
       testResult = { id, success: resp.success, message: resp.message };
     } catch (err: any) {
-      testResult = { id, success: false, message: err?.message || 'Test failed' };
+      testResult = { id, success: false, message: err?.message || $t('settingsMcp.testFailed') };
     } finally { testingId = null; }
   }
 
@@ -157,7 +158,7 @@
       }
     } catch (err: any) {
       profile.isActive = !newActive;
-      error = err?.message || 'Toggle failed';
+      error = err?.message || $t('settingsProviders.toggleFailedShort');
     }
   }
 
@@ -173,7 +174,7 @@
       await api.updateModel(providerType, model.id, { active: newActive });
     } catch (err: any) {
       model.isActive = !newActive;
-      error = err?.message || 'Update failed';
+      error = err?.message || $t('settingsProviders.updateFailedShort');
     }
   }
 
@@ -185,26 +186,26 @@
       await api.updateCliProvider(cli.id, { active: newActive });
     } catch (err: any) {
       cli.active = !newActive;
-      error = err?.message || 'CLI update failed';
+      error = err?.message || $t('settingsProviders.cliUpdateFailedShort');
     }
   }
 
   async function deleteProviderById(id: string) {
-    if (!confirm('Are you sure you want to remove this provider?')) return;
+    if (!confirm($t('settingsProviders.removeConfirm'))) return;
     try {
       const api = await import('$lib/api/nebo');
       await api.deleteProvider(id);
       await loadProviders();
       await loadModels();
     } catch (err: any) {
-      error = err?.message || 'Delete failed';
+      error = err?.message || $t('settingsProviders.deleteFailedShort');
     }
   }
 
   function openAddModal(providerType?: string) {
     if (providerType) {
       const label = providerOptions.find(p => p.value === providerType)?.label || providerType;
-      newProvider = { name: `My ${label}`, provider: providerType, apiKey: '', baseUrl: '' };
+      newProvider = { name: $t('settingsProviders.defaultName', { values: { label } }), provider: providerType, apiKey: '', baseUrl: '' };
     } else {
       newProvider = { name: '', provider: 'anthropic', apiKey: '', baseUrl: '' };
     }
@@ -219,8 +220,8 @@
   }
 
   async function addProvider() {
-    if (!newProvider.name) { addError = 'Name is required'; return; }
-    if (!isLocalProvider && !newProvider.apiKey) { addError = 'API key is required'; return; }
+    if (!newProvider.name) { addError = $t('settingsProviders.nameRequired'); return; }
+    if (!isLocalProvider && !newProvider.apiKey) { addError = $t('settingsProviders.apiKeyRequired'); return; }
 
     isAdding = true;
     addError = '';
@@ -236,17 +237,17 @@
       await loadModels();
       closeAddModal();
     } catch (err: any) {
-      addError = err?.message || 'Failed to add provider';
+      addError = err?.message || $t('settingsProviders.addFailed');
     } finally { isAdding = false; }
   }
 </script>
 
-<SettingsHeader title="Providers" description="Configure LLM providers, API keys, and model availability." />
+<SettingsHeader title={$t('settingsProviders.title')} description={$t('settingsProviders.pageDescription')} />
 
 {#if loading}
   <div class="flex items-center justify-center gap-3 py-16">
     <Spinner size={20} />
-    <span class="text-xs text-base-content/50">Loading providers...</span>
+    <span class="text-xs text-base-content/50">{$t('settingsProviders.loadingProviders')}</span>
   </div>
 {:else}
   <div class="flex flex-col gap-6">
@@ -260,8 +261,8 @@
       <div class="rounded-lg border border-base-content/5 bg-base-100 p-4">
         {#if janusStatus?.connected}
           <div class="flex items-center justify-between mb-3">
-            <span class="text-sm font-medium">NeboAI AI</span>
-            <a href="/settings/usage" class="text-xs text-primary hover:brightness-110 transition-all">View Usage</a>
+            <span class="text-sm font-medium">{$t('settingsProviders.neboaiAI')}</span>
+            <a href="/settings/usage" class="text-xs text-primary hover:brightness-110 transition-all">{$t('settingsProviders.viewUsageLabel')}</a>
           </div>
           {#if janusModels().length > 0}
             <div class="flex flex-col gap-1.5">
@@ -269,7 +270,7 @@
                 <div class="flex items-center justify-between py-1.5 px-3 rounded-md bg-base-200/50">
                   <span class="text-sm">{janusDisplayName(model)}</span>
                   <div class="flex items-center gap-3">
-                    <span class="text-xs text-base-content/50 font-mono">{model.contextWindow?.toLocaleString() || '?'} ctx</span>
+                    <span class="text-xs text-base-content/50 font-mono">{$t('settingsProviders.contextWindow', { values: { count: model.contextWindow?.toLocaleString() || '?' } })}</span>
                     <input type="checkbox" class="toggle toggle-sm toggle-primary" checked={model.isActive} onchange={() => toggleModel('janus', model)} />
                   </div>
                 </div>
@@ -279,10 +280,10 @@
         {:else}
           <div class="flex items-center justify-between">
             <div>
-              <span class="text-sm font-medium">Not connected</span>
-              <p class="text-xs text-base-content/50 mt-0.5">Connect to NeboAI for managed AI models.</p>
+              <span class="text-sm font-medium">{$t('settingsProviders.notConnected')}</span>
+              <p class="text-xs text-base-content/50 mt-0.5">{$t('settingsProviders.connectManaged')}</p>
             </div>
-            <a href="/settings/account" class="text-xs font-medium text-primary hover:brightness-110 transition-all">Connect</a>
+            <a href="/settings/account" class="text-xs font-medium text-primary hover:brightness-110 transition-all">{$t('oauth.connect')}</a>
           </div>
         {/if}
       </div>
@@ -291,7 +292,7 @@
     <!-- CLI Providers -->
     {#if cliProviders.length > 0}
       <section>
-        <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-2">CLI Providers</div>
+        <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-2">{$t('settingsProviders.cliProviders')}</div>
         <div class="rounded-lg border border-base-content/5 bg-base-100 p-4">
           <div class="flex flex-col gap-2">
             {#each cliProviders as cli (cli.id)}
@@ -315,7 +316,7 @@
     {#if localProvs.length > 0}
       <section>
         <div class="flex items-center justify-between mb-2">
-          <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">Local Models</div>
+          <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('settingsProviders.localModels')}</div>
           <button
             type="button"
             class="flex items-center gap-1 text-xs text-base-content/50 hover:text-primary transition-colors cursor-pointer"
@@ -327,7 +328,7 @@
               finally { discovering = false; }
             }}
           >
-            <RefreshCw class="w-3 h-3 {discovering ? 'animate-spin' : ''}" /> Discover
+            <RefreshCw class="w-3 h-3 {discovering ? 'animate-spin' : ''}" /> {$t('settingsProviders.discover')}
           </button>
         </div>
         {#each localProvs as prov (prov.type)}
@@ -337,9 +338,9 @@
               <span class="text-sm font-medium">{prov.label}</span>
             </div>
             {#if prov.configured}
-              <p class="text-xs text-base-content/50 ml-4 mb-3">{prov.models.length} model{prov.models.length !== 1 ? 's' : ''} detected</p>
+              <p class="text-xs text-base-content/50 ml-4 mb-3">{prov.models.length === 1 ? $t('settingsProviders.modelDetectedCount', { values: { count: prov.models.length } }) : $t('settingsProviders.modelsDetectedCount', { values: { count: prov.models.length } })}</p>
             {:else}
-              <p class="text-xs text-base-content/50 ml-4 mb-3">Ollama not detected. Make sure it's running.</p>
+              <p class="text-xs text-base-content/50 ml-4 mb-3">{$t('settingsProviders.ollamaNotRunning')}</p>
             {/if}
             {#if prov.configured && prov.models.length > 0}
               <div class="flex flex-col gap-1.5">
@@ -347,7 +348,7 @@
                   <div class="flex items-center justify-between py-1.5 px-3 rounded-md bg-base-200/50">
                     <span class="text-sm">{model.displayName}</span>
                     <div class="flex items-center gap-3">
-                      <span class="text-xs text-base-content/50 font-mono">{model.contextWindow?.toLocaleString() || '?'} ctx</span>
+                      <span class="text-xs text-base-content/50 font-mono">{$t('settingsProviders.contextWindow', { values: { count: model.contextWindow?.toLocaleString() || '?' } })}</span>
                       <input type="checkbox" class="toggle toggle-sm toggle-primary" checked={model.isActive} onchange={() => toggleModel(prov.type, model)} />
                     </div>
                   </div>
@@ -362,13 +363,13 @@
     <!-- API Key Providers -->
     <section>
       <div class="flex items-center justify-between mb-2">
-        <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">API Key Providers</div>
+        <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('settingsProviders.apiKeyProviders')}</div>
         <button
           type="button"
           class="flex items-center gap-1 text-xs text-base-content/50 hover:text-primary transition-colors cursor-pointer"
           onclick={() => openAddModal()}
         >
-          <Plus class="w-3.5 h-3.5" /> Add Provider
+          <Plus class="w-3.5 h-3.5" /> {$t('settingsProviders.addProviderModal')}
         </button>
       </div>
 
@@ -396,7 +397,7 @@
                     onclick={() => testProvider(prov.profile!.id)}
                     disabled={testingId === prov.profile.id}
                   >
-                    {#if testingId === prov.profile.id}<Spinner size={14} />{:else}Test{/if}
+                    {#if testingId === prov.profile.id}<Spinner size={14} />{:else}{$t('settingsProviders.test')}{/if}
                   </button>
                   <input type="checkbox" class="toggle toggle-sm toggle-primary" checked={prov.profile.isActive} onchange={() => toggleProvider(prov.profile!)} />
                   <button
@@ -412,7 +413,7 @@
                     class="text-xs font-medium text-base-content/50 hover:text-primary transition-colors cursor-pointer"
                     onclick={() => openAddModal(prov.type)}
                   >
-                    Add Key
+                    {$t('settingsProviders.addKeyLabel')}
                   </button>
                 {/if}
               </div>
@@ -426,7 +427,7 @@
                   <div class="flex items-center justify-between py-1.5 px-3 rounded-md bg-base-200/50 {!providerActive ? 'opacity-50' : ''}">
                     <span class="text-sm">{model.displayName}</span>
                     <div class="flex items-center gap-3">
-                      <span class="text-xs text-base-content/50 font-mono">{model.contextWindow?.toLocaleString() || '?'} ctx</span>
+                      <span class="text-xs text-base-content/50 font-mono">{$t('settingsProviders.contextWindow', { values: { count: model.contextWindow?.toLocaleString() || '?' } })}</span>
                       <input
                         type="checkbox"
                         class="toggle toggle-sm toggle-primary"
@@ -453,7 +454,7 @@
     <div class="relative bg-base-100 rounded-xl border border-base-300 shadow-lg w-full max-w-lg" role="dialog" aria-modal="true">
       <!-- Header -->
       <div class="flex items-center justify-between px-5 py-4 border-b border-base-content/10">
-        <h3 class="text-base font-semibold">Add Provider</h3>
+        <h3 class="text-base font-semibold">{$t('settingsProviders.addProviderModal')}</h3>
         <button type="button" onclick={closeAddModal} class="text-base-content/50 hover:text-base-content transition-colors cursor-pointer">
           <X class="w-4 h-4" />
         </button>
@@ -461,7 +462,7 @@
       <!-- Body -->
       <div class="px-5 py-5 flex flex-col gap-4">
         <div>
-          <label class="text-xs font-medium text-base-content/70 mb-1 block" for="provider-type">Provider</label>
+          <label class="text-xs font-medium text-base-content/70 mb-1 block" for="provider-type">{$t('settingsApps.provider')}</label>
           <select id="provider-type" bind:value={newProvider.provider} class="select select-bordered w-full select-sm">
             {#each providerOptions as opt}
               <option value={opt.value}>{opt.label}</option>
@@ -469,20 +470,20 @@
           </select>
         </div>
         <div>
-          <label class="text-xs font-medium text-base-content/70 mb-1 block" for="provider-name">Name</label>
-          <input id="provider-name" type="text" bind:value={newProvider.name} placeholder="e.g. My Anthropic" class="input input-bordered input-sm w-full" />
+          <label class="text-xs font-medium text-base-content/70 mb-1 block" for="provider-name">{$t('settingsProviders.nameLabel')}</label>
+          <input id="provider-name" type="text" bind:value={newProvider.name} placeholder={$t('settingsProviders.namePlaceholderExample')} class="input input-bordered input-sm w-full" />
         </div>
         {#if !isLocalProvider}
           <div>
-            <label class="text-xs font-medium text-base-content/70 mb-1 block" for="api-key">API Key</label>
-            <input id="api-key" type="password" bind:value={newProvider.apiKey} placeholder="sk-..." class="input input-bordered input-sm w-full font-mono" />
+            <label class="text-xs font-medium text-base-content/70 mb-1 block" for="api-key">{$t('onboarding.apiKey.apiKeyLabel')}</label>
+            <input id="api-key" type="password" bind:value={newProvider.apiKey} placeholder={$t('settingsProviders.apiKeyPlaceholder')} class="input input-bordered input-sm w-full font-mono" />
           </div>
         {/if}
         {#if isLocalProvider}
           <div>
-            <label class="text-xs font-medium text-base-content/70 mb-1 block" for="base-url">Base URL <span class="font-normal text-base-content/40">(optional)</span></label>
-            <input id="base-url" type="text" bind:value={newProvider.baseUrl} placeholder="http://localhost:11434" class="input input-bordered input-sm w-full font-mono" />
-            <p class="text-xs text-base-content/40 mt-1">Defaults to http://localhost:11434 if not set.</p>
+            <label class="text-xs font-medium text-base-content/70 mb-1 block" for="base-url">{$t('settingsProviders.baseUrlLabel')} <span class="font-normal text-base-content/40">({$t('common.optional')})</span></label>
+            <input id="base-url" type="text" bind:value={newProvider.baseUrl} placeholder={$t('settingsProviders.baseUrlPlaceholder')} class="input input-bordered input-sm w-full font-mono" />
+            <p class="text-xs text-base-content/40 mt-1">{$t('settingsProviders.baseUrlHint')}</p>
           </div>
         {/if}
         {#if addError}
@@ -491,9 +492,9 @@
       </div>
       <!-- Footer -->
       <div class="flex items-center justify-end gap-2 px-5 py-4 border-t border-base-content/10">
-        <button type="button" class="btn btn-ghost btn-sm" onclick={closeAddModal}>Cancel</button>
+        <button type="button" class="btn btn-ghost btn-sm" onclick={closeAddModal}>{$t('common.cancel')}</button>
         <button type="button" class="btn btn-primary btn-sm" onclick={addProvider} disabled={isAdding}>
-          {#if isAdding}<Spinner size={14} /> Adding...{:else}Add Provider{/if}
+          {#if isAdding}<Spinner size={14} /> {$t('settingsProviders.adding')}{:else}{$t('settingsProviders.addProviderModal')}{/if}
         </button>
       </div>
     </div>

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { getContext, onMount, onDestroy } from 'svelte';
+  import { t } from 'svelte-i18n';
   import { page } from '$app/stores';
   import ChatPane from '$lib/components/chat/ChatPane.svelte';
   import type { AgentPageContext, EnrichedChat } from '$lib/types/agentPage';
@@ -98,7 +99,7 @@
     const ws = getWebSocketClient();
     activeRunUnsubs.push(ws.on<{ agentId?: string; session_id?: string; error?: string }>('chat_error', (data) => {
       if (!isFirstRunEvent(data)) return;
-      const message = data.error || 'Something went wrong.';
+      const message = data.error || $t('chat.somethingWentWrong');
       // Survive a remount: keep pending-send + stash the error so a new page
       // instance can restore the bubble and the provider banner.
       sessionStorage.setItem(pendingErrorKey(initialThreadId), message);
@@ -221,6 +222,25 @@
   /** Parse raw API messages into ChatMessage[] for the controller. */
   function parseMessages(rawMessages: ApiChatMessage[]): ChatMessage[] {
     const result: ChatMessage[] = [];
+    // Tool results live on the tool-role rows, keyed by tool_call_id; join them
+    // up front so history reloads show real Request/Response like live streams.
+    const resultsById = new Map<string, string>();
+    for (const m of rawMessages) {
+      if (!m.toolResults) continue;
+      try {
+        const arr = JSON.parse(m.toolResults);
+        if (Array.isArray(arr)) {
+          for (const r of arr) {
+            if (r?.tool_call_id) {
+              resultsById.set(
+                r.tool_call_id,
+                typeof r.content === 'string' ? r.content : JSON.stringify(r.content, null, 2)
+              );
+            }
+          }
+        }
+      } catch {}
+    }
     for (const m of rawMessages) {
       let meta: MessageMeta | null = null;
       if (m.metadata) {
@@ -257,7 +277,16 @@
         bubbles.push(b);
         return b;
       };
-      const pushTool = (target: AssistantMsg, tc: ToolCallMeta) => {
+      // The message-level toolCalls column carries the call ids (metadata
+      // toolCalls doesn't) — index-aligned, both persisted in call order.
+      let callIds: string[] = [];
+      if (m.toolCalls) {
+        try {
+          const arr = JSON.parse(m.toolCalls);
+          if (Array.isArray(arr)) callIds = arr.map((c) => c?.id ?? '');
+        } catch {}
+      }
+      const pushTool = (target: AssistantMsg, tc: ToolCallMeta, callIdx: number) => {
         const request = parseToolInput(tc.input);
         (target.tools ??= []).push({
           // Raw name so the display formats the signature; persisted records carry
@@ -266,7 +295,7 @@
           label: toolDisplayName(tc.name || 'tool', request),
           status: tc.status === 'error' ? 'error' : 'success',
           request,
-          response: '',
+          response: resultsById.get(callIds[callIdx] ?? '') ?? '',
         });
       };
 
@@ -279,12 +308,12 @@
             else cur.content = cur.content ? `${cur.content}\n${text}` : text;
           } else if (block.type === 'tool' && block.toolCallIndex != null) {
             const tc = toolCalls[block.toolCallIndex];
-            if (tc) { if (!cur) cur = newBubble(''); pushTool(cur, tc); }
+            if (tc) { if (!cur) cur = newBubble(''); pushTool(cur, tc, block.toolCallIndex); }
           }
         }
       } else if (toolCalls.length) {
         cur = newBubble(m.content || '');
-        for (const tc of toolCalls) pushTool(cur, tc);
+        toolCalls.forEach((tc, i) => { pushTool(cur!, tc, i); });
       } else if (m.content) {
         cur = newBubble(m.content);
       }
@@ -356,11 +385,11 @@
 
 <ChatPane
   messages={chat.messages}
-  agentName={agent?.name ?? 'Agent'}
+  agentName={agent?.name ?? $t('common.agent')}
   agentId={agentId}
   {threadId}
-  headerTitle={thread?.name ?? 'Thread'}
-  headerRight="Work"
+  headerTitle={thread?.name ?? $t('chat.thread')}
+  headerRight={$t('chat.work')}
   allAgents={chat.allAgents}
   tokenUsage={chat.tokenUsage}
   quotaWarning={chat.quotaWarning}

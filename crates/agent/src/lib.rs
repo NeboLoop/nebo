@@ -8,6 +8,7 @@ pub mod decompose;
 pub mod dedupe;
 pub mod memory_consolidation;
 pub mod fuzzy;
+pub mod goals;
 pub mod hooks;
 pub mod keyparser;
 pub mod lanes;
@@ -36,6 +37,13 @@ pub mod task_graph;
 pub mod tool_filter;
 pub mod testing;
 pub mod transcript;
+
+// Link the BLAS provider for turbovec's ndarray backend: blas-src's contract
+// requires a crate in the graph to reference it, or rustc drops the rlib and
+// its `-framework Accelerate` directive, leaving cblas_* undefined at link
+// time in artifacts (like test binaries) that don't pull Accelerate elsewhere.
+#[cfg(target_os = "macos")]
+use blas_src as _;
 
 pub use agent_worker::{AgentWorkerRegistry, ChannelDispatcher};
 pub use concurrency::ConcurrencyController;

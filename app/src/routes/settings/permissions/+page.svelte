@@ -1,6 +1,7 @@
 <script lang="ts">
   import SettingsHeader from '$lib/components/settings/SettingsHeader.svelte';
   import { onMount } from 'svelte';
+  import { t } from 'svelte-i18n';
   import ApprovalModal from '$lib/components/ApprovalModal.svelte';
   import AlertTriangle from 'lucide-svelte/icons/alert-triangle';
   import Eye from 'lucide-svelte/icons/eye';
@@ -108,22 +109,22 @@
   }
 </script>
 
-<SettingsHeader title="Permissions" description="Control what your agent can access and do." />
+<SettingsHeader title={$t('settingsPermissions.title')} description={$t('settingsPermissions.pageDescription')} />
 
 <!-- Full Access -->
 <div class="flex items-center justify-between p-4 rounded-xl border border-base-300 mb-7">
   <div>
     <div class="text-sm font-semibold flex items-center gap-2">
       {#if fullAccess}<AlertTriangle class="w-4 h-4 text-warning" />{/if}
-      Full Access
+      {$t('settingsPermissions.fullAccess')}
     </div>
-    <div class="text-xs text-base-content/70">The agent will execute all tools without asking for permission.</div>
+    <div class="text-xs text-base-content/70">{$t('settingsPermissions.fullAccessDesc')}</div>
   </div>
   <button
     type="button"
     role="switch"
     aria-checked={fullAccess}
-    aria-label="Full Access"
+    aria-label={$t('settingsPermissions.fullAccess')}
     class="relative inline-flex h-5 w-8 shrink-0 cursor-pointer items-center rounded-full transition-colors {fullAccess ? 'bg-primary' : 'bg-base-300'}"
     onclick={handleFullAccessToggle}
   >
@@ -135,13 +136,13 @@
 
 {#if fullAccess}
   <div class="rounded-xl bg-warning/10 border border-warning/20 px-4 py-3 mb-7">
-    <p class="text-xs text-warning font-medium">Full Access is active</p>
-    <p class="text-xs text-base-content/70 mt-0.5">All approval prompts are bypassed. Make sure you trust the prompts you're sending.</p>
+    <p class="text-xs text-warning font-medium">{$t('settingsPermissions.fullAccessActive')}</p>
+    <p class="text-xs text-base-content/70 mt-0.5">{$t('settingsPermissions.autonomousActiveDesc')}</p>
   </div>
 {/if}
 
 <!-- Capabilities -->
-<h3 class="text-sm font-semibold mb-3">Capabilities</h3>
+<h3 class="text-sm font-semibold mb-3">{$t('settingsPermissions.capabilities')}</h3>
 <div class="divide-y divide-base-content/10 mb-7">
   {#each permissions as perm}
     <div class="flex items-center justify-between py-3.5">
@@ -162,8 +163,8 @@
 
 <!-- Always-approved commands (per-command allowlist) -->
 {#if approvedCommands.length > 0}
-  <h3 class="text-sm font-semibold mb-1">Always-approved commands</h3>
-  <p class="text-xs text-base-content/70 mb-3">Shell command prefixes you chose "Approve Always" for — they run without asking. Dangerous commands are still blocked.</p>
+  <h3 class="text-sm font-semibold mb-1">{$t('settingsPermissions.approvedCommands')}</h3>
+  <p class="text-xs text-base-content/70 mb-3">{$t('settingsPermissions.approvedCommandsDesc')}</p>
   <div class="divide-y divide-base-content/10 mb-7">
     {#each approvedCommands as cmd}
       <div class="flex items-center justify-between py-2.5">
@@ -171,7 +172,7 @@
         <button
           onclick={() => removeApprovedCommand(cmd)}
           class="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-base-200 cursor-pointer transition-colors border-none bg-transparent text-base-content/60 hover:text-error"
-          aria-label="Remove {cmd}"
+          aria-label={$t('settingsPermissions.removeCommand', { values: { cmd } })}
         >
           <X class="w-4 h-4" />
         </button>
@@ -181,13 +182,13 @@
 {/if}
 
 <!-- Approval dialog preview -->
-<h3 class="text-sm font-semibold mb-1">Approval Dialog</h3>
-<p class="text-xs text-base-content/70 mb-3">When an agent needs permission, this dialog appears.</p>
+<h3 class="text-sm font-semibold mb-1">{$t('settingsPermissions.approvalDialog')}</h3>
+<p class="text-xs text-base-content/70 mb-3">{$t('settingsPermissions.approvalDialogDesc')}</p>
 <button
   onclick={() => showPreview = true}
   class="inline-flex items-center gap-2 px-4 py-2 rounded-lg border border-base-300 text-sm font-medium cursor-pointer hover:bg-base-200 transition-colors bg-transparent"
 >
-  <Eye class="w-4 h-4" /> Preview Approval Dialog
+  <Eye class="w-4 h-4" /> {$t('settingsPermissions.previewApprovalDialog')}
 </button>
 
 <ApprovalModal
@@ -201,11 +202,11 @@
 <!-- Full Access Activation Modal -->
 {#if showEnableModal}
   <div class="fixed inset-0 z-[80] flex items-center justify-center p-4" role="dialog" aria-modal="true">
-    <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" role="button" tabindex="0" aria-label="Close modal" onclick={cancelEnable} onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); cancelEnable(); } }}></div>
+    <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" role="button" tabindex="0" aria-label={$t('common.closeModal')} onclick={cancelEnable} onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); cancelEnable(); } }}></div>
     <div class="relative w-full max-w-lg rounded-2xl bg-base-100 border border-base-content/10 shadow-2xl overflow-hidden">
       <!-- Header -->
       <div class="flex items-center justify-between px-5 py-4 border-b border-base-content/10">
-        <h3 class="text-sm font-bold">Enable Full Access</h3>
+        <h3 class="text-sm font-bold">{$t('settingsPermissions.enableFullAccess')}</h3>
         <button onclick={cancelEnable} class="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-base-200 cursor-pointer transition-colors border-none bg-transparent">
           <X class="w-4 h-4" />
         </button>
@@ -216,42 +217,42 @@
         <div class="flex items-start gap-3">
           <AlertTriangle class="w-5 h-5 text-warning shrink-0 mt-0.5" />
           <p class="text-xs text-base-content leading-relaxed">
-            This will allow your agent to execute all tools — including shell commands, file modifications, and network requests — without asking for permission.
+            {$t('settingsPermissions.enableWarning')}
           </p>
         </div>
 
         <!-- Risks -->
         <div class="rounded-xl bg-error/10 border border-error/20 p-4">
-          <p class="text-xs font-semibold text-error mb-2">Risks include:</p>
+          <p class="text-xs font-semibold text-error mb-2">{$t('settingsPermissions.risks')}</p>
           <ul class="text-xs text-base-content/70 space-y-1 list-disc list-inside">
-            <li>The agent may modify or delete files on your system</li>
-            <li>The agent may execute arbitrary shell commands</li>
-            <li>The agent may make network requests and access external services</li>
-            <li>You are solely responsible for any actions taken by the agent</li>
+            <li>{$t('settingsPermissions.risk1')}</li>
+            <li>{$t('settingsPermissions.risk2')}</li>
+            <li>{$t('settingsPermissions.risk3')}</li>
+            <li>{$t('settingsPermissions.risk4')}</li>
           </ul>
         </div>
 
         <!-- Disclaimer -->
         <div class="rounded-xl bg-base-200 p-4 max-h-28 overflow-y-auto">
           <p class="text-xs text-base-content/70 leading-relaxed">
-            By enabling Full Access, you acknowledge that Nebo Labs, Inc. shall not be liable for any damages, losses, or consequences arising from the unsupervised execution of tools by the agent. You accept full responsibility for all actions taken by the agent while Full Access is enabled.
+            {$t('settingsPermissions.fullAccessDisclaimer')}
           </p>
         </div>
 
         <!-- Accept checkbox -->
         <label class="flex items-center gap-3 cursor-pointer">
           <input type="checkbox" class="checkbox checkbox-sm checkbox-warning" bind:checked={termsAccepted} />
-          <span class="text-xs font-medium">I understand the risks and accept full responsibility</span>
+          <span class="text-xs font-medium">{$t('settingsPermissions.acceptRisks')}</span>
         </label>
 
         <!-- Type ENABLE -->
         <div>
-          <label class="block text-xs font-medium mb-1.5" for="confirm-enable">Type ENABLE to confirm</label>
+          <label class="block text-xs font-medium mb-1.5" for="confirm-enable">{$t('settingsPermissions.typeEnable')}</label>
           <input
             id="confirm-enable"
             type="text"
             class="w-full h-9 rounded-lg bg-base-200 border border-base-content/10 px-3 text-sm focus:outline-none focus:border-primary/50 transition-colors"
-            placeholder="ENABLE"
+            placeholder={$t('settingsPermissions.enableWord')}
             bind:value={confirmText}
             onkeydown={(e) => { if (e.key === 'Enter' && canConfirm) confirmEnable(); }}
           />
@@ -264,14 +265,14 @@
           onclick={cancelEnable}
           class="px-4 py-2 rounded-lg border border-base-content/10 text-sm font-medium cursor-pointer hover:bg-base-200 transition-colors bg-transparent"
         >
-          Cancel
+          {$t('common.cancel')}
         </button>
         <button
           onclick={confirmEnable}
           disabled={!canConfirm}
           class="px-4 py-2 rounded-lg bg-error text-error-content text-sm font-bold cursor-pointer hover:brightness-110 transition-all border-none disabled:opacity-30 disabled:cursor-not-allowed"
         >
-          Enable Full Access
+          {$t('settingsPermissions.enableFullAccess')}
         </button>
       </div>
     </div>

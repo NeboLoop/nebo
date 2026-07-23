@@ -13,8 +13,11 @@
 /extensions
 .fix
 .plans/
-docs/.archive/
-docs/plans/
+# Internal docs are not for the public repo — only publishers-guide is public.
+# (Kept on disk; withheld from the tree so nothing internal ships when this repo
+# goes public. Opt specific docs back in by force-adding them.)
+docs/*
+!docs/publishers-guide/
 results*/
 .testing/
 overrides/

@@ -130,6 +130,39 @@ impl PluginManager {
         active.upload_file(filename, mime_type, data).await
     }
 
+    /// List loop channels this bot belongs to (active plugin).
+    pub async fn list_channels(&self) -> Result<Vec<crate::types::LoopChannelInfo>, CommError> {
+        let inner = self.inner.read().await;
+        let active = inner.active.as_ref().ok_or(CommError::NoActivePlugin)?;
+        if !active.is_connected() {
+            return Err(CommError::NotConnected);
+        }
+        active.list_channels().await
+    }
+
+    /// List loops this bot belongs to (active plugin).
+    pub async fn list_loops(&self) -> Result<Vec<crate::types::LoopInfo>, CommError> {
+        let inner = self.inner.read().await;
+        let active = inner.active.as_ref().ok_or(CommError::NoActivePlugin)?;
+        if !active.is_connected() {
+            return Err(CommError::NotConnected);
+        }
+        active.list_loops().await
+    }
+
+    /// List members of a channel or loop (active plugin).
+    pub async fn list_channel_members(
+        &self,
+        channel_id: &str,
+    ) -> Result<Vec<crate::types::ChannelMemberItem>, CommError> {
+        let inner = self.inner.read().await;
+        let active = inner.active.as_ref().ok_or(CommError::NoActivePlugin)?;
+        if !active.is_connected() {
+            return Err(CommError::NotConnected);
+        }
+        active.list_channel_members(channel_id).await
+    }
+
     /// Subscribe to a topic on the active plugin.
     pub async fn subscribe(&self, topic: &str) -> Result<(), CommError> {
         let mut inner = self.inner.write().await;

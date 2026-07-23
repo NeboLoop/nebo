@@ -32,6 +32,31 @@ impl Store {
         .map_err(|e| NeboError::Database(e.to_string()))
     }
 
+    /// The chat id a session's messages are stored under, if the session
+    /// records one: `active_chat_id`, falling back to `name` (legacy
+    /// pre-decoupling sessions). Returns `None` when the session row is
+    /// missing or carries neither — callers that need a best-effort id use
+    /// [`Self::resolve_session_chat_id`], which layers the synthetic
+    /// `chat-{session_id}` fallback on top of this ONE derivation. Callers
+    /// that must know whether a real chat exists (context-isolated memory
+    /// scoping fails closed without one) use this directly.
+    pub fn session_chat_id(&self, session_id: &str) -> Option<String> {
+        self.get_session(session_id)
+            .ok()
+            .flatten()
+            .and_then(|s| s.active_chat_id.or(s.name))
+    }
+
+    /// Resolve a session id to the chat id its messages are stored under.
+    /// Sessions are decoupled from chats: prefer `active_chat_id`, fall back to
+    /// `name` (legacy pre-decoupling sessions), then `chat-{session_id}`.
+    /// The ONE derivation — used by both the write side (SessionManager) and
+    /// readers (tools); do not mirror this chain anywhere else.
+    pub fn resolve_session_chat_id(&self, session_id: &str) -> String {
+        self.session_chat_id(session_id)
+            .unwrap_or_else(|| format!("chat-{}", session_id))
+    }
+
     pub fn get_session_by_name(&self, name: &str) -> Result<Option<Session>, NeboError> {
         let conn = self.conn()?;
         conn.query_row(
@@ -380,5 +405,44 @@ impl<T> OptionalExt<T> for rusqlite::Result<T> {
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(e) => Err(e),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::Store;
+
+    #[test]
+    fn test_session_chat_id_derivation_chain() {
+        let path = std::env::temp_dir().join(format!("nebo-sessq-test-{}.db", std::process::id()));
+        let path_str = path.to_string_lossy().to_string();
+        let _ = std::fs::remove_file(&path);
+        let store = Store::new(&path_str).unwrap();
+
+        // No session row → no chat derivable (context-isolated memory fails
+        // closed on this), while resolve_ keeps its synthetic fallback.
+        assert_eq!(store.session_chat_id("missing"), None);
+        assert_eq!(store.resolve_session_chat_id("missing"), "chat-missing");
+
+        // active_chat_id wins.
+        store
+            .create_session("s1", Some("legacy-name"), None, None, None)
+            .unwrap();
+        store.set_session_active_chat_id("s1", "chat-42").unwrap();
+        assert_eq!(store.session_chat_id("s1").as_deref(), Some("chat-42"));
+        assert_eq!(store.resolve_session_chat_id("s1"), "chat-42");
+
+        // Legacy session: name only.
+        store
+            .create_session("s2", Some("legacy-name"), None, None, None)
+            .unwrap();
+        assert_eq!(store.session_chat_id("s2").as_deref(), Some("legacy-name"));
+
+        // Row exists but carries neither → still None.
+        store.create_session("s3", None, None, None, None).unwrap();
+        assert_eq!(store.session_chat_id("s3"), None);
+        assert_eq!(store.resolve_session_chat_id("s3"), "chat-s3");
+
+        let _ = std::fs::remove_file(&path);
     }
 }

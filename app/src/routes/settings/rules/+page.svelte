@@ -1,6 +1,7 @@
 <script lang="ts">
   import SettingsHeader from '$lib/components/settings/SettingsHeader.svelte';
   import { onMount } from 'svelte';
+  import { t } from 'svelte-i18n';
 
   let rules = $state<{ section: string; rules: { enabled: boolean; text: string }[] }[]>([]);
 
@@ -13,7 +14,7 @@
       if (profile?.agentRules) {
         const ruleLines = String(profile.agentRules).split('\n').filter((l: string) => l.trim());
         rules = [{
-          section: 'Custom Rules',
+          section: $t('settingsRules.customRules'),
           rules: ruleLines.map((line: string) => ({
             enabled: true,
             text: line.replace(/^[-*]\s*/, ''),
@@ -24,7 +25,7 @@
   });
 </script>
 
-<SettingsHeader title="Rules" description="Define behavior constraints and guidelines for your agent." />
+<SettingsHeader title={$t('settingsRules.title')} description={$t('settingsRules.constraintsDescription')} />
 
 {#each rules as section}
   <div class="mb-5">
@@ -41,6 +42,6 @@
 {/each}
 
 <div class="flex gap-2 mt-4">
-  <button class="px-4 py-2 rounded-lg border border-dashed border-base-content/20 text-sm cursor-pointer hover:bg-base-200 transition-colors">+ Add Section</button>
-  <button class="px-4 py-2 rounded-lg border border-base-content/10 text-sm cursor-pointer hover:bg-base-200 transition-colors ml-auto">Reset to Defaults</button>
+  <button class="px-4 py-2 rounded-lg border border-dashed border-base-content/20 text-sm cursor-pointer hover:bg-base-200 transition-colors">+ {$t('settingsRules.addSection')}</button>
+  <button class="px-4 py-2 rounded-lg border border-base-content/10 text-sm cursor-pointer hover:bg-base-200 transition-colors ml-auto">{$t('settingsRules.resetDefaults')}</button>
 </div>

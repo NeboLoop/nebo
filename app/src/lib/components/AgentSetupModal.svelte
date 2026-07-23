@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { t } from 'svelte-i18n';
   import Check from 'lucide-svelte/icons/check';
   import ArrowRight from 'lucide-svelte/icons/arrow-right';
 
@@ -20,9 +21,9 @@
 
   // Mock config inputs
   const inputs = [
-    { id: 'repo', label: 'Repository', placeholder: 'owner/repo', value: '' },
-    { id: 'branch', label: 'Default Branch', placeholder: 'main', value: 'main' },
-    { id: 'notify', label: 'Notification Channel', placeholder: '#deployments', value: '' },
+    { id: 'repo', label: 'components.agentSetup.repository', placeholder: 'owner/repo', value: '' },
+    { id: 'branch', label: 'components.agentSetup.defaultBranch', placeholder: 'main', value: 'main' },
+    { id: 'notify', label: 'components.agentSetup.notificationChannel', placeholder: '#deployments', value: '' },
   ];
 
   let inputValues = $state(inputs.map(i => i.value));
@@ -60,11 +61,11 @@
     <div class="relative w-full max-w-md rounded-2xl bg-base-100 border border-base-content/10 shadow-2xl overflow-hidden">
       <!-- Header -->
       <div class="flex items-center justify-between px-5 py-4 border-b border-base-content/10">
-        <h3 class="text-sm font-bold">Set up {agentName}</h3>
+        <h3 class="text-sm font-bold">{$t('components.agentSetup.title', { values: { name: agentName } })}</h3>
         <div class="flex items-center gap-2">
           {#each steps as s, i}
             <div class="flex items-center gap-1.5">
-              <div class="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold {i < step ? 'bg-success text-success-content' : i === step ? 'bg-primary text-primary-content' : 'bg-base-200 text-base-content/40'}">
+              <div class="w-5 h-5 rounded-full flex items-center justify-center text-[0.625rem] font-bold {i < step ? 'bg-success text-success-content' : i === step ? 'bg-primary text-primary-content' : 'bg-base-200 text-base-content/40'}">
                 {#if i < step}<Check class="w-3 h-3" />{:else}{i + 1}{/if}
               </div>
               {#if i < steps.length - 1}
@@ -78,11 +79,11 @@
       <div class="px-5 py-5">
         {#if step === 0}
           <!-- Configure inputs -->
-          <p class="text-xs text-base-content/50 mb-4">Configure {agentName} for your workflow.</p>
+          <p class="text-xs text-base-content/50 mb-4">{$t('components.agentSetup.configureFor', { values: { name: agentName } })}</p>
           <div class="flex flex-col gap-3">
             {#each inputs as input, i}
               <div>
-                <label class="text-sm font-medium mb-1 block" for="setup-{input.id}">{input.label}</label>
+                <label class="text-sm font-medium mb-1 block" for="setup-{input.id}">{$t(input.label)}</label>
                 <input
                   id="setup-{input.id}"
                   type="text"
@@ -96,13 +97,13 @@
 
         {:else if step === 1}
           <!-- Schedule -->
-          <p class="text-xs text-base-content/50 mb-4">How should {agentName} run?</p>
+          <p class="text-xs text-base-content/50 mb-4">{$t('components.agentSetup.howShouldRun', { values: { name: agentName } })}</p>
           <div class="flex flex-col gap-2">
             {#each [
-              { id: 'manual', label: 'Manual', desc: 'Only when you ask' },
-              { id: 'hourly', label: 'Every hour', desc: 'Checks and runs automatically' },
-              { id: 'daily', label: 'Daily', desc: 'Runs once per day at 9:00 AM' },
-              { id: 'event', label: 'On events', desc: 'Triggers on webhooks or system events' },
+              { id: 'manual', label: $t('components.agentSetup.manual'), desc: $t('components.agentSetup.manualDesc') },
+              { id: 'hourly', label: $t('automations.everyHour'), desc: $t('components.agentSetup.everyHourDesc') },
+              { id: 'daily', label: $t('components.agentSetup.daily'), desc: $t('components.agentSetup.dailyDesc') },
+              { id: 'event', label: $t('components.agentSetup.onEvents'), desc: $t('components.agentSetup.onEventsDesc') },
             ] as option}
               <label class="flex items-center gap-3 p-3 rounded-xl border cursor-pointer transition-colors {scheduleType === option.id ? 'border-primary/30 bg-primary/5' : 'border-base-content/10 hover:border-base-content/20'}">
                 <input type="radio" name="schedule" value={option.id} bind:group={scheduleType} class="radio radio-sm radio-primary" />
@@ -121,20 +122,20 @@
               <div class="w-14 h-14 rounded-full bg-success/15 flex items-center justify-center mx-auto mb-4">
                 <Check class="w-7 h-7 text-success" />
               </div>
-              <h3 class="text-lg font-bold mb-1">{agentName} is ready!</h3>
-              <p class="text-xs text-base-content/50">Your agent is configured and active.</p>
+              <h3 class="text-lg font-bold mb-1">{$t('components.agentSetup.isReady', { values: { name: agentName } })}</h3>
+              <p class="text-xs text-base-content/50">{$t('components.agentSetup.readyDesc')}</p>
             {:else if activating}
               <div class="w-14 h-14 rounded-full bg-primary/15 flex items-center justify-center mx-auto mb-4">
                 <span class="loading loading-spinner loading-md text-primary"></span>
               </div>
-              <h3 class="text-lg font-bold mb-1">Activating {agentName}...</h3>
-              <p class="text-xs text-base-content/50">Setting up your agent configuration.</p>
+              <h3 class="text-lg font-bold mb-1">{$t('components.agentSetup.activating', { values: { name: agentName } })}</h3>
+              <p class="text-xs text-base-content/50">{$t('components.agentSetup.activatingDesc')}</p>
             {:else}
               <div class="w-14 h-14 rounded-xl bg-base-200 flex items-center justify-center mx-auto mb-4 text-2xl font-bold text-base-content/30">
                 {agentName.charAt(0)}
               </div>
-              <h3 class="text-lg font-bold mb-1">Ready to activate</h3>
-              <p class="text-xs text-base-content/50 mb-4">{agentName} will start with your configured settings.</p>
+              <h3 class="text-lg font-bold mb-1">{$t('components.agentSetup.readyToActivate')}</h3>
+              <p class="text-xs text-base-content/50 mb-4">{$t('components.agentSetup.willStart', { values: { name: agentName } })}</p>
             {/if}
           </div>
         {/if}
@@ -147,28 +148,28 @@
             onclick={handleClose}
             class="px-4 py-2 rounded-lg bg-primary text-primary-content text-sm font-bold cursor-pointer hover:brightness-110 transition-all border-none"
           >
-            Done
+            {$t('common.done')}
           </button>
         {:else}
           <button
             onclick={handleClose}
             class="px-4 py-2 rounded-lg border border-base-content/10 text-sm font-medium cursor-pointer hover:bg-base-200 transition-colors bg-transparent"
           >
-            Cancel
+            {$t('common.cancel')}
           </button>
           {#if step < 2}
             <button
               onclick={() => (step += 1)}
               class="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-primary text-primary-content text-sm font-bold cursor-pointer hover:brightness-110 transition-all border-none"
             >
-              Next <ArrowRight class="w-3.5 h-3.5" />
+              {$t('common.next')} <ArrowRight class="w-3.5 h-3.5" />
             </button>
           {:else if !activating}
             <button
               onclick={handleActivate}
               class="px-4 py-2 rounded-lg bg-success text-success-content text-sm font-bold cursor-pointer hover:brightness-110 transition-all border-none"
             >
-              Activate
+              {$t('components.agentSetup.activate')}
             </button>
           {/if}
         {/if}

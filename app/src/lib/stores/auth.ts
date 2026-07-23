@@ -1,5 +1,6 @@
 import { writable, derived, get } from 'svelte/store';
-import { goto } from '$app/navigation';
+import { storage } from '$lib/storage';
+import { goto } from '$lib/nav';
 import * as api from '$lib/api/nebo';
 import type { User, LoginResponse, UserGetCurrentUserResponse, UserUpdateCurrentUserResponse } from '$lib/api/neboComponents';
 import { logger } from '$lib/monitoring';
@@ -72,11 +73,11 @@ function getStoredAuth(): {
 	}
 
 	try {
-		const token = localStorage.getItem(TOKEN_KEY);
-		const refreshToken = localStorage.getItem(REFRESH_TOKEN_KEY);
-		const expiresAtStr = localStorage.getItem(EXPIRES_AT_KEY);
+		const token = storage.get(TOKEN_KEY);
+		const refreshToken = storage.get(REFRESH_TOKEN_KEY);
+		const expiresAtStr = storage.get(EXPIRES_AT_KEY);
 		const expiresAt = expiresAtStr ? parseInt(expiresAtStr, 10) : null;
-		const userStr = localStorage.getItem(USER_KEY);
+		const userStr = storage.get(USER_KEY);
 		const user = userStr ? (JSON.parse(userStr) as User) : null;
 
 		return { token, refreshToken, expiresAt, user };
@@ -93,9 +94,9 @@ function storeTokens(token: string, refreshToken: string, expiresAt: number): vo
 	if (typeof window === 'undefined') return;
 
 	try {
-		localStorage.setItem(TOKEN_KEY, token);
-		localStorage.setItem(REFRESH_TOKEN_KEY, refreshToken);
-		localStorage.setItem(EXPIRES_AT_KEY, expiresAt.toString());
+		storage.set(TOKEN_KEY, token);
+		storage.set(REFRESH_TOKEN_KEY, refreshToken);
+		storage.set(EXPIRES_AT_KEY, expiresAt.toString());
 	} catch {
 		logger.warn('Failed to store auth tokens in localStorage');
 	}
@@ -108,7 +109,7 @@ function storeUser(user: User): void {
 	if (typeof window === 'undefined') return;
 
 	try {
-		localStorage.setItem(USER_KEY, JSON.stringify(user));
+		storage.set(USER_KEY, JSON.stringify(user));
 	} catch {
 		logger.warn('Failed to store user in localStorage');
 	}
@@ -121,10 +122,10 @@ function clearStoredAuth(): void {
 	if (typeof window === 'undefined') return;
 
 	try {
-		localStorage.removeItem(TOKEN_KEY);
-		localStorage.removeItem(REFRESH_TOKEN_KEY);
-		localStorage.removeItem(EXPIRES_AT_KEY);
-		localStorage.removeItem(USER_KEY);
+		storage.remove(TOKEN_KEY);
+		storage.remove(REFRESH_TOKEN_KEY);
+		storage.remove(EXPIRES_AT_KEY);
+		storage.remove(USER_KEY);
 	} catch {
 		logger.warn('Failed to clear auth data from localStorage');
 	}
@@ -258,7 +259,7 @@ function createAuthStore() {
 		async fetchCurrentUser(): Promise<void> {
 			// Check both store state and localStorage for token
 			const state = get({ subscribe });
-			const storedToken = typeof window !== 'undefined' ? localStorage.getItem(TOKEN_KEY) : null;
+			const storedToken = storage.get(TOKEN_KEY);
 			const token = state.token || storedToken;
 
 			if (!token) return;

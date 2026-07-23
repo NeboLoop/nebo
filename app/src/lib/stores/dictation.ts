@@ -14,6 +14,8 @@
  */
 
 import { writable, derived } from 'svelte/store';
+import { storage } from '$lib/storage';
+import { backendWsBase } from '$lib/api/base';
 import { startPcmCapture, type AudioCaptureHandle } from '$lib/stores/audio';
 import { deviceManager } from '$lib/stores/devices';
 import { logger } from '$lib/monitoring';
@@ -50,7 +52,7 @@ const initialState: DictationState = {
 	error: null,
 	ownerId: null,
 	isPushToTalk: false,
-	holdToRecordEnabled: typeof localStorage !== 'undefined' && localStorage.getItem(HOLD_TO_RECORD_KEY) === 'true',
+	holdToRecordEnabled: storage.get(HOLD_TO_RECORD_KEY) === 'true',
 	route: { type: 'editor' }
 };
 
@@ -194,9 +196,9 @@ function createDictationStore() {
 			log.info('Dictation connecting for owner: ' + ownerId);
 
 			try {
-				// 1. Open WebSocket (use current origin so Vite proxy works in dev)
-				const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-				const wsUrl = `${wsProtocol}//${window.location.host}/ws/voice/dictation`;
+				// 1. Open WebSocket (same base derivation as the chat WS — carries
+				// the tunnel prefix, and the Vite proxy still applies in dev)
+				const wsUrl = `${backendWsBase()}/ws/voice/dictation`;
 				ws = new WebSocket(wsUrl);
 				ws.binaryType = 'arraybuffer';
 
@@ -298,7 +300,7 @@ function createDictationStore() {
 		 * Toggle hold-to-record preference (persisted to localStorage).
 		 */
 		setHoldToRecordEnabled(enabled: boolean) {
-			localStorage.setItem(HOLD_TO_RECORD_KEY, String(enabled));
+			storage.set(HOLD_TO_RECORD_KEY, String(enabled));
 			update(s => ({ ...s, holdToRecordEnabled: enabled }));
 		},
 

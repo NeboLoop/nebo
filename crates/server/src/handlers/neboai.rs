@@ -1184,6 +1184,180 @@ pub async fn connect_handler(
     })))
 }
 
+// ── Artifact sharing (Work panel → loop channels / members) ───────────
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareChannel {
+    pub channel_id: String,
+    pub channel_name: String,
+    pub loop_id: String,
+    pub loop_name: String,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareMember {
+    pub bot_id: String,
+    pub bot_name: String,
+    pub loop_id: String,
+    pub loop_name: String,
+    pub is_online: bool,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareTargetsResponse {
+    pub connected: bool,
+    pub channels: Vec<ShareChannel>,
+    pub members: Vec<ShareMember>,
+}
+
+/// GET /api/v1/neboai/share/targets — where an artifact can be shared:
+/// loop channels this bot belongs to, and loop members (bots/agents) it can DM.
+pub async fn share_targets(State(state): State<AppState>) -> HandlerResult<ShareTargetsResponse> {
+    if !state.comm_manager.is_connected().await {
+        return Ok(Json(ShareTargetsResponse {
+            connected: false,
+            channels: Vec::new(),
+            members: Vec::new(),
+        }));
+    }
+
+    let channels: Vec<ShareChannel> = state
+        .comm_manager
+        .list_channels()
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|c| ShareChannel {
+            channel_id: c.channel_id,
+            channel_name: c.channel_name,
+            loop_id: c.loop_id,
+            loop_name: c.loop_name,
+        })
+        .collect();
+
+    // Members come per loop; exclude this bot itself (sharing to yourself is
+    // what Download is for).
+    let self_bot_id = config::read_bot_id().unwrap_or_default();
+    let mut members = Vec::new();
+    for lp in state.comm_manager.list_loops().await.unwrap_or_default() {
+        for m in state
+            .comm_manager
+            .list_channel_members(&lp.id)
+            .await
+            .unwrap_or_default()
+        {
+            if m.bot_id == self_bot_id {
+                continue;
+            }
+            members.push(ShareMember {
+                bot_id: m.bot_id,
+                bot_name: m.bot_name,
+                loop_id: lp.id.clone(),
+                loop_name: lp.name.clone(),
+                is_online: m.is_online,
+            });
+        }
+    }
+
+    Ok(Json(ShareTargetsResponse {
+        connected: true,
+        channels,
+        members,
+    }))
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareArtifactRequest {
+    /// Artifact reference — a `/api/v1/files/...` URL or absolute local path.
+    pub artifact: String,
+    /// Optional message to accompany the file.
+    #[serde(default)]
+    pub text: String,
+    /// Post into this loop channel…
+    #[serde(default)]
+    pub channel_id: String,
+    /// …or DM this loop member (exactly one of the two).
+    #[serde(default)]
+    pub to_bot_id: String,
+}
+
+/// POST /api/v1/neboai/share — upload a Work-panel artifact to the loop and
+/// send it to a channel or member. Same upload pathway as run-artifact
+/// attachments (resolve_comm_attachments), same addressing as the loop tool.
+pub async fn share_artifact(
+    State(state): State<AppState>,
+    Json(body): Json<ShareArtifactRequest>,
+) -> HandlerResult<serde_json::Value> {
+    if body.channel_id.is_empty() == body.to_bot_id.is_empty() {
+        return Err(to_error_response(NeboError::Validation(
+            "provide exactly one of channelId or toBotId".into(),
+        )));
+    }
+    if !state.comm_manager.is_connected().await {
+        return Err(to_error_response(NeboError::Internal(
+            "not connected to NeboAI".into(),
+        )));
+    }
+
+    let comm = Some(state.comm_manager.clone());
+    let attachments = crate::chat_dispatch::resolve_comm_attachments(
+        &comm,
+        &state.plugin_store,
+        std::slice::from_ref(&body.artifact),
+    )
+    .await;
+    if attachments.is_empty() {
+        return Err(to_error_response(NeboError::Internal(format!(
+            "failed to upload artifact {}",
+            body.artifact
+        ))));
+    }
+
+    // Relay markers: this is the OWNER sharing, not the agent speaking —
+    // same canonical shape as the ws prompt mirror (handlers/ws.rs).
+    let mut meta = HashMap::new();
+    meta.insert("relay".to_string(), "true".to_string());
+    meta.insert("role".to_string(), "user".to_string());
+    meta.insert("senderName".to_string(), "You".to_string());
+
+    let to_channel = !body.channel_id.is_empty();
+    let msg = comm::CommMessage {
+        id: Uuid::new_v4().to_string(),
+        from: String::new(),
+        to: body.to_bot_id.clone(),
+        topic: body.channel_id.clone(),
+        conversation_id: body.channel_id.clone(),
+        msg_type: if to_channel {
+            comm::CommMessageType::LoopChannel
+        } else {
+            comm::CommMessageType::Message
+        },
+        content: body.text.clone(),
+        metadata: meta,
+        timestamp: 0,
+        human_injected: true,
+        human_id: None,
+        task_id: None,
+        correlation_id: None,
+        task_status: None,
+        artifacts: Vec::new(),
+        error: None,
+        attachments,
+    };
+
+    state
+        .comm_manager
+        .send(msg)
+        .await
+        .map_err(|e| to_error_response(NeboError::Internal(format!("share send: {e}"))))?;
+
+    Ok(Json(serde_json::json!({ "shared": true })))
+}
+
 fn callback_html(_email: &str, err_msg: &str) -> Html<String> {
     let success = err_msg.is_empty();
     let heading = if success { "Signed in" } else { "Sign-in failed" };

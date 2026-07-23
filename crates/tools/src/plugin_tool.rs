@@ -50,10 +50,57 @@ struct PluginInput {
     /// Search query for action: "discover" (marketplace plugin search).
     #[serde(default)]
     query: String,
+    /// Typed capability operation to invoke (e.g. "ledger.bill.create", or the
+    /// fully-qualified "accounting.ap-specialist.ledger.bill.create"). When set,
+    /// the port is resolved on its operation suffix to whichever installed plugin
+    /// declares that binding, and `input` is passed as flags — no `resource`/
+    /// `command` needed. This is the provider-agnostic port pathway.
+    #[serde(default)]
+    operation: String,
+    /// Typed input object for a port `operation`; each field becomes a `--key value` flag.
+    #[serde(default)]
+    input: serde_json::Value,
 }
 
 fn default_action() -> String {
     "exec".to_string()
+}
+
+/// The `capability.resource.action` suffix a plugin binding matches on. A fully-
+/// qualified port (`department.role.capability.resource.action`) reduces to its
+/// last three segments; a bare operation is returned unchanged. This is what keeps
+/// one plugin binding (`ledger.bill.create`) satisfying every seat that calls it.
+fn port_suffix(operation: &str) -> String {
+    let parts: Vec<&str> = operation.split('.').collect();
+    if parts.len() > 3 {
+        parts[parts.len() - 3..].join(".")
+    } else {
+        operation.to_string()
+    }
+}
+
+/// The calling department in a fully-qualified port (the first segment of
+/// `department.role.capability.resource.action`). `None` for a bare operation.
+/// Load-bearing: when a shared operation (e.g. `mail.message.send`) has multiple
+/// installed providers, the department is what selects the right one — without it
+/// two departments would collide on whichever provider happened to be first.
+fn port_department(operation: &str) -> Option<String> {
+    let parts: Vec<&str> = operation.split('.').collect();
+    if parts.len() > 3 {
+        Some(parts[0].to_string())
+    } else {
+        None
+    }
+}
+
+/// The capability a port targets (the first segment of the operation suffix,
+/// e.g. "ledger" for `…ledger.bill.create`).
+fn port_capability(operation: &str) -> String {
+    port_suffix(operation)
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .to_string()
 }
 
 impl PluginTool {
@@ -93,6 +140,80 @@ impl PluginTool {
             slugs.push(slug.clone());
         }
         slugs
+    }
+
+    /// Resolve a typed capability operation to (plugin slug, command) by scanning
+    /// active plugins' declared `interface_bindings`. Matches on the
+    /// `capability.resource.action` suffix, so a fully-qualified port
+    /// (`department.role.capability.resource.action`) binds the same as a bare op.
+    fn resolve_port(&self, operation: &str) -> Result<(String, String), String> {
+        let suffix = port_suffix(operation);
+        // Every installed provider that implements this operation.
+        let mut providers: Vec<(String, String)> = Vec::new();
+        for slug in self.active_slugs() {
+            if let Some(m) = self.plugin_store.get_manifest(&slug) {
+                if let Some(cmd) = m.interface_bindings.get(&suffix) {
+                    providers.push((slug, cmd.clone()));
+                }
+            }
+        }
+        match providers.len() {
+            0 => Err(format!(
+                "no installed provider implements operation '{suffix}'."
+            )),
+            1 => Ok(providers.into_iter().next().unwrap()),
+            _ => {
+                // Ambiguous: a shared operation (e.g. mail.message.send) with several
+                // providers. The calling DEPARTMENT's binding disambiguates — this is why
+                // the port carries department.role. Never guess; a wrong provider here
+                // could send from the wrong account or move money the wrong way.
+                let dept = port_department(operation);
+                let cap = port_capability(operation);
+                if let Some(bound) = self.department_provider(dept.as_deref(), &cap) {
+                    if let Some(p) = providers.iter().find(|(s, _)| *s == bound) {
+                        return Ok(p.clone());
+                    }
+                }
+                let names: Vec<&str> = providers.iter().map(|(s, _)| s.as_str()).collect();
+                Err(format!(
+                    "operation '{suffix}' is implemented by multiple providers ({}); \
+                     bind one for {}.{} to disambiguate.",
+                    names.join(", "),
+                    dept.as_deref().unwrap_or("<department>"),
+                    cap
+                ))
+            }
+        }
+    }
+
+    /// The provider a department has bound for a capability (e.g. accounting's
+    /// `mail` → "postmark", support's `mail` → a different provider). This is what
+    /// makes resolution department-scoped and collision-free. Populated by the
+    /// install wizard's per-department capability binding; `None` until bound, so an
+    /// ambiguous port fails loudly rather than resolving to the wrong provider.
+    fn department_provider(&self, department: Option<&str>, capability: &str) -> Option<String> {
+        let _dept = department?;
+        let _ = capability;
+        // TICKET-02: the install wizard writes the per-department capability→provider
+        // binding (keyed "<department>.<capability>", e.g. "accounting.mail" → "postmark",
+        // "customer-support.mail" → a different provider); this reads it. Until that store
+        // exists, return None — so an ambiguous port fails loudly demanding a binding,
+        // never resolving to the wrong provider.
+        None
+    }
+
+    /// (operation, provider-slug) for every port the installed plugins implement.
+    fn bound_operations(&self) -> Vec<(String, String)> {
+        let mut out = Vec::new();
+        for slug in self.active_slugs() {
+            if let Some(m) = self.plugin_store.get_manifest(&slug) {
+                for op in m.interface_bindings.keys() {
+                    out.push((op.clone(), slug.clone()));
+                }
+            }
+        }
+        out.sort();
+        out
     }
 
     /// List installed plugins (slug, version, enabled/disabled, signature status).
@@ -385,6 +506,16 @@ impl DynTool for PluginTool {
         }
 
         out.push_str("\nFor commands listed above, use the exact syntax shown. For other plugins, discover commands first via the skill tool.");
+
+        // Typed capability ports currently bound (provider-agnostic).
+        let ops = self.bound_operations();
+        if !ops.is_empty() {
+            out.push_str("\n\nTyped ports (provider-agnostic): call plugin(operation: \"<op>\", input: {...}). \
+                          The operation resolves to the bound provider below:\n");
+            for (op, slug) in &ops {
+                out.push_str(&format!("  - {op}  (via {slug})\n"));
+            }
+        }
         out
     }
 
@@ -442,11 +573,25 @@ impl DynTool for PluginTool {
                 "description": "Command timeout in seconds (default: 120)"
             }),
         );
+        props.insert(
+            "operation".into(),
+            serde_json::json!({
+                "type": "string",
+                "description": "Typed capability operation to invoke (provider-agnostic), e.g. 'ledger.bill.create' or the fully-qualified 'accounting.ap-specialist.ledger.bill.create'. Resolves on the operation suffix to whichever installed plugin declares that binding. Use this instead of resource/command to call a port; pass fields via `input`. See this tool's description for the operations currently bound."
+            }),
+        );
+        props.insert(
+            "input".into(),
+            serde_json::json!({
+                "type": "object",
+                "description": "Typed input for a port `operation`. Each field is passed to the bound plugin as a --key value flag."
+            }),
+        );
 
         serde_json::json!({
             "type": "object",
             "properties": serde_json::Value::Object(props),
-            "required": ["resource"]
+            "required": []
         })
     }
 
@@ -481,6 +626,38 @@ impl DynTool for PluginTool {
                 Ok(v) => v,
                 Err(e) => return ToolResult::error(format!("invalid input: {}", e)),
             };
+
+            // Typed port pathway: an `operation` resolves to whichever installed plugin
+            // declares that binding (provider-agnostic), and `input` becomes flags. This
+            // is how a seat's capability port (`department.role.ledger.bill.create`) runs
+            // without naming a vendor tool.
+            if !pi.operation.is_empty() {
+                let (slug, command) = match self.resolve_port(&pi.operation) {
+                    Ok(x) => x,
+                    Err(e) => return ToolResult::error(e),
+                };
+                let mut args = pi.args.clone();
+                if let serde_json::Value::Object(map) = &pi.input {
+                    for (k, v) in map {
+                        let sval = match v {
+                            serde_json::Value::String(s) => s.clone(),
+                            other => other.to_string(),
+                        };
+                        args.entry(k.clone()).or_insert(sval);
+                    }
+                }
+                let port_pi = PluginInput {
+                    resource: slug,
+                    action: "exec".to_string(),
+                    command,
+                    args,
+                    timeout: pi.timeout,
+                    query: String::new(),
+                    operation: String::new(),
+                    input: serde_json::Value::Null,
+                };
+                return self.handle_exec(&port_pi, ctx).await;
+            }
 
             // `list` and `discover` don't need a plugin slug; `exec`/`events` do.
             match pi.action.as_str() {
@@ -874,6 +1051,7 @@ impl PluginTool {
 
         let effective_timeout = runtime
             .effective_timeout(Duration::from_secs(timeout_secs));
+        let started = std::time::SystemTime::now();
         let result = tokio::time::timeout(effective_timeout, cmd.output()).await;
 
         match result {
@@ -920,7 +1098,16 @@ impl PluginTool {
                     text.push_str("\n... (output truncated)");
                 }
 
-                ToolResult::ok(text)
+                // A plugin that produced a user-facing document (e.g. a deck via
+                // `nebo-office pptx create spec.json -o out.pptx`) must surface it
+                // exactly like an `os` write does, or it never reaches the Work
+                // panel / chat cards. Same is_work_document gate; the mtime check
+                // keeps inputs the plugin only read (a spec, a template) out.
+                let result = ToolResult::ok(text);
+                match produced_work_document(&args, None, started) {
+                    Some(path) => result.with_image_url(path),
+                    None => result,
+                }
             }
         }
     }
@@ -1265,6 +1452,36 @@ pub fn is_auth_error(output: &str) -> bool {
 /// Extract the agent id from a session key. Handles both
 /// `agent:<id>:...` and `subagent:<parentId>:...` (a subagent runs under its
 /// parent agent's credentials). Returns `None` for non-agent sessions.
+/// The last arg naming a work document (same gate as `os` writes) that was
+/// modified during this execution — i.e. a file the command just produced, not
+/// an input it read. Output flags conventionally come last (`-o out.pptx`),
+/// hence the reverse scan. Relative tokens resolve against `base` (a shell
+/// `cwd`) when given. The 1s slack absorbs coarse filesystem mtimes.
+/// Shared by plugin exec and shell exec so every way a run creates a document
+/// surfaces it identically. Ceiling: files a command creates WITHOUT naming
+/// them in its args (e.g. `unzip`) aren't detected.
+pub(crate) fn produced_work_document(
+    args: &[String],
+    base: Option<&std::path::Path>,
+    started: std::time::SystemTime,
+) -> Option<String> {
+    let cutoff = started - std::time::Duration::from_secs(1);
+    args.iter().rev().find_map(|a| {
+        if !crate::file_tool::is_work_document(a) {
+            return None;
+        }
+        let path = match base {
+            Some(b) if std::path::Path::new(a).is_relative() => b.join(a.as_str()),
+            _ => std::path::PathBuf::from(a.as_str()),
+        };
+        let fresh = std::fs::metadata(&path)
+            .and_then(|m| m.modified())
+            .map(|m| m >= cutoff)
+            .unwrap_or(false);
+        fresh.then(|| path.to_string_lossy().to_string())
+    })
+}
+
 fn agent_id_from_session_key(key: &str) -> Option<String> {
     // Delegated (subagent) runs nest the parent's FULL session key:
     //   subagent:<parent_session_key>:<task_id>
@@ -1447,6 +1664,44 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_port_suffix_matches_operation() {
+        // Fully-qualified port reduces to the capability.resource.action a plugin declares.
+        assert_eq!(
+            port_suffix("accounting.ap-specialist.ledger.bill.create"),
+            "ledger.bill.create"
+        );
+        assert_eq!(
+            port_suffix("sales.account-executive.crm.opportunity.status"),
+            "crm.opportunity.status"
+        );
+        // A bare operation (already the suffix) is returned unchanged.
+        assert_eq!(port_suffix("ledger.bill.create"), "ledger.bill.create");
+        assert_eq!(port_suffix("mail.message.send"), "mail.message.send");
+    }
+
+    #[test]
+    fn test_port_department_and_capability_scope_resolution() {
+        // The department is what disambiguates a shared operation across departments:
+        // accounting.collections-specialist.mail.message.send and
+        // customer-support.escalation-specialist.mail.message.send are the SAME operation
+        // but must be able to resolve to different providers.
+        assert_eq!(
+            port_department("accounting.collections-specialist.mail.message.send").as_deref(),
+            Some("accounting")
+        );
+        assert_eq!(
+            port_department("customer-support.escalation-specialist.mail.message.send").as_deref(),
+            Some("customer-support")
+        );
+        // Both target the same capability — hence the collision the department resolves.
+        assert_eq!(port_capability("accounting.collections-specialist.mail.message.send"), "mail");
+        assert_eq!(port_capability("customer-support.escalation-specialist.mail.message.send"), "mail");
+        assert_eq!(port_capability("accounting.ap-specialist.ledger.bill.create"), "ledger");
+        // A bare operation has no department (nothing to scope by).
+        assert_eq!(port_department("mail.message.send"), None);
+    }
+
+    #[test]
     fn test_agent_id_from_session_key_resolves_nested_subagent() {
         // Direct agent chat.
         assert_eq!(
@@ -1469,6 +1724,11 @@ mod tests {
             Some("abc-123")
         );
         assert_eq!(agent_id_from_session_key("acp:xyz"), None);
+        // Agent-bound workflow runs — plugin tool must resolve credentials here.
+        assert_eq!(
+            agent_id_from_session_key("agent:cos-uuid:workflow:run-42").as_deref(),
+            Some("cos-uuid")
+        );
     }
 
     #[test]
@@ -1550,5 +1810,39 @@ mod tests {
         assert!(has_url_candidate("Visit https://example.com"));
         assert!(!has_url_candidate("Visit https://example.com "));
         assert!(!has_url_candidate("no url here"));
+    }
+
+    #[test]
+    fn test_produced_work_document_detects_fresh_output() {
+        let dir = std::env::temp_dir().join(format!("nebo-pwd-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let deck = dir.join("out.pptx");
+        let spec = dir.join("spec.json");
+        std::fs::write(&spec, "{}").unwrap();
+        let started = std::time::SystemTime::now();
+        std::fs::write(&deck, "fake-deck").unwrap();
+
+        let args: Vec<String> = vec![
+            "pptx".into(),
+            "create".into(),
+            spec.to_string_lossy().into_owned(),
+            "-o".into(),
+            deck.to_string_lossy().into_owned(),
+        ];
+        // The fresh .pptx output is detected; the .json spec is not a work doc.
+        assert_eq!(
+            produced_work_document(&args, None, started),
+            Some(deck.to_string_lossy().into_owned())
+        );
+        // Relative token resolves against base.
+        let rel: Vec<String> = vec!["out.pptx".into()];
+        assert_eq!(
+            produced_work_document(&rel, Some(&dir), started),
+            Some(deck.to_string_lossy().into_owned())
+        );
+        // A work doc that predates the run (an input) is excluded.
+        let stale = started + std::time::Duration::from_secs(5);
+        assert_eq!(produced_work_document(&args, None, stale), None);
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

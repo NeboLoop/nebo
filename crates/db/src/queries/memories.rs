@@ -4,6 +4,14 @@ use crate::Store;
 use crate::models::Memory;
 use types::NeboError;
 
+/// Memory writes closer together than this gap coalesce into ONE activity
+/// burst in `memory_scope_activity` (see `record_memory_write_activity`).
+/// 5 minutes: a single extraction flush or explicit-store batch lands well
+/// inside one window, while separate working sessions land in separate ones —
+/// so `write_events` approximates "distinct sessions/runs that touched this
+/// scope" without threading a session id through every write path.
+const MEMORY_WRITE_BURST_GAP_SECS: i64 = 300;
+
 impl Store {
     pub fn list_memories(&self, limit: i64, offset: i64) -> Result<Vec<Memory>, NeboError> {
         let conn = self.conn()?;
@@ -175,6 +183,73 @@ impl Store {
             ));
         }
 
+        // Consolidation activity gate (Phase 2, docs/plans/memory-rock-solid.md):
+        // every memory write funnels through this upsert, so scope activity is
+        // recorded HERE — one pathway, no per-caller drift. Best-effort:
+        // activity bookkeeping must never fail a store.
+        if let Err(e) = self.record_memory_write_activity(user_id, MEMORY_WRITE_BURST_GAP_SECS) {
+            tracing::debug!(user_id, error = %e, "failed to record memory write activity");
+        }
+
+        Ok(())
+    }
+
+    /// Record one memory write for `user_id` in `memory_scope_activity`.
+    /// Writes within `min_gap_secs` of the previous one coalesce into the same
+    /// burst (the counter does not increment); a write after a longer gap
+    /// counts as a new burst. `min_gap_secs = 0` counts every call.
+    pub fn record_memory_write_activity(
+        &self,
+        user_id: &str,
+        min_gap_secs: i64,
+    ) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "INSERT INTO memory_scope_activity (user_id, write_events, last_write_at)
+             VALUES (?1, 1, CURRENT_TIMESTAMP)
+             ON CONFLICT(user_id) DO UPDATE SET
+                write_events = CASE
+                    WHEN last_write_at IS NULL
+                      OR (strftime('%s', 'now') - strftime('%s', last_write_at)) >= ?2
+                    THEN write_events + 1
+                    ELSE write_events
+                END,
+                last_write_at = CURRENT_TIMESTAMP",
+            params![user_id, min_gap_secs],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Write bursts recorded for `user_id` since its last consolidation
+    /// (`reset_memory_scope_activity` zeroes the counter). 0 when the scope
+    /// has never been written.
+    pub fn get_memory_scope_write_events(&self, user_id: &str) -> Result<i64, NeboError> {
+        let conn = self.conn()?;
+        conn.query_row(
+            "SELECT write_events FROM memory_scope_activity WHERE user_id = ?1",
+            params![user_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map(|v| v.unwrap_or(0))
+        .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
+    /// Zero a scope's write-burst counter and stamp its consolidation time —
+    /// called after a successful consolidation so the activity gate measures
+    /// "since last consolidation".
+    pub fn reset_memory_scope_activity(&self, user_id: &str) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "INSERT INTO memory_scope_activity (user_id, write_events, last_consolidated_at)
+             VALUES (?1, 0, CURRENT_TIMESTAMP)
+             ON CONFLICT(user_id) DO UPDATE SET
+                write_events = 0,
+                last_consolidated_at = CURRENT_TIMESTAMP",
+            params![user_id],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
         Ok(())
     }
 
@@ -383,6 +458,32 @@ impl Store {
             |row| row.get(0),
         )
         .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
+    /// Memories with no embedded chunk at all — victims of the migration-0113
+    /// dangling-FK bug (chunk inserts succeeded, embedding inserts silently
+    /// failed) plus rows written by paths that predate embed-on-store. Used by
+    /// the boot-time embedding backfill.
+    pub fn list_memories_missing_embeddings(&self) -> Result<Vec<Memory>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, namespace, key, value, tags, metadata, created_at, updated_at,
+                        accessed_at, access_count, user_id
+                 FROM memories m
+                 WHERE NOT EXISTS (
+                     SELECT 1 FROM memory_chunks c
+                     JOIN memory_embeddings e ON e.chunk_id = c.id
+                     WHERE c.memory_id = m.id
+                 )
+                 ORDER BY m.id",
+            )
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map([], row_to_memory)
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| NeboError::Database(e.to_string()))
     }
 
     pub fn increment_memory_access(&self, id: i64) -> Result<(), NeboError> {
@@ -619,6 +720,106 @@ mod tests {
         assert_eq!(deleted, 2);
         assert_eq!(store.count_memories_by_namespace("daily/").unwrap(), 0);
         assert_eq!(store.count_memories_by_namespace("tacit/").unwrap(), 1);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_memory_scope_activity_bursts() {
+        let path =
+            std::env::temp_dir().join(format!("nebo-memq-activity-test-{}.db", std::process::id()));
+        let path_str = path.to_string_lossy().to_string();
+        let _ = std::fs::remove_file(&path);
+        let store = Store::new(&path_str).unwrap();
+
+        // Unwritten scope: zero events.
+        assert_eq!(store.get_memory_scope_write_events("scope-a").unwrap(), 0);
+
+        // A batch of rapid upserts (one extraction flush) coalesces into ONE burst.
+        for i in 0..5 {
+            store
+                .upsert_memory("project", &format!("fact-{i}"), "v", None, None, "scope-a")
+                .unwrap();
+        }
+        assert_eq!(store.get_memory_scope_write_events("scope-a").unwrap(), 1);
+
+        // Gap-separated writes count as new bursts (gap 0 = every call counts).
+        store.record_memory_write_activity("scope-a", 0).unwrap();
+        store.record_memory_write_activity("scope-a", 0).unwrap();
+        assert_eq!(store.get_memory_scope_write_events("scope-a").unwrap(), 3);
+
+        // Consolidation resets the counter; the scope's memories are untouched.
+        store.reset_memory_scope_activity("scope-a").unwrap();
+        assert_eq!(store.get_memory_scope_write_events("scope-a").unwrap(), 0);
+        assert_eq!(
+            store.list_memories_by_user_and_namespace("scope-a", "", 100, 0).unwrap().len(),
+            5
+        );
+
+        // Scopes are independent.
+        store
+            .upsert_memory("project", "other", "v", None, None, "scope-b")
+            .unwrap();
+        assert_eq!(store.get_memory_scope_write_events("scope-b").unwrap(), 1);
+        assert_eq!(store.get_memory_scope_write_events("scope-a").unwrap(), 0);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_list_memories_missing_embeddings() {
+        let path =
+            std::env::temp_dir().join(format!("nebo-memq-embed-test-{}.db", std::process::id()));
+        let path_str = path.to_string_lossy().to_string();
+        let _ = std::fs::remove_file(&path);
+        let store = Store::new(&path_str).unwrap();
+        store
+            .upsert_memory("tacit/general", "embedded", "value a", None, None, "u1")
+            .unwrap();
+        store
+            .upsert_memory("tacit/general", "bare", "value b", None, None, "u1")
+            .unwrap();
+        store
+            .upsert_memory("tacit/general", "orphan-chunk", "value c", None, None, "u2")
+            .unwrap();
+        let embedded = store
+            .get_memory_by_key_and_user("tacit/general", "embedded", "u1")
+            .unwrap()
+            .unwrap();
+        let bare = store
+            .get_memory_by_key_and_user("tacit/general", "bare", "u1")
+            .unwrap()
+            .unwrap();
+        let orphan = store
+            .get_memory_by_key_and_user("tacit/general", "orphan-chunk", "u2")
+            .unwrap()
+            .unwrap();
+
+        // Fully embedded: chunk + embedding row.
+        let chunk = store
+            .insert_memory_chunk(Some(embedded.id), 0, "value a", "memory", "", 0, 7, "m", "u1")
+            .unwrap();
+        store
+            .insert_memory_embedding(chunk, "m", 3, &[0u8; 12])
+            .unwrap();
+        // 0113-style victim: chunk exists but its embedding insert failed.
+        let orphan_chunk = store
+            .insert_memory_chunk(Some(orphan.id), 0, "value c", "memory", "", 0, 7, "m", "u2")
+            .unwrap();
+
+        let missing = store.list_memories_missing_embeddings().unwrap();
+        let ids: Vec<i64> = missing.iter().map(|m| m.id).collect();
+        assert!(!ids.contains(&embedded.id), "embedded memory must be skipped");
+        assert!(ids.contains(&bare.id), "chunk-less memory is missing");
+        assert!(ids.contains(&orphan.id), "unembedded chunk still counts as missing");
+        assert_eq!(ids.len(), 2);
+
+        // Backfill prep: clearing the orphan's stale chunk removes the row but
+        // keeps the memory selectable for re-embedding.
+        store.delete_chunks_for_memory(orphan.id).unwrap();
+        assert!(store.get_memory_chunk(orphan_chunk).unwrap().is_none());
+        let missing_after = store.list_memories_missing_embeddings().unwrap();
+        assert_eq!(missing_after.len(), 2);
 
         let _ = std::fs::remove_file(&path);
     }

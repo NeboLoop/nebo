@@ -2,7 +2,7 @@
 //!
 //! A notebook is JSON with a top-level `cells` array. `os(file, edit)` would corrupt
 //! that structure (string replace across JSON), so cell-level edits go through here.
-//! Mirrors Claude Code's NotebookEdit: replace / insert / delete a cell, located by its
+//! Cell-level edits: replace / insert / delete a cell, located by its
 //! `id` (nbformat ≥4.5) or by zero-based index.
 
 use crate::errors;

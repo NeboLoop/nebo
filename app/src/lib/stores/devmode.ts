@@ -1,11 +1,12 @@
 import { writable } from 'svelte/store';
+import { storage } from '$lib/storage';
 
 // Persisted dev mode toggle — gates advanced settings like Providers, Routing, Secrets
-const stored = typeof localStorage !== 'undefined' ? localStorage.getItem('nebo-devmode') : null;
+const stored = storage.get('nebo-devmode');
 export const devMode = writable(stored === 'true');
 
 devMode.subscribe(v => {
-  if (typeof localStorage !== 'undefined') {
-    localStorage.setItem('nebo-devmode', String(v));
+  {
+    storage.set('nebo-devmode', String(v));
   }
 });

@@ -1,6 +1,8 @@
 <script lang="ts">
+  import { t } from 'svelte-i18n';
   import { page } from '$app/stores';
-  import { goto } from '$app/navigation';
+  import { goto, appPath } from '$lib/nav';
+  import { backendHealth } from '$lib/api/base';
   import { devMode } from '$lib/stores/devmode.js';
   import Cloud from 'lucide-svelte/icons/cloud';
   import User from 'lucide-svelte/icons/user';
@@ -30,41 +32,38 @@
   let appVersion = $state('');
 
   onMount(async () => {
-    try {
-      const resp = await fetch('/health');
-      const data = await resp.json();
-      if (data?.version) appVersion = data.version;
-    } catch { /* keep empty */ }
+    const data = await backendHealth();
+    if (data?.version) appVersion = data.version;
   });
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   interface NavItem { id: string; path: string; label: string; icon: typeof SvelteComponent<any>; devOnly?: boolean }
 
   const allItems: (NavItem | null)[] = [
-    { id: 'account', path: '/settings/account', label: 'Account', icon: Cloud },
-    { id: 'profile', path: '/settings/profile', label: 'Profile', icon: User },
-    { id: 'billing', path: '/settings/billing', label: 'Billing', icon: CreditCard },
-    { id: 'usage', path: '/settings/usage', label: 'Usage', icon: BarChart3 },
+    { id: 'account', path: '/settings/account', label: 'settings.navItems.account', icon: Cloud },
+    { id: 'profile', path: '/settings/profile', label: 'settings.navItems.profile', icon: User },
+    { id: 'billing', path: '/settings/billing', label: 'settings.navItems.billing', icon: CreditCard },
+    { id: 'usage', path: '/settings/usage', label: 'settings.navItems.usage', icon: BarChart3 },
     null,
-    { id: 'agents', path: '/settings/agents', label: 'Agents', icon: Bot },
-    { id: 'skills', path: '/settings/skills', label: 'Skills', icon: Zap },
-    { id: 'plugins', path: '/settings/plugins', label: 'Plugins', icon: Puzzle },
-    { id: 'mcp', path: '/settings/mcp', label: 'MCP', icon: Cable },
-    { id: 'browser', path: '/settings/browser', label: 'Browser', icon: Globe },
-    { id: 'updates', path: '/settings/updates', label: 'Updates', icon: RefreshCw },
+    { id: 'agents', path: '/settings/agents', label: 'settings.navItems.agents', icon: Bot },
+    { id: 'skills', path: '/settings/skills', label: 'settings.navItems.skills', icon: Zap },
+    { id: 'plugins', path: '/settings/plugins', label: 'settings.navItems.plugins', icon: Puzzle },
+    { id: 'mcp', path: '/settings/mcp', label: 'settings.navItems.mcp', icon: Cable },
+    { id: 'browser', path: '/settings/browser', label: 'settings.navItems.browser', icon: Globe },
+    { id: 'updates', path: '/settings/updates', label: 'settings.navItems.updates', icon: RefreshCw },
     null,
-    { id: 'providers', path: '/settings/providers', label: 'Providers', icon: Key, devOnly: true },
-    { id: 'routing', path: '/settings/routing', label: 'Routing', icon: Cpu, devOnly: true },
-    { id: 'secrets', path: '/settings/secrets', label: 'Secrets', icon: Lock, devOnly: true },
-    { id: 'events', path: '/settings/events', label: 'System Events', icon: Radio, devOnly: true },
+    { id: 'providers', path: '/settings/providers', label: 'settings.navItems.providers', icon: Key, devOnly: true },
+    { id: 'routing', path: '/settings/routing', label: 'settings.navItems.routing', icon: Cpu, devOnly: true },
+    { id: 'secrets', path: '/settings/secrets', label: 'settings.navItems.secrets', icon: Lock, devOnly: true },
+    { id: 'events', path: '/settings/events', label: 'settings.navItems.systemEvents', icon: Radio, devOnly: true },
     null,
-    { id: 'permissions', path: '/settings/permissions', label: 'Permissions', icon: Shield },
+    { id: 'permissions', path: '/settings/permissions', label: 'settings.navItems.permissions', icon: Shield },
     null,
-    { id: 'status', path: '/settings/status', label: 'Status', icon: Activity },
+    { id: 'status', path: '/settings/status', label: 'settings.navItems.status', icon: Activity },
     null,
-    { id: 'developer', path: '/settings/developer', label: 'Developer', icon: Code },
+    { id: 'developer', path: '/settings/developer', label: 'settings.navItems.developer', icon: Code },
     null,
-    { id: 'about', path: '/settings/about', label: 'About', icon: Info },
+    { id: 'about', path: '/settings/about', label: 'settings.navItems.about', icon: Info },
   ];
 
   // Filter out devOnly items when dev mode is off, and collapse adjacent nulls
@@ -83,7 +82,7 @@
 
   const allTabs = $derived(items.filter((i): i is NavItem => i !== null));
   const activeTab = $derived(
-    allTabs.find(t => $page.url.pathname.startsWith(t.path))?.id || 'account'
+    allTabs.find(t => appPath($page.url.pathname).startsWith(t.path))?.id || 'account'
   );
 
   function closeSettings() {
@@ -106,23 +105,23 @@
     <!-- Header -->
     <div class="flex items-center justify-between px-6 py-4 border-b border-base-content/10 shrink-0">
       <div class="flex items-center gap-3">
-        <h1 class="font-display text-lg font-bold text-base-content">Settings</h1>
+        <h1 class="font-display text-lg font-bold text-base-content">{$t('settings.title')}</h1>
         {#if appVersion}<span class="text-xs text-base-content/50">v{appVersion}</span>{/if}
       </div>
       <button
         class="p-1.5 rounded-full hover:bg-base-content/10 transition-colors cursor-pointer bg-transparent border-none"
         onclick={closeSettings}
-        aria-label="Close settings"
+        aria-label={$t('settings.closeSettings')}
       >
         <X class="w-4 h-4 text-base-content/90" />
       </button>
     </div>
 
     <!-- Body: sidebar + content -->
-    <div class="flex flex-1 min-h-0 overflow-hidden">
+    <div class="flex max-md:flex-col flex-1 min-h-0 overflow-hidden">
       <!-- Nav sidebar -->
-      <nav class="w-48 shrink-0 border-r border-base-content/10 overflow-y-auto py-3 px-2" aria-label="Settings navigation">
-        <ul class="flex flex-col gap-0.5">
+      <nav class="w-48 max-md:w-full shrink-0 border-r max-md:border-r-0 max-md:border-b border-base-content/10 overflow-y-auto max-md:overflow-x-auto py-3 max-md:py-2 px-2" aria-label={$t('settings.settingsNav')}>
+        <ul class="flex flex-col max-md:flex-row max-md:gap-1 gap-0.5 max-md:w-max">
           {#each items as item}
             {#if item === null}
               <li class="h-3"></li>
@@ -136,7 +135,7 @@
                   aria-current={activeTab === item.id ? 'page' : undefined}
                 >
                   <item.icon class="w-4 h-4 shrink-0" />
-                  <span class="font-medium">{item.label}</span>
+                  <span class="font-medium">{$t(item.label)}</span>
                 </a>
               </li>
             {/if}

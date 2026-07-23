@@ -399,6 +399,9 @@ pub struct McpIntegrationOAuth {
     pub oauth_client_id: Option<String>,
     pub oauth_client_secret: Option<String>,
     pub oauth_token_endpoint: Option<String>,
+    /// The redirect_uri the flow STARTED with — the token exchange must present
+    /// this exact value (RFC 6749), never one recomputed from the callback.
+    pub oauth_redirect_uri: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

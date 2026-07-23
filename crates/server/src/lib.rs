@@ -12,6 +12,7 @@ mod heartbeat;
 pub mod middleware;
 mod migration;
 mod plugin_commands;
+pub(crate) mod plugin_oauth;
 mod plugin_provider;
 mod redact;
 pub mod routes;
@@ -87,6 +88,20 @@ fn wants_coordination(text: &str) -> bool {
         "one plan together",
     ];
     PHRASES.iter().any(|p| t.contains(p))
+}
+
+/// Best-effort claim extraction from a JWT payload — no signature verification.
+/// Only used on the provisioner-injected NEBO_BOT_TOKEN to mirror its ownerId
+/// into profile metadata the same way the OAuth pathway records owner_id; the
+/// token itself is verified by the services that consume it.
+fn jwt_claim(token: &str, claim: &str) -> Option<String> {
+    use base64::Engine;
+    let payload = token.split('.').nth(1)?;
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload)
+        .ok()?;
+    let v: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    v.get(claim)?.as_str().map(|s| s.to_string())
 }
 
 /// Seed the provider_models table from the embedded models.yaml catalog.
@@ -599,7 +614,18 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         Err(e) => warn!(error = %e, "failed to clean up orphaned workflow runs"),
     }
 
-    // Ensure bot_id exists: file → DB (Go migration) → generate new
+    // Cloud/container deploys are provisioned as a specific bot up front, so
+    // there is no interactive pairing flow to run. NEBO_BOT_ID seeds the same
+    // file the pairing flow writes, so the chain below is unchanged.
+    if config::read_bot_id().is_none()
+        && let Ok(id) = std::env::var("NEBO_BOT_ID")
+        && id.len() == 36
+    {
+        config::write_bot_id(&id)?;
+        info!(bot_id = %id, "seeded bot_id from NEBO_BOT_ID");
+    }
+
+    // Ensure bot_id exists: env → file → DB (Go migration) → generate new
     if config::read_bot_id().is_none() {
         // Check DB for bot_id set by the Go version (plugin_settings table)
         let from_db = store
@@ -621,12 +647,93 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         let _ = store.set_plugin_setting("neboai", "bot_id", &bot_id);
     }
 
+    // Seed the NeboAI credential for env-provisioned (cloud) deploys as an active
+    // auth profile — the counterpart to NEBO_BOT_ID above. This is the SAME store
+    // the OAuth callback writes and `activate_neboai`/`neboai_token` read, so the
+    // pod auto-connects to the loop on boot with NO interactive OAuth (a cloud bot's
+    // identity is provisioned up front, not paired in a browser). Seed ONLY when no
+    // active profile exists: the token rotates at runtime and persists back to this
+    // profile, so re-seeding the original env value on restart would push a stale
+    // token and fail auth.
+    if let Ok(tok) = std::env::var("NEBO_BOT_TOKEN")
+        && !tok.is_empty()
+    {
+        // The profile metadata MUST carry janus_provider — build_providers only
+        // constructs the Janus LLM provider when it's present (same key the
+        // OAuth pathway writes in store_neboai_profile). Without it a cloud pod
+        // connects to the loop but has NO providers and rejects every run.
+        let mut meta = serde_json::Map::new();
+        meta.insert("janus_provider".into(), "true".into());
+        if let Some(owner) = jwt_claim(&tok, "ownerId") {
+            meta.insert("owner_id".into(), owner.into());
+        }
+        let meta_json = serde_json::Value::Object(meta).to_string();
+
+        let existing = store
+            .list_all_active_auth_profiles_by_provider("neboai")
+            .unwrap_or_default();
+        if existing.is_empty() {
+            // Seed failure means the pod can't authenticate to the loop, so surface it
+            // rather than discarding — the cloud bot would silently never connect.
+            let id = uuid::Uuid::new_v4().to_string();
+            match store.create_auth_profile(
+                &id,
+                "NeboAI",
+                "neboai",
+                &tok,
+                None,
+                Some(&cfg.neboai.api_url),
+                0,
+                1,
+                Some("token"),
+                Some(&meta_json),
+            ) {
+                Ok(_) => info!("seeded NeboAI auth profile from NEBO_BOT_TOKEN (first boot)"),
+                Err(e) => warn!(error = %e, "failed to seed NeboAI auth profile from NEBO_BOT_TOKEN"),
+            }
+        } else if let Some(profile) = existing.first() {
+            // Repair pods seeded before the metadata fix: patch janus_provider in
+            // (merging any existing metadata) WITHOUT touching the api_key, which
+            // rotates at runtime. Desktop installs never set NEBO_BOT_TOKEN, so
+            // their OAuth-managed profiles are never touched here.
+            let mut merged = profile
+                .metadata
+                .as_deref()
+                .and_then(|m| serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(m).ok())
+                .unwrap_or_default();
+            if !merged.contains_key("janus_provider") {
+                for (k, v) in serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&meta_json)
+                    .unwrap_or_default()
+                {
+                    merged.entry(k).or_insert(v);
+                }
+                let merged_json = serde_json::Value::Object(merged).to_string();
+                match store.update_auth_profile_metadata(&profile.id, &merged_json) {
+                    Ok(_) => info!("repaired NeboAI auth profile metadata (janus_provider seeded)"),
+                    Err(e) => warn!(error = %e, "failed to repair NeboAI auth profile metadata"),
+                }
+            }
+        }
+    }
+
     // NOTE: setup/onboarding completion is driven ONLY by the user finishing
     // the onboarding flow (POST /api/v1/setup/complete -> mark_setup_complete()).
     // We must NOT auto-mark it here just because a bot_id exists: bot_id is
     // generated automatically on first boot (above), so auto-marking would fire
     // on a brand-new install before the user ever sees onboarding, causing the
     // app to skip straight into the main view.
+    //
+    // The ONE exception is server mode: a provisioned cloud pod has no human at
+    // the machine to click through desktop onboarding (permissions, Full Access,
+    // account linking) — its identity and credentials are injected at provision
+    // time above. Without this, opening the bot through the tunnel lands on an
+    // onboarding flow that can never be completed.
+    if tools::server_mode() && !config::is_setup_complete().unwrap_or(false) {
+        match config::mark_setup_complete() {
+            Ok(()) => info!("server mode: marked setup complete (provisioned deploy, no interactive onboarding)"),
+            Err(e) => warn!(error = %e, "server mode: failed to mark setup complete"),
+        }
+    }
 
     // Initialize auth service
     let auth_service = Arc::new(auth::AuthService::new(store.clone(), cfg.clone()));
@@ -642,6 +749,17 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         gemini = cli_statuses.gemini.installed,
         "CLI detection complete"
     );
+
+    // Seed the provider_models catalog BEFORE building providers. On a fresh
+    // database (first boot of a provisioned cloud pod) build_providers' Janus
+    // has-active-chat-models gate reads this table — seeding it afterwards
+    // left every newly provisioned bot with NO LLM provider until a restart
+    // (observed live: providers built at t+0.0s, catalog seeded at t+1.3s).
+    {
+        let boot_models_cfg = config::ModelsConfig::load();
+        seed_models_from_catalog(&store, &boot_models_cfg);
+        info!("seeded provider_models from embedded catalog (pre-provider-build)");
+    }
 
     // Build AI providers from database auth profiles + active CLI providers
     let mut providers = build_providers(&store, &cfg, Some(&cli_statuses));
@@ -717,6 +835,11 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
             if let Err(e) = browser::native_host::install_manifest(&nebo_binary, local_ext_id) {
                 warn!("failed to install native messaging manifest: {}", e);
             }
+        }
+        // Generate the per-install relay secret so it exists before any relay
+        // (launched by the browser) connects to /ws/extension.
+        if let Err(e) = config::ensure_extension_secret() {
+            warn!("failed to prepare extension relay secret: {}", e);
         }
     }
 
@@ -896,6 +1019,33 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         agent::search_adapter::HybridSearchAdapter::new(store.clone(), embedding_provider.clone()),
     );
 
+    // Embed-on-store hook: explicit memory-tool stores go through the SAME
+    // chunk+embed pathway as automatic extraction. Absent when no embedding
+    // provider is configured (the hook would have nothing to embed with).
+    let memory_embedder: Option<Arc<dyn tools::MemoryEmbedder>> =
+        embedding_provider.clone().map(|ep| {
+            Arc::new(agent::search_adapter::MemoryEmbedAdapter::new(
+                store.clone(),
+                ep,
+            )) as Arc<dyn tools::MemoryEmbedder>
+        });
+
+    // Background boot maintenance for vector recall, skipped entirely when no
+    // embedding provider exists:
+    // 1. backfill memories that have no embeddings (victims of the
+    //    migration-0113 dangling-FK bug plus rows stored before all write
+    //    paths embedded) — batched + rate-limited inside;
+    // 2. pre-warm the embedding provider and per-user ANN indexes (runs even
+    //    when the backfill had nothing to do) so the first chat's recall
+    //    doesn't pay the cold-provider + lazy-index-build cost.
+    if let Some(ep) = embedding_provider.clone() {
+        let store_boot = store.clone();
+        tokio::spawn(async move {
+            agent::memory::backfill_missing_embeddings(store_boot.clone(), ep.clone()).await;
+            agent::search_adapter::prewarm(&store_boot, ep.as_ref()).await;
+        });
+    }
+
     // Initialize napp package registry
     let napp_config = napp::RegistryConfig {
         installed_tools_dir: data_dir.join("nebo").join("tools"),
@@ -961,7 +1111,8 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
             orch_handle.clone(),
             Some(skill_loader.clone()),
             advisor_runner,
-            Some(hybrid_searcher),
+            Some(hybrid_searcher.clone()),
+            memory_embedder,
             structured_agent,
             None, // workflow_manager registered separately after Runner is created
             None,
@@ -1253,16 +1404,24 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         Some(skill_loader.clone()),
     )
     .set_ask_channels(ask_channels.clone())
-    .set_approval_channels(approval_channels.clone());
+    .set_approval_channels(approval_channels.clone())
+    // Same adapter instance as the memory tool — one search pathway, one
+    // TurboVec index cache — powering per-message prompt recall.
+    .set_hybrid_searcher(hybrid_searcher);
 
-    if let Some(ep) = embedding_provider {
+    if let Some(ep) = embedding_provider.clone() {
         runner_builder = runner_builder.set_embedding_provider(ep);
     }
 
     let runner = Arc::new(runner_builder);
 
-    // Spawn background memory consolidation sweep (30-min interval, per-scope dedup/prune)
-    agent::memory_consolidation::spawn_sweep(store.clone(), runner.providers());
+    // Spawn background memory consolidation sweep (30-min interval, per-scope
+    // dedup/prune); the embedding provider keeps merged values' vectors fresh.
+    agent::memory_consolidation::spawn_sweep(
+        store.clone(),
+        runner.providers(),
+        embedding_provider,
+    );
 
     // Create event bus and dispatcher for workflow-to-workflow events
     let (event_bus, event_rx) = tools::EventBus::new();
@@ -1304,6 +1463,12 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
             .set_license_keys(cached_license_keys.clone())
             .await;
     }
+    // Self-heal failed-install debris BEFORE the first scan: an EMPTY
+    // agents/<slug>/ dir (the pre-atomic installer created the dir before the
+    // payload arrived) can never load, but it made the marketplace report the
+    // agent as "installed" and blocked reinstall. Removing it is safe — an
+    // empty dir contains no user data — and unblocks reinstall.
+    heal_agent_install_debris(&data_dir.join("nebo"));
     agent_loader.load_all().await;
     let (_watcher_handle, agent_fs_rx) = agent_loader.watch();
     tool_registry.set_agent_loader(agent_loader.clone());
@@ -1404,26 +1569,35 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
                 sync_agent_workflows(&store, &agent_id_for_bindings, config);
             }
         }
-        // Filesystem is the source of truth. Remove any DB agent not on the filesystem.
+        // Filesystem is the source of truth for which agents are active.
+        // Soft-deactivate any DB agent not on the filesystem — same policy as
+        // the fs-watcher's Removed branch. Do NOT delete: the listing may be
+        // incomplete (partial load_all after transient IO), and the user may
+        // re-add the directory; chats/sessions/memories must survive.
         let fs_ids: std::collections::HashSet<String> = fs_agents
             .iter()
             .map(|a| a.id.clone().unwrap_or_else(|| a.agent_def.name.clone()))
             .collect();
         if let Ok(db_agents) = store.list_agents(1000, 0) {
-            let mut removed = 0usize;
+            let mut deactivated = 0usize;
             for db_agent in &db_agents {
-                if !fs_ids.contains(&db_agent.id) {
-                    let _ = store.delete_agent_chats(&db_agent.id);
-                    let _ = store.delete_agent_sessions(&db_agent.id);
-                    let _ = store.delete_agent_memories(&db_agent.id);
-                    let _ = store.delete_agent_workflow_runs(&db_agent.id);
-                    let _ = store.delete_agent(&db_agent.id);
-                    removed += 1;
-                    info!(id = %db_agent.id, name = %db_agent.name, "removed orphan agent and associated data from DB");
+                if !fs_ids.contains(&db_agent.id) && db_agent.is_enabled != 0 {
+                    match store.set_agent_enabled(&db_agent.id, false) {
+                        Ok(()) => {
+                            deactivated += 1;
+                            info!(id = %db_agent.id, name = %db_agent.name, "deactivated orphan agent missing from filesystem (data preserved)");
+                        }
+                        Err(e) => {
+                            warn!(id = %db_agent.id, error = %e, "failed to deactivate orphan agent");
+                        }
+                    }
                 }
             }
-            if removed > 0 {
-                info!(removed, "cleaned up orphan agents from DB");
+            if deactivated > 0 {
+                info!(
+                    deactivated,
+                    "deactivated orphan agents missing from filesystem"
+                );
             }
         }
 
@@ -1541,9 +1715,8 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // Recover incomplete sub-agent tasks from previous crash
     orch_handle.get().unwrap().recover().await;
 
-    // Seed provider_models table from the models catalog loaded earlier
-    seed_models_from_catalog(&store, &models_cfg);
-    info!("seeded provider_models from embedded catalog");
+    // provider_models is seeded earlier, BEFORE build_providers (fresh-DB
+    // first boots need the catalog present when the Janus gate reads it).
     let models_config = Arc::new(models_cfg);
 
     // Create snapshot store for browser accessibility snapshots
@@ -1580,6 +1753,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         auth: auth_service,
         hub,
         runner,
+        goal_tracker: Arc::new(agent::goals::GoalTracker::new()),
         tools: tool_registry,
         bridge,
         napp_registry,
@@ -1618,6 +1792,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         )),
         channel_context: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         channel_engagement: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
+        store_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
     };
 
     // Install the chat-title sink: the runner generates+persists titles for every
@@ -1952,9 +2127,69 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         });
     }
 
+    // Management-tunnel watcher — dials the hub and keeps the tunnel alive
+    // (docs/plans/nebo-cloud-architecture.md, Plane B). Every bot — desktop
+    // and cloud — is reached through its outbound tunnel, so this runs
+    // whenever NeboAI is enabled; until credentials exist it just idles.
+    if cfg.is_neboai_enabled() && !cfg.neboai.tunnel_url.is_empty() {
+        let tunnel_state = state.clone();
+        let local_addr = format!("127.0.0.1:{}", cfg.port);
+        tokio::spawn(async move {
+            let mut backoff_secs: u64 = 30;
+            loop {
+                let Some(token) = codes::neboai_token(&tunnel_state) else {
+                    // Not activated yet — poll until credentials appear.
+                    tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                    continue;
+                };
+                let started = std::time::Instant::now();
+                let hub_url = tunnel_state.config.neboai.tunnel_url.clone();
+                match comm::tunnel::run(&hub_url, &token, &local_addr).await {
+                    Ok(()) => info!("tunnel: closed by hub, redialing"),
+                    Err(e) => info!("tunnel: {e}"),
+                }
+                // A connection that lived a while earns a quick redial;
+                // repeated fast failures back off like the comms watcher.
+                let delay = if started.elapsed() > std::time::Duration::from_secs(60) {
+                    backoff_secs = 30;
+                    5
+                } else {
+                    backoff_secs = (backoff_secs * 2).min(600);
+                    backoff_secs
+                };
+                tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
+            }
+        });
+    }
+
     // Spawn background update checker (skip in debug/dev builds)
     if cfg!(debug_assertions) {
         tracing::debug!("skipping background update checker in dev build");
+    } else if tools::server_mode() {
+        // Cloud pod: poll the loop's per-bot pinned-image state instead of the
+        // desktop CDN feed. Notify-only — the banner offers "Update"; applying
+        // is the owner's consent (update_apply re-pins via the loop and the
+        // reconciler restarts the pod). Never auto-download, never self-swap.
+        let update_hub = state.hub.clone();
+        let update_state = state.clone();
+        tokio::spawn(async move {
+            // Let comms/credentials come up before the first check.
+            tokio::time::sleep(std::time::Duration::from_secs(120)).await;
+            loop {
+                match crate::handlers::agent::cloud_update_check(&update_state).await {
+                    Ok(check) => {
+                        if check.get("available").and_then(|v| v.as_bool()) == Some(true) {
+                            update_hub.broadcast("update_available", check.clone());
+                            // No download phase in the cloud — available IS ready,
+                            // which is what surfaces the banner.
+                            update_hub.broadcast("update_ready", check);
+                        }
+                    }
+                    Err(e) => tracing::debug!(error = %e, "cloud update check failed"),
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+            }
+        });
     } else {
         let update_hub = state.hub.clone();
         let download_hub = state.hub.clone();
@@ -2483,6 +2718,72 @@ async fn handle_agent_fs_events(
     }
 
     warn!("agent filesystem event channel closed");
+}
+
+/// Remove failed-install debris under `<nebo>/agents` at boot:
+/// - EMPTY `agents/<slug>/` dirs — the pre-atomic installer created the dir
+///   before downloading the payload, so a failed download left an empty dir
+///   that the marketplace read as "installed" while the agent never existed.
+///   Uses `fs::remove_dir`, which only succeeds on EMPTY directories, so real
+///   agent content can never be deleted.
+/// - Any leftover `.staging/` payloads from an install interrupted mid-flight
+///   (the atomic installer stages there and renames into place on success).
+fn heal_agent_install_debris(nebo_dir: &std::path::Path) {
+    let agents_root = nebo_dir.join("agents");
+    if let Ok(entries) = std::fs::read_dir(&agents_root) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let is_empty = std::fs::read_dir(&path)
+                .map(|mut e| e.next().is_none())
+                .unwrap_or(false);
+            if !is_empty {
+                continue;
+            }
+            match std::fs::remove_dir(&path) {
+                Ok(()) => tracing::error!(
+                    dir = %path.display(),
+                    "removed EMPTY agent directory — debris from a failed install (the agent was never actually installed); reinstall it from the marketplace"
+                ),
+                Err(e) => warn!(dir = %path.display(), error = %e, "failed to remove empty agent directory"),
+            }
+        }
+    }
+    let staging = nebo_dir.join(".staging");
+    if staging.is_dir() {
+        match std::fs::remove_dir_all(&staging) {
+            Ok(()) => warn!(dir = %staging.display(), "removed leftover install staging directory (install was interrupted mid-flight)"),
+            Err(e) => warn!(dir = %staging.display(), error = %e, "failed to remove leftover install staging directory"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod install_debris_tests {
+    use super::heal_agent_install_debris;
+
+    #[test]
+    fn removes_only_empty_agent_dirs_and_staging() {
+        let tmp = tempfile::tempdir().unwrap();
+        let nebo = tmp.path();
+        // Debris: empty dir from a failed install.
+        std::fs::create_dir_all(nebo.join("agents").join("sdr")).unwrap();
+        // Real install: must be untouched.
+        let real = nebo.join("agents").join("closer").join("1.0.0");
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::write(real.join("AGENT.md"), "---\nname: Closer\n---\n").unwrap();
+        // Leftover staging payload from an interrupted install.
+        std::fs::create_dir_all(nebo.join(".staging").join("agent-x-1")).unwrap();
+        std::fs::write(nebo.join(".staging").join("agent-x-1").join("1.0.0.napp"), b"partial").unwrap();
+
+        heal_agent_install_debris(nebo);
+
+        assert!(!nebo.join("agents").join("sdr").exists(), "empty dir removed");
+        assert!(real.join("AGENT.md").exists(), "real install preserved");
+        assert!(!nebo.join(".staging").exists(), "staging swept");
+    }
 }
 
 /// Sync workflow bindings from an AgentConfig into the agent_workflows table.
@@ -4231,14 +4532,38 @@ async fn process_comm_attachments(
                 }
             }
         } else {
-            // Append a text description for non-image attachments
+            // Non-image attachments (video, audio, documents): download to
+            // <data_dir>/files/uploads/ and hand the agent the LOCAL PATH — a
+            // bare "[Attached: name]" gives it nothing to operate on, and the
+            // loop URL needs auth its tools don't have.
             let size_kb = att.size / 1024;
             let size_label = if size_kb >= 1024 {
                 format!("{:.1} MB", size_kb as f64 / 1024.0)
             } else {
                 format!("{} KB", size_kb)
             };
-            prompt.push_str(&format!("\n[Attached: {} ({})]", att.filename, size_label));
+            let saved = match api.download_file(&att.file_id).await {
+                Ok(bytes) => config::data_dir().ok().and_then(|d| {
+                    let dir = d.join("files").join("uploads");
+                    std::fs::create_dir_all(&dir).ok()?;
+                    // file_id-prefixed name: unique, stable across re-sends.
+                    let short_id: String = att.file_id.chars().take(8).collect();
+                    let path = dir.join(format!("{}-{}", short_id, att.filename));
+                    std::fs::write(&path, &bytes).ok()?;
+                    Some(path.to_string_lossy().to_string())
+                }),
+                Err(e) => {
+                    tracing::warn!(file_id = %att.file_id, error = %e, "failed to download attachment");
+                    None
+                }
+            };
+            match saved {
+                Some(path) => prompt.push_str(&format!(
+                    "\n[Attached: {} ({}) — saved at {}]",
+                    att.filename, size_label, path
+                )),
+                None => prompt.push_str(&format!("\n[Attached: {} ({})]", att.filename, size_label)),
+            }
         }
     }
 

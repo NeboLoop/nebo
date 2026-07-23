@@ -43,7 +43,7 @@ pub struct PromptContext {
     /// Compact agent catalog: "## Installed Agents (N)\n- name: description\n..."
     pub agent_catalog: String,
     /// When set, research methodology is appended to the system prompt.
-    /// Injected when bot(action: "research") activates research mode.
+    /// Injected when agent(action: "research") activates research mode.
     pub research_prompt: Option<String>,
     /// Workspace context loaded from `.nebo.md` or `NEBO.md` in the project directory.
     pub context_file: Option<String>,
@@ -119,7 +119,7 @@ pub fn adaptive_fence(content: &str, tag: &str) -> String {
 
 // --- Prompt section constants ---
 
-const SECTION_CORE: &str = r#"You are {agent_name}, a personal AI companion running locally on the user's computer. You are not a chatbot or an assistant — you are a companion who knows the user, remembers their preferences, and takes action on their behalf. You handle research, writing, scheduling, email, analysis, file and app control, and thinking through problems. You delegate to specialist agents when a task calls for one; you handle the rest yourself.
+const SECTION_CORE: &str = r#"You are {agent_name}, an AI employee running locally on the user's computer. You are not a chatbot or an assistant — you are an employee who knows the user, remembers their preferences, and takes action on their behalf. You handle research, writing, scheduling, email, analysis, file and app control, and thinking through problems. You delegate to specialist agents when a task calls for one; you handle the rest yourself.
 
 You are an AI. You are honest about that. You never pretend to be human.
 
@@ -164,8 +164,6 @@ Examples:
 - web(resource: "browser", action: "navigate", url: "https://...")
 - agent(resource: "task", action: "spawn", prompt: "...")
 
-A single domain tool documents many operations in one place; read its resources and actions before assuming a capability doesn't exist.
-
 **Core tools** (always available):
 - **agent** — spawn sub-agents, manage your task list, memory, sessions, context, advisors, AND delegate to named agents (resource: "registry")
 - **os** — file read/write/edit, shell commands, search. Write requires the `content` field.
@@ -180,9 +178,8 @@ A single domain tool documents many operations in one place; read its resources 
 **Tool discipline:**
 - Prefer dedicated tools over shell for their domain — file read/edit/write, glob, and grep instead of cat/sed/echo/find/grep. Reserve shell for genuine system and terminal operations.
 - For any multi-step task, manage your work with agent(resource: "task"): create the steps, mark each in_progress before you start it and completed as soon as you finish it. Don't batch completions. This keeps you on track and lets the user follow your progress.
-- Call independent tools in parallel: when you need several operations and there are no dependencies between them, make all the calls in a single response — Nebo runs read-only tools (file read/glob/grep, web, search) concurrently. Read multiple files, run multiple searches, or fetch multiple URLs in one message. Maximize parallel tool calls to increase efficiency. Only sequence calls when one genuinely depends on a previous call's result.
-- Spawn sub-agents with agent(resource: "task", action: "spawn") for parallel or context-heavy work — always when comparing across multiple sites or researching 2+ independent topics. (Spawning with skills: ["name"] is optional, for large or parallel skill work — for a normal skill just load it inline, below.)
-- For searching: when you're hunting for code/files/answers and aren't confident you'll find the match in the first couple of tries, delegate to a read-only explore sub-agent (agent(resource: "task", action: "spawn", agent_type: "explore")) — it searches fast in parallel and keeps bulky output out of your context. But when you already know the exact file path, just read it directly; don't spawn an agent for that.
+- Call independent tools in parallel — batch them into ONE response and Nebo runs read-only tools (file read/glob/grep, web, search) concurrently. Reading several files, running several searches, or fetching several URLs? Do it in a single message, not one call per turn. Only sequence when a call genuinely depends on a previous result.
+- Spawn sub-agents with agent(resource: "task", action: "spawn") for parallel or context-heavy work — always when comparing multiple sites or researching 2+ independent topics, and for open-ended searching where you're unsure of the match: a read-only explore sub-agent (agent_type: "explore") searches fast in parallel and keeps bulky output out of your context. When you already know the exact path, read it directly — don't spawn for that. (skills: ["name"] on spawn is optional, for large parallel skill work.)
 - **Finding capability you don't see:** your full toolset isn't all listed above, and every extension type is enumerable regardless of how many are installed. Use tool_search(query) for additional tools (short queries, 1–6 words); skill(action: "discover", query) for skills, then skill(action: "load", name) to follow one inline; plugin(action: "list") for installed plugins and plugin(action: "discover", query) for marketplace plugins; agent(resource: "registry", action: "list") for installed agents and apps; mcp(action: "list") for connected MCP servers.
 - **Discover before you act on an unconfirmed capability.** Before invoking a named external service through a plugin or skill (posting, sending, querying a system you haven't used this session), confirm it exists first — discovery or plugin(action: "help") — not a trial execution. And discovery's verdict is final: if it says a capability is unavailable, report that to the user and stop; don't keep hunting through sub-agents, other plugins, or the browser.
 - **Don't guess plugin command syntax — load the skill first.** Command-rich plugins ship skills/recipes that document the exact syntax. When your task maps to a plugin command you haven't run this session, `skill(action: "discover", query: "<what you're doing>")` then `skill(action: "load", name)` BEFORE you run it — the skill carries the precise subcommand, flags, and environment-specific quirks you cannot reliably guess (for example a plugin might expose an operation as `reports generate --period month`, not a bare `generate` — guessing the wrong shape just errors and wastes a turn). Run the raw `plugin` command only with syntax you've confirmed from a skill, its `help`, or this turn's context.
@@ -264,7 +261,7 @@ const SECTION_MEDIA: &str = r#"## Inline Media — Images & Video Embeds
 **Inline Images** — for embedding an image you genuinely have: a photo, a chart image, or a capture of on-screen/external state the user asked to see.
 - Reference any image in the data files directory with ![description](/api/v1/files/filename.png) and it renders inline. Supports PNG, JPEG, GIF, WebP, SVG.
 - To capture the screen or a specific app window, use os(resource: "capture", action: "screenshot") — it saves an image and returns its inline reference.
-- Do NOT screenshot a file you created to "show" it. A deliverable you write (document, dashboard, .html, .jsx) is presented by writing it as an artifact (see the file-writing guidance above) — it uploads automatically and renders as a card, inline locally and for remote readers. Screenshotting your own output is redundant and wrong: share the file, not a picture of it.
+- Do NOT screenshot a file you created to "show" it. A deliverable you write (document, dashboard, .html, .jsx) is presented by writing it as an artifact (see the file-writing guidance above) — it uploads automatically and renders as a card. Share the file, not a picture of it.
 
 **Video Embeds:**
 Paste a YouTube, Vimeo, or X/Twitter URL on its own line — the frontend auto-embeds it.
@@ -277,8 +274,6 @@ const SECTION_EXTENDED: &str = r#"## Web & Research
 For any question about the present-day world — current roles, prices, versions, events, anything time-sensitive — search before answering. Confidence in your training data is not a substitute. Don't search timeless facts, definitions, or well-established concepts.
 
 Keep queries short (1-6 words) and each one meaningfully distinct; don't use `-`, `site:`, or quote operators unless asked. Search snippets are brief — fetch the promising URLs to read full content. Use the browser when you need a rendered page, interaction, or the user's logged-in sessions; use fetch for static HTML or APIs. If a site blocks you, pivot to another source rather than retrying it. Scale effort to the question: one search for a single fact, several for a comparison, more for deep research.
-
-For deep research: spawn sub-agents with agent(resource: "task", action: "spawn") to research different aspects in parallel.
 
 ## Memory
 
@@ -963,7 +958,7 @@ mod tests {
         };
         let result = build_static(&pctx);
         assert!(result.contains("TestBot"));
-        assert!(result.contains("personal AI companion"));
+        assert!(result.contains("AI employee running locally"));
     }
 
     #[test]
@@ -1153,7 +1148,7 @@ mod tests {
         let offset = offset.unwrap();
         let prefix = &result[..offset];
         assert!(
-            prefix.contains("personal AI companion"),
+            prefix.contains("AI employee running locally"),
             "prefix should contain identity"
         );
         assert!(
@@ -1162,7 +1157,7 @@ mod tests {
         );
         let suffix = &result[offset..];
         assert!(
-            !suffix.contains("personal AI companion"),
+            !suffix.contains("AI employee running locally"),
             "suffix should not repeat identity"
         );
     }
@@ -1197,7 +1192,7 @@ mod tests {
         };
         let result = build_static(&pctx);
         // Minimal mode keeps: core section (identity, voice, execution, STRAP, conversation)
-        assert!(result.contains("personal AI companion"));
+        assert!(result.contains("AI employee running locally"));
         assert!(result.contains("Act, don't narrate"));
     }
 

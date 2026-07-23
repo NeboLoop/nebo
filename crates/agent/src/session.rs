@@ -154,14 +154,9 @@ impl SessionManager {
             }
         }
 
-        // Load from DB — prefer active_chat_id, fall back to name
-        let chat_id = self
-            .store
-            .get_session(session_id)
-            .ok()
-            .flatten()
-            .and_then(|s| s.active_chat_id.or(s.name))
-            .unwrap_or_else(|| format!("chat-{}", session_id));
+        // Load via the one canonical derivation in the db crate
+        // (active_chat_id → name → chat-{session_id}).
+        let chat_id = self.store.resolve_session_chat_id(session_id);
 
         if let Ok(mut cache) = self.chat_ids.write() {
             cache.insert(session_id.to_string(), chat_id.clone());
@@ -356,6 +351,22 @@ impl SessionManager {
     pub fn clear_current_messages(&self, session_id: &str) -> Result<(), NeboError> {
         let chat_id = self.resolve_chat_id(session_id);
         self.store.delete_chat_messages_by_chat_id(&chat_id)?;
+        self.store.reset_session_counters(session_id)?;
+        Ok(())
+    }
+
+    /// Compact the current conversation: atomically replace all messages with a
+    /// single assistant summary message. Stays in the same conversation; a
+    /// failure leaves the original messages untouched.
+    pub fn compact_current_messages(
+        &self,
+        session_id: &str,
+        summary: &str,
+    ) -> Result<(), NeboError> {
+        let chat_id = self.resolve_chat_id(session_id);
+        let msg_id = uuid::Uuid::new_v4().to_string();
+        self.store
+            .compact_chat_messages(&chat_id, &msg_id, summary)?;
         self.store.reset_session_counters(session_id)?;
         Ok(())
     }

@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { t } from 'svelte-i18n';
 	import {
 		layoutWorkflow,
 		clampZoom,
@@ -181,7 +182,7 @@
 
 {#if allNodes.length === 0}
 	<div class="flex h-full items-center justify-center">
-		<span class="text-xs text-base-content/50">No workflows to visualize</span>
+		<span class="text-xs text-base-content/50">{$t('workflowCanvas.noWorkflows')}</span>
 	</div>
 {:else}
 	<div class="flex h-full w-full">
@@ -217,21 +218,21 @@
 			<div class="absolute right-3 top-3 z-10 flex flex-col gap-1.5">
 				<button
 					class="btn btn-square btn-sm btn-ghost border border-base-300 bg-base-100"
-					title="Zoom in"
+					title={$t('commander.zoomIn')}
 					onclick={() => container && zoomToward(zoom * 1.2, { x: container.clientWidth / 2, y: container.clientHeight / 2 })}
 				>
 					<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
 				</button>
 				<button
 					class="btn btn-square btn-sm btn-ghost border border-base-300 bg-base-100"
-					title="Zoom out"
+					title={$t('commander.zoomOut')}
 					onclick={() => container && zoomToward(zoom * 0.8, { x: container.clientWidth / 2, y: container.clientHeight / 2 })}
 				>
 					<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="5" y1="12" x2="19" y2="12"/></svg>
 				</button>
 				<button
 					class="btn btn-square btn-sm btn-ghost border border-base-300 bg-base-100"
-					title="Fit to screen"
+					title={$t('workflowCanvas.fitToScreen')}
 					onclick={doFitToScreen}
 				>
 					<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
@@ -315,7 +316,7 @@
 								</div>
 							{:else if node.type === 'emit'}
 								<div class="flex flex-col items-center justify-center h-full px-3">
-									<div class="text-xs font-semibold text-accent uppercase tracking-wider">Emit</div>
+									<div class="text-xs font-semibold text-accent uppercase tracking-wider">{$t('workflowCanvas.emit')}</div>
 									<div class="text-xs text-base-content/60 font-mono truncate max-w-full mt-0.5">{node.sublabel}</div>
 								</div>
 							{:else}
@@ -338,7 +339,7 @@
 										{#if isBranch && typeDef.branchLabels}
 											<span class="text-xs text-base-content/40 font-mono">{typeDef.branchLabels.join(' / ')}</span>
 										{:else}
-											<span class="text-xs text-base-content/40 font-mono">{node.stepCount ?? 0} steps</span>
+											<span class="text-xs text-base-content/40 font-mono">{$t('automations.stepCount', { values: { count: node.stepCount ?? 0 } })}</span>
 										{/if}
 									</div>
 								</div>
@@ -363,10 +364,10 @@
 				<div class="flex items-center justify-between px-4 py-3 border-b border-base-content/10 shrink-0">
 					<div class="flex-1 min-w-0">
 						<div class="text-sm font-semibold truncate">{selectedWorkflowName}</div>
-						<div class="text-xs text-base-content/50">{selectedWf.activities?.length ?? 0} activities</div>
+						<div class="text-xs text-base-content/50">{$t('workflowCanvas.activityCount', { values: { count: selectedWf.activities?.length ?? 0 } })}</div>
 					</div>
 					<div class="flex items-center gap-1.5 shrink-0">
-						<input type="checkbox" class="toggle toggle-sm toggle-primary" checked={selectedWf.isActive !== false} role="switch" title="Enable/disable" />
+						<input type="checkbox" class="toggle toggle-sm toggle-primary" checked={selectedWf.isActive !== false} role="switch" title={$t('workflowCanvas.enableDisable')} />
 						<button class="w-6 h-6 rounded-md flex items-center justify-center hover:bg-base-200 cursor-pointer bg-transparent border-none text-base" onclick={() => { selectedNodeId = null; selectedWorkflowName = null; }}>&times;</button>
 					</div>
 				</div>
@@ -376,14 +377,14 @@
 						<!-- Activity detail -->
 						{@const act = selectedActivity}
 						<div class="mb-4">
-							<div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1">Activity</div>
+							<div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1">{$t('workflowCanvas.activity')}</div>
 							<div class="text-sm font-medium">{act.id}</div>
 							<div class="text-xs text-base-content/70 mt-0.5">{act.intent}</div>
 						</div>
 
 						{#if act.skills?.length}
 							<div class="mb-4">
-								<div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1.5">Skills</div>
+								<div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1.5">{$t('marketplace.skills')}</div>
 								<div class="flex flex-col gap-1">
 									{#each act.skills as skill}
 										<div class="py-1 px-2 rounded bg-base-200 font-mono text-xs truncate">{skill}</div>
@@ -394,7 +395,7 @@
 
 						{#if act.steps?.length}
 							<div>
-								<div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1.5">Steps</div>
+								<div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1.5">{$t('automations.steps')}</div>
 								<div class="flex flex-col gap-1">
 									{#each act.steps as step, i}
 										<div class="flex items-start gap-2 py-1.5 px-2 rounded-md border border-base-300 bg-base-100">
@@ -408,7 +409,7 @@
 					{:else}
 						<!-- Workflow overview -->
 						<div class="mb-4">
-							<div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1">Trigger</div>
+							<div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1">{$t('automations.trigger')}</div>
 							<div class="flex items-center gap-1.5">
 								<span class="text-sm capitalize">{selectedWf.trigger?.type ?? 'manual'}</span>
 								{#if selectedWf.trigger?.schedule}
@@ -421,27 +422,27 @@
 						</div>
 
 						<div class="mb-4">
-							<div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1">Description</div>
+							<div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1">{$t('agentSettings.descriptionLabel')}</div>
 							<div class="text-xs text-base-content/70 leading-relaxed">{selectedWf.description}</div>
 						</div>
 
 						{#if selectedWf.emit}
 							<div class="mb-4">
-								<div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1">Emits</div>
+								<div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1">{$t('workflowCanvas.emits')}</div>
 								<div class="py-1 px-2 rounded bg-accent/10 text-xs text-accent font-mono inline-block">{selectedWf.emit}</div>
 							</div>
 						{/if}
 
 						{#if selectedWf.lastFired}
 							<div class="mb-4">
-								<div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1">Last Fired</div>
+								<div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1">{$t('workflowCanvas.lastFired')}</div>
 								<div class="text-xs text-base-content/70 font-mono">{selectedWf.lastFired}</div>
 							</div>
 						{/if}
 
 						<!-- Activity list -->
 						<div>
-							<div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-2">Activities</div>
+							<div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-2">{$t('workflowCanvas.activities')}</div>
 							<div class="flex flex-col gap-1.5">
 								{#each selectedWf.activities ?? [] as act, idx}
 									<button
@@ -453,7 +454,7 @@
 										<div class="flex-1 min-w-0">
 											<div class="text-sm font-medium truncate">{act.id}</div>
 											<div class="text-xs text-base-content/60 truncate">{act.intent}</div>
-											<div class="text-xs text-base-content/40 font-mono mt-0.5">{act.steps?.length ?? 0} steps</div>
+											<div class="text-xs text-base-content/40 font-mono mt-0.5">{$t('automations.stepCount', { values: { count: act.steps?.length ?? 0 } })}</div>
 										</div>
 									</button>
 								{/each}
@@ -468,7 +469,7 @@
 						<button
 							class="text-xs text-primary cursor-pointer bg-transparent border-none hover:underline p-0"
 							onclick={() => selectedNodeId = null}
-						>&larr; Back to workflow overview</button>
+						>{$t('workflowCanvas.backToOverview')}</button>
 					</div>
 				{/if}
 			</div>

@@ -1,6 +1,7 @@
 <script lang="ts">
   import SettingsHeader from '$lib/components/settings/SettingsHeader.svelte';
   import { onMount } from 'svelte';
+  import { t } from 'svelte-i18n';
   import { EVENT_COLORS } from '$lib/tokens.js';
 
   let events = $state<{ id: string; type: string; source: string; payload: string; time: string }[]>([]);
@@ -26,18 +27,18 @@
   });
 </script>
 
-<SettingsHeader title="System Events" description="Live view of agent, workflow, tool, and watcher event sources." />
+<SettingsHeader title={$t('settingsEvents.title')} description={$t('settingsEvents.description')} />
 
 <!-- Filters -->
 <div class="flex gap-1.5 mb-4 flex-wrap">
-  {#each types as t}
+  {#each types as kind}
     <button
-      class="px-3 py-1 rounded-2xl border text-sm cursor-pointer transition-colors {filter === t
+      class="px-3 py-1 rounded-2xl border text-sm cursor-pointer transition-colors {filter === kind
         ? 'bg-primary/10 text-primary border-primary'
         : 'border-base-content/10 bg-base-100 hover:border-base-content/20'}"
-      onclick={() => filter = t}
+      onclick={() => filter = kind}
     >
-      {t.charAt(0).toUpperCase() + t.slice(1)}
+      {kind === 'all' ? $t('settingsMemories.all') : kind.charAt(0).toUpperCase() + kind.slice(1)}
     </button>
   {/each}
 </div>
@@ -60,6 +61,6 @@
     </div>
   {/each}
   {#if filtered.length === 0}
-    <div class="rounded-xl border border-base-300 px-4 py-6 text-center text-sm text-base-content/60">No events.</div>
+    <div class="rounded-xl border border-base-300 px-4 py-6 text-center text-sm text-base-content/60">{$t('settingsEvents.noEvents')}</div>
   {/if}
 </div>

@@ -14,8 +14,8 @@ pub struct FileTool {
     /// for the read-before-edit + staleness guard. Keyed by `session_key\u{1f}path`.
     ///
     /// Metadata only — we never cache the content (the content always travels in the
-    /// read's tool_result, and re-reads always return fresh content). This mirrors the
-    /// useful half of Claude Code's readFileState while deliberately omitting its content
+    /// read's tool_result, and re-reads always return fresh content). This keeps the
+    /// useful half of a read-state cache while deliberately omitting content
     /// dedup, whose "refer to the earlier read" stub turns into a blank once that earlier
     /// read is evicted by compaction.
     read_state: Arc<Mutex<HashMap<String, i64>>>,
@@ -203,7 +203,7 @@ impl FileTool {
             if let Ok(n) = file.read(&mut sample) {
                 if n > 0 && is_binary_content(&sample[..n], n) {
                     // Images: return them INLINE as a viewable image (data URL) so the model
-                    // actually sees the pixels — like Claude Code's Read. The runner renders
+                    // actually sees the pixels. The runner renders
                     // image_url inline for multimodal providers and routes it through the vision
                     // sidecar otherwise. One canonical "read an image" path; never make the model
                     // guess the contents.
@@ -504,10 +504,19 @@ impl FileTool {
             self.record_read(session, &path, m);
         }
 
-        if input.replace_all && count > 1 {
+        let result = if input.replace_all && count > 1 {
             ToolResult::ok(format!("Replaced {} occurrences in {}", count, path))
         } else {
             ToolResult::ok(format!("Edited {}", path))
+        };
+        // An edited work document must re-emit its artifact exactly like a write,
+        // or the Work panel keeps rendering the pre-edit version — observed live:
+        // the owner saw a stale document, told the agent "you didn't update it",
+        // and the agent spiraled into re-writing a file it had correctly edited.
+        if is_work_document(&path) {
+            result.with_image_url(path)
+        } else {
+            result
         }
     }
 
@@ -788,7 +797,7 @@ fn relativize_path(path: &str, base: &str) -> String {
 /// Extensions that count as user-facing "Work" products (reports, sheets, designs,
 /// images). Code/config/scratch files are deliberately excluded so the Work panel
 /// surfaces deliverables, not noise.
-fn is_work_document(path: &str) -> bool {
+pub(crate) fn is_work_document(path: &str) -> bool {
     const WORK_EXTS: &[&str] = &[
         "md", "pdf", "csv", "xlsx", "xls", "docx", "doc", "pptx", "ppt", "html", "png",
         "jpg", "jpeg", "gif", "svg", "webp", "mp4", "webm", "mov", "jsx", "tsx",

@@ -48,8 +48,47 @@ impl ClientHub {
     }
 }
 
+/// True when a WS handshake may reach a localhost-trust endpoint: either no
+/// Origin header (native clients — the Tauri shell, agents, relays), or an
+/// Origin whose host is loopback/Tauri (our own SPA, dev server, app iframes).
+/// A hostile web page reaching localhost via DNS-rebind or a direct
+/// `ws://127.0.0.1` connect always carries its own Origin — browsers send it
+/// unconditionally and page JS cannot suppress it — so it is rejected here.
+/// NOTE (Phase 4): remote UI through the tunnel will carry the loop's Origin;
+/// the hub must strip/rewrite Origin before proxying into the tunnel.
+fn origin_is_trusted(headers: &axum::http::HeaderMap) -> bool {
+    let Some(origin) = headers
+        .get(axum::http::header::ORIGIN)
+        .and_then(|v| v.to_str().ok())
+    else {
+        return true;
+    };
+    let Some(rest) = origin
+        .strip_prefix("http://")
+        .or_else(|| origin.strip_prefix("https://"))
+        .or_else(|| origin.strip_prefix("tauri://"))
+    else {
+        return false; // includes opaque "null" origins
+    };
+    let authority = rest.split('/').next().unwrap_or("");
+    let host = if let Some(v6) = authority.strip_prefix('[') {
+        v6.split(']').next().unwrap_or("")
+    } else {
+        authority.split(':').next().unwrap_or("")
+    };
+    matches!(host, "localhost" | "127.0.0.1" | "::1" | "tauri.localhost")
+}
+
 /// GET /ws — Main client WebSocket endpoint.
-pub async fn client_ws_handler(State(state): State<AppState>, ws: WebSocketUpgrade) -> Response {
+pub async fn client_ws_handler(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    ws: WebSocketUpgrade,
+) -> Response {
+    if !origin_is_trusted(&headers) {
+        warn!("ws: rejected upgrade from untrusted origin");
+        return axum::http::StatusCode::FORBIDDEN.into_response();
+    }
     info!("ws upgrade request received");
     ws.on_upgrade(move |socket| handle_client_ws(socket, state))
 }
@@ -58,8 +97,13 @@ pub async fn client_ws_handler(State(state): State<AppState>, ws: WebSocketUpgra
 pub async fn app_ws_handler(
     Path(agent_id): Path<String>,
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Response {
+    if !origin_is_trusted(&headers) {
+        warn!(agent = %agent_id, "ws/app: rejected upgrade from untrusted origin");
+        return axum::http::StatusCode::FORBIDDEN.into_response();
+    }
     match state.store.get_agent(&agent_id) {
         Ok(Some(agent)) if agent.is_app.unwrap_or(0) != 0 => {
             ws.on_upgrade(move |socket| handle_app_ws(socket, agent_id, state))
@@ -386,7 +430,7 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState) {
                                             seen.clear();
                                         }
                                     }
-                                    dispatch_chat(&state, &parsed, &cleanup_token).await;
+                                    dispatch_chat(&state, &parsed).await;
                                 }
                                 "cancel" => {
                                     let data = &parsed["data"];
@@ -658,19 +702,23 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState) {
                                             return;
                                         }
 
-                                        // 4. Clear messages in current conversation and insert summary
-                                        let _ = state_clone.runner.sessions().clear_current_messages(&internal_sid);
-                                        let chat_id = state_clone.runner.sessions().active_chat_id(&internal_sid);
-                                        let msg_id = uuid::Uuid::new_v4().to_string();
-                                        let _ = state_clone.store.create_chat_message(
-                                            &msg_id, &chat_id, "assistant",
+                                        // 4. Atomically replace the conversation with the summary.
+                                        // On failure the original conversation is left intact.
+                                        match state_clone.runner.sessions().compact_current_messages(
+                                            &internal_sid,
                                             &format!("**Conversation Summary**\n\n{}", summary),
-                                            None,
-                                        );
-
-                                        state_clone.hub.broadcast("session_compact", serde_json::json!({
-                                            "session_id": skey, "success": true, "summary_length": summary.len()
-                                        }));
+                                        ) {
+                                            Ok(()) => {
+                                                state_clone.hub.broadcast("session_compact", serde_json::json!({
+                                                    "session_id": skey, "success": true, "summary_length": summary.len()
+                                                }));
+                                            }
+                                            Err(e) => {
+                                                state_clone.hub.broadcast("session_compact", serde_json::json!({
+                                                    "session_id": skey, "success": false, "error": format!("failed to save summary: {}", e)
+                                                }));
+                                            }
+                                        }
                                     });
                                 }
                                 "list_active_runs" => {
@@ -1459,18 +1507,23 @@ async fn handle_builtin_slash(
                     return;
                 }
 
-                let _ = state_clone.runner.sessions().clear_current_messages(&internal_sid);
-                let chat_id = state_clone.runner.sessions().active_chat_id(&internal_sid);
-                let msg_id = uuid::Uuid::new_v4().to_string();
-                let _ = state_clone.store.create_chat_message(
-                    &msg_id, &chat_id, "assistant",
+                // Atomically replace the conversation with the summary.
+                // On failure the original conversation is left intact.
+                match state_clone.runner.sessions().compact_current_messages(
+                    &internal_sid,
                     &format!("**Conversation Summary**\n\n{}", summary),
-                    None,
-                );
-
-                state_clone.hub.broadcast("session_compact", serde_json::json!({
-                    "session_id": skey, "success": true, "summary_length": summary.len()
-                }));
+                ) {
+                    Ok(()) => {
+                        state_clone.hub.broadcast("session_compact", serde_json::json!({
+                            "session_id": skey, "success": true, "summary_length": summary.len()
+                        }));
+                    }
+                    Err(e) => {
+                        state_clone.hub.broadcast("session_compact", serde_json::json!({
+                            "session_id": skey, "success": false, "error": format!("failed to save summary: {}", e)
+                        }));
+                    }
+                }
             });
             Some("Compacting conversation...".to_string())
         }
@@ -1509,7 +1562,14 @@ async fn handle_builtin_slash(
 }
 
 /// Dispatch a chat message to the agent runner via the unified chat pipeline.
-async fn dispatch_chat(state: &AppState, msg: &serde_json::Value, conn_token: &CancellationToken) {
+///
+/// The run's cancel token is deliberately INDEPENDENT of the WS connection: a
+/// phone locking its screen (or any tunnel blip) drops the socket, and a run
+/// that died with it lost the user's work mid-stream — observed live when a
+/// cloud bot's report run was killed twice by mobile disconnects. Runs finish
+/// server-side and persist; explicit cancellation goes through the RunRegistry
+/// (the "cancel" WS message), never through connection lifetime.
+async fn dispatch_chat(state: &AppState, msg: &serde_json::Value) {
     let data = &msg["data"];
     let session_id = data["session_id"].as_str().unwrap_or("default").to_string();
     let prompt = data["prompt"].as_str().unwrap_or("").to_string();
@@ -1599,17 +1659,22 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value, conn_token: &C
         info!(count = images.len(), "extracted images from prompt");
     }
 
-    // Convert uploaded image attachments to vision content
+    // Convert uploaded attachments: images become vision content; other files
+    // (video, audio, documents) are saved locally and referenced in the prompt
+    // so the agent can operate on them.
+    let mut prompt = prompt;
     if !ws_attachments.is_empty() {
-        let mut att_prompt = prompt.clone();
         let att_images =
-            crate::process_comm_attachments(state, &ws_attachments, &mut att_prompt).await;
+            crate::process_comm_attachments(state, &ws_attachments, &mut prompt).await;
         if !att_images.is_empty() {
             info!(count = att_images.len(), "extracted images from attachments");
             images.extend(att_images);
         }
-        // att_prompt may have non-image descriptions appended — not needed for local user chat
-        // since the user already sees the filenames in the composer
+        // An image-only send has no text at all — give the stored message an
+        // honest stand-in so providers that reject empty text blocks are safe.
+        if prompt.is_empty() && !images.is_empty() {
+            prompt = "[Attached image]".to_string();
+        }
     }
 
     // Redact sensitive slash command arguments before the prompt enters storage
@@ -1817,7 +1882,7 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value, conn_token: &C
             channel: channel.clone(),
             origin: Origin::User,
             agent_id: agent_id.clone(),
-            cancel_token: conn_token.child_token(),
+            cancel_token: CancellationToken::new(),
             lane: lanes::MAIN.to_string(),
             comm_reply,
             entity_config,
@@ -2044,7 +2109,15 @@ fn inject_delegate_response(
 }
 
 /// GET /api/v1/agent/ws — Agent WebSocket endpoint for agent-to-server communication.
-pub async fn agent_ws_handler(State(state): State<AppState>, ws: WebSocketUpgrade) -> Response {
+pub async fn agent_ws_handler(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    ws: WebSocketUpgrade,
+) -> Response {
+    if !origin_is_trusted(&headers) {
+        warn!("agent/ws: rejected upgrade from untrusted origin");
+        return axum::http::StatusCode::FORBIDDEN.into_response();
+    }
     let hub = state.hub.clone();
     ws.on_upgrade(move |socket| handle_agent_ws(socket, hub))
 }
@@ -2081,9 +2154,49 @@ async fn handle_agent_ws(mut socket: WebSocket, hub: Arc<ClientHub>) {
 /// GET /ws/extension — Chrome extension bridge WebSocket endpoint.
 /// The native messaging host process connects here to relay messages
 /// between the Chrome extension and the Nebo agent.
-pub async fn extension_ws_handler(State(state): State<AppState>, ws: WebSocketUpgrade) -> Response {
+pub async fn extension_ws_handler(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    ws: WebSocketUpgrade,
+) -> Response {
+    // Reject browser-originated upgrades. The native messaging relay is a plain
+    // client and sends no Origin; a web page's WebSocket ALWAYS sends its Origin
+    // and page JS cannot suppress it, so this alone defeats the localhost-WS /
+    // DNS-rebind attack from the open web.
+    if headers.contains_key(axum::http::header::ORIGIN) {
+        warn!("ws/extension: rejected upgrade carrying an Origin header (browser-originated)");
+        return (axum::http::StatusCode::FORBIDDEN, "extension endpoint").into_response();
+    }
+    // Require the per-install relay secret (defense in depth vs. a non-browser
+    // local process). A caller that cannot read the user's data dir cannot
+    // present it. Fail closed if the secret is somehow missing.
+    let presented = headers
+        .get("x-nebo-extension-secret")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    match config::read_extension_secret() {
+        Some(secret) if constant_time_eq(presented, &secret) => {}
+        _ => {
+            warn!("ws/extension: rejected upgrade with missing/invalid relay secret");
+            return (axum::http::StatusCode::FORBIDDEN, "unauthorized").into_response();
+        }
+    }
     let bridge = state.extension_bridge.clone();
     ws.on_upgrade(move |socket| handle_extension_ws(socket, bridge))
+}
+
+/// Constant-time string comparison. The secret is fixed-length (64 hex chars),
+/// so the early length check leaks nothing useful.
+fn constant_time_eq(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b) {
+        diff |= x ^ y;
+    }
+    diff == 0
 }
 
 async fn handle_extension_ws(socket: WebSocket, bridge: Arc<browser::ExtensionBridge>) {
@@ -2173,7 +2286,7 @@ async fn handle_extension_ws(socket: WebSocket, bridge: Arc<browser::ExtensionBr
                                     } else {
                                         Ok(parsed["result"].clone())
                                     };
-                                    bridge_recv.deliver_result(id, result).await;
+                                    bridge_recv.deliver_result(conn_id, id, result).await;
                                 }
                             }
                             "batch_response" => {
@@ -2184,7 +2297,7 @@ async fn handle_extension_ws(socket: WebSocket, bridge: Arc<browser::ExtensionBr
                                     } else {
                                         Ok(parsed["result"].clone())
                                     };
-                                    bridge_recv.deliver_result(id, result).await;
+                                    bridge_recv.deliver_result(conn_id, id, result).await;
                                 }
                             }
                             "hello" | "connected" => {
@@ -2209,4 +2322,65 @@ async fn handle_extension_ws(socket: WebSocket, bridge: Arc<browser::ExtensionBr
     }
 
     bridge.disconnect(conn_id).await;
+}
+
+#[cfg(test)]
+mod origin_guard_tests {
+    use super::origin_is_trusted;
+    use axum::http::{HeaderMap, HeaderValue, header::ORIGIN};
+
+    fn with_origin(origin: &str) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        h.insert(ORIGIN, HeaderValue::from_str(origin).unwrap());
+        h
+    }
+
+    #[test]
+    fn native_clients_without_origin_pass() {
+        assert!(origin_is_trusted(&HeaderMap::new()));
+    }
+
+    #[test]
+    fn local_origins_pass() {
+        for o in [
+            "http://localhost:5173",
+            "http://localhost:27895",
+            "http://127.0.0.1:27895",
+            "http://[::1]:27895",
+            "tauri://localhost",
+            "http://tauri.localhost",
+        ] {
+            assert!(origin_is_trusted(&with_origin(o)), "{o} should be trusted");
+        }
+    }
+
+    #[test]
+    fn hostile_origins_rejected() {
+        for o in [
+            "http://evil.com",
+            "https://evil.com",
+            "http://localhost.evil.com",
+            "http://127.0.0.1.evil.com",
+            "null",
+            "file://",
+            "http://192.168.1.50:27895",
+        ] {
+            assert!(!origin_is_trusted(&with_origin(o)), "{o} should be rejected");
+        }
+    }
+}
+
+#[cfg(test)]
+mod extension_auth_tests {
+    use super::constant_time_eq;
+
+    #[test]
+    fn secret_comparison() {
+        assert!(constant_time_eq("abc123", "abc123"));
+        assert!(!constant_time_eq("abc123", "abc124"));
+        assert!(!constant_time_eq("abc123", "abc1234")); // length mismatch
+        assert!(!constant_time_eq("", "x"));
+        assert!(constant_time_eq("", "")); // empty==empty, but the handler
+        // rejects an empty stored secret via read_extension_secret returning None.
+    }
 }

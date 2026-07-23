@@ -1,7 +1,9 @@
 <script lang="ts">
   import { page } from '$app/stores';
-  import { goto } from '$app/navigation';
+  import { afterNavigate } from '$app/navigation';
+  import { goto, appPath } from '$lib/nav';
   import { onMount } from 'svelte';
+  import { t } from 'svelte-i18n';
   import { listStoreProducts, listStoreCategories } from '$lib/api/nebo';
   import { installItem } from '$lib/stores/marketplace.js';
   import { getWebSocketClient } from '$lib/websocket/client';
@@ -9,11 +11,19 @@
   import UserMenu from '$lib/components/UserMenu.svelte';
   import { sidebarCollapsedFor } from '$lib/stores/sidebar.js';
   import { slugify } from '$lib/data/categories';
+  import { loadMarketplaceMap, mapSlugify, type MarketplaceMap } from '$lib/data/marketplaceMap';
   const sidebarCollapsed = sidebarCollapsedFor('marketplace');
   import Search from 'lucide-svelte/icons/search';
   import X from 'lucide-svelte/icons/x';
   import Lock from 'lucide-svelte/icons/lock';
+  import SlidersHorizontal from 'lucide-svelte/icons/sliders-horizontal';
   let { children } = $props();
+
+  // Mobile: the nav sidebar becomes a sliding drawer and search becomes a
+  // full-screen overlay; both closed by default, both close on navigation.
+  let mobileFiltersOpen = $state(false);
+  let mobileSearchOpen = $state(false);
+  afterNavigate(() => { mobileFiltersOpen = false; mobileSearchOpen = false; });
 
   type MarketItem = { id: string; name: string; desc: string; category: string; rating: number; installs: number; featured: boolean; price: string; code: string; type: string; path: string; private: boolean; org?: Record<string, unknown> };
   let categories = $state<{ slug: string; name: string; emoji: string; count: number }[]>([]);
@@ -90,7 +100,7 @@
 
   const showResults = $derived(searchFocused && debouncedQuery.trim().length > 0);
 
-  const typeLabels: Record<string, string> = { skill: 'Skill', agent: 'Agent', plugin: 'Plugin', connector: 'Connector', app: 'App', collection: 'Collection', private: 'Private' };
+  const typeLabelKeys: Record<string, string> = { skill: 'marketplace.types.skill', agent: 'marketplace.types.agent', plugin: 'marketplace.types.plugin', connector: 'marketplace.types.connector', app: 'marketplace.types.app', collection: 'marketplace.types.collection', private: 'marketplace.types.private' };
 
   function selectResult(path: string) {
     searchQuery = '';
@@ -112,36 +122,46 @@
   }
 
   // On the unified /marketplace page the active tab is driven by the `kind`
-  // param (all/agents/apps/...). Everywhere else it derives from the pathname.
-  const activeKind = $derived($page.url.searchParams.get('kind') || 'all');
+  // param. Like the website, Employees is the default view; the legacy
+  // category/publisher storefronts (linked from cards) still resolve as 'all'.
+  const activeKind = $derived(
+    $page.url.searchParams.get('kind') ||
+      ($page.url.searchParams.get('category') || $page.url.searchParams.get('publisher') ? 'all' : 'employees')
+  );
+  const activeFilter = $derived($page.url.searchParams.get('filter') || '');
+  // Curated map drives the sidebar per tab, same single source as the website:
+  // employee-type tabs filter by department, tool-type tabs (incl. collections,
+  // which the website filters by tool category too) by tool category.
+  let mktMap: MarketplaceMap | null = $state(null);
+  onMount(() => { loadMarketplaceMap().then((m) => (mktMap = m)); });
+  const DEPT_KINDS = ['employees'];
+  const TC_KINDS = ['tools', 'collections'];
   const activePrice = $derived($page.url.searchParams.get('price') || 'all');
   const activeCategory = $derived($page.url.searchParams.get('category') || '');
   // Detail pages (/marketplace/<type>/<id>) shouldn't show the kind filter bar.
-  const isDetail = $derived(/^\/marketplace\/(agents|apps|skills|plugins|connectors|collections)\/.+/.test($page.url.pathname));
+  const isDetail = $derived(/^\/marketplace\/(agents|apps|skills|plugins|connectors|collections)\/.+/.test(appPath($page.url.pathname)));
 
   const marketplaceTab = $derived.by(() => {
-    const p = $page.url.pathname;
+    const p = appPath($page.url.pathname);
     if (p === '/marketplace') return activeKind;
     const match = p.match(/\/marketplace\/([^/]+)/);
     return match ? match[1] : 'all';
   });
 
+  // The website's three views (employees / tools / collections) plus the two
+  // desktop-only user surfaces. Per-type browsing lives inside Tools + search.
   const navItems = [
-    { id: 'all', path: '/marketplace', label: 'All' },
-    { id: 'agents', path: '/marketplace?kind=agents', label: 'Agents' },
-    { id: 'apps', path: '/marketplace?kind=apps', label: 'Apps' },
-    { id: 'skills', path: '/marketplace?kind=skills', label: 'Skills' },
-    { id: 'plugins', path: '/marketplace?kind=plugins', label: 'Plugins' },
-    { id: 'connectors', path: '/marketplace?kind=connectors', label: 'Connectors' },
-    { id: 'collections', path: '/marketplace?kind=collections', label: 'Collections' },
-    { id: 'shared', path: '/marketplace/shared', label: 'Shared' },
-    { id: 'installed', path: '/marketplace/installed', label: 'Installed' },
+    { id: 'employees', path: '/marketplace', labelKey: 'marketplace.nav.employees' },
+    { id: 'tools', path: '/marketplace?kind=tools', labelKey: 'marketplace.nav.tools' },
+    { id: 'collections', path: '/marketplace?kind=collections', labelKey: 'marketplace.nav.collections' },
+    { id: 'shared', path: '/marketplace/shared', labelKey: 'marketplace.nav.shared' },
+    { id: 'installed', path: '/marketplace/installed', labelKey: 'marketplace.installed' },
   ];
 
   const priceOptions = [
-    { value: 'all', label: 'All' },
-    { value: 'free', label: 'Free' },
-    { value: 'paid', label: 'Paid' },
+    { value: 'all', labelKey: 'marketplace.nav.all' },
+    { value: 'free', labelKey: 'common.free' },
+    { value: 'paid', labelKey: 'marketplace.paid' },
   ];
 
   // Set the ?price= filter on the current /marketplace URL.
@@ -164,7 +184,7 @@
     // dispatchInstallStart opens the modal instantly AND validates the format.
     if (!dispatchInstallStart(code)) {
       codeStatus = 'error';
-      codeMessage = 'Invalid code format';
+      codeMessage = $t('marketplace.invalidCodeFormat');
       setTimeout(() => { codeStatus = 'idle'; codeMessage = ''; }, 2500);
       return;
     }
@@ -182,26 +202,67 @@
 
 <svelte:head><title>Marketplace - Nebo</title></svelte:head>
 
-<!-- Left panel: marketplace nav -->
-<div class="{$sidebarCollapsed ? 'w-12 min-w-12' : 'w-[220px] min-w-[220px]'} border-r border-base-300 flex flex-col bg-base-200 shrink-0 transition-all duration-150">
-  <div class="h-11 border-b border-base-300 flex items-center shrink-0 {$sidebarCollapsed ? 'justify-center' : 'px-3.5 justify-between'}">
-    {#if !$sidebarCollapsed}
-      <span class="text-sm font-semibold flex-1">Marketplace</span>
+<!-- Shared search result rows — rendered in the desktop dropdown and the mobile overlay -->
+{#snippet searchRows()}
+  {#if searchResults.length > 0}
+    {#each searchResults as item}
+      <button
+        class="w-full flex items-center gap-3 px-3.5 py-2.5 text-left cursor-pointer hover:bg-base-200 transition-colors bg-transparent border-none border-b border-b-base-300 last:border-b-0"
+        onmousedown={() => selectResult(item.path)}
+      >
+        <div class="flex-1 min-w-0">
+          <div class="text-sm font-medium truncate flex items-center gap-1.5">
+            {#if item.private}
+              <Lock class="w-3 h-3 text-base-content/50 shrink-0" />
+            {/if}
+            {item.name}
+          </div>
+          <div class="text-xs text-base-content/70 truncate">{item.desc}</div>
+        </div>
+        {#if item.private && item.org}
+          <span class="px-1.5 py-0.5 rounded text-xs font-mono bg-accent/10 text-accent shrink-0">{item.org.name}</span>
+        {:else}
+          <span class="px-1.5 py-0.5 rounded text-xs font-mono bg-base-200 text-base-content/70 shrink-0">{$t(typeLabelKeys[item.type])}</span>
+        {/if}
+      </button>
+    {/each}
+    <button
+      class="w-full px-3.5 py-2.5 text-left text-sm font-medium text-primary cursor-pointer hover:bg-base-200 transition-colors bg-transparent border-none border-t border-t-base-300"
+      onmousedown={submitSearch}
+    >{$t('marketplace.seeAllResults', { values: { query: debouncedQuery } })}</button>
+  {:else if searchLoading}
+    <div class="px-3.5 py-4 text-center text-xs text-base-content/50">{$t('marketplace.searching')}</div>
+  {:else}
+    <div class="px-3.5 py-4 text-center text-xs text-base-content/50">{$t('marketplace.noResultsFor', { values: { query: debouncedQuery } })}</div>
+  {/if}
+{/snippet}
+
+<!-- Left panel: marketplace nav — sliding drawer below md -->
+{#if mobileFiltersOpen}
+  <div class="fixed inset-0 z-30 bg-black/40 md:hidden" onclick={() => (mobileFiltersOpen = false)} role="presentation"></div>
+{/if}
+<div class="{$sidebarCollapsed ? 'md:w-12 md:min-w-12' : 'md:w-[220px] md:min-w-[220px]'} max-md:fixed max-md:inset-y-0 max-md:left-0 max-md:z-40 max-md:w-[280px] max-md:transition-transform {mobileFiltersOpen ? 'max-md:translate-x-0 max-md:shadow-2xl' : 'max-md:-translate-x-full'} border-r border-base-300 flex flex-col bg-base-200 shrink-0 transition-all duration-150">
+  <div class="h-11 border-b border-base-300 flex items-center shrink-0 {$sidebarCollapsed && !mobileFiltersOpen ? 'md:justify-center px-3.5 max-md:justify-between' : 'px-3.5 justify-between'}">
+    {#if !$sidebarCollapsed || mobileFiltersOpen}
+      <span class="text-sm font-semibold flex-1">{$t('marketplace.title')}</span>
     {/if}
-    <button class="w-7 h-7 rounded-md flex items-center justify-center hover:bg-base-200 cursor-pointer bg-transparent border-none shrink-0" onclick={() => $sidebarCollapsed = !$sidebarCollapsed} title={$sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}>
+    <button class="max-md:hidden w-7 h-7 rounded-md flex items-center justify-center hover:bg-base-200 cursor-pointer bg-transparent border-none shrink-0" onclick={() => $sidebarCollapsed = !$sidebarCollapsed} title={$sidebarCollapsed ? $t('nav.expandSidebar') : $t('nav.collapseSidebar')}>
       <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5" stroke="currentColor" stroke-width="1.2"/><line x1="5.5" y1="3" x2="5.5" y2="13" stroke="currentColor" stroke-width="1.2"/></svg>
+    </button>
+    <button class="md:hidden w-7 h-7 rounded-md flex items-center justify-center hover:bg-base-200 cursor-pointer bg-transparent border-none shrink-0" onclick={() => (mobileFiltersOpen = false)} title={$t('common.close')}>
+      <X class="w-4 h-4" />
     </button>
   </div>
 
-  {#if $sidebarCollapsed}
+  {#if $sidebarCollapsed && !mobileFiltersOpen}
     <div class="flex-1 overflow-y-auto">
       <div class="flex flex-col items-center gap-1 py-2">
         {#each navItems as item}
-          {@const icons: Record<string, string> = { all: '◆', agents: '◉', apps: '▦', skills: '⚡', plugins: '🔌', connectors: '⬡', collections: '▤', shared: '↗', installed: '✓' }}
+          {@const icons: Record<string, string> = { employees: '◉', tools: '⚙', collections: '▤', shared: '↗', installed: '✓' }}
           <a
             href={item.path}
             class="w-8 h-8 rounded-md flex items-center justify-center text-sm transition-colors {marketplaceTab === item.id ? 'bg-base-100 shadow-[0_0_0_1px_var(--color-base-300)]' : 'hover:bg-base-200'}"
-            title={item.label}
+            title={$t(item.labelKey)}
           >{icons[item.id]}</a>
         {/each}
       </div>
@@ -216,7 +277,7 @@
   {:else}
     <!-- Install code -->
     <div class="py-2.5 px-3.5 border-b border-base-300">
-      <div class="text-xs text-base-content/70 mb-1">Install code</div>
+      <div class="text-xs text-base-content/70 mb-1">{$t('marketplace.installCode')}</div>
       <form class="flex gap-1" onsubmit={(e) => { e.preventDefault(); redeemCode(); }}>
         <input
           type="text"
@@ -229,7 +290,7 @@
           type="submit"
           class="py-1 px-2 rounded-[5px] border border-base-300 bg-base-100 text-sm cursor-pointer font-medium disabled:opacity-50"
           disabled={codeStatus === 'processing' || !codeInput.trim()}
-        >{codeStatus === 'processing' ? '...' : 'Go'}</button>
+        >{codeStatus === 'processing' ? '...' : $t('marketplace.go')}</button>
       </form>
       {#if codeMessage}
         <div class="text-sm mt-1 {codeStatus === 'error' ? 'text-error' : codeStatus === 'success' ? 'text-success' : 'text-base-content/60'}">
@@ -239,7 +300,54 @@
     </div>
 
     <div class="flex-1 overflow-y-auto">
-      <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 px-3.5 pt-3 pb-1">Category</div>
+      {#if DEPT_KINDS.includes(activeKind) && mktMap}
+        <!-- Departments — the website's employees nav -->
+        <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 px-3.5 pt-3 pb-1">{$t('marketplace.departments')}</div>
+        <div class="px-1.5">
+          <a
+            href="/marketplace?kind={activeKind}"
+            class="flex items-center gap-1.5 py-1 px-2.5 rounded-md text-sm transition-colors border {!activeFilter
+              ? 'bg-base-100 border-base-300 shadow-sm font-medium'
+              : 'border-transparent hover:bg-base-100/70'}"
+          >
+            <span class="flex-1 truncate">{$t('marketplace.allDepartments')}</span>
+          </a>
+          {#each mktMap.departments as d}
+            <a
+              href="/marketplace?kind={activeKind}&filter={mapSlugify(d)}"
+              class="flex items-center gap-1.5 py-1 px-2.5 rounded-md text-sm transition-colors border {activeFilter === mapSlugify(d)
+                ? 'bg-base-100 border-base-300 shadow-sm font-medium'
+                : 'border-transparent hover:bg-base-100/70'}"
+            >
+              <span class="flex-1 truncate">{d}</span>
+            </a>
+          {/each}
+        </div>
+      {:else if TC_KINDS.includes(activeKind) && mktMap}
+        <!-- Tool categories — the website's tools/collections nav -->
+        <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 px-3.5 pt-3 pb-1">{$t('marketplace.toolCategories')}</div>
+        <div class="px-1.5">
+          <a
+            href="/marketplace?kind={activeKind}"
+            class="flex items-center gap-1.5 py-1 px-2.5 rounded-md text-sm transition-colors border {!activeFilter
+              ? 'bg-base-100 border-base-300 shadow-sm font-medium'
+              : 'border-transparent hover:bg-base-100/70'}"
+          >
+            <span class="flex-1 truncate">{$t('marketplace.allToolCategories')}</span>
+          </a>
+          {#each mktMap.toolCategories as c}
+            <a
+              href="/marketplace?kind={activeKind}&filter={mapSlugify(c)}"
+              class="flex items-center gap-1.5 py-1 px-2.5 rounded-md text-sm transition-colors border {activeFilter === mapSlugify(c)
+                ? 'bg-base-100 border-base-300 shadow-sm font-medium'
+                : 'border-transparent hover:bg-base-100/70'}"
+            >
+              <span class="flex-1 truncate">{c}</span>
+            </a>
+          {/each}
+        </div>
+      {:else}
+      <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 px-3.5 pt-3 pb-1">{$t('marketplace.detail.category')}</div>
       <div class="px-1.5">
         <a
           href="/marketplace"
@@ -247,7 +355,7 @@
             ? 'bg-base-100 shadow-[0_0_0_1px_var(--color-base-300)] font-medium'
             : 'hover:bg-base-200'}"
         >
-          <span class="flex-1 truncate">All categories</span>
+          <span class="flex-1 truncate">{$t('marketplace.allCategories')}</span>
         </a>
         {#each categories as cat}
           <a
@@ -263,8 +371,9 @@
           </a>
         {/each}
       </div>
+      {/if}
 
-      <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 px-3.5 pt-3 pb-1">Pricing</div>
+      <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 px-3.5 pt-3 pb-1">{$t('marketplace.pricing')}</div>
       <div class="p-1.5">
         {#each priceOptions as opt}
           <button
@@ -274,7 +383,7 @@
               : 'hover:bg-base-200'}"
             onclick={() => setPrice(opt.value)}
           >
-            {opt.label}
+            {$t(opt.labelKey)}
           </button>
         {/each}
       </div>
@@ -287,6 +396,15 @@
 <div class="flex-1 flex flex-col bg-base-100 min-w-0">
   <div class="h-12 px-[18px] border-b border-base-content/10 flex items-center gap-2 shrink-0">
     {#if !isDetail}
+      <button
+        class="md:hidden w-8 h-8 rounded-md flex items-center justify-center hover:bg-base-200 cursor-pointer bg-transparent border border-base-300 shrink-0"
+        onclick={() => (mobileFiltersOpen = true)}
+        title={$t('marketplace.title')}
+      >
+        <SlidersHorizontal class="w-4 h-4" />
+      </button>
+    {/if}
+    {#if !isDetail}
       <div class="flex items-center gap-1 flex-1 min-w-0 overflow-x-auto">
         {#each navItems as item}
           <a
@@ -294,13 +412,21 @@
             class="shrink-0 px-3 py-1 rounded-lg text-sm transition-colors {marketplaceTab === item.id
               ? 'bg-base-content text-base-100 font-semibold'
               : 'text-base-content/70 font-medium hover:text-base-content hover:bg-base-200'}"
-          >{item.label}</a>
+          >{$t(item.labelKey)}</a>
         {/each}
       </div>
     {:else}
       <div class="flex-1"></div>
     {/if}
-    <div class="relative ml-auto shrink-0">
+    <!-- Mobile: search is a full-screen overlay, so the header only carries the trigger -->
+    <button
+      class="md:hidden ml-auto w-8 h-8 rounded-md flex items-center justify-center hover:bg-base-200 cursor-pointer bg-transparent border border-base-300 shrink-0"
+      onclick={() => (mobileSearchOpen = true)}
+      title={$t('marketplace.searchPlaceholder')}
+    >
+      <Search class="w-4 h-4" />
+    </button>
+    <div class="max-md:hidden relative ml-auto shrink-0">
       <form class="flex items-center h-[26px] w-[220px] rounded-[5px] px-[9px] gap-1.5 text-sm border border-base-300 bg-base-100" onsubmit={(e) => { e.preventDefault(); submitSearch(); }}>
         <Search class="w-3 h-3 text-base-content/50 shrink-0" />
         <input
@@ -308,7 +434,7 @@
           bind:value={searchQuery}
           onfocus={() => searchFocused = true}
           onblur={() => setTimeout(() => searchFocused = false, 200)}
-          placeholder="Search marketplace..."
+          placeholder={$t('marketplace.searchPlaceholder')}
           class="flex-1 bg-transparent border-none outline-none text-sm placeholder:text-base-content/50 min-w-0"
         />
         {#if searchQuery}
@@ -319,41 +445,43 @@
       </form>
       {#if showResults}
         <div class="absolute top-full right-0 mt-1 w-[340px] bg-base-100 border border-base-300 rounded-lg shadow-xl z-50 overflow-hidden">
-          {#if searchResults.length > 0}
-            {#each searchResults as item}
-              <button
-                class="w-full flex items-center gap-3 px-3.5 py-2.5 text-left cursor-pointer hover:bg-base-200 transition-colors bg-transparent border-none border-b border-b-base-300 last:border-b-0"
-                onmousedown={() => selectResult(item.path)}
-              >
-                <div class="flex-1 min-w-0">
-                  <div class="text-sm font-medium truncate flex items-center gap-1.5">
-                    {#if item.private}
-                      <Lock class="w-3 h-3 text-base-content/50 shrink-0" />
-                    {/if}
-                    {item.name}
-                  </div>
-                  <div class="text-xs text-base-content/70 truncate">{item.desc}</div>
-                </div>
-                {#if item.private && item.org}
-                  <span class="px-1.5 py-0.5 rounded text-xs font-mono bg-accent/10 text-accent shrink-0">{item.org.name}</span>
-                {:else}
-                  <span class="px-1.5 py-0.5 rounded text-xs font-mono bg-base-200 text-base-content/70 shrink-0">{typeLabels[item.type]}</span>
-                {/if}
-              </button>
-            {/each}
-            <button
-              class="w-full px-3.5 py-2.5 text-left text-sm font-medium text-primary cursor-pointer hover:bg-base-200 transition-colors bg-transparent border-none border-t border-t-base-300"
-              onmousedown={submitSearch}
-            >See all results for "{debouncedQuery}"</button>
-          {:else if searchLoading}
-            <div class="px-3.5 py-4 text-center text-xs text-base-content/50">Searching…</div>
-          {:else}
-            <div class="px-3.5 py-4 text-center text-xs text-base-content/50">No results for "{debouncedQuery}"</div>
-          {/if}
+          {@render searchRows()}
         </div>
       {/if}
     </div>
   </div>
+  {#if mobileSearchOpen}
+    <!-- Mobile search overlay: full-screen takeover with live results -->
+    <div class="md:hidden fixed inset-0 z-50 bg-base-100 flex flex-col">
+      <div class="h-12 px-3 border-b border-base-300 flex items-center gap-2 shrink-0">
+        <form class="flex items-center flex-1 h-9 rounded-md px-2.5 gap-1.5 border border-base-300 bg-base-100 min-w-0" onsubmit={(e) => { e.preventDefault(); submitSearch(); }}>
+          <Search class="w-4 h-4 text-base-content/50 shrink-0" />
+          <!-- svelte-ignore a11y_autofocus -->
+          <input
+            type="text"
+            bind:value={searchQuery}
+            placeholder={$t('marketplace.searchPlaceholder')}
+            autofocus
+            class="flex-1 bg-transparent border-none outline-none text-sm placeholder:text-base-content/50 min-w-0"
+          />
+          {#if searchQuery}
+            <button type="button" class="p-0 bg-transparent border-none cursor-pointer shrink-0" onclick={clearSearch}>
+              <X class="w-3.5 h-3.5 text-base-content/50" />
+            </button>
+          {/if}
+        </form>
+        <button
+          class="h-9 px-2.5 rounded-md text-sm font-medium border-none bg-transparent cursor-pointer text-base-content/80 shrink-0"
+          onclick={() => { mobileSearchOpen = false; clearSearch(); }}
+        >{$t('common.cancel')}</button>
+      </div>
+      <div class="flex-1 overflow-y-auto">
+        {#if debouncedQuery.trim()}
+          {@render searchRows()}
+        {/if}
+      </div>
+    </div>
+  {/if}
   <div class="flex-1 min-h-0 overflow-y-auto">
     {@render children()}
   </div>

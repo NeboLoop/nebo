@@ -3,18 +3,22 @@ export * from './nebo';
 
 // Import all functions and components
 import * as api from './nebo';
+import { storage } from '$lib/storage';
 import webapi from './gocliRequest';
 import type * as components from './neboComponents';
 
 // Export api object containing all API methods
+import { backendBase } from './base';
+
 export const nebo = api;
 
 // API Configuration - base URL is loaded from browser origin
 export const API_CONFIG = {
 	get baseURL() {
-		// In browser, use the current origin; in SSR, default to localhost
+		// In browser, backendBase() (origin + tunnel prefix when applicable);
+		// in SSR, default to localhost
 		if (typeof window !== 'undefined') {
-			return window.location.origin;
+			return backendBase();
 		}
 		return 'http://localhost:8847';
 	}
@@ -41,7 +45,7 @@ export interface TranscribeResponse {
 
 export async function transcribeAudio(audioBlob: Blob): Promise<TranscribeResponse> {
 	const baseUrl = typeof window !== 'undefined' ? window.location.origin : '';
-	const token = typeof window !== 'undefined' ? localStorage.getItem('nebo_token') : null;
+	const token = storage.get('nebo_token');
 
 	const headers: Record<string, string> = {
 		'Content-Type': audioBlob.type || 'audio/webm'

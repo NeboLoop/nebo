@@ -3,7 +3,7 @@
   "name": "Nebo",
   "version": "1.0.0",
   "type": "agent",
-  "description": "Your personal desktop AI companion. Handles anything you need — research, writing, scheduling, analysis, or just thinking through a problem.",
+  "description": "Your first AI employee. Handles anything you need — research, writing, scheduling, analysis, or just thinking through a problem.",
   "author": "nebo",
-  "tags": ["companion", "general", "default"]
+  "tags": ["employee", "general", "default"]
 }

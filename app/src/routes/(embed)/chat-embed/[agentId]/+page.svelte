@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
+  import { storage } from '$lib/storage';
   import { page } from '$app/stores';
   import ChatPane from '$lib/components/chat/ChatPane.svelte';
   import { getWebSocketClient } from '$lib/websocket/client';
@@ -133,7 +134,7 @@
 
     // Connect WebSocket (this page runs outside the root layout, so we bootstrap ourselves)
     const ws = getWebSocketClient();
-    const token = localStorage.getItem('nebo_token');
+    const token = storage.get('nebo_token');
     ws.connect(token || undefined);
 
     // Listen for postMessage commands from parent

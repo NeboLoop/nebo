@@ -27,9 +27,14 @@ impl DynTool for ExitTool {
     }
 
     fn description(&self) -> String {
-        "Stop this workflow early when there is nothing meaningful to do — \
-         no items found, condition not met, or task already complete. \
+        "Abandon the ENTIRE workflow run — every remaining step and activity is \
+         skipped, including later steps that store, send, or record things. \
+         Call this ONLY when the whole workflow has nothing meaningful to do: \
+         no items found, condition not met, task inapplicable to this data. \
          This is a clean stop, not an error.\n\n\
+         NEVER call exit to mark a step or activity as finished — completing a \
+         step is the normal flow, not an exit. To finish a step, simply respond \
+         with your result as text and the next step will run.\n\n\
          Examples:\n  \
          exit(reason: \"No urgent emails found\")\n  \
          exit(reason: \"Nothing new since last check\")\n  \

@@ -53,7 +53,7 @@ Pick a **depth**:
 Weave the clarifying answers into a single refined question, then call:
 
 ```
-bot(resource: "research", action: "deep_research", query: "<refined question>", depth: "standard")
+agent(resource: "research", action: "deep_research", query: "<refined question>", depth: "standard")
 ```
 
 The harness runs deterministically and returns a finished, cited report. Under the hood it:

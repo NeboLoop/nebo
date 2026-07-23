@@ -1,4 +1,5 @@
 import { writable, derived } from 'svelte/store';
+import { storage } from '$lib/storage';
 
 // Per-section collapse state, persisted to localStorage so it survives reloads.
 const STORAGE_KEY = 'nebo:sidebar-collapsed';
@@ -6,7 +7,7 @@ const STORAGE_KEY = 'nebo:sidebar-collapsed';
 function loadCollapsed(): Record<string, boolean> {
   if (typeof localStorage === 'undefined') return {};
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = storage.get(STORAGE_KEY);
     return raw ? (JSON.parse(raw) as Record<string, boolean>) : {};
   } catch {
     return {};
@@ -19,7 +20,7 @@ const collapsedMap = writable<Record<string, boolean>>(loadCollapsed());
 if (typeof localStorage !== 'undefined') {
   collapsedMap.subscribe((m) => {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(m));
+      storage.set(STORAGE_KEY, JSON.stringify(m));
     } catch {
       // ignore quota / privacy-mode failures
     }

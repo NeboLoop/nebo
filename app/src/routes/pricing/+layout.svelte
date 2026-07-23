@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
-  import { goto } from '$app/navigation';
+  import { t } from 'svelte-i18n';
+  import { goto } from '$lib/nav';
   import ArrowLeft from 'lucide-svelte/icons/arrow-left';
   import X from 'lucide-svelte/icons/x';
 
@@ -25,12 +26,12 @@
       class="flex items-center gap-2 text-xs text-base-content/70 hover:text-base-content transition-colors cursor-pointer bg-transparent border-none"
     >
       <ArrowLeft class="w-4 h-4" />
-      <span class="font-medium">Back to Billing</span>
+      <span class="font-medium">{$t('pricing.backToBilling')}</span>
     </button>
     <button
       onclick={close}
       class="p-1.5 rounded-full hover:bg-base-content/10 transition-colors cursor-pointer bg-transparent border-none"
-      aria-label="Close"
+      aria-label={$t('common.close')}
     >
       <X class="w-4 h-4 text-base-content/90" />
     </button>

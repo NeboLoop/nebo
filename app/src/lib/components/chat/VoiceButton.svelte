@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { t } from 'svelte-i18n';
 	import { dictationStore, type DictationRoute } from '$lib/stores/dictation';
 	import { voiceStore } from '$lib/stores/voice';
 	import { deviceManager, micDevices, selectedMicId } from '$lib/stores/devices';
@@ -140,17 +141,17 @@
 	}
 
 	function micLabel(device: MediaDeviceInfo): string {
-		return device.label || `Microphone ${device.deviceId.slice(0, 8)}`;
+		return device.label || $t('chatInput.microphoneN', { values: { id: device.deviceId.slice(0, 8) } });
 	}
 </script>
 
 {#if isPlaying}
 	<button
 		class="w-8 h-8 rounded-lg grid place-items-center text-base-content/60 hover:text-base-content hover:bg-base-200 cursor-pointer transition-colors border-none bg-transparent"
-		title="Stop playback"
+		title={$t('chatInput.stopPlayback')}
 		onclick={handleStopPlayback}
 	>
-		<Volume2 class="w-[18px] h-[18px] text-primary voice-pulse" />
+		<Volume2 class="w-[1.125rem] h-[1.125rem] text-primary voice-pulse" />
 	</button>
 {:else}
 	<div class="relative flex items-center" bind:this={dropdownRef}>
@@ -158,32 +159,32 @@
 		<button
 			class="w-8 h-8 rounded-lg grid place-items-center cursor-pointer transition-colors border-none bg-transparent {isRecording ? 'text-error' : isConnecting ? 'text-warning' : 'text-base-content/60 hover:text-base-content hover:bg-base-200'}"
 			title={isRecording
-				? isPushToTalk ? 'Release to stop' : 'Stop recording'
-				: isConnecting ? 'Connecting...'
-				: holdToRecordEnabled ? 'Hold to record' : 'Start voice input'}
+				? isPushToTalk ? $t('chatInput.releaseToStop') : $t('chatInput.stopRecording')
+				: isConnecting ? $t('settingsPlugins.connecting')
+				: holdToRecordEnabled ? $t('chatInput.holdToRecord') : $t('chatInput.startVoiceInput')}
 			onclick={handleClick}
 			onpointerdown={handlePointerDown}
 			onpointerup={handlePointerUp}
 			onpointerleave={handlePointerUp}
 		>
 			{#if isRecording}
-				<MicOff class="w-[18px] h-[18px] animate-pulse" />
+				<MicOff class="w-[1.125rem] h-[1.125rem] animate-pulse" />
 			{:else if isConnecting}
-				<Mic class="w-[18px] h-[18px] animate-pulse" />
+				<Mic class="w-[1.125rem] h-[1.125rem] animate-pulse" />
 			{:else}
-				<Mic class="w-[18px] h-[18px]" />
+				<Mic class="w-[1.125rem] h-[1.125rem]" />
 			{/if}
 		</button>
 
 		<!-- PTT indicator -->
 		{#if isPushToTalk && isRecording}
-			<span class="text-xs text-error/80 font-medium ml-0.5">PTT</span>
+			<span class="text-xs text-error/80 font-medium ml-0.5">{$t('chatInput.ptt')}</span>
 		{/if}
 
 		<!-- Chevron dropdown trigger -->
 		<button
 			class="w-4 h-6 grid place-items-center text-base-content/40 hover:text-base-content/70 cursor-pointer transition-colors border-none bg-transparent -ml-1"
-			title="Voice settings"
+			title={$t('chatInput.voiceSettings')}
 			onclick={toggleDropdown}
 		>
 			<ChevronDown class="w-3 h-3" />
@@ -194,7 +195,7 @@
 			<div class="absolute bottom-full left-0 mb-2 w-64 rounded-lg bg-base-100 border border-base-300 shadow-lg z-50">
 				<!-- Microphone selection -->
 				<div class="p-2">
-					<div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 px-2 pb-1">Microphone</div>
+					<div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 px-2 pb-1">{$t('chatInput.microphone')}</div>
 					{#each $micDevices as device (device.deviceId)}
 						<button
 							class="w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-sm text-base-content hover:bg-base-200/50 cursor-pointer border-none bg-transparent text-left"
@@ -208,7 +209,7 @@
 							<span class="truncate">{micLabel(device)}</span>
 						</button>
 					{:else}
-						<div class="px-2 py-1.5 text-xs text-base-content/50">No microphones found</div>
+						<div class="px-2 py-1.5 text-xs text-base-content/50">{$t('chatInput.noMicrophones')}</div>
 					{/each}
 				</div>
 
@@ -221,7 +222,7 @@
 						class="w-full flex items-center justify-between px-2 py-1.5 rounded-md text-sm text-base-content hover:bg-base-200/50 cursor-pointer border-none bg-transparent"
 						onclick={handleToggleHoldToRecord}
 					>
-						<span>Hold to record</span>
+						<span>{$t('chatInput.holdToRecord')}</span>
 						<input
 							type="checkbox"
 							class="toggle toggle-sm toggle-primary"

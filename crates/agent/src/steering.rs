@@ -20,7 +20,7 @@ pub fn format_proactive_items(items: &[crate::proactive::ProactiveItem]) -> Vec<
         .collect()
 }
 
-// ===== Reminder engine: event-driven, message-stream steering (Claude Code style) =====
+// ===== Reminder engine: event-driven, message-stream steering =====
 //
 // Unlike the always-on Generator pipeline (which injects into the low-salience
 // system-prompt suffix), reminders are checked AFTER tool results and injected as
@@ -134,12 +134,14 @@ fn reminders() -> Vec<Box<dyn Reminder>> {
         Box::new(SilenceBreaker),
         Box::new(ActionConfirm),
         Box::new(ExecuteIntent),
+        Box::new(SkillExecutionNudge),
         Box::new(OutputDiscipline),
         Box::new(NarrationSuppressor),
         Box::new(RepetitionDetector),
         Box::new(ToolResultGrounding),
         Box::new(ToolResultHonesty),
         Box::new(ResearchDelegationNudge),
+        Box::new(SerialReadGrind),
         Box::new(TaskTrackingNudge),
         Box::new(TaskCompletionNudge),
         Box::new(UntrustedContent),
@@ -213,7 +215,7 @@ const EXTERNAL_CONTENT_TOOLS: &[&str] = &["web", "browser"];
 
 /// UntrustedContent — prompt-injection defense. When recent tool results carried
 /// content fetched from the web, remind the model (in the high-salience stream)
-/// that it's untrusted external data, not instructions. Mirrors Claude Code's
+/// that it's untrusted external data, not instructions. Emitted as an
 /// external-content `<system-reminder>`. Both modes; cadence-capped so it recurs
 /// periodically while external content is in the window without spamming.
 struct UntrustedContent;
@@ -852,8 +854,8 @@ impl Reminder for ErrorRecovery {
 }
 
 /// Re-state the modifiable objective every N turns so a weak model doesn't drift off
-/// the goal over a long run. Claude Code does the analogue (todo/task re-injection on a
-/// cadence, never every turn). Content template mirrors the recap: goal → stay on it.
+/// the goal over a long run — objective re-injection on a cadence (never every
+/// turn), analogous to periodic todo/task recaps. Content template: goal → stay on it.
 const OBJECTIVE_REINFORCE_EVERY: usize = 8;
 /// ExecuteIntent — weak models narrate a next step ("Now I'll create the file") and end the
 /// turn without the tool call ("promise-then-stop"). The static comm-style binds intent to a
@@ -891,6 +893,88 @@ impl Reminder for ExecuteIntent {
              give the result."
                 .to_string(),
         )
+    }
+}
+
+/// Tool calls burned after a skill load, with nothing produced, before the nudge fires.
+const SKILL_STALL_CALLS: usize = 8;
+
+/// Tool calls in a run that loaded a skill but hasn't executed anything since.
+/// Walks the transcript backwards: a state-changing action or a `plugin` call means
+/// the run IS producing; a text-only assistant message means the prior run concluded.
+/// Either ends the walk, returning the deepest unexecuted skill load found so far
+/// (so repeated skill re-loads can't keep resetting the count). Returns how many
+/// tool calls have been burned since that load, or None if the run is producing.
+fn calls_since_unexecuted_skill_load(messages: &[ChatMessage]) -> Option<usize> {
+    let mut calls_since = 0usize;
+    let mut deepest: Option<usize> = None;
+    for m in messages.iter().rev() {
+        if m.role != "assistant" {
+            continue;
+        }
+        let has_tools = m
+            .tool_calls
+            .as_ref()
+            .is_some_and(|tc| !tc.is_empty() && tc != "[]" && tc != "null");
+        if !has_tools {
+            if m.content.is_empty() {
+                continue;
+            }
+            return deepest; // text-only turn — anything earlier belongs to a concluded run
+        }
+        let tc = m.tool_calls.as_deref().unwrap_or_default();
+        if state_changing_action(tc).is_some() {
+            return deepest; // producing, not stuck preparing
+        }
+        let Ok(calls) = serde_json::from_str::<serde_json::Value>(tc) else {
+            continue;
+        };
+        let Some(arr) = calls.as_array() else { continue };
+        let name_of = |c: &serde_json::Value| {
+            c.get("name")
+                .and_then(|n| n.as_str())
+                .unwrap_or("")
+                .to_string()
+        };
+        if arr.iter().any(|c| name_of(c) == "plugin") {
+            return deepest; // plugin execution counts as producing
+        }
+        if arr.iter().any(|c| name_of(c) == "skill") {
+            deepest = Some(calls_since);
+        }
+        calls_since += arr.len();
+    }
+    deepest
+}
+
+/// SkillExecutionNudge — the "preparation loop" failure observed in production: a run
+/// loads a skill, then keeps reading/searching/re-installing without ever invoking
+/// anything that produces work (a cloud bot installed an office plugin twice, burned
+/// the whole run on setup probes, and never called the pptx tool it had installed).
+/// Fires once SKILL_STALL_CALLS tool calls have passed since a skill load with zero
+/// state-changing actions and no plugin execution.
+struct SkillExecutionNudge;
+impl Reminder for SkillExecutionNudge {
+    fn name(&self) -> &'static str {
+        "skill_execution_nudge"
+    }
+    fn priority(&self) -> u8 {
+        8 // corrective — a run that gathers forever and ships nothing is a core failure
+    }
+    fn min_turns_between(&self) -> usize {
+        4
+    }
+    fn check(&self, ctx: &ReminderContext) -> Option<String> {
+        let burned = calls_since_unexecuted_skill_load(ctx.messages)?;
+        if burned < SKILL_STALL_CALLS {
+            return None;
+        }
+        Some(format!(
+            "You loaded a skill {burned} tool calls ago and haven't produced anything since — \
+             no file written, no plugin invoked, no artifact created. You have the \
+             instructions; stop gathering and execute the next concrete step now. If a step \
+             is blocked, state exactly what's blocking it instead of collecting more context."
+        ))
     }
 }
 
@@ -1058,7 +1142,7 @@ impl Reminder for ResearchModeNudge {
         }
         Some(
             "This task calls for multi-source research. Use \
-             bot(resource: \"research\", action: \"deep_research\", query: \"<the user's research question>\") \
+             agent(resource: \"research\", action: \"deep_research\", query: \"<the user's research question>\") \
              to run the verified deep-research harness rather than searching ad-hoc."
                 .to_string(),
         )
@@ -1319,9 +1403,9 @@ impl Reminder for TaskTrackingNudge {
         Some(
             "This looks like a multi-step request. Break it into trackable tasks so the user \
              can see your progress:\n\
-             1. Create tasks: bot(resource: \"task\", action: \"create\", subject: \"...\")\n\
-             2. Update as you work: bot(resource: \"task\", action: \"update\", task_id: N, status: \"in_progress\")\n\
-             3. Mark complete with output: bot(resource: \"task\", action: \"update\", task_id: N, status: \"completed\", output: \"...\")\n\
+             1. Create tasks: agent(resource: \"task\", action: \"create\", subject: \"...\")\n\
+             2. Update as you work: agent(resource: \"task\", action: \"update\", task_id: N, status: \"in_progress\")\n\
+             3. Mark complete with output: agent(resource: \"task\", action: \"update\", task_id: N, status: \"completed\", output: \"...\")\n\
              Create all tasks upfront, then work through them one at a time."
                 .to_string(),
         )
@@ -1354,7 +1438,7 @@ impl Reminder for TaskCompletionNudge {
         Some(
             "You have tasks but none are marked in_progress or completed. \
              Update task status as you work: \
-             bot(resource: \"task\", action: \"update\", task_id: N, status: \"in_progress\") \
+             agent(resource: \"task\", action: \"update\", task_id: N, status: \"in_progress\") \
              before starting, then status: \"completed\" with output when done."
                 .to_string(),
         )
@@ -1418,6 +1502,97 @@ impl Reminder for ResearchDelegationNudge {
     }
 }
 
+/// True if this assistant turn made EXACTLY ONE tool call and it was a read-type
+/// filesystem exploration (`os`/`system` read/glob/grep/list). This is the per-turn
+/// signal for the serial grind: many turns each doing one read. A healthy PARALLEL
+/// batch has ≥2 calls in the turn, so it returns false — that's the whole point of
+/// counting per-turn rather than by flat tool-name frequency.
+fn is_serial_read_turn(tool_calls_json: &str) -> bool {
+    let calls: serde_json::Value = match serde_json::from_str(tool_calls_json) {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+    let arr = match calls.as_array() {
+        Some(a) => a,
+        None => return false,
+    };
+    if arr.len() != 1 {
+        return false;
+    }
+    let c = &arr[0];
+    let name = c.get("name").and_then(|n| n.as_str()).unwrap_or("");
+    if name != "os" && name != "system" {
+        return false;
+    }
+    let action = c
+        .get("input")
+        .and_then(|i| i.get("action"))
+        .and_then(|a| a.as_str())
+        .unwrap_or("");
+    matches!(action, "read" | "glob" | "grep" | "list" | "ls")
+}
+
+/// SerialReadGrind — a weak-model failure seen in production runs: reading a
+/// directory tree one file per turn across dozens of turns. The runtime already runs
+/// batched read-only tools concurrently and an explore sub-agent exists; the prompt even
+/// says to use them — but weak models ignore static prompt bullets and heed the live
+/// stream. This fires as a stream reminder once the grind is underway. It also relieves
+/// the real damage: 40 serial reads overflow the sliding window and compaction strips all
+/// but the most-recent few, which is how the model ended up thinking the files were empty.
+/// Delegation keeps that bulk in the sub-agent's context, not the main one.
+struct SerialReadGrind;
+impl Reminder for SerialReadGrind {
+    fn name(&self) -> &'static str {
+        "serial_read_grind"
+    }
+    fn priority(&self) -> u8 {
+        8
+    }
+    fn min_turns_between(&self) -> usize {
+        4
+    }
+    fn check(&self, ctx: &ReminderContext) -> Option<String> {
+        // Direct Claude batches/delegates on its own; this is a weak-model nudge.
+        if ctx.is_claude() {
+            return None;
+        }
+        // Count serial single-read turns among the last 8 assistant tool-turns.
+        let mut serial = 0usize;
+        let mut seen = 0usize;
+        for m in ctx.messages.iter().rev() {
+            if m.role != "assistant" {
+                continue;
+            }
+            let Some(ref tc) = m.tool_calls else { continue };
+            if tc.is_empty() || tc == "[]" || tc == "null" {
+                continue;
+            }
+            seen += 1;
+            if is_serial_read_turn(tc) {
+                serial += 1;
+            }
+            if seen >= 8 {
+                break;
+            }
+        }
+        if serial < 5 {
+            return None;
+        }
+        Some(
+            "You've read files one at a time for several turns — this fills your context \
+             and older reads get compacted away (that's how content you already read \
+             starts looking 'empty'). Two fixes, both faster: (1) batch independent reads \
+             into ONE message — Nebo runs read-only tools in parallel, so request every \
+             file you need at once; (2) for a whole directory or open-ended search, spawn \
+             an explore sub-agent: agent(resource: \"task\", action: \"spawn\", \
+             agent_type: \"explore\", prompt: \"Read <dir> and report <what you need> as a \
+             consolidated summary\"). It explores in its own context and hands you one \
+             answer. Don't keep grinding file-by-file."
+                .to_string(),
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1466,6 +1641,52 @@ mod tests {
             ..base_rctx()
         };
         assert!(IdentityReinforce.check(&claude).is_none());
+    }
+
+    #[test]
+    fn serial_read_grind_fires_on_one_at_a_time_reads() {
+        let read = |path: &str| ChatMessage {
+            tool_calls: Some(format!(
+                r#"[{{"name":"os","input":{{"action":"read","path":"{path}"}}}}]"#
+            )),
+            ..make_msg("assistant", "reading")
+        };
+        // 6 turns, each a single os read → the grind. Fires.
+        let mut messages = Vec::new();
+        for i in 0..6 {
+            messages.push(make_msg("user", "go"));
+            messages.push(read(&format!("/dir/f{i}.md")));
+        }
+        let ctx = ReminderContext { messages: &messages, ..base_rctx() };
+        assert!(SerialReadGrind.check(&ctx).is_some(), "grind should fire");
+
+        // Direct Claude self-regulates → skipped.
+        let claude = ReminderContext {
+            messages: &messages,
+            provider_id: "anthropic",
+            ..base_rctx()
+        };
+        assert!(SerialReadGrind.check(&claude).is_none());
+
+        // A healthy PARALLEL batch (one turn, five reads) is NOT a grind — this is
+        // exactly what we want the model to do, so it must not false-fire.
+        let batched = ChatMessage {
+            tool_calls: Some(
+                r#"[{"name":"os","input":{"action":"read","path":"/a"}},
+                    {"name":"os","input":{"action":"read","path":"/b"}},
+                    {"name":"os","input":{"action":"read","path":"/c"}},
+                    {"name":"os","input":{"action":"read","path":"/d"}},
+                    {"name":"os","input":{"action":"read","path":"/e"}}]"#
+                    .to_string(),
+            ),
+            ..make_msg("assistant", "batch")
+        };
+        let batch_msgs = vec![make_msg("user", "go"), batched];
+        let bctx = ReminderContext { messages: &batch_msgs, ..base_rctx() };
+        assert!(
+            SerialReadGrind.check(&bctx).is_none(),
+            "a parallel batch is not a grind"
+        );
     }
 
     #[test]
@@ -1776,6 +1997,61 @@ mod tests {
         // Only one discovery call → no fire.
         let few = vec!["tool_search".to_string(), "web".to_string(), "os".to_string()];
         assert!(ResearchDelegationNudge.check(&rctx_tools(&[], &few, 3)).is_none());
+    }
+
+    #[test]
+    fn test_skill_execution_nudge_preparation_loop() {
+        let skill = r#"[{"name":"skill","input":{"action":"load","name":"pptx"}}]"#;
+        let reads = r#"[{"name":"os","input":{"action":"read","path":"a"}},{"name":"os","input":{"action":"read","path":"b"}}]"#;
+        let mut msgs = vec![
+            make_msg("user", "make me a deck"),
+            make_assistant_with_tools("", skill),
+        ];
+        for _ in 0..4 {
+            msgs.push(make_assistant_with_tools("", reads));
+        }
+        // 8 burned calls since the skill load, nothing produced → fires.
+        let out = SkillExecutionNudge
+            .check(&rctx_tools(&msgs, &[], 6))
+            .expect("fires after 8 burned calls with no execution");
+        assert!(out.contains("execute the next concrete step"));
+        // Below threshold → no fire.
+        assert!(
+            SkillExecutionNudge
+                .check(&rctx_tools(&msgs[..4], &[], 3))
+                .is_none(),
+            "4 burned calls is under the stall threshold"
+        );
+        // A write after the skill load = producing → no fire.
+        let write = r#"[{"name":"os","input":{"action":"write","path":"deck.pptx"}}]"#;
+        msgs.push(make_assistant_with_tools("", write));
+        assert!(SkillExecutionNudge.check(&rctx_tools(&msgs, &[], 7)).is_none());
+        // A plugin invocation also counts as producing.
+        let plugin_msgs = vec![
+            make_assistant_with_tools("", skill),
+            make_assistant_with_tools("", r#"[{"name":"plugin","input":{"resource":"nebo-office","action":"help"}}]"#),
+        ];
+        assert!(
+            SkillExecutionNudge
+                .check(&rctx_tools(&plugin_msgs, &[], 3))
+                .is_none()
+        );
+        // Re-loading the skill mid-grind doesn't reset the count.
+        let reload_msgs = vec![
+            make_msg("user", "make me a deck"),
+            make_assistant_with_tools("", skill),
+            make_assistant_with_tools("", reads),
+            make_assistant_with_tools("", reads),
+            make_assistant_with_tools("", skill),
+            make_assistant_with_tools("", reads),
+            make_assistant_with_tools("", reads),
+        ];
+        assert!(
+            SkillExecutionNudge
+                .check(&rctx_tools(&reload_msgs, &[], 8))
+                .is_some(),
+            "re-load counts from the deepest skill load"
+        );
     }
 
     #[test]

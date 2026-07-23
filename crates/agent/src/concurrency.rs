@@ -113,7 +113,7 @@ impl ConcurrencyController {
     }
 
     /// Report a 429 rate limit. Acquires permits into held_back to reduce concurrency.
-    pub fn report_rate_limit(&self, _retry_after_secs: Option<u64>) {
+    pub fn report_rate_limit(&self, retry_after_secs: Option<u64>) {
         self.backpressure.store(true, Ordering::SeqCst);
 
         let effective = self.effective_permits.load(Ordering::SeqCst);
@@ -129,6 +129,7 @@ impl ConcurrencyController {
             effective,
             to_hold = actual_hold,
             target,
+            retry_after_secs,
             "rate limit backpressure: reducing concurrency"
         );
 

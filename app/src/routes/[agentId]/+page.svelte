@@ -1,6 +1,6 @@
 <script lang="ts">
   import { page } from '$app/stores';
-  import { goto } from '$app/navigation';
+  import { goto } from '$lib/nav';
   import { getContext } from 'svelte';
   import type { AgentPageContext } from '$lib/types/agentPage';
 

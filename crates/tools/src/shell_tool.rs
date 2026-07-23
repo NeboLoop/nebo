@@ -184,6 +184,7 @@ impl ShellTool {
             cmd.env("PATH", ps.path_with_plugins());
         }
 
+        let started = std::time::SystemTime::now();
         let result =
             tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), cmd.output()).await;
 
@@ -283,7 +284,7 @@ impl ShellTool {
                     if persisted {
                         result.push_str(&format!(
                             "\n\n--- Full output ({} chars, {} lines) saved to: {}\n\
-                             Read sections with: system(resource: \"file\", action: \"read\", path: \"{}\", offset: N, limit: M)",
+                             Read sections with: os(resource: \"file\", action: \"read\", path: \"{}\", offset: N, limit: M)",
                             total_len, total_lines,
                             output_path.display(), output_path.display(),
                         ));
@@ -297,7 +298,16 @@ impl ShellTool {
                     }
                 }
 
-                ToolResult::ok(result)
+                // A command that produced a work document (`python gen.py -o report.pdf`,
+                // `nebo-office pptx create … -o deck.pptx`) surfaces it exactly like an
+                // `os` write — same gate the plugin exec pathway uses.
+                let tokens = shlex::split(&input.command).unwrap_or_default();
+                let base = (!input.cwd.is_empty()).then(|| std::path::Path::new(&input.cwd));
+                let result = ToolResult::ok(result);
+                match crate::plugin_tool::produced_work_document(&tokens, base, started) {
+                    Some(path) => result.with_image_url(path),
+                    None => result,
+                }
             }
         }
     }

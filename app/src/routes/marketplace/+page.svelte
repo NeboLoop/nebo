@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { page } from '$app/stores';
 	import { onMount } from 'svelte';
+	import { t } from 'svelte-i18n';
 	import Search from 'lucide-svelte/icons/search';
 	import FeaturedCard from '$lib/components/marketplace/FeaturedCard.svelte';
 	import SectionTopRanked from '$lib/components/marketplace/sections/SectionTopRanked.svelte';
@@ -8,20 +9,27 @@
 	import SectionListGrid from '$lib/components/marketplace/sections/SectionListGrid.svelte';
 	import MarketplaceGrid from '$lib/components/MarketplaceGrid.svelte';
 	import ListCard from '$lib/components/marketplace/ListCard.svelte';
-	import { listStoreProducts, listStoreFeatured, listStoreCategories } from '$lib/api/nebo';
-	import { type AppItem, toAppItem } from '$lib/types/marketplace';
+	import { loadStoreCatalog } from '$lib/data/storeCatalog';
+	import { type AppItem } from '$lib/types/marketplace';
+	import ResumeCard from '$lib/components/marketplace/ResumeCard.svelte';
+	import { loadMarketplaceMap, deptFromSlug, toolCatFromSlug, type MarketplaceMap } from '$lib/data/marketplaceMap';
 	import { slugify, categoryMeta } from '$lib/data/categories';
 
 	const KIND_TYPE: Record<string, string> = {
 		all: '', agents: 'agent', apps: 'app', skills: 'skill',
 		plugins: 'plugin', connectors: 'connector', collections: 'collection'
 	};
-	const KIND_LABEL: Record<string, string> = {
-		all: 'Marketplace', agents: 'Agents', apps: 'Apps', skills: 'Skills',
-		plugins: 'Plugins', connectors: 'Connectors', collections: 'Collections'
+	const KIND_LABEL_KEY: Record<string, string> = {
+		all: 'marketplace.title', agents: 'marketplace.nav.agents', apps: 'marketplace.nav.apps', skills: 'marketplace.skills',
+		plugins: 'marketplace.nav.plugins', connectors: 'nav.connectors', collections: 'marketplace.nav.collections'
 	};
 
-	const kind = $derived($page.url.searchParams.get('kind') || 'all');
+	// Employees is the default view (same as the website); the legacy
+	// category/publisher storefronts linked from cards still resolve as 'all'.
+	const kind = $derived(
+		$page.url.searchParams.get('kind') ||
+			($page.url.searchParams.get('category') || $page.url.searchParams.get('publisher') ? 'all' : 'employees')
+	);
 	const price = $derived($page.url.searchParams.get('price') || 'all');
 	const category = $derived($page.url.searchParams.get('category') || '');
 	const publisher = $derived($page.url.searchParams.get('publisher') || '');
@@ -30,41 +38,18 @@
 
 	let loading = $state(true);
 	let items: AppItem[] = $state([]);
+	// Curated Employees/Tools presentation map (same single source as the website).
+	let mktMap: MarketplaceMap | null = $state(null);
 	let featured: AppItem[] = $state([]);
 	let categoryOrder: string[] = $state([]);
 
-	// The proxy pages the catalog (~100/page via limit/offset); fetch in PARALLEL and dedupe.
-	async function fetchAllProducts(): Promise<AppItem[]> {
-		const PAGES = 6;
-		const results = await Promise.all(
-			Array.from({ length: PAGES }, (_, i) =>
-				listStoreProducts(undefined, undefined, i + 1, 100).catch(() => ({ products: [] }))
-			)
-		);
-		const seen = new Set<string>();
-		const out: AppItem[] = [];
-		for (const res of results) {
-			for (const r of ((res as { products?: any[] })?.products as any[]) || []) {
-				const id = String(r?.id ?? '');
-				if (!id || seen.has(id)) continue;
-				seen.add(id);
-				out.push(toAppItem(r, out.length));
-			}
-		}
-		return out;
-	}
-
 	onMount(async () => {
 		try {
-			const [products, featuredRes, catsRes] = await Promise.all([
-				fetchAllProducts(),
-				listStoreFeatured().catch(() => ({ products: [] })),
-				listStoreCategories().catch(() => ({ categories: [] }))
-			]);
-			items = products;
-			featured = (((featuredRes as { products?: any[] })?.products as any[]) || []).map((r, i) => toAppItem(r, i));
-			const cats = ((catsRes as { categories?: any[] })?.categories as any[]) || [];
-			categoryOrder = cats.map((c) => String(c.name || ''));
+			const [catalog, mapRes] = await Promise.all([loadStoreCatalog(), loadMarketplaceMap()]);
+			mktMap = mapRes;
+			items = catalog.items;
+			featured = catalog.featured;
+			categoryOrder = catalog.categoryOrder;
 		} catch { /* ignore */ }
 		loading = false;
 	});
@@ -76,10 +61,40 @@
 		else if (price === 'paid') result = result.filter((it) => !it.free);
 		if (category) result = result.filter((it) => slugify(it.category) === category);
 		if (publisher) result = result.filter((it) => it.author === publisher);
+		// Sidebar map filter (same scheme as the website): agents narrow by
+		// department; tool-type kinds and collections narrow by tool category.
+		if (kind === 'agents' && deptFilter) result = result.filter((it) => mapOf(it)?.dept === deptFilter);
+		else if (tcFilter && ['apps', 'skills', 'plugins', 'connectors', 'collections'].includes(kind))
+			result = result.filter((it) => mapOf(it)?.tc === tcFilter);
 		return result;
 	});
 
 	const spotlight = $derived(featured[0] ?? items[0] ?? null);
+
+	// ── Employees / Tools views (map-driven, joined on artifact Code) ──
+	const mapOf = (it: AppItem) => mktMap?.entries[it.code];
+	const respOf = (it: AppItem) => mktMap?.responsibilities[mapOf(it)?.role ?? ''] ?? [];
+	// The map-driven views respect the price filter, same as the website.
+	const priceOk = (it: AppItem) => price === 'all' || (price === 'free' ? it.free : !it.free);
+	const employees = $derived(mktMap ? items.filter((it) => mapOf(it)?.d === 'E' && priceOk(it)) : []);
+	const filterSlug = $derived($page.url.searchParams.get('filter') || '');
+	const deptFilter = $derived(mktMap && filterSlug ? deptFromSlug(mktMap, filterSlug) : '');
+	const tcFilter = $derived(mktMap && filterSlug ? toolCatFromSlug(mktMap, filterSlug) : '');
+	const employeesByDept = $derived.by(() => {
+		if (!mktMap) return [] as { name: string; roles: AppItem[] }[];
+		const depts = deptFilter ? [deptFilter] : mktMap.departments;
+		return depts
+			.map((d) => ({ name: d, roles: employees.filter((e) => mapOf(e)?.dept === d) }))
+			.filter((g) => g.roles.length > 0);
+	});
+	const toolItems = $derived(mktMap ? items.filter((it) => mapOf(it)?.d === 'T' && priceOk(it)) : []);
+	const toolsByCategory = $derived.by(() => {
+		if (!mktMap) return [] as { name: string; items: AppItem[] }[];
+		const cats = tcFilter ? [tcFilter] : mktMap.toolCategories;
+		return cats
+			.map((c) => ({ name: c, items: toolItems.filter((t) => mapOf(t)?.tc === c) }))
+			.filter((g) => g.items.length > 0);
+	});
 
 	// A category on its own (no kind/price/publisher) gets the editorial
 	// storefront treatment: headline + lede + featured + Top + All.
@@ -120,7 +135,7 @@
 	<!-- Category storefront — headline + lede + featured + Top + All -->
 	<div class="max-w-6xl mx-auto pb-10">
 		<div class="px-6 pt-6">
-			<h1 class="font-display text-3xl font-bold tracking-tight">{categoryName || 'Category'}</h1>
+			<h1 class="font-display text-3xl font-bold tracking-tight">{categoryName || $t('marketplace.detail.category')}</h1>
 			{#if catMeta}
 				<p class="text-base text-base-content/70 mt-2 max-w-3xl leading-relaxed">{catMeta.lede}</p>
 			{/if}
@@ -129,7 +144,7 @@
 		{#if categoryItems.length === 0}
 			<div class="flex flex-col items-center justify-center py-16 text-center">
 				<Search class="w-10 h-10 text-base-content/40 mb-3" />
-				<p class="text-base font-medium">Nothing here yet</p>
+				<p class="text-base font-medium">{$t('marketplace.nothingHereYet')}</p>
 			</div>
 		{:else}
 			{#if categoryFeatured}
@@ -137,26 +152,78 @@
 					<FeaturedCard item={categoryFeatured} />
 				</div>
 			{/if}
-			<SectionListGrid title="Top in {categoryName}" items={categoryItems.slice(0, 6)} />
+			<SectionListGrid title={$t('marketplace.topIn', { values: { name: categoryName } })} items={categoryItems.slice(0, 6)} />
 			{#if categoryItems.length > 6}
-				<SectionListGrid title="All in {categoryName}" items={categoryItems.slice(6)} />
+				<SectionListGrid title={$t('marketplace.allIn', { values: { name: categoryName } })} items={categoryItems.slice(6)} />
 			{/if}
+		{/if}
+	</div>
+{:else if kind === 'employees'}
+	<!-- Employees — the website's hiring view: departments of roles as resume cards -->
+	<div class="max-w-6xl mx-auto px-6 py-8 pb-12">
+		<h1 class="font-display text-3xl font-bold tracking-tight">{$t('marketplace.employeesHeadline')}</h1>
+		<p class="text-base text-base-content/70 mt-2 max-w-3xl leading-relaxed">{$t('marketplace.employeesLede')}</p>
+		{#if !mktMap || employees.length === 0}
+			<div class="flex flex-col items-center justify-center py-16 text-center">
+				<Search class="w-10 h-10 text-base-content/40 mb-3" />
+				<p class="text-base font-medium">{$t('marketplace.nothingHereYet')}</p>
+			</div>
+		{:else}
+			{#each employeesByDept as group}
+				<section class="mt-10">
+					<div class="flex items-baseline gap-3 mb-4">
+						<h2 class="text-xl font-bold tracking-tight">{group.name}</h2>
+						<span class="text-sm text-base-content/50">{group.roles.length} {group.roles.length === 1 ? 'role' : 'roles'}</span>
+					</div>
+					<div class="grid grid-cols-1 md:grid-cols-2 gap-5">
+						{#each group.roles as e (e.id)}
+							<ResumeCard item={e} department={group.name} title={mapOf(e)?.role} responsibilities={respOf(e)} />
+						{/each}
+					</div>
+				</section>
+			{/each}
+		{/if}
+	</div>
+{:else if kind === 'tools'}
+	<!-- Tools — the website's tool-category view over the same catalog -->
+	<div class="max-w-6xl mx-auto px-6 py-8 pb-12">
+		<h1 class="font-display text-3xl font-bold tracking-tight">{$t('marketplace.toolsHeadline')}</h1>
+		<p class="text-base text-base-content/70 mt-2 max-w-3xl leading-relaxed">{$t('marketplace.toolsLede')}</p>
+		{#if !mktMap || toolItems.length === 0}
+			<div class="flex flex-col items-center justify-center py-16 text-center">
+				<Search class="w-10 h-10 text-base-content/40 mb-3" />
+				<p class="text-base font-medium">{$t('marketplace.nothingHereYet')}</p>
+			</div>
+		{:else}
+			{#each toolsByCategory as group}
+				<section class="mt-8">
+					<div class="flex items-baseline gap-3 mb-3">
+						<h2 class="text-lg font-bold tracking-tight">{group.name}</h2>
+						<span class="text-sm text-base-content/50">{group.items.length}</span>
+					</div>
+					<MarketplaceGrid>
+						{#each group.items as item (item.id)}
+							<ListCard {item} />
+						{/each}
+					</MarketplaceGrid>
+				</section>
+			{/each}
 		{/if}
 	</div>
 {:else if isFiltering}
 	<!-- Filtered: flat result list (kind / price / publisher) -->
 	<div class="max-w-6xl mx-auto px-6 py-6">
 		{#if publisher}
-			<h1 class="font-display text-xl font-bold mb-1">By {publisher}</h1>
+			<h1 class="font-display text-xl font-bold mb-1">{$t('marketplace.byPublisher', { values: { name: publisher } })}</h1>
 		{/if}
 		<div class="mb-4 text-sm text-base-content/70">
-			{filteredItems.length} result{filteredItems.length === 1 ? '' : 's'}
+			{filteredItems.length === 1 ? $t('marketplace.resultCountSingular', { values: { count: filteredItems.length } }) : $t('marketplace.resultCount', { values: { count: filteredItems.length } })}
 		</div>
 		{#if filteredItems.length === 0}
 			<div class="flex flex-col items-center justify-center py-16 text-center">
 				<Search class="w-10 h-10 text-base-content/40 mb-3" />
-				<p class="text-base font-medium">No results found</p>
-				<p class="text-xs text-base-content/50 mt-1">Try adjusting your filters.</p>
+				<p class="text-base font-medium">{$t('common.noResultsFound')}</p>
+				<p class="text-xs text-base-content/50 mt-1">{$t('marketplace.tryAdjustingFilters')}</p>
 			</div>
 		{:else}
 			<MarketplaceGrid>
@@ -169,7 +236,7 @@
 {:else if items.length === 0}
 	<div class="flex flex-col items-center justify-center py-16 text-center">
 		<Search class="w-10 h-10 text-base-content/40 mb-3" />
-		<p class="text-base font-medium">No items in the marketplace yet</p>
+		<p class="text-base font-medium">{$t('marketplace.noItemsYet')}</p>
 	</div>
 {:else}
 	<!-- Editorial home — Apple App Store cadence: a large hero, a ranked list,
@@ -182,7 +249,7 @@
 			</div>
 		{/if}
 
-		<SectionTopRanked title="Top in {KIND_LABEL[kind] ?? 'the Marketplace'}" items={items.slice(0, 9)} />
+		<SectionTopRanked title={$t('marketplace.topIn', { values: { name: KIND_LABEL_KEY[kind] ? $t(KIND_LABEL_KEY[kind]) : $t('marketplace.theMarketplace') } })} items={items.slice(0, 9)} />
 
 		{#each byCategory as group, i}
 			{#if i % 4 === 0}

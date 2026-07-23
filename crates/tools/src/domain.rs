@@ -43,8 +43,8 @@ pub struct DomainSchemaConfig {
 /// Auto-correct missing `resource` on STRAP tool calls.
 ///
 /// LLMs commonly forget to set `resource`, placing the resource name in the
-/// `action` field instead (e.g. `bot(action: "memory")` instead of
-/// `bot(resource: "memory", action: "list")`).
+/// `action` field instead (e.g. `agent(action: "memory")` instead of
+/// `agent(resource: "memory", action: "list")`).
 ///
 /// Call this before per-tool `infer_resource` logic. If the action value
 /// matches a known resource name, it's swapped into the resource field.
@@ -59,7 +59,7 @@ pub fn auto_correct_resource(
     }
 
     // Most common LLM error: resource name placed as action value
-    // e.g. bot(action: "memory") instead of bot(resource: "memory", action: "list")
+    // e.g. agent(action: "memory") instead of agent(resource: "memory", action: "list")
     if resource_names.contains(&domain_input.action.as_str()) {
         input["resource"] = serde_json::Value::String(domain_input.action.clone());
         return domain_input.action.clone();

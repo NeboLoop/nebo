@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { t } from 'svelte-i18n';
 	import MarketplaceGrid from '$lib/components/MarketplaceGrid.svelte';
 	import ArtifactIcon from '../ArtifactIcon.svelte';
 	import PricePill from '../PricePill.svelte';
@@ -12,7 +13,7 @@
 		<div class="flex items-baseline justify-between mb-3">
 			<h2 class="font-display text-lg font-bold">{title}</h2>
 			{#if seeAllHref}
-				<a href={seeAllHref} class="text-base text-primary font-medium">See All</a>
+				<a href={seeAllHref} class="text-base text-primary font-medium">{$t('marketplace.detail.seeAll')}</a>
 			{/if}
 		</div>
 		<MarketplaceGrid>

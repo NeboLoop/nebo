@@ -93,7 +93,12 @@ impl DynTool for EventTool {
             match domain_input.action.as_str() {
                 "create" => {
                     let name = input["name"].as_str().unwrap_or("");
-                    let cron_val = input["cron"].as_str().unwrap_or("");
+                    let cron_val = input["cron"]
+                        .as_str()
+                        .filter(|v| !v.is_empty())
+                        // `schedule` is the natural synonym models reach for — accept it.
+                        .or_else(|| input["schedule"].as_str())
+                        .unwrap_or("");
                     let at_val = input["at"].as_str().unwrap_or("");
                     let task_type = input["task_type"].as_str().unwrap_or("bash");
                     let command = input["command"].as_str().unwrap_or("");
@@ -134,6 +139,23 @@ impl DynTool for EventTool {
                                 "create",
                                 "command",
                                 "event(action: \"create\", name: \"cleanup\", cron: \"0 0 * * *\", command: \"rm -rf /tmp/cache/*\")",
+                            ));
+                        }
+                        // Cron commands execute later without going through the
+                        // interactive shell pipeline — run the same unconditional
+                        // safeguard here at creation time so a scheduled job can't
+                        // smuggle a command the shell tool would refuse.
+                        if let Some(block) = crate::safeguard::check_safeguard(
+                            "shell",
+                            &serde_json::json!({
+                                "resource": "bash",
+                                "action": "exec",
+                                "command": command,
+                            }),
+                        ) {
+                            return ToolResult::error(format!(
+                                "Refusing to schedule this command: {}",
+                                block
                             ));
                         }
                         (command, None::<&str>)
@@ -280,13 +302,20 @@ impl DynTool for EventTool {
                             // Execute based on task type
                             let (success, output) = match job.task_type.as_str() {
                                 "bash" => {
-                                    match tokio::process::Command::new("bash")
-                                        .arg("-c")
-                                        .arg(&job.command)
-                                        .output()
-                                        .await
+                                    match tokio::time::timeout(
+                                        std::time::Duration::from_secs(120),
+                                        tokio::process::Command::new("bash")
+                                            .arg("-c")
+                                            .arg(&job.command)
+                                            .output(),
+                                    )
+                                    .await
                                     {
-                                        Ok(result) => {
+                                        Err(_) => (
+                                            false,
+                                            "Command timed out after 120s".to_string(),
+                                        ),
+                                        Ok(Ok(result)) => {
                                             let stdout =
                                                 String::from_utf8_lossy(&result.stdout).to_string();
                                             let stderr =
@@ -298,7 +327,7 @@ impl DynTool for EventTool {
                                             };
                                             (result.status.success(), out)
                                         }
-                                        Err(e) => (false, format!("Failed to execute: {}", e)),
+                                        Ok(Err(e)) => (false, format!("Failed to execute: {}", e)),
                                     }
                                 }
                                 "agent" => {

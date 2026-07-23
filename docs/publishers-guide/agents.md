@@ -171,7 +171,7 @@ Each context maintains its own memory pool. Agent-wide memories (stored without 
 
 **When to use `inherit_user`:**
 
-Use this when your agent needs user preferences without asking for them — timezone for scheduling, language for communication, name for personalization. The agent reads from the main Nebo companion's `tacit/preferences` memories (read-only).
+Use this when your agent needs user preferences without asking for them — timezone for scheduling, language for communication, name for personalization. The agent reads from the primary Nebo employee's `tacit/preferences` memories (read-only).
 
 **Three-tier user_id convention:**
 
@@ -179,7 +179,7 @@ Memory scoping follows a layered naming convention:
 
 | Layer | user_id format | Description |
 |-------|---------------|-------------|
-| Layer 1 (User) | `"user123"` | Nebo companion preferences (timezone, language, style) |
+| Layer 1 (User) | `"user123"` | User-level preferences (timezone, language, style) |
 | Layer 2 (Agent) | `"user123:agent:brief"` | Agent-wide memories |
 | Layer 3 (Context) | `"user123:agent:brief:ctx:doc-123"` | Per-document/project memories |
 

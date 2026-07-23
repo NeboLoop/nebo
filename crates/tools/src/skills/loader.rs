@@ -31,7 +31,7 @@ pub struct Loader {
     /// Keyed by skill name, value is the full SKILL.md content from include_str!().
     bundled_raw: HashMap<String, &'static str>,
     /// Pre-built compact catalog string, rebuilt on load_all() / watcher reload.
-    /// Names-only format (like Claude Code's deferred tool listing).
+    /// Names-only format (the deferred tool-listing format).
     cached_catalog: Arc<RwLock<String>>,
     /// License keys for sealed .napp files, keyed by artifact_id.
     /// Populated from the license key cache before load_all().
@@ -300,7 +300,7 @@ impl Loader {
         verify_dependencies(&mut loaded, self.plugin_store.as_deref());
 
         let count = loaded.len();
-        // Rebuild cached catalog before storing (names-only, like Claude Code deferred tools)
+        // Rebuild cached catalog before storing (names-only, deferred-tool format)
         let catalog = build_catalog_string(&loaded);
         *self.skills.write().await = loaded;
         *self.cached_catalog.write().await = catalog;
@@ -848,11 +848,18 @@ impl Loader {
             use notify::{Event, EventKind, RecursiveMode, Watcher};
             use tokio::sync::mpsc;
 
-            let (tx, mut rx) = mpsc::channel::<notify::Result<Event>>(32);
+            // Unbounded + non-blocking send: the callback runs on notify's
+            // event-loop thread, and watcher.watch() below round-trips through
+            // that same thread. A bounded channel that filled during the watch()
+            // setup window blocked the notify thread in blocking_send, which
+            // deadlocked watch() → notify → consumer on a single-worker runtime
+            // (2026-07-22 cloud incident: 1-vCPU pods froze at end of boot).
+            // Same pattern at every notify watcher site in the workspace.
+            let (tx, mut rx) = mpsc::unbounded_channel::<notify::Result<Event>>();
 
             let mut watcher = match notify::RecommendedWatcher::new(
                 move |res| {
-                    let _ = tx.blocking_send(res);
+                    let _ = tx.send(res);
                 },
                 notify::Config::default().with_poll_interval(std::time::Duration::from_secs(2)),
             ) {

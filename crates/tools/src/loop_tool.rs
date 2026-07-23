@@ -32,7 +32,7 @@ fn mime_for_path(p: &std::path::Path) -> &'static str {
 }
 
 /// LoopTool provides NeboAI communication capabilities.
-/// Resources: dm, channel, group, topic.
+/// Resources: dm, channel, loop, topic.
 pub struct LoopTool {
     comm: Arc<dyn CommPlugin>,
 }
@@ -328,7 +328,7 @@ impl LoopTool {
         }
     }
 
-    async fn handle_group(&self, input: &serde_json::Value) -> ToolResult {
+    async fn handle_loop(&self, input: &serde_json::Value) -> ToolResult {
         let action = input["action"].as_str().unwrap_or("");
 
         match action {
@@ -342,9 +342,9 @@ impl LoopTool {
                 let loop_id = input["loop_id"].as_str().unwrap_or("");
                 if loop_id.is_empty() {
                     return ToolResult::error(errors::missing_param(
-                        "group get",
+                        "loop get",
                         "loop_id",
-                        "loop(resource: \"group\", action: \"get\", loop_id: \"...\")",
+                        "loop(resource: \"loop\", action: \"get\", loop_id: \"...\")",
                     ));
                 }
                 match self.comm.get_loop_info(loop_id).await {
@@ -358,20 +358,20 @@ impl LoopTool {
                 let loop_id = input["loop_id"].as_str().unwrap_or("");
                 if loop_id.is_empty() {
                     return ToolResult::error(errors::missing_param(
-                        "group members",
+                        "loop members",
                         "loop_id",
-                        "loop(resource: \"group\", action: \"members\", loop_id: \"...\")",
+                        "loop(resource: \"loop\", action: \"members\", loop_id: \"...\")",
                     ));
                 }
                 match self.comm.list_channel_members(loop_id).await {
                     Ok(members) => {
                         ToolResult::ok(serde_json::to_string_pretty(&members).unwrap_or_default())
                     }
-                    Err(e) => ToolResult::error(format!("Failed to list group members: {}. Do not retry — this is a communication error.", e)),
+                    Err(e) => ToolResult::error(format!("Failed to list loop members: {}. Do not retry — this is a communication error.", e)),
                 }
             }
             _ => ToolResult::error(format!(
-                "Unknown group action: {}. Available: list, get, members",
+                "Unknown loop action: {}. Available: list, get, members",
                 action
             )),
         }
@@ -435,8 +435,10 @@ impl DynTool for LoopTool {
     }
 
     fn description(&self) -> String {
-        "NeboAI communication — direct messages, channels, groups, and topics.\n\
-         USE THIS when: user wants to message another bot, post to a channel, or interact with NeboAI infrastructure.\n\n\
+        "NeboAI communication — loops (workspaces this agent belongs to), channels, direct messages, and topics.\n\
+         USE THIS when: user asks which loops you belong to, wants to message another bot, post to a channel, or interact with NeboAI infrastructure.\n\n\
+         - loop(resource: \"loop\", action: \"list\") — List the loops this agent belongs to\n\
+         - loop(resource: \"loop\", action: \"get\", loop_id: \"...\") / members — Loop details / members\n\
          - loop(resource: \"dm\", action: \"send\", to: \"agent-uuid\", text: \"Hello\") — Send a DM to another bot\n\
          - loop(resource: \"channel\", action: \"send\", channel_id: \"...\", text: \"Hello\") — Send to a loop channel\n\
          - loop(resource: \"channel\", action: \"share\", path: \"/abs/path/file.pdf\") — Share a local file into the channel reply\n\
@@ -445,7 +447,6 @@ impl DynTool for LoopTool {
          - loop(resource: \"channel\", action: \"list\") — List available channels\n\
          - loop(resource: \"channel\", action: \"messages\", channel_id: \"...\", limit: 20) — Read channel messages\n\
          - loop(resource: \"channel\", action: \"members\", channel_id: \"...\") — List channel members\n\
-         - loop(resource: \"group\", action: \"list\") / get / members — Manage loops\n\
          - loop(resource: \"topic\", action: \"subscribe\", topic: \"news\") / unsubscribe / status\n\n\
          Use loop for bot-to-bot communication and NeboAI infrastructure."
             .to_string()
@@ -458,7 +459,7 @@ impl DynTool for LoopTool {
                 "resource": {
                     "type": "string",
                     "description": "REQUIRED. The communication resource category — determines which actions are available.",
-                    "enum": ["dm", "channel", "group", "topic"]
+                    "enum": ["dm", "channel", "loop", "topic"]
                 },
                 "action": {
                     "type": "string",
@@ -470,7 +471,7 @@ impl DynTool for LoopTool {
                 "to": { "type": "string", "description": "Recipient agent ID (for dm)" },
                 "channel_id": { "type": "string", "description": "Channel ID" },
                 "topic": { "type": "string", "description": "Topic name for pub/sub" },
-                "loop_id": { "type": "string", "description": "Loop (group) ID" },
+                "loop_id": { "type": "string", "description": "Loop ID" },
                 "limit": { "type": "integer", "description": "Max results to return" }
             },
             "required": ["resource", "action"]
@@ -497,7 +498,7 @@ impl DynTool for LoopTool {
                 let corrected = crate::domain::auto_correct_resource(
                     &domain_input,
                     &mut input,
-                    &["dm", "channel", "group", "topic"],
+                    &["dm", "channel", "loop", "topic"],
                 );
                 if corrected.is_empty() {
                     self.infer_resource(&domain_input.action).to_string()
@@ -508,7 +509,7 @@ impl DynTool for LoopTool {
 
             if resource.is_empty() {
                 return ToolResult::error(
-                    "Resource is required. Available: dm, channel, group, topic",
+                    "Resource is required. Available: dm, channel, loop, topic",
                 );
             }
 
@@ -526,10 +527,17 @@ impl DynTool for LoopTool {
             match resource.as_str() {
                 "dm" => self.handle_dm(&input).await,
                 "channel" => self.handle_channel(&input).await,
-                "group" => self.handle_group(&input).await,
+                "loop" => self.handle_loop(&input).await,
+                // Old name — return a correction, same pattern as the other
+                // tool renames (the concept is user-facing "loop" everywhere).
+                "group" => ToolResult::error(
+                    "resource \"group\" is now \"loop\". Call \
+                     loop(resource: \"loop\", action: \"list\") to list the loops \
+                     this agent belongs to (or get / members with loop_id).",
+                ),
                 "topic" => self.handle_topic(&input).await,
                 other => ToolResult::error(format!(
-                    "Resource {:?} not available. Available: dm, channel, group, topic",
+                    "Resource {:?} not available. Available: dm, channel, loop, topic",
                     other
                 )),
             }

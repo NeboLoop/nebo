@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { t } from 'svelte-i18n';
   import { AGENT_COLORS } from '$lib/tokens.js';
   import { AGENTS } from '$lib/data.js';
   import { flattenForDate, attachRunData, userScheduleItems } from '$lib/stores/schedule.js';
@@ -8,7 +9,7 @@
 
   let selected = $state<string | null>(null);
 
-  const DOWS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const DOWS = $derived([$t('weekdays.sun'), $t('weekdays.mon'), $t('weekdays.tue'), $t('weekdays.wed'), $t('weekdays.thu'), $t('weekdays.fri'), $t('weekdays.sat')]);
   const today = new Date();
 
   const cells = $derived.by(() => {
@@ -85,7 +86,7 @@
             class="flex items-center text-xs px-1 py-px rounded-sm overflow-hidden border-l-2 cursor-pointer text-left transition-shadow {isHeartbeat ? 'opacity-50' : ''} {isHeartbeat ? '' : c.fillClass} {c.textClass} {c.edgeClass} {selected === item._id ? 'ring-2' : ''}"
             style="{isHeartbeat ? 'border-left-style:dashed;' : ''} {selected === item._id ? `--tw-ring-color:${c.edgeVar}` : ''}"
             onclick={(e) => { e.stopPropagation(); selected = item._id; }}
-            title="{a?.name ?? item.agent} · {item.label}{isHeartbeat ? ` (every ${item.interval})` : ''}"
+            title="{a?.name ?? item.agent} · {item.label}{isHeartbeat ? ` (${$t('schedule.everyInterval', { values: { interval: item.interval } })})` : ''}"
           >
             <span class="overflow-hidden whitespace-nowrap text-ellipsis font-medium flex-1">{isHeartbeat ? `↻ ${a?.name ?? item.agent} · ${item.interval}` : `${a?.name ?? item.agent}: ${item.label}`}</span>
             {#if item.run && !isHeartbeat}
@@ -94,7 +95,7 @@
           </button>
         {/each}
         {#if hidden > 0}
-          <div class="font-mono text-xs px-1">+{hidden} more</div>
+          <div class="font-mono text-xs px-1">{$t('schedule.moreCount', { values: { count: hidden } })}</div>
         {/if}
       </div>
     {/each}

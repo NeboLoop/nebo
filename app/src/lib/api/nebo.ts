@@ -825,6 +825,20 @@ export function testIntegration(id: string, req: Record<string, unknown> = {}) {
 }
 
 /**
+ * @description "Get tool permissions"
+ */
+export function getToolPermissions(id: string) {
+	return webapi.get<unknown>(`/api/v1/integrations/${id}/tool-permissions`)
+}
+
+/**
+ * @description "Update tool permissions"
+ */
+export function updateToolPermissions(id: string, req: Record<string, unknown> = {}) {
+	return webapi.put<unknown>(`/api/v1/integrations/${id}/tool-permissions`, req)
+}
+
+/**
  * @description "Local models status"
  */
 export function localModelsStatus() {
@@ -993,6 +1007,13 @@ export function neboAIConnectHandler(req: Record<string, unknown> = {}) {
 }
 
 /**
+ * @description "Nebo a i entitlements"
+ */
+export function neboAIEntitlements() {
+	return webapi.get<unknown>(`/api/v1/neboai/entitlements`)
+}
+
+/**
  * @description "Nebo a i janus usage"
  */
 export function neboAIJanusUsage() {
@@ -1063,6 +1084,20 @@ export function neboAIReferralCode() {
 }
 
 /**
+ * @description "Nebo a i share artifact"
+ */
+export function neboAIShareArtifact(req: Record<string, unknown> = {}) {
+	return webapi.post<components.NeboAIShareArtifactResponse>(`/api/v1/neboai/share`, req)
+}
+
+/**
+ * @description "Nebo a i share targets"
+ */
+export function neboAIShareTargets() {
+	return webapi.get<components.ShareTargetsResponse>(`/api/v1/neboai/share/targets`)
+}
+
+/**
  * @description "Nebo a i bot status"
  */
 export function neboAIBotStatus() {
@@ -1119,6 +1154,13 @@ export function listAllPluginEvents() {
 }
 
 /**
+ * @description "Oauth relay"
+ */
+export function oauthRelay() {
+	return webapi.get<components.OauthRelayResponse>(`/api/v1/plugins/oauth/relay`)
+}
+
+/**
  * @description "Remove plugin"
  */
 export function removePlugin(slug: string) {
@@ -1130,6 +1172,13 @@ export function removePlugin(slug: string) {
  */
 export function listPluginAccounts(slug: string, agentId: string) {
 	return webapi.get<components.ListPluginAccountsResponse>(`/api/v1/plugins/${slug}/accounts`, { agentId })
+}
+
+/**
+ * @description "Disconnect plugin account"
+ */
+export function disconnectPluginAccount(slug: string, agentId: string, accountLabel: string) {
+	return webapi.delete<components.DisconnectPluginAccountResponse>(`/api/v1/plugins/${slug}/accounts`, { agentId, accountLabel })
 }
 
 /**
@@ -1434,10 +1483,17 @@ export function listStoreFeatured(q?: string, category?: string, page?: number, 
 }
 
 /**
+ * @description "List store marketplace map"
+ */
+export function listStoreMarketplaceMap() {
+	return webapi.get<unknown>(`/api/v1/store/marketplace-map`)
+}
+
+/**
  * @description "List store orgs"
  */
 export function listStoreOrgs() {
-	return webapi.get<components.ListStoreOrgsResponse>(`/api/v1/store/orgs`)
+	return webapi.get<unknown>(`/api/v1/store/orgs`)
 }
 
 /**

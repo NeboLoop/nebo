@@ -1,6 +1,6 @@
 mod mcp_serve;
 
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 use clap::{Parser, Subcommand};
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
@@ -169,11 +169,11 @@ async fn main() -> anyhow::Result<()> {
     // Detect Chrome native messaging relay BEFORE parsing CLI args.
     // Chrome passes `chrome-extension://EXTENSION_ID/` as the sole argument.
     // When detected, run as a lightweight stdin/stdout relay — no GUI, no server.
-    // The `nebo relay` subcommand also reaches run_native_messaging via clap.
+    // The `nebo relay` subcommand also reaches the relay via clap.
     {
         let args: Vec<String> = std::env::args().collect();
         if args.iter().any(|a| a.starts_with("chrome-extension://")) {
-            return run_native_messaging().await;
+            return browser::extension_relay::run(config::read_extension_secret()).await;
         }
     }
 
@@ -376,7 +376,7 @@ async fn main() -> anyhow::Result<()> {
             run_onboard(&cfg)?;
         }
         Some(Commands::Relay) => {
-            run_native_messaging().await?;
+            browser::extension_relay::run(config::read_extension_secret()).await?;
         }
         Some(Commands::Capabilities) => {
             println!("Nebo v{VERSION} — Platform Capabilities");
@@ -483,14 +483,97 @@ async fn run_chat(
     interactive: bool,
     prompt: Option<String>,
 ) -> anyhow::Result<()> {
-    let store = Arc::new(db::Store::new(&cfg.database.sqlite_path)?);
+    // The CLI is a thin client of the RUNNING server's one chat pipeline
+    // (ws → dispatch_chat → Runner), exactly like the web UI — so the agent
+    // has its full tool registry, memory, and steering. The previous
+    // implementation called the provider directly with zero tools and no
+    // system prompt, a competing pathway on which tool use was impossible.
+    let url = format!("ws://{}:{}/ws", cfg.host, cfg.port);
+    let (ws, _) = tokio_tungstenite::connect_async(&url).await.map_err(|e| {
+        anyhow::anyhow!("cannot reach nebo server at {url} ({e}) — is `nebo serve` running?")
+    })?;
+    use futures::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message as WsMessage;
+    let (mut tx, mut rx) = ws.split();
 
-    // Build providers using the canonical server function (handles all provider types)
-    let providers = server::build_providers(&store, cfg, None);
+    // Auth handshake (the local server trusts the connection; it replies auth_ok).
+    tx.send(WsMessage::Text(r#"{"type":"auth"}"#.to_string().into()))
+        .await?;
 
-    if providers.is_empty() {
-        println!("No active providers available. Add one with `nebo serve` and the web UI.");
-        return Ok(());
+    // Unique session per invocation so test runs never bleed into each other
+    // or into the user's UI chats.
+    let session_id = format!(
+        "agent:assistant:cli-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+    );
+
+    let send_prompt = |text: String| {
+        let msg = serde_json::json!({
+            "type": "chat",
+            "message_id": format!("cli-{}-{}", session_id, uuid::Uuid::new_v4()),
+            "data": {
+                "session_id": session_id,
+                "prompt": text,
+                "agent_id": "assistant",
+                "channel": "cli",
+            },
+        });
+        msg.to_string()
+    };
+
+    // Stream events for OUR session until the run completes. Returns false on
+    // socket close.
+    async fn pump(
+        rx: &mut (impl StreamExt<Item = Result<WsMessage, tokio_tungstenite::tungstenite::Error>>
+              + Unpin),
+        session_id: &str,
+    ) -> anyhow::Result<bool> {
+        let timeout = std::time::Duration::from_secs(300);
+        loop {
+            let Ok(next) = tokio::time::timeout(timeout, rx.next()).await else {
+                anyhow::bail!("timed out after {}s waiting for the run", timeout.as_secs());
+            };
+            let Some(msg) = next else { return Ok(false) };
+            let WsMessage::Text(text) = msg? else {
+                continue;
+            };
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
+                continue;
+            };
+            let data = &v["data"];
+            if data["session_id"].as_str() != Some(session_id) {
+                continue;
+            }
+            match v["type"].as_str().unwrap_or("") {
+                "chat_stream" => {
+                    if let Some(c) = data["content"].as_str() {
+                        print!("{c}");
+                        use std::io::Write;
+                        let _ = std::io::stdout().flush();
+                    }
+                }
+                "activity" => {
+                    if let Some(label) = data["label"].as_str() {
+                        eprintln!("[tool] {label}");
+                    }
+                }
+                "chat_error" => {
+                    println!();
+                    anyhow::bail!(
+                        "chat error: {}",
+                        data["error"].as_str().unwrap_or("unknown")
+                    );
+                }
+                "chat_complete" => {
+                    println!();
+                    return Ok(true);
+                }
+                _ => {}
+            }
+        }
     }
 
     if interactive {
@@ -513,301 +596,22 @@ async fn run_chat(
                     if line == "exit" || line == "quit" {
                         break;
                     }
-                    send_chat_message(providers[0].as_ref(), &line).await?;
+                    tx.send(WsMessage::Text(send_prompt(line).into())).await?;
+                    if !pump(&mut rx, &session_id).await? {
+                        break;
+                    }
                 }
                 None => break,
             }
         }
     } else if let Some(prompt) = prompt {
-        send_chat_message(providers[0].as_ref(), &prompt).await?;
+        tx.send(WsMessage::Text(send_prompt(prompt).into())).await?;
+        pump(&mut rx, &session_id).await?;
     } else {
         println!("Usage: nebo chat 'your prompt' or nebo chat -i for interactive mode");
     }
 
     Ok(())
-}
-
-async fn send_chat_message(provider: &dyn ai::Provider, prompt: &str) -> anyhow::Result<()> {
-    let req = ai::ChatRequest {
-        tool_choice: Default::default(),
-        messages: vec![ai::Message {
-            role: "user".into(),
-            content: prompt.into(),
-            ..Default::default()
-        }],
-        tools: vec![],
-        max_tokens: 4096,
-        temperature: 0.7,
-        system: String::new(),
-        static_system: String::new(),
-        model: String::new(),
-        enable_thinking: false,
-        metadata: None,
-        cache_breakpoints: vec![],
-        cancel_token: None,
-        trace: None,
-    };
-
-    let mut rx = provider
-        .stream(&req)
-        .await
-        .map_err(|e| anyhow::anyhow!("provider error: {e}"))?;
-
-    while let Some(event) = rx.recv().await {
-        match event.event_type {
-            ai::StreamEventType::Text => {
-                print!("{}", event.text);
-            }
-            ai::StreamEventType::Done => break,
-            _ => {}
-        }
-    }
-    println!();
-
-    Ok(())
-}
-
-/// Run as a Chrome native messaging host.
-/// Chrome launches this process and communicates via stdin/stdout using
-/// length-prefixed JSON. This process is a transparent bridge between
-/// the Chrome extension (stdin/stdout) and the running Nebo server (WebSocket).
-///
-/// Self-healing: retries WS connection with backoff if server isn't ready.
-/// Exits cleanly when WS breaks so Chrome's onDisconnect fires and relaunches.
-///
-/// Extension ←stdin/stdout→ this process ←WebSocket→ Nebo server ←in-process→ Agent
-async fn run_native_messaging() -> anyhow::Result<()> {
-    use futures::{SinkExt, StreamExt};
-    use std::sync::Arc;
-    use tokio::io::AsyncReadExt;
-    use tokio_tungstenite::connect_async;
-
-    // NOTE: stdout is the native messaging channel — ALL diagnostic logging goes to stderr.
-    eprintln!("[nebo-relay] starting native messaging bridge");
-
-    let ws_url = "ws://127.0.0.1:27895/ws/extension";
-
-    // Retry WS connection with backoff — server may not be ready yet
-    let ws_stream = {
-        let mut attempts = 0u32;
-        loop {
-            match connect_async(ws_url).await {
-                Ok((stream, _)) => {
-                    eprintln!("[nebo-relay] connected to server at {}", ws_url);
-                    break stream;
-                }
-                Err(e) if attempts < 10 => {
-                    attempts += 1;
-                    let delay = std::cmp::min(500 * 2u64.pow(attempts - 1), 5000);
-                    eprintln!(
-                        "[nebo-relay] WS connect attempt {}/10 failed ({}), retrying in {}ms",
-                        attempts, e, delay
-                    );
-                    tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
-                }
-                Err(e) => {
-                    eprintln!("[nebo-relay] giving up after 10 attempts: {}", e);
-                    // Give up — exit so Chrome can retry later
-                    std::process::exit(1);
-                    #[allow(unreachable_code)]
-                    return Err(anyhow::anyhow!("Cannot connect to Nebo: {}", e));
-                }
-            }
-        }
-    };
-
-    let (mut ws_tx, mut ws_rx) = ws_stream.split();
-
-    // Detect which browser launched this relay (check parent process)
-    let browser = detect_parent_browser();
-    eprintln!("[nebo-relay] detected browser: {}", browser);
-
-    // Send hello to server with browser identification (must be first message)
-    let hello = serde_json::json!({
-        "type": "hello",
-        "browser": browser,
-        "relay": true,
-    });
-    let _ = ws_tx
-        .send(tokio_tungstenite::tungstenite::Message::Text(
-            serde_json::to_string(&hello).unwrap().into(),
-        ))
-        .await;
-
-    let mut stdin = tokio::io::stdin();
-    let stdout = Arc::new(tokio::sync::Mutex::new(tokio::io::stdout()));
-
-    let stdout_send = stdout.clone();
-
-    // Task 1: Read from Chrome extension (stdin) → forward to server (WS)
-    let send_task = tokio::spawn(async move {
-        loop {
-            // Read 4-byte length prefix
-            let mut len_buf = [0u8; 4];
-            if stdin.read_exact(&mut len_buf).await.is_err() {
-                eprintln!("[nebo-relay] stdin closed — extension disconnected");
-                break;
-            }
-            let len = u32::from_le_bytes(len_buf) as usize;
-            // Chrome's 1 MB native-messaging cap applies HOST→EXTENSION only; the
-            // extension legitimately sends larger payloads this way (screenshots
-            // ~1.4 MB, full-page outerHTML several MB). Anything past this bound
-            // means a corrupted length prefix — resync is impossible on a
-            // length-prefixed stream, so exit and let Chrome relaunch the relay.
-            const MAX_EXT_MSG_BYTES: usize = 64 * 1024 * 1024;
-            if len > MAX_EXT_MSG_BYTES {
-                eprintln!(
-                    "[nebo-relay] implausible message length {} bytes — corrupted stream, exiting",
-                    len
-                );
-                break;
-            }
-
-            // Read JSON body
-            let mut body = vec![0u8; len];
-            if stdin.read_exact(&mut body).await.is_err() {
-                eprintln!("[nebo-relay] stdin read error");
-                break;
-            }
-
-            let msg: serde_json::Value = match serde_json::from_slice(&body) {
-                Ok(v) => v,
-                Err(e) => {
-                    eprintln!("[nebo-relay] malformed JSON from extension: {}", e);
-                    continue;
-                }
-            };
-
-            let msg_type = msg["type"].as_str().unwrap_or("");
-
-            // Handle hello and ping locally — respond immediately via stdout
-            match msg_type {
-                "hello" => {
-                    eprintln!(
-                        "[nebo-relay] extension hello (v{}, id={})",
-                        msg["version"].as_str().unwrap_or("?"),
-                        msg["extension_id"].as_str().unwrap_or("?")
-                    );
-                    let resp = serde_json::json!({"type": "connected"});
-                    let _ = write_native_message(&stdout_send, &resp).await;
-                    // Also forward to server so it knows extension connected
-                    let text = serde_json::to_string(&msg).unwrap();
-                    let _ = ws_tx
-                        .send(tokio_tungstenite::tungstenite::Message::Text(text.into()))
-                        .await;
-                    continue;
-                }
-                "ping" => {
-                    let resp = serde_json::json!({"type": "pong"});
-                    let _ = write_native_message(&stdout_send, &resp).await;
-                    continue;
-                }
-                _ => {}
-            }
-
-            // Forward everything else to the server
-            eprintln!("[nebo-relay] ext→server: type={}", msg_type);
-            let text = serde_json::to_string(&msg).unwrap();
-            if ws_tx
-                .send(tokio_tungstenite::tungstenite::Message::Text(text.into()))
-                .await
-                .is_err()
-            {
-                eprintln!("[nebo-relay] WS send failed — server disconnected");
-                break; // WS broke — exit so Chrome relaunches us
-            }
-        }
-    });
-
-    // Task 2: Read from server (WS) → forward to Chrome extension (stdout)
-    let stdout_recv = stdout.clone();
-    let recv_task = tokio::spawn(async move {
-        while let Some(Ok(msg)) = ws_rx.next().await {
-            match msg {
-                tokio_tungstenite::tungstenite::Message::Text(text) => {
-                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&text) {
-                        let msg_type = parsed["type"].as_str().unwrap_or("");
-                        eprintln!("[nebo-relay] server→ext: type={}", msg_type);
-                        if write_native_message(&stdout_recv, &parsed).await.is_err() {
-                            eprintln!("[nebo-relay] stdout write failed — extension disconnected");
-                            break;
-                        }
-                    }
-                }
-                tokio_tungstenite::tungstenite::Message::Close(_) => {
-                    eprintln!("[nebo-relay] WS closed by server");
-                    break;
-                }
-                _ => {}
-            }
-        }
-    });
-
-    // Wait for either direction to close
-    tokio::select! {
-        _ = send_task => { eprintln!("[nebo-relay] send task ended"); }
-        _ = recv_task => { eprintln!("[nebo-relay] recv task ended"); }
-    }
-
-    eprintln!("[nebo-relay] shutting down");
-    // Force exit — tokio's blocking stdin thread prevents clean shutdown.
-    // Chrome's onDisconnect will fire and the extension will reconnect.
-    std::process::exit(0);
-}
-
-/// Write a native messaging response (4-byte length prefix + JSON) to stdout.
-async fn write_native_message(
-    stdout: &tokio::sync::Mutex<tokio::io::Stdout>,
-    msg: &serde_json::Value,
-) -> Result<(), std::io::Error> {
-    use tokio::io::AsyncWriteExt;
-    let json_bytes = serde_json::to_vec(msg).unwrap();
-    let len = (json_bytes.len() as u32).to_le_bytes();
-    let mut out = stdout.lock().await;
-    out.write_all(&len).await?;
-    out.write_all(&json_bytes).await?;
-    out.flush().await?;
-    Ok(())
-}
-
-/// Detect which browser launched this relay by checking the parent process name.
-fn detect_parent_browser() -> String {
-    #[cfg(unix)]
-    {
-        let ppid = std::os::unix::process::parent_id();
-        if let Ok(output) = std::process::Command::new("ps")
-            .args(["-p", &ppid.to_string(), "-o", "comm="])
-            .output()
-        {
-            let parent = String::from_utf8_lossy(&output.stdout)
-                .trim()
-                .to_string()
-                .to_lowercase();
-            if parent.contains("brave") {
-                return "brave".to_string();
-            }
-            if parent.contains("chrome") {
-                return "chrome".to_string();
-            }
-            if parent.contains("firefox") {
-                return "firefox".to_string();
-            }
-            if parent.contains("safari") {
-                return "safari".to_string();
-            }
-            if parent.contains("edge") {
-                return "edge".to_string();
-            }
-            if parent.contains("arc") {
-                return "arc".to_string();
-            }
-            // Return the raw parent name if unrecognized
-            if !parent.is_empty() {
-                return parent;
-            }
-        }
-    }
-    "unknown".to_string()
 }
 
 async fn run_test_command(command: TestCommands) -> anyhow::Result<()> {

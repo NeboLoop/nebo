@@ -40,3 +40,8 @@ NeboAI:
   ApiURL: https://api.neboai.com
   JanusURL: https://janus.neboai.com
   CommsURL: wss://comms.neboai.com/ws
+  # Management tunnel (Plane B): the bot dials this outbound so it's reachable
+  # from the loop's /manage "Open" (and neboai.com/t/<botID>). Empty = the bot
+  # never dials the hub, so Open reports "bot is offline" even when it's on the
+  # loop. Every bot — desktop and cloud — dials it.
+  TunnelURL: wss://api.neboai.com/tunnel/connect

@@ -75,6 +75,16 @@ pub struct ScoredMemory {
 /// Minimum confidence threshold for tacit memories in prompt.
 const MIN_CONFIDENCE_THRESHOLD: f64 = 0.65;
 
+/// Cold-start fairness for decay ranking: a brand-new memory has
+/// `access_count` 0, so pure `count * decay` scoring lets any older memory
+/// with a handful of historical accesses dominate it forever — the new memory
+/// is never injected, so it never gets an access bump, so it never becomes
+/// competitive. For its first [`NEW_MEMORY_GRACE_DAYS`], a memory is scored as
+/// if it had at least [`NEW_MEMORY_ACCESS_PRIOR`] accesses (decaying from its
+/// creation time); after the grace window, real access accounting takes over.
+const NEW_MEMORY_ACCESS_PRIOR: f64 = 3.0;
+const NEW_MEMORY_GRACE_DAYS: f64 = 14.0;
+
 /// Max characters per message when building extraction prompt.
 const MAX_CONTENT_PER_MESSAGE: usize = 500;
 /// Max total characters for extraction prompt.
@@ -107,14 +117,28 @@ pub fn decay_score(access_count: i64, accessed_at: Option<i64>) -> f64 {
 /// Score a memory by combining confidence from metadata with decay.
 pub fn score_memory(mem: &Memory) -> f64 {
     let confidence = extract_confidence_from_metadata(mem).unwrap_or(0.75);
-    // Parse TEXT timestamp from SQLite (e.g. "2026-03-06 12:34:56") into epoch seconds
-    let accessed_ts = mem.accessed_at.as_deref().and_then(|s| {
+    let accessed_ts = parse_sqlite_timestamp(mem.accessed_at.as_deref());
+    let mut decay = decay_score(mem.access_count.unwrap_or(0), accessed_ts);
+
+    // Cold-start fairness: young memories get a neutral access prior so they
+    // can compete with long-accessed ones (see NEW_MEMORY_ACCESS_PRIOR docs).
+    if let Some(created_ts) = parse_sqlite_timestamp(mem.created_at.as_deref()) {
+        let age_days = ((chrono::Utc::now().timestamp() - created_ts) as f64 / 86400.0).max(0.0);
+        if age_days <= NEW_MEMORY_GRACE_DAYS {
+            decay = decay.max(NEW_MEMORY_ACCESS_PRIOR * 0.7_f64.powf(age_days / 30.0));
+        }
+    }
+
+    confidence * decay
+}
+
+/// Parse a SQLite TEXT timestamp (e.g. "2026-03-06 12:34:56") into epoch seconds.
+fn parse_sqlite_timestamp(ts: Option<&str>) -> Option<i64> {
+    ts.and_then(|s| {
         chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
             .ok()
             .map(|dt| dt.and_utc().timestamp())
-    });
-    let decay = decay_score(mem.access_count.unwrap_or(0), accessed_ts);
-    confidence * decay
+    })
 }
 
 /// Extract confidence value from memory metadata JSON.
@@ -129,12 +153,14 @@ fn extract_confidence_from_metadata(mem: &Memory) -> Option<f64> {
 /// and included in the prompt so the LLM avoids extracting duplicates.
 /// `topics` are the scope's declared memory topics (agent.json `memory.topics`);
 /// when non-empty they replace the generic `project` category in the prompt.
+/// `model` overrides the provider's default model (empty = provider default).
 pub async fn extract_facts(
     provider: &dyn Provider,
     messages: &[ChatMessage],
     store: Option<&Store>,
     user_id: Option<&str>,
     topics: &[MemoryTopic],
+    model: &str,
 ) -> Option<ExtractedFacts> {
     let conversation = build_conversation_text(messages);
     if conversation.is_empty() {
@@ -210,7 +236,7 @@ pub async fn extract_facts(
         temperature: 0.0,
         system: "You are a precise fact extractor. Return only valid JSON.".to_string(),
         static_system: String::new(),
-        model: String::new(),
+        model: model.to_string(),
         enable_thinking: false,
         metadata: None,
         cache_breakpoints: vec![],
@@ -256,7 +282,7 @@ pub fn store_facts(
     topics: &[MemoryTopic],
 ) {
     let entries = format_for_storage(facts, topics);
-    let mut stored_entries: Vec<MemoryEntry> = Vec::new();
+    let mut stored_keys: Vec<(String, String)> = Vec::new();
     for entry in entries {
         // Stage-0 write guard — the canonical deterministic filter shared
         // with the explicit memory-tool store (tools::memory_guard).
@@ -301,14 +327,14 @@ pub fn store_facts(
                 entry.namespace, entry.key, e
             );
         } else {
-            stored_entries.push(entry);
+            stored_keys.push((entry.namespace.clone(), entry.key.clone()));
         }
     }
 
     // Embed stored memories in the background for vector search
     if let Some(ep) = embedding_provider {
-        if !stored_entries.is_empty() {
-            embed_memories_async(store.clone(), ep, stored_entries, user_id.to_string());
+        if !stored_keys.is_empty() {
+            embed_memories_async(store.clone(), ep, stored_keys, user_id.to_string());
         }
     }
 }
@@ -666,6 +692,121 @@ pub fn memory_scope_chain(user_id: &str) -> Vec<String> {
     chain
 }
 
+/// Explicit isolation context carried in a session key, if any.
+/// Channel sessions set a deliberate 4th segment: `agent:{id}:{channel}:{ctx}`
+/// (the ctx segment may itself contain colons — everything after the third
+/// colon is the context). Desktop chat-thread sessions carry no segment.
+pub fn session_key_context(session_key: &str) -> Option<String> {
+    let parts: Vec<&str> = session_key.splitn(4, ':').collect();
+    if parts.len() == 4 && parts[0] == "agent" {
+        Some(parts[3].to_string())
+    } else {
+        None
+    }
+}
+
+/// The memory scoping decision for one run — produced by
+/// [`resolve_memory_scope`], the ONE derivation the runner threads into every
+/// read and write path (extraction, flush, transcript indexing, the memory
+/// tool via `ToolContext.user_id`, recall, injection).
+#[derive(Debug, Clone, PartialEq)]
+pub struct MemoryScope {
+    /// The exact scope every memory WRITE uses, and the base scope for reads.
+    pub user_id: String,
+    /// Fail-closed marker: `context_isolated` is set but no context could be
+    /// derived (no explicit key segment, no session row / active chat). All
+    /// memory writes for the run must be refused — never silently written to
+    /// the shared agent scope, where they would be readable from every
+    /// isolation context. Reads still serve `user_id` (the base agent scope)
+    /// plus the owner identity chain.
+    pub writes_disabled: bool,
+}
+
+/// Derive the memory scope for a run. Context precedence (highest first):
+///
+/// 1. An EXPLICIT `:ctx:` segment in the session key
+///    (`agent:{id}:{channel}:{ctx}`) — channel sessions set it deliberately.
+/// 2. With `context_isolated` only: the session's ACTIVE CHAT id
+///    (thread = matter), resolved by the caller via the canonical
+///    `Store::session_chat_id`.
+/// 3. Neither derivable under `context_isolated` → FAIL CLOSED: the base
+///    agent scope is kept for reads, `writes_disabled` is set.
+///
+/// Without `context_isolated`, contexts are ignored and the agent's base
+/// scope applies; the main bot (empty `agent_id`) always uses the raw owner.
+pub fn resolve_memory_scope(
+    owner: &str,
+    agent_id: &str,
+    context_isolated: bool,
+    explicit_ctx: Option<&str>,
+    chat_ctx: Option<&str>,
+) -> MemoryScope {
+    if agent_id.is_empty() {
+        return MemoryScope {
+            user_id: owner.to_string(),
+            writes_disabled: false,
+        };
+    }
+    let agent_scope = agent_memory_scope(owner, agent_id);
+    if !context_isolated {
+        return MemoryScope {
+            user_id: agent_scope,
+            writes_disabled: false,
+        };
+    }
+    match explicit_ctx.or(chat_ctx) {
+        Some(ctx) => MemoryScope {
+            user_id: format!("{}:ctx:{}", agent_scope, ctx),
+            writes_disabled: false,
+        },
+        None => MemoryScope {
+            user_id: agent_scope,
+            writes_disabled: true,
+        },
+    }
+}
+
+/// The inherited READ scopes for a run — the ONE place this construction
+/// lives (the runner calls it once per run). A context-isolated run inherits
+/// the agent-wide `tacit/` prefix ONLY (working style crosses contexts, case
+/// facts do not — and sibling ctx scopes appear nowhere); every agent
+/// additionally reads the owner's identity prefixes. The main bot inherits
+/// nothing (it IS the owner scope).
+pub fn build_inherit_scopes(
+    owner: &str,
+    agent_id: &str,
+    context_isolated: bool,
+    has_context: bool,
+) -> Vec<crate::db_context::InheritScope> {
+    let mut inherit_scopes: Vec<crate::db_context::InheritScope> = Vec::new();
+
+    if !agent_id.is_empty() {
+        // If context-isolated, inherit agent-wide memories (all tacit/)
+        if context_isolated && has_context {
+            inherit_scopes.push(crate::db_context::InheritScope {
+                user_id: agent_memory_scope(owner, agent_id),
+                namespace_prefix: "tacit/".to_string(),
+            });
+        }
+
+        // Every agent reads the owner's IDENTITY memories (read-only): who the
+        // owner is and how to act belongs to the owner, not the agent that
+        // happened to hear it. Only the identity prefixes are blanket-injected
+        // (mirroring the local slice in load_scored_memories — injecting all of
+        // tacit/ was the prompt-bloat source); arbitrary owner facts surface on
+        // demand via the FTS scope chain. Writes stay scoped to the agent, so
+        // what each agent LEARNS remains independent.
+        for prefix in ["tacit/preferences", "tacit/personality"] {
+            inherit_scopes.push(crate::db_context::InheritScope {
+                user_id: owner.to_string(),
+                namespace_prefix: prefix.to_string(),
+            });
+        }
+    }
+
+    inherit_scopes
+}
+
 pub fn load_scored_memories(
     store: &Store,
     user_id: &str,
@@ -721,73 +862,182 @@ pub fn load_scored_memories(
     all_scored
 }
 
-/// Spawn a background task to chunk and embed recently stored memories.
+/// Spawn a background task to chunk and embed recently stored memories,
+/// identified by `(namespace, key)` pairs for `user_id`.
 /// This is fire-and-forget: failures are logged but don't affect the caller.
 pub fn embed_memories_async(
     store: Arc<Store>,
     embedding_provider: Arc<dyn EmbeddingProvider>,
-    entries: Vec<MemoryEntry>,
+    keys: Vec<(String, String)>,
     user_id: String,
 ) {
     tokio::spawn(async move {
-        for entry in &entries {
-            // Look up the memory we just stored
-            let mem = match store.get_memory_by_key_and_user(&entry.namespace, &entry.key, &user_id)
-            {
-                Ok(Some(m)) => m,
-                _ => continue,
-            };
+        embed_memories(&store, embedding_provider.as_ref(), &keys, &user_id).await;
+        debug!(count = keys.len(), "background embedding complete");
+        // Write-time contradiction micro-check (Phase 2,
+        // docs/plans/memory-rock-solid.md): every NEW-write path funnels
+        // through this wrapper (auto-extraction, explicit tool store, flush),
+        // so this is the ONE point where a freshly written + embedded memory
+        // is compared against its scope. The boot backfill deliberately calls
+        // embed_memories directly — old rows are never re-litigated. Runs
+        // after the caller already returned: it can never slow or fail a store.
+        crate::memory_consolidation::check_new_memories(
+            &store,
+            embedding_provider.as_ref(),
+            &keys,
+            &user_id,
+        )
+        .await;
+    });
+}
 
-            let text = format!("{}: {}", mem.key, mem.value);
-            let chunks = chunking::chunk_text_default(&text);
-            let model = embedding_provider.id().to_string();
-            let dims = embedding_provider.dimensions() as i64;
+/// Chunk and embed the memories at `(namespace, key)` for `user_id` — the ONE
+/// chunk+embed pathway, shared by auto-extraction, explicit tool stores, the
+/// flush path (all via [`embed_memories_async`]), and the boot backfill (which
+/// awaits it directly to control batching).
+pub async fn embed_memories(
+    store: &Store,
+    embedding_provider: &dyn EmbeddingProvider,
+    keys: &[(String, String)],
+    user_id: &str,
+) {
+    let mut inserted_any = false;
+    for (namespace, key) in keys {
+        // Look up the memory we just stored
+        let mem = match store.get_memory_by_key_and_user(namespace, key, user_id) {
+            Ok(Some(m)) => m,
+            _ => continue,
+        };
 
-            // Collect chunk texts for batch embedding
-            let chunk_texts: Vec<String> = chunks.iter().map(|c| c.text.clone()).collect();
-            if chunk_texts.is_empty() {
+        let text = format!("{}: {}", mem.key, mem.value);
+        let chunks = chunking::chunk_text_default(&text);
+        let model = embedding_provider.id().to_string();
+        let dims = embedding_provider.dimensions() as i64;
+
+        // Collect chunk texts for batch embedding
+        let chunk_texts: Vec<String> = chunks.iter().map(|c| c.text.clone()).collect();
+        if chunk_texts.is_empty() {
+            continue;
+        }
+
+        let embeddings = match embedding_provider.embed(&chunk_texts).await {
+            Ok(e) => e,
+            Err(e) => {
+                debug!(
+                    key = %key,
+                    error = %e,
+                    "failed to embed memory"
+                );
                 continue;
             }
+        };
 
-            let embeddings = match embedding_provider.embed(&chunk_texts).await {
-                Ok(e) => e,
+        // Replace, don't accumulate: an upsert-updated (or curator-merged)
+        // memory would otherwise keep its previous chunks/vectors alongside
+        // the new ones — ghost values that stale-match vector recall and the
+        // write-time contradiction check. Clearing only AFTER a successful
+        // embed keeps the failure mode unchanged: a failed embed leaves the
+        // old vectors in place until the boot backfill retries.
+        if let Err(e) = store.delete_chunks_for_memory(mem.id) {
+            debug!(memory_id = mem.id, error = %e, "failed to clear stale chunks before re-embed");
+        }
+
+        for (i, (chunk, embedding)) in chunks.iter().zip(embeddings.iter()).enumerate() {
+            let chunk_id = match store.insert_memory_chunk(
+                Some(mem.id),
+                i as i64,
+                &chunk.text,
+                "memory",
+                "",
+                chunk.start_char as i64,
+                chunk.end_char as i64,
+                &model,
+                user_id,
+            ) {
+                Ok(id) => id,
                 Err(e) => {
-                    debug!(
-                        key = %entry.key,
-                        error = %e,
-                        "failed to embed memory"
-                    );
+                    debug!(error = %e, "failed to insert memory chunk");
                     continue;
                 }
             };
 
-            for (i, (chunk, embedding)) in chunks.iter().zip(embeddings.iter()).enumerate() {
-                let chunk_id = match store.insert_memory_chunk(
-                    Some(mem.id),
-                    i as i64,
-                    &chunk.text,
-                    "memory",
-                    "",
-                    chunk.start_char as i64,
-                    chunk.end_char as i64,
-                    &model,
-                    &user_id,
-                ) {
-                    Ok(id) => id,
-                    Err(e) => {
-                        debug!(error = %e, "failed to insert memory chunk");
-                        continue;
-                    }
-                };
-
-                let blob = ai::f32_to_bytes(embedding);
-                if let Err(e) = store.insert_memory_embedding(chunk_id, &model, dims, &blob) {
-                    debug!(error = %e, "failed to insert memory embedding");
-                }
+            let blob = ai::f32_to_bytes(embedding);
+            if let Err(e) = store.insert_memory_embedding(chunk_id, &model, dims, &blob) {
+                debug!(error = %e, "failed to insert memory embedding");
+            } else {
+                inserted_any = true;
             }
         }
-        debug!(count = entries.len(), "background embedding complete");
-    });
+    }
+
+    // Freshness: drop the user's cached ANN index so same-lifetime searches
+    // see the new vectors (stale caches made fresh memories invisible until
+    // restart). This is the ONE hook point — every write path (auto-extract,
+    // explicit store, flush, backfill) funnels through this function.
+    if inserted_any {
+        crate::search_adapter::invalidate_index(user_id);
+    }
+}
+
+/// How many memories to embed per backfill batch, and the pause between
+/// batches. Each memory is one embedding-provider call, so 16 per batch with a
+/// 500ms gap keeps the backfill well under typical provider rate limits while
+/// still clearing thousands of rows within minutes of boot.
+const BACKFILL_BATCH_SIZE: usize = 16;
+const BACKFILL_BATCH_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Boot-time backfill: embed every memory that has no vector embedding —
+/// victims of the migration-0113 dangling-FK bug (chunk inserts succeeded,
+/// embedding inserts silently failed for months) plus rows written before all
+/// write paths embedded. Runs in batches through the canonical
+/// [`embed_memories`] pathway. Callers must skip this entirely when no
+/// embedding provider is configured.
+pub async fn backfill_missing_embeddings(
+    store: Arc<Store>,
+    embedding_provider: Arc<dyn EmbeddingProvider>,
+) {
+    let missing = match store.list_memories_missing_embeddings() {
+        Ok(m) => m,
+        Err(e) => {
+            warn!(error = %e, "embedding backfill: failed to list unembedded memories");
+            return;
+        }
+    };
+    if missing.is_empty() {
+        return;
+    }
+
+    tracing::info!(count = missing.len(), "embedding backfill starting");
+
+    // The 0113 bug left chunks WITHOUT embeddings behind; re-embedding through
+    // the canonical pathway inserts fresh chunks, so clear the orphans first
+    // (selection guarantees these memories have no embedded chunk to lose).
+    for mem in &missing {
+        if let Err(e) = store.delete_chunks_for_memory(mem.id) {
+            debug!(memory_id = mem.id, error = %e, "embedding backfill: failed to clear orphan chunks");
+        }
+    }
+
+    // embed_memories is scoped per user_id, so group first, then batch.
+    let mut by_user: std::collections::HashMap<String, Vec<(String, String)>> =
+        std::collections::HashMap::new();
+    for mem in missing {
+        by_user
+            .entry(mem.user_id)
+            .or_default()
+            .push((mem.namespace, mem.key));
+    }
+
+    let mut embedded = 0usize;
+    for (user_id, keys) in by_user {
+        for batch in keys.chunks(BACKFILL_BATCH_SIZE) {
+            embed_memories(&store, embedding_provider.as_ref(), batch, &user_id).await;
+            embedded += batch.len();
+            tokio::time::sleep(BACKFILL_BATCH_DELAY).await;
+        }
+    }
+
+    tracing::info!(count = embedded, "embedding backfill complete");
 }
 
 #[cfg(test)]
@@ -896,6 +1146,70 @@ mod tests {
         assert_eq!(ranked[0].memory.key, "a"); // higher score first
     }
 
+    /// Build a Memory for score tests: `confidence`, created `created_days_ago`,
+    /// last accessed `accessed_days_ago` (None = never), `access_count` accesses.
+    fn score_fixture(
+        confidence: f64,
+        created_days_ago: i64,
+        accessed_days_ago: Option<i64>,
+        access_count: i64,
+    ) -> Memory {
+        let fmt =
+            |days: i64| (chrono::Utc::now() - chrono::Duration::days(days))
+                .format("%Y-%m-%d %H:%M:%S")
+                .to_string();
+        Memory {
+            id: 1,
+            namespace: "tacit/preferences".to_string(),
+            key: "k".to_string(),
+            value: "v".to_string(),
+            tags: None,
+            metadata: Some(format!(r#"{{"confidence": {confidence}}}"#)),
+            created_at: Some(fmt(created_days_ago)),
+            updated_at: None,
+            accessed_at: accessed_days_ago.map(fmt),
+            access_count: Some(access_count),
+            user_id: "u1".to_string(),
+        }
+    }
+
+    #[test]
+    fn test_score_new_memory_beats_ancient_low_confidence() {
+        // Cold-start fairness: a brand-new, never-accessed memory with decent
+        // confidence must outrank an ancient low-confidence memory that
+        // accumulated accesses — otherwise the new memory is never injected,
+        // never bumped, and loses forever.
+        let fresh = score_fixture(0.85, 0, None, 0);
+        let ancient = score_fixture(0.3, 200, Some(20), 6);
+        assert!(
+            score_memory(&fresh) > score_memory(&ancient),
+            "fresh {} vs ancient {}",
+            score_memory(&fresh),
+            score_memory(&ancient)
+        );
+    }
+
+    #[test]
+    fn test_score_neutral_prior_expires_after_grace() {
+        // Same never-accessed memory, but created outside the grace window:
+        // the neutral prior no longer applies, so decay falls back to the
+        // plain count floor (1.0) — real access accounting decides from here.
+        let aged_out = score_fixture(0.85, 30, None, 0);
+        let in_grace = score_fixture(0.85, 0, None, 0);
+        assert!(score_memory(&in_grace) > score_memory(&aged_out));
+        // Outside grace, score is confidence * 1.0 (count floor, days=0).
+        assert!((score_memory(&aged_out) - 0.85).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_score_heavily_used_memory_still_wins_within_grace() {
+        // The prior is a floor, not a cap: a genuinely well-used memory keeps
+        // outranking a fresh one.
+        let fresh = score_fixture(0.85, 0, None, 0);
+        let well_used = score_fixture(0.85, 100, Some(1), 20);
+        assert!(score_memory(&well_used) > score_memory(&fresh));
+    }
+
     #[test]
     fn test_format_for_storage_applies_confidence() {
         let facts = ExtractedFacts {
@@ -988,5 +1302,170 @@ mod tests {
         let entries = format_for_storage(&facts, &[]);
         assert!(!entries[0].key.contains('\x00'));
         assert!(!entries[0].value.contains('\x01'));
+    }
+
+    // ── Context-isolation scope derivation ─────────────────────────────
+
+    #[test]
+    fn test_session_key_context_shapes() {
+        // Explicit 4th segment on an agent key.
+        assert_eq!(
+            session_key_context("agent:a1:web:caseA").as_deref(),
+            Some("caseA")
+        );
+        // The ctx segment may itself contain colons — stays whole.
+        assert_eq!(
+            session_key_context("agent:a1:loop:dm:123").as_deref(),
+            Some("dm:123")
+        );
+        // Desktop chat-thread keys carry no segment.
+        assert_eq!(session_key_context("agent:a1:web"), None);
+        // Non-agent key shapes never yield a context.
+        assert_eq!(session_key_context("main"), None);
+        assert_eq!(session_key_context("acp:xyz"), None);
+        assert_eq!(session_key_context("subagent:parent:child"), None);
+        assert_eq!(session_key_context("slack:group:C123:extra"), None);
+    }
+
+    #[test]
+    fn test_resolve_memory_scope_main_bot_and_plain_agent() {
+        // Main bot: raw owner, contexts irrelevant.
+        let s = resolve_memory_scope("local", "", true, Some("caseA"), None);
+        assert_eq!(s.user_id, "local");
+        assert!(!s.writes_disabled);
+
+        // Non-isolated agent: base scope, contexts ignored.
+        let s = resolve_memory_scope("local", "a1", false, Some("caseA"), Some("chat-1"));
+        assert_eq!(s.user_id, "local:agent:a1");
+        assert!(!s.writes_disabled);
+    }
+
+    #[test]
+    fn test_resolve_memory_scope_isolated_context_precedence() {
+        // Explicit channel segment wins over the chat derivation.
+        let s = resolve_memory_scope("local", "a1", true, Some("caseA"), Some("chat-1"));
+        assert_eq!(s.user_id, "local:agent:a1:ctx:caseA");
+        assert!(!s.writes_disabled);
+
+        // No explicit segment → active chat id (thread = matter).
+        let s = resolve_memory_scope("local", "a1", true, None, Some("chat-1"));
+        assert_eq!(s.user_id, "local:agent:a1:ctx:chat-1");
+        assert!(!s.writes_disabled);
+    }
+
+    #[test]
+    fn test_resolve_memory_scope_isolated_fails_closed_without_context() {
+        // Isolated with NO derivable context: reads keep the base agent
+        // scope, writes are refused — never a silent write to the shared
+        // agent scope.
+        let s = resolve_memory_scope("local", "a1", true, None, None);
+        assert_eq!(s.user_id, "local:agent:a1");
+        assert!(s.writes_disabled);
+    }
+
+    #[test]
+    fn test_memory_scope_chain_ctx_excludes_siblings() {
+        let chain = memory_scope_chain("local:agent:a1:ctx:chat-A");
+        assert_eq!(
+            chain,
+            vec![
+                "local:agent:a1:ctx:chat-A".to_string(),
+                "local:agent:a1".to_string(),
+                "local".to_string(),
+            ]
+        );
+        // Sibling contexts and sibling agents are never in the chain —
+        // cross-case recall is structurally impossible.
+        assert!(!chain.iter().any(|s| s.contains(":ctx:chat-B")));
+        assert!(!chain.iter().any(|s| s.contains(":agent:a2")));
+    }
+
+    #[test]
+    fn test_build_inherit_scopes_isolated_ctx_reads() {
+        // Isolated run with a context: agent-wide tacit/ ONLY + owner
+        // identity prefixes — never the agent's non-tacit namespaces, never
+        // a sibling ctx scope.
+        let scopes = build_inherit_scopes("local", "a1", true, true);
+        assert_eq!(scopes.len(), 3);
+        assert_eq!(scopes[0].user_id, "local:agent:a1");
+        assert_eq!(scopes[0].namespace_prefix, "tacit/");
+        assert_eq!(scopes[1].user_id, "local");
+        assert_eq!(scopes[1].namespace_prefix, "tacit/preferences");
+        assert_eq!(scopes[2].user_id, "local");
+        assert_eq!(scopes[2].namespace_prefix, "tacit/personality");
+        // Every agent-scope inherit is prefix-bounded to tacit/ (case facts
+        // in entity/, project, topic layers do NOT cross contexts) and no
+        // inherited scope is a ctx scope.
+        for s in &scopes {
+            if s.user_id == "local:agent:a1" {
+                assert!(s.namespace_prefix.starts_with("tacit/"));
+            }
+            assert!(!s.user_id.contains(":ctx:"));
+        }
+
+        // Fail-closed run (no context): no agent tacit/ inherit (the base
+        // agent scope IS the read scope), identity prefixes remain.
+        let scopes = build_inherit_scopes("local", "a1", true, false);
+        assert_eq!(scopes.len(), 2);
+        assert!(scopes.iter().all(|s| s.user_id == "local"));
+
+        // Main bot inherits nothing.
+        assert!(build_inherit_scopes("local", "", false, false).is_empty());
+    }
+
+    #[test]
+    fn test_store_facts_extraction_lands_at_exact_ctx_scope() {
+        // Extraction parity: with context_isolated + a chat-derived ctx, the
+        // debounced-extraction/flush write path (store_facts) lands facts
+        // under the exact ctx scope — invisible to sibling contexts.
+        let path = std::env::temp_dir().join(format!(
+            "nebo-ctx-extract-test-{}.db",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let store = Arc::new(Store::new(&path.to_string_lossy()).unwrap());
+
+        let scope = resolve_memory_scope("local", "a1", true, None, Some("chat-A"));
+        assert!(!scope.writes_disabled);
+
+        let facts = ExtractedFacts {
+            preferences: vec![Fact {
+                key: "filing-deadline".to_string(),
+                value: "The filing deadline for the Smith matter is March 3, 2027.".to_string(),
+                category: "preference".to_string(),
+                tags: vec![],
+                confidence: 0.9,
+                explicit: Some(true),
+                topic: None,
+            }],
+            ..Default::default()
+        };
+        store_facts(&store, &facts, &scope.user_id, None, &[]);
+
+        // Lands under the exact ctx scope…
+        let stored = store
+            .get_memory_by_key_and_user(
+                "tacit/preferences",
+                "filing-deadline",
+                "local:agent:a1:ctx:chat-A",
+            )
+            .unwrap();
+        assert!(stored.is_some(), "fact must land under the ctx scope");
+        // …and under NO other scope a sibling context would read.
+        for other in [
+            "local:agent:a1:ctx:chat-B",
+            "local:agent:a1",
+            "local",
+        ] {
+            assert!(
+                store
+                    .get_memory_by_key_and_user("tacit/preferences", "filing-deadline", other)
+                    .unwrap()
+                    .is_none(),
+                "fact leaked to scope {other}"
+            );
+        }
+
+        let _ = std::fs::remove_file(&path);
     }
 }

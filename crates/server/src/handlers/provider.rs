@@ -546,6 +546,7 @@ pub async fn list_models(State(state): State<AppState>) -> HandlerResult<serde_j
             "reasoning": tr.reasoning,
             "code": tr.code,
             "general": tr.general,
+            "aux": tr.aux,
             "fallbacks": tr.fallbacks,
         })
     });
@@ -793,6 +794,7 @@ pub async fn update_task_routing(
             reasoning: String::new(),
             code: String::new(),
             general: String::new(),
+            aux: String::new(),
             fallbacks: std::collections::HashMap::new(),
         });
     if let Some(v) = body.get("vision").and_then(|v| v.as_str()) {
@@ -809,6 +811,9 @@ pub async fn update_task_routing(
     }
     if let Some(v) = body.get("general").and_then(|v| v.as_str()) {
         tr.general = v.to_string();
+    }
+    if let Some(v) = body.get("aux").and_then(|v| v.as_str()) {
+        tr.aux = v.to_string();
     }
     if let Some(fallbacks) = body.get("fallbacks").and_then(|v| v.as_object()) {
         let mut fb = std::collections::HashMap::new();

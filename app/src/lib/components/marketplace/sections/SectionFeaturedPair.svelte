@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { t } from 'svelte-i18n';
 	import LargeCard from '../LargeCard.svelte';
 	import { type AppItem } from '$lib/types/marketplace';
 
@@ -10,7 +11,7 @@
 		{#if title || seeAllHref}
 			<div class="flex items-baseline justify-between mb-4">
 				{#if title}<h2 class="font-display text-lg font-bold">{title}</h2>{/if}
-				{#if seeAllHref}<a href={seeAllHref} class="text-sm text-primary font-medium">See All</a>{/if}
+				{#if seeAllHref}<a href={seeAllHref} class="text-sm text-primary font-medium">{$t('marketplace.detail.seeAll')}</a>{/if}
 			</div>
 		{/if}
 		<div class="grid grid-cols-1 sm:grid-cols-2 gap-4">

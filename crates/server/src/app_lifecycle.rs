@@ -333,6 +333,40 @@ impl AppLifecycle {
     }
 }
 
+/// Stop and relaunch a running app's sidecar from its current (post-update) tool
+/// dir, so an update that swapped the version dir replaces the live sidecar with
+/// the new binary. No-op if the app isn't currently running (the lazy-launch path
+/// picks up the new dir on the next request) or has no sidecar dir. Reuses the same
+/// launch sequence as the on-demand path.
+pub(crate) async fn relaunch(state: &crate::state::AppState, agent: &db::models::Agent) {
+    let agent_id = agent.id.clone();
+    let mut lifecycles = state.app_lifecycles.write().await;
+    let Some(mut old) = lifecycles.remove(&agent_id) else {
+        return; // not running — next request lazy-launches from the new dir
+    };
+    let _ = old.shutdown().await;
+    let Some(tool_dir) = crate::handlers::agents::app_tool_dir(agent) else {
+        warn!(agent = %agent_id, "app has no sidecar dir after update — not relaunched");
+        return;
+    };
+    let mut lifecycle = AppLifecycle::new(
+        agent_id.clone(),
+        tool_dir,
+        state.hub.clone(),
+        state.tools.clone(),
+        state.skill_loader.clone(),
+        state.config.port,
+    );
+    match lifecycle.launch().await {
+        Ok(()) => {
+            lifecycles.insert(agent_id, lifecycle);
+        }
+        Err(e) => {
+            warn!(agent = %agent_id, error = %e, "failed to relaunch app sidecar after update");
+        }
+    }
+}
+
 /// Read tool definitions from agent.json in the agent directory.
 /// Returns None if no agent.json or no tools declared.
 fn read_tool_defs_from_config(agent_root: &Path, agent_id: &str) -> Option<Vec<SidecarToolDef>> {

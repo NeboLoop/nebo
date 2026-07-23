@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { t } from 'svelte-i18n';
 	import { Star } from 'lucide-svelte';
 
 	interface Review {
@@ -29,19 +30,19 @@
 	} = $props();
 
 	const reviewBody = $derived(review.review ?? review.body ?? '');
-	const reviewerName = $derived(review.authorName ?? review.reviewer_name ?? 'Anonymous');
+	const reviewerName = $derived(review.authorName ?? review.reviewer_name ?? $t('marketplace.detail.anonymous'));
 	const createdAt = $derived(review.createdAt ?? review.created_at ?? '');
 
 	function timeAgo(dateStr: string) {
 		if (!dateStr) return '';
 		const diff = Date.now() - new Date(dateStr).getTime();
 		const mins = Math.floor(diff / 60000);
-		if (mins < 60) return `${mins}m ago`;
+		if (mins < 60) return $t('time.minutesAgo', { values: { n: mins } });
 		const hours = Math.floor(mins / 60);
-		if (hours < 24) return `${hours}h ago`;
+		if (hours < 24) return $t('time.hoursAgo', { values: { n: hours } });
 		const days = Math.floor(hours / 24);
-		if (days < 30) return `${days}d ago`;
-		return `${Math.floor(days / 30)}mo ago`;
+		if (days < 30) return $t('time.daysAgo', { values: { n: days } });
+		return $t('time.monthsAgo', { values: { n: Math.floor(days / 30) } });
 	}
 </script>
 
@@ -59,7 +60,7 @@
 
 	{#if reply}
 		<div class="mt-3 pt-3 border-t border-base-content/10">
-			<p class="text-sm font-semibold text-base-content/40 mb-1">Developer Response</p>
+			<p class="text-sm font-semibold text-base-content/40 mb-1">{$t('marketplace.reviews.developerResponse')}</p>
 			<p class="text-sm text-base-content/60 leading-relaxed line-clamp-3">{reply.body}</p>
 		</div>
 	{/if}

@@ -87,8 +87,10 @@ const MUTATION_TOOLS: &[&str] = &[
 pub struct ExtensionBridge {
     /// Active browser connections keyed by connection ID.
     connections: Arc<Mutex<HashMap<i64, BrowserConnection>>>,
-    /// Pending responses keyed by request ID.
-    pending: Arc<Mutex<HashMap<i64, oneshot::Sender<Result<serde_json::Value, String>>>>>,
+    /// Pending responses keyed by request ID, bound to the connection the
+    /// request was routed to — only that connection may resolve it.
+    #[allow(clippy::type_complexity)]
+    pending: Arc<Mutex<HashMap<i64, (i64, oneshot::Sender<Result<serde_json::Value, String>>)>>>,
     /// Monotonic connection/request ID counter.
     next_id: Arc<AtomicI64>,
     /// The system default browser bundle ID (detected at startup).
@@ -243,17 +245,17 @@ impl ExtensionBridge {
             .filter(|(_, c)| !default.is_empty() && c.browser.contains(&default))
             .min_by_key(|(id, _)| **id)
             .or_else(|| conns.iter().min_by_key(|(id, _)| **id))
-            .map(|(_, c)| c);
+            .map(|(id, c)| (*id, c.tx.clone()));
 
-        let tx = match target {
-            Some(conn) => conn.tx.clone(),
+        let (target_conn, tx) = match target {
+            Some(t) => t,
             None => return Err("No browser connection available".to_string()),
         };
         drop(conns);
 
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let (resp_tx, resp_rx) = oneshot::channel();
-        self.pending.lock().await.insert(id, resp_tx);
+        self.pending.lock().await.insert(id, (target_conn, resp_tx));
 
         let request = ToolRequest {
             id,
@@ -352,17 +354,17 @@ impl ExtensionBridge {
             .filter(|(_, c)| !default.is_empty() && c.browser.contains(&default))
             .min_by_key(|(id, _)| **id)
             .or_else(|| conns.iter().min_by_key(|(id, _)| **id))
-            .map(|(_, c)| c);
+            .map(|(id, c)| (*id, c.tx.clone()));
 
-        let tx = match target {
-            Some(conn) => conn.tx.clone(),
+        let (target_conn, tx) = match target {
+            Some(t) => t,
             None => return Err("No browser connection available".to_string()),
         };
         drop(conns);
 
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let (resp_tx, resp_rx) = oneshot::channel();
-        self.pending.lock().await.insert(id, resp_tx);
+        self.pending.lock().await.insert(id, (target_conn, resp_tx));
 
         let request = ToolRequest {
             id,
@@ -437,12 +439,25 @@ impl ExtensionBridge {
     }
 
     /// Deliver a tool result from the extension (called by WS handler).
-    pub async fn deliver_result(&self, id: i64, result: Result<serde_json::Value, String>) {
+    /// `conn_id` is the connection the result arrived on: only the connection a
+    /// request was routed to may resolve it, so one relay can never inject a
+    /// forged result into a request sent to another. Exception: if the owning
+    /// connection is gone (relay WS dropped mid-request and reconnected — the
+    /// same grace period `disconnect` preserves pending for), the result is
+    /// accepted from the surviving connection.
+    pub async fn deliver_result(&self, conn_id: i64, id: i64, result: Result<serde_json::Value, String>) {
         let mut map = self.pending.lock().await;
-        if let Some(tx) = map.remove(&id) {
-            let _ = tx.send(result);
-        } else {
+        let Some((owner, _)) = map.get(&id) else {
             debug!(id, "no pending request for tool result");
+            return;
+        };
+        let owner = *owner;
+        if owner != conn_id && self.connections.lock().await.contains_key(&owner) {
+            warn!(id, conn_id, owner, "ignoring tool result from a connection the request was not routed to");
+            return;
+        }
+        if let Some((_, tx)) = map.remove(&id) {
+            let _ = tx.send(result);
         }
     }
 
@@ -522,6 +537,50 @@ async fn detect_default_browser() -> String {
 
     // Default fallback
     "unknown".to_string()
+}
+
+#[cfg(test)]
+mod result_binding_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn result_only_accepted_from_routed_connection() {
+        let bridge = ExtensionBridge::new();
+        *bridge.default_browser.lock().await = Some("chrome".to_string());
+        let (real_conn, mut real_rx) = bridge.connect("chrome".to_string()).await;
+        let (evil_conn, _evil_rx) = bridge.connect("chrome imposter".to_string()).await;
+
+        let b = bridge.clone();
+        let exec = tokio::spawn(async move { b.execute("read_page", &serde_json::json!({}), None).await });
+
+        // The request routes to the oldest chrome match (real_conn).
+        let req = real_rx.recv().await.expect("request routed to real connection");
+
+        // A result from the other live connection must be ignored...
+        bridge
+            .deliver_result(evil_conn, req.id, Ok(serde_json::json!({"forged": true})))
+            .await;
+        assert!(!exec.is_finished());
+
+        // ...while the routed connection resolves it.
+        bridge
+            .deliver_result(real_conn, req.id, Ok(serde_json::json!({"ok": true})))
+            .await;
+        let result = exec.await.unwrap().unwrap();
+        assert_eq!(result["ok"], true);
+
+        // If the owning connection is gone (relay reconnect grace), a surviving
+        // connection may deliver the late result.
+        let b = bridge.clone();
+        let exec = tokio::spawn(async move { b.execute("navigate", &serde_json::json!({}), None).await });
+        let req = real_rx.recv().await.expect("second request routed");
+        bridge.disconnect(real_conn).await;
+        bridge
+            .deliver_result(evil_conn, req.id, Ok(serde_json::json!({"late": true})))
+            .await;
+        let result = exec.await.unwrap().unwrap();
+        assert_eq!(result["late"], true);
+    }
 }
 
 #[cfg(target_os = "macos")]

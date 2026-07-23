@@ -1,3 +1,5 @@
+import { backendBase } from './base';
+import { storage } from '$lib/storage';
 export type Method =
 	| 'get'
 	| 'GET'
@@ -58,7 +60,7 @@ export function genUrl(url: string, params: any) {
  */
 function getBaseUrl(): string {
 	if (typeof window !== 'undefined') {
-		return window.location.origin;
+		return backendBase();
 	}
 	// SSR fallback - relative URLs will work
 	return '';
@@ -70,7 +72,7 @@ function getBaseUrl(): string {
 function getAuthToken(): string | null {
 	if (typeof window === 'undefined') return null;
 	try {
-		return localStorage.getItem('nebo_token');
+		return storage.get('nebo_token');
 	} catch {
 		return null;
 	}

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { page } from '$app/stores';
-  import { goto } from '$app/navigation';
+  import { goto } from '$lib/nav';
+  import { t } from 'svelte-i18n';
   import { getContext, onDestroy } from 'svelte';
   import { AGENT_COLORS_MAP } from '$lib/tokens.js';
   import { getActivityType } from '$lib/utils/workflowTypes';
@@ -45,18 +46,19 @@
     ctx.openWorkflow(name, wf);
   }
 
+  // `label` holds an i18n key — translated with $t at render time.
   const settingsSections = [
-    { id: 'general', label: 'General' },
-    { id: 'identity', label: 'Identity' },
-    { id: 'persona', label: 'Persona' },
-    { id: 'soul', label: 'Soul' },
-    { id: 'rules', label: 'Rules' },
-    { id: 'configure', label: 'Configure' },
-    { id: 'workflows', label: 'Workflows' },
-    { id: 'skills', label: 'Skills' },
-    { id: 'channels', label: 'Channels' },
-    { id: 'accounts', label: 'Connected Accounts' },
-    { id: 'memory', label: 'Memory' },
+    { id: 'general', label: 'agentSettings.general' },
+    { id: 'identity', label: 'settings.navItems.identity' },
+    { id: 'persona', label: 'agentPersona.title' },
+    { id: 'soul', label: 'settings.navItems.soul' },
+    { id: 'rules', label: 'settings.navItems.rules' },
+    { id: 'configure', label: 'agent.configure' },
+    { id: 'workflows', label: 'marketplace.workflows' },
+    { id: 'skills', label: 'settings.navItems.skills' },
+    { id: 'channels', label: 'agentSettings.channels' },
+    { id: 'accounts', label: 'agentSettings.connectedAccounts' },
+    { id: 'memory', label: 'agentSettings.memory' },
   ];
 
   // Delete confirmation triggered by ?delete=1 query param or button click
@@ -103,7 +105,7 @@
       const api = await import('$lib/api/nebo');
       const resp = await api.duplicateAgent(agentId, { name });
       const newId = (resp.agent as { id?: string })?.id;
-      if (!newId) throw new Error('Duplicate did not return a new agent.');
+      if (!newId) throw new Error($t('agentSettings.duplicateNoId'));
       showDuplicate = false;
       // If the source had per-account plugins (e.g. gws), send the copy to its
       // Connected Accounts so the user can connect its own inbox; otherwise open it.
@@ -113,16 +115,17 @@
         goto(`/${newId}/threads`);
       }
     } catch (e) {
-      duplicateError = (e as Error)?.message || 'Could not duplicate this agent.';
+      duplicateError = (e as Error)?.message || $t('agentSettings.duplicateFailed');
       duplicating = false;
     }
   }
 
+  // Returns an i18n key — translate with $t at the call site.
   function statusLabel(s: string) {
-    if (s === 'online') return 'Online';
-    if (s === 'running') return 'Running';
-    if (s === 'paused') return 'Paused';
-    return 'Idle';
+    if (s === 'online') return 'common.online';
+    if (s === 'running') return 'agent.running';
+    if (s === 'paused') return 'common.paused';
+    return 'agent.idle';
   }
 
   function triggerSummary(wf: WorkflowConfig): string {
@@ -336,7 +339,7 @@
         const slug = data.plugin as string;
         if (slug === channelConnectingSlug) {
           channelConnectingSlug = null;
-          channelAuthError = 'Authentication failed. Check your credentials and try again.';
+          channelAuthError = $t('agentSettings.authFailedRetry');
         }
       }),
     );
@@ -381,7 +384,7 @@
       closeAuthModal();
       await loadChannels();
     } catch {
-      channelAuthError = 'Failed to save credentials.';
+      channelAuthError = $t('agentSettings.saveCredentialsFailed');
     }
     finally { channelAuthSaving = false; }
   }
@@ -492,7 +495,7 @@
         const slug = data.plugin as string;
         if (slug === addAccountConnectingSlug) {
           addAccountConnectingSlug = null;
-          addAccountError = (data.error as string) || 'Sign-in failed. Please try again.';
+          addAccountError = (data.error as string) || $t('agentSettings.signInFailedRetry');
         }
       }),
     );
@@ -588,13 +591,13 @@
       // Login runs in the background; completion arrives via WS.
     } catch (e) {
       addAccountConnectingSlug = null;
-      addAccountError = (e as Error)?.message || 'Could not start sign-in for this account.';
+      addAccountError = (e as Error)?.message || $t('agentSettings.startSignInFailed');
     }
   }
 </script>
 
 <div class="h-11 px-[18px] border-b border-base-content/10 flex items-center gap-2 shrink-0">
-  <span class="text-sm font-semibold">{agent?.name} &mdash; {settingsSections.find(s => s.id === section)?.label ?? 'Settings'}</span>
+  <span class="text-sm font-semibold">{agent?.name} &mdash; {$t(settingsSections.find(s => s.id === section)?.label ?? 'settings.title')}</span>
 </div>
 <div class="flex-1 overflow-y-auto p-6">
   <div class="max-w-[480px] flex flex-col gap-5">
@@ -607,18 +610,18 @@
           <div class="flex items-center gap-2">
             <div class="text-sm font-semibold">{agent?.name}</div>
             {#if !agent?.editable}
-              <span class="py-0.5 px-2 rounded bg-base-200 font-mono text-xs text-base-content/70">Read-only</span>
+              <span class="py-0.5 px-2 rounded bg-base-200 font-mono text-xs text-base-content/70">{$t('agentSettings.readOnly')}</span>
             {/if}
           </div>
           <div class="text-xs text-base-content/70">{agent?.role}</div>
           <div class="flex items-center gap-2 mt-1.5">
             <div class="w-[7px] h-[7px] rounded-full shrink-0 {ctx.agentStatus(agentId) === 'online' ? 'bg-success' : ctx.agentStatus(agentId) === 'running' ? 'bg-warning animate-pulse' : 'bg-base-content/30'}"></div>
-            <span class="text-xs text-base-content/50">{statusLabel(ctx.agentStatus(agentId))}</span>
+            <span class="text-xs text-base-content/50">{$t(statusLabel(ctx.agentStatus(agentId)))}</span>
             {#if agentId !== 'assistant'}
               <button
                 class="ml-1 py-0.5 px-2 rounded text-xs font-medium cursor-pointer border border-base-300 bg-base-100 hover:bg-base-200 transition-colors"
                 onclick={() => ctx.toggleAgentStatus(agentId)}
-              >{ctx.agentStatus(agentId) === 'paused' ? 'Activate' : 'Pause'}</button>
+              >{ctx.agentStatus(agentId) === 'paused' ? $t('agent.activate') : $t('sidebar.pause')}</button>
             {/if}
           </div>
         </div>
@@ -626,42 +629,42 @@
 
       {#if !agent?.editable}
         <div class="rounded-lg border border-base-300 bg-base-200/50 px-3.5 py-2.5">
-          <div class="text-xs text-base-content/70">This agent's configuration is managed by its <span class="font-mono">agent.json</span> and cannot be edited directly. Duplicate it to create an editable copy.</div>
+          <div class="text-xs text-base-content/70">{$t('agentSettings.configManagedPrefix')} <span class="font-mono">agent.json</span> {$t('agentSettings.configManagedSuffix')}</div>
         </div>
       {/if}
 
       {#if devMode}
         <div>
-          <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1.5">Model</div>
+          <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1.5">{$t('agentSettings.model')}</div>
           <div class="text-sm font-mono">{config.model}</div>
         </div>
       {/if}
 
       <div>
-        <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1.5">Skills</div>
-        <div class="text-sm">{skills.length > 0 ? skills.join(', ') : 'None assigned'}</div>
+        <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1.5">{$t('settingsSkills.title')}</div>
+        <div class="text-sm">{skills.length > 0 ? skills.join(', ') : $t('agentSettings.noneAssigned')}</div>
       </div>
 
       <div>
-        <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1.5">Workflows</div>
-        <div class="text-sm">{workflowEntries.length} configured</div>
+        <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1.5">{$t('marketplace.workflows')}</div>
+        <div class="text-sm">{$t('agentSettings.configuredCount', { values: { count: workflowEntries.length } })}</div>
       </div>
 
       <div>
-        <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1.5">Created</div>
+        <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1.5">{$t('settingsMemories.created')}</div>
         <div class="text-sm">Mar 12, 2026</div>
       </div>
 
       <!-- Duplicate -->
       <div class="border-t border-base-300 pt-5 mt-3">
-        <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-2">Duplicate</div>
+        <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-2">{$t('sidebar.duplicate')}</div>
         {#if showDuplicate}
           <div class="rounded-lg border border-base-300 bg-base-200/50 p-4">
-            <div class="text-sm font-medium mb-1">Duplicate {agent?.name}</div>
-            <div class="text-xs text-base-content/70 mb-3">Creates a faithful copy — same persona, skills, workflows, and configuration — with its own name and identity. The copy connects its own accounts.</div>
+            <div class="text-sm font-medium mb-1">{$t('agentSettings.duplicateTitle', { values: { name: agent?.name ?? '' } })}</div>
+            <div class="text-xs text-base-content/70 mb-3">{$t('agentSettings.duplicateDesc')}</div>
             <input
               class="input input-bordered input-sm w-full mb-2"
-              placeholder="e.g. Nancy"
+              placeholder={$t('agentSettings.duplicateNamePlaceholder')}
               bind:value={duplicateName}
               disabled={duplicating}
               onkeydown={(e) => { if (e.key === 'Enter') handleDuplicate(); }}
@@ -670,54 +673,54 @@
               <div class="text-xs text-error mb-2">{duplicateError}</div>
             {/if}
             <div class="flex items-center gap-2">
-              <button class="btn btn-primary btn-sm" onclick={handleDuplicate} disabled={duplicating || !duplicateName.trim()}>{duplicating ? 'Duplicating…' : 'Create Copy'}</button>
-              <button class="btn btn-ghost btn-sm" onclick={() => showDuplicate = false} disabled={duplicating}>Cancel</button>
+              <button class="btn btn-primary btn-sm" onclick={handleDuplicate} disabled={duplicating || !duplicateName.trim()}>{duplicating ? $t('agentSettings.duplicating') : $t('agentSettings.createCopy')}</button>
+              <button class="btn btn-ghost btn-sm" onclick={() => showDuplicate = false} disabled={duplicating}>{$t('common.cancel')}</button>
             </div>
           </div>
         {:else}
-          <button class="btn btn-sm btn-outline" onclick={openDuplicate}>Duplicate Agent</button>
+          <button class="btn btn-sm btn-outline" onclick={openDuplicate}>{$t('agentSettings.duplicateAgent')}</button>
         {/if}
       </div>
 
       <!-- Danger zone -->
       {#if agent?.editable}
         <div class="border-t border-base-300 pt-5 mt-3">
-          <div class="text-xs font-semibold uppercase tracking-wider text-error mb-2">Danger Zone</div>
+          <div class="text-xs font-semibold uppercase tracking-wider text-error mb-2">{$t('agentSettings.dangerZone')}</div>
           {#if showDeleteConfirm}
             <div class="rounded-lg border border-error/30 bg-error/5 p-4">
-              <div class="text-sm font-medium mb-1">Delete {agent?.name}?</div>
-              <div class="text-xs text-base-content/70 mb-3">This will permanently remove the agent, all threads, runs, and memory. This action cannot be undone.</div>
+              <div class="text-sm font-medium mb-1">{$t('agent.deleteTitle', { values: { name: agent?.name ?? '' } })}</div>
+              <div class="text-xs text-base-content/70 mb-3">{$t('agentSettings.deleteWarning')}</div>
               <div class="flex items-center gap-2">
-                <button class="btn btn-error btn-sm" onclick={handleDeleteAgent} disabled={deleting}>{deleting ? 'Deleting...' : 'Delete Agent'}</button>
-                <button class="btn btn-ghost btn-sm" onclick={() => showDeleteConfirm = false}>Cancel</button>
+                <button class="btn btn-error btn-sm" onclick={handleDeleteAgent} disabled={deleting}>{deleting ? $t('agentSettings.deleting') : $t('agentSettings.deleteAgent')}</button>
+                <button class="btn btn-ghost btn-sm" onclick={() => showDeleteConfirm = false}>{$t('common.cancel')}</button>
               </div>
             </div>
           {:else}
-            <button class="btn btn-error btn-sm btn-outline" onclick={() => showDeleteConfirm = true}>Delete Agent</button>
+            <button class="btn btn-error btn-sm btn-outline" onclick={() => showDeleteConfirm = true}>{$t('agentSettings.deleteAgent')}</button>
           {/if}
         </div>
       {/if}
 
     {:else if section === 'identity'}
       <div class="flex items-center justify-between mb-1">
-        <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">Identity</div>
+        <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('settings.navItems.identity')}</div>
         {#if identitySaved}
-          <span class="text-xs text-success flex items-center gap-1"><Check class="w-3 h-3" /> Saved</span>
+          <span class="text-xs text-success flex items-center gap-1"><Check class="w-3 h-3" /> {$t('common.saved')}</span>
         {/if}
       </div>
       {#if !agent?.editable}
-        <div class="rounded-lg border border-base-300 bg-base-200/50 px-3.5 py-2.5 text-xs text-base-content/70">Managed by <span class="font-mono">AGENT.md</span> — read-only.</div>
+        <div class="rounded-lg border border-base-300 bg-base-200/50 px-3.5 py-2.5 text-xs text-base-content/70">{$t('agentSettings.managedByPrefix')} <span class="font-mono">AGENT.md</span> {$t('agentSettings.managedReadOnlySuffix')}</div>
       {/if}
       <label class="block">
-        <span class="block text-xs font-semibold uppercase tracking-wider mb-1.5">Agent Name</span>
+        <span class="block text-xs font-semibold uppercase tracking-wider mb-1.5">{$t('agentSettings.agentName')}</span>
         <input type="text" bind:value={editName} oninput={debounceIdentitySave} disabled={!agent?.editable} class="w-full py-[7px] px-2.5 rounded-md border border-base-300 text-sm bg-base-100 outline-none font-body disabled:opacity-60 disabled:cursor-not-allowed" />
       </label>
       <label class="block">
-        <span class="block text-xs font-semibold uppercase tracking-wider mb-1.5">Role</span>
+        <span class="block text-xs font-semibold uppercase tracking-wider mb-1.5">{$t('agentSettings.role')}</span>
         <textarea bind:value={editRole} oninput={debounceIdentitySave} disabled={!agent?.editable} rows="3" class="w-full py-[7px] px-2.5 rounded-md border border-base-300 text-sm bg-base-100 outline-none font-body disabled:opacity-60 disabled:cursor-not-allowed resize-none"></textarea>
       </label>
       <div>
-        <div class="text-xs font-semibold uppercase tracking-wider mb-1.5">Color</div>
+        <div class="text-xs font-semibold uppercase tracking-wider mb-1.5">{$t('agentSettings.color')}</div>
         <div class="flex gap-2">
           {#each ['violet', 'green', 'sky', 'amber', 'rose', 'mint', 'slate', 'peach'] as color}
             {@const c = AGENT_COLORS_MAP[color]}
@@ -731,86 +734,86 @@
         </div>
       </div>
       <div>
-        <div class="text-xs font-semibold uppercase tracking-wider mb-1.5">Status</div>
+        <div class="text-xs font-semibold uppercase tracking-wider mb-1.5">{$t('automations.status')}</div>
         <div class="flex items-center gap-1.5 text-sm">
           <div class="w-[7px] h-[7px] rounded-full shrink-0 {(agent?.status ?? 'idle') === 'online' ? 'bg-success' : (agent?.status ?? 'idle') === 'running' ? 'bg-warning animate-pulse' : 'bg-base-content/30'}"></div>
-          {statusLabel(agent?.status ?? 'idle')}
+          {$t(statusLabel(agent?.status ?? 'idle'))}
         </div>
       </div>
 
     {:else if section === 'persona'}
       <div class="flex items-center justify-between mb-1">
         <div>
-          <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">Persona</div>
-          <div class="text-xs text-base-content/70 mt-1">The agent's operating instructions &mdash; what it does, how it works, what rules it follows.</div>
+          <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('agentPersona.title')}</div>
+          <div class="text-xs text-base-content/70 mt-1">{$t('agentSettings.personaDesc')}</div>
         </div>
         {#if personaSaved}
-          <span class="text-xs text-success flex items-center gap-1"><Check class="w-3 h-3" /> Saved</span>
+          <span class="text-xs text-success flex items-center gap-1"><Check class="w-3 h-3" /> {$t('common.saved')}</span>
         {/if}
       </div>
       {#if !agent?.editable}
-        <div class="rounded-lg border border-base-300 bg-base-200/50 px-3.5 py-2.5 text-xs text-base-content/70">Managed by <span class="font-mono">AGENT.md</span> &mdash; read-only.</div>
+        <div class="rounded-lg border border-base-300 bg-base-200/50 px-3.5 py-2.5 text-xs text-base-content/70">{$t('agentSettings.managedByPrefix')} <span class="font-mono">AGENT.md</span> {$t('agentSettings.managedReadOnlySuffix')}</div>
       {/if}
       <textarea rows="20"
         bind:value={editPersona}
         oninput={debouncePersonaSave}
         disabled={!agent?.editable}
-        placeholder={"You are a helpful assistant that specializes in...\n\n## Rules\n- Always confirm before taking consequential actions\n- Be concise but thorough when needed\n\n## Capabilities\n- Research and analysis\n- Document drafting\n- Task automation"}
+        placeholder={$t('agentSettings.personaPlaceholder')}
         class="w-full py-[7px] px-2.5 rounded-md border border-base-300 text-sm bg-base-100 outline-none resize-y font-mono leading-relaxed disabled:opacity-60 disabled:cursor-not-allowed"
       ></textarea>
 
     {:else if section === 'soul'}
       <div class="flex items-center justify-between mb-1">
         <div>
-          <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">Soul</div>
-          <div class="text-xs text-base-content/70 mt-1">Who this agent IS &mdash; voice, tone, personality, values, and boundaries. Not what it does, but how it speaks and who it is.</div>
+          <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('settings.navItems.soul')}</div>
+          <div class="text-xs text-base-content/70 mt-1">{$t('agentSettings.soulDesc')}</div>
         </div>
         {#if soulSaved}
-          <span class="text-xs text-success flex items-center gap-1"><Check class="w-3 h-3" /> Saved</span>
+          <span class="text-xs text-success flex items-center gap-1"><Check class="w-3 h-3" /> {$t('common.saved')}</span>
         {/if}
       </div>
       {#if !agent?.editable}
-        <div class="rounded-lg border border-base-300 bg-base-200/50 px-3.5 py-2.5 text-xs text-base-content/70">Managed externally &mdash; read-only.</div>
+        <div class="rounded-lg border border-base-300 bg-base-200/50 px-3.5 py-2.5 text-xs text-base-content/70">{$t('agentSettings.managedExternally')}</div>
       {/if}
       <textarea rows="20"
         bind:value={editSoul}
         oninput={debounceSoulSave}
         disabled={!agent?.editable}
-        placeholder={"# Core Truths\n- Be genuinely helpful, not performatively helpful\n- Have opinions and share them when relevant\n- Be resourceful before asking for help\n- Earn trust through competence\n\n# Vibe\n- Conversational and warm, not corporate\n- Direct and honest — skip filler words\n- Concise when needed, thorough when it matters\n\n# Boundaries\n- Private things stay private. Period.\n- When in doubt, ask before acting externally\n- Never send half-baked replies\n\n# Personality\n- Curious and engaged\n- Patient with complex problems\n- Lighthearted when appropriate\n- Not a sycophant — be genuine"}
+        placeholder={$t('agentSettings.soulPlaceholder')}
         class="w-full py-[7px] px-2.5 rounded-md border border-base-300 text-sm bg-base-100 outline-none resize-y font-mono leading-relaxed disabled:opacity-60 disabled:cursor-not-allowed"
       ></textarea>
 
     {:else if section === 'rules'}
       <div class="flex items-center justify-between mb-1">
         <div>
-          <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">Rules</div>
-          <div class="text-xs text-base-content/70 mt-1">Behavior constraints and guardrails &mdash; what this agent must or must not do.</div>
+          <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('settings.navItems.rules')}</div>
+          <div class="text-xs text-base-content/70 mt-1">{$t('agentSettings.rulesDesc')}</div>
         </div>
         {#if rulesSaved}
-          <span class="text-xs text-success flex items-center gap-1"><Check class="w-3 h-3" /> Saved</span>
+          <span class="text-xs text-success flex items-center gap-1"><Check class="w-3 h-3" /> {$t('common.saved')}</span>
         {/if}
       </div>
       {#if !agent?.editable}
-        <div class="rounded-lg border border-base-300 bg-base-200/50 px-3.5 py-2.5 text-xs text-base-content/70">Managed externally &mdash; read-only.</div>
+        <div class="rounded-lg border border-base-300 bg-base-200/50 px-3.5 py-2.5 text-xs text-base-content/70">{$t('agentSettings.managedExternally')}</div>
       {/if}
       <textarea rows="20"
         bind:value={editRules}
         oninput={debounceRulesSave}
         disabled={!agent?.editable}
-        placeholder={"# Rules\n- Always confirm before taking destructive actions\n- Never send emails without explicit approval\n- Keep responses concise unless asked for detail\n- Escalate to owner if uncertain about a request\n\n# Boundaries\n- Do not access files outside the project directory\n- Do not make purchases or financial commitments\n- Do not share sensitive information externally"}
+        placeholder={$t('agentSettings.rulesPlaceholder')}
         class="w-full py-[7px] px-2.5 rounded-md border border-base-300 text-sm bg-base-100 outline-none resize-y font-mono leading-relaxed disabled:opacity-60 disabled:cursor-not-allowed"
       ></textarea>
 
     {:else if section === 'configure'}
       <div class="flex items-center justify-between gap-3 mb-1">
-        <div class="text-sm">These inputs customize how {agent?.name} operates.</div>
+        <div class="text-sm">{$t('agentConfigure.inputsCustomize', { values: { name: agent?.name ?? '' } })}</div>
         {#if configFields.length > 0}
-          <button type="button" class="btn btn-sm btn-primary shrink-0" onclick={openConfigure}>Configure</button>
+          <button type="button" class="btn btn-sm btn-primary shrink-0" onclick={openConfigure}>{$t('agent.configure')}</button>
         {/if}
       </div>
 
       {#if configFields.length === 0}
-        <div class="text-center py-6 text-sm">No configurable inputs for this agent.</div>
+        <div class="text-center py-6 text-sm">{$t('agentConfigure.noInputs')}</div>
       {:else}
         <dl class="flex flex-col gap-3 mt-3">
           {#each configFields as field (field.key)}
@@ -820,7 +823,7 @@
             <div class="border-b border-base-content/10 pb-3 last:border-0">
               <dt class="text-sm font-medium">{field.label || field.key}</dt>
               {#if field.description}<dd class="text-xs text-base-content/50 mt-0.5">{field.description}</dd>{/if}
-              <dd class="text-sm mt-1 whitespace-pre-wrap {isEmpty ? 'text-base-content/40 italic' : ''}">{isEmpty ? 'Not set' : String(val)}</dd>
+              <dd class="text-sm mt-1 whitespace-pre-wrap {isEmpty ? 'text-base-content/40 italic' : ''}">{isEmpty ? $t('common.notSet') : String(val)}</dd>
             </div>
           {/each}
         </dl>
@@ -832,41 +835,41 @@
         <div class="grid grid-cols-4 gap-2 mb-4">
           <div class="rounded-lg border border-base-300 bg-base-100 p-2.5 text-center">
             <div class="text-base font-semibold">{workflowStats.totalRuns}</div>
-            <div class="text-xs text-base-content/50">Total runs</div>
+            <div class="text-xs text-base-content/50">{$t('agentActivity.totalRuns')}</div>
           </div>
           <div class="rounded-lg border border-base-300 bg-base-100 p-2.5 text-center">
             <div class="text-base font-semibold text-success">{workflowStats.completed}</div>
-            <div class="text-xs text-base-content/50">Completed</div>
+            <div class="text-xs text-base-content/50">{$t('common.completed')}</div>
           </div>
           <div class="rounded-lg border border-base-300 bg-base-100 p-2.5 text-center">
             <div class="text-base font-semibold {workflowStats.failed > 0 ? 'text-error' : ''}">{workflowStats.failed}</div>
-            <div class="text-xs text-base-content/50">Failed</div>
+            <div class="text-xs text-base-content/50">{$t('common.failed')}</div>
           </div>
           <div class="rounded-lg border border-base-300 bg-base-100 p-2.5 text-center">
             <div class="text-base font-semibold font-mono">{workflowStats.avgDuration}</div>
-            <div class="text-xs text-base-content/50">Avg duration</div>
+            <div class="text-xs text-base-content/50">{$t('agentActivity.avgDuration')}</div>
           </div>
         </div>
       {/if}
 
       <!-- Header with canvas button -->
       <div class="flex items-center justify-between mb-3">
-        <div class="text-sm">Automated sequences for {agent?.name}.</div>
+        <div class="text-sm">{$t('agentSettings.automatedSequencesFor', { values: { name: agent?.name ?? '' } })}</div>
         {#if workflowEntries.length > 0}
           <button
             class="flex items-center gap-1.5 py-1 px-2.5 rounded-lg border border-base-300 text-xs font-medium cursor-pointer bg-base-100 hover:bg-base-200 transition-colors"
             onclick={() => ctx.openCanvas()}
-            title="Open canvas editor"
+            title={$t('agentSettings.openCanvasEditor')}
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="8" y="14" width="7" height="7" rx="1"/><line x1="6.5" y1="10" x2="11.5" y2="14"/><line x1="17.5" y1="10" x2="11.5" y2="14"/></svg>
-            Canvas
+            {$t('agentSettings.canvas')}
           </button>
         {/if}
       </div>
 
       {#if workflowEntries.length === 0}
         <div class="text-center py-8 text-sm">
-          No workflows configured. Create one or install from the Marketplace.
+          {$t('agentSettings.noWorkflows')}
         </div>
       {:else}
         <div class="flex flex-col gap-2">
@@ -882,20 +885,20 @@
                   <div class="flex items-center gap-1.5">
                     <span class="text-sm font-medium">{name}</span>
                     {#if purchased}
-                      <span class="py-0 px-1.5 rounded bg-base-200 text-xs font-mono">Marketplace</span>
+                      <span class="py-0 px-1.5 rounded bg-base-200 text-xs font-mono">{$t('nav.marketplace')}</span>
                     {/if}
                     {#if wf.isActive === false}
-                      <span class="py-0 px-1.5 rounded bg-base-200 text-xs text-base-content/50">Paused</span>
+                      <span class="py-0 px-1.5 rounded bg-base-200 text-xs text-base-content/50">{$t('common.paused')}</span>
                     {/if}
                   </div>
                   <div class="text-xs text-base-content/70 mt-0.5 truncate">{wf.description}</div>
                   <div class="flex items-center gap-2 mt-1.5 flex-wrap">
                     <span class="text-xs text-base-content/50 font-mono">{triggerSummary(wf)}</span>
                     <span class="text-xs text-base-content/30">&middot;</span>
-                    <span class="text-xs text-base-content/50 font-mono inline-flex items-center gap-1">{wf.activities?.length ?? 0} {(wf.activities?.length ?? 0) === 1 ? 'activity' : 'activities'}{#each [...new Set((wf.activities ?? []).map((a: WorkflowActivity) => a.type).filter(Boolean))] as t}<span class="inline-block" title={getActivityType(t).label}>{getActivityType(t).icon}</span>{/each}</span>
+                    <span class="text-xs text-base-content/50 font-mono inline-flex items-center gap-1">{(wf.activities?.length ?? 0) === 1 ? $t('agentSettings.activityCountSingular', { values: { count: 1 } }) : $t('agentSettings.activityCount', { values: { count: wf.activities?.length ?? 0 } })}{#each [...new Set((wf.activities ?? []).map((a: WorkflowActivity) => a.type).filter(Boolean))] as t}<span class="inline-block" title={getActivityType(t).label}>{getActivityType(t).icon}</span>{/each}</span>
                     {#if wf.lastFired}
                       <span class="text-xs text-base-content/30">&middot;</span>
-                      <span class="text-xs text-base-content/50 font-mono">Last: {formatLastFired(wf.lastFired)}</span>
+                      <span class="text-xs text-base-content/50 font-mono">{$t('agentSettings.lastFired', { values: { time: formatLastFired(wf.lastFired) } })}</span>
                     {/if}
                     {#if wf.emit}
                       <span class="text-xs text-base-content/30">&middot;</span>
@@ -911,24 +914,24 @@
         </div>
       {/if}
 
-      <button class="mt-3 w-full py-2.5 rounded-lg border border-dashed border-base-300 text-sm text-primary font-medium cursor-pointer bg-transparent hover:bg-base-200 transition-colors" onclick={createNewWorkflow}>+ New workflow</button>
+      <button class="mt-3 w-full py-2.5 rounded-lg border border-dashed border-base-300 text-sm text-primary font-medium cursor-pointer bg-transparent hover:bg-base-200 transition-colors" onclick={createNewWorkflow}>{$t('agentSettings.newWorkflow')}</button>
 
     {:else if section === 'skills'}
-      <div class="text-xs text-base-content/70 mb-2">Skills assigned to {agent?.name}. Add more from the Marketplace.</div>
+      <div class="text-xs text-base-content/70 mb-2">{$t('agentSettings.skillsAssignedTo', { values: { name: agent?.name ?? '' } })}</div>
       {#each skills as skill}
         <div class="flex items-center gap-2.5 py-2 px-3 rounded-lg border border-base-300 bg-base-100">
           <div class="w-7 h-7 rounded-md bg-base-200 flex items-center justify-center text-sm shrink-0">&#9889;</div>
           <span class="text-sm font-medium flex-1">{skill}</span>
-          <button class="text-sm text-error cursor-pointer bg-transparent border-none hover:opacity-70">Remove</button>
+          <button class="text-sm text-error cursor-pointer bg-transparent border-none hover:opacity-70">{$t('common.remove')}</button>
         </div>
       {/each}
-      <a href="/marketplace/skills" class="inline-flex items-center gap-1 text-sm text-primary font-medium mt-1">+ Add from Marketplace &#8594;</a>
+      <a href="/marketplace/skills" class="inline-flex items-center gap-1 text-sm text-primary font-medium mt-1">{$t('agentSettings.addFromMarketplace')}</a>
 
     {:else if section === 'channels'}
       <div class="flex items-center gap-3 py-2.5 px-3 rounded-lg border border-base-300 bg-base-100 mb-3">
         <div class="flex-1 min-w-0">
-          <div class="text-sm font-medium">Expose to Loop</div>
-          <div class="text-xs text-base-content/70 mt-0.5">When off, this agent won't appear in your loop.</div>
+          <div class="text-sm font-medium">{$t('agentSettings.exposeToLoop')}</div>
+          <div class="text-xs text-base-content/70 mt-0.5">{$t('agentSettings.exposeToLoopDesc')}</div>
         </div>
         <input
           type="checkbox"
@@ -939,13 +942,13 @@
           onchange={saveLoopExposed}
         />
       </div>
-      <div class="text-xs text-base-content/70 mb-2">Connect {agent?.name} to external messaging platforms. Install channel plugins from the Marketplace, then enable them here.</div>
+      <div class="text-xs text-base-content/70 mb-2">{$t('agentSettings.channelsDesc', { values: { name: agent?.name ?? '' } })}</div>
       {#if channelsLoading}
-        <div class="text-xs text-base-content/50 py-6 text-center">Loading channels...</div>
+        <div class="text-xs text-base-content/50 py-6 text-center">{$t('agentSettings.loadingChannels')}</div>
       {:else if channelList.length === 0}
         <div class="py-8 text-center">
-          <div class="text-sm text-base-content/50 mb-2">No channel plugins installed</div>
-          <a href="/marketplace/plugins" class="inline-flex items-center gap-1 text-sm text-primary font-medium">Browse Marketplace &#8594;</a>
+          <div class="text-sm text-base-content/50 mb-2">{$t('agentSettings.noChannelPlugins')}</div>
+          <a href="/marketplace/plugins" class="inline-flex items-center gap-1 text-sm text-primary font-medium">{$t('agentSettings.browseMarketplaceArrow')}</a>
         </div>
       {:else}
         <div class="flex flex-col gap-2">
@@ -955,7 +958,7 @@
                 <div class="flex items-center gap-2">
                   <span class="text-sm font-medium">{ch.name}</span>
                   {#if ch.needsAuth && !ch.authenticated}
-                    <span class="text-xs text-warning font-medium">Setup required</span>
+                    <span class="text-xs text-warning font-medium">{$t('agentSettings.setupRequired')}</span>
                   {/if}
                 </div>
                 {#if ch.description}
@@ -966,13 +969,13 @@
                 <button
                   class="btn btn-sm btn-outline btn-primary"
                   onclick={() => openAuthModal(ch)}
-                >Connect</button>
+                >{$t('settingsPlugins.connect')}</button>
               {:else}
                 <div class="flex items-center gap-2">
                   {#if ch.needsAuth}
                     <button
                       class="btn btn-xs btn-ghost text-base-content/50"
-                      title="Update credentials"
+                      title={$t('agentSettings.updateCredentials')}
                       onclick={() => openAuthModal(ch)}
                     >
                       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="w-3.5 h-3.5"><path fill-rule="evenodd" d="M11.013 2.513a1.75 1.75 0 0 1 2.475 2.474L6.226 12.25a2.751 2.751 0 0 1-.892.596l-2.047.848a.75.75 0 0 1-.98-.98l.848-2.047a2.75 2.75 0 0 1 .596-.892l7.262-7.262Z" clip-rule="evenodd" /></svg>
@@ -992,17 +995,17 @@
             </div>
           {/each}
         </div>
-        <a href="/marketplace/plugins" class="inline-flex items-center gap-1 text-sm text-primary font-medium mt-2">+ Add from Marketplace &#8594;</a>
+        <a href="/marketplace/plugins" class="inline-flex items-center gap-1 text-sm text-primary font-medium mt-2">{$t('agentSettings.addFromMarketplace')}</a>
       {/if}
 
     {:else if section === 'accounts'}
-      <div class="text-xs text-base-content/70 mb-2">Connect multiple accounts to {agent?.name} for plugins that support it &mdash; for example several Gmail inboxes. Each account signs in separately and {agent?.name} can use any of them.</div>
+      <div class="text-xs text-base-content/70 mb-2">{$t('agentSettings.accountsDesc', { values: { name: agent?.name ?? '' } })}</div>
       {#if accountsLoading}
-        <div class="text-xs text-base-content/50 py-6 text-center">Loading accounts...</div>
+        <div class="text-xs text-base-content/50 py-6 text-center">{$t('agentSettings.loadingAccounts')}</div>
       {:else if accountPlugins.length === 0}
         <div class="py-8 text-center">
-          <div class="text-sm text-base-content/50 mb-2">No plugins available for multiple accounts</div>
-          <a href="/marketplace/plugins" class="inline-flex items-center gap-1 text-sm text-primary font-medium">Browse Marketplace &#8594;</a>
+          <div class="text-sm text-base-content/50 mb-2">{$t('agentSettings.noMultiAccountPlugins')}</div>
+          <a href="/marketplace/plugins" class="inline-flex items-center gap-1 text-sm text-primary font-medium">{$t('agentSettings.browseMarketplaceArrow')}</a>
         </div>
       {:else}
         <div class="flex flex-col gap-3">
@@ -1018,7 +1021,7 @@
                 <button
                   class="btn btn-sm btn-outline btn-primary shrink-0"
                   onclick={() => openAddAccount(plugin)}
-                >+ Add account</button>
+                >{$t('agentSettings.addAccount')}</button>
               </div>
               {#if plugin.accounts.length > 0}
                 <div class="border-t border-base-content/10">
@@ -1031,28 +1034,28 @@
                       {/if}
                       <span class="text-sm truncate flex-1">{acct.accountLabel}</span>
                       {#if acct.isPrimary}
-                        <span class="py-0.5 px-2 rounded bg-accent/15 text-accent text-xs font-medium shrink-0">Primary</span>
+                        <span class="py-0.5 px-2 rounded bg-accent/15 text-accent text-xs font-medium shrink-0">{$t('agentSettings.primary')}</span>
                       {/if}
                       {#if acct.needsReauth}
-                        <span class="py-0.5 px-2 rounded bg-warning/15 text-warning text-xs font-medium shrink-0">Expired</span>
+                        <span class="py-0.5 px-2 rounded bg-warning/15 text-warning text-xs font-medium shrink-0">{$t('statusBadge.expired')}</span>
                         <button
                           class="btn btn-xs btn-warning btn-outline shrink-0"
                           onclick={() => reconnectAccount(plugin.slug, acct.accountLabel)}
                           disabled={addAccountConnectingSlug === plugin.slug}
-                        >Reconnect</button>
+                        >{$t('agentSettings.reconnect')}</button>
                       {/if}
                       <button
                         class="btn btn-xs btn-ghost text-error shrink-0"
                         onclick={() => disconnectAccount(plugin.slug, acct.accountLabel)}
-                        title="Disconnect this account"
-                        aria-label="Disconnect {acct.accountLabel}"
-                      >Disconnect</button>
+                        title={$t('agentSettings.disconnectAccountTitle')}
+                        aria-label={$t('agentSettings.disconnectAccountLabel', { values: { label: acct.accountLabel } })}
+                      >{$t('settingsPlugins.disconnect')}</button>
                     </div>
                   {/each}
                 </div>
               {:else}
                 <div class="border-t border-base-content/10 px-3.5 py-2">
-                  <span class="text-xs text-base-content/50">No accounts connected yet</span>
+                  <span class="text-xs text-base-content/50">{$t('agentSettings.noAccountsYet')}</span>
                 </div>
               {/if}
             </div>
@@ -1064,7 +1067,7 @@
       <MemoryManager {agentId} />
 
     {:else}
-      <div class="text-center py-10 text-sm">Unknown settings section.</div>
+      <div class="text-center py-10 text-sm">{$t('agentSettings.unknownSection')}</div>
     {/if}
 
   </div>
@@ -1076,17 +1079,17 @@
   {@const busy = channelAuthSaving || channelConnectingSlug === ch.pluginSlug}
   <!-- svelte-ignore a11y_click_events_have_key_events a11y_interactive_supports_focus a11y_no_noninteractive_tabindex -->
   <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/40" tabindex="-1" onkeydown={(e) => { if (e.key === 'Escape' && !helpChatOpen) closeAuthModal(); }} role="dialog" aria-modal="true">
-    <div class="bg-base-100 rounded-xl border border-base-300 shadow-xl mx-4 flex overflow-hidden transition-all duration-300 ease-out {helpChatOpen ? 'w-[80vw] h-[80vh]' : 'w-full max-w-md'}">
+    <div class="bg-base-100 rounded-xl border border-base-300 shadow-xl flex overflow-hidden transition-all duration-300 ease-out {helpChatOpen ? 'w-[80vw] max-md:w-[92vw] h-[80vh]' : 'w-[min(92vw,28rem)]'}">
       <!-- Left: Setup form -->
       <div class="flex flex-col min-h-0 overflow-hidden {helpChatOpen ? 'w-1/2 border-r border-base-content/10' : 'w-full'}">
         <div class="flex items-center justify-between p-5 border-b border-base-content/10">
           <div class="min-w-0">
-            <div class="text-base font-semibold">Connect {ch.name}</div>
+            <div class="text-base font-semibold">{$t('agentSettings.connectChannel', { values: { name: ch.name } })}</div>
             {#if ch.authLabel}
               <div class="text-xs text-base-content/50 mt-0.5">{ch.authLabel}</div>
             {/if}
           </div>
-          <button class="btn btn-ghost btn-sm btn-square" onclick={closeAuthModal} aria-label="Close" disabled={busy}>
+          <button class="btn btn-ghost btn-sm btn-square" onclick={closeAuthModal} aria-label={$t('common.close')} disabled={busy}>
             <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" /></svg>
           </button>
         </div>
@@ -1094,18 +1097,18 @@
         <div class="p-5 space-y-4 overflow-y-auto flex-1">
           {#if ch.setup}
             <div class="rounded-lg bg-primary/5 border border-primary/30 p-3">
-              <div class="text-sm font-medium mb-1">Guided setup</div>
-              <div class="text-xs text-base-content/70 mb-2.5">Generate a ready-to-paste app manifest, install it, and connect — step by step.</div>
+              <div class="text-sm font-medium mb-1">{$t('agentSettings.guidedSetup')}</div>
+              <div class="text-xs text-base-content/70 mb-2.5">{$t('agentSettings.guidedSetupDesc')}</div>
               <button class="btn btn-sm btn-primary" onclick={() => { channelWizardOpen = true; }} disabled={busy}>
-                Start setup wizard
+                {$t('agentSettings.startSetupWizard')}
               </button>
-              <div class="text-xs text-base-content/50 mt-2">Or paste tokens manually below.</div>
+              <div class="text-xs text-base-content/50 mt-2">{$t('agentSettings.pasteTokensBelow')}</div>
             </div>
           {/if}
 
           {#if ch.authHelp?.text}
             <div class="rounded-lg bg-base-200/50 border border-base-300 p-3">
-              <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1.5">Setup Guide</div>
+              <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1.5">{$t('agentSettings.setupGuide')}</div>
               {#each ch.authHelp.text.split('\n').filter(Boolean) as line}
                 <div class="text-xs text-base-content/70 leading-relaxed">{line}</div>
               {/each}
@@ -1114,7 +1117,7 @@
               {/if}
             </div>
           {:else if ch.authHelp?.url}
-            <a href={ch.authHelp.url} target="_blank" rel="noopener noreferrer" class="inline-flex items-center gap-1 text-xs text-primary font-medium hover:underline">{ch.authHelp.urlLabel ?? 'Setup documentation'} &#8599;</a>
+            <a href={ch.authHelp.url} target="_blank" rel="noopener noreferrer" class="inline-flex items-center gap-1 text-xs text-primary font-medium hover:underline">{ch.authHelp.urlLabel ?? $t('agentSettings.setupDocumentation')} &#8599;</a>
           {/if}
 
           {#each ch.authEnvKeys as envKey}
@@ -1123,7 +1126,7 @@
               <input
                 type="password"
                 class="input input-sm input-bordered w-full font-mono text-xs"
-                placeholder="Paste token here..."
+                placeholder={$t('agentSettings.pasteTokenPlaceholder')}
                 value={channelAuthInputs[envKey] ?? ''}
                 disabled={busy}
                 oninput={(e) => { channelAuthInputs[envKey] = (e.target as HTMLInputElement).value; }}
@@ -1142,15 +1145,15 @@
               class="btn btn-sm btn-ghost text-primary"
               onclick={() => openHelpChat(ch.pluginSlug)}
               disabled={helpChatLoading}
-            >{helpChatLoading ? 'Loading...' : 'Need help?'}</button>
+            >{helpChatLoading ? $t('common.loading') : $t('agentSettings.needHelp')}</button>
           {/if}
           <div class="flex-1"></div>
-          <button class="btn btn-sm btn-ghost" onclick={closeAuthModal} disabled={busy}>Cancel</button>
+          <button class="btn btn-sm btn-ghost" onclick={closeAuthModal} disabled={busy}>{$t('common.cancel')}</button>
           <button
             class="btn btn-sm btn-primary"
             disabled={busy || !ch.authEnvKeys.some(k => channelAuthInputs[k]?.trim())}
             onclick={() => submitAuthForm(ch.pluginSlug)}
-          >{busy ? 'Saving...' : 'Save Credentials'}</button>
+          >{busy ? $t('common.saving') : $t('agentSettings.saveCredentials')}</button>
         </div>
       </div>
 
@@ -1158,18 +1161,18 @@
       {#if helpChatOpen && helpChat}
         <div class="w-1/2 flex flex-col min-h-0 overflow-hidden">
           <div class="flex items-center justify-between px-4 py-3 border-b border-base-content/10 shrink-0">
-            <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{ch.name} Help</div>
-            <button class="btn btn-ghost btn-xs btn-square" onclick={closeHelpChat} aria-label="Close help">
+            <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('agentSettings.channelHelp', { values: { name: ch.name } })}</div>
+            <button class="btn btn-ghost btn-xs btn-square" onclick={closeHelpChat} aria-label={$t('agentSettings.closeHelp')}>
               <svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" /></svg>
             </button>
           </div>
           <div class="flex-1 flex flex-col min-h-0">
             <ChatPane
               messages={helpChat.messages}
-              agentName="{ch.name} Help"
+              agentName={$t('agentSettings.channelHelp', { values: { name: ch.name } })}
               agentId={agentId}
               sessionId={helpSessionKey ?? ''}
-              placeholder="Ask about {ch.name} setup..."
+              placeholder={$t('agentSettings.askAboutSetup', { values: { name: ch.name } })}
               onsend={(text) => helpChat?.send(text)}
               onstop={() => helpChat?.stop()}
               isLoading={helpChat.isLoading}
@@ -1198,33 +1201,33 @@
   {@const connecting = addAccountConnectingSlug === plugin.slug}
   <!-- svelte-ignore a11y_click_events_have_key_events a11y_interactive_supports_focus a11y_no_noninteractive_tabindex -->
   <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/40" tabindex="-1" onkeydown={(e) => { if (e.key === 'Escape') closeAddAccount(); }} role="dialog" aria-modal="true">
-    <div class="bg-base-100 rounded-xl border border-base-300 shadow-xl mx-4 w-full max-w-md flex flex-col overflow-hidden">
+    <div class="bg-base-100 rounded-xl border border-base-300 shadow-xl w-[min(92vw,28rem)] flex flex-col overflow-hidden">
       <div class="flex items-center justify-between p-5 border-b border-base-content/10">
         <div class="min-w-0">
-          <div class="text-base font-semibold">Add {plugin.name} account</div>
-          <div class="text-xs text-base-content/50 mt-0.5">Label this account, then sign in to connect it.</div>
+          <div class="text-base font-semibold">{$t('agentSettings.addPluginAccount', { values: { name: plugin.name } })}</div>
+          <div class="text-xs text-base-content/50 mt-0.5">{$t('agentSettings.addAccountDesc')}</div>
         </div>
-        <button class="btn btn-ghost btn-sm btn-square" onclick={closeAddAccount} aria-label="Close">
+        <button class="btn btn-ghost btn-sm btn-square" onclick={closeAddAccount} aria-label={$t('common.close')}>
           <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" /></svg>
         </button>
       </div>
 
       <div class="p-5 space-y-4">
         <label class="flex flex-col gap-1.5">
-          <span class="text-xs font-semibold uppercase tracking-wider text-base-content/50">Account label</span>
+          <span class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('agentSettings.accountLabel')}</span>
           <input
             type="text"
             class="input input-sm input-bordered w-full text-sm font-body"
-            placeholder="work@acme.com"
+            placeholder={$t('agentSettings.accountLabelPlaceholder')}
             bind:value={addAccountLabel}
             disabled={connecting}
             onkeydown={(e) => { if (e.key === 'Enter') submitAddAccount(); }}
           />
-          <span class="text-xs text-base-content/50">Usually the email address or username for the account.</span>
+          <span class="text-xs text-base-content/50">{$t('agentSettings.accountLabelHint')}</span>
         </label>
 
         {#if connecting}
-          <div class="rounded-lg bg-primary/5 border border-primary/30 p-3 text-xs text-base-content/70">A sign-in window opened in your browser. Finish there &mdash; this connects automatically when it completes. Changed your mind? Cancel sign-in to close this and ignore the window.</div>
+          <div class="rounded-lg bg-primary/5 border border-primary/30 p-3 text-xs text-base-content/70">{$t('agentSettings.signInWindowOpened')}</div>
         {/if}
 
         {#if addAccountError}
@@ -1234,12 +1237,12 @@
 
       <div class="flex items-center gap-2 p-5 border-t border-base-content/10">
         <div class="flex-1"></div>
-        <button class="btn btn-sm btn-ghost" onclick={closeAddAccount}>{connecting ? 'Cancel sign-in' : 'Cancel'}</button>
+        <button class="btn btn-sm btn-ghost" onclick={closeAddAccount}>{connecting ? $t('agentSettings.cancelSignIn') : $t('common.cancel')}</button>
         <button
           class="btn btn-sm btn-primary"
           disabled={connecting || !addAccountLabel.trim()}
           onclick={submitAddAccount}
-        >{connecting ? 'Signing in...' : 'Sign in'}</button>
+        >{connecting ? $t('agentSettings.signingIn') : $t('agentSettings.signIn')}</button>
       </div>
     </div>
   </div>

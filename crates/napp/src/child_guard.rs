@@ -383,18 +383,18 @@ mod tests {
     fn parses_pid_and_full_command_with_spaces() {
         // macOS path contains a space ("Application Support") — the command must
         // come back whole, not tokenized.
-        let line = "  4242 /Users/x/Library/Application Support/Nebo/nebo/plugins/stadium-ops/0.1.0/stadium-ops watch --events";
+        let line = "  4242 /Users/x/Library/Application Support/Nebo/nebo/plugins/example-ops/0.1.0/example-ops watch --events";
         let (pid, cmd) = parse_ps_line(line).expect("parse");
         assert_eq!(pid, 4242);
         assert_eq!(
             cmd,
-            "/Users/x/Library/Application Support/Nebo/nebo/plugins/stadium-ops/0.1.0/stadium-ops watch --events"
+            "/Users/x/Library/Application Support/Nebo/nebo/plugins/example-ops/0.1.0/example-ops watch --events"
         );
     }
 
     #[test]
     fn matches_binary_with_space_in_path_and_args() {
-        let target = "/Users/x/Library/Application Support/Nebo/nebo/plugins/stadium-ops/0.1.0/stadium-ops";
+        let target = "/Users/x/Library/Application Support/Nebo/nebo/plugins/example-ops/0.1.0/example-ops";
         // argv0 == target, with trailing args → match (the leak case)
         assert!(command_is_for(&format!("{target} watch --events"), target));
         // exact, no args → match

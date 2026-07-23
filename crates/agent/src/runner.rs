@@ -37,11 +37,37 @@ const DEFAULT_CONTEXT_TOKEN_LIMIT: usize = 80_000;
 const MAX_TRANSIENT_RETRIES: usize = 10;
 /// Max retryable (provider/rate_limit/billing) retries before giving up.
 const MAX_RETRYABLE_RETRIES: usize = 5;
+/// Max reactive-compaction attempts when the provider rejects for context
+/// overflow despite the local estimate saying we fit (single-shot reactive
+/// compact + give-up, a guard against an auto-compaction death-spiral).
+const MAX_OVERFLOW_RETRIES: usize = 2;
 /// Consecutive overloaded (529) errors before falling back to a cheaper model.
 #[allow(dead_code)] // reserved for overload fallback logic
 const MAX_OVERLOADS_BEFORE_FALLBACK: usize = 3;
 /// Timeout for individual tool execution.
 const TOOL_EXECUTION_TIMEOUT: Duration = Duration::from_secs(300);
+/// Max gap between stream events before the stream is declared wedged
+/// (connection open, no tokens). A 90s idle watchdog, classified transient so
+/// the normal retry/failover path re-issues the request.
+const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
+
+/// Retry backoff: exponential 500ms × 2^(n−1) capped at 32s, plus 0–25% jitter.
+/// An explicit provider Retry-After wins outright.
+fn retry_backoff(attempt: usize, retry_after_secs: Option<u64>) -> Duration {
+    if let Some(secs) = retry_after_secs {
+        return Duration::from_secs(secs);
+    }
+    let exp = attempt.saturating_sub(1).min(6) as u32; // 500ms × 2^6 = 32s cap
+    let base_ms = 500u64 << exp;
+    // ponytail: clock-nanos jitter instead of a rand dependency
+    let jitter_ms = base_ms
+        * (std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos() as u64 % 250)
+            .unwrap_or(0))
+        / 1000;
+    Duration::from_millis(base_ms + jitter_ms)
+}
 /// Default max auto-continuations when agent stops mid-task (no work tasks).
 #[allow(dead_code)] // used by max_auto_continuations, reserved for auto-continuation logic
 const MAX_AUTO_CONTINUATIONS_DEFAULT: usize = 5;
@@ -114,6 +140,58 @@ fn persist_capability_grant(store: &Store, category: &str) -> Result<(), String>
     store
         .update_tool_permissions(&json)
         .map_err(|e| e.to_string())
+}
+
+/// "Approve Always" on an MCP tool call → pin an explicit Always-allow override
+/// in the server's tool-permission map — the SAME store Settings → MCP → Tool
+/// permissions edits (tools::policy::McpServerPermissions on the integration row).
+fn persist_mcp_tool_allow(store: &Store, integration_id: &str, tool: &str) -> Result<(), String> {
+    let mut perms = tools::policy::McpServerPermissions::from_json(
+        store
+            .get_mcp_tool_permissions(integration_id)
+            .map_err(|e| e.to_string())?
+            .as_deref(),
+    );
+    perms
+        .tools
+        .insert(tool.to_string(), tools::policy::McpToolAccess::Allow);
+    store
+        .set_mcp_tool_permissions(integration_id, &perms.to_json())
+        .map_err(|e| e.to_string())
+}
+
+/// One tool-approval round-trip (PERMISSIONS_SME §11): register a oneshot keyed
+/// by the tool_call id, emit `approval_request`, and await the ApprovalModal
+/// decision ("deny" / "once" / "always"). Run cancellation resolves to "deny".
+/// The ONE ask pathway shared by the capability gate and the MCP tri-state gate.
+async fn ask_tool_approval(
+    channels: &tools::ApprovalChannels,
+    tx: &mpsc::Sender<StreamEvent>,
+    cancel_token: &CancellationToken,
+    tool_call: &ai::ToolCall,
+    session_id: &str,
+    gate: &str,
+) -> String {
+    let request_id = tool_call.id.clone();
+    let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
+    channels.lock().await.insert(request_id.clone(), resp_tx);
+    let _ = tx
+        .send(StreamEvent::approval_request(tool_call.clone()))
+        .await;
+    info!(
+        session_id,
+        request_id = %request_id,
+        gate,
+        tool = %tool_call.name,
+        "tool approval: waiting for user decision"
+    );
+    tokio::select! {
+        _ = cancel_token.cancelled() => {
+            channels.lock().await.remove(&request_id);
+            "deny".to_string()
+        }
+        result = resp_rx => result.unwrap_or_else(|_| "deny".to_string()),
+    }
 }
 
 /// Stable per-turn identity for spiral detection: tool name + action (e.g.
@@ -210,6 +288,25 @@ pub(crate) fn prefer_non_gateway(providers: &[Arc<dyn Provider>]) -> Option<Arc<
         .find(|p| p.id() != "janus")
         .cloned()
         .or_else(|| providers.first().cloned())
+}
+
+/// Resolve the (provider, model) for auxiliary side-tasks — chat title
+/// generation, memory extraction, tool-batch summaries, and the auto-continue
+/// judge.  Honors `task_routing.aux` ("provider/model") from models.yaml when
+/// set AND that provider is loaded; returns `None` otherwise so each caller
+/// silently keeps its existing selection.  Aux routing must never make a
+/// side-task fail that would have succeeded before.
+pub(crate) fn resolve_aux(
+    cfg: &config::ModelsConfig,
+    providers: &[Arc<dyn Provider>],
+) -> Option<(Arc<dyn Provider>, String)> {
+    let spec = cfg.task_routing.as_ref().map(|tr| tr.aux.as_str())?;
+    if spec.is_empty() {
+        return None;
+    }
+    let (provider_id, model) = spec.split_once('/')?;
+    let provider = providers.iter().find(|p| p.id() == provider_id)?.clone();
+    Some((provider, model.to_string()))
 }
 
 /// JSON shape for tool results stored in the DB. Includes optional image_url
@@ -322,6 +419,13 @@ struct RunState {
     /// System prompt + tool-schema tokens (display estimate, no threshold fudge).
     system_overhead_tokens: usize,
     last_input_tokens: usize,
+    /// Local estimate (chars/4) of the message tokens sent in the last request.
+    /// Compared against API-reported usage to calibrate compaction thresholds.
+    last_request_estimate: usize,
+    /// Observed undercount of the local estimate vs API-reported usage
+    /// (hybrid counting, expressed as a threshold adjustment:
+    /// actual_prev + est(tail) > threshold  ⇔  est(prev) + est(tail) > threshold − undercount).
+    estimate_correction: usize,
     /// Cumulative input tokens across all iterations in this run.
     total_input_tokens: i32,
     /// Cumulative output tokens across all iterations in this run.
@@ -339,6 +443,8 @@ impl RunState {
             prompt_overhead: 0,
             system_overhead_tokens: 0,
             last_input_tokens: 0,
+            last_request_estimate: 0,
+            estimate_correction: 0,
             total_input_tokens: 0,
             total_output_tokens: 0,
             thresholds: None,
@@ -380,6 +486,9 @@ pub struct Runner {
     /// handler. Set via `set_approval_channels`.
     approval_channels: Option<tools::ApprovalChannels>,
     embedding_provider: Option<Arc<dyn ai::EmbeddingProvider>>,
+    /// The SAME hybrid-search adapter instance the memory tool uses (shared
+    /// TurboVec index cache) — powers per-message prompt recall.
+    hybrid_searcher: Option<Arc<dyn tools::HybridSearcher>>,
     /// Optional broadcast/loop-push sink for auto-generated chat titles.
     title_sink: std::sync::OnceLock<Arc<dyn ChatTitleSink>>,
 }
@@ -410,6 +519,7 @@ impl Runner {
             agent_registry,
             skill_loader,
             embedding_provider: None,
+            hybrid_searcher: None,
             title_sink: std::sync::OnceLock::new(),
         }
     }
@@ -441,6 +551,14 @@ impl Runner {
     /// Set the embedding provider for transcript indexing and memory embedding.
     pub fn set_embedding_provider(mut self, provider: Arc<dyn ai::EmbeddingProvider>) -> Self {
         self.embedding_provider = Some(provider);
+        self
+    }
+
+    /// Set the hybrid searcher for per-message prompt memory recall — pass the
+    /// same adapter instance wired into the memory tool so both share one
+    /// pathway and one index cache.
+    pub fn set_hybrid_searcher(mut self, searcher: Arc<dyn tools::HybridSearcher>) -> Self {
+        self.hybrid_searcher = Some(searcher);
         self
     }
 
@@ -502,7 +620,7 @@ impl Runner {
         let session_id = session.id.clone();
         info!(session_id = %session_id, ms = t_run_entry.elapsed().as_millis() as u64, "[telemetry] session ready");
 
-        // Pre-load skills into the sub-agent's conversation (Claude Code pattern).
+        // Pre-load skills into the sub-agent's conversation.
         // Each skill becomes a user message with isMeta metadata so the UI doesn't
         // render it as real user input. Injected BEFORE the task prompt so the
         // sub-agent has instructions in its context from turn 1.
@@ -782,6 +900,7 @@ impl Runner {
         let approval_channels = self.approval_channels.clone();
         let full_access = req.full_access;
         let embedding_provider = self.embedding_provider.clone();
+        let hybrid_searcher = self.hybrid_searcher.clone();
         let tool_scope = req.tool_scope.clone();
         let plan_mode = req.plan_mode;
         let preactivate_tools = req.preactivate_tools.clone();
@@ -875,6 +994,7 @@ impl Runner {
                         approval_channels.as_ref(),
                         full_access,
                         embedding_provider.as_ref(),
+                        hybrid_searcher.as_ref(),
                         tool_scope.as_deref(),
                         false, // no plan_mode for forks
                         &preactivate_tools,
@@ -957,6 +1077,7 @@ impl Runner {
                 approval_channels.as_ref(),
                 full_access,
                 embedding_provider.as_ref(),
+                hybrid_searcher.as_ref(),
                 tool_scope.as_deref(),
                 plan_mode,
                 &preactivate_tools,
@@ -1157,6 +1278,7 @@ async fn run_loop(
     approval_channels: Option<&tools::ApprovalChannels>,
     full_access: bool,
     embedding_provider: Option<&Arc<dyn ai::EmbeddingProvider>>,
+    hybrid_searcher: Option<&Arc<dyn tools::HybridSearcher>>,
     tool_scope: Option<&str>,
     plan_mode: bool,
     preactivate_tools: &[String],
@@ -1191,6 +1313,7 @@ async fn run_loop(
     };
     let mut transient_retries = 0usize;
     let mut retryable_retries = 0usize;
+    let mut overflow_retries = 0usize;
     // Pre-seed called_tools with preactivated tools so they pass the tool filter
     // from turn 1 (bypasses deferred-loading discovery for sub-agents).
     let mut called_tools: Vec<String> = preactivate_tools.to_vec();
@@ -1211,17 +1334,17 @@ async fn run_loop(
     let mut read_failures: std::collections::HashMap<String, usize> =
         std::collections::HashMap::new();
     const READ_FAILURE_LIMIT: usize = 3;
-    // Spiral backstop (FRAMES Phase 2): repeated calls to the SAME (tool, action)
-    // within a turn — even with different args that each "succeed" — are the
+    // Spiral backstop (FRAMES Phase 2): UNPRODUCTIVE repeats of the SAME (tool,
+    // action) within a turn — errored or returning already-seen content — are the
     // wander-spiral the identical-args and read-failure guards both miss (glob
     // hunting across dirs, browser page re-reads, shell retries). After
-    // SAME_ACTION_LIMIT, return a terminal result so the run ends and the agent
-    // reports instead of looping.
-    // ponytail: coarse name:action key — a legit task calling ONE action 8x in a
-    // single turn gets cut (reading N different files is "os:read" repeated, so the
-    // limit also bounds that). 8 clears normal multi-file work; raise it or add
-    // result-novelty keying if it ever false-trips. NOT a substitute for clear tool
-    // errors — a misleading error is what STARTS the spiral.
+    // SAME_ACTION_LIMIT such attempts, return a terminal result so the run ends and
+    // the agent reports instead of looping.
+    // ponytail: result-novelty keyed (see the counter's gate below) — only
+    // error/redundant attempts count, so legitimate bulk work (create N distinct
+    // todos, write N files) no longer false-trips, which the coarse name:action key
+    // used to do at 8. NOT a substitute for clear tool errors — a misleading error is
+    // what STARTS the spiral.
     let mut action_call_counts: std::collections::HashMap<String, usize> =
         std::collections::HashMap::new();
     const SAME_ACTION_LIMIT: usize = 8;
@@ -1261,10 +1384,13 @@ async fn run_loop(
     // Track file paths read during this session to detect duplicate reads.
     // When the model re-reads a file, a short note is appended to the tool result.
     let mut files_read_this_session: HashSet<String> = HashSet::new();
-    // Deferred tool discovery follows Claude Code's message-history pattern:
-    // Each turn, `extract_discovered_deferred_tools` scans window_messages for
-    // tool_search results and direct calls to deferred tools. When sliding window
-    // evicts those messages, the tools naturally unload. No persistent set needed.
+    // Deferred tool discovery: each turn, `extract_discovered_deferred_tools`
+    // scans window_messages for tool_search results and direct calls to deferred
+    // tools. The results accumulate into this per-run set so a tool stays loaded
+    // for the rest of the run even after compaction evicts its discovery message.
+    // (Snapshotting the discovered set onto the compact boundary would solve the
+    // same eviction race — a monotonic per-run set is equivalent and simpler.)
+    let mut discovered_deferred: HashSet<String> = HashSet::new();
 
     // Resolve agent from registry if agent_id is set
     let active_agent_entry = if !agent_id.is_empty() {
@@ -1286,16 +1412,24 @@ async fn run_loop(
     // threaded into extraction, the flush, and the memory tool's layer map.
     let memory_topics = memory_config.topics.clone();
 
-    // Extract context_id from session key for context-isolated memory scoping.
-    // Session key format: "agent:{agent_id}:{channel}:{context_id}"
-    let context_id: Option<String> = {
-        let parts: Vec<&str> = session_id.splitn(4, ':').collect();
-        if parts.len() == 4 && parts[0] == "agent" {
-            Some(parts[3].to_string())
-        } else {
-            None
-        }
+    // Explicit isolation context from the session key, if the channel set one
+    // ("agent:{agent_id}:{channel}:{context_id}").
+    let explicit_ctx = crate::memory::session_key_context(session_id);
+
+    // Context-isolated agents whose session key carries NO explicit segment
+    // (desktop chat threads) derive the context from the session's ACTIVE
+    // CHAT id — thread = matter — via the canonical session→chat resolution.
+    // Precedence: an explicit channel segment always wins over the chat
+    // derivation (see memory::resolve_memory_scope).
+    let chat_ctx = if memory_config.context_isolated
+        && !agent_id.is_empty()
+        && explicit_ctx.is_none()
+    {
+        store.session_chat_id(session_id)
+    } else {
+        None
     };
+    let has_context = explicit_ctx.is_some() || chat_ctx.is_some();
 
     // Canonical memory owner: the on-device local user id, NOT the loosely-passed
     // (often empty) request user_id. ALL memory scoping derives from this so the
@@ -1306,53 +1440,78 @@ async fn run_loop(
         .ensure_local_user_id()
         .unwrap_or_else(|_| user_id.to_string());
 
-    // Scope memory by agent: each agent gets its own memory namespace to prevent cross-contamination.
-    // Main bot uses the raw owner; agents use "owner:agent:agent_id".
-    // With context_isolated, further scoped to "owner:agent:agent_id:ctx:context_id".
-    let memory_user_id = if !agent_id.is_empty() {
-        // Canonical base scope (one definition shared with the memory API).
-        let agent_scope = crate::memory::agent_memory_scope(&memory_owner, agent_id);
-        if memory_config.context_isolated {
-            if let Some(ref ctx) = context_id {
-                format!("{}:ctx:{}", agent_scope, ctx)
-            } else {
-                agent_scope
-            }
-        } else {
-            agent_scope
-        }
-    } else {
-        memory_owner.clone()
-    };
-
-    // Build the inheritance chain for READ access
-    let mut inherit_scopes: Vec<db_context::InheritScope> = Vec::new();
-
-    if !agent_id.is_empty() {
-        let agent_scope = crate::memory::agent_memory_scope(&memory_owner, agent_id);
-
-        // If context-isolated, inherit agent-wide memories (all tacit/)
-        if memory_config.context_isolated && context_id.is_some() {
-            inherit_scopes.push(db_context::InheritScope {
-                user_id: agent_scope,
-                namespace_prefix: "tacit/".to_string(),
-            });
-        }
-
-        // Every agent reads the owner's IDENTITY memories (read-only): who the
-        // owner is and how to act belongs to the owner, not the agent that
-        // happened to hear it. Only the identity prefixes are blanket-injected
-        // (mirroring the local slice in load_scored_memories — injecting all of
-        // tacit/ was the prompt-bloat source); arbitrary owner facts surface on
-        // demand via the FTS scope chain. Writes stay scoped to the agent, so
-        // what each agent LEARNS remains independent.
-        for prefix in ["tacit/preferences", "tacit/personality"] {
-            inherit_scopes.push(db_context::InheritScope {
-                user_id: memory_owner.clone(),
-                namespace_prefix: prefix.to_string(),
-            });
-        }
+    // Scope memory by agent: each agent gets its own memory namespace to prevent
+    // cross-contamination. Main bot uses the raw owner; agents use
+    // "owner:agent:agent_id"; with context_isolated, further scoped to
+    // "owner:agent:agent_id:ctx:context_id". The ONE derivation — every read
+    // and write path below inherits it.
+    let memory_scope = crate::memory::resolve_memory_scope(
+        &memory_owner,
+        agent_id,
+        memory_config.context_isolated,
+        explicit_ctx.as_deref(),
+        chat_ctx.as_deref(),
+    );
+    // Fail-closed: context_isolated with no derivable context must NEVER write
+    // to the shared agent scope (readable from every isolation context — the
+    // exact leak the flag exists to prevent). Setting skip_memory refuses the
+    // extraction, flush, and personality paths through their existing gate;
+    // transcript indexing and the memory tool's mutations check
+    // memory_writes_disabled directly. Reads still serve the base agent scope
+    // + owner identity chain.
+    let memory_writes_disabled = memory_scope.writes_disabled;
+    if memory_writes_disabled {
+        warn!(
+            session_id,
+            agent_id, "context_isolated: no context derivable — memory writes disabled for this run"
+        );
+        skip_memory = true;
     }
+    let memory_user_id = memory_scope.user_id;
+
+    // Build the inheritance chain for READ access: agent tacit/ (context-
+    // isolated runs only) + owner identity prefixes. Sibling ctx scopes are
+    // never in the chain.
+    let inherit_scopes = crate::memory::build_inherit_scopes(
+        &memory_owner,
+        agent_id,
+        memory_config.context_isolated,
+        has_context,
+    );
+
+    // Kick off per-message memory recall CONCURRENTLY with the rest of prompt
+    // assembly: its cost is a query-embedding network round trip (~650ms
+    // steady-state), while the sibling loads below (db context, configured
+    // inputs, task, skill template) are local SQLite/file work that doesn't
+    // depend on it. tokio::spawn rather than futures::join! because those
+    // siblings are synchronous — join! polls futures on THIS task, so the
+    // sync work would serialize in front of the recall instead of overlapping.
+    // Joined (and deduped against the identity slice, which needs db_ctx)
+    // right before the run loop starts.
+    let recall_task = if !user_prompt.is_empty() {
+        hybrid_searcher.map(|searcher| {
+            let searcher = searcher.clone();
+            let recall_user_id = memory_user_id.clone();
+            let recall_prompt = user_prompt.to_string();
+            let t_start = std::time::Instant::now();
+            tokio::spawn(async move {
+                let results = searcher
+                    .search(
+                        &recall_prompt,
+                        &recall_user_id,
+                        db_context::PROMPT_MEMORY_CANDIDATES,
+                        // min_score 0: FTS-only installs score below the
+                        // vector-scale default floor (see format_prompt_
+                        // relevant_memories docs).
+                        Some(0.0),
+                    )
+                    .await;
+                (results, t_start.elapsed())
+            })
+        })
+    } else {
+        None
+    };
 
     // Load rich DB context (agent profile, user profile, personality directive, scored memories)
     let t_run_start = std::time::Instant::now();
@@ -1414,33 +1573,10 @@ async fn run_loop(
         }
     }
 
-    // Pre-load prompt-relevant memories via FTS (surfaces memories the decay scoring may miss)
-    if !user_prompt.is_empty() {
-        let t_fts = std::time::Instant::now();
-        let existing_ids: std::collections::HashSet<i64> = db_ctx
-            .tacit_memories
-            .iter()
-            .map(|sm| sm.memory.id)
-            .collect();
-        let relevant = db_context::load_prompt_relevant_memories(
-            store,
-            &memory_user_id,
-            user_prompt,
-            &existing_ids,
-        );
-        if !relevant.is_empty() {
-            db_context_formatted.push_str(&relevant);
-        }
-        info!(
-            ms = t_fts.elapsed().as_millis() as u64,
-            session_id, "[telemetry] FTS memory search"
-        );
-    }
-
     // Get active task (mutable: refreshed periodically to catch async detect_objective)
     let mut active_task = sessions.get_active_task(session_id).unwrap_or_default();
 
-    // Skills follow Claude Code's deferred pattern: NOT auto-loaded into system prompt.
+    // Skills follow a deferred pattern: NOT auto-loaded into system prompt.
     // Model uses skill(action: "discover") to find skills and skill(action: "load") to
     // activate them. Loaded skill content goes into message history (tool results) and
     // unloads when messages are evicted by sliding window.
@@ -1465,6 +1601,60 @@ async fn run_loop(
     } else {
         None
     };
+
+    // Join the concurrent memory recall spawned before the db-context load,
+    // under a hard latency budget (db_context::join_prompt_recall): the vector
+    // leg is a remote embed call and must never gate prompt assembly
+    // unboundedly — past budget it degrades to the synchronous FTS-only tier.
+    // `wait_ms` is the residual cost recall adds to assembly, capped by the
+    // budget and ~0 when the search finished under the sibling loads above.
+    let mut recalled_ids: Vec<i64> = Vec::new();
+    if let Some(task) = recall_task {
+        let t_join = std::time::Instant::now();
+        let existing_ids: std::collections::HashSet<i64> = db_ctx
+            .tacit_memories
+            .iter()
+            .map(|sm| sm.memory.id)
+            .collect();
+        let (relevant, ids) = db_context::join_prompt_recall(
+            task,
+            store,
+            &memory_user_id,
+            user_prompt,
+            &existing_ids,
+        )
+        .await;
+        recalled_ids = ids;
+        if !relevant.is_empty() {
+            db_context_formatted.push_str(&relevant);
+        }
+        info!(
+            wait_ms = t_join.elapsed().as_millis() as u64,
+            session_id, "[telemetry] hybrid memory recall"
+        );
+    }
+
+    // Access accounting: memories actually injected into this prompt — the
+    // identity slice plus per-message recall — get their access_count bumped
+    // so decay ranking reflects real usefulness (without this, a new correct
+    // memory loses to an old touched one forever). Spawned: never blocks the
+    // hot path.
+    {
+        let mut injected_ids: Vec<i64> = db_ctx
+            .tacit_memories
+            .iter()
+            .map(|sm| sm.memory.id)
+            .collect();
+        injected_ids.extend(&recalled_ids);
+        if !injected_ids.is_empty() {
+            let store_bump = store.clone();
+            tokio::spawn(async move {
+                for id in injected_ids {
+                    let _ = store_bump.increment_memory_access(id);
+                }
+            });
+        }
+    }
 
     // Agent-declared skills are already in the skill catalog (compact name +
     // description). The LLM discovers and loads them on-demand via the skill
@@ -1790,6 +1980,17 @@ async fn run_loop(
             return Ok(());
         }
 
+        // Every consumer drains the event receiver until the run completes, so a
+        // closed channel means the consumer task died — stop instead of burning
+        // iterations and tool calls into the void (every send is `let _ =`).
+        if tx.is_closed() {
+            warn!(
+                session_id,
+                iteration, "event receiver dropped — stopping run"
+            );
+            return Ok(());
+        }
+
         // Adaptive iteration limit: extend past default only if making genuine progress.
         if iteration > max_iterations && iteration <= hard_ceiling {
             if consecutive_error_iterations >= 2
@@ -1910,6 +2111,7 @@ async fn run_loop(
         // Compute context thresholds — use model's actual context window when
         // available so large-context providers (200K Claude, 128K GPT-4o) aren't
         // under-utilized.  Falls back to DEFAULT_CONTEXT_TOKEN_LIMIT (80K).
+        let estimate_correction = state.estimate_correction;
         let thresholds = state.thresholds.get_or_insert_with(|| {
             let model_ctx = if !model_override.is_empty() {
                 selector
@@ -1930,6 +2132,11 @@ async fn run_loop(
             let context_window = model_ctx.unwrap_or(DEFAULT_CONTEXT_TOKEN_LIMIT);
             ContextThresholds::from_context_window(context_window, state.prompt_overhead)
         });
+        // Calibrate with API-reported usage from the previous iteration: the
+        // chars/4 estimate undercounts (tokenizer overhead, tool-call JSON),
+        // so tighten thresholds by the observed error instead of trusting it.
+        let thresholds = thresholds.adjusted(estimate_correction);
+        let thresholds = &thresholds;
 
         // Pre-compaction memory flush: extract facts from ALL messages before
         // the sliding window evicts them. Only fires when new compactions have
@@ -1948,6 +2155,7 @@ async fn run_loop(
                         session_id,
                         &memory_user_id,
                         &memory_topics,
+                        embedding_provider.cloned(),
                     )
                     .await;
                 }
@@ -1990,6 +2198,10 @@ async fn run_loop(
         // Stage 4: Sliding window — only fires if still over auto_compact after stages 1-3
         let (window_messages, evicted) =
             pruning::apply_sliding_window(&working, run_start_time, thresholds.auto_compact);
+
+        // Record the local estimate for what this request will carry; compared
+        // against API-reported usage when it arrives to set estimate_correction.
+        state.last_request_estimate = pruning::estimate_total_tokens(&window_messages);
 
         // Build rolling summary if we evicted messages.
         // Quick fallback is used immediately (no LLM call); the LLM-quality
@@ -2039,8 +2251,11 @@ async fn run_loop(
                 crate::memory_flush::track_extraction(handle).await;
             }
 
-            // Background: index evicted messages for cross-session semantic search
-            if let Some(ep) = embedding_provider {
+            // Background: index evicted messages for cross-session semantic search.
+            // Fail-closed isolation: indexing writes conversation content under
+            // memory_user_id, so a run whose isolation context could not be
+            // derived must not index into the shared agent scope.
+            if let Some(ep) = embedding_provider.filter(|_| !memory_writes_disabled) {
                 let store_c = store.clone();
                 let ep_c = ep.clone();
                 let sid = session_id.to_string();
@@ -2056,14 +2271,16 @@ async fn run_loop(
             sessions.get_summary(session_id).unwrap_or_default()
         };
 
-        // Discover which deferred tools are active by scanning the message window.
-        // Follows Claude Code's extractDiscoveredToolNames pattern — tools load when
-        // tool_search results or direct calls appear in messages, and unload when
-        // those messages are evicted by sliding window compaction.
+        // Discover which deferred tools are active by scanning the message window:
+        // tools load when tool_search results or direct calls appear in messages,
+        // and unload when those messages are evicted by sliding window compaction.
         let t_tools_start = std::time::Instant::now();
         let deferred_names = tools.get_deferred_names().await;
-        let mut active_deferred =
-            tool_filter::extract_discovered_deferred_tools(&window_messages, &deferred_names);
+        discovered_deferred.extend(tool_filter::extract_discovered_deferred_tools(
+            &window_messages,
+            &deferred_names,
+        ));
+        let mut active_deferred = discovered_deferred.clone();
 
         // Merge agent-declared dependencies — these stay active for the entire session
         // regardless of message window state (they're part of the job definition).
@@ -2194,22 +2411,15 @@ async fn run_loop(
         // the rest). The behavioral steering moved to the message-stream reminder channel.
         if let Some(reason) = steering::should_force_break(&window_messages, iteration) {
             warn!(session_id, iteration, reason = %reason, "circuit breaker triggered");
-            let _ = tx.send(StreamEvent {
-                event_type: StreamEventType::Text,
-                text: format!(
-                    "\n\nI got stuck in a loop and the circuit breaker stopped me. {}\n\n\
-                     I apologize for the repeated attempts. Please let me know how you'd like to proceed.",
-                    reason
-                ),
-                tool_call: None,
-                error: None,
-                usage: None,
-                rate_limit: None,
-                widgets: None,
-                provider_metadata: None,
-                stop_reason: None,
-                image_url: None,
-            }).await;
+            // Typed termination: a ControlNotice status event, never assistant
+            // prose (the old apology text leaked verbatim into channel replies).
+            turn_exit_reason = "user_requested_stop".to_string();
+            let _ = tx
+                .send(StreamEvent::control_notice(
+                    "Stopped at your request.",
+                    "user_requested_stop",
+                ))
+                .await;
             break;
         }
 
@@ -2529,7 +2739,28 @@ async fn run_loop(
                 }
 
                 if ai::is_context_overflow(&e) {
-                    warn!("context overflow, reducing window");
+                    overflow_retries += 1;
+                    if overflow_retries > MAX_OVERFLOW_RETRIES {
+                        return Err(format!(
+                            "Context overflow persisted after {} compaction attempts: {}",
+                            MAX_OVERFLOW_RETRIES, e
+                        ));
+                    }
+                    // The provider disagreed with our local estimate. Make the
+                    // retry state-changing: tighten thresholds by 20% of the
+                    // compaction budget so next iteration's stages actually
+                    // evict, instead of re-sending the identical request.
+                    let bump = state
+                        .thresholds
+                        .as_ref()
+                        .map(|t| t.auto_compact / 5)
+                        .unwrap_or(20_000);
+                    state.estimate_correction += bump;
+                    warn!(
+                        overflow_retries,
+                        correction = state.estimate_correction,
+                        "context overflow: forcing reactive compaction"
+                    );
                     continue;
                 }
 
@@ -2556,7 +2787,7 @@ async fn run_loop(
                     }
                     tokio::select! {
                         _ = cancel_token.cancelled() => return Ok(()),
-                        _ = tokio::time::sleep(Duration::from_secs(2)) => {}
+                        _ = tokio::time::sleep(retry_backoff(transient_retries, None)) => {}
                     }
                     continue;
                 }
@@ -2585,7 +2816,7 @@ async fn run_loop(
                     }
                     tokio::select! {
                         _ = cancel_token.cancelled() => return Ok(()),
-                        _ = tokio::time::sleep(Duration::from_secs(2)) => {}
+                        _ = tokio::time::sleep(retry_backoff(retryable_retries, None)) => {}
                     }
                     continue;
                 }
@@ -2598,6 +2829,7 @@ async fn run_loop(
         let mut assistant_content = String::new();
         let mut tool_calls: Vec<ai::ToolCall> = Vec::new();
         let mut stream_error: Option<String> = None;
+        let mut last_retry_after: Option<u64> = None;
         let mut stop_reason: Option<String> = None;
         let mut t_first_token: Option<std::time::Instant> = None;
         // Track the order of content blocks (text vs tool) for correct rehydration.
@@ -2628,9 +2860,22 @@ async fn run_loop(
                     }
                     return Ok(());
                 }
-                ev = rx.recv() => match ev {
-                    Some(e) => e,
-                    None => break,
+                ev = tokio::time::timeout(STREAM_IDLE_TIMEOUT, rx.recv()) => match ev {
+                    Ok(Some(e)) => e,
+                    Ok(None) => break,
+                    Err(_) => {
+                        warn!(
+                            iteration,
+                            session_id,
+                            "stream idle timeout: no events for {}s",
+                            STREAM_IDLE_TIMEOUT.as_secs()
+                        );
+                        stream_error = Some(format!(
+                            "stream idle timeout: no events for {}s",
+                            STREAM_IDLE_TIMEOUT.as_secs()
+                        ));
+                        break;
+                    }
                 }
             };
             if t_first_token.is_none() {
@@ -2704,11 +2949,26 @@ async fn run_loop(
                         state.total_input_tokens += usage.input_tokens;
                         state.total_output_tokens += usage.output_tokens;
                         usage.overhead_tokens = state.system_overhead_tokens as i32;
+
+                        // Calibrate the local token estimate against ground truth.
+                        // Context actually sent = input + cache tokens (with prompt
+                        // caching, input_tokens alone excludes the cached bulk).
+                        let context_actual = (usage.input_tokens
+                            + usage.cache_creation_input_tokens
+                            + usage.cache_read_input_tokens)
+                            as usize;
+                        if context_actual > 0 && state.last_request_estimate > 0 {
+                            let conversation_actual =
+                                context_actual.saturating_sub(state.system_overhead_tokens);
+                            state.estimate_correction =
+                                conversation_actual.saturating_sub(state.last_request_estimate);
+                        }
                     }
                     let _ = tx.send(event).await;
                 }
                 StreamEventType::RateLimit => {
                     if let Some(ref meta) = event.rate_limit {
+                        last_retry_after = meta.retry_after_secs;
                         concurrency.report_success(Some(meta));
 
                         // Check Janus session/weekly usage and generate quota warning at >80%
@@ -2790,8 +3050,10 @@ async fn run_loop(
                 }
                 StreamEventType::ApprovalRequest
                 | StreamEventType::AskRequest
-                | StreamEventType::PlanApproval => {
-                    // Approval/Ask/Plan: only sent by runner, not received from provider.
+                | StreamEventType::PlanApproval
+                | StreamEventType::ControlNotice => {
+                    // Approval/Ask/Plan/ControlNotice: only sent by runner, not
+                    // received from provider.
                 }
                 StreamEventType::ToolSummary => {
                     // Tool execution summary — relay to parent for display.
@@ -2813,6 +3075,9 @@ async fn run_loop(
         if stream_error.is_none() && (!assistant_content.is_empty() || !tool_calls.is_empty()) {
             transient_retries = 0;
             retryable_retries = 0;
+            // Note: estimate_correction is NOT reset — the compaction that
+            // recovered from overflow must stay in effect for the rest of the run.
+            overflow_retries = 0;
         }
 
         // Report success or rate limit to concurrency controller
@@ -2836,7 +3101,7 @@ async fn run_loop(
                     }
                     tokio::select! {
                         _ = cancel_token.cancelled() => return Ok(()),
-                        _ = tokio::time::sleep(Duration::from_secs(2)) => {}
+                        _ = tokio::time::sleep(retry_backoff(transient_retries, None)) => {}
                     }
                     continue;
                 }
@@ -2844,7 +3109,7 @@ async fn run_loop(
 
             // Report rate limit to concurrency controller
             if reason == "rate_limit" {
-                concurrency.report_rate_limit(None);
+                concurrency.report_rate_limit(last_retry_after);
             }
 
             // Layer 2: Retryable errors (rate_limit, billing, provider errors)
@@ -2874,7 +3139,7 @@ async fn run_loop(
                 }
                 tokio::select! {
                     _ = cancel_token.cancelled() => return Ok(()),
-                    _ = tokio::time::sleep(Duration::from_secs(2)) => {}
+                    _ = tokio::time::sleep(retry_backoff(retryable_retries, last_retry_after)) => {}
                 }
                 continue;
             }
@@ -3083,6 +3348,7 @@ async fn run_loop(
                 channel: channel_ctx.cloned(),
                 model_preference: (!model_override.is_empty()).then(|| model_override.to_string()),
                 memory_topics: memory_topics.iter().map(|t| t.slug.clone()).collect(),
+                memory_writes_disabled,
                 // Populated by the approval gate below, before tool execution.
                 approved_categories: std::collections::HashSet::new(),
             };
@@ -3189,10 +3455,16 @@ async fn run_loop(
             }
 
             // Spiral backstop (see action_call_counts): once one (tool, action) has
-            // run SAME_ACTION_LIMIT times this turn, END the run with a terminal result
-            // rather than let the model keep trying variations that each "succeed" but
-            // never converge (glob-wander / browser re-read / shell-retry). Generalizes
-            // the read-failure guard to non-failing loops. (FRAMES Phase 2.)
+            // racked up SAME_ACTION_LIMIT UNPRODUCTIVE attempts this turn (errored or
+            // returning content the model already had — glob-wander / browser re-read /
+            // shell-retry), END the run with a terminal result. Productive calls that
+            // return novel results don't count, so legitimate bulk work (create N
+            // todos, write N files) never trips this. (FRAMES Phase 2.)
+            //
+            // The tripped action key is recorded so the terminal break below emits a
+            // typed ControlNotice ("repeated_tool_calls") — the model-facing tool
+            // result text must never surface as user-visible reply text.
+            let mut spiral_stop: Option<String> = None;
             for (idx, tc) in tool_calls.iter().enumerate() {
                 if blocked_results[idx].is_some() {
                     continue;
@@ -3205,12 +3477,12 @@ async fn run_loop(
                         limit = SAME_ACTION_LIMIT,
                         "spiral backstop: ending run after repeated action"
                     );
+                    spiral_stop.get_or_insert_with(|| key.clone());
                     blocked_results[idx] = Some((
                         tc.clone(),
                         ToolResult::terminal(format!(
-                            "Stopped: '{}' has been called {} times this turn without resolving the \
-                             task. Do not retry more variations — report what you found so far and ask \
-                             the user for the missing detail (e.g. the correct path, file, or input).",
+                            "'{}' has been called {} times this turn without resolving. \
+                             Report what you found so far and ask for the missing detail.",
                             key, SAME_ACTION_LIMIT
                         )),
                     ));
@@ -3233,6 +3505,112 @@ async fn run_loop(
             let mut approved_cmds: Vec<String> = store.get_approved_commands().unwrap_or_default();
             for idx in 0..tool_calls.len() {
                 if blocked_results[idx].is_some() {
+                    continue;
+                }
+                // ── MCP tri-state gate (Settings → MCP → Tool permissions) ────
+                // Per-server default + per-tool override, decided by
+                // tools::policy::McpServerPermissions: Allow auto-approves,
+                // Ask runs the SAME ApprovalGate round-trip as capabilities,
+                // Deny refuses with an error naming the setting. This gate is
+                // the ONE enforcement site for MCP tool permissions; MCP
+                // proxies carry no ambient capability, so the loop `continue`s
+                // here and never reaches the capability gate below.
+                if tool_calls[idx].name.starts_with("mcp__") {
+                    if let Some((integration_id, original)) =
+                        tools.mcp_proxy_info(&tool_calls[idx].name).await
+                    {
+                        let perms = tools::policy::McpServerPermissions::from_json(
+                            store
+                                .get_mcp_tool_permissions(&integration_id)
+                                .unwrap_or_default()
+                                .as_deref(),
+                        );
+                        // mcp__<server>__<tool> — the server slug, for messages.
+                        let server = tool_calls[idx]
+                            .name
+                            .split("__")
+                            .nth(1)
+                            .unwrap_or("server")
+                            .to_string();
+                        match perms.decide(&original) {
+                            tools::policy::McpToolAccess::Allow => {}
+                            tools::policy::McpToolAccess::Deny => {
+                                blocked_results[idx] = Some((
+                                    tool_calls[idx].clone(),
+                                    ToolResult::error(format!(
+                                        "Blocked: the MCP tool '{original}' on server \
+                                         '{server}' is set to Blocked in Settings → MCP → \
+                                         Tool permissions. Tell the user this tool is \
+                                         blocked by that setting and stop — do not retry \
+                                         or work around it."
+                                    )),
+                                ));
+                            }
+                            tools::policy::McpToolAccess::Ask if full_access => {
+                                // Full Access bypasses the ask, same as the
+                                // capability gate. Blocked above still blocks.
+                            }
+                            tools::policy::McpToolAccess::Ask => {
+                                match approval_channels {
+                                    Some(chs)
+                                        if tools::ExecutionMode::from(origin)
+                                            == tools::ExecutionMode::Interactive =>
+                                    {
+                                        let decision = ask_tool_approval(
+                                            chs,
+                                            tx,
+                                            cancel_token,
+                                            &tool_calls[idx],
+                                            session_id,
+                                            "mcp",
+                                        )
+                                        .await;
+                                        match decision.as_str() {
+                                            "always" => {
+                                                if let Err(e) = persist_mcp_tool_allow(
+                                                    store,
+                                                    &integration_id,
+                                                    &original,
+                                                ) {
+                                                    warn!(session_id, tool = %original, error = %e, "failed to persist MCP tool grant");
+                                                }
+                                            }
+                                            "once" | "approve" | "approved" | "yes" | "true" => {}
+                                            _ => {
+                                                blocked_results[idx] = Some((
+                                                    tool_calls[idx].clone(),
+                                                    ToolResult::error(format!(
+                                                        "The user declined to allow the MCP \
+                                                         tool '{original}' on server \
+                                                         '{server}'. Tell the user it needs \
+                                                         their approval and stop — do not \
+                                                         retry or work around it."
+                                                    )),
+                                                ));
+                                            }
+                                        }
+                                    }
+                                    // Unattended (cron/workflow/comm/subagent) or no
+                                    // channel: nobody can answer — refuse instead of
+                                    // hanging on a prompt nobody sees. Unlike the
+                                    // capability gate there is no registry backstop
+                                    // for MCP tools, so the refusal happens here.
+                                    _ => {
+                                        blocked_results[idx] = Some((
+                                            tool_calls[idx].clone(),
+                                            ToolResult::error(format!(
+                                                "The MCP tool '{original}' on server \
+                                                 '{server}' needs the user's approval \
+                                                 (Settings → MCP → Tool permissions) and no \
+                                                 one is available to approve it in this \
+                                                 run. Report this and stop."
+                                            )),
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                    }
                     continue;
                 }
                 let category = match tools::capabilities::gating_capability(
@@ -3276,26 +3654,15 @@ async fn run_loop(
                     // registry Phase 1c hard-blocks (safe).
                     None => continue,
                 };
-                let request_id = tool_calls[idx].id.clone();
-                let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
-                chs.lock().await.insert(request_id.clone(), resp_tx);
-                let _ = tx
-                    .send(StreamEvent::approval_request(tool_calls[idx].clone()))
-                    .await;
-                info!(
+                let decision = ask_tool_approval(
+                    chs,
+                    tx,
+                    cancel_token,
+                    &tool_calls[idx],
                     session_id,
-                    request_id = %request_id,
                     category,
-                    tool = %tool_calls[idx].name,
-                    "tool approval: waiting for user decision"
-                );
-                let decision = tokio::select! {
-                    _ = cancel_token.cancelled() => {
-                        chs.lock().await.remove(&request_id);
-                        "deny".to_string()
-                    }
-                    result = resp_rx => result.unwrap_or_else(|_| "deny".to_string()),
-                };
+                )
+                .await;
                 match decision.as_str() {
                     "always" => {
                         approved_cats.insert(category.to_string());
@@ -3342,21 +3709,27 @@ async fn run_loop(
             }
             ctx.approved_categories = approved_cats;
 
-            // Partition tool calls into concurrent-safe (read-only) and sequential (writes).
-            // Concurrent-safe tools run in parallel via FuturesUnordered, then
+            // Partition tool calls into concurrent-safe and sequential phases.
+            // Concurrent tools run in parallel via FuturesUnordered, then
             // sequential tools run one at a time to prevent state conflicts.
-            let mut concurrent_indices = Vec::new();
-            let mut sequential_indices = Vec::new();
+            // Beyond read-only calls, path-disjoint os file mutations are also
+            // admitted to the parallel phase — see partition_tool_calls for
+            // the admission rules.
+            let mut live_indices = Vec::new();
+            let mut partition_inputs: Vec<(&str, &serde_json::Value, bool)> = Vec::new();
             for (idx, tc) in tool_calls.iter().enumerate() {
                 if blocked_results[idx].is_some() {
                     continue;
                 }
-                if tools.is_concurrent_safe(&tc.name, &tc.input).await {
-                    concurrent_indices.push(idx);
-                } else {
-                    sequential_indices.push(idx);
-                }
+                let safe = tools.is_concurrent_safe(&tc.name, &tc.input).await;
+                live_indices.push(idx);
+                partition_inputs.push((tc.name.as_str(), &tc.input, safe));
             }
+            let (concurrent, sequential) = partition_tool_calls(&partition_inputs);
+            let concurrent_indices: Vec<usize> =
+                concurrent.into_iter().map(|i| live_indices[i]).collect();
+            let sequential_indices: Vec<usize> =
+                sequential.into_iter().map(|i| live_indices[i]).collect();
 
             // Phase 1: Execute concurrent-safe tools in parallel
             for &idx in &concurrent_indices {
@@ -3624,7 +3997,7 @@ async fn run_loop(
             // Save all tool results to session in deterministic order
             // and track whether ALL results in this iteration were errors.
             //
-            // Context protection (Claude Code pattern):
+            // Context protection:
             // - Success results: 30K cap. Oversized → persist to file, return preview + path.
             // - Error results:   10K cap. Oversized → first 5K + last 5K with truncation marker.
             // - Universal:      100K hard ceiling as final safety net.
@@ -3680,11 +4053,7 @@ async fn run_loop(
                     *read_failures.entry(p).or_insert(0) += 1;
                 }
 
-                // Spiral backstop: count every (tool, action) attempt this turn
-                // (success or failure) so the pre-dispatch guard can end a wander-loop.
-                *action_call_counts.entry(action_key(&tc)).or_insert(0) += 1;
-
-                // Empty result guard (Claude Code pattern): prevent models from
+                // Empty result guard: prevent models from
                 // interpreting empty tool_result as end-of-output.
                 if result.content.is_empty() && !result.is_error {
                     result.content = format!("({} completed with no output)", tc.name);
@@ -3711,6 +4080,17 @@ async fn run_loop(
                     }
                 }
 
+                // Spiral backstop counter: only UNPRODUCTIVE attempts count. A call
+                // that errored or returned content the model already had is a
+                // wander-loop step (glob-wander / browser re-read / shell-retry); a
+                // call that succeeded with a NOVEL result made progress. Counting
+                // successes cut legitimate bulk work off at 8 (e.g. creating N
+                // distinct todos, writing N files) — the false-trip this guard's own
+                // comment warned about. Novelty-key it instead.
+                if result.is_error || flagged_redundant {
+                    *action_call_counts.entry(action_key(&tc)).or_insert(0) += 1;
+                }
+
                 // Arg-identity dedup (complements the content check above, which only
                 // fires on byte-identical output): the model repeated a call it already
                 // made this turn — same tool, identical arguments. Results that drift
@@ -3730,7 +4110,7 @@ async fn run_loop(
                     }
                 }
 
-                // Error truncation: first 5K + last 5K with marker (Claude Code pattern)
+                // Error truncation: first 5K + last 5K with marker
                 if result.is_error && result.content.len() > ERROR_CAP {
                     let total_len = result.content.len();
                     let first = truncate_str(&result.content, ERROR_HALF).to_string();
@@ -3840,24 +4220,27 @@ async fn run_loop(
             // unrecoverable (auth/permission/connection) — surface it and stop rather
             // than feed it back for the model to retry/improvise. This is the
             // death-spiral fix: in an autonomous workflow there is no human to ask or
-            // to interrupt, so a dead account must stop the run cleanly. Mirrors the
-            // circuit-breaker's emit-text-then-break. (Narrow: only ToolResult::terminal
-            // sets this — healthy long-running tasks never trip it.)
+            // to interrupt, so a dead account must stop the run cleanly. (Narrow: only
+            // ToolResult::terminal sets this — healthy long-running tasks never trip it.)
+            //
+            // Typed termination: emitted as a ControlNotice status event, never Text —
+            // the old emit-text-then-break made the notice indistinguishable from
+            // assistant prose and it leaked verbatim into channel replies.
             if let Some(msg) = terminal_error {
                 warn!(session_id, iteration, "terminal tool error — ending run");
+                let (control_reason, notice) = match &spiral_stop {
+                    Some(action) => (
+                        "repeated_tool_calls",
+                        format!(
+                            "Stopped: '{}' was called {} times this turn without progress.",
+                            action, SAME_ACTION_LIMIT
+                        ),
+                    ),
+                    None => ("terminal_tool_error", msg),
+                };
+                turn_exit_reason = control_reason.to_string();
                 let _ = tx
-                    .send(StreamEvent {
-                        event_type: StreamEventType::Text,
-                        text: msg,
-                        tool_call: None,
-                        error: None,
-                        usage: None,
-                        rate_limit: None,
-                        widgets: None,
-                        provider_metadata: None,
-                        stop_reason: None,
-                        image_url: None,
-                    })
+                    .send(StreamEvent::control_notice(notice, control_reason))
                     .await;
                 break;
             }
@@ -4144,8 +4527,8 @@ async fn run_loop(
             empty_content_retries = 0;
         }
 
-        // Auto-continuation: tool_use blocks are the sole continuation signal
-        // (aligned with Claude Code). Text-only responses always exit the loop.
+        // Auto-continuation: tool_use blocks are the sole continuation signal.
+        // Text-only responses always exit the loop.
         // Tool-using iterations already `continue` via the tool execution path
         // at ~line 2367, so reaching this point means no tools were called.
         // Max-tokens recovery and budget continuation handle their own cases above.
@@ -4319,17 +4702,19 @@ async fn run_loop(
 
             debouncer
                 .schedule(session_id, move || async move {
-                    let provider = {
+                    let resolved = {
                         let prov_lock = providers.read().await;
-                        prefer_non_gateway(&prov_lock)
+                        resolve_aux(&config::ModelsConfig::load(), &prov_lock)
+                            .or_else(|| prefer_non_gateway(&prov_lock).map(|p| (p, String::new())))
                     };
-                    if let Some(provider) = provider {
+                    if let Some((provider, aux_model)) = resolved {
                         if let Some(facts) = memory::extract_facts(
                             provider.as_ref(),
                             &last_exchange,
                             Some(&store),
                             Some(&mem_uid),
                             &topics,
+                            &aux_model,
                         )
                         .await
                         {
@@ -4969,9 +5354,145 @@ fn simple_hash(data: &[u8]) -> u64 {
     hash
 }
 
+/// Ceiling on path-admitted file mutations in one parallel batch. Read-only
+/// calls don't count against it — their parallelism is unchanged from the
+/// pre-path-scoping behavior and total simultaneous tool execution is already
+/// throttled by the shared tool-permit semaphore (`ConcurrencyControl`,
+/// min 8). This cap only bounds the newly-admitted parallel writes; the
+/// excess spills to the sequential phase.
+const MAX_CONCURRENT_FILE_MUTATIONS: usize = 8;
+
+/// Decide which of a turn's tool calls run in the parallel phase.
+///
+/// `calls` holds one `(tool_name, input, concurrent_safe)` tuple per call,
+/// where `concurrent_safe` is the registry's `is_concurrent_safe` verdict.
+/// Returns `(concurrent, sequential)` index lists into `calls`, each
+/// preserving the original call order.
+///
+/// Admission rules — strictly additive over the plain safe/unsafe split:
+/// - `concurrent_safe` calls are admitted exactly as before.
+/// - an os file mutation (write/edit/delete/move/copy — see
+///   [`tools::registry::file_mutation_paths`]) is admitted iff all of its
+///   canonical target paths (source, plus destination for move/copy) are
+///   disjoint — not equal to, not an ancestor of, not a descendant of — every
+///   path reserved by a mutation already admitted in this batch, and fewer
+///   than [`MAX_CONCURRENT_FILE_MUTATIONS`] mutations have been admitted.
+/// - everything else (overlapping or unparseable paths, non-file mutations)
+///   stays sequential, preserving original relative order.
+fn partition_tool_calls(calls: &[(&str, &serde_json::Value, bool)]) -> (Vec<usize>, Vec<usize>) {
+    let mut concurrent = Vec::new();
+    let mut sequential = Vec::new();
+    // Canonical paths reserved by mutations admitted so far in this batch.
+    let mut reserved: Vec<std::path::PathBuf> = Vec::new();
+    let mut admitted_mutations = 0usize;
+    for (i, (name, input, safe)) in calls.iter().enumerate() {
+        if *safe {
+            // Read-only per the registry — runs in parallel exactly as before.
+            concurrent.push(i);
+            continue;
+        }
+        // Path-scoped admission: a file mutation may join the parallel phase
+        // when its target paths don't overlap anything already reserved.
+        if admitted_mutations < MAX_CONCURRENT_FILE_MUTATIONS {
+            if let Some(paths) = tools::registry::file_mutation_paths(name, input) {
+                let disjoint = paths
+                    .iter()
+                    .all(|p| reserved.iter().all(|r| !paths_overlap(p, r)));
+                if disjoint {
+                    reserved.extend(paths);
+                    admitted_mutations += 1;
+                    concurrent.push(i);
+                    continue;
+                }
+            }
+        }
+        sequential.push(i);
+    }
+    (concurrent, sequential)
+}
+
+/// Two canonical paths overlap when they are equal or one contains the other
+/// (ancestor/descendant). Mutations to overlapping paths must not race.
+fn paths_overlap(a: &std::path::Path, b: &std::path::Path) -> bool {
+    a.starts_with(b) || b.starts_with(a)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Minimal provider stub for resolve_aux tests (only id() matters).
+    struct StubProvider(&'static str);
+
+    #[async_trait::async_trait]
+    impl Provider for StubProvider {
+        fn id(&self) -> &str {
+            self.0
+        }
+        async fn stream(
+            &self,
+            _req: &ChatRequest,
+        ) -> Result<ai::EventReceiver, ProviderError> {
+            Err(ProviderError::Request("stub".into()))
+        }
+    }
+
+    fn aux_config(aux: &str) -> config::ModelsConfig {
+        config::ModelsConfig {
+            version: "1.0".into(),
+            defaults: None,
+            task_routing: Some(config::models::TaskRouting {
+                vision: String::new(),
+                audio: String::new(),
+                reasoning: String::new(),
+                code: String::new(),
+                general: String::new(),
+                aux: aux.to_string(),
+                fallbacks: std::collections::HashMap::new(),
+            }),
+            lane_routing: None,
+            aliases: vec![],
+            providers: std::collections::HashMap::new(),
+            cli_providers: vec![],
+        }
+    }
+
+    #[test]
+    fn test_resolve_aux_unset_returns_none() {
+        let providers: Vec<Arc<dyn Provider>> = vec![Arc::new(StubProvider("anthropic"))];
+        // Empty aux field → fallback.
+        assert!(resolve_aux(&aux_config(""), &providers).is_none());
+        // No task_routing at all → fallback.
+        let mut cfg = aux_config("");
+        cfg.task_routing = None;
+        assert!(resolve_aux(&cfg, &providers).is_none());
+    }
+
+    #[test]
+    fn test_resolve_aux_provider_missing_returns_none() {
+        let providers: Vec<Arc<dyn Provider>> = vec![Arc::new(StubProvider("anthropic"))];
+        let cfg = aux_config("openai/gpt-4o-mini");
+        assert!(resolve_aux(&cfg, &providers).is_none());
+    }
+
+    #[test]
+    fn test_resolve_aux_malformed_spec_returns_none() {
+        // Bare model id without a provider prefix cannot be routed → fallback.
+        let providers: Vec<Arc<dyn Provider>> = vec![Arc::new(StubProvider("anthropic"))];
+        assert!(resolve_aux(&aux_config("gpt-4o-mini"), &providers).is_none());
+    }
+
+    #[test]
+    fn test_resolve_aux_set_and_available_routes() {
+        let providers: Vec<Arc<dyn Provider>> = vec![
+            Arc::new(StubProvider("anthropic")),
+            Arc::new(StubProvider("openai")),
+        ];
+        let cfg = aux_config("openai/gpt-4o-mini");
+        let (provider, model) = resolve_aux(&cfg, &providers).expect("aux route should resolve");
+        assert_eq!(provider.id(), "openai");
+        assert_eq!(model, "gpt-4o-mini");
+    }
 
     #[test]
     fn test_convert_messages() {
@@ -5022,6 +5543,90 @@ mod tests {
         let prompt = build_system_prompt("You are a coding assistant.", "");
         assert!(prompt.contains("coding assistant"));
         assert!(!prompt.contains("Memory context"));
+    }
+
+    #[test]
+    fn test_partition_disjoint_writes_run_concurrently() {
+        let w1 = serde_json::json!({"resource": "file", "action": "write", "path": "/a/b.txt"});
+        let w2 = serde_json::json!({"resource": "file", "action": "write", "path": "/a/c.txt"});
+        let calls = vec![("os", &w1, false), ("os", &w2, false)];
+        let (concurrent, sequential) = partition_tool_calls(&calls);
+        assert_eq!(concurrent, vec![0, 1], "disjoint writes both join the parallel phase");
+        assert!(sequential.is_empty());
+    }
+
+    #[test]
+    fn test_partition_same_path_write_stays_sequential() {
+        let w1 = serde_json::json!({"resource": "file", "action": "write", "path": "/a/b.txt"});
+        let w2 = serde_json::json!({"resource": "file", "action": "write", "path": "/a/b.txt"});
+        let calls = vec![("os", &w1, false), ("os", &w2, false)];
+        let (concurrent, sequential) = partition_tool_calls(&calls);
+        assert_eq!(concurrent, vec![0]);
+        assert_eq!(sequential, vec![1], "second write to the same path is sequential");
+    }
+
+    #[test]
+    fn test_partition_ancestor_overlap_stays_sequential() {
+        let w1 = serde_json::json!({"resource": "file", "action": "write", "path": "/a"});
+        let w2 = serde_json::json!({"resource": "file", "action": "write", "path": "/a/c.txt"});
+        let calls = vec![("os", &w1, false), ("os", &w2, false)];
+        let (concurrent, sequential) = partition_tool_calls(&calls);
+        assert_eq!(concurrent, vec![0]);
+        assert_eq!(sequential, vec![1], "write under an already-reserved dir is sequential");
+    }
+
+    #[test]
+    fn test_partition_non_file_mutation_stays_sequential() {
+        let shell = serde_json::json!({"resource": "shell", "action": "exec", "command": "ls"});
+        let calls = vec![("os", &shell, false)];
+        let (concurrent, sequential) = partition_tool_calls(&calls);
+        assert!(concurrent.is_empty(), "non-file mutations never join the parallel phase");
+        assert_eq!(sequential, vec![0]);
+    }
+
+    #[test]
+    fn test_partition_reads_unchanged_and_order_preserved() {
+        // Reads (concurrent_safe=true) are admitted as before, even when a
+        // conflicting write is forced sequential; both phases keep original order.
+        let r1 = serde_json::json!({"resource": "file", "action": "read", "path": "/a/b.txt"});
+        let w1 = serde_json::json!({"resource": "file", "action": "write", "path": "/x/y.txt"});
+        let w2 = serde_json::json!({"resource": "file", "action": "write", "path": "/x/y.txt"});
+        let r2 = serde_json::json!({"action": "search", "query": "q"});
+        let calls = vec![
+            ("os", &r1, true),
+            ("os", &w1, false),
+            ("os", &w2, false),
+            ("web", &r2, true),
+        ];
+        let (concurrent, sequential) = partition_tool_calls(&calls);
+        assert_eq!(concurrent, vec![0, 1, 3]);
+        assert_eq!(sequential, vec![2]);
+    }
+
+    #[test]
+    fn test_partition_move_reserves_destination() {
+        let mv = serde_json::json!({
+            "resource": "file", "action": "move", "path": "/src/a.txt", "destination": "/dst/a.txt"
+        });
+        let w = serde_json::json!({"resource": "file", "action": "write", "path": "/dst/a.txt"});
+        let calls = vec![("os", &mv, false), ("os", &w, false)];
+        let (concurrent, sequential) = partition_tool_calls(&calls);
+        assert_eq!(concurrent, vec![0]);
+        assert_eq!(sequential, vec![1], "write to a move's destination is sequential");
+    }
+
+    #[test]
+    fn test_partition_mutation_cap_spills_to_sequential() {
+        let inputs: Vec<serde_json::Value> = (0..10)
+            .map(|i| {
+                serde_json::json!({"resource": "file", "action": "write", "path": format!("/a/f{i}.txt")})
+            })
+            .collect();
+        let calls: Vec<(&str, &serde_json::Value, bool)> =
+            inputs.iter().map(|input| ("os", input, false)).collect();
+        let (concurrent, sequential) = partition_tool_calls(&calls);
+        assert_eq!(concurrent.len(), MAX_CONCURRENT_FILE_MUTATIONS);
+        assert_eq!(sequential, vec![8, 9], "excess past the cap spills to sequential");
     }
 
     fn make_msg(id: &str, role: &str, content: &str) -> ChatMessage {

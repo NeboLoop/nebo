@@ -39,6 +39,14 @@ pub fn routes() -> Router<AppState> {
             axum::routing::delete(handlers::integrations::delete_integration),
         )
         .route(
+            "/integrations/{id}/tool-permissions",
+            axum::routing::get(handlers::integrations::get_tool_permissions),
+        )
+        .route(
+            "/integrations/{id}/tool-permissions",
+            axum::routing::put(handlers::integrations::update_tool_permissions),
+        )
+        .route(
             "/integrations/{id}/test",
             axum::routing::post(handlers::integrations::test_integration),
         )

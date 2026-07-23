@@ -130,6 +130,7 @@ export interface ArtifactUpdateHistoryEntry {
 export interface ArtifactUpdatePref {
 	artifactId: string
 	artifactType: string
+	name?: string
 	autoUpdate: boolean
 	localVersion: string
 	remoteVersion: string
@@ -141,6 +142,7 @@ export interface ArtifactUpdateSettings {
 	agents: boolean
 	skills: boolean
 	plugins: boolean
+	connectors?: boolean
 	checkIntervalHours: number
 }
 
@@ -403,6 +405,7 @@ export interface McpIntegration {
 	createdAt: number
 	updatedAt: number
 	toolCount?: number
+	artifactId?: string
 }
 
 export interface Memory {
@@ -622,6 +625,27 @@ export interface Setting {
 	developerMode: boolean
 	autoUpdate: boolean
 	fullAccess: boolean
+}
+
+export interface ShareChannel {
+	channelId: string
+	channelName: string
+	loopId: string
+	loopName: string
+}
+
+export interface ShareMember {
+	botId: string
+	botName: string
+	loopId: string
+	loopName: string
+	isOnline: boolean
+}
+
+export interface ShareTargetsResponse {
+	connected: boolean
+	channels: ShareChannel[]
+	members: ShareMember[]
 }
 
 export interface SkillSecretInfo {
@@ -973,6 +997,10 @@ export interface DisableAgentChannelResponse {
 	ok: boolean
 }
 
+export interface DisconnectPluginAccountResponse {
+	ok: boolean
+}
+
 export interface DuplicateAgentResponse {
 	agent: unknown
 	activated: boolean
@@ -1291,10 +1319,6 @@ export interface ListStorageResponse {
 	items: unknown[]
 }
 
-export interface ListStoreOrgsResponse {
-	orgs: unknown
-}
-
 export interface ListTaskHistoryResponse {
 	history: CronHistory[]
 }
@@ -1388,6 +1412,15 @@ export interface NeboAIJanusUsageResponse {
 
 export interface NeboAIOpenNeboaiResponse {
 	ok: boolean
+}
+
+export interface NeboAIShareArtifactResponse {
+	shared: boolean
+}
+
+export interface OauthRelayResponse {
+	status: string
+	message: string
 }
 
 export interface PickFilesResponse {

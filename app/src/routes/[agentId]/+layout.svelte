@@ -1,6 +1,7 @@
 <script lang="ts">
   import { page } from '$app/stores';
-  import { goto } from '$app/navigation';
+  import { goto } from '$lib/nav';
+  import { t } from 'svelte-i18n';
   import { setContext, onMount } from 'svelte';
   import { getWebSocketClient } from '$lib/websocket/client';
   import { AGENT_COLORS_MAP } from '$lib/tokens.js';
@@ -8,6 +9,14 @@
   import WorkflowBuilder from '$lib/components/workflow/WorkflowBuilder.svelte';
   import { launchApp } from '$lib/apps/launcher.js';
   import { sidebarCollapsedFor } from '$lib/stores/sidebar.js';
+  import { mobileAgentsOpen, mobileChatsOpen } from '$lib/stores/mobileNav';
+
+  // Mobile drawers close on any navigation (open → pick → see content).
+  $effect(() => {
+    void $page.url.pathname;
+    mobileAgentsOpen.set(false);
+    mobileChatsOpen.set(false);
+  });
   const sidebarCollapsed = sidebarCollapsedFor('agents');
   import { devMode } from '$lib/stores/devmode.js';
   import type { AgentDisplay, EnrichedChat, AgentRun, WorkflowStatsLocal, WorkflowConfig } from '$lib/types/agentPage';
@@ -458,11 +467,12 @@
     goto(a?.isApp ? `/${id}/overview` : `/${id}/threads`);
   }
 
+  // Returns an i18n key — translate with $t at the call site.
   function statusLabel(s: string) {
-    if (s === 'online') return 'Online';
-    if (s === 'running') return 'Running';
-    if (s === 'paused') return 'Paused';
-    return 'Idle';
+    if (s === 'online') return 'common.online';
+    if (s === 'running') return 'agent.running';
+    if (s === 'paused') return 'common.paused';
+    return 'agent.idle';
   }
 
   // Agent context menu
@@ -516,7 +526,7 @@
       launchApp(id, a?.name || 'App');
     } else if (action === 'delete') {
       const a = allAgents.find(ag => ag.id === id);
-      deleteTarget = { id, name: a?.name || 'this agent' };
+      deleteTarget = { id, name: a?.name || '' };
     }
   }
 
@@ -553,7 +563,7 @@
   });
 </script>
 
-<svelte:head><title>{agent?.name ?? 'Agent'} - Nebo</title></svelte:head>
+<svelte:head><title>{agent?.name ?? $t('common.agent')} - Nebo</title></svelte:head>
 
 <!-- Agent context menu -->
 {#if ctxMenu}
@@ -567,7 +577,7 @@
     {#if ctxAgent?.isApp}
       <button class="flex items-center gap-2.5 w-full px-3 py-1.5 text-sm text-left cursor-pointer bg-transparent border-none hover:bg-base-200 transition-colors font-medium" onclick={() => ctxAction('open-app')}>
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-base-content/50"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
-        Open App
+        {$t('agent.openApp')}
       </button>
       <div class="h-px bg-base-300 my-1"></div>
     {:else}
@@ -575,32 +585,32 @@
         <button class="flex items-center gap-2.5 w-full px-3 py-1.5 text-sm text-left cursor-pointer bg-transparent border-none hover:bg-base-200 transition-colors" onclick={() => ctxAction('toggle-status')}>
           {#if ctxSt === 'paused'}
             <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" class="text-success"><polygon points="6,4 20,12 6,20"/></svg>
-            Activate
+            {$t('agent.activate')}
           {:else}
             <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" class="text-base-content/50"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>
-            Pause
+            {$t('sidebar.pause')}
           {/if}
         </button>
         <div class="h-px bg-base-300 my-1"></div>
       {/if}
       <button class="flex items-center gap-2.5 w-full px-3 py-1.5 text-sm text-left cursor-pointer bg-transparent border-none hover:bg-base-200 transition-colors" onclick={() => ctxAction('new-thread')}>
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-base-content/50"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-        New chat
+        {$t('agent.newChat')}
       </button>
     {/if}
     <button class="flex items-center gap-2.5 w-full px-3 py-1.5 text-sm text-left cursor-pointer bg-transparent border-none hover:bg-base-200 transition-colors" onclick={() => ctxAction('copy-id')}>
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="text-base-content/50"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-      Copy Agent ID
+      {$t('agent.copyAgentId')}
     </button>
     <button class="flex items-center gap-2.5 w-full px-3 py-1.5 text-sm text-left cursor-pointer bg-transparent border-none hover:bg-base-200 transition-colors" onclick={() => ctxAction('settings')}>
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-base-content/50"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-      Settings
+      {$t('nav.settings')}
     </button>
     <div class="h-px bg-base-300 my-1"></div>
     {#if ctxAgent?.editable}
       <button class="flex items-center gap-2.5 w-full px-3 py-1.5 text-sm text-left cursor-pointer bg-transparent border-none hover:bg-error/10 text-error transition-colors" onclick={() => ctxAction('delete')}>
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
-        Delete
+        {$t('common.delete')}
       </button>
     {/if}
   </div>
@@ -616,20 +626,20 @@
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-error"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
         </div>
         <div>
-          <h3 class="text-sm font-bold">Delete {deleteTarget.name}?</h3>
-          <p class="text-xs text-base-content/50">This cannot be undone</p>
+          <h3 class="text-sm font-bold">{$t('agent.deleteTitle', { values: { name: deleteTarget.name || $t('agent.thisAgent') } })}</h3>
+          <p class="text-xs text-base-content/50">{$t('agent.cannotBeUndone')}</p>
         </div>
       </div>
       <div class="px-5 py-4">
-        <p class="text-sm text-base-content/70">All threads, runs, and memory for this agent will be permanently removed.</p>
+        <p class="text-sm text-base-content/70">{$t('agent.deleteWarning')}</p>
       </div>
       <div class="flex items-center justify-end gap-2 px-5 py-4 border-t border-base-content/10">
-        <button class="px-4 py-2 rounded-lg border border-base-content/10 text-sm font-medium cursor-pointer hover:bg-base-200 transition-colors bg-transparent" onclick={() => { deleteTarget = null; }} disabled={deleting}>Cancel</button>
+        <button class="px-4 py-2 rounded-lg border border-base-content/10 text-sm font-medium cursor-pointer hover:bg-base-200 transition-colors bg-transparent" onclick={() => { deleteTarget = null; }} disabled={deleting}>{$t('common.cancel')}</button>
         <button class="px-4 py-2 rounded-lg bg-error text-error-content text-sm font-bold cursor-pointer hover:brightness-110 transition-all border-none" onclick={confirmDeleteAgent} disabled={deleting}>
           {#if deleting}
             <span class="loading loading-spinner loading-xs"></span>
           {:else}
-            Delete Agent
+            {$t('agentSettings.deleteAgent')}
           {/if}
         </button>
       </div>
@@ -647,8 +657,8 @@
         <div class="flex items-center gap-3">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-primary"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="8" y="14" width="7" height="7" rx="1"/><line x1="6.5" y1="10" x2="11.5" y2="14"/><line x1="17.5" y1="10" x2="11.5" y2="14"/></svg>
           <div>
-            <div class="text-sm font-semibold">{agent?.name} &mdash; Workflow Builder</div>
-            <div class="text-xs text-base-content/50">{workflowEntries.length} workflows &middot; {workflowEntries.reduce((sum, [, wf]) => sum + (wf.activities?.length ?? 0), 0)} activities</div>
+            <div class="text-sm font-semibold">{$t('agent.workflowBuilder', { values: { name: agent?.name ?? '' } })}</div>
+            <div class="text-xs text-base-content/50">{$t('agent.workflowsActivitiesCount', { values: { workflows: workflowEntries.length, activities: workflowEntries.reduce((sum, [, wf]) => sum + (wf.activities?.length ?? 0), 0) } })}</div>
           </div>
         </div>
         <button class="w-8 h-8 rounded-lg flex items-center justify-center hover:bg-base-200 cursor-pointer bg-transparent border-none text-lg" onclick={() => showCanvasModal = false}>&times;</button>
@@ -657,7 +667,7 @@
         <WorkflowBuilder
           workflows={config.workflows}
           agentId={agentId}
-          agentName={agent?.name ?? 'Agent'}
+          agentName={agent?.name ?? $t('common.agent')}
           focusWorkflow={canvasFocusWorkflow}
           onclose={() => { showCanvasModal = false; canvasFocusWorkflow = null; }}
           onsave={(wfs) => { showCanvasModal = false; canvasFocusWorkflow = null; persistWorkflows(wfs).catch((e) => console.error('[nebo] failed to save workflows', e)); }}
@@ -668,12 +678,16 @@
 {/if}
 
 <!-- Column 1: Agent roster -->
-<div data-tour="agents" class="{$sidebarCollapsed ? 'w-12 min-w-12' : 'w-[260px] min-w-[260px]'} border-r border-base-300 shadow-[2px_0_8px_-2px_rgba(0,0,0,0.08)] flex flex-col bg-base-200 shrink-0 transition-all duration-150">
+{#if $mobileAgentsOpen}
+  <!-- Mobile drawer backdrop -->
+  <div class="fixed inset-0 z-30 bg-black/40 md:hidden" onclick={() => mobileAgentsOpen.set(false)} role="presentation"></div>
+{/if}
+<div data-tour="agents" class="{$sidebarCollapsed ? 'md:w-12 md:min-w-12' : 'md:w-[260px] md:min-w-[260px]'} max-md:fixed max-md:inset-y-0 max-md:left-0 max-md:z-40 max-md:w-[280px] max-md:transition-transform {$mobileAgentsOpen ? 'max-md:translate-x-0 max-md:shadow-2xl' : 'max-md:-translate-x-full'} border-r border-base-300 shadow-[2px_0_8px_-2px_rgba(0,0,0,0.08)] flex flex-col bg-base-200 shrink-0 transition-all duration-150">
   <div class="h-11 border-b border-base-300 flex items-center shrink-0 {$sidebarCollapsed ? 'justify-center' : 'px-3.5 justify-between'}">
     {#if !$sidebarCollapsed}
-      <span class="text-sm font-semibold flex-1">Agents</span>
+      <span class="text-sm font-semibold flex-1">{$t('sidebar.agents')}</span>
     {/if}
-    <button class="w-7 h-7 rounded-md flex items-center justify-center hover:bg-base-200 cursor-pointer bg-transparent border-none shrink-0" onclick={() => $sidebarCollapsed = !$sidebarCollapsed} title={$sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}>
+    <button class="w-7 h-7 rounded-md flex items-center justify-center hover:bg-base-200 cursor-pointer bg-transparent border-none shrink-0" onclick={() => $sidebarCollapsed = !$sidebarCollapsed} title={$sidebarCollapsed ? $t('nav.expandSidebar') : $t('nav.collapseSidebar')}>
       <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5" stroke="currentColor" stroke-width="1.2"/><line x1="5.5" y1="3" x2="5.5" y2="13" stroke="currentColor" stroke-width="1.2"/></svg>
     </button>
   </div>
@@ -694,7 +708,7 @@
               onclick={() => selectAgent(a.id)}
               oncontextmenu={(e) => handleAgentContext(e, a.id)}
               data-context-menu
-              title="{a.name} — {statusLabel(st)}"
+              title="{a.name} — {$t(statusLabel(st))}"
             >{a.initial}</button>
             <div class="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-base-200 {st === 'running' ? 'bg-warning animate-pulse' : st === 'paused' ? 'bg-base-content/30' : 'bg-success'}"></div>
           </div>
@@ -753,7 +767,7 @@
       {/each}
       {#if sortedAppAgents.length > 0}
         <div class="px-3.5 pt-3 pb-1">
-          <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">Agent Apps</div>
+          <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('agent.agentApps')}</div>
         </div>
         {#each sortedAppAgents as a}
           {@const st = agentStatus(a.id)}

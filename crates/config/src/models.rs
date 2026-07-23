@@ -58,6 +58,11 @@ pub struct TaskRouting {
     pub code: String,
     #[serde(default)]
     pub general: String,
+    /// Cheap-model route for internal side-tasks (titles, memory extraction,
+    /// tool summaries, auto-continue judge). "provider/model" format; empty = unset
+    /// (each side-task keeps its default provider selection).
+    #[serde(default)]
+    pub aux: String,
     #[serde(default)]
     pub fallbacks: HashMap<String, Vec<String>>,
 }

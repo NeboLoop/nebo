@@ -84,6 +84,16 @@ pub struct PluginManifest {
     /// a Discord bot). See `ArtifactSetup`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub setup: Option<ArtifactSetup>,
+    /// Interface bindings: maps a typed capability operation (the
+    /// `capability.resource.action` suffix, e.g. "ledger.bill.create") to this
+    /// plugin's concrete command (e.g. "bill create"). This is how a plugin
+    /// declares which interface operations it implements. A seat that calls a
+    /// port (`department.role.ledger.bill.create`) resolves it, on the operation
+    /// suffix, to whichever installed plugin declares that binding — so the same
+    /// seat runs on QuickBooks, Xero, or Wave unchanged. Empty for plugins that
+    /// implement no interface.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub interface_bindings: HashMap<String, String>,
 }
 
 /// Channel bridge declaration in plugin.json.
@@ -2226,11 +2236,11 @@ impl PluginStore {
             use notify::{Event, EventKind, RecursiveMode, Watcher};
             use tokio::sync::mpsc;
 
-            let (tx, mut rx) = mpsc::channel::<notify::Result<Event>>(32);
+            let (tx, mut rx) = mpsc::unbounded_channel::<notify::Result<Event>>();
 
             let mut watcher = match notify::RecommendedWatcher::new(
                 move |res| {
-                    let _ = tx.blocking_send(res);
+                    let _ = tx.send(res);
                 },
                 notify::Config::default()
                     .with_poll_interval(std::time::Duration::from_secs(2)),
@@ -2783,6 +2793,7 @@ mod tests {
             triggers: vec![],
             channel: None,
             setup: None,
+            interface_bindings: HashMap::new(),
         };
 
         let json = serde_json::to_string(&manifest).unwrap();
@@ -2945,6 +2956,7 @@ mod tests {
             triggers: vec![],
             channel: None,
             setup: None,
+            interface_bindings: HashMap::new(),
         }
     }
 

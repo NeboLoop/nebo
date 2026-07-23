@@ -28,6 +28,8 @@
 </script>
 
 <script lang="ts">
+	import { t } from 'svelte-i18n';
+
 	interface Props {
 		requestId: string;
 		prompt: string;
@@ -82,7 +84,7 @@
 
 	{#if answered}
 		{#if wasSkipped}
-			<div class="badge badge-ghost badge-sm">Skipped</div>
+			<div class="badge badge-ghost badge-sm">{$t('common.skipped')}</div>
 		{:else}
 			<div class="flex flex-wrap gap-1">
 				{#each (response ?? '').split(', ') as item}
@@ -91,7 +93,7 @@
 			</div>
 		{/if}
 	{:else if disabled}
-		<div class="badge badge-ghost badge-sm">Skipped</div>
+		<div class="badge badge-ghost badge-sm">{$t('common.skipped')}</div>
 	{:else}
 		{#if widget?.label}
 			<p class="text-xs text-base-content/70 mb-1">{widget.label}</p>
@@ -110,7 +112,7 @@
 						<span class="flex flex-col">
 							<span class="text-sm">
 								{option.label}
-								{#if option.recommended}<span class="badge badge-primary badge-xs ml-1">Recommended</span>{/if}
+								{#if option.recommended}<span class="badge badge-primary badge-xs ml-1">{$t('chat.recommended')}</span>{/if}
 							</span>
 							{#if option.description}<span class="text-xs text-base-content/70">{option.description}</span>{/if}
 						</span>
@@ -128,7 +130,7 @@
 						<span class="flex flex-col items-start text-left">
 							<span class="font-medium">
 								{option.label}
-								{#if option.recommended}<span class="badge badge-primary badge-xs ml-1">Recommended</span>{/if}
+								{#if option.recommended}<span class="badge badge-primary badge-xs ml-1">{$t('chat.recommended')}</span>{/if}
 							</span>
 							{#if option.description}<span class="text-xs text-base-content/70 font-normal">{option.description}</span>{/if}
 						</span>
@@ -144,11 +146,11 @@
 					<input
 						type="text"
 						class="input input-bordered input-sm flex-1"
-						placeholder="Type your answer…"
+						placeholder={$t('chat.typeYourAnswer')}
 						bind:value={otherText}
 						onkeydown={(e) => e.key === 'Enter' && submitOther()}
 					/>
-					<button type="button" class="btn btn-sm btn-primary" disabled={!otherText.trim()} onclick={submitOther}>OK</button>
+					<button type="button" class="btn btn-sm btn-primary" disabled={!otherText.trim()} onclick={submitOther}>{$t('common.ok')}</button>
 				</div>
 			{/if}
 
@@ -160,13 +162,13 @@
 						disabled={selected.size === 0}
 						onclick={() => submit([...selected].join(', '))}
 					>
-						Submit{selected.size > 0 ? ` (${selected.size})` : ''}
+						{$t('chat.submit')}{selected.size > 0 ? ` (${selected.size})` : ''}
 					</button>
 				{/if}
 				{#if !showOther}
-					<button type="button" class="text-xs text-base-content/60 hover:text-base-content cursor-pointer bg-transparent border-none px-0" onclick={() => (showOther = true)}>Other…</button>
+					<button type="button" class="text-xs text-base-content/60 hover:text-base-content cursor-pointer bg-transparent border-none px-0" onclick={() => (showOther = true)}>{$t('chat.other')}</button>
 				{/if}
-				<button type="button" class="text-xs text-base-content/40 hover:text-base-content/70 cursor-pointer bg-transparent border-none px-0 ml-auto" onclick={() => submit(SKIP_VALUE)}>Skip</button>
+				<button type="button" class="text-xs text-base-content/40 hover:text-base-content/70 cursor-pointer bg-transparent border-none px-0 ml-auto" onclick={() => submit(SKIP_VALUE)}>{$t('common.skip')}</button>
 			</div>
 		</div>
 	{/if}

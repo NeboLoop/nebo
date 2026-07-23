@@ -3,17 +3,13 @@ name: nebo-server-image
 # Builds the headless Nebo server image (amd64) for the SaaS/cluster deploy and
 # pushes it to GHCR. Frontend is built on the runner (pinned pnpm 10, matching
 # release.yml) and embedded via rust-embed; the Rust binary compiles in Docker.
+# Build an image when we actually want to ship one — NOT on every backend
+# commit. The old `push: branches:[main] paths:[crates/**, ...]` trigger fired a
+# cold ~32min build on every commit and burned the org's Actions minutes.
 on:
   workflow_dispatch:
   push:
-    branches: [main]
-    paths:
-      - 'crates/**'
-      - 'app/**'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - 'Dockerfile'
-      - '.github/workflows/server-image.yml'
+    tags: ['v*']
 
 jobs:
   build:
@@ -50,13 +46,26 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Flux's ImagePolicy only matches `main-<unix_ts>-<short_sha>` and orders
+      # by the timestamp — the same tag convention every other image in the
+      # cluster uses. Never `:latest` (Flux can't order it and the deploy repo
+      # never references it).
+      - name: Compute image tag
+        id: vars
+        run: |
+          echo "tag=main-$(date +%s)-$(echo ${{ github.sha }} | cut -c1-7)" >> "$GITHUB_OUTPUT"
+
+      # Layer cache lives in GHCR, not GHA: the Rust dep layer alone is >1GB
+      # and the repo's whole GHA cache is capped at 10GB, so GHA evicted the
+      # dep layer between builds and every "warm" build ran cold. GHCR has no
+      # cap. The gha cache-from stays only as a transition fallback.
       - uses: docker/build-push-action@v6
         with:
           context: .
           platforms: linux/amd64
           push: true
-          tags: |
-            ghcr.io/neboloop/nebo:latest
-            ghcr.io/neboloop/nebo:${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          tags: ghcr.io/neboloop/nebo-server:${{ steps.vars.outputs.tag }}
+          cache-from: |
+            type=registry,ref=ghcr.io/neboloop/nebo-server:buildcache
+            type=gha
+          cache-to: type=registry,ref=ghcr.io/neboloop/nebo-server:buildcache,mode=max

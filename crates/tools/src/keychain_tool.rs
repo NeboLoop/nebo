@@ -39,7 +39,7 @@ impl DynTool for KeychainTool {
                 "action": {
                     "type": "string",
                     "description": "Action to perform",
-                    "enum": ["get", "find", "add", "delete"]
+                    "enum": ["get", "find", "add", "store", "delete"]
                 },
                 "service": {
                     "type": "string",
@@ -77,7 +77,8 @@ impl DynTool for KeychainTool {
             match action {
                 "get" => handle_get(&input).await,
                 "find" => handle_find(&input).await,
-                "add" => handle_add(&input).await,
+                // "store" is the synonym models reach for first — same operation.
+                "add" | "store" => handle_add(&input).await,
                 "delete" => handle_delete(&input).await,
                 _ => ToolResult::error(format!(
                     "Unknown action '{}'. Use: get, find, add, delete",
@@ -94,7 +95,13 @@ impl DynTool for KeychainTool {
 
 #[cfg(target_os = "macos")]
 async fn handle_get(input: &serde_json::Value) -> ToolResult {
-    let service = match input["service"].as_str() {
+    let service = match input["service"]
+        .as_str()
+        .filter(|v| !v.is_empty())
+        // `label` is accepted as a synonym — `security` stores generic
+        // passwords by service, and models use the terms interchangeably.
+        .or_else(|| input["label"].as_str())
+    {
         Some(s) if !s.is_empty() => s,
         _ => return ToolResult::error(errors::missing_param("get", "service", "keychain(action: \"get\", service: \"myapp\", account: \"user@example.com\")")),
     };
@@ -120,7 +127,13 @@ async fn handle_find(input: &serde_json::Value) -> ToolResult {
 
 #[cfg(target_os = "macos")]
 async fn handle_add(input: &serde_json::Value) -> ToolResult {
-    let service = match input["service"].as_str() {
+    let service = match input["service"]
+        .as_str()
+        .filter(|v| !v.is_empty())
+        // `label` is accepted as a synonym — `security` stores generic
+        // passwords by service, and models use the terms interchangeably.
+        .or_else(|| input["label"].as_str())
+    {
         Some(s) if !s.is_empty() => s,
         _ => return ToolResult::error(errors::missing_param("add", "service", "keychain(action: \"add\", service: \"myapp\", account: \"user@example.com\", password: \"secret\")")),
     };
@@ -150,7 +163,13 @@ async fn handle_add(input: &serde_json::Value) -> ToolResult {
 
 #[cfg(target_os = "macos")]
 async fn handle_delete(input: &serde_json::Value) -> ToolResult {
-    let service = match input["service"].as_str() {
+    let service = match input["service"]
+        .as_str()
+        .filter(|v| !v.is_empty())
+        // `label` is accepted as a synonym — `security` stores generic
+        // passwords by service, and models use the terms interchangeably.
+        .or_else(|| input["label"].as_str())
+    {
         Some(s) if !s.is_empty() => s,
         _ => return ToolResult::error(errors::missing_param("delete", "service", "keychain(action: \"delete\", service: \"myapp\", account: \"user@example.com\")")),
     };
@@ -171,7 +190,13 @@ async fn handle_delete(input: &serde_json::Value) -> ToolResult {
 
 #[cfg(target_os = "linux")]
 async fn handle_get(input: &serde_json::Value) -> ToolResult {
-    let service = match input["service"].as_str() {
+    let service = match input["service"]
+        .as_str()
+        .filter(|v| !v.is_empty())
+        // `label` is accepted as a synonym — `security` stores generic
+        // passwords by service, and models use the terms interchangeably.
+        .or_else(|| input["label"].as_str())
+    {
         Some(s) if !s.is_empty() => s,
         _ => return ToolResult::error(errors::missing_param("get", "service", "keychain(action: \"get\", service: \"myapp\", account: \"user@example.com\")")),
     };
@@ -203,7 +228,13 @@ async fn handle_find(input: &serde_json::Value) -> ToolResult {
 
 #[cfg(target_os = "linux")]
 async fn handle_add(input: &serde_json::Value) -> ToolResult {
-    let service = match input["service"].as_str() {
+    let service = match input["service"]
+        .as_str()
+        .filter(|v| !v.is_empty())
+        // `label` is accepted as a synonym — `security` stores generic
+        // passwords by service, and models use the terms interchangeably.
+        .or_else(|| input["label"].as_str())
+    {
         Some(s) if !s.is_empty() => s,
         _ => return ToolResult::error(errors::missing_param("add", "service", "keychain(action: \"add\", service: \"myapp\", account: \"user@example.com\", password: \"secret\")")),
     };
@@ -245,7 +276,13 @@ async fn handle_add(input: &serde_json::Value) -> ToolResult {
 
 #[cfg(target_os = "linux")]
 async fn handle_delete(input: &serde_json::Value) -> ToolResult {
-    let service = match input["service"].as_str() {
+    let service = match input["service"]
+        .as_str()
+        .filter(|v| !v.is_empty())
+        // `label` is accepted as a synonym — `security` stores generic
+        // passwords by service, and models use the terms interchangeably.
+        .or_else(|| input["label"].as_str())
+    {
         Some(s) if !s.is_empty() => s,
         _ => return ToolResult::error(errors::missing_param("delete", "service", "keychain(action: \"delete\", service: \"myapp\", account: \"user@example.com\")")),
     };
@@ -269,7 +306,13 @@ async fn handle_delete(input: &serde_json::Value) -> ToolResult {
 
 #[cfg(target_os = "windows")]
 async fn handle_get(input: &serde_json::Value) -> ToolResult {
-    let service = match input["service"].as_str() {
+    let service = match input["service"]
+        .as_str()
+        .filter(|v| !v.is_empty())
+        // `label` is accepted as a synonym — `security` stores generic
+        // passwords by service, and models use the terms interchangeably.
+        .or_else(|| input["label"].as_str())
+    {
         Some(s) if !s.is_empty() => s,
         _ => return ToolResult::error(errors::missing_param("get", "service", "keychain(action: \"get\", service: \"myapp\", account: \"user@example.com\")")),
     };
@@ -317,7 +360,13 @@ async fn handle_find(input: &serde_json::Value) -> ToolResult {
 
 #[cfg(target_os = "windows")]
 async fn handle_add(input: &serde_json::Value) -> ToolResult {
-    let service = match input["service"].as_str() {
+    let service = match input["service"]
+        .as_str()
+        .filter(|v| !v.is_empty())
+        // `label` is accepted as a synonym — `security` stores generic
+        // passwords by service, and models use the terms interchangeably.
+        .or_else(|| input["label"].as_str())
+    {
         Some(s) if !s.is_empty() => s,
         _ => return ToolResult::error(errors::missing_param("add", "service", "keychain(action: \"add\", service: \"myapp\", account: \"user@example.com\", password: \"secret\")")),
     };
@@ -337,7 +386,13 @@ async fn handle_add(input: &serde_json::Value) -> ToolResult {
 
 #[cfg(target_os = "windows")]
 async fn handle_delete(input: &serde_json::Value) -> ToolResult {
-    let service = match input["service"].as_str() {
+    let service = match input["service"]
+        .as_str()
+        .filter(|v| !v.is_empty())
+        // `label` is accepted as a synonym — `security` stores generic
+        // passwords by service, and models use the terms interchangeably.
+        .or_else(|| input["label"].as_str())
+    {
         Some(s) if !s.is_empty() => s,
         _ => return ToolResult::error(errors::missing_param("delete", "service", "keychain(action: \"delete\", service: \"myapp\")")),
     };

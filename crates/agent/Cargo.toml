@@ -36,6 +36,15 @@ regex = { workspace = true }
 sysinfo = { workspace = true }
 turbovec = "0.5"
 
+# turbovec's ndarray uses the BLAS backend but never `use`s its provider crate,
+# so rustc drops blas-src (and its `-framework Accelerate` link directive) from
+# any final artifact whose only Accelerate path is turbovec — leaving cblas_*
+# symbols undefined (e.g. this crate's test binary). blas-src's documented
+# contract is that a crate in the graph must reference it; do so here
+# (see `use blas_src as _;` in lib.rs).
+[target.'cfg(target_os = "macos")'.dependencies]
+blas-src = { version = "0.10", features = ["accelerate"] }
+
 [dev-dependencies]
 tempfile = "3"
 async-trait = { workspace = true }

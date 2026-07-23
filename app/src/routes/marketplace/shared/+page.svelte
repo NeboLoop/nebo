@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { t } from 'svelte-i18n';
 	import Share2 from 'lucide-svelte/icons/share-2';
 	import MarketplaceGrid from '$lib/components/MarketplaceGrid.svelte';
 	import ListCard from '$lib/components/marketplace/ListCard.svelte';
@@ -29,8 +30,8 @@
 
 <div class="max-w-6xl mx-auto px-6 py-6">
 	<div class="mb-5">
-		<div class="text-base font-semibold">Shared with you</div>
-		<div class="text-xs text-base-content/50">Private agents, skills, and tools shared with you by your organizations.</div>
+		<div class="text-base font-semibold">{$t('marketplace.sharedPage.title')}</div>
+		<div class="text-xs text-base-content/50">{$t('marketplace.sharedPage.subtitle')}</div>
 	</div>
 
 	{#if loading}
@@ -40,8 +41,8 @@
 	{:else if items.length === 0}
 		<div class="flex flex-col items-center justify-center py-16 text-center">
 			<Share2 class="w-10 h-10 text-base-content/40 mb-3" />
-			<p class="text-base font-medium">Nothing shared with you yet</p>
-			<p class="text-xs text-base-content/50 mt-1">Items shared privately by an organization will appear here.</p>
+			<p class="text-base font-medium">{$t('marketplace.sharedPage.empty')}</p>
+			<p class="text-xs text-base-content/50 mt-1">{$t('marketplace.sharedPage.emptyHint')}</p>
 		</div>
 	{:else}
 		<MarketplaceGrid>

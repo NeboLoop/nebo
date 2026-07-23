@@ -1,10 +1,11 @@
 <script lang="ts">
+  import { t } from 'svelte-i18n';
   import ColorDayView from './ColorDayView.svelte';
   import ColorWeekView from './ColorWeekView.svelte';
   import ColorMonthView from './ColorMonthView.svelte';
 
-  const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
-  const DAYS = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+  const MONTHS = $derived([$t('months.january'), $t('months.february'), $t('months.march'), $t('months.april'), $t('months.may'), $t('months.june'), $t('months.july'), $t('months.august'), $t('months.september'), $t('months.october'), $t('months.november'), $t('months.december')]);
+  const DAYS = $derived([$t('schedule.sunday'), $t('schedule.monday'), $t('schedule.tuesday'), $t('schedule.wednesday'), $t('schedule.thursday'), $t('schedule.friday'), $t('schedule.saturday')]);
 
   let { view = $bindable('day'), selectedDate = $bindable(new Date()), enabled, onopencanvas }: { view: string; selectedDate: Date; enabled: Record<string, boolean>; onopencanvas?: (agentFull: string) => void } = $props();
 
@@ -52,11 +53,11 @@
 
 <div class="flex-1 flex flex-col min-h-0 overflow-hidden">
   <!-- Header -->
-  <div class="px-5 py-3.5 flex items-center gap-2 border-b border-base-content/10 shrink-0">
+  <div class="px-5 max-md:px-3 py-3.5 flex flex-wrap items-center gap-2 max-md:gap-y-2 border-b border-base-content/10 shrink-0">
     <button class="w-7 h-7 rounded-md flex items-center justify-center hover:bg-base-200 cursor-pointer bg-transparent border-none text-lg" onclick={goPrev}>‹</button>
     <button class="w-7 h-7 rounded-md flex items-center justify-center hover:bg-base-200 cursor-pointer bg-transparent border-none text-lg" onclick={goNext}>›</button>
 
-    <h1 class="text-xl font-bold tracking-tight ml-1">{dateLabel}</h1>
+    <h1 class="text-xl max-md:text-base font-bold tracking-tight ml-1">{dateLabel}</h1>
     {#if dateSub}
       <span class="text-xs text-base-content/70">{dateSub}</span>
     {/if}
@@ -68,7 +69,7 @@
         <button
           class="px-3.5 py-1 rounded-md text-sm cursor-pointer transition-all {view === v ? 'bg-base-100 font-medium text-base-content shadow-sm' : 'text-base-content'}"
           onclick={() => view = v}
-        >{v[0].toUpperCase() + v.slice(1)}</button>
+        >{$t('schedule.' + v)}</button>
       {/each}
     </div>
 
@@ -76,10 +77,10 @@
       <button
         class="w-7 h-7 rounded-md flex items-center justify-center hover:bg-base-200 cursor-pointer bg-transparent border-none text-sm {showHeartbeats ? 'text-primary bg-primary/10' : 'text-base-content/50'}"
         onclick={() => showHeartbeats = !showHeartbeats}
-        title="{showHeartbeats ? 'Hide' : 'Show'} interval events"
+        title={showHeartbeats ? $t('schedule.hideIntervalEvents') : $t('schedule.showIntervalEvents')}
       >↻</button>
     {/if}
-    <button class="btn btn-ghost btn-sm text-sm" onclick={goToday}>Today</button>
+    <button class="btn btn-ghost btn-sm text-sm" onclick={goToday}>{$t('schedule.today')}</button>
   </div>
 
   <!-- Calendar content -->

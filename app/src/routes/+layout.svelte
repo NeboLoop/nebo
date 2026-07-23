@@ -1,9 +1,25 @@
 <script lang="ts">
   import '../app.css';
   import '$lib/i18n';
+  import { t } from 'svelte-i18n';
   import { page } from '$app/stores';
-  import { goto } from '$app/navigation';
+  import { goto, appPath } from '$lib/nav';
+  import { beforeNavigate } from '$app/navigation';
+  import { base } from '$app/paths';
+  import { mobileAgentsOpen } from '$lib/stores/mobileNav';
+  import { storage } from '$lib/storage';
   import { onMount } from 'svelte';
+
+  // Under the tunnel base (/t/<botID>/), goto() is base-aware via $lib/nav but
+  // raw <a href="/x"> links would still escape the prefix onto the hub's site.
+  // Catch any same-origin navigation that leaves the base and re-root it.
+  beforeNavigate((nav) => {
+    if (!base || !nav.to) return;
+    const to = nav.to.url;
+    if (to.origin !== location.origin || to.pathname.startsWith(base)) return;
+    nav.cancel();
+    goto(to.pathname + to.search + to.hash);
+  });
   import { onWsEvent } from '$lib/websocket/subscribe';
   import { theme } from '$lib/stores/theme.js';
   import { onboardingComplete, onboardingChecked, backendReady, backendChecking, checkOnboardingStatus, retryBackendConnection } from '$lib/stores/onboarding';
@@ -44,7 +60,7 @@
         import('$lib/websocket/client').then(({ getWebSocketClient }) => {
           const ws = getWebSocketClient();
           if (!ws.isConnected()) {
-            const token = typeof localStorage !== 'undefined' ? localStorage.getItem('nebo_token') : null;
+            const token = storage.get('nebo_token');
             ws.connect(token || undefined);
           }
           // Attach real-time event listeners after connecting
@@ -66,7 +82,7 @@
 
   // Redirect to onboarding if not complete (wait for check to finish)
   $effect(() => {
-    if ($onboardingChecked && !$onboardingComplete && !$page.url.pathname.startsWith('/onboarding')) {
+    if ($onboardingChecked && !$onboardingComplete && !appPath($page.url.pathname).startsWith('/onboarding')) {
       goto('/onboarding');
     }
   });
@@ -103,13 +119,13 @@
   }
 
   const sections = [
-    { id: 'agents', path: '/', label: 'Agents' },
-    { id: 'schedule', path: '/schedule', label: 'Schedule' },
-    { id: 'marketplace', path: '/marketplace', label: 'Marketplace' },
+    { id: 'agents', path: '/', label: 'nav.agents' },
+    { id: 'schedule', path: '/schedule', label: 'nav.schedule' },
+    { id: 'marketplace', path: '/marketplace', label: 'nav.marketplace' },
   ];
 
   const activeSection = $derived.by(() => {
-    const p = $page.url.pathname;
+    const p = appPath($page.url.pathname);
     if (p === '/') return 'agents';
     for (const s of sections) {
       if (s.path !== '/' && p.startsWith(s.path)) return s.id;
@@ -119,12 +135,12 @@
     return '';
   });
 
-  const isEmbed = $derived($page.url.pathname.startsWith('/chat-embed'));
+  const isEmbed = $derived(appPath($page.url.pathname).startsWith('/chat-embed'));
 
   const isMinimalChrome = $derived(
     isEmbed ||
-    $page.url.pathname.startsWith('/settings') ||
-    $page.url.pathname.startsWith('/app/')
+    appPath($page.url.pathname).startsWith('/settings') ||
+    appPath($page.url.pathname).startsWith('/app/')
   );
 </script>
 
@@ -137,9 +153,9 @@
     <div class="w-10 h-10 rounded-lg bg-primary text-primary-content flex items-center justify-center font-mono text-xl font-bold">N</div>
     {#if $backendChecking}
       <span class="loading loading-spinner loading-md"></span>
-      <p class="text-sm text-base-content/70">Connecting to Nebo...</p>
+      <p class="text-sm text-base-content/70">{$t('layout.connectingToNebo')}</p>
     {:else}
-      <p class="text-sm text-base-content/70">Waiting for backend...</p>
+      <p class="text-sm text-base-content/70">{$t('layout.waitingForBackend')}</p>
       <span class="loading loading-dots loading-sm"></span>
     {/if}
     <button
@@ -147,14 +163,14 @@
       disabled={$backendChecking}
       onclick={() => retryBackendConnection()}
     >
-      Retry now
+      {$t('layout.retryNow')}
     </button>
   </div>
 {:else if !$onboardingChecked}
   <div class="h-dvh flex items-center justify-center bg-base-100">
     <span class="loading loading-spinner loading-lg"></span>
   </div>
-{:else if $page.url.pathname.startsWith('/onboarding')}
+{:else if appPath($page.url.pathname).startsWith('/onboarding')}
   {@render children()}
 {:else if !$onboardingComplete}
   <!-- Check finished, onboarding not complete, and we're not on /onboarding yet:
@@ -165,32 +181,42 @@
     <span class="loading loading-spinner loading-lg"></span>
   </div>
 {:else}
-  <div class="flex flex-col h-screen">
+  <div class="flex flex-col h-dvh">
     {#if !isMinimalChrome}
-      <header class="h-14 border-b border-base-300 bg-base-100 flex items-center px-4 shrink-0">
-        <a href="/" class="flex items-center gap-1.5 font-semibold text-sm tracking-tight mr-4">
+      <header class="h-14 border-b border-base-300 bg-base-100 flex items-center px-2 md:px-4 shrink-0">
+        {#if activeSection === 'agents'}
+          <!-- Mobile: opens the Employees drawer (the sidebar is a slide-over below md) -->
+          <button
+            class="md:hidden w-9 h-9 mr-1 rounded-md flex items-center justify-center border-none bg-transparent cursor-pointer text-base-content/70"
+            aria-label="Employees"
+            onclick={() => mobileAgentsOpen.update((v) => !v)}
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+          </button>
+        {/if}
+        <a href="/" class="flex items-center gap-1.5 font-semibold text-sm tracking-tight mr-2 md:mr-4">
           <div class="w-5 h-5 rounded bg-primary text-primary-content flex items-center justify-center font-mono text-sm font-bold">N</div>
-          Nebo
+          <span class="hidden sm:inline">Nebo</span>
         </a>
-        <nav class="flex items-center h-full gap-1">
+        <nav class="flex items-center h-full gap-0.5 md:gap-1 min-w-0 overflow-x-auto">
           {#each sections as s}
             <a
               href={s.path}
               data-tour={s.id}
-              class="px-3 h-full flex items-center text-sm font-medium border-b-3 transition-colors {activeSection === s.id
+              class="px-2 md:px-3 h-full flex items-center text-sm font-medium border-b-3 transition-colors whitespace-nowrap shrink-0 {activeSection === s.id
                 ? 'border-primary text-base-content'
                 : 'border-transparent text-base-content/70 hover:text-base-content'}"
-            >{s.label}</a>
+            >{$t(s.label)}</a>
           {/each}
         </nav>
         <div class="flex-1"></div>
         <button
           onclick={() => (showCommandPalette = true)}
           data-tour="search"
-          class="flex items-center h-8 w-48 rounded-field px-3 gap-1.5 text-sm cursor-pointer border border-base-300 bg-base-100"
+          class="flex items-center h-8 w-auto md:w-48 rounded-field px-2 md:px-3 gap-1.5 text-sm cursor-pointer border border-base-300 bg-base-100"
         >
           <span class="font-mono text-sm py-px px-1 rounded-sm bg-base-200">&#x2318;K</span>
-          <span class="text-base-content/70">Search or run...</span>
+          <span class="text-base-content/70 hidden md:inline">{$t('nav.searchOrRun')}</span>
         </button>
         <NotificationBell />
       </header>
@@ -217,7 +243,7 @@
     plan={upgradedPlan}
     onclose={() => {
       showUpgradeSuccess = false;
-      if ($page.url.pathname.startsWith('/pricing')) goto('/');
+      if (appPath($page.url.pathname).startsWith('/pricing')) goto('/');
     }}
   />
 {/if}

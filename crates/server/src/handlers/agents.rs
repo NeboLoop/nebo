@@ -1905,6 +1905,37 @@ pub async fn activate_agent(
         .start_agent(&agent_id, &agent.name, None)
         .await;
 
+    // Re-emit account.connected for accounts linked before this activation.
+    // The live OAuth emit (plugins.rs auth-complete) fires during the install
+    // wizard — BEFORE this agent's worker exists to hear it — so per-account
+    // onboarding workflows (event trigger on "account.connected") never ran
+    // for the installing agent. start_agent has registered event subscriptions
+    // inline by this point, so the emit lands. Activation is a deliberate
+    // action (install wizard / manual toggle), not an app-boot worker start,
+    // so this does not re-fire onboarding on every launch.
+    match state
+        .store
+        .list_all_plugin_account_profiles_for_agent(&agent_id)
+    {
+        Ok(profiles) => {
+            for p in profiles {
+                state.emit_lifecycle(
+                    "account.connected",
+                    serde_json::json!({
+                        "plugin": &p.plugin_slug,
+                        "account_label": &p.account_label,
+                        "config_dir": &p.config_dir,
+                        "agent_id": &p.agent_id,
+                    }),
+                    format!("activate:agent:{agent_id}"),
+                );
+            }
+        }
+        Err(e) => {
+            warn!(agent = %agent_id, error = %e, "failed to list account profiles for lifecycle re-emit");
+        }
+    }
+
     // Launch sidecar binary for app agents using the shared .napp runtime.
     if agent.is_app.unwrap_or(0) != 0 {
         let old_lifecycle = {

@@ -165,6 +165,14 @@ impl NeboAIApi {
             .await
     }
 
+    /// Get the curated marketplace reorganization map — the Employees/Tools/
+    /// Collections placement keyed by artifact Code, generated from one source
+    /// on NeboAI. Returns `{ departments, toolCategories, entries, responsibilities }`.
+    pub async fn get_marketplace_map(&self) -> Result<serde_json::Value, CommError> {
+        self.do_json(reqwest::Method::GET, "/api/v1/marketplace/map", None::<&()>)
+            .await
+    }
+
     /// List the organizations (namespaces) the authenticated bot's owner belongs
     /// to, each with its non-public artifacts. Backs the marketplace "Shared" tab.
     /// Returns NeboAI's `{ "orgs": [...] }` envelope verbatim.
@@ -971,6 +979,21 @@ impl NeboAIApi {
     // ── Referral ──────────────────────────────────────────────────
 
     /// Get or create the user's referral/invite code.
+    /// Consent-model cloud-bot update state: this bot's pinned server image vs
+    /// the current default. `{current, latest, updateAvailable}`; empty fields
+    /// for non-cloud bots.
+    pub async fn bot_update_status(&self) -> Result<serde_json::Value, CommError> {
+        self.do_json(reqwest::Method::GET, "/api/v1/bots/self/update", None::<&()>)
+            .await
+    }
+
+    /// Consent to the update: re-pins this bot to the latest default image.
+    /// The cloud reconciler restarts the pod on the new image within ~a minute.
+    pub async fn bot_update_apply(&self) -> Result<serde_json::Value, CommError> {
+        self.do_json(reqwest::Method::POST, "/api/v1/bots/self/update", None::<&()>)
+            .await
+    }
+
     pub async fn referral_code(&self) -> Result<serde_json::Value, CommError> {
         self.do_json(
             reqwest::Method::GET,

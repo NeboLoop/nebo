@@ -5778,13 +5778,14 @@ dependencies = [
 
 [[package]]
 name = "nebo"
-version = "0.12.5"
+version = "0.12.6"
 dependencies = [
  "anyhow",
  "dirs 6.0.0",
  "dotenvy",
  "futures",
  "http 1.4.0",
+ "nebo-browser",
  "nebo-config",
  "nebo-server",
  "open",
@@ -5805,10 +5806,11 @@ dependencies = [
 
 [[package]]
 name = "nebo-agent"
-version = "0.12.5"
+version = "0.12.6"
 dependencies = [
  "a2ui-validation",
  "async-trait",
+ "blas-src",
  "chrono",
  "chrono-tz",
  "futures",
@@ -5842,10 +5844,11 @@ dependencies = [
 
 [[package]]
 name = "nebo-ai"
-version = "0.12.5"
+version = "0.12.6"
 dependencies = [
  "async-openai",
  "async-trait",
+ "base64 0.22.1",
  "futures",
  "hex",
  "libc",
@@ -5865,7 +5868,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-auth"
-version = "0.12.5"
+version = "0.12.6"
 dependencies = [
  "bcrypt",
  "chrono",
@@ -5886,8 +5889,9 @@ dependencies = [
 
 [[package]]
 name = "nebo-browser"
-version = "0.12.5"
+version = "0.12.6"
 dependencies = [
+ "anyhow",
  "base64 0.22.1",
  "chromiumoxide",
  "futures",
@@ -5897,12 +5901,13 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-tungstenite 0.26.2",
  "tracing",
 ]
 
 [[package]]
 name = "nebo-cli"
-version = "0.12.5"
+version = "0.12.6"
 dependencies = [
  "anyhow",
  "clap",
@@ -5925,11 +5930,12 @@ dependencies = [
  "tokio-tungstenite 0.26.2",
  "tracing",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]
 name = "nebo-comm"
-version = "0.12.5"
+version = "0.12.6"
 dependencies = [
  "async-trait",
  "futures",
@@ -5944,12 +5950,13 @@ dependencies = [
  "tokio-util",
  "tracing",
  "urlencoding",
+ "yamux",
  "zstd",
 ]
 
 [[package]]
 name = "nebo-config"
-version = "0.12.5"
+version = "0.12.6"
 dependencies = [
  "dirs 6.0.0",
  "hex",
@@ -5966,7 +5973,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-db"
-version = "0.12.5"
+version = "0.12.6"
 dependencies = [
  "chrono",
  "nebo-types",
@@ -5983,7 +5990,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-mcp"
-version = "0.12.5"
+version = "0.12.6"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -6001,7 +6008,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-napp"
-version = "0.12.5"
+version = "0.12.6"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -6032,14 +6039,14 @@ dependencies = [
 
 [[package]]
 name = "nebo-notify"
-version = "0.12.5"
+version = "0.12.6"
 dependencies = [
  "tracing",
 ]
 
 [[package]]
 name = "nebo-proto"
-version = "0.12.5"
+version = "0.12.6"
 dependencies = [
  "prost",
  "tonic",
@@ -6048,7 +6055,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-render"
-version = "0.12.5"
+version = "0.12.6"
 dependencies = [
  "docx-rs",
  "pulldown-cmark",
@@ -6063,7 +6070,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-server"
-version = "0.12.5"
+version = "0.12.6"
 dependencies = [
  "a2ui-core",
  "a2ui-types",
@@ -6123,7 +6130,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-tools"
-version = "0.12.5"
+version = "0.12.6"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -6174,7 +6181,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-types"
-version = "0.12.5"
+version = "0.12.6"
 dependencies = [
  "serde",
  "serde_json",
@@ -6185,7 +6192,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-updater"
-version = "0.12.5"
+version = "0.12.6"
 dependencies = [
  "futures",
  "hex",
@@ -6203,7 +6210,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-vm"
-version = "0.12.5"
+version = "0.12.6"
 dependencies = [
  "dirs 6.0.0",
  "hex",
@@ -6235,7 +6242,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-voice"
-version = "0.12.5"
+version = "0.12.6"
 dependencies = [
  "bytes",
  "dirs 6.0.0",
@@ -6251,7 +6258,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-workflow"
-version = "0.12.5"
+version = "0.12.6"
 dependencies = [
  "async-trait",
  "chrono",
@@ -6295,6 +6302,12 @@ name = "nodrop"
 version = "0.1.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72ef4a56884ca558e5ddb05a1d1e7e1bfd9a68d9ed024c21704cc98872dae1bb"
+
+[[package]]
+name = "nohash-hasher"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2bf50223579dc7cdcfb3bfcacf7069ff68243f8c363f62ffa99cf000a6b9c451"
 
 [[package]]
 name = "nom"
@@ -10537,6 +10550,7 @@ checksum = "9ae9cec805b01e8fc3fd2fe289f89149a9b66dd16786abd8b19cfa7b48cb0098"
 dependencies = [
  "bytes",
  "futures-core",
+ "futures-io",
  "futures-sink",
  "pin-project-lite",
  "tokio",
@@ -13073,6 +13087,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "56c1936c4cc7a1c9ab21a1ebb602eb942ba868cbd44a99cb7cdc5892335e1c85"
 dependencies = [
  "linked-hash-map",
+]
+
+[[package]]
+name = "yamux"
+version = "0.13.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1991f6690292030e31b0144d73f5e8368936c58e45e7068254f7138b23b00672"
+dependencies = [
+ "futures",
+ "log",
+ "nohash-hasher",
+ "parking_lot",
+ "pin-project",
+ "rand 0.9.2",
+ "static_assertions",
+ "web-time",
 ]
 
 [[package]]

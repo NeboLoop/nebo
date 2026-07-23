@@ -330,6 +330,29 @@ fn spawn_plugin_login(
         if let Some(ref p) = profile {
             cmd.env(&p.env_name, &p.config_dir);
         }
+        // Cloud bots (NEBOAI_PUBLIC_OAUTH=1, set by the provisioner): the user's
+        // browser can't reach the pod's loopback listener, so hand the plugin
+        // the ONE public redirect + an opaque state and register the pending
+        // auth for the hub-relayed callback (crate::plugin_oauth). Desktop
+        // never sets the env, so this pathway can't affect it.
+        if crate::plugin_oauth::public_oauth_enabled() {
+            match config::read_bot_id().filter(|id| !id.is_empty()) {
+                Some(bot_id) => match crate::plugin_oauth::begin(&bot_id) {
+                    Ok(relay) => {
+                        info!(plugin = %slug_owned, port = relay.port, "plugin auth: using public OAuth redirect via hub relay");
+                        cmd.env("NEBO_OAUTH_REDIRECT_URI", crate::plugin_oauth::PUBLIC_REDIRECT_URI);
+                        cmd.env("NEBO_OAUTH_STATE", &relay.state);
+                        cmd.env("NEBO_OAUTH_PORT", relay.port.to_string());
+                    }
+                    Err(e) => {
+                        warn!(plugin = %slug_owned, error = %e, "plugin auth: failed to set up public OAuth relay; falling back to loopback redirect");
+                    }
+                },
+                None => {
+                    warn!(plugin = %slug_owned, "plugin auth: NEBOAI_PUBLIC_OAUTH set but no bot_id configured; falling back to loopback redirect");
+                }
+            }
+        }
         cmd.stdin(std::process::Stdio::null());
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
@@ -584,6 +607,24 @@ fn spawn_plugin_login(
             }
         }
     });
+}
+
+/// GET /plugins/oauth/relay?code=...&state=...
+///
+/// Hub-relayed OAuth callback (crate::plugin_oauth). The hub forwards Google's
+/// redirect into this bot's tunnel; the single-use nonce inside `state` is the
+/// auth (the route is public — Google's redirect carries no session), and the
+/// loopback port is resolved from the pending registry, never from the request.
+pub async fn oauth_relay(
+    axum::extract::RawQuery(raw_query): axum::extract::RawQuery,
+) -> (axum::http::StatusCode, Json<serde_json::Value>) {
+    let raw_query = raw_query.unwrap_or_default();
+    let (status, message) = crate::plugin_oauth::relay_request(&raw_query).await;
+    (
+        axum::http::StatusCode::from_u16(status)
+            .unwrap_or(axum::http::StatusCode::INTERNAL_SERVER_ERROR),
+        Json(serde_json::json!({ "status": status, "message": message })),
+    )
 }
 
 /// GET /plugins/{slug}/accounts?agentId=<id>

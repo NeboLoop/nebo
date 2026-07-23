@@ -2328,7 +2328,7 @@ impl PersonaTool {
         let wait = input["wait"].as_bool().unwrap_or(true);
         let max_iterations = input["max_iterations"].as_u64().unwrap_or(0) as usize;
         let desc_prompt = if prompt.len() > 60 {
-            format!("{}...", &prompt[..60])
+            format!("{}...", crate::truncate_str(prompt, 60))
         } else {
             prompt.to_string()
         };
@@ -2703,6 +2703,18 @@ impl DynTool for PersonaTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_truncate_str_multibyte_no_panic() {
+        // Descriptions are cut at a byte length; emoji/CJK straddling the cut
+        // must not panic (was `&prompt[..60]`, which panics off-boundary).
+        let s = "日本語のテキスト🎉".repeat(10);
+        let t = crate::truncate_str(&s, 60);
+        assert!(t.len() <= 60);
+        assert!(s.starts_with(t));
+        // ASCII shorter than the limit passes through untouched.
+        assert_eq!(crate::truncate_str("abc", 60), "abc");
+    }
 
     #[test]
     fn test_normalize_cron_translates_numeric_dow() {

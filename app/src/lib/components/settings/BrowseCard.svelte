@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { t } from 'svelte-i18n';
   import ExternalLink from 'lucide-svelte/icons/external-link';
 
   // Marketplace footer card, matching the MCP Servers "Browse Connectors" block.
@@ -23,7 +24,7 @@
       {href}
       class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-base-300 text-sm font-medium hover:bg-base-200 transition-colors"
     >
-      Marketplace <ExternalLink class="w-3.5 h-3.5" />
+      {$t('nav.marketplace')} <ExternalLink class="w-3.5 h-3.5" />
     </a>
   </div>
 </div>

@@ -29,9 +29,9 @@ members = [
 ]
 
 [workspace.package]
-version = "0.12.5"
+version = "0.12.6"
 edition = "2024"
-license = "Apache-2.0"
+license = "MIT"
 repository = "https://github.com/NeboLoop/nebo"
 
 [workspace.dependencies]
@@ -89,6 +89,7 @@ futures = "0.3"
 async-openai = { version = "0.33", features = ["chat-completion"] }
 tokio-util = "0.7"
 tokio-tungstenite = { version = "0.26", features = ["connect", "native-tls"] }
+yamux = "0.13"
 
 # Cron
 cron = "0.12"
@@ -147,3 +148,11 @@ split-debuginfo = "unpacked"
 lto = true
 codegen-units = 1
 strip = true
+
+# Server-image profile (Dockerfile only): trades a few % runtime perf for a
+# ~3x faster compile — fat LTO + one codegen unit on the 4-core CI runner was
+# 24 of the image build's 30 minutes. Desktop releases keep [profile.release].
+[profile.server]
+inherits = "release"
+lto = "thin"
+codegen-units = 16

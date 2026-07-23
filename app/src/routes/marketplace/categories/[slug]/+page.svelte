@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { page } from '$app/stores';
-	import { goto } from '$app/navigation';
+	import { goto } from '$lib/nav';
 	import { onMount } from 'svelte';
 	import { t } from 'svelte-i18n';
 	import { ChevronLeft, Check, Sparkles } from 'lucide-svelte';

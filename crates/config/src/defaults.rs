@@ -100,6 +100,44 @@ pub fn ensure_bot_id() -> String {
     id
 }
 
+/// Read or generate the per-install extension relay secret, stored at
+/// `<data_dir>/.extension-secret` (mode 0600). It authenticates the native
+/// messaging relay to the local server on `/ws/extension` — a value that a
+/// hostile web page (no filesystem access) can never present, closing the
+/// localhost-WS / DNS-rebinding path into the browser-control channel. Both the
+/// server (generates at startup) and the relay (reads on connect) resolve the
+/// same default data dir, so they agree without any inter-process handoff.
+pub fn ensure_extension_secret() -> Result<String, NeboError> {
+    if let Some(existing) = read_extension_secret() {
+        return Ok(existing);
+    }
+    let secret = {
+        use rand::Rng;
+        let mut bytes = [0u8; 32];
+        rand::thread_rng().fill(&mut bytes);
+        bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()
+    };
+    let dir = data_dir()?;
+    let path = dir.join(files::EXTENSION_SECRET);
+    let _ = fs::remove_file(&path);
+    fs::write(&path, &secret)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(secret)
+}
+
+/// Read the extension relay secret without generating one (relay side).
+/// Returns `None` if the file is absent or empty.
+pub fn read_extension_secret() -> Option<String> {
+    let dir = data_dir().ok()?;
+    let s = fs::read_to_string(dir.join(files::EXTENSION_SECRET)).ok()?;
+    let s = s.trim().to_string();
+    if s.is_empty() { None } else { Some(s) }
+}
+
 // ── Artifact Directory Helpers ─────────────────────────────────────
 
 /// Returns the `nebo/` directory for marketplace (sealed) artifacts.

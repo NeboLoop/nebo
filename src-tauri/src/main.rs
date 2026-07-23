@@ -143,19 +143,28 @@ fn get_window_state(label: String) -> Option<WindowState> {
 
 /// Tauri command: save a Work-panel artifact to ~/Downloads and reveal it.
 /// WKWebView ignores the anchor `download` attribute, so the desktop build
-/// saves natively. `file_name` must be a bare name inside the files dir.
+/// saves natively. `rel_path` is the file's path inside the files dir (e.g.
+/// "work/blobs/<hash>.md"); `save_name` is the friendly name to save it under.
 #[tauri::command]
-fn save_artifact(file_name: String) -> Result<String, String> {
-    if file_name.contains('/') || file_name.contains('\\') || file_name.starts_with('.') {
-        return Err("invalid file name".into());
+fn save_artifact(rel_path: String, save_name: String) -> Result<String, String> {
+    let files_dir = config::data_dir().map_err(|e| e.to_string())?.join("files");
+    // Resolve under the files dir and reject any escape (e.g. `..`).
+    let src = files_dir
+        .join(&rel_path)
+        .canonicalize()
+        .map_err(|_| format!("file not found: {rel_path}"))?;
+    let base = files_dir.canonicalize().map_err(|e| e.to_string())?;
+    if !src.starts_with(&base) || !src.is_file() {
+        return Err(format!("file not found: {rel_path}"));
     }
-    let src = config::data_dir()
-        .map_err(|e| e.to_string())?
-        .join("files")
-        .join(&file_name);
-    if !src.is_file() {
-        return Err(format!("file not found: {file_name}"));
-    }
+    // Save under the artifact title (a bare name), falling back to the source
+    // file name. Strip any path components a title might carry.
+    let file_name = std::path::Path::new(&save_name)
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .filter(|s| !s.is_empty() && !s.starts_with('.'))
+        .or_else(|| src.file_name().map(|s| s.to_string_lossy().into_owned()))
+        .unwrap_or_else(|| "download".into());
     let downloads = dirs::download_dir().ok_or("no Downloads directory")?;
     // Don't overwrite an existing download: name.ext, name (1).ext, …
     let mut dest = downloads.join(&file_name);
@@ -334,7 +343,7 @@ fn main() {
         let args: Vec<String> = std::env::args().collect();
         if args.iter().any(|a| a.starts_with("chrome-extension://")) {
             let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
-            if let Err(e) = rt.block_on(run_native_messaging()) {
+            if let Err(e) = rt.block_on(browser::extension_relay::run(config::read_extension_secret())) {
                 eprintln!("[nebo-relay] error: {e}");
                 std::process::exit(1);
             }
@@ -892,194 +901,4 @@ fn wait_for_server() {
         std::thread::sleep(std::time::Duration::from_millis(250));
     }
     tracing::warn!("Server did not become ready in 15s, launching window anyway");
-}
-
-// ── Chrome native messaging relay ─────────────────────────────────────
-// Lightweight stdin/stdout bridge between Chrome extension and Nebo server (WS).
-// Extension ←stdin/stdout→ this process ←WebSocket→ Nebo server
-
-async fn run_native_messaging() -> anyhow::Result<()> {
-    use futures::{SinkExt, StreamExt};
-    use std::sync::Arc;
-    use tokio::io::AsyncReadExt;
-
-    eprintln!("[nebo-relay] starting native messaging bridge");
-
-    let ws_url = "ws://127.0.0.1:27895/ws/extension";
-
-    // Retry WS connection with backoff — server may not be ready yet
-    let ws_stream = {
-        let mut attempts = 0u32;
-        loop {
-            match tokio_tungstenite::connect_async(ws_url).await {
-                Ok((stream, _)) => {
-                    eprintln!("[nebo-relay] connected to server at {ws_url}");
-                    break stream;
-                }
-                Err(e) if attempts < 10 => {
-                    attempts += 1;
-                    let delay = std::cmp::min(500 * 2u64.pow(attempts - 1), 5000);
-                    eprintln!(
-                        "[nebo-relay] WS connect attempt {attempts}/10 failed ({e}), retrying in {delay}ms"
-                    );
-                    tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
-                }
-                Err(e) => {
-                    eprintln!("[nebo-relay] giving up after 10 attempts: {e}");
-                    std::process::exit(1);
-                }
-            }
-        }
-    };
-
-    let (mut ws_tx, mut ws_rx) = ws_stream.split();
-
-    // Detect which browser launched this relay
-    let browser = detect_parent_browser();
-    eprintln!("[nebo-relay] detected browser: {browser}");
-
-    let hello = serde_json::json!({
-        "type": "hello",
-        "browser": browser,
-        "relay": true,
-    });
-    let _ = ws_tx
-        .send(tokio_tungstenite::tungstenite::Message::Text(
-            serde_json::to_string(&hello).unwrap().into(),
-        ))
-        .await;
-
-    let mut stdin = tokio::io::stdin();
-    let stdout = Arc::new(tokio::sync::Mutex::new(tokio::io::stdout()));
-
-    let stdout_send = stdout.clone();
-
-    // stdin → WS
-    let send_task = tokio::spawn(async move {
-        loop {
-            let mut len_buf = [0u8; 4];
-            if stdin.read_exact(&mut len_buf).await.is_err() {
-                eprintln!("[nebo-relay] stdin closed");
-                break;
-            }
-            let len = u32::from_le_bytes(len_buf) as usize;
-            if len > 1_048_576 {
-                eprintln!("[nebo-relay] message too large: {len} bytes");
-                break;
-            }
-
-            let mut body = vec![0u8; len];
-            if stdin.read_exact(&mut body).await.is_err() {
-                break;
-            }
-
-            let msg: serde_json::Value = match serde_json::from_slice(&body) {
-                Ok(v) => v,
-                Err(e) => {
-                    eprintln!("[nebo-relay] malformed JSON: {e}");
-                    continue;
-                }
-            };
-
-            let msg_type = msg["type"].as_str().unwrap_or("");
-
-            match msg_type {
-                "hello" => {
-                    let resp = serde_json::json!({"type": "connected"});
-                    let _ = write_native_message(&stdout_send, &resp).await;
-                    let text = serde_json::to_string(&msg).unwrap();
-                    let _ = ws_tx
-                        .send(tokio_tungstenite::tungstenite::Message::Text(text.into()))
-                        .await;
-                    continue;
-                }
-                "ping" => {
-                    let resp = serde_json::json!({"type": "pong"});
-                    let _ = write_native_message(&stdout_send, &resp).await;
-                    continue;
-                }
-                _ => {}
-            }
-
-            let text = serde_json::to_string(&msg).unwrap();
-            if ws_tx
-                .send(tokio_tungstenite::tungstenite::Message::Text(text.into()))
-                .await
-                .is_err()
-            {
-                eprintln!("[nebo-relay] WS send failed");
-                break;
-            }
-        }
-    });
-
-    // WS → stdout
-    let stdout_recv = stdout.clone();
-    let recv_task = tokio::spawn(async move {
-        while let Some(Ok(msg)) = ws_rx.next().await {
-            if let tokio_tungstenite::tungstenite::Message::Text(text) = msg {
-                if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&text) {
-                    if write_native_message(&stdout_recv, &parsed).await.is_err() {
-                        break;
-                    }
-                }
-            }
-        }
-    });
-
-    tokio::select! {
-        _ = send_task => {}
-        _ = recv_task => {}
-    }
-
-    eprintln!("[nebo-relay] shutting down");
-    std::process::exit(0);
-}
-
-async fn write_native_message(
-    stdout: &tokio::sync::Mutex<tokio::io::Stdout>,
-    msg: &serde_json::Value,
-) -> Result<(), std::io::Error> {
-    use tokio::io::AsyncWriteExt;
-    let json_bytes = serde_json::to_vec(msg).unwrap();
-    let len = (json_bytes.len() as u32).to_le_bytes();
-    let mut out = stdout.lock().await;
-    out.write_all(&len).await?;
-    out.write_all(&json_bytes).await?;
-    out.flush().await?;
-    Ok(())
-}
-
-fn detect_parent_browser() -> String {
-    #[cfg(unix)]
-    {
-        let ppid = std::os::unix::process::parent_id();
-        if let Ok(output) = std::process::Command::new("ps")
-            .args(["-p", &ppid.to_string(), "-o", "comm="])
-            .output()
-        {
-            let parent = String::from_utf8_lossy(&output.stdout)
-                .trim()
-                .to_lowercase();
-            if parent.contains("brave") {
-                return "brave".into();
-            }
-            if parent.contains("chrome") {
-                return "chrome".into();
-            }
-            if parent.contains("firefox") {
-                return "firefox".into();
-            }
-            if parent.contains("edge") {
-                return "edge".into();
-            }
-            if parent.contains("arc") {
-                return "arc".into();
-            }
-            if !parent.is_empty() {
-                return parent;
-            }
-        }
-    }
-    "unknown".into()
 }

@@ -1,14 +1,15 @@
 import { writable } from 'svelte/store';
+import { storage } from '$lib/storage';
 
 // Persisted auto-approved actions
-const stored = typeof localStorage !== 'undefined' ? localStorage.getItem('nebo-permissions') : null;
+const stored = storage.get('nebo-permissions');
 const initial: string[] = stored ? JSON.parse(stored) : [];
 
 export const autoApproved = writable<string[]>(initial);
 
 autoApproved.subscribe(v => {
-  if (typeof localStorage !== 'undefined') {
-    localStorage.setItem('nebo-permissions', JSON.stringify(v));
+  {
+    storage.set('nebo-permissions', JSON.stringify(v));
   }
 });
 

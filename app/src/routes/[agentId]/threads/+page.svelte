@@ -1,7 +1,8 @@
 <script lang="ts">
   import { getContext, onMount } from 'svelte';
+  import { t } from 'svelte-i18n';
   import { onWsEvent } from '$lib/websocket/subscribe';
-  import { goto } from '$app/navigation';
+  import { goto } from '$lib/nav';
   import ChatPane from '$lib/components/chat/ChatPane.svelte';
   import type { AgentPageContext } from '$lib/types/agentPage';
   import { currentUser } from '$lib/stores/auth';
@@ -11,15 +12,18 @@
   const agentId = $derived(ctx.agentId);
   const agent = $derived(ctx.agent);
 
+  // Returns an i18n key — translated in the derived below.
   function getGreeting(): string {
     const hour = new Date().getHours();
-    if (hour < 12) return 'Good morning';
-    if (hour < 17) return 'Good afternoon';
-    return 'Good evening';
+    if (hour < 12) return 'chat.goodMorning';
+    if (hour < 17) return 'chat.goodAfternoon';
+    return 'chat.goodEvening';
   }
 
   const firstName = $derived($currentUser?.name?.split(' ')[0] ?? '');
-  const greeting = $derived(firstName ? `${getGreeting()}, ${firstName}` : getGreeting());
+  const greeting = $derived(firstName
+    ? $t('chat.greetingWithName', { values: { greeting: $t(getGreeting()), name: firstName } })
+    : $t(getGreeting()));
 
   let messages = $state<any[]>([]);
   let isLoading = $state(false);
@@ -96,13 +100,13 @@
 
 <ChatPane
   {messages}
-  agentName={agent?.name ?? 'Agent'}
+  agentName={agent?.name ?? $t('common.agent')}
   agentId={agentId}
-  headerTitle="New thread"
-  headerRight="Work"
-  placeholder="Start a new thread with {agent?.name}..."
+  headerTitle={$t('chat.newThread')}
+  headerRight={$t('chat.work')}
+  placeholder={$t('chat.startNewThreadWith', { values: { name: agent?.name ?? '' } })}
   emptyTitle={greeting}
-  emptyDesc="New thread with {agent?.name ?? 'your companion'} · clean context, fresh start."
+  emptyDesc={$t('chat.newThreadEmptyDesc', { values: { name: agent?.name ?? $t('chat.yourEmployee') } })}
   {allAgents}
   onsend={handleSend}
   {isLoading}

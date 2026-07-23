@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { t } from 'svelte-i18n';
   import AlertTriangle from 'lucide-svelte/icons/alert-triangle';
   import Shield from 'lucide-svelte/icons/shield';
   import { approveAlways } from '$lib/stores/permissions.js';
@@ -28,11 +29,11 @@
   }: Props = $props();
 
   const typeLabels: Record<string, string> = {
-    shell_command: 'Run Shell Command',
-    file_write: 'Write File',
-    file_delete: 'Delete File',
-    http_request: 'HTTP Request',
-    browser_navigate: 'Open URL',
+    shell_command: 'components.approvalModal.runShellCommand',
+    file_write: 'components.approvalModal.writeFile',
+    file_delete: 'components.approvalModal.deleteFile',
+    http_request: 'components.approvalModal.httpRequest',
+    browser_navigate: 'components.approvalModal.openUrl',
   };
 
   function handleDeny() {
@@ -70,8 +71,8 @@
           <AlertTriangle class="w-5 h-5 text-warning" />
         </div>
         <div>
-          <h3 class="text-sm font-bold text-base-content">Action Requires Approval</h3>
-          <p class="text-xs text-base-content/50">{agent} wants to perform an action</p>
+          <h3 class="text-sm font-bold text-base-content">{$t('components.approvalModal.title')}</h3>
+          <p class="text-xs text-base-content/50">{$t('components.approvalModal.wantsToPerform', { values: { agent } })}</p>
         </div>
       </div>
 
@@ -79,7 +80,7 @@
       <div class="px-5 py-4">
         <div class="flex items-center gap-2 mb-3">
           <Shield class="w-4 h-4 text-base-content/40" />
-          <span class="text-sm font-medium text-base-content/70">{typeLabels[actionType] || actionType}</span>
+          <span class="text-sm font-medium text-base-content/70">{typeLabels[actionType] ? $t(typeLabels[actionType]) : actionType}</span>
         </div>
         <div class="p-3 rounded-lg bg-base-200 border border-base-content/10 font-mono text-xs text-base-content break-all leading-relaxed">
           {actionDetail}
@@ -92,19 +93,19 @@
           onclick={handleDeny}
           class="px-4 py-2 rounded-lg border border-base-content/10 text-sm font-medium cursor-pointer hover:bg-base-200 transition-colors bg-transparent"
         >
-          Deny
+          {$t('approval.deny')}
         </button>
         <button
           onclick={handleApproveOnce}
           class="px-4 py-2 rounded-lg bg-primary text-primary-content text-sm font-bold cursor-pointer hover:brightness-110 transition-all border-none"
         >
-          Approve Once
+          {$t('components.approvalModal.approveOnce')}
         </button>
         <button
           onclick={handleApproveAlways}
           class="px-4 py-2 rounded-lg bg-success text-success-content text-sm font-bold cursor-pointer hover:brightness-110 transition-all border-none"
         >
-          Approve Always
+          {$t('components.approvalModal.approveAlways')}
         </button>
       </div>
     </div>

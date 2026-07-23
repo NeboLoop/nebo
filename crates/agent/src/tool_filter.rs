@@ -218,12 +218,12 @@ const ALWAYS_INCLUDE_TOOLS: &[&str] =
     &["agent", "skill", "event", "message", "tool_search", "plugin", "os", "web", "mcp"];
 
 // Keyword-based deferred activation removed. Tools now load and unload via
-// message-history scanning (extract_discovered_deferred_tools), following
-// Claude Code's pattern. Model explicitly calls tool_search to discover tools.
+// message-history scanning (extract_discovered_deferred_tools). Model
+// explicitly calls tool_search to discover tools.
 
 /// Extract deferred tools that are currently "discovered" in the message window.
 ///
-/// Follows Claude Code's `extractDiscoveredToolNames(messages)` pattern:
+/// Scans the message window for discovered deferred tool names:
 /// - Scans assistant `tool_calls` for deferred tools that were directly called
 /// - Scans tool result messages for `tool_search` responses, extracting `matches`
 ///

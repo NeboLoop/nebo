@@ -53,6 +53,49 @@ fn parse_eval_response(content: &str) -> EvalDecision {
     }
 }
 
+/// Scope an activity's toolset to what its text actually references.
+///
+/// The full registry (~38 tools, ~21k tokens of schemas) went out with EVERY
+/// LLM turn and invited small models to wander — web-searching for
+/// instructions the step already spells out, or shelling out to plugin
+/// binaries via `os` instead of the plugin tool. Scan the activity's intent,
+/// steps, and skill docs for `<tool>(` call references; when at least one
+/// registry tool matches, run with just those plus `message` (the delivery
+/// primitive — steps often say "alert" without naming it). No match → fail
+/// open with the full roster (can't infer usage → don't break agents that
+/// rely on free tool choice).
+pub(crate) fn scoped_activity_tools<'a>(
+    activity: &Activity,
+    resolved_tools: &'a [Box<dyn DynTool>],
+    skill_content: Option<&HashMap<String, String>>,
+) -> Vec<&'a Box<dyn DynTool>> {
+    let mut text = activity.intent.clone();
+    for s in &activity.steps {
+        text.push_str(s);
+    }
+    if let Some(skills) = skill_content {
+        for name in &activity.skills {
+            if let Some(body) = skills.get(name.as_str()) {
+                text.push_str(body);
+            }
+        }
+    }
+    let referenced: Vec<&'a Box<dyn DynTool>> = resolved_tools
+        .iter()
+        .filter(|t| t.name() == "message" || text.contains(&format!("{}(", t.name())))
+        .collect();
+    if referenced.iter().any(|t| t.name() != "message") {
+        info!(
+            activity = activity.id.as_str(),
+            tools = referenced.len(),
+            "scoped activity toolset to referenced tools"
+        );
+        referenced
+    } else {
+        resolved_tools.iter().collect()
+    }
+}
+
 /// Execute a complete workflow run.
 ///
 /// If `existing_run_id` is provided, uses that run record instead of creating a new one.
@@ -194,8 +237,11 @@ pub async fn execute_workflow(
             warn!(run_id = %run_id, error = %e, "failed to update workflow run status");
         }
 
-        // All resolved tools are available to every activity
-        let mut activity_tools: Vec<&Box<dyn DynTool>> = resolved_tools.iter().collect();
+        // Scope the toolset to what the activity actually uses (see
+        // scoped_activity_tools) — the full registry went out with EVERY LLM
+        // turn (~21k tokens of schemas) and invited small models to wander.
+        let mut activity_tools: Vec<&Box<dyn DynTool>> =
+            scoped_activity_tools(activity, resolved_tools, skill_content);
 
         // Inject emit tool if event bus is available (always available, no declaration needed)
         let emit_tool_box: Option<Box<dyn DynTool>> =
@@ -627,6 +673,16 @@ pub async fn execute_activity(
         })?;
 
         // --- Orchestrator evaluation (its tokens count too) ---
+        // Give the evaluator the remaining steps so it can see that unexecuted
+        // work (often the side effects: store, send, record) still exists —
+        // without this it exited workflows whose intermediate output merely
+        // LOOKED complete (voice profile distilled at step 2/5, never stored).
+        let remaining_steps = activity.steps[i + 1..]
+            .iter()
+            .enumerate()
+            .map(|(j, s)| format!("- Step {}: {}", i + j + 2, truncate_at_char_boundary(s, 200)))
+            .collect::<Vec<_>>()
+            .join("\n");
         let (eval, eval_tokens) = evaluate_step(
             provider,
             &system,
@@ -634,6 +690,7 @@ pub async fn execute_activity(
             &step_result,
             i,
             total_steps,
+            &remaining_steps,
             make_trace(i.to_string()),
         )
         .await?;
@@ -731,17 +788,30 @@ async fn evaluate_step(
     step_output: &str,
     step_index: usize,
     total_steps: usize,
+    remaining_steps: &str,
     trace: ai::RequestTrace,
 ) -> Result<(EvalDecision, u32), WorkflowError> {
+    let remaining_block = if remaining_steps.is_empty() {
+        String::from("(none — this is the final step)")
+    } else {
+        remaining_steps.to_string()
+    };
     let eval_system = format!(
         "{}\n\n## Step Evaluation Mode\n\
          You are evaluating the output of Step {}/{}: \"{}\"\n\n\
+         Steps that have NOT run yet:\n{}\n\n\
          Based on the workflow context above and the step output below, respond with EXACTLY ONE of:\n\
          - proceed — step completed its stated goal, continue to the next step\n\
-         - exit:<reason> — the task is inapplicable, the data doesn't match expectations, \
-           or continuing would be wasteful or harmful\n\n\
+         - exit:<reason> — ONLY when the task is inapplicable to this data, a required \
+           precondition failed, or continuing would be harmful\n\n\
+         NEVER exit because the work so far looks complete or sufficient — the remaining \
+         steps exist for a reason and often perform the required side effects (storing, \
+         sending, recording). \"Task completed\" and \"no actions required\" are NOT valid \
+         exit reasons; if this step met its goal, respond proceed. If the remaining steps \
+         carry their own conditional guards (\"only if\", \"always\", \"skip if\"), respond \
+         proceed and let the steps self-gate — do not exit on their behalf.\n\n\
          Respond with ONLY the decision. Nothing else.",
-        system, step_index + 1, total_steps, step_text,
+        system, step_index + 1, total_steps, step_text, remaining_block,
     );
 
     let truncated_output = truncate_at_char_boundary(step_output, 2000);
@@ -938,7 +1008,8 @@ async fn run_llm_loop(
             ..Default::default()
         });
 
-        // Execute each tool call and collect results (ctx built above the loop).
+        // Execute each tool call and collect results (ctx built above the loop
+        // with tools::workflow_session_key — supersedes the older inline binding).
         let mut tool_result_entries = Vec::new();
         for tc in &tool_calls {
             let tool = tools.iter().find(|t| t.name() == tc.name)
@@ -1426,6 +1497,90 @@ fn strip_mcp_prefix(name: &str) -> &str {
 #[cfg(test)]
 mod engine_tests {
     use super::*;
+
+    struct FakeTool(&'static str);
+    impl DynTool for FakeTool {
+        fn name(&self) -> &str {
+            self.0
+        }
+        fn description(&self) -> String {
+            String::new()
+        }
+        fn schema(&self) -> serde_json::Value {
+            serde_json::json!({})
+        }
+        fn requires_approval(&self) -> bool {
+            false
+        }
+        fn execute_dyn<'a>(
+            &'a self,
+            _ctx: &'a tools::ToolContext,
+            _input: serde_json::Value,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = tools::ToolResult> + Send + 'a>>
+        {
+            Box::pin(async { tools::ToolResult::ok(String::new()) })
+        }
+    }
+
+    fn fake_registry() -> Vec<Box<dyn DynTool>> {
+        ["plugin", "agent", "message", "os", "web", "browser"]
+            .iter()
+            .map(|n| Box::new(FakeTool(n)) as Box<dyn DynTool>)
+            .collect()
+    }
+
+    #[test]
+    fn test_scoped_activity_tools_filters_to_referenced() {
+        let activity: Activity = serde_json::from_value(serde_json::json!({
+            "id": "sweep",
+            "intent": "Mark noise read",
+            "steps": [
+                "List: plugin(resource: \"gws\", action: \"exec\", command: \"gmail users messages list\")",
+                "Record ids: agent(resource: \"memory\", action: \"store\", key: \"x\")"
+            ]
+        }))
+        .unwrap();
+        let registry = fake_registry();
+        let scoped = scoped_activity_tools(&activity, &registry, None);
+        let names: Vec<&str> = scoped.iter().map(|t| t.name()).collect();
+        // plugin + agent referenced; message always rides along; os/web/browser stripped
+        assert_eq!(names, vec!["plugin", "agent", "message"]);
+    }
+
+    #[test]
+    fn test_scoped_activity_tools_fails_open_without_references() {
+        let activity: Activity = serde_json::from_value(serde_json::json!({
+            "id": "compile",
+            "intent": "Compile the briefing from prior context",
+            "steps": ["Lead with the most important thing", "Keep it scannable"]
+        }))
+        .unwrap();
+        let registry = fake_registry();
+        let scoped = scoped_activity_tools(&activity, &registry, None);
+        // Nothing referenced → full roster (fail open)
+        assert_eq!(scoped.len(), registry.len());
+    }
+
+    #[test]
+    fn test_scoped_activity_tools_reads_skill_docs() {
+        let activity: Activity = serde_json::from_value(serde_json::json!({
+            "id": "triage-inbox",
+            "intent": "Get unread email summary",
+            "skills": ["gws-gmail-triage"],
+            "steps": ["Run: gws gmail +triage --max 30 ONCE to get the unread summary."]
+        }))
+        .unwrap();
+        let mut skills = HashMap::new();
+        skills.insert(
+            "gws-gmail-triage".to_string(),
+            "Use plugin(resource: \"gws\", action: \"exec\", ...) to triage.".to_string(),
+        );
+        let registry = fake_registry();
+        // Step text never names a tool, but the skill doc shows plugin( usage
+        let scoped = scoped_activity_tools(&activity, &registry, Some(&skills));
+        let names: Vec<&str> = scoped.iter().map(|t| t.name()).collect();
+        assert_eq!(names, vec!["plugin", "message"]);
+    }
 
     #[test]
     fn test_parse_eval_response() {

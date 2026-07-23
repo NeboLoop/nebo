@@ -165,7 +165,7 @@ impl OsTool {
     /// True when the call is a file-management verb (move/copy/rename/delete/
     /// mkdir) shaped like a file op (has `path`, no explicit resource) rather
     /// than a mouse `move`. The file tool has no such actions (they go through
-    /// the shell, matching Claude Code), so these are redirected to a shell
+    /// the shell), so these are redirected to a shell
     /// correction — and the permission gate must NOT treat them as desktop
     /// control. One detection, shared by `execute` (the redirect) and
     /// `capabilities::gating_capability` (skip the wrong-capability ask).
@@ -186,6 +186,26 @@ impl OsTool {
             "move" | "copy" | "rename" | "delete" | "remove" | "mkdir" | "rmdir" | "trash"
         );
         !has_explicit_resource && file_mgmt_verb && has_path && (has_dest || action != "move")
+    }
+
+    /// Resolve the effective resource of an os call — THE canonical chain:
+    /// explicit non-empty `resource` field → [`Self::infer_resource`] from the
+    /// action name → [`Self::infer_resource_from_context`] from the parameters.
+    /// Every consumer (approval gate, resource permits, concurrency, capability
+    /// gating, safeguards, path scoping) must use this so they all agree on
+    /// which resource a call targets.
+    pub(crate) fn resolved_resource(input: &serde_json::Value) -> &str {
+        let resource = input.get("resource").and_then(|v| v.as_str()).unwrap_or("");
+        if !resource.is_empty() {
+            return resource;
+        }
+        let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
+        let inferred = Self::infer_resource(action);
+        if inferred.is_empty() {
+            Self::infer_resource_from_context(input)
+        } else {
+            inferred
+        }
     }
 
     /// Infer resource from action name when resource field is omitted.
@@ -584,19 +604,7 @@ impl DynTool for OsTool {
     }
 
     fn requires_approval_for(&self, input: &serde_json::Value) -> bool {
-        let resource = input.get("resource").and_then(|v| v.as_str()).unwrap_or("");
-        // If no resource, try to infer it from action, then from context
-        let resource = if resource.is_empty() {
-            let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
-            let inferred = Self::infer_resource(action);
-            if inferred.is_empty() {
-                Self::infer_resource_from_context(input)
-            } else {
-                inferred
-            }
-        } else {
-            resource
-        };
+        let resource = Self::resolved_resource(input);
         // Organizer resources: only write actions need approval
         match resource {
             "mail" | "contacts" | "calendar" | "reminders" => {
@@ -608,19 +616,7 @@ impl DynTool for OsTool {
     }
 
     fn resource_permit(&self, input: &serde_json::Value) -> Option<ResourceKind> {
-        let resource = input.get("resource").and_then(|v| v.as_str()).unwrap_or("");
-        let resource = if resource.is_empty() {
-            let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
-            let inferred = OsTool::infer_resource(action);
-            if inferred.is_empty() {
-                OsTool::infer_resource_from_context(input)
-            } else {
-                inferred
-            }
-        } else {
-            resource
-        };
-        match resource {
+        match OsTool::resolved_resource(input) {
             // Physical screen resources — one mouse, one keyboard, one display
             "window" | "input" | "ui" | "menu" | "dialog" | "space" | "shortcut" => {
                 Some(ResourceKind::Screen)
@@ -632,19 +628,8 @@ impl DynTool for OsTool {
     }
 
     fn is_concurrent_safe(&self, input: &serde_json::Value) -> bool {
-        let resource = input.get("resource").and_then(|v| v.as_str()).unwrap_or("");
         let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
-        let resource = if resource.is_empty() {
-            let inferred = OsTool::infer_resource(action);
-            if inferred.is_empty() {
-                OsTool::infer_resource_from_context(input)
-            } else {
-                inferred
-            }
-        } else {
-            resource
-        };
-        match resource {
+        match OsTool::resolved_resource(input) {
             "file" => matches!(action, "read" | "list" | "glob" | "grep"),
             "search" => true,
             "capture" => matches!(action, "screenshot" | "see"),
@@ -678,8 +663,8 @@ impl DynTool for OsTool {
             // args are file operations, NOT a mouse "move" — but action-name inference
             // resolves bare "move" to the desktop "input" resource, which then gated on
             // the wrong (Desktop) capability and surfaced a misleading "need Desktop".
-            // The file tool has no move/copy/delete (matching Claude Code: those go
-            // through the shell), so steer the agent to shell `mv`/`cp`/`rm` instead of
+            // The file tool has no move/copy/delete (those go through the shell),
+            // so steer the agent to shell `mv`/`cp`/`rm` instead of
             // misrouting. Disambiguated by file args: a real mouse move never carries
             // `path` + `destination`.
             {
@@ -739,6 +724,38 @@ impl DynTool for OsTool {
                 .is_some_and(|s| !s.is_empty())
             {
                 input["resource"] = serde_json::Value::String(resource.clone());
+            }
+
+            // Desktop-bound resources have no counterpart in a cloud deploy —
+            // no screen, input devices, or Mail/Calendar apps. Refuse with a
+            // reason the model can act on, instead of letting the platform
+            // layer fail deep inside with a cryptic xdotool/Evolution error.
+            // file/shell/web/search all work normally here, so only these are
+            // gated.
+            if crate::server_mode()
+                && matches!(
+                    resource.as_str(),
+                    "window"
+                        | "input"
+                        | "clipboard"
+                        | "capture"
+                        | "notification"
+                        | "ui"
+                        | "menu"
+                        | "dialog"
+                        | "space"
+                        | "shortcut"
+                        | "tts"
+                        | "dock"
+                        | "mail"
+                        | "contacts"
+                        | "calendar"
+                        | "reminders"
+                )
+            {
+                return ToolResult::error(format!(
+                    "os(resource: \"{resource}\") is not available in server mode — this Nebo runs in the cloud and has no screen, input devices, or desktop apps. File, shell, and web tools work normally."
+                ));
             }
 
             match resource.as_str() {

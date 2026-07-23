@@ -4,7 +4,7 @@
 //! (schedule, heartbeat, event, watch, channel). The `AgentWorkerRegistry`
 //! manages the lifecycle of all workers.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
 use std::process::Stdio;
@@ -818,6 +818,19 @@ impl SharedBridgeRegistry {
             .unwrap_or_default()
     }
 
+    /// Force-stop a shared bridge for a plugin slug, regardless of remaining agents.
+    /// Used on plugin update: cancel the running process and drop the entry so it
+    /// respawns against the NEW binary when its agents' workers re-register.
+    pub async fn stop(&self, plugin_slug: &str) {
+        let mut bridges = self.bridges.write().await;
+        if let Some(bridge) = bridges.remove(plugin_slug) {
+            if let Some(cancel) = bridge.cancel {
+                cancel.cancel();
+            }
+            info!(plugin = %plugin_slug, "shared bridge stopped (plugin update)");
+        }
+    }
+
     /// Stop all shared bridges (server shutdown).
     pub async fn stop_all(&self) {
         let mut bridges = self.bridges.write().await;
@@ -925,6 +938,12 @@ impl AgentWorkerRegistry {
         if let Some(worker) = workers.remove(agent_id) {
             worker.stop(&self.store).await;
         }
+    }
+
+    /// Shared-bridge registry — lets callers force-stop a plugin's shared bridge
+    /// (e.g. on plugin update) so it respawns against the new binary.
+    pub fn shared_bridges(&self) -> &Arc<SharedBridgeRegistry> {
+        &self.shared_bridges
     }
 
     /// Stop all workers (shutdown).
@@ -1505,11 +1524,11 @@ async fn folder_watch_loop(
         }
     }
 
-    let (tx, mut rx) = mpsc::channel::<notify::Result<Event>>(64);
+    let (tx, mut rx) = mpsc::unbounded_channel::<notify::Result<Event>>();
 
     let mut watcher = match notify::RecommendedWatcher::new(
         move |res| {
-            let _ = tx.blocking_send(res);
+            let _ = tx.send(res);
         },
         notify::Config::default().with_poll_interval(std::time::Duration::from_secs(2)),
     ) {
@@ -1751,6 +1770,12 @@ async fn channel_loop(
     let mut backoff_secs = channel_def.restart_delay_secs;
     let max_backoff_secs = 300;
 
+    // Threads this bot has posted into — feeds the respond-scope check for
+    // un-addressed thread replies. Outside the respawn loop so bridge
+    // restarts keep the memory.
+    let participating_threads: ParticipatingThreads =
+        Arc::new(std::sync::Mutex::new(HashSet::new()));
+
     loop {
         if cancel.is_cancelled() {
             break;
@@ -1853,6 +1878,7 @@ async fn channel_loop(
         let bridge_stdin = stdin.clone();
         let bridge_agent = agent_id.clone();
         let bridge_channel = channel_name.clone();
+        let forwarder_threads = participating_threads.clone();
         let bridge_forwarder = tokio::spawn(async move {
             while let Some(op) = bridge_rx.recv().await {
                 let line = match serde_json::to_string(&op) {
@@ -1878,6 +1904,15 @@ async fn channel_loop(
                     break;
                 }
                 let _ = guard.flush().await;
+                // An agent-initiated op that targets a thread (plugin_tool
+                // post/reply, scheduler cron post) makes the bot a participant
+                // there — later un-addressed replies in it are in scope.
+                if let (Some(ch), Some(ts)) = (
+                    op.get("channel").and_then(|v| v.as_str()),
+                    op.get("thread_ts").and_then(|v| v.as_str()),
+                ) {
+                    record_thread_participation(&forwarder_threads, ch, ts);
+                }
             }
         });
 
@@ -2082,6 +2117,19 @@ async fn channel_loop(
                                 continue;
                             }
 
+                            // Respond-scope rule (see channel_message_in_scope):
+                            // in multi-party surfaces, only DMs, direct
+                            // @mentions of THIS bot, and replies in threads the
+                            // bot already participates in trigger a run.
+                            if !channel_message_in_scope(&payload, &participating_threads) {
+                                debug!(
+                                    agent = %agent_id,
+                                    channel = %channel_name,
+                                    "channel inbound: out of respond scope (not a DM, self-mention, or participating thread), skipping"
+                                );
+                                continue;
+                            }
+
                             // Build session key from channel + platform channel ID
                             let platform_channel = payload.get("channel")
                                 .and_then(|v| v.as_str())
@@ -2126,6 +2174,7 @@ async fn channel_loop(
                             let ch = channel_name.clone();
                             let stdin_ref = stdin.clone();
                             let reply_payload = payload.clone();
+                            let reply_threads = participating_threads.clone();
 
                             let agent_display = agent_name.clone();
                             tokio::spawn(async move {
@@ -2250,6 +2299,16 @@ async fn channel_loop(
                                 match stdin_lock.write_all(reply_line.as_bytes()).await {
                                     Ok(()) => {
                                         let _ = stdin_lock.flush().await;
+                                        // The bot answered this message — its
+                                        // thread now counts as participation
+                                        // for the respond-scope check.
+                                        if let Some((tch, tts)) =
+                                            reply_participation_key(&reply_payload)
+                                        {
+                                            record_thread_participation(
+                                                &reply_threads, &tch, &tts,
+                                            );
+                                        }
                                         info!(
                                             agent = %agent,
                                             channel = %ch,
@@ -2407,6 +2466,11 @@ async fn shared_channel_loop(
     let channel_name = plugin_slug.clone();
     let mut backoff_secs = channel_def.restart_delay_secs;
     let max_backoff_secs = 300;
+
+    // Threads any registered agent has replied into via this shared bridge —
+    // feeds the respond-scope check, same as the per-agent loop.
+    let participating_threads: ParticipatingThreads =
+        Arc::new(std::sync::Mutex::new(HashSet::new()));
 
     loop {
         if cancel.is_cancelled() {
@@ -2595,6 +2659,16 @@ async fn shared_channel_loop(
                                 continue;
                             }
 
+                            // Respond-scope rule — same enforcement as the
+                            // per-agent channel_loop (channel_message_in_scope).
+                            if !channel_message_in_scope(&payload, &participating_threads) {
+                                debug!(
+                                    channel = %channel_name,
+                                    "shared channel inbound: out of respond scope, skipping"
+                                );
+                                continue;
+                            }
+
                             // Route: find the best matching agent by name
                             let agents = shared_bridges.get_agents(&plugin_slug).await;
                             let (target_id, target_name) = route_to_agent(&text, &agents);
@@ -2620,6 +2694,7 @@ async fn shared_channel_loop(
                             let ch = channel_name.clone();
                             let stdin_ref = stdin.clone();
                             let reply_payload = payload.clone();
+                            let reply_threads = participating_threads.clone();
 
                             tokio::spawn(async move {
                                 match dispatch.dispatch(&target_id, &session_key, channel_ctx, &text).await {
@@ -2659,6 +2734,12 @@ async fn shared_channel_loop(
                                                 channel = %ch,
                                                 error = %e,
                                                 "failed to write reply to shared channel stdin"
+                                            );
+                                        } else if let Some((tch, tts)) =
+                                            reply_participation_key(&reply_payload)
+                                        {
+                                            record_thread_participation(
+                                                &reply_threads, &tch, &tts,
                                             );
                                         }
                                         let _ = stdin_lock.flush().await;
@@ -2752,6 +2833,104 @@ async fn shared_channel_loop(
         }
         backoff_secs = (backoff_secs * 2).min(max_backoff_secs);
     }
+}
+
+/// Threads the bot has posted into, keyed `(channel_id, thread_ts)`.
+///
+/// Shared between a bridge's inbound loop (respond-scope checks) and its
+/// outbound writers (participation recording). Declared outside the respawn
+/// loop so bridge restarts keep the thread memory; a full Nebo restart loses
+/// it, which only costs the user one re-mention in an old thread.
+type ParticipatingThreads = Arc<std::sync::Mutex<HashSet<(String, String)>>>;
+
+/// ONE respond-scope rule for inbound bridge messages, enforced nebo-side so
+/// every channel plugin inherits it (the bridge is a pipe, not a policy — it
+/// supplies platform facts, Nebo decides).
+///
+/// In a multi-party surface the bot responds ONLY to:
+///   (a) messages that directly @mention ITS OWN platform user,
+///   (b) DMs,
+///   (c) un-addressed replies within a thread the bot itself is participating in.
+///
+/// A message that @mentions a DIFFERENT user never triggers a run — even if
+/// the bot is a channel member and the text looks like a question it could
+/// answer. Outbound sends (cron posts, agent-initiated `post`/`dm` ops) don't
+/// pass through the inbound path, so scheduled/announce traffic is unaffected.
+///
+/// Bridges report the facts as inbound payload fields: `channel_type`
+/// (`"im"`/`"mpim"`/`"channel"`/`"group"`), `mentions_bot` (bool),
+/// `mentions_other` (bool). Payloads carrying neither `channel_type` nor
+/// `mentions_bot` come from bridges that don't distinguish multi-party
+/// surfaces (single-party plugins, older bridges) and dispatch as before.
+fn channel_message_in_scope(
+    payload: &serde_json::Value,
+    participating: &ParticipatingThreads,
+) -> bool {
+    let channel_type = payload.get("channel_type").and_then(|v| v.as_str());
+    let mentions_bot = payload.get("mentions_bot").and_then(|v| v.as_bool());
+
+    // No scope facts → legacy/single-party bridge; keep dispatching.
+    if channel_type.is_none() && mentions_bot.is_none() {
+        return true;
+    }
+
+    // (b) DMs are always in scope.
+    if matches!(channel_type, Some("im") | Some("dm")) {
+        return true;
+    }
+
+    // (a) Directly @mentioned — in scope even if other users are mentioned too.
+    if mentions_bot == Some(true) {
+        return true;
+    }
+
+    // Explicitly addressed to someone else — never in scope.
+    if payload.get("mentions_other").and_then(|v| v.as_bool()) == Some(true) {
+        return false;
+    }
+
+    // (c) Un-addressed reply inside a thread the bot is participating in.
+    if let (Some(channel), Some(thread_ts)) = (
+        payload.get("channel").and_then(|v| v.as_str()),
+        payload.get("thread_ts").and_then(|v| v.as_str()),
+    ) {
+        if participating
+            .lock()
+            .expect("participating_threads mutex poisoned")
+            .contains(&(channel.to_string(), thread_ts.to_string()))
+        {
+            return true;
+        }
+    }
+
+    false
+}
+
+/// Record that the bot posted into a thread, so later un-addressed replies in
+/// that thread pass the respond-scope check.
+fn record_thread_participation(participating: &ParticipatingThreads, channel: &str, thread_ts: &str) {
+    let mut set = participating
+        .lock()
+        .expect("participating_threads mutex poisoned");
+    // Bound memory: dropping stale entries only costs a re-mention in a
+    // long-dormant thread, which re-registers it on the bot's next reply.
+    if set.len() >= 1024 {
+        set.clear();
+    }
+    set.insert((channel.to_string(), thread_ts.to_string()));
+}
+
+/// Participation key for an outbound reply, derived from the echoed inbound
+/// payload: the thread the reply lands in, or — for a top-level reply — the
+/// user message it answers (a later "reply in thread" on that message roots
+/// the thread at its `ts`).
+fn reply_participation_key(reply_payload: &serde_json::Value) -> Option<(String, String)> {
+    let channel = reply_payload.get("channel").and_then(|v| v.as_str())?;
+    let thread_ts = reply_payload
+        .get("thread_ts")
+        .and_then(|v| v.as_str())
+        .or_else(|| reply_payload.get("ts").and_then(|v| v.as_str()))?;
+    Some((channel.to_string(), thread_ts.to_string()))
 }
 
 /// Route an incoming message to the best matching agent.
@@ -2920,5 +3099,112 @@ mod tests {
         assert!(cfg.event.is_none());
         assert!(!cfg.multiplexed);
         assert_eq!(cfg.command, "gmail +watch");
+    }
+
+    fn empty_threads() -> ParticipatingThreads {
+        Arc::new(std::sync::Mutex::new(HashSet::new()))
+    }
+
+    #[test]
+    fn test_scope_dm_always_dispatches() {
+        let payload = serde_json::json!({
+            "text": "hi", "channel": "D111", "channel_type": "im",
+            "mentions_bot": false, "mentions_other": false,
+        });
+        assert!(channel_message_in_scope(&payload, &empty_threads()));
+    }
+
+    #[test]
+    fn test_scope_self_mention_dispatches() {
+        let payload = serde_json::json!({
+            "text": "<@UBOT> status?", "channel": "C1", "channel_type": "channel",
+            "mentions_bot": true, "mentions_other": false,
+        });
+        assert!(channel_message_in_scope(&payload, &empty_threads()));
+    }
+
+    #[test]
+    fn test_scope_self_and_other_mention_dispatches() {
+        // Both the bot and someone else mentioned — still addressed to the bot.
+        let payload = serde_json::json!({
+            "text": "<@UBOT> ask <@UOTHER>", "channel": "C1", "channel_type": "channel",
+            "mentions_bot": true, "mentions_other": true,
+        });
+        assert!(channel_message_in_scope(&payload, &empty_threads()));
+    }
+
+    #[test]
+    fn test_scope_other_mention_never_dispatches() {
+        // The Donna bug: "@Donna Give me a residential address..." — a message
+        // addressed to a DIFFERENT user must never trigger a run.
+        let payload = serde_json::json!({
+            "text": "<@UDONNA> Give me a residential address", "channel": "C1",
+            "channel_type": "channel", "mentions_bot": false, "mentions_other": true,
+        });
+        let threads = empty_threads();
+        assert!(!channel_message_in_scope(&payload, &threads));
+
+        // ...even inside a thread the bot participates in.
+        record_thread_participation(&threads, "C1", "1700.1");
+        let threaded = serde_json::json!({
+            "text": "<@UDONNA> Give me a residential address", "channel": "C1",
+            "thread_ts": "1700.1", "channel_type": "channel",
+            "mentions_bot": false, "mentions_other": true,
+        });
+        assert!(!channel_message_in_scope(&threaded, &threads));
+    }
+
+    #[test]
+    fn test_scope_unaddressed_channel_message_skipped() {
+        let payload = serde_json::json!({
+            "text": "what's the weather", "channel": "C1", "channel_type": "channel",
+            "mentions_bot": false, "mentions_other": false,
+        });
+        assert!(!channel_message_in_scope(&payload, &empty_threads()));
+    }
+
+    #[test]
+    fn test_scope_participating_thread_dispatches() {
+        let threads = empty_threads();
+        record_thread_participation(&threads, "C1", "1700.1");
+        let payload = serde_json::json!({
+            "text": "and the zip code?", "channel": "C1", "thread_ts": "1700.1",
+            "channel_type": "channel", "mentions_bot": false, "mentions_other": false,
+        });
+        assert!(channel_message_in_scope(&payload, &threads));
+
+        // Same text in a thread the bot is NOT part of — skipped.
+        let other = serde_json::json!({
+            "text": "and the zip code?", "channel": "C1", "thread_ts": "1700.9",
+            "channel_type": "channel", "mentions_bot": false, "mentions_other": false,
+        });
+        assert!(!channel_message_in_scope(&other, &threads));
+    }
+
+    #[test]
+    fn test_scope_legacy_payload_without_facts_dispatches() {
+        // Bridges that don't report scope facts keep their previous behavior.
+        let payload = serde_json::json!({
+            "text": "hello", "channel": "chat-7",
+        });
+        assert!(channel_message_in_scope(&payload, &empty_threads()));
+    }
+
+    #[test]
+    fn test_reply_participation_key_prefers_thread_then_ts() {
+        let threaded = serde_json::json!({
+            "channel": "C1", "thread_ts": "1700.1", "ts": "1700.5",
+        });
+        assert_eq!(
+            reply_participation_key(&threaded),
+            Some(("C1".into(), "1700.1".into()))
+        );
+        // Top-level inbound: the answered message's ts roots any future thread.
+        let top_level = serde_json::json!({ "channel": "C1", "ts": "1700.5" });
+        assert_eq!(
+            reply_participation_key(&top_level),
+            Some(("C1".into(), "1700.5".into()))
+        );
+        assert_eq!(reply_participation_key(&serde_json::json!({})), None);
     }
 }

@@ -1,3 +1,5 @@
+import { backendWsBase } from '$lib/api/base';
+import { storage } from '$lib/storage';
 /**
  * WebSocket Client for Nebo
  *
@@ -53,12 +55,8 @@ type PresenceStatus = 'focused' | 'unfocused' | 'away';
  * Get WebSocket URL based on current page origin
  */
 function getWebSocketUrl(): string {
-	if (typeof window === 'undefined') return '';
-
-	const origin = window.location.origin;
-	const wsProtocol = origin.startsWith('https:') ? 'wss:' : 'ws:';
-	const host = origin.replace(/^https?:/, '');
-	return `${wsProtocol}${host}/ws`;
+	const base = backendWsBase();
+	return base ? `${base}/ws` : '';
 }
 
 class WebSocketClient {
@@ -70,6 +68,7 @@ class WebSocketClient {
 	private closedByUser = false;
 	private reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
 	private reconnectAttempts = 0;
+	private visibilityHooked = false;
 	private authToken: string | null = null;
 
 	// Presence tracking state
@@ -92,6 +91,17 @@ class WebSocketClient {
 	connect(token?: string): void {
 		if (token) {
 			this.authToken = token;
+		}
+		// Mobile browsers (iOS especially) suspend WebSockets in background tabs
+		// and standalone PWAs. Reconnect the moment the page is visible again so
+		// resume feels instant instead of waiting out the backoff timer.
+		if (typeof document !== 'undefined' && !this.visibilityHooked) {
+			this.visibilityHooked = true;
+			document.addEventListener('visibilitychange', () => {
+				if (document.visibilityState === 'visible' && this.ws?.readyState !== WebSocket.OPEN) {
+					this.connect();
+				}
+			});
 		}
 		if (this.ws?.readyState === WebSocket.OPEN) {
 			return;
@@ -116,7 +126,7 @@ class WebSocketClient {
 
 				// Send auth token if available, otherwise just connect.
 				// Server allows unauthenticated local connections (all HTTP API routes are public).
-				const authToken = this.authToken || localStorage.getItem('nebo_token');
+				const authToken = this.authToken || storage.get('nebo_token');
 				const msg = authToken
 					? { type: 'auth', data: { token: authToken }, timestamp: new Date().toISOString() }
 					: { type: 'connect', timestamp: new Date().toISOString() };

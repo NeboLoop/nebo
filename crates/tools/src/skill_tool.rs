@@ -79,6 +79,32 @@ impl SkillTool {
             .map(|d| d.join("skills"))
             .map_err(|e| format!("data dir error: {}", e))
     }
+
+    /// Resolve a skill name to its directory under the user skills dir.
+    /// The ONE pathway for turning tool-input names into filesystem paths:
+    /// rejects names containing path separators, `..`, or `.` so input like
+    /// `../../foo` can never escape the skills directory (create/read/update/
+    /// enable/disable/delete all go through here).
+    fn user_skill_dir(name: &str) -> Result<std::path::PathBuf, String> {
+        if name.is_empty()
+            || name == "."
+            || name.contains("..")
+            || name.contains('/')
+            || name.contains('\\')
+        {
+            return Err(format!(
+                "Invalid skill name '{}': names cannot contain path separators, '.', or '..'",
+                name
+            ));
+        }
+        let dir = Self::user_skills_dir()?;
+        let skill_dir = dir.join(name);
+        // Belt and braces: the joined path must still be inside the skills dir.
+        if !skill_dir.starts_with(&dir) {
+            return Err(format!("Invalid skill name '{}'", name));
+        }
+        Ok(skill_dir)
+    }
 }
 
 impl DynTool for SkillTool {
@@ -188,7 +214,7 @@ impl DynTool for SkillTool {
 
             match domain_input.action.as_str() {
                 "list" => {
-                    // Budget-constrained catalog (Claude Code pattern): show count +
+                    // Budget-constrained catalog: show count +
                     // capped entries with truncated descriptions. Never dump the full
                     // catalog — use discover(query) for targeted search.
                     const MAX_CATALOG_ENTRIES: usize = 30;
@@ -352,12 +378,12 @@ impl DynTool for SkillTool {
                         }
                         None => {
                             // Fall back to reading raw file from skills dir
-                            let dir = match Self::user_skills_dir() {
+                            let skill_dir = match Self::user_skill_dir(name) {
                                 Ok(d) => d,
                                 Err(e) => return ToolResult::error(e),
                             };
-                            let skill_md_path = dir.join(name).join("SKILL.md");
-                            let skill_md_disabled = dir.join(name).join("SKILL.md.disabled");
+                            let skill_md_path = skill_dir.join("SKILL.md");
+                            let skill_md_disabled = skill_dir.join("SKILL.md.disabled");
                             let path = if skill_md_path.exists() {
                                 skill_md_path
                             } else if skill_md_disabled.exists() {
@@ -494,11 +520,10 @@ impl DynTool for SkillTool {
                         }
                     }
                     // Otherwise enable a disabled skill on disk (available next message).
-                    let dir = match Self::user_skills_dir() {
+                    let skill_dir = match Self::user_skill_dir(name) {
                         Ok(d) => d,
                         Err(e) => return ToolResult::error(e),
                     };
-                    let skill_dir = dir.join(name);
                     if skill_dir.join("SKILL.md.disabled").exists() {
                         match std::fs::rename(
                             skill_dir.join("SKILL.md.disabled"),
@@ -526,11 +551,10 @@ impl DynTool for SkillTool {
                             "skill(action: \"unload\", name: \"coding-assistant\")",
                         ));
                     }
-                    let dir = match Self::user_skills_dir() {
+                    let skill_dir = match Self::user_skill_dir(name) {
                         Ok(d) => d,
                         Err(e) => return ToolResult::error(e),
                     };
-                    let skill_dir = dir.join(name);
 
                     if skill_dir.join("SKILL.md.disabled").exists() {
                         ToolResult::ok(format!("Skill '{}' is already disabled.", name))
@@ -561,7 +585,7 @@ impl DynTool for SkillTool {
                     // LLMs often send literal \n instead of real newlines in tool call strings.
                     let content = content_raw.replace("\\n", "\n");
 
-                    let dir = match Self::user_skills_dir() {
+                    let skill_dir = match Self::user_skill_dir(name) {
                         Ok(d) => d,
                         Err(e) => return ToolResult::error(e),
                     };
@@ -576,17 +600,22 @@ impl DynTool for SkillTool {
                         )
                     };
 
-                    let skill_dir = dir.join(name);
                     if let Err(e) = std::fs::create_dir_all(&skill_dir) {
                         return ToolResult::error(format!("Failed to create skill dir: {}. Do not retry — this is a filesystem error.", e));
                     }
                     let path = skill_dir.join("SKILL.md");
                     match std::fs::write(&path, final_content) {
-                        Ok(_) => ToolResult::ok(format!(
-                            "Created skill '{}' at {}",
-                            name,
-                            path.display()
-                        )),
+                        Ok(_) => {
+                            // Make the skill (and its triggers) live NOW — the fs
+                            // watcher is not instant and first-call trigger tests
+                            // race it. Same pattern as the install paths.
+                            self.loader.reload_from_disk().await;
+                            ToolResult::ok(format!(
+                                "Created skill '{}' at {}",
+                                name,
+                                path.display()
+                            ))
+                        }
                         Err(e) => ToolResult::error(format!("Failed to write skill: {}. Do not retry — this is a filesystem error.", e)),
                     }
                 }
@@ -623,11 +652,11 @@ impl DynTool for SkillTool {
                         }
                     }
 
-                    let dir = match Self::user_skills_dir() {
+                    let skill_dir = match Self::user_skill_dir(name) {
                         Ok(d) => d,
                         Err(e) => return ToolResult::error(e),
                     };
-                    let skill_md = dir.join(name).join("SKILL.md");
+                    let skill_md = skill_dir.join("SKILL.md");
                     if !skill_md.exists() {
                         return ToolResult::error(format!("Skill '{}' not found", name));
                     }
@@ -656,12 +685,10 @@ impl DynTool for SkillTool {
                         }
                     }
 
-                    let dir = match Self::user_skills_dir() {
+                    let skill_dir = match Self::user_skill_dir(name) {
                         Ok(d) => d,
                         Err(e) => return ToolResult::error(e),
                     };
-
-                    let skill_dir = dir.join(name);
                     if skill_dir.is_dir() {
                         if let Err(e) = std::fs::remove_dir_all(&skill_dir) {
                             tracing::warn!(skill = %name, error = %e, "failed to remove skill directory");
@@ -916,5 +943,32 @@ impl DynTool for SkillTool {
                 )),
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SkillTool;
+
+    #[test]
+    fn test_user_skill_dir_rejects_traversal_names() {
+        // Names that could escape the skills directory must be rejected
+        // before any filesystem operation (esp. delete's remove_dir_all).
+        for bad in [
+            "../../foo",
+            "..",
+            "a/../b",
+            "foo/bar",
+            "foo\\bar",
+            "/etc",
+            ".",
+            "",
+        ] {
+            assert!(
+                SkillTool::user_skill_dir(bad).is_err(),
+                "expected rejection for {:?}",
+                bad
+            );
+        }
     }
 }

@@ -127,6 +127,8 @@ pub struct AppState {
     pub presence: Arc<agent::PresenceTracker>,
     /// Proactive inbox — in-memory queue for background task results
     pub proactive_inbox: Arc<agent::ProactiveInbox>,
+    /// Auto-continuation budget/state tracker for judge-gated persistent goals
+    pub goal_tracker: Arc<agent::goals::GoalTracker>,
     /// Global registry of all active agent runs — single source of truth
     pub run_registry: RunRegistry,
     /// Owner's personal loop ID — used to unify agent sessions across local + NeboAI
@@ -152,6 +154,12 @@ pub struct AppState {
     /// Active follow-up windows per loop channel, keyed by conversation_id.
     /// Lets the engaged user keep talking without re-mentioning the bot.
     pub channel_engagement: Arc<Mutex<HashMap<String, Engagement>>>,
+    /// Short-TTL cache of raw NeboAI store responses (marketplace catalog + map),
+    /// keyed by query. Only the cloud round-trip is cached; the store handler
+    /// enriches each response with local install state per request. Uses
+    /// std::sync::Mutex — the lock is never held across an await (snapshot then
+    /// release in the handler), so the cheaper sync lock is correct.
+    pub store_cache: Arc<std::sync::Mutex<HashMap<String, (std::time::Instant, serde_json::Value)>>>,
 }
 
 impl AppState {

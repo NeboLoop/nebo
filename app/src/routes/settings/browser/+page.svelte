@@ -33,8 +33,8 @@
 </script>
 
 <SettingsHeader
-  title="Browser"
-  description="How Nebo browses the web — the Chrome/Brave extension and the built-in fallback browser."
+  title={$t('settingsBrowser.title')}
+  description={$t('settingsBrowser.description')}
 />
 
 <!-- Extension status -->
@@ -47,12 +47,12 @@
         <XCircle class="w-5 h-5 text-base-content/40 shrink-0" />
       {/if}
       <div>
-        <div class="text-sm font-medium">Browser Extension</div>
+        <div class="text-sm font-medium">{$t('settingsBrowser.extension')}</div>
         <div class="text-xs text-base-content/70">
           {#if loading}
             {$t('common.loading')}
           {:else if extensionConnected}
-            Connected — Nebo can drive your logged-in Chrome or Brave browser.
+            {$t('settingsBrowser.extensionConnected')}
           {:else}
             {$t('browserExtension.notConnected')}
           {/if}
@@ -94,14 +94,14 @@
       <XCircle class="w-5 h-5 text-base-content/40 shrink-0" />
     {/if}
     <div>
-      <div class="text-sm font-medium">Built-in Browser</div>
+      <div class="text-sm font-medium">{$t('settingsBrowser.builtIn')}</div>
       <div class="text-xs text-base-content/70">
         {#if loading}
           {$t('common.loading')}
         {:else if builtInAvailable}
-          Available — Nebo falls back to its bundled browser when the extension isn't connected.
+          {$t('settingsBrowser.builtInAvailable')}
         {:else}
-          Not available. Reinstall Nebo to restore the bundled browser.
+          {$t('settingsBrowser.builtInMissing')}
         {/if}
       </div>
     </div>

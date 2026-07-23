@@ -22,6 +22,13 @@ pub struct ConnectPayload {
     /// Color token from the bot's Identity settings. Serializes as `agentColor`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_color: Option<String>,
+    /// Where this install runs: "macos" | "windows" | "linux". Lets the owner's
+    /// manage console tell instances apart (Cloud / Mac / Windows / Linux).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub platform: Option<String>,
+    /// The machine's hostname (".local" stripped) — "which computer is this?".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hostname: Option<String>,
 }
 
 /// AUTH_OK / AUTH_FAIL frame payload (server -> client).

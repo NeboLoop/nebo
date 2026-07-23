@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { t } from 'svelte-i18n';
   import type { ExtensionInfo } from '$lib/api/nebo';
   import SettingsHeader from '$lib/components/settings/SettingsHeader.svelte';
   import StatCard from '$lib/components/settings/StatCard.svelte';
@@ -56,25 +57,25 @@
   }
 </script>
 
-<SettingsHeader title="Skills" description="Manage installed skills and their capabilities." />
+<SettingsHeader title={$t('settingsSkills.title')} description={$t('settingsSkills.pageDescription')} />
 
 <div class="flex gap-3 mb-6">
-  <StatCard label="Skills" value={skills.length} />
-  <StatCard label="Enabled" value={enabledCount} accent="success" />
-  <StatCard label="Sources" value={sourceCount} />
+  <StatCard label={$t('settingsSkills.title')} value={skills.length} />
+  <StatCard label={$t('common.enabled')} value={enabledCount} accent="success" />
+  <StatCard label={$t('settingsSkills.sources')} value={sourceCount} />
 </div>
 
 <div class="mb-6">
   <div class="flex items-center justify-between mb-3">
-    <h3 class="text-base font-semibold">Installed Skills</h3>
+    <h3 class="text-base font-semibold">{$t('settingsSkills.installedSkills')}</h3>
     {#if skills.length > 0}
-      <input type="text" bind:value={search} placeholder="Search skills…" class="input input-sm input-bordered max-w-xs text-sm" />
+      <input type="text" bind:value={search} placeholder={$t('settingsSkills.searchPlaceholder')} class="input input-sm input-bordered max-w-xs text-sm" />
     {/if}
   </div>
 
   {#if filtered.length === 0}
     <div class="text-center py-8">
-      <div class="text-xs text-base-content/50">{search ? `No skills match "${search}"` : 'No skills installed.'}</div>
+      <div class="text-xs text-base-content/50">{search ? $t('settingsSkills.noMatch', { values: { search } }) : $t('settingsSkills.noneInstalled')}</div>
     </div>
   {:else}
     <div class="flex flex-col gap-1.5">
@@ -83,7 +84,7 @@
           {#snippet leading()}
             <div
               class="w-2 h-2 rounded-full shrink-0 {skill.enabled ? 'bg-success' : 'bg-base-content/20'}"
-              title={skill.enabled ? 'Enabled' : 'Disabled'}
+              title={skill.enabled ? $t('common.enabled') : $t('common.disabled')}
             ></div>
           {/snippet}
           <div class="flex items-center gap-2 mb-0.5">
@@ -103,8 +104,8 @@
 </div>
 
 <BrowseCard
-  title="Browse Skills"
-  description="Discover more skills in the marketplace."
+  title={$t('settingsSecrets.browseSkills')}
+  description={$t('settingsSkills.browseDescription')}
   href="/marketplace/skills"
 />
 
@@ -117,20 +118,20 @@
   >
     {#if selected.description}
       <div>
-        <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1">Description</div>
+        <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1">{$t('common.description')}</div>
         <p class="text-xs text-base-content/70">{selected.description}</p>
       </div>
     {/if}
     <div>
-      <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1.5">Status</div>
+      <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1.5">{$t('common.status')}</div>
       <div class="flex items-center gap-2">
-        <span class="px-2 py-0.5 rounded text-xs font-medium {selected.enabled ? 'bg-success/10 text-success' : 'bg-base-200 text-base-content/60'}">{selected.enabled ? 'Enabled' : 'Disabled'}</span>
+        <span class="px-2 py-0.5 rounded text-xs font-medium {selected.enabled ? 'bg-success/10 text-success' : 'bg-base-200 text-base-content/60'}">{selected.enabled ? $t('common.enabled') : $t('common.disabled')}</span>
         <span class="px-1.5 py-0.5 rounded text-xs font-mono bg-base-200 text-base-content/70">{selected.source}</span>
       </div>
     </div>
     {#if selected.capabilities.length > 0}
       <div>
-        <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1.5">Capabilities</div>
+        <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1.5">{$t('settingsApps.capabilities')}</div>
         <div class="flex flex-wrap gap-1">
           {#each selected.capabilities as capability}
             <span class="px-1.5 py-0.5 rounded bg-base-200 text-xs font-mono text-base-content/70">{capability}</span>
@@ -139,16 +140,16 @@
       </div>
     {/if}
     {#snippet footer()}
-      <button class="px-3 py-1.5 rounded-md border border-base-300 text-xs cursor-pointer bg-transparent hover:bg-base-200 transition-colors" onclick={() => selected && toggleSkill(selected)}>{selected?.enabled ? 'Disable' : 'Enable'}</button>
-      <button class="px-3 py-1.5 rounded-md border border-error/30 text-xs text-error font-medium cursor-pointer bg-transparent hover:bg-error/5 transition-colors" onclick={() => (confirming = true)}>Uninstall</button>
+      <button class="px-3 py-1.5 rounded-md border border-base-300 text-xs cursor-pointer bg-transparent hover:bg-base-200 transition-colors" onclick={() => selected && toggleSkill(selected)}>{selected?.enabled ? $t('common.disable') : $t('common.enable')}</button>
+      <button class="px-3 py-1.5 rounded-md border border-error/30 text-xs text-error font-medium cursor-pointer bg-transparent hover:bg-error/5 transition-colors" onclick={() => (confirming = true)}>{$t('common.uninstall')}</button>
     {/snippet}
   </ManageModal>
 
   {#if confirming}
     <ConfirmModal
-      title="Uninstall {selected.name}?"
-      message="This removes the skill from this companion. You can reinstall it from the marketplace later."
-      confirmLabel="Uninstall"
+      title={$t('common.uninstallTitle', { values: { name: selected.name } })}
+      message={$t('settingsSkills.uninstallMessage')}
+      confirmLabel={$t('common.uninstall')}
       busy={removing}
       onCancel={() => (confirming = false)}
       onConfirm={uninstall}

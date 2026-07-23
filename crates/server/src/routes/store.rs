@@ -23,6 +23,10 @@ pub fn routes() -> Router<AppState> {
             axum::routing::get(handlers::store::list_store_categories),
         )
         .route(
+            "/store/marketplace-map",
+            axum::routing::get(handlers::store::list_store_marketplace_map),
+        )
+        .route(
             "/store/screenshots/{type}",
             axum::routing::get(handlers::store::get_store_screenshots),
         )

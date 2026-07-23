@@ -4,7 +4,7 @@ use chrono::{DateTime, Utc};
 use db::Store;
 use db::models::{AgentProfile, Memory, UserPreference, UserProfile};
 use regex::Regex;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::memory::{self, ScoredMemory};
 use crate::sanitize;
@@ -111,7 +111,7 @@ pub fn format_for_system_prompt(ctx: &DBContext, agent_name: &str) -> String {
             .as_deref()
             .filter(|s| !s.is_empty())
             .or_else(|| personality_preset_prompt(agent.personality_preset.as_deref()))
-            .unwrap_or("You are a helpful personal AI companion.");
+            .unwrap_or("You are a capable AI employee.");
         sections.push(format!("# Identity\n{}", personality));
     }
 
@@ -331,49 +331,134 @@ pub fn format_for_system_prompt(ctx: &DBContext, agent_name: &str) -> String {
     result
 }
 
-/// Search for memories relevant to the user's current prompt using FTS.
-/// Returns a formatted string to append to the system prompt, excluding
-/// memories already present in the tacit_memories list.
-pub fn load_prompt_relevant_memories(
+/// Character budget for the per-message "Relevant to This Conversation" slice.
+/// ~1,200 chars ≈ 300 tokens: room for roughly 5-8 short facts while keeping
+/// recall a small, bounded fraction of the system prompt. A char budget
+/// replaces the old bare 5-line cap, which could blow past any size target
+/// with long values or waste headroom on short ones.
+const PROMPT_MEMORY_CHAR_BUDGET: usize = 1200;
+
+/// How many candidates to request from hybrid search before dedupe/budget
+/// trimming (same as the old FTS candidate count).
+pub const PROMPT_MEMORY_CANDIDATES: usize = 10;
+
+/// Hard latency budget for the VECTOR leg of per-message recall, measured
+/// from the join point (time the spawned search already had during the
+/// sibling prompt-assembly loads counts toward it for free). Rationale: the
+/// query-embed round trip is a REMOTE provider call — p50 ~650ms observed on
+/// Janus, but with unbounded tail spikes (3.6s and 21s seen live). Prompt
+/// assembly must never gate on a remote call unboundedly, and the budget must
+/// beat the model's typical time-to-first-token contribution so recall is
+/// never the user-visible bottleneck; past it, recall degrades to the
+/// FTS-only tier.
+const RECALL_VECTOR_BUDGET_MS: u64 = 800;
+
+/// Join the recall search that the runner spawned before prompt assembly,
+/// enforcing [`RECALL_VECTOR_BUDGET_MS`]. Within budget → hybrid results flow
+/// unchanged. Past budget → degrade to a synchronous FTS-only search over the
+/// same read-scope chain — the documented fallback tier of the ONE recall
+/// pathway (this function), not a competing implementation. Both arms funnel
+/// through [`format_prompt_relevant_memories`] for dedupe/budget/formatting.
+pub async fn join_prompt_recall(
+    recall_task: tokio::task::JoinHandle<(Vec<tools::HybridSearchResult>, std::time::Duration)>,
     store: &Store,
     user_id: &str,
     prompt: &str,
     existing_memory_ids: &HashSet<i64>,
-) -> String {
-    if prompt.is_empty() {
-        return String::new();
+) -> (String, Vec<i64>) {
+    let t_join = std::time::Instant::now();
+    match tokio::time::timeout(
+        std::time::Duration::from_millis(RECALL_VECTOR_BUDGET_MS),
+        recall_task,
+    )
+    .await
+    {
+        Ok(Ok((results, net))) => {
+            debug!(
+                net_ms = net.as_millis() as u64,
+                "hybrid recall completed within budget"
+            );
+            format_prompt_relevant_memories(results, existing_memory_ids)
+        }
+        // Spawned search panicked — no recall this turn.
+        Ok(Err(_)) => (String::new(), Vec::new()),
+        Err(_) => {
+            warn!(
+                elapsed_ms = t_join.elapsed().as_millis() as u64,
+                "recall degraded to FTS (vector leg exceeded budget)"
+            );
+            // Deliberately NOT cancelled: dropping the JoinHandle detaches the
+            // task, so the in-flight search finishes in the background — its
+            // results are dropped for this turn, but its query-embedding lands
+            // in the embedding cache, making a retry of this prompt cheap.
+            let scope_chain = crate::memory::memory_scope_chain(user_id);
+            let fts = store
+                .search_memories_fts(prompt, &scope_chain, PROMPT_MEMORY_CANDIDATES as i64)
+                .unwrap_or_default();
+            let results: Vec<tools::HybridSearchResult> = fts
+                .iter()
+                .filter_map(|(mem_id, rank)| {
+                    store.get_memory(*mem_id).ok().flatten().map(|m| {
+                        tools::HybridSearchResult {
+                            memory_id: Some(*mem_id),
+                            key: m.key,
+                            value: m.value,
+                            namespace: m.namespace,
+                            score: crate::search::normalize_bm25(*rank),
+                        }
+                    })
+                })
+                .collect();
+            format_prompt_relevant_memories(results, existing_memory_ids)
+        }
     }
+}
 
-    // FTS search against memories table, across the full read-scope chain so
-    // an agent also surfaces owner-level facts.
-    let scope_chain = crate::memory::memory_scope_chain(user_id);
-    let fts_results = match store.search_memories_fts(prompt, &scope_chain, 10) {
-        Ok(results) => results,
-        Err(_) => return String::new(),
-    };
-
-    // Fetch full memories, filtering out duplicates
+/// Filter, budget, and format hybrid-search results into the per-message
+/// "Relevant to This Conversation" prompt slice. The search itself is issued
+/// by the runner through the ONE hybrid pathway the memory tool uses
+/// (`agent::search::hybrid_search` behind the [`tools::HybridSearcher`]
+/// adapter — FTS + vector when an embedding provider exists, FTS-only
+/// otherwise, requested with `min_score = 0` because FTS-only scores sit
+/// below the vector-scale default floor and the old FTS injection had no
+/// floor either) and runs CONCURRENTLY with the rest of prompt assembly;
+/// this is the synchronous join step. Returns the formatted section
+/// (excluding memories already in the tacit identity slice) plus the ids of
+/// the memories actually injected, so the caller can bump access accounting.
+pub fn format_prompt_relevant_memories(
+    results: Vec<tools::HybridSearchResult>,
+    existing_memory_ids: &HashSet<i64>,
+) -> (String, Vec<i64>) {
     let mut lines = Vec::new();
-    for (mem_id, _rank) in fts_results {
-        if existing_memory_ids.contains(&mem_id) {
+    let mut injected_ids: Vec<i64> = Vec::new();
+    let mut used_chars = 0usize;
+    for r in results {
+        // Session chunks with no parent memory are transcript fragments, not
+        // durable facts — skip them for prompt injection.
+        let Some(mem_id) = r.memory_id else { continue };
+        if existing_memory_ids.contains(&mem_id) || injected_ids.contains(&mem_id) {
             continue;
         }
-        if let Ok(Some(mem)) = store.get_memory(mem_id) {
-            lines.push(format!("{}: {}", mem.key, mem.value));
-            if lines.len() >= 5 {
-                break;
-            }
+        let line = format!("{}: {}", r.key, r.value);
+        if !lines.is_empty() && used_chars + line.len() > PROMPT_MEMORY_CHAR_BUDGET {
+            break;
         }
+        used_chars += line.len();
+        lines.push(line);
+        injected_ids.push(mem_id);
     }
 
     if lines.is_empty() {
-        return String::new();
+        return (String::new(), Vec::new());
     }
 
     debug!(count = lines.len(), "injected prompt-relevant memories");
-    format!(
-        "\n\n## Relevant to This Conversation\n{}",
-        group_memories_by_section(&lines)
+    (
+        format!(
+            "\n\n## Relevant to This Conversation\n{}",
+            group_memories_by_section(&lines)
+        ),
+        injected_ids,
     )
 }
 
@@ -537,6 +622,175 @@ fn personality_preset_prompt(preset: Option<&str>) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+
+    /// Temp-file store: the r2d2 pool would give each `:memory:` connection
+    /// its own database, so file-backed is required for cross-connection reads.
+    fn test_store(name: &str) -> (Arc<Store>, std::path::PathBuf) {
+        let path =
+            std::env::temp_dir().join(format!("nebo-{name}-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let store = Arc::new(Store::new(&path.to_string_lossy()).unwrap());
+        (store, path)
+    }
+
+    /// No embedding provider → hybrid search degrades to FTS-only and results
+    /// still flow into the prompt slice (the memory-wave regression guard).
+    /// Exercises search + join exactly as the runner does (spawn elided).
+    #[tokio::test]
+    async fn test_prompt_recall_fts_only_degradation() {
+        use tools::HybridSearcher;
+
+        let (store, path) = test_store("recall-degradation-test");
+        store
+            .upsert_memory(
+                "tacit/general",
+                "person/alice",
+                "Alice leads the migration project",
+                None,
+                None,
+                "u1",
+            )
+            .unwrap();
+        let adapter = crate::search_adapter::HybridSearchAdapter::new(store.clone(), None);
+
+        let results = adapter
+            .search(
+                "what is alice working on",
+                "u1",
+                PROMPT_MEMORY_CANDIDATES,
+                Some(0.0),
+            )
+            .await;
+        let (text, ids) = format_prompt_relevant_memories(results.clone(), &HashSet::new());
+        assert!(
+            text.contains("Alice leads the migration project"),
+            "FTS-only recall should still inject: {text:?}"
+        );
+        assert_eq!(ids.len(), 1);
+
+        // Memories already in the identity slice are deduped out.
+        let existing: HashSet<i64> = ids.iter().copied().collect();
+        let (text, ids) = format_prompt_relevant_memories(results, &existing);
+        assert!(text.is_empty());
+        assert!(ids.is_empty());
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// The injected slice is bounded by PROMPT_MEMORY_CHAR_BUDGET, not a bare
+    /// line count: long values stop early, and at least one line always fits.
+    #[tokio::test]
+    async fn test_prompt_recall_respects_char_budget() {
+        use tools::HybridSearcher;
+
+        let (store, path) = test_store("recall-budget-test");
+        let long_value = format!("zebra fact {}", "x".repeat(400));
+        for i in 0..8 {
+            store
+                .upsert_memory(
+                    "tacit/general",
+                    &format!("fact/zebra-{i}"),
+                    &long_value,
+                    None,
+                    None,
+                    "u1",
+                )
+                .unwrap();
+        }
+        let adapter = crate::search_adapter::HybridSearchAdapter::new(store.clone(), None);
+
+        let results = adapter
+            .search("zebra", "u1", PROMPT_MEMORY_CANDIDATES, Some(0.0))
+            .await;
+        let (text, ids) = format_prompt_relevant_memories(results, &HashSet::new());
+        assert!(!ids.is_empty(), "at least one line always fits");
+        // Each line is ~425 chars, so the 1,200-char budget admits at most 3.
+        assert!(
+            ids.len() <= 3,
+            "budget should stop injection well before all 8 candidates: {}",
+            ids.len()
+        );
+        assert!(!text.is_empty());
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Budget-met path: the spawned search completes inside
+    /// RECALL_VECTOR_BUDGET_MS, so its hybrid results flow through unchanged
+    /// (no FTS fallback involvement — the store holds nothing FTS could find).
+    #[tokio::test]
+    async fn test_join_recall_within_budget_returns_hybrid_results() {
+        let (store, path) = test_store("recall-join-fast-test");
+        let task = tokio::spawn(async {
+            (
+                vec![tools::HybridSearchResult {
+                    memory_id: Some(42),
+                    key: "fact/vector".to_string(),
+                    value: "vector-only recall content".to_string(),
+                    namespace: "tacit/general".to_string(),
+                    score: 0.9,
+                }],
+                std::time::Duration::from_millis(1),
+            )
+        });
+
+        let (text, ids) =
+            join_prompt_recall(task, &store, "u-join-fast", "anything", &HashSet::new()).await;
+        assert!(
+            text.contains("vector-only recall content"),
+            "hybrid results must flow unchanged: {text:?}"
+        );
+        assert_eq!(ids, vec![42]);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Budget-exceeded path: a slow vector leg (stubbed spawned search that
+    /// outlives the budget) degrades to the synchronous FTS-only tier — the
+    /// FTS-matchable memory is returned, the late vector results are dropped.
+    #[tokio::test]
+    async fn test_join_recall_over_budget_degrades_to_fts() {
+        let (store, path) = test_store("recall-join-slow-test");
+        store
+            .upsert_memory(
+                "tacit/general",
+                "fact/keyword",
+                "keyword fallback content",
+                None,
+                None,
+                "u-join-slow",
+            )
+            .unwrap();
+        let task = tokio::spawn(async {
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            (
+                vec![tools::HybridSearchResult {
+                    memory_id: Some(99),
+                    key: "fact/late".to_string(),
+                    value: "late vector content".to_string(),
+                    namespace: "tacit/general".to_string(),
+                    score: 0.9,
+                }],
+                std::time::Duration::from_secs(5),
+            )
+        });
+
+        let (text, ids) =
+            join_prompt_recall(task, &store, "u-join-slow", "keyword", &HashSet::new()).await;
+        assert!(
+            text.contains("keyword fallback content"),
+            "FTS tier must serve the turn when the vector leg exceeds budget: {text:?}"
+        );
+        assert!(
+            !text.contains("late vector content"),
+            "late vector results must be dropped for this turn"
+        );
+        assert_eq!(ids.len(), 1);
+        assert_ne!(ids[0], 99);
+
+        let _ = std::fs::remove_file(&path);
+    }
 
     #[test]
     fn test_format_empty_context() {

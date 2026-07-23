@@ -8,8 +8,11 @@ const CHARS_PER_TOKEN: usize = 4;
 const IMAGE_CHAR_ESTIMATE: usize = 8000;
 /// Minimum token savings to bother micro-compacting.
 const MICRO_COMPACT_MIN_SAVINGS: usize = 1000;
-/// Protect the N most recent tool results from micro-compaction.
-const MICRO_COMPACT_KEEP_RECENT: usize = 3;
+/// Protect the N most recent tool results from micro-compaction. Matches Claude
+/// Code's microcompact keep-recent (5): keeping only 3 stripped content the model
+/// was still actively working with, so mid-run reads it had just done looked
+/// "empty" once compacted. 5 leaves enough live context to reason over.
+const MICRO_COMPACT_KEEP_RECENT: usize = 5;
 /// When compactable tool results exceed this count, strip aggressively
 /// regardless of age (keep only MICRO_COMPACT_KEEP_RECENT most recent).
 const MICRO_COMPACT_COUNT_TRIGGER: usize = 4;
@@ -19,7 +22,7 @@ const MICRO_COMPACT_COUNT_TRIGGER: usize = 4;
 /// stale tool results at full input cost.
 pub const TIME_BASED_GAP_THRESHOLD_SECS: i64 = 300; // 5 minutes
 /// How many recent tool results to keep during time-based clearing.
-/// Claude Code keeps 1 — we match that.
+/// Keep the single most recent so the model retains immediate context.
 pub const TIME_BASED_KEEP_RECENT: usize = 1;
 
 /// Default sliding window token limit (used when caller doesn't supply one).
@@ -55,6 +58,17 @@ impl ContextThresholds {
             auto_compact,
         }
     }
+
+    /// Tighten thresholds by the run's observed estimate undercount
+    /// (API-reported usage vs local chars/4 estimate). Never loosens —
+    /// an overcounting estimate just means compaction fires early.
+    pub fn adjusted(&self, undercount: usize) -> Self {
+        Self {
+            warning: self.warning.saturating_sub(undercount),
+            error: self.error.saturating_sub(undercount),
+            auto_compact: self.auto_compact.saturating_sub(undercount),
+        }
+    }
 }
 
 /// Estimate tokens for a message.
@@ -82,7 +96,7 @@ pub fn estimate_total_tokens(messages: &[ChatMessage]) -> usize {
 /// Never evicts messages with created_at >= run_start_time.
 /// `max_tokens` controls the token budget for the window — caller typically
 /// passes `ContextThresholds::auto_compact` so eviction only fires when
-/// approaching the context limit (like Claude Code's ~83% threshold).
+/// approaching the context limit (the standard ~83%-of-limit threshold).
 pub fn apply_sliding_window(
     messages: &[ChatMessage],
     run_start_time: i64,
@@ -200,7 +214,7 @@ pub fn micro_compact(
     };
 
     // Count-based trigger: when compactable results exceed threshold,
-    // strip aggressively regardless of age (Claude Code style).
+    // strip aggressively regardless of age.
     let count_triggered = tool_result_indices.len() > MICRO_COMPACT_COUNT_TRIGGER;
     // Age-based floor for the non-triggered path (backward compat).
     let min_age = if count_triggered {
@@ -517,7 +531,13 @@ fn bounded_content(content: &str) -> String {
         Some(nl) if nl > READ_RESULT_KEEP_CHARS / 2 => &slice[..nl],
         _ => slice,
     };
-    format!("{}\n…(truncated)", slice.trim_end())
+    // Explicit about WHY it's short — a bare "truncated" (or worse, a blank) reads
+    // as "the file is empty"; this tells the model the content existed and is
+    // recoverable, so it re-reads instead of concluding the file was empty.
+    format!(
+        "{}\n…(truncated to save context — the full content was read successfully; re-read this path if you need the rest)",
+        slice.trim_end()
+    )
 }
 
 /// Build an informative one-line summary of a tool call + result.
@@ -1173,8 +1193,9 @@ mod tests {
         // now be compactable since we removed the category filter.
         let big = "x".repeat(4000);
         let mut messages = Vec::new();
-        // Create 6 tool results with a custom tool name — exceeds count trigger (4)
-        for i in 0..6 {
+        // Create 8 tool results with a custom tool name — exceeds count trigger (4)
+        // and leaves ≥2 compactable after the keep-recent-5 protection.
+        for i in 0..8 {
             let mut assistant = make_old_msg("assistant", "calling tool");
             assistant.tool_calls = Some(
                 serde_json::json!([{
@@ -1194,7 +1215,7 @@ mod tests {
             "non-standard tool results should be compactable (universal filter)"
         );
 
-        // Should keep 3 most recent, compact older 3
+        // Should keep 5 most recent, compact the older 3.
         // Tool summaries now use informative format like "[search_emails] N lines"
         let compacted_count = result
             .iter()
@@ -1256,8 +1277,8 @@ mod tests {
         let result = "x".repeat(10_000);
         let summary = build_tool_summary("os", Some(&input), &result);
         assert!(summary.len() < result.len(), "should be bounded");
-        assert!(summary.len() <= READ_RESULT_KEEP_CHARS + 32);
-        assert!(summary.ends_with("…(truncated)"));
+        assert!(summary.len() <= READ_RESULT_KEEP_CHARS + 160);
+        assert!(summary.contains("truncated to save context"));
     }
 
     #[test]
