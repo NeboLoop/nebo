@@ -7,7 +7,7 @@
   import type { AskWidgetDef } from './AskWidget.svelte';
   import { AGENT_COLORS_MAP } from '$lib/tokens.js';
   import { downloadArtifact } from '$lib/chat/download';
-  import { backendUrl } from '$lib/api/base';
+  import { backendUrl, backendBase } from '$lib/api/base';
   import { addToast } from '$lib/stores/toast';
   import { devMode } from '$lib/stores/devmode';
   import { marked } from 'marked';
@@ -17,7 +17,7 @@
   import Presentation from 'lucide-svelte/icons/presentation';
   import type { UploadedAttachment } from '$lib/types/attachment';
   import { getAttachmentType, formatFileSize, attachmentMediaUrl } from '$lib/types/attachment';
-  import { backendBase } from '$lib/api/base';
+  import { NEAR_BOTTOM_PX, distanceFromBottom } from '$lib/chat/scroll';
 
   // Configure marked for streaming-friendly rendering
   marked.setOptions({
@@ -437,6 +437,8 @@
   let showScrollButton = $state(false);
   let autoScrollEnabled = $state(true);
   let scrollingProgrammatically = false;
+  let programmaticUntil = 0;
+  let settleRAF: number | null = null;
   let initialScrollDone = false;
   let prevScrollHeight = 0;
   let lastScrollTop = 0;
@@ -495,6 +497,43 @@
     });
   });
 
+  function isProgrammaticScroll(): boolean {
+    return scrollingProgrammatically || performance.now() < programmaticUntil;
+  }
+
+  /** Pin to bottom. Instant for auto-follow (avoids smooth-scroll race);
+   *  smooth only for the explicit button. Keep the programmatic lock until
+   *  we are near the bottom or the deadline elapses. */
+  function pinToBottom(smooth = false) {
+    if (!messagesContainer) return;
+    scrollingProgrammatically = true;
+    programmaticUntil = performance.now() + (smooth ? 600 : 100);
+    if (smooth) {
+      messagesContainer.scrollTo({ top: messagesContainer.scrollHeight, behavior: 'smooth' });
+    } else {
+      messagesContainer.scrollTop = messagesContainer.scrollHeight;
+    }
+    showScrollButton = false;
+    autoScrollEnabled = true;
+    if (settleRAF) cancelAnimationFrame(settleRAF);
+    const settle = () => {
+      settleRAF = null;
+      if (!messagesContainer) {
+        scrollingProgrammatically = false;
+        programmaticUntil = 0;
+        return;
+      }
+      const near = distanceFromBottom(messagesContainer) <= NEAR_BOTTOM_PX;
+      if (near || performance.now() >= programmaticUntil) {
+        scrollingProgrammatically = false;
+        programmaticUntil = 0;
+        return;
+      }
+      settleRAF = requestAnimationFrame(settle);
+    };
+    settleRAF = requestAnimationFrame(settle);
+  }
+
   // Preserve scroll position after older messages are prepended
   $effect(() => {
     if (isLoadingMore && messagesContainer) {
@@ -505,13 +544,17 @@
     // When loading finishes and messages have been prepended, adjust scroll
     if (!isLoadingMore && prevScrollHeight > 0 && messagesContainer) {
       scrollingProgrammatically = true;
+      programmaticUntil = performance.now() + 100;
       requestAnimationFrame(() => {
         if (messagesContainer) {
           const added = messagesContainer.scrollHeight - prevScrollHeight;
           messagesContainer.scrollTop += added;
         }
         prevScrollHeight = 0;
-        requestAnimationFrame(() => { scrollingProgrammatically = false; });
+        requestAnimationFrame(() => {
+          scrollingProgrammatically = false;
+          programmaticUntil = 0;
+        });
       });
     }
   });
@@ -533,6 +576,7 @@
       // absorb the growth — total height constant, view stays put (calm fill).
       if (updateTurnSpacer() > 0) return;
       scrollingProgrammatically = true;
+      programmaticUntil = performance.now() + 100;
       el.scrollTop = el.scrollHeight;
       lastScrollTop = el.scrollTop;
       requestAnimationFrame(() => { scrollingProgrammatically = false; });
@@ -548,6 +592,7 @@
   $effect(() => {
     if (messagesContainer && hasMessages && !initialScrollDone) {
       scrollingProgrammatically = true;
+      programmaticUntil = performance.now() + 800;
       let lastHeight = -1;
       let stableFrames = 0;
       let frames = 0;
@@ -570,6 +615,7 @@
           initialScrollDone = true;
           requestAnimationFrame(() => {
             scrollingProgrammatically = false;
+            programmaticUntil = 0;
           });
           return;
         }
@@ -580,38 +626,43 @@
   });
 
   function handleScroll() {
-    if (!messagesContainer || scrollingProgrammatically) return;
+    if (!messagesContainer) return;
+    const programmatic = isProgrammaticScroll();
     const { scrollTop, scrollHeight, clientHeight } = messagesContainer;
-    const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
+    const dist = scrollHeight - scrollTop - clientHeight;
     const scrolledUp = scrollTop < lastScrollTop - 1;
     lastScrollTop = scrollTop;
-    showScrollButton = distanceFromBottom > 100;
+    showScrollButton = dist > NEAR_BOTTOM_PX;
 
     // Disengage only on genuine user intent — an UPWARD scroll away from the
     // bottom. Position alone can't distinguish "user scrolled away" from a
     // pin that hasn't caught up with fresh content yet.
-    if (scrolledUp && distanceFromBottom > 100) {
+    if (!programmatic && scrolledUp && dist > NEAR_BOTTOM_PX) {
       autoScrollEnabled = false;
-    } else if (distanceFromBottom <= 100) {
+    } else if (dist <= NEAR_BOTTOM_PX) {
       autoScrollEnabled = true;
     }
 
     // Load older messages when scrolled near top
-    if (scrollTop < 100 && hasMore && !isLoadingMore && onloadmore) {
+    if (!programmatic && scrollTop < 100 && hasMore && !isLoadingMore && onloadmore) {
       onloadmore();
     }
   }
 
   function scrollToBottom() {
-    if (messagesContainer) {
-      scrollingProgrammatically = true;
-      messagesContainer.scrollTo({ top: messagesContainer.scrollHeight, behavior: 'smooth' });
-      showScrollButton = false;
-      autoScrollEnabled = true;
-      requestAnimationFrame(() => {
-        requestAnimationFrame(() => { scrollingProgrammatically = false; });
-      });
-    }
+    pinToBottom(true);
+  }
+
+  /** Re-enable follow and pin before the parent appends the user message. */
+  function handleSend(
+    text: string,
+    files: { file: File; id: string; previewUrl: string | null; isImage: boolean }[],
+    ...rest: unknown[]
+  ) {
+    autoScrollEnabled = true;
+    showScrollButton = false;
+    if (initialScrollDone) pinToBottom(false);
+    (onsend as ((t: string, f: typeof files, ...r: unknown[]) => void) | undefined)?.(text, files, ...rest);
   }
 
   // Dropzone state
@@ -1186,7 +1237,7 @@
       {sessionId}
       {placeholder}
       {allAgents}
-      {onsend}
+      onsend={handleSend}
       {onstop}
       {isLoading}
       {allowAttachments}

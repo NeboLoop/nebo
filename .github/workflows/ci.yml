@@ -1,0 +1,42 @@
+name: CI
+
+# Runs on every branch push and pull request. Frontend typecheck + unit tests
+# are the gate; Rust coverage stays on `make test` / release until a dedicated
+# cargo job is hardened for this runner image.
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: "22"
+  PNPM_VERSION: "10.33.2"
+
+jobs:
+  frontend:
+    name: Frontend check & test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install pnpm
+        run: npm install -g pnpm@${{ env.PNPM_VERSION }}
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint / typecheck
+        run: pnpm lint
+
+      - name: Unit tests
+        run: pnpm test
