@@ -504,10 +504,19 @@ impl FileTool {
             self.record_read(session, &path, m);
         }
 
-        if input.replace_all && count > 1 {
+        let result = if input.replace_all && count > 1 {
             ToolResult::ok(format!("Replaced {} occurrences in {}", count, path))
         } else {
             ToolResult::ok(format!("Edited {}", path))
+        };
+        // An edited work document must re-emit its artifact exactly like a write,
+        // or the Work panel keeps rendering the pre-edit version — observed live:
+        // the owner saw a stale document, told the agent "you didn't update it",
+        // and the agent spiraled into re-writing a file it had correctly edited.
+        if is_work_document(&path) {
+            result.with_image_url(path)
+        } else {
+            result
         }
     }
 
