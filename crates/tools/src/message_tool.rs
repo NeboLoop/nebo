@@ -453,10 +453,17 @@ async fn handle_sms_read(input: &serde_json::Value) -> ToolResult {
     };
 
     let escaped_phone = phone.replace('\'', "''");
+    // Media (images/screenshots) is NOT in m.text — it lives in the attachment
+    // table; without this column an MMS reads as an empty message (data loss).
+    // The filenames are on-disk paths (~/Library/Messages/Attachments/…) the
+    // agent can read or view directly.
     let query = format!(
         "SELECT m.is_from_me, \
          datetime(m.date/1000000000 + 978307200, 'unixepoch', 'localtime') as msg_date, \
-         m.text \
+         m.text, \
+         (SELECT GROUP_CONCAT(a.filename, ', ') FROM message_attachment_join maj \
+          JOIN attachment a ON maj.attachment_id = a.ROWID \
+          WHERE maj.message_id = m.ROWID) as attachments \
          FROM message m \
          JOIN chat_message_join cmj ON m.ROWID = cmj.message_id \
          JOIN chat c ON cmj.chat_id = c.ROWID \
@@ -490,7 +497,10 @@ async fn handle_sms_search(input: &serde_json::Value) -> ToolResult {
     let query = format!(
         "SELECT c.chat_identifier, m.is_from_me, \
          datetime(m.date/1000000000 + 978307200, 'unixepoch', 'localtime') as msg_date, \
-         m.text \
+         m.text, \
+         (SELECT GROUP_CONCAT(a.filename, ', ') FROM message_attachment_join maj \
+          JOIN attachment a ON maj.attachment_id = a.ROWID \
+          WHERE maj.message_id = m.ROWID) as attachments \
          FROM message m \
          JOIN chat_message_join cmj ON m.ROWID = cmj.message_id \
          JOIN chat c ON cmj.chat_id = c.ROWID \
