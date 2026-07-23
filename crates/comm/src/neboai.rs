@@ -395,6 +395,8 @@ impl CommPlugin for NeboAIPlugin {
                 .get("agent_color")
                 .filter(|v| !v.is_empty())
                 .cloned(),
+            platform: config.get("platform").filter(|v| !v.is_empty()).cloned(),
+            hostname: config.get("hostname").filter(|v| !v.is_empty()).cloned(),
         };
         tracing::info!(
             target: "neboai_identity",

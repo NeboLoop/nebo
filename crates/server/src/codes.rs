@@ -1680,6 +1680,24 @@ async fn persist_workflow_artifact(
 /// by the rotated-token cache (written immediately on AUTH_OK, so it survives
 /// hot-reload/crash where the DB persist hasn't run yet). Used by both the
 /// comms connect and the management-tunnel watcher — one resolution pathway.
+/// The machine's hostname for the manage console (".local" stripped). Env vars
+/// cover containers/Windows; the `hostname` command covers desktops.
+fn host_label() -> String {
+    let from_env = std::env::var("COMPUTERNAME")
+        .or_else(|_| std::env::var("HOSTNAME"))
+        .ok()
+        .filter(|s| !s.trim().is_empty());
+    let name = from_env.or_else(|| {
+        std::process::Command::new("hostname")
+            .output()
+            .ok()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .filter(|s| !s.is_empty())
+    });
+    name.map(|n| n.trim_end_matches(".local").to_string())
+        .unwrap_or_default()
+}
+
 pub(crate) fn neboai_token(state: &AppState) -> Option<String> {
     let profiles = state
         .store
@@ -1731,6 +1749,9 @@ pub async fn activate_neboai(state: &AppState) -> Result<(), NeboError> {
     if let Ok(dir) = config::data_dir() {
         config.insert("data_dir".into(), dir.to_string_lossy().to_string());
     }
+    // System info for the owner's manage console — which machine is this bot?
+    config.insert("platform".into(), std::env::consts::OS.to_string());
+    config.insert("hostname".into(), host_label());
 
     // Pin the PRIMARY agent's identity on CONNECT so the loop's default agent is
     // deterministically "Nebo" (the local `assistant` row) and can never be
