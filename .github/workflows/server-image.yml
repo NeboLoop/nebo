@@ -55,11 +55,17 @@ jobs:
         run: |
           echo "tag=main-$(date +%s)-$(echo ${{ github.sha }} | cut -c1-7)" >> "$GITHUB_OUTPUT"
 
+      # Layer cache lives in GHCR, not GHA: the Rust dep layer alone is >1GB
+      # and the repo's whole GHA cache is capped at 10GB, so GHA evicted the
+      # dep layer between builds and every "warm" build ran cold. GHCR has no
+      # cap. The gha cache-from stays only as a transition fallback.
       - uses: docker/build-push-action@v6
         with:
           context: .
           platforms: linux/amd64
           push: true
           tags: ghcr.io/neboloop/nebo-server:${{ steps.vars.outputs.tag }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: |
+            type=registry,ref=ghcr.io/neboloop/nebo-server:buildcache
+            type=gha
+          cache-to: type=registry,ref=ghcr.io/neboloop/nebo-server:buildcache,mode=max
