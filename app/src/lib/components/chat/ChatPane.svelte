@@ -65,6 +65,8 @@
     /** Structured rendering payload (ToolResult.payload) — known kinds render
      *  as rich cards; unknown kinds are ignored. */
     payload?: { kind: string; [k: string]: unknown };
+    /** Live deep-research snapshot (research_progress events). */
+    research?: { kind: string; [k: string]: unknown };
   }
 
   type Message =
@@ -378,6 +380,58 @@
       return url;
     }
   }
+  interface ResearchState {
+    question?: string;
+    depth?: string;
+    angles?: string[];
+    phase?: string;
+    results_found?: number;
+    sources_read?: number;
+    domains?: Record<string, number>;
+    claims_verified?: number;
+    started_ms?: number;
+    elapsed_ms?: number;
+    complete?: boolean;
+  }
+  /** Live snapshot while running; final summary payload afterwards. */
+  function researchState(tool: ToolMsg): ResearchState | null {
+    if (tool.payload?.kind === 'research_summary') {
+      return { ...(tool.payload as ResearchState), complete: true, phase: 'complete' };
+    }
+    if (tool.research && typeof tool.research === 'object') {
+      return tool.research as ResearchState;
+    }
+    return null;
+  }
+  // 1s tick drives the live elapsed timer on running research cards.
+  let clockNow = $state(Date.now());
+  $effect(() => {
+    const t = setInterval(() => (clockNow = Date.now()), 1000);
+    return () => clearInterval(t);
+  });
+  function fmtElapsed(ms: number): string {
+    const s = Math.max(0, Math.floor(ms / 1000));
+    const m = Math.floor(s / 60);
+    return m > 0 ? `${m}m ${s % 60}s` : `${s}s`;
+  }
+  function researchPhaseLabel(phase?: string): string {
+    switch (phase) {
+      case 'scoping': return $t('chat.researchScoping');
+      case 'searching': return $t('chat.researchSearching');
+      case 'reading': return $t('chat.researchReading');
+      case 'verifying': return $t('chat.researchVerifying');
+      case 'writing': return $t('chat.researchWriting');
+      default: return '';
+    }
+  }
+  function topDomains(domains?: Record<string, number>): [string, number][] {
+    return Object.entries(domains ?? {}).sort((a, b) => b[1] - a[1]).slice(0, 4);
+  }
+  function otherDomainCount(domains?: Record<string, number>): number {
+    const entries = Object.entries(domains ?? {});
+    return Math.max(0, entries.length - 4);
+  }
+
   function searchPayload(tool: ToolMsg): SearchResultsPayload | null {
     return tool.payload?.kind === 'search_results' && Array.isArray((tool.payload as unknown as SearchResultsPayload).groups)
       ? (tool.payload as unknown as SearchResultsPayload)
@@ -935,6 +989,54 @@
                     <span class="font-mono text-base-content/40 shrink-0">{strapSig(tool)}</span>
                     {#if tool.durationMs}<span class="text-base-content/40 shrink-0">{fmtDuration(tool.durationMs)}</span>{/if}
                   </div>
+                  {#if researchState(tool)}
+                    {@const rs = researchState(tool)!}
+                    <div class="mt-2 max-w-[560px] rounded-xl border border-base-300 bg-base-100 px-3.5 py-3">
+                      <div class="flex items-center gap-2">
+                        <span class="text-sm font-medium truncate flex-1">{rs.question ?? $t('chat.researchTitle')}</span>
+                        {#if rs.depth}<span class="text-xs text-base-content/50 font-mono shrink-0">{rs.depth}</span>{/if}
+                      </div>
+                      <div class="flex items-center gap-1.5 mt-1 text-xs text-base-content/70">
+                        {#if !rs.complete}
+                          <span class="loading loading-spinner loading-xs text-primary"></span>
+                          <span>{$t('chat.researchCounting', { values: { n: rs.sources_read ?? 0 } })}</span>
+                          {#if rs.started_ms}<span class="text-base-content/50 font-mono">· {fmtElapsed(clockNow - rs.started_ms)}</span>{/if}
+                          {#if researchPhaseLabel(rs.phase)}<span class="text-base-content/50">· {researchPhaseLabel(rs.phase)}</span>{/if}
+                        {:else}
+                          <span class="w-1.5 h-1.5 rounded-full bg-success"></span>
+                          <span>{$t('chat.researchComplete', { values: { n: rs.sources_read ?? 0 } })}</span>
+                          {#if rs.elapsed_ms}<span class="text-base-content/50 font-mono">· {fmtElapsed(rs.elapsed_ms)}</span>{/if}
+                        {/if}
+                      </div>
+                      {#if rs.angles?.length}
+                        <div class="mt-2 flex flex-wrap gap-1.5">
+                          {#each rs.angles as angle}
+                            <span class="text-xs bg-base-200 rounded-full px-2 py-0.5 text-base-content/70">{angle}</span>
+                          {/each}
+                        </div>
+                      {/if}
+                      {#if topDomains(rs.domains).length}
+                        {@const top = topDomains(rs.domains)}
+                        {@const max = top[0][1]}
+                        <div class="mt-2.5 flex flex-col gap-1.5">
+                          {#each top as [host, count]}
+                            <div class="flex items-center gap-2 text-xs">
+                              <img src="https://www.google.com/s2/favicons?domain={host}&sz=32" alt="" loading="lazy" class="w-3.5 h-3.5 rounded-sm shrink-0" onerror={(e) => ((e.currentTarget as HTMLImageElement).style.visibility = 'hidden')} />
+                              <span class="truncate w-36">{host}</span>
+                              <span class="text-base-content/50 font-mono shrink-0">{count}</span>
+                              <div class="flex-1 h-1.5 rounded-full bg-base-200 overflow-hidden"><div class="h-full bg-base-content/20" style:width="{Math.round((count / max) * 100)}%"></div></div>
+                            </div>
+                          {/each}
+                          {#if otherDomainCount(rs.domains) > 0}
+                            <span class="text-xs text-base-content/50">{$t('chat.researchOtherDomains', { values: { n: otherDomainCount(rs.domains) } })}</span>
+                          {/if}
+                        </div>
+                      {/if}
+                      {#if rs.claims_verified}
+                        <div class="mt-2 text-xs text-base-content/50">{$t('chat.researchVerified', { values: { n: rs.claims_verified } })}</div>
+                      {/if}
+                    </div>
+                  {/if}
                   {#if searchPayload(tool)}
                     {#each searchPayload(tool)!.groups as g}
                       <div class="mt-2 max-w-[560px]">

@@ -215,7 +215,8 @@
           data-tour="search"
           class="flex items-center h-8 w-auto md:w-48 rounded-field px-2 md:px-3 gap-1.5 text-sm cursor-pointer border border-base-300 bg-base-100"
         >
-          <span class="font-mono text-sm py-px px-1 rounded-sm bg-base-200">&#x2318;K</span>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="md:hidden text-base-content/70"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+          <span class="font-mono text-sm py-px px-1 rounded-sm bg-base-200 hidden md:inline">&#x2318;K</span>
           <span class="text-base-content/70 hidden md:inline">{$t('nav.searchOrRun')}</span>
         </button>
         <NotificationBell />

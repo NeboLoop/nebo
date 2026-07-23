@@ -1046,6 +1046,19 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                             hub.broadcast("subagent_start", payload);
                         }
                         StreamEventType::SubagentProgress => {
+                            // Structured research panel snapshot: forward as its
+                            // own event; the app renders the live research card.
+                            if let Some(ref p) = event.payload {
+                                if p.get("kind").and_then(|k| k.as_str())
+                                    == Some("research_progress")
+                                {
+                                    hub.broadcast(
+                                        "research_progress",
+                                        ws_payload!("data": p.clone()),
+                                    );
+                                    continue;
+                                }
+                            }
                             let mut payload = ws_payload!();
                             if let Some(ref w) = event.widgets {
                                 for (k, v) in w.as_object().into_iter().flatten() {

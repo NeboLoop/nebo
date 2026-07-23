@@ -971,6 +971,46 @@ struct FetchedSource {
 /// harness if the receiver is full or gone (`try_send`).
 type ProgressTx = Option<tokio::sync::mpsc::Sender<ai::StreamEvent>>;
 
+/// Live snapshot for the research panel UI. Emitted WHOLE on every change —
+/// the frontend replaces state, so ordering/accumulation bugs are impossible.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct PanelState {
+    pub question: String,
+    pub depth: String,
+    /// Angle labels from the scope phase (the plan).
+    pub angles: Vec<String>,
+    /// "searching" | "reading" | "verifying" | "writing" | "complete"
+    pub phase: String,
+    /// Search results surfaced across all angle searches so far.
+    pub results_found: usize,
+    /// Pages actually fetched + extracted.
+    pub sources_read: usize,
+    /// host → count for fetched sources (domain aggregation display).
+    pub domains: std::collections::HashMap<String, usize>,
+    pub claims_verified: usize,
+    pub started_ms: u64,
+}
+
+fn emit_panel(tx: &ProgressTx, panel: &PanelState) {
+    if let Some(tx) = tx {
+        if let Ok(mut v) = serde_json::to_value(panel) {
+            v["kind"] = serde_json::Value::String("research_progress".into());
+            let _ = tx.try_send(ai::StreamEvent { payload: Some(v),
+                event_type: ai::StreamEventType::SubagentProgress,
+                text: String::new(),
+                tool_call: None,
+                error: None,
+                usage: None,
+                rate_limit: None,
+                widgets: None,
+                provider_metadata: None,
+                stop_reason: None,
+                image_url: None,
+            });
+        }
+    }
+}
+
 fn emit_progress(tx: &ProgressTx, text: impl Into<String>) {
     if let Some(tx) = tx {
         let _ = tx.try_send(ai::StreamEvent { payload: None,
@@ -1161,6 +1201,22 @@ pub async fn run(
     let dir = crate::research::create_run_dir(&data_dir, &run_id, &question)?;
     let _ = crate::research::update_run_status(&dir, crate::research::RunStatus::Running);
     emit_progress(&progress, "Scoping the research question…");
+    // Live panel snapshot — replaced whole on every emission (see PanelState).
+    let panel = Arc::new(Mutex::new(PanelState {
+        question: question.clone(),
+        depth: match cfg.max_fetch {
+            5 => "quick".into(),
+            25 => "deep".into(),
+            _ => "standard".into(),
+        },
+        phase: "scoping".into(),
+        started_ms: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0),
+        ..Default::default()
+    }));
+    emit_panel(&progress, &*panel.lock().await);
 
     let bail = |dir: &Path| {
         let _ = crate::research::update_run_status(dir, crate::research::RunStatus::Cancelled);
@@ -1183,6 +1239,12 @@ pub async fn run(
     persist(&dir, "scope.json", &scope);
     debug!(angles = scope.angles.len(), "deep_research: scoped");
     emit_progress(&progress, format!("Searching {} angles…", scope.angles.len()));
+    {
+        let mut p = panel.lock().await;
+        p.angles = scope.angles.iter().map(|a| a.label.clone()).collect();
+        p.phase = "searching".into();
+        emit_panel(&progress, &p);
+    }
 
     // ── Phases 1+2 pipelined: each angle searches, then its novel sources are
     //    fetched + extracted immediately — interleaved, no barrier (mirrors the
@@ -1200,6 +1262,7 @@ pub async fn run(
             (agent.clone(), cancel.clone(), question.clone(), angle.clone(), run_id.clone(), progress.clone());
         let (dedup, search_log, sem, sources_dir) =
             (dedup.clone(), search_log.clone(), sem.clone(), sources_dir.clone());
+        let panel = panel.clone();
         angle_futs.push(Box::pin(async move {
             if cancel.is_cancelled() {
                 return Vec::new();
@@ -1234,6 +1297,11 @@ pub async fn run(
             };
             let ar = AngleResults { angle: label, results };
             search_log.lock().await.push(ar.clone());
+            {
+                let mut p = panel.lock().await;
+                p.results_found += ar.results.len();
+                emit_panel(&progress, &p);
+            }
 
             // (b) Dedup — admit this angle as soon as it lands (completion order).
             let novel = dedup.lock().await.admit(&ar);
@@ -1247,6 +1315,7 @@ pub async fn run(
                 let (agent, cancel, q, cfg, run_id, progress) =
                     (agent.clone(), cancel.clone(), q.clone(), cfg, run_id.clone(), progress.clone());
                 let (sem, sources_dir) = (sem.clone(), sources_dir.clone());
+                let panel = panel.clone();
                 fetch_futs.push(Box::pin(async move {
                     let _permit = sem.acquire_owned().await.ok();
                     let hash = source_hash(&planned.url);
@@ -1295,6 +1364,13 @@ pub async fn run(
                         .map(|d| Claim::from_draft(d, planned.url.clone(), extracted.source_quality, source_ref.clone()))
                         .collect();
                     emit_node_done(&progress, &node, &desc, !claims.is_empty());
+                    {
+                        let mut p = panel.lock().await;
+                        p.phase = "reading".into();
+                        p.sources_read += 1;
+                        *p.domains.entry(host.to_string()).or_insert(0) += 1;
+                        emit_panel(&progress, &p);
+                    }
                     FetchedSource {
                         row: SourceRow { url: planned.url.clone(), quality: extracted.source_quality, angle: planned.angle.clone(), claim_count: claims.len() },
                         claims,
@@ -1363,6 +1439,11 @@ pub async fn run(
     // ── Phase 3: Verify (barrier — 3 adversarial votes per claim) ──
     let votes_per = cfg.votes_per_claim;
     emit_progress(&progress, format!("Verifying {} claims (×{} adversarial votes)…", ranked.len(), votes_per));
+    {
+        let mut p = panel.lock().await;
+        p.phase = "verifying".into();
+        emit_panel(&progress, &p);
+    }
     let mut verify_futs: Vec<BoxFut<(usize, Vote)>> = Vec::new();
     for (ci, claim) in ranked.iter().enumerate() {
         for v in 0..votes_per {
@@ -1443,6 +1524,12 @@ pub async fn run(
 
     // ── Phase 4: Synthesize ──
     emit_progress(&progress, format!("Synthesizing {} confirmed claims…", confirmed.len()));
+    {
+        let mut p = panel.lock().await;
+        p.phase = "writing".into();
+        p.claims_verified = confirmed.len();
+        emit_panel(&progress, &p);
+    }
     emit_node_start(&progress, "synth", "Synthesize: writing the report");
     let stats = base_stats(confirmed.len(), killed.len(), unverified.len(), verified);
     let report = match run_typed::<ReportOut>(&agent, StructuredTask {

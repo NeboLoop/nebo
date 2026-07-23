@@ -1764,8 +1764,14 @@ impl AgentTool {
         // before the (slow, credit-costly) fan-out. Only gate INTERACTIVE (User-origin) runs:
         // automations/cron/channels/sub-agents (and an explicit `confirm: false`) proceed
         // without prompting — an automation must never block on a UI button.
-        let confirm_gate = matches!(ctx.origin, crate::origin::Origin::User)
-            && input["confirm"].as_bool().unwrap_or(true);
+        // Input tolerance: models routinely pass confirm as the STRING "false"
+        // (observed live) — honor bools and their string forms identically.
+        let confirm_flag = match &input["confirm"] {
+            serde_json::Value::Bool(b) => *b,
+            serde_json::Value::String(s) => !s.eq_ignore_ascii_case("false"),
+            _ => true,
+        };
+        let confirm_gate = matches!(ctx.origin, crate::origin::Origin::User) && confirm_flag;
         let scope = crate::deep_research::scope(&agent, query, &cfg).await;
         let angle_labels: Vec<&str> = scope.angles.iter().map(|a| a.label.as_str()).collect();
         let mut plan = format!(
@@ -1824,6 +1830,7 @@ impl AgentTool {
             &short[..short.len().min(8)]
         );
 
+        let research_started = std::time::Instant::now();
         match crate::deep_research::run(
             agent,
             data_dir,
@@ -1837,7 +1844,16 @@ impl AgentTool {
         .await
         {
             Ok(report) => {
-                let mut result = ToolResult::ok(crate::deep_research::format_report(&report));
+                let mut result = ToolResult::ok(crate::deep_research::format_report(&report))
+                    // Final card state for the live stream AND reloaded history.
+                    .with_payload(serde_json::json!({
+                        "kind": "research_summary",
+                        "question": report.question,
+                        "sources_read": report.stats.sources_fetched,
+                        "results_found": report.stats.claims_extracted,
+                        "claims_verified": report.stats.confirmed,
+                        "elapsed_ms": research_started.elapsed().as_millis() as u64,
+                    }));
                 // Surface the report in the Work panel under its unique name.
                 if report_src.exists() {
                     let _ = std::fs::create_dir_all(&files_dir);

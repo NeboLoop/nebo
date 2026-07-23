@@ -69,6 +69,9 @@ export interface ToolUse {
   /** Structured rendering payload from the backend (ToolResult.payload).
    *  Known kinds render as rich cards (e.g. search_results). */
   payload?: { kind: string; [k: string]: unknown };
+  /** Live deep-research panel snapshot (research_progress events) — replaced
+   *  whole on every update; the final state comes from the result payload. */
+  research?: { kind: string; [k: string]: unknown };
 }
 
 export type ChatMessage =
@@ -656,6 +659,23 @@ export function createChatController(config: ChatControllerConfig) {
   unsubs.push(ws.on('thinking', handleThinking));
   unsubs.push(ws.on('tool_start', handleToolStart));
   unsubs.push(ws.on('tool_result', handleToolResult));
+
+  function handleResearchProgress(data: any) {
+    if (!isMyEvent(data)) return;
+    const snap = data?.data;
+    if (!snap || typeof snap !== 'object') return;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      if (m.type !== 'assistant' || !m.tools?.length) continue;
+      const ti = m.tools.findIndex((t) => t.status === 'running' && t.name === 'agent');
+      if (ti === -1) continue;
+      const tools = [...m.tools];
+      tools[ti] = { ...tools[ti], research: snap };
+      messages[i] = { ...m, tools };
+      return;
+    }
+  }
+  unsubs.push(ws.on('research_progress', handleResearchProgress));
   unsubs.push(ws.on('usage', handleUsage));
   unsubs.push(ws.on('quota_warning', handleQuotaWarning));
   unsubs.push(ws.on('chat_error', handleChatError));
