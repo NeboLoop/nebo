@@ -134,6 +134,7 @@ fn reminders() -> Vec<Box<dyn Reminder>> {
         Box::new(SilenceBreaker),
         Box::new(ActionConfirm),
         Box::new(ExecuteIntent),
+        Box::new(SkillExecutionNudge),
         Box::new(OutputDiscipline),
         Box::new(NarrationSuppressor),
         Box::new(RepetitionDetector),
@@ -892,6 +893,88 @@ impl Reminder for ExecuteIntent {
              give the result."
                 .to_string(),
         )
+    }
+}
+
+/// Tool calls burned after a skill load, with nothing produced, before the nudge fires.
+const SKILL_STALL_CALLS: usize = 8;
+
+/// Tool calls in a run that loaded a skill but hasn't executed anything since.
+/// Walks the transcript backwards: a state-changing action or a `plugin` call means
+/// the run IS producing; a text-only assistant message means the prior run concluded.
+/// Either ends the walk, returning the deepest unexecuted skill load found so far
+/// (so repeated skill re-loads can't keep resetting the count). Returns how many
+/// tool calls have been burned since that load, or None if the run is producing.
+fn calls_since_unexecuted_skill_load(messages: &[ChatMessage]) -> Option<usize> {
+    let mut calls_since = 0usize;
+    let mut deepest: Option<usize> = None;
+    for m in messages.iter().rev() {
+        if m.role != "assistant" {
+            continue;
+        }
+        let has_tools = m
+            .tool_calls
+            .as_ref()
+            .is_some_and(|tc| !tc.is_empty() && tc != "[]" && tc != "null");
+        if !has_tools {
+            if m.content.is_empty() {
+                continue;
+            }
+            return deepest; // text-only turn — anything earlier belongs to a concluded run
+        }
+        let tc = m.tool_calls.as_deref().unwrap_or_default();
+        if state_changing_action(tc).is_some() {
+            return deepest; // producing, not stuck preparing
+        }
+        let Ok(calls) = serde_json::from_str::<serde_json::Value>(tc) else {
+            continue;
+        };
+        let Some(arr) = calls.as_array() else { continue };
+        let name_of = |c: &serde_json::Value| {
+            c.get("name")
+                .and_then(|n| n.as_str())
+                .unwrap_or("")
+                .to_string()
+        };
+        if arr.iter().any(|c| name_of(c) == "plugin") {
+            return deepest; // plugin execution counts as producing
+        }
+        if arr.iter().any(|c| name_of(c) == "skill") {
+            deepest = Some(calls_since);
+        }
+        calls_since += arr.len();
+    }
+    deepest
+}
+
+/// SkillExecutionNudge — the "preparation loop" failure observed in production: a run
+/// loads a skill, then keeps reading/searching/re-installing without ever invoking
+/// anything that produces work (a cloud bot installed an office plugin twice, burned
+/// the whole run on setup probes, and never called the pptx tool it had installed).
+/// Fires once SKILL_STALL_CALLS tool calls have passed since a skill load with zero
+/// state-changing actions and no plugin execution.
+struct SkillExecutionNudge;
+impl Reminder for SkillExecutionNudge {
+    fn name(&self) -> &'static str {
+        "skill_execution_nudge"
+    }
+    fn priority(&self) -> u8 {
+        8 // corrective — a run that gathers forever and ships nothing is a core failure
+    }
+    fn min_turns_between(&self) -> usize {
+        4
+    }
+    fn check(&self, ctx: &ReminderContext) -> Option<String> {
+        let burned = calls_since_unexecuted_skill_load(ctx.messages)?;
+        if burned < SKILL_STALL_CALLS {
+            return None;
+        }
+        Some(format!(
+            "You loaded a skill {burned} tool calls ago and haven't produced anything since — \
+             no file written, no plugin invoked, no artifact created. You have the \
+             instructions; stop gathering and execute the next concrete step now. If a step \
+             is blocked, state exactly what's blocking it instead of collecting more context."
+        ))
     }
 }
 
@@ -1914,6 +1997,61 @@ mod tests {
         // Only one discovery call → no fire.
         let few = vec!["tool_search".to_string(), "web".to_string(), "os".to_string()];
         assert!(ResearchDelegationNudge.check(&rctx_tools(&[], &few, 3)).is_none());
+    }
+
+    #[test]
+    fn test_skill_execution_nudge_preparation_loop() {
+        let skill = r#"[{"name":"skill","input":{"action":"load","name":"pptx"}}]"#;
+        let reads = r#"[{"name":"os","input":{"action":"read","path":"a"}},{"name":"os","input":{"action":"read","path":"b"}}]"#;
+        let mut msgs = vec![
+            make_msg("user", "make me a deck"),
+            make_assistant_with_tools("", skill),
+        ];
+        for _ in 0..4 {
+            msgs.push(make_assistant_with_tools("", reads));
+        }
+        // 8 burned calls since the skill load, nothing produced → fires.
+        let out = SkillExecutionNudge
+            .check(&rctx_tools(&msgs, &[], 6))
+            .expect("fires after 8 burned calls with no execution");
+        assert!(out.contains("execute the next concrete step"));
+        // Below threshold → no fire.
+        assert!(
+            SkillExecutionNudge
+                .check(&rctx_tools(&msgs[..4], &[], 3))
+                .is_none(),
+            "4 burned calls is under the stall threshold"
+        );
+        // A write after the skill load = producing → no fire.
+        let write = r#"[{"name":"os","input":{"action":"write","path":"deck.pptx"}}]"#;
+        msgs.push(make_assistant_with_tools("", write));
+        assert!(SkillExecutionNudge.check(&rctx_tools(&msgs, &[], 7)).is_none());
+        // A plugin invocation also counts as producing.
+        let plugin_msgs = vec![
+            make_assistant_with_tools("", skill),
+            make_assistant_with_tools("", r#"[{"name":"plugin","input":{"resource":"nebo-office","action":"help"}}]"#),
+        ];
+        assert!(
+            SkillExecutionNudge
+                .check(&rctx_tools(&plugin_msgs, &[], 3))
+                .is_none()
+        );
+        // Re-loading the skill mid-grind doesn't reset the count.
+        let reload_msgs = vec![
+            make_msg("user", "make me a deck"),
+            make_assistant_with_tools("", skill),
+            make_assistant_with_tools("", reads),
+            make_assistant_with_tools("", reads),
+            make_assistant_with_tools("", skill),
+            make_assistant_with_tools("", reads),
+            make_assistant_with_tools("", reads),
+        ];
+        assert!(
+            SkillExecutionNudge
+                .check(&rctx_tools(&reload_msgs, &[], 8))
+                .is_some(),
+            "re-load counts from the deepest skill load"
+        );
     }
 
     #[test]
