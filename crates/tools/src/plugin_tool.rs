@@ -1104,7 +1104,7 @@ impl PluginTool {
                 // panel / chat cards. Same is_work_document gate; the mtime check
                 // keeps inputs the plugin only read (a spec, a template) out.
                 let result = ToolResult::ok(text);
-                match produced_work_document(&args, started) {
+                match produced_work_document(&args, None, started) {
                     Some(path) => result.with_image_url(path),
                     None => result,
                 }
@@ -1453,21 +1453,33 @@ pub fn is_auth_error(output: &str) -> bool {
 /// `agent:<id>:...` and `subagent:<parentId>:...` (a subagent runs under its
 /// parent agent's credentials). Returns `None` for non-agent sessions.
 /// The last arg naming a work document (same gate as `os` writes) that was
-/// modified during this plugin execution — i.e. a file the plugin just produced,
-/// not an input it read. Output flags conventionally come last (`-o out.pptx`),
-/// hence the reverse scan. The 1s slack absorbs coarse filesystem mtimes.
-fn produced_work_document(args: &[String], started: std::time::SystemTime) -> Option<String> {
+/// modified during this execution — i.e. a file the command just produced, not
+/// an input it read. Output flags conventionally come last (`-o out.pptx`),
+/// hence the reverse scan. Relative tokens resolve against `base` (a shell
+/// `cwd`) when given. The 1s slack absorbs coarse filesystem mtimes.
+/// Shared by plugin exec and shell exec so every way a run creates a document
+/// surfaces it identically. Ceiling: files a command creates WITHOUT naming
+/// them in its args (e.g. `unzip`) aren't detected.
+pub(crate) fn produced_work_document(
+    args: &[String],
+    base: Option<&std::path::Path>,
+    started: std::time::SystemTime,
+) -> Option<String> {
     let cutoff = started - std::time::Duration::from_secs(1);
-    args.iter()
-        .rev()
-        .find(|a| {
-            crate::file_tool::is_work_document(a)
-                && std::fs::metadata(a.as_str())
-                    .and_then(|m| m.modified())
-                    .map(|m| m >= cutoff)
-                    .unwrap_or(false)
-        })
-        .cloned()
+    args.iter().rev().find_map(|a| {
+        if !crate::file_tool::is_work_document(a) {
+            return None;
+        }
+        let path = match base {
+            Some(b) if std::path::Path::new(a).is_relative() => b.join(a.as_str()),
+            _ => std::path::PathBuf::from(a.as_str()),
+        };
+        let fresh = std::fs::metadata(&path)
+            .and_then(|m| m.modified())
+            .map(|m| m >= cutoff)
+            .unwrap_or(false);
+        fresh.then(|| path.to_string_lossy().to_string())
+    })
 }
 
 fn agent_id_from_session_key(key: &str) -> Option<String> {
@@ -1798,5 +1810,39 @@ mod tests {
         assert!(has_url_candidate("Visit https://example.com"));
         assert!(!has_url_candidate("Visit https://example.com "));
         assert!(!has_url_candidate("no url here"));
+    }
+
+    #[test]
+    fn test_produced_work_document_detects_fresh_output() {
+        let dir = std::env::temp_dir().join(format!("nebo-pwd-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let deck = dir.join("out.pptx");
+        let spec = dir.join("spec.json");
+        std::fs::write(&spec, "{}").unwrap();
+        let started = std::time::SystemTime::now();
+        std::fs::write(&deck, "fake-deck").unwrap();
+
+        let args: Vec<String> = vec![
+            "pptx".into(),
+            "create".into(),
+            spec.to_string_lossy().into_owned(),
+            "-o".into(),
+            deck.to_string_lossy().into_owned(),
+        ];
+        // The fresh .pptx output is detected; the .json spec is not a work doc.
+        assert_eq!(
+            produced_work_document(&args, None, started),
+            Some(deck.to_string_lossy().into_owned())
+        );
+        // Relative token resolves against base.
+        let rel: Vec<String> = vec!["out.pptx".into()];
+        assert_eq!(
+            produced_work_document(&rel, Some(&dir), started),
+            Some(deck.to_string_lossy().into_owned())
+        );
+        // A work doc that predates the run (an input) is excluded.
+        let stale = started + std::time::Duration::from_secs(5);
+        assert_eq!(produced_work_document(&args, None, stale), None);
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
