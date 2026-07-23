@@ -61,7 +61,7 @@ r2d2 = "0.8"
 r2d2_sqlite = "0.32"
 
 # Auth
-jsonwebtoken = "9"
+jsonwebtoken = "10"
 bcrypt = "0.16"
 
 # CLI
