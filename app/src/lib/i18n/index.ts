@@ -1,4 +1,5 @@
 import { browser } from '$app/environment';
+import { storage } from '$lib/storage';
 import { init, register } from 'svelte-i18n';
 
 // Register locale files (lazy-loaded)
@@ -32,7 +33,7 @@ const supportedLocales = ['en', 'de', 'es', 'pt-BR', 'zh-CN', 'zh-TW', 'ja', 'ko
 
 function detectLocale(): string {
 	if (!browser) return 'en';
-	const saved = localStorage.getItem('nebo_locale');
+	const saved = storage.get('nebo_locale');
 	if (saved) return saved;
 	const browserLang = navigator.language;
 	if (supportedLocales.includes(browserLang)) return browserLang;

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
+  import { storage } from '$lib/storage';
   import { t } from 'svelte-i18n';
   import { Editor, Extension, Mark } from '@tiptap/core';
   import StarterKit from '@tiptap/starter-kit';
@@ -112,9 +113,9 @@
   function saveDraft() {
     if (!editor || !draftKey) return;
     if (editor.isEmpty) {
-      localStorage.removeItem(draftKey);
+      storage.remove(draftKey);
     } else {
-      localStorage.setItem(draftKey, JSON.stringify(editor.getJSON()));
+      storage.set(draftKey, JSON.stringify(editor.getJSON()));
     }
   }
 
@@ -126,7 +127,7 @@
   function restoreDraft() {
     if (!editor || !draftKey) return;
     try {
-      const saved = localStorage.getItem(draftKey);
+      const saved = storage.get(draftKey);
       if (saved) {
         const json = JSON.parse(saved);
         editor.commands.setContent(json);
@@ -145,7 +146,7 @@
       if (draftSaveTimer) { clearTimeout(draftSaveTimer); draftSaveTimer = null; }
       // Save current content under the OLD key
       if (!editor.isEmpty) {
-        localStorage.setItem(prevDraftKey, JSON.stringify(editor.getJSON()));
+        storage.set(prevDraftKey, JSON.stringify(editor.getJSON()));
       } else {
         localStorage.removeItem(prevDraftKey);
       }
@@ -158,7 +159,7 @@
   });
 
   function clearDraft() {
-    if (draftKey) localStorage.removeItem(draftKey);
+    if (draftKey) storage.remove(draftKey);
     if (draftSaveTimer) clearTimeout(draftSaveTimer);
   }
 

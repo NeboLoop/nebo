@@ -1,4 +1,5 @@
 import { backendBase } from './base';
+import { storage } from '$lib/storage';
 export type Method =
 	| 'get'
 	| 'GET'
@@ -71,7 +72,7 @@ function getBaseUrl(): string {
 function getAuthToken(): string | null {
 	if (typeof window === 'undefined') return null;
 	try {
-		return localStorage.getItem('nebo_token');
+		return storage.get('nebo_token');
 	} catch {
 		return null;
 	}

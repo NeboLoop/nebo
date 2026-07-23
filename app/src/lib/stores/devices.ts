@@ -6,6 +6,7 @@
  */
 
 import { writable, derived } from 'svelte/store';
+import { storage } from '$lib/storage';
 import { logger } from '$lib/monitoring';
 
 const log = logger.child({ component: 'VoiceDeviceManager' });
@@ -20,7 +21,7 @@ export interface DeviceManagerState {
 const initialState: DeviceManagerState = {
 	inputs: [],
 	outputs: [],
-	selectedMicId: localStorage.getItem(STORAGE_KEY)
+	selectedMicId: storage.get(STORAGE_KEY)
 };
 
 function createDeviceManager() {
@@ -56,9 +57,9 @@ function createDeviceManager() {
 		/** Select a specific microphone by deviceId. Pass null for default. */
 		selectMic(deviceId: string | null) {
 			if (deviceId) {
-				localStorage.setItem(STORAGE_KEY, deviceId);
+				storage.set(STORAGE_KEY, deviceId);
 			} else {
-				localStorage.removeItem(STORAGE_KEY);
+				storage.remove(STORAGE_KEY);
 			}
 			update((s) => ({ ...s, selectedMicId: deviceId }));
 		},

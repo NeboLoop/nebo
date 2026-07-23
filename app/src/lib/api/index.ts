@@ -3,6 +3,7 @@ export * from './nebo';
 
 // Import all functions and components
 import * as api from './nebo';
+import { storage } from '$lib/storage';
 import webapi from './gocliRequest';
 import type * as components from './neboComponents';
 
@@ -44,7 +45,7 @@ export interface TranscribeResponse {
 
 export async function transcribeAudio(audioBlob: Blob): Promise<TranscribeResponse> {
 	const baseUrl = typeof window !== 'undefined' ? window.location.origin : '';
-	const token = typeof window !== 'undefined' ? localStorage.getItem('nebo_token') : null;
+	const token = storage.get('nebo_token');
 
 	const headers: Record<string, string> = {
 		'Content-Type': audioBlob.type || 'audio/webm'

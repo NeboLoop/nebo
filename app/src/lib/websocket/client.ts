@@ -1,4 +1,5 @@
 import { backendWsBase } from '$lib/api/base';
+import { storage } from '$lib/storage';
 /**
  * WebSocket Client for Nebo
  *
@@ -125,7 +126,7 @@ class WebSocketClient {
 
 				// Send auth token if available, otherwise just connect.
 				// Server allows unauthenticated local connections (all HTTP API routes are public).
-				const authToken = this.authToken || localStorage.getItem('nebo_token');
+				const authToken = this.authToken || storage.get('nebo_token');
 				const msg = authToken
 					? { type: 'auth', data: { token: authToken }, timestamp: new Date().toISOString() }
 					: { type: 'connect', timestamp: new Date().toISOString() };

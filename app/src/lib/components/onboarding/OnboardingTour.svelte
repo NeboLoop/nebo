@@ -2,11 +2,14 @@
   import { t } from 'svelte-i18n';
   import { onMount, onDestroy } from 'svelte';
   import { dispatchInstallStart } from '$lib/marketplace/installCodes';
+  import { storage } from '$lib/storage';
 
   // Proactive first-run onboarding: account-type question → scripted welcome →
-  // spotlight tour → one-tap setup. Deterministic (no LLM). Fires once; the
-  // `nebo:tour-done` flag (localStorage) keeps it from ever repeating.
-  const DONE_KEY = 'nebo:tour-done';
+  // spotlight tour → one-tap setup. Deterministic (no LLM). Runs ONLY on the
+  // one-shot handoff flag the onboarding wizard sets when it completes — never
+  // on "flag missing in this browser", which re-showed the tour on every new
+  // browser (and, tunnel-served, whenever ANOTHER bot cleared shared storage).
+  const PENDING_KEY = 'nebo:tour-pending';
 
   type Phase = 'hidden' | 'account' | 'welcome' | 'tour' | 'finale';
   let phase = $state<Phase>('hidden');
@@ -76,11 +79,7 @@
   const welcomeNoun = $derived(accountType === 'business' ? $t('onboardingTour.nounBusiness') : $t('onboardingTour.nounPersonal'));
 
   function shouldRun(): boolean {
-    try {
-      return typeof localStorage !== 'undefined' && localStorage.getItem(DONE_KEY) !== '1';
-    } catch {
-      return false;
-    }
+    return storage.get(PENDING_KEY) === '1';
   }
 
   function updateRect() {
@@ -139,11 +138,7 @@
   }
 
   function finish() {
-    try {
-      localStorage.setItem(DONE_KEY, '1');
-    } catch {
-      /* ignore */
-    }
+    storage.remove(PENDING_KEY);
     phase = 'hidden';
   }
 

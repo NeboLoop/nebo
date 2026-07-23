@@ -7,6 +7,7 @@
   import { beforeNavigate } from '$app/navigation';
   import { base } from '$app/paths';
   import { mobileAgentsOpen } from '$lib/stores/mobileNav';
+  import { storage } from '$lib/storage';
   import { onMount } from 'svelte';
 
   // Under the tunnel base (/t/<botID>/), goto() is base-aware via $lib/nav but
@@ -59,7 +60,7 @@
         import('$lib/websocket/client').then(({ getWebSocketClient }) => {
           const ws = getWebSocketClient();
           if (!ws.isConnected()) {
-            const token = typeof localStorage !== 'undefined' ? localStorage.getItem('nebo_token') : null;
+            const token = storage.get('nebo_token');
             ws.connect(token || undefined);
           }
           // Attach real-time event listeners after connecting

@@ -14,6 +14,7 @@
  */
 
 import { writable, derived } from 'svelte/store';
+import { storage } from '$lib/storage';
 import { backendWsBase } from '$lib/api/base';
 import { startPcmCapture, type AudioCaptureHandle } from '$lib/stores/audio';
 import { deviceManager } from '$lib/stores/devices';
@@ -51,7 +52,7 @@ const initialState: DictationState = {
 	error: null,
 	ownerId: null,
 	isPushToTalk: false,
-	holdToRecordEnabled: typeof localStorage !== 'undefined' && localStorage.getItem(HOLD_TO_RECORD_KEY) === 'true',
+	holdToRecordEnabled: storage.get(HOLD_TO_RECORD_KEY) === 'true',
 	route: { type: 'editor' }
 };
 
@@ -299,7 +300,7 @@ function createDictationStore() {
 		 * Toggle hold-to-record preference (persisted to localStorage).
 		 */
 		setHoldToRecordEnabled(enabled: boolean) {
-			localStorage.setItem(HOLD_TO_RECORD_KEY, String(enabled));
+			storage.set(HOLD_TO_RECORD_KEY, String(enabled));
 			update(s => ({ ...s, holdToRecordEnabled: enabled }));
 		},
 

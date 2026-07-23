@@ -1,10 +1,11 @@
 import { writable, get } from 'svelte/store';
+import { storage } from '$lib/storage';
 import { backendHealth } from '$lib/api/base';
 import { logger } from '$lib/monitoring';
 
 // Onboarding state tracks whether setup is complete.
 // On init, we check localStorage for a cached value, then verify with the backend.
-const stored = typeof localStorage !== 'undefined' ? localStorage.getItem('nebo-onboarding-complete') : null;
+const stored = storage.get('nebo-onboarding-complete');
 export const onboardingComplete = writable(stored === 'true');
 export const onboardingChecked = writable(false);
 
@@ -14,9 +15,7 @@ export const backendChecking = writable(false);
 
 // Sync to localStorage whenever it changes
 onboardingComplete.subscribe(v => {
-  if (typeof localStorage !== 'undefined') {
-    localStorage.setItem('nebo-onboarding-complete', String(v));
-  }
+  storage.set('nebo-onboarding-complete', String(v));
 });
 
 let pollTimer: ReturnType<typeof setTimeout> | null = null;
@@ -62,12 +61,12 @@ export async function checkOnboardingStatus(): Promise<boolean> {
     const { status } = await import('$lib/api/nebo');
     const statusResp = await status() as { setupComplete?: boolean };
     const complete = !!statusResp?.setupComplete;
-    if (!complete && typeof localStorage !== 'undefined') {
+    if (!complete) {
       // Backend reports a fresh profile (data dir was wiped / first ever run), but
-      // localStorage lives in the webview and survives that wipe. Clear stale UI prefs
-      // so "fresh" is truly fresh — the tour re-runs and the sidebar starts expanded.
-      localStorage.removeItem('nebo:tour-done');
-      localStorage.removeItem('nebo:sidebar-collapsed');
+      // browser storage survives that wipe. Clear THIS install's stale UI prefs
+      // (base-scoped — never another bot's) so "fresh" is truly fresh.
+      storage.remove('nebo:tour-pending');
+      storage.remove('nebo:sidebar-collapsed');
     }
     onboardingComplete.set(complete);
     onboardingChecked.set(true);

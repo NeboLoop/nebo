@@ -1,5 +1,6 @@
 <script lang="ts">
   import { goto } from '$lib/nav';
+  import { storage } from '$lib/storage';
   import { onMount } from 'svelte';
   import { t } from 'svelte-i18n';
   import { completeOnboarding } from '$lib/stores/onboarding';
@@ -118,7 +119,7 @@
       step = 1;
     } else {
       // Skip language step; persist default locale
-      localStorage.setItem('nebo_locale', 'en');
+      storage.set('nebo_locale', 'en');
       try { await api.userUpdatePreferences({ language: 'en' }); } catch {}
       step = 2;
     }
@@ -126,7 +127,7 @@
 
   // Save language preference via backend
   async function saveLocale() {
-    localStorage.setItem('nebo_locale', selectedLocale);
+    storage.set('nebo_locale', selectedLocale);
     try {
       await api.userUpdatePreferences({ language: selectedLocale });
     } catch {
@@ -212,6 +213,8 @@
 
   async function finish() {
     await completeOnboarding();
+    // One-shot handoff: the tour runs exactly once, right after onboarding.
+    storage.set('nebo:tour-pending', '1');
     goto('/');
   }
 
