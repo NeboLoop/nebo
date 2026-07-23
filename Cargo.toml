@@ -148,3 +148,11 @@ split-debuginfo = "unpacked"
 lto = true
 codegen-units = 1
 strip = true
+
+# Server-image profile (Dockerfile only): trades a few % runtime perf for a
+# ~3x faster compile — fat LTO + one codegen unit on the 4-core CI runner was
+# 24 of the image build's 30 minutes. Desktop releases keep [profile.release].
+[profile.server]
+inherits = "release"
+lto = "thin"
+codegen-units = 16

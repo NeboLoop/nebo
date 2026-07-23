@@ -38,12 +38,12 @@ FROM chef AS build
 COPY --from=planner /src/recipe.json recipe.json
 RUN MULTIARCH=$(dpkg-architecture -qDEB_HOST_MULTIARCH) && \
     export RUSTFLAGS="-C link-arg=-L/usr/lib/${MULTIARCH} -C link-arg=-Wl,--no-as-needed -C link-arg=-lopenblas -C link-arg=-Wl,--as-needed" && \
-    cargo chef cook --release --recipe-path recipe.json -p nebo-cli
+    cargo chef cook --profile server --recipe-path recipe.json -p nebo-cli
 COPY . .
 RUN test -d app/build || { echo "app/build missing — run 'cd app && pnpm build' on the host first"; exit 1; }
 RUN MULTIARCH=$(dpkg-architecture -qDEB_HOST_MULTIARCH) && \
     export RUSTFLAGS="-C link-arg=-L/usr/lib/${MULTIARCH} -C link-arg=-Wl,--no-as-needed -C link-arg=-lopenblas -C link-arg=-Wl,--as-needed" && \
-    cargo build --release -p nebo-cli
+    cargo build --profile server -p nebo-cli
 
 FROM debian:bookworm-slim
 # Runtime .so for the GUI crates the binary links (loaded but unused on a server).
@@ -53,7 +53,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       libwayland-client0 libxkbcommon0 \
     && rm -rf /var/lib/apt/lists/* \
     && useradd -u 1000 -m nebo
-COPY --from=build /src/target/release/nebo-cli /usr/local/bin/nebo-cli
+COPY --from=build /src/target/server/nebo-cli /usr/local/bin/nebo-cli
 USER 1000
 ENV NEBO_HOST=0.0.0.0 NEBO_DATA_DIR=/data NEBO_SERVER_MODE=1
 EXPOSE 27895
