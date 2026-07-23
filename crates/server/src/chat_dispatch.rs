@@ -1705,6 +1705,8 @@ fn mime_from_extension(path: &std::path::Path) -> String {
         "html" => "text/html",
         "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "pptx" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "ppt" => "application/vnd.ms-powerpoint",
         _ => "application/octet-stream",
     }
     .to_string()

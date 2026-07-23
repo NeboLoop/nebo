@@ -1051,6 +1051,7 @@ impl PluginTool {
 
         let effective_timeout = runtime
             .effective_timeout(Duration::from_secs(timeout_secs));
+        let started = std::time::SystemTime::now();
         let result = tokio::time::timeout(effective_timeout, cmd.output()).await;
 
         match result {
@@ -1097,7 +1098,16 @@ impl PluginTool {
                     text.push_str("\n... (output truncated)");
                 }
 
-                ToolResult::ok(text)
+                // A plugin that produced a user-facing document (e.g. a deck via
+                // `nebo-office pptx create spec.json -o out.pptx`) must surface it
+                // exactly like an `os` write does, or it never reaches the Work
+                // panel / chat cards. Same is_work_document gate; the mtime check
+                // keeps inputs the plugin only read (a spec, a template) out.
+                let result = ToolResult::ok(text);
+                match produced_work_document(&args, started) {
+                    Some(path) => result.with_image_url(path),
+                    None => result,
+                }
             }
         }
     }
@@ -1442,6 +1452,24 @@ pub fn is_auth_error(output: &str) -> bool {
 /// Extract the agent id from a session key. Handles both
 /// `agent:<id>:...` and `subagent:<parentId>:...` (a subagent runs under its
 /// parent agent's credentials). Returns `None` for non-agent sessions.
+/// The last arg naming a work document (same gate as `os` writes) that was
+/// modified during this plugin execution — i.e. a file the plugin just produced,
+/// not an input it read. Output flags conventionally come last (`-o out.pptx`),
+/// hence the reverse scan. The 1s slack absorbs coarse filesystem mtimes.
+fn produced_work_document(args: &[String], started: std::time::SystemTime) -> Option<String> {
+    let cutoff = started - std::time::Duration::from_secs(1);
+    args.iter()
+        .rev()
+        .find(|a| {
+            crate::file_tool::is_work_document(a)
+                && std::fs::metadata(a.as_str())
+                    .and_then(|m| m.modified())
+                    .map(|m| m >= cutoff)
+                    .unwrap_or(false)
+        })
+        .cloned()
+}
+
 fn agent_id_from_session_key(key: &str) -> Option<String> {
     // Delegated (subagent) runs nest the parent's FULL session key:
     //   subagent:<parent_session_key>:<task_id>

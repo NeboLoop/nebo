@@ -788,7 +788,7 @@ fn relativize_path(path: &str, base: &str) -> String {
 /// Extensions that count as user-facing "Work" products (reports, sheets, designs,
 /// images). Code/config/scratch files are deliberately excluded so the Work panel
 /// surfaces deliverables, not noise.
-fn is_work_document(path: &str) -> bool {
+pub(crate) fn is_work_document(path: &str) -> bool {
     const WORK_EXTS: &[&str] = &[
         "md", "pdf", "csv", "xlsx", "xls", "docx", "doc", "pptx", "ppt", "html", "png",
         "jpg", "jpeg", "gif", "svg", "webp", "mp4", "webm", "mov", "jsx", "tsx",
