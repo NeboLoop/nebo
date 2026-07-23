@@ -12,7 +12,7 @@
 //! 1. When `NEBOAI_PUBLIC_OAUTH=1` (set by the cloud provisioner; never on
 //!    desktop), the login flow registers a pending auth here — `{nonce, port,
 //!    expiry}` — and passes the ONE public redirect
-//!    (`https://api.neboai.com/oauth/plugin/callback`) plus an opaque `state`
+//!    (`https://neboai.com/oauth/plugin/callback`) plus an opaque `state`
 //!    (`base64url({bot_id, port, nonce})`) to the plugin via
 //!    `NEBO_OAUTH_REDIRECT_URI` / `NEBO_OAUTH_STATE` / `NEBO_OAUTH_PORT`.
 //! 2. Google redirects the user's browser to the hub; the hub parses `state`
@@ -35,7 +35,7 @@ use tracing::warn;
 /// The ONE fixed public redirect URI carried on the Google OAuth client.
 /// The Google Cloud console for the client must list it under
 /// "Authorized redirect URIs" or Google rejects the auth request.
-pub const PUBLIC_REDIRECT_URI: &str = "https://api.neboai.com/oauth/plugin/callback";
+pub const PUBLIC_REDIRECT_URI: &str = "https://neboai.com/oauth/plugin/callback";
 
 /// How long a pending auth stays valid — the user has this long to finish the
 /// Google consent screen.
