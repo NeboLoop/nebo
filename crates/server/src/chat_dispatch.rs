@@ -138,6 +138,32 @@ fn humanize_tool_call(tool_name: &str, input: &serde_json::Value) -> (String, St
     // STRAP: toolName(resource, action, …).
     let resource = input.get("resource").and_then(|v| v.as_str());
     let action = input.get("action").and_then(|v| v.as_str());
+    // The web tool takes an action without a resource, so it used to fall
+    // through to the static "Searched the web" for EVERYTHING — a run that
+    // fetched four pages read as search-only. Label by action (+ host when
+    // there's a URL) so fetches and navigations are visible as page visits.
+    if tool_name == "web" {
+        let host = input
+            .get("url")
+            .and_then(|v| v.as_str())
+            .and_then(|u| url::Url::parse(u).ok())
+            .and_then(|u| {
+                u.host_str()
+                    .map(|h| h.trim_start_matches("www.").to_string())
+            });
+        let site = host.as_deref().unwrap_or("a page");
+        let (gerund, past) = match action {
+            Some("search") | None => ("searching the web".to_string(), "Searched the web".to_string()),
+            Some("fetch") => (format!("reading {site}"), format!("Read {site}")),
+            Some("navigate") => (format!("opening {site}"), format!("Opened {site}")),
+            Some("read_page") => ("reading the page".to_string(), "Read the page".to_string()),
+            Some(a) => {
+                let a = a.replace('_', " ");
+                (format!("{a} (web)"), format!("Web: {a}"))
+            }
+        };
+        return (gerund, past);
+    }
     if let (Some(resource), Some(action)) = (resource, action) {
         let noun = resource.replace('_', " ");
         if let Some((gerund, past)) = strap_verb(action) {
