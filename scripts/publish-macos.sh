@@ -93,7 +93,7 @@ else
   echo "    to the CDN. This step only adds the mac assets + merged checksums."
   echo "    The GitHub release now has the mac assets; to feed the auto-updater on mac,"
   echo "    set DO_SPACES_ACCESS_KEY + DO_SPACES_SECRET_KEY and re-run, or upload"
-  echo "    dist/${BIN}, dist/${DMG}, and the merged checksums.txt to"
-  echo "    s3://neboloop/releases/${TAG}/."
+  echo "    the dist/ mac assets (both DMGs + bare binaries) and the merged"
+  echo "    checksums.txt to s3://neboloop/releases/${TAG}/."
 fi
 echo "Done."
