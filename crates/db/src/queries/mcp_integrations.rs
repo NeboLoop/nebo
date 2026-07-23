@@ -173,6 +173,7 @@ impl Store {
         client_secret: Option<&str>,
         authorization_endpoint: &str,
         token_endpoint: &str,
+        redirect_uri: &str,
     ) -> Result<(), NeboError> {
         let conn = self.conn()?;
         conn.execute(
@@ -183,6 +184,7 @@ impl Store {
                 oauth_client_secret = ?4,
                 oauth_authorization_endpoint = ?5,
                 oauth_token_endpoint = ?6,
+                oauth_redirect_uri = ?8,
                 updated_at = unixepoch()
              WHERE id = ?7",
             params![
@@ -192,7 +194,8 @@ impl Store {
                 client_secret,
                 authorization_endpoint,
                 token_endpoint,
-                id
+                id,
+                redirect_uri
             ],
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;
@@ -207,7 +210,8 @@ impl Store {
         let conn = self.conn()?;
         match conn.query_row(
             "SELECT id, name, server_url, auth_type, oauth_state, oauth_pkce_verifier,
-                    oauth_client_id, oauth_client_secret, oauth_token_endpoint
+                    oauth_client_id, oauth_client_secret, oauth_token_endpoint,
+                    oauth_redirect_uri
              FROM mcp_integrations WHERE oauth_state = ?1",
             params![state],
             |row| {
@@ -221,6 +225,7 @@ impl Store {
                     oauth_client_id: row.get(6)?,
                     oauth_client_secret: row.get(7)?,
                     oauth_token_endpoint: row.get(8)?,
+                    oauth_redirect_uri: row.get(9)?,
                 })
             },
         ) {
@@ -234,7 +239,7 @@ impl Store {
     pub fn clear_mcp_oauth_state(&self, id: &str) -> Result<(), NeboError> {
         let conn = self.conn()?;
         conn.execute(
-            "UPDATE mcp_integrations SET oauth_state = NULL, oauth_pkce_verifier = NULL, updated_at = unixepoch() WHERE id = ?1",
+            "UPDATE mcp_integrations SET oauth_state = NULL, oauth_pkce_verifier = NULL, oauth_redirect_uri = NULL, updated_at = unixepoch() WHERE id = ?1",
             params![id],
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;

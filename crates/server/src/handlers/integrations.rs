@@ -954,6 +954,7 @@ pub async fn reauthenticate_integration(
             encrypted_secret.as_deref(),
             &metadata.authorization_endpoint,
             &metadata.token_endpoint,
+            &redirect_uri,
         )
         .map_err(to_error_response)?;
 
@@ -1084,6 +1085,7 @@ pub async fn get_oauth_url(
             encrypted_secret.as_deref(),
             &metadata.authorization_endpoint,
             &metadata.token_endpoint,
+            &redirect_uri,
         )
         .map_err(to_error_response)?;
 
@@ -1212,10 +1214,17 @@ pub async fn oauth_callback(
         .as_deref()
         .and_then(|enc| state.bridge.client().decrypt_token(enc).ok());
 
-    // The callback arrives AT the redirect_uri the flow started with, so
-    // deriving from this request reproduces the exact value the authorize
-    // request used — required to match at the token exchange.
-    let redirect_uri = oauth_redirect_uri(&headers, state.config.port);
+    // RFC 6749: the token exchange must present the EXACT redirect_uri the
+    // authorize request used, so it's stored with the flow state. Recomputing
+    // from this request's Host broke through the tunnel's peer-replica hop
+    // (which rewrote Host) — the token endpoint answered "redirect_uri
+    // mismatch". The recompute survives only as a legacy fallback for a flow
+    // started before the column existed.
+    let redirect_uri = integration
+        .oauth_redirect_uri
+        .clone()
+        .filter(|u| !u.is_empty())
+        .unwrap_or_else(|| oauth_redirect_uri(&headers, state.config.port));
 
     // 3. Exchange code for tokens
     let tokens = match exchange_mcp_code(
