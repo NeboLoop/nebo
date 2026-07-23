@@ -1429,7 +1429,7 @@
 		"description": "Monitor connected employees and system health",
 		"mcpServer": "MCP Server",
 		"database": "Database",
-		"webSocket": "WebSocket",
+		"webSocket": "Live connection",
 		"uptime": "Uptime",
 		"updates": "Updates",
 		"currentVersion": "Current Version",

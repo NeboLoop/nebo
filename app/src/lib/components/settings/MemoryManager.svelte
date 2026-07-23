@@ -166,7 +166,7 @@
 {#if showInfo}
   <div class="fixed inset-0 z-50 flex items-center justify-center">
     <button type="button" class="absolute inset-0 bg-black/60 backdrop-blur-sm" onclick={() => (showInfo = false)} aria-label={$t('common.close')}></button>
-    <div class="relative bg-base-100 rounded-2xl border border-base-300 w-full max-w-md mx-4 p-6">
+    <div class="relative bg-base-100 rounded-2xl border border-base-300 w-[min(92vw,28rem)] p-6">
       <div class="flex items-center justify-between mb-4">
         <h3 class="text-lg font-bold">{$t('memoryManager.howItWorks')}</h3>
         <button type="button" onclick={() => (showInfo = false)} class="p-1.5 rounded-full hover:bg-base-200 transition-colors cursor-pointer" aria-label={$t('common.close')}>

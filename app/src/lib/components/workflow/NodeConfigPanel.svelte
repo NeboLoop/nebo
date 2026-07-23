@@ -197,7 +197,7 @@
 	}
 </script>
 
-<div class="w-[340px] shrink-0 border-l border-base-content/10 bg-base-100 flex flex-col overflow-hidden">
+<div class="w-[340px] shrink-0 border-l border-base-content/10 bg-base-100 flex flex-col overflow-hidden max-md:w-full max-md:h-[40%] max-md:border-l-0 max-md:border-t">
 	<!-- Panel header -->
 	<div class="flex items-center justify-between px-4 py-3 border-b border-base-content/10 shrink-0">
 		<div class="flex-1 min-w-0">

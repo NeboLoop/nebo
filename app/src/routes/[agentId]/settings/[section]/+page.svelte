@@ -1079,7 +1079,7 @@
   {@const busy = channelAuthSaving || channelConnectingSlug === ch.pluginSlug}
   <!-- svelte-ignore a11y_click_events_have_key_events a11y_interactive_supports_focus a11y_no_noninteractive_tabindex -->
   <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/40" tabindex="-1" onkeydown={(e) => { if (e.key === 'Escape' && !helpChatOpen) closeAuthModal(); }} role="dialog" aria-modal="true">
-    <div class="bg-base-100 rounded-xl border border-base-300 shadow-xl mx-4 flex overflow-hidden transition-all duration-300 ease-out {helpChatOpen ? 'w-[80vw] h-[80vh]' : 'w-full max-w-md'}">
+    <div class="bg-base-100 rounded-xl border border-base-300 shadow-xl flex overflow-hidden transition-all duration-300 ease-out {helpChatOpen ? 'w-[80vw] max-md:w-[92vw] h-[80vh]' : 'w-[min(92vw,28rem)]'}">
       <!-- Left: Setup form -->
       <div class="flex flex-col min-h-0 overflow-hidden {helpChatOpen ? 'w-1/2 border-r border-base-content/10' : 'w-full'}">
         <div class="flex items-center justify-between p-5 border-b border-base-content/10">
@@ -1201,7 +1201,7 @@
   {@const connecting = addAccountConnectingSlug === plugin.slug}
   <!-- svelte-ignore a11y_click_events_have_key_events a11y_interactive_supports_focus a11y_no_noninteractive_tabindex -->
   <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/40" tabindex="-1" onkeydown={(e) => { if (e.key === 'Escape') closeAddAccount(); }} role="dialog" aria-modal="true">
-    <div class="bg-base-100 rounded-xl border border-base-300 shadow-xl mx-4 w-full max-w-md flex flex-col overflow-hidden">
+    <div class="bg-base-100 rounded-xl border border-base-300 shadow-xl w-[min(92vw,28rem)] flex flex-col overflow-hidden">
       <div class="flex items-center justify-between p-5 border-b border-base-content/10">
         <div class="min-w-0">
           <div class="text-base font-semibold">{$t('agentSettings.addPluginAccount', { values: { name: plugin.name } })}</div>

@@ -9,6 +9,7 @@
   import { downloadArtifact } from '$lib/chat/download';
   import { backendUrl } from '$lib/api/base';
   import { addToast } from '$lib/stores/toast';
+  import { devMode } from '$lib/stores/devmode';
   import { marked } from 'marked';
   import FileText from 'lucide-svelte/icons/file-text';
   import Code from 'lucide-svelte/icons/code';
@@ -1103,7 +1104,10 @@
       {/if}
     {/each}
 
-    {#if isLoading && groupedMessages.length > 0 && groupedMessages[groupedMessages.length - 1]?.type !== 'assistant'}
+    <!-- Live working indicator (ChatGPT/Claude style): shown for the WHOLE run,
+         including while the reply text is streaming or a tool grinds after the
+         last text chunk — not only before the first assistant message. -->
+    {#if isLoading && groupedMessages.length > 0}
       <div class="max-w-[640px] mt-3 py-2 flex items-center gap-2">
         <span class="loading loading-spinner loading-xs text-primary"></span>
         <span class="text-sm text-base-content/50 animate-pulse">{activityStatus || $t('chat.working')}</span>
@@ -1119,8 +1123,8 @@
   </div>
   {/if}
 
-  <!-- Token usage badge -->
-  {#if tokenUsage}
+  <!-- Token usage badge — dev mode only; regular users don't care about tokens -->
+  {#if tokenUsage && $devMode}
     {@const totalPrompt = tokenUsage.input + (tokenUsage.cacheRead ?? 0) + (tokenUsage.cacheCreation ?? 0)}
     {@const conversationIn = Math.max(0, totalPrompt - (tokenUsage.overhead ?? 0))}
     <div class="max-w-3xl mx-auto w-full shrink-0 px-6 pb-1">

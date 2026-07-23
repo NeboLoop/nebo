@@ -588,10 +588,10 @@
 
 <svelte:window onkeydown={handleKeyboard} />
 
-<div class="flex h-full w-full overflow-hidden">
+<div class="flex h-full w-full overflow-hidden max-md:flex-col">
 	<!-- Left panel: AI Architect Chat -->
 	{#if mode === 'edit' && chatOpen}
-		<div class="w-[320px] shrink-0 border-r border-base-content/10 flex flex-col overflow-hidden">
+		<div class="w-[320px] shrink-0 border-r border-base-content/10 flex flex-col overflow-hidden max-md:w-full max-md:h-[40%] max-md:border-r-0 max-md:border-b">
 			<BuilderChat
 				{agentId}
 				workflows={builderWorkflows}
@@ -603,9 +603,9 @@
 	{/if}
 
 	<!-- Center: Canvas + Toolbar -->
-	<div class="flex-1 min-w-0 flex flex-col overflow-hidden">
+	<div class="flex-1 min-w-0 min-h-0 flex flex-col overflow-hidden">
 		<!-- Toolbar -->
-		<div class="flex items-center gap-2 px-3 py-2 border-b border-base-content/10 shrink-0 bg-base-100">
+		<div class="flex items-center gap-2 px-3 py-2 border-b border-base-content/10 shrink-0 bg-base-100 max-md:flex-wrap">
 			{#if mode === 'edit'}
 				<!-- Chat toggle -->
 				<button
