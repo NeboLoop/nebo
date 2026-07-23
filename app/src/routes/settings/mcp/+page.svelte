@@ -425,11 +425,12 @@
   <div class="flex flex-col gap-1.5">
     {#each integrations as integration (integration.id)}
       <div class="rounded-lg border border-base-300 bg-base-100">
-        <div class="flex items-center gap-3 p-3.5">
+        <div class="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3 p-3.5">
+          <div class="flex items-center gap-3 flex-1 min-w-0">
           <div class="w-2 h-2 rounded-full shrink-0 {integration.connectionStatus === 'connected' ? 'bg-success' : integration.lastError ? 'bg-error' : 'bg-base-content/20'}" title={integration.connectionStatus === 'connected' ? $t('common.connected') : integration.lastError ?? $t('common.disconnected')}></div>
           <div class="flex-1 min-w-0">
-            <div class="flex items-center gap-2 mb-0.5">
-              <span class="text-sm font-semibold">{integration.name}</span>
+            <div class="flex items-center gap-2 mb-0.5 min-w-0">
+              <span class="text-sm font-semibold truncate">{integration.name}</span>
               <span class="px-1.5 py-0.5 rounded text-xs font-mono bg-base-200 text-base-content/70">{integration.authType === 'oauth' ? $t('settingsMcp.badgeOauth') : integration.authType === 'none' ? $t('settingsMcp.authNone') : $t('onboarding.apiKey.apiKeyLabel')}</span>
               {#if integration.toolCount > 0}
                 <span class="text-xs text-base-content/50">{$t('settingsStatus.toolsCount', { values: { count: integration.toolCount } })}</span>
@@ -455,7 +456,8 @@
               <div class="text-xs text-error mt-0.5">{integration.lastError}</div>
             {/if}
           </div>
-          <div class="flex items-center gap-1.5 shrink-0">
+          </div>
+          <div class="flex items-center gap-1.5 shrink-0 self-end sm:self-auto">
             {#if integration.authType === 'oauth' && (integration.connectionStatus === 'error' || integration.connectionStatus === 'needs_reauth')}
               <button
                 onclick={() => reauthenticate(integration.id)}
@@ -606,7 +608,7 @@
 {#if keyPromptId}
   <div class="fixed inset-0 z-50 flex items-center justify-center">
     <div class="absolute inset-0 bg-black/30" role="presentation"></div>
-    <div class="relative bg-base-100 rounded-box border border-base-300 shadow-xl w-[440px] flex flex-col z-10">
+    <div class="relative bg-base-100 rounded-box border border-base-300 shadow-xl w-full max-w-[440px] mx-4 flex flex-col z-10">
       <div class="flex items-center justify-between px-5 py-3.5 border-b border-base-300 shrink-0">
         <span class="text-base font-semibold">{$t('settingsMcp.enterApiKey')}</span>
         <button class="w-7 h-7 rounded-md flex items-center justify-center hover:bg-base-200 cursor-pointer bg-transparent border-none" onclick={() => keyPromptId = null}>
@@ -635,7 +637,7 @@
 {#if showAddModal}
   <div class="fixed inset-0 z-50 flex items-center justify-center">
     <div class="absolute inset-0 bg-black/30" role="presentation"></div>
-    <div class="relative bg-base-100 rounded-box border border-base-300 shadow-xl w-[520px] max-h-[80vh] flex flex-col z-10">
+    <div class="relative bg-base-100 rounded-box border border-base-300 shadow-xl w-full max-w-[520px] mx-4 max-h-[85dvh] flex flex-col z-10">
       <!-- Header -->
       <div class="flex items-center justify-between px-5 py-3.5 border-b border-base-300 shrink-0">
         <div class="flex items-center gap-2">
