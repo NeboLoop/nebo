@@ -58,6 +58,7 @@
   // without a SvelteKit goto (goto can remount and drop chat_error / the bubble).
   let activeRunUnsubs: Array<() => void> = [];
   let pendingSendStarted = false;
+  let lastThreadId = '';
   let firstRunSettled = false;
 
   function pendingSendKey(id: string) {
@@ -156,6 +157,12 @@
 
   $effect(() => {
     if (threadId && agentId) {
+      // SvelteKit REUSES this component across thread switches. The first-send
+      // guard must reset when the user clicks a different chat, or every later
+      // switch skips loadMessages() and the transcript freezes on the chat the
+      // send happened in.
+      if (lastThreadId && threadId !== lastThreadId) pendingSendStarted = false;
+      lastThreadId = threadId;
       const sk = `agent:${agentId}:thread:${threadId}`;
       chat.setSessionKey(sk);
 

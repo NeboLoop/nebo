@@ -713,6 +713,30 @@ pub(crate) async fn finalize_agent_install(state: &AppState, artifact_id: &str, 
         if !agent.frontmatter.is_empty() {
             if let Ok(config) = napp::agent::parse_agent_config(&agent.frontmatter) {
                 crate::sync_agent_workflows(&state.store, artifact_id, &config);
+
+                // Seed the per-employee approval policy so a fresh install is
+                // protected out of the box: every gated operation of its bound
+                // interfaces defaults to "Needs approval" from install time —
+                // NOT from the first visit to the Approvals page. Seed-if-absent
+                // so a reinstall never clobbers the customer's tuned policy.
+                if !config.requires.interfaces.is_empty() {
+                    let existing = state
+                        .store
+                        .get_entity_config("agent", artifact_id)
+                        .ok()
+                        .flatten()
+                        .and_then(|c| c.operation_policy);
+                    if existing.is_none() {
+                        let patch = serde_json::json!({
+                            "operationPolicy": tools::policy::OperationPolicy::default().to_json()
+                        });
+                        if let Err(e) =
+                            state.store.upsert_entity_config("agent", artifact_id, &patch)
+                        {
+                            tracing::warn!(agent = artifact_id, error = %e, "failed to seed default operation policy");
+                        }
+                    }
+                }
             }
         }
     }
@@ -1150,6 +1174,11 @@ async fn handle_plugin_code(state: &AppState, code: &str) -> Result<CodeHandlerR
             }),
         );
     }
+
+    // Plugins ship embedded skills (loader step 2.5) — without a reload they
+    // stay invisible until the next boot and the model can't discover them
+    // (the nebo-office pptx flail). Same warm-reload rule as skill installs.
+    state.skill_loader.reload_from_disk().await;
 
     Ok(CodeHandlerResult {
         message: format!("Installed plugin: {}", name),

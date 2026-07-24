@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="83 101 560 560" role="img" aria-label="NeboAI tray mark">
+  <title>NeboAI tray mark</title>
+  <!-- macOS template image: black + alpha only. Regenerate with:
+       rsvg-convert tray-icon.svg -w 22 -h 22 -o tray-icon.png -->
+  <path fill="#000000" d="M111 571 L276 314 L399 453 L455 322 L615 571 L424 571 L284 413 L217 571 Z"/>
+  <path fill="#000000" d="M372.5 191 L436.5 305 L383 384 L311 306 Z"/>
+</svg>

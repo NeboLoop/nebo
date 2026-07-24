@@ -485,6 +485,7 @@ fn notify_plugin_needs_reauth(state: &AppState, p: &db::PluginAccountProfile) {
         Some(&body),
         Some(&action_url),
         None,
+        Some(p.agent_id.as_ref()),
     ) {
         warn!(error = %e, "failed to create plugin reauth notification");
         return;

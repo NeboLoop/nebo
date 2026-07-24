@@ -509,7 +509,23 @@ async fn fetch_janus_usage(state: &AppState) -> Result<crate::state::JanusUsage,
         budget_free_available: body["grants"]["free_available"].as_u64().unwrap_or(0),
         budget_gift_available: body["grants"]["gift_available"].as_u64().unwrap_or(0),
         budget_credits_cents: body["credits"]["balance_cents"].as_u64().unwrap_or(0),
-        budget_active_pool: body["plan"].as_str().unwrap_or("").to_string(),
+        // The pool actually being consumed, in FIFO drawdown order (free → gift →
+        // credits) — NOT the plan name. body["plan"] was showing "free" even when
+        // the free pool was empty and spend was coming from the gift pool.
+        budget_active_pool: {
+            let free = body["grants"]["free_available"].as_u64().unwrap_or(0);
+            let gift = body["grants"]["gift_available"].as_u64().unwrap_or(0);
+            let credits = body["credits"]["balance_cents"].as_u64().unwrap_or(0);
+            if free > 0 {
+                "free".to_string()
+            } else if gift > 0 {
+                "gift".to_string()
+            } else if credits > 0 {
+                "credits".to_string()
+            } else {
+                String::new()
+            }
+        },
         updated_at: now,
     };
 

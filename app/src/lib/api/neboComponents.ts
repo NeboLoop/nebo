@@ -62,6 +62,7 @@ export interface Agent {
 	color?: string
 	loopExposed: boolean
 	loopAgentId?: string
+	department?: string
 }
 
 export interface AgentProfile {
@@ -322,6 +323,7 @@ export interface EntityConfig {
 	allowedPaths?: string
 	pinned?: number
 	multiChat?: number
+	operationPolicy?: string
 	createdAt: number
 	updatedAt: number
 	lastHeartbeatAt?: string
@@ -457,6 +459,7 @@ export interface Notification {
 	body?: string
 	actionUrl?: string
 	icon?: string
+	agentId?: string
 	readAt?: number
 	createdAt: number
 }
@@ -1016,6 +1019,14 @@ export interface EnableAgentChannelResponse {
 	ok: boolean
 }
 
+export interface GetAgentOperationsResponse {
+	default: unknown
+	configured: unknown
+	interfaces: string[]
+	operations: unknown[]
+	total: number
+}
+
 export interface GetAgentResponse {
 	agent: Agent
 	displayName: string
@@ -1167,6 +1178,10 @@ export interface GetSystemInfoResponse {
 export interface GetToolOutputResponse {
 	output: string
 	isError: boolean
+}
+
+export interface GetWorkflowApprovalStatusResponse {
+	status: string
 }
 
 export interface GetWorkflowResponse {
@@ -1465,6 +1480,11 @@ export interface RemoveCollectionItemResponse {
 
 export interface RemovePluginResponse {
 	message: string
+}
+
+export interface ResolveWorkflowApprovalResponse {
+	status: string
+	runId: unknown
 }
 
 export interface RunAgentWorkflowResponse {

@@ -30,6 +30,10 @@ pub struct ResolvedEntityConfig {
     /// Whether this entity supports multiple concurrent chats.
     #[serde(default)]
     pub multi_chat: bool,
+    /// Per-employee three-state approval policy over gated interface operations
+    /// (raw JSON of tools::policy::OperationPolicy). None = inherit seat defaults.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation_policy: Option<String>,
 }
 
 /// Resolve entity config by layering overrides on global defaults.
@@ -150,6 +154,13 @@ pub fn resolve(
         .map(|v| v != 0)
         .unwrap_or(false);
 
+    // Per-operation approval policy (per-employee only; no global layer). Raw JSON
+    // passed through; the runtime parses it into OperationPolicy at dispatch.
+    let operation_policy = entity.and_then(|e| e.operation_policy.clone());
+    if operation_policy.is_some() {
+        overrides.insert("operationPolicy".into(), true);
+    }
+
     ResolvedEntityConfig {
         entity_type: entity_type.to_string(),
         entity_id: entity_id.to_string(),
@@ -165,6 +176,7 @@ pub fn resolve(
         allowed_paths,
         pinned,
         multi_chat,
+        operation_policy,
     }
 }
 

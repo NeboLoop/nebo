@@ -214,6 +214,10 @@ pub struct AgentDetailResponse {
     /// Signing key ID for verification.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signing_key_id: Option<String>,
+    /// Marketplace department slugs from the artifact manifest (e.g. ["sales"]).
+    /// Absent on older NeboAI servers.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub departments: Vec<String>,
 }
 
 /// Full skill detail with manifest.

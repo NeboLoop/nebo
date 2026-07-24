@@ -86,10 +86,12 @@ impl DynTool for MessageTool {
 
     fn execute_dyn<'a>(
         &'a self,
-        _ctx: &'a ToolContext,
+        ctx: &'a ToolContext,
         input: serde_json::Value,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send + 'a>> {
         Box::pin(async move {
+            // Attribute persisted notifications to the calling AI employee.
+            let agent_id = crate::plugin_tool::agent_id_from_session_key(&ctx.session_key);
             let domain_input: DomainInput = match serde_json::from_value(input.clone()) {
                 Ok(v) => v,
                 Err(e) => return ToolResult::error(format!("Failed to parse input: {}. Do not retry — this is a schema error.", e)),
@@ -144,7 +146,7 @@ impl DynTool for MessageTool {
                 }
                 "notify" => {
                     let nf = self.notify_fn.read().unwrap().clone();
-                    handle_notify(&self.store, nf.as_ref(), &domain_input.action, &input).await
+                    handle_notify(&self.store, nf.as_ref(), &domain_input.action, &input, agent_id.as_deref()).await
                 }
                 "sms" => handle_sms(&domain_input.action, &input).await,
                 other => ToolResult::error(format!(
@@ -160,7 +162,7 @@ impl DynTool for MessageTool {
 // Notify resource handlers
 // ---------------------------------------------------------------------------
 
-async fn handle_notify(store: &Store, notify_fn: Option<&NotifyFn>, action: &str, input: &serde_json::Value) -> ToolResult {
+async fn handle_notify(store: &Store, notify_fn: Option<&NotifyFn>, action: &str, input: &serde_json::Value, agent_id: Option<&str>) -> ToolResult {
     match action {
         "send" => {
             let text = input["text"].as_str().unwrap_or("");
@@ -181,6 +183,7 @@ async fn handle_notify(store: &Store, notify_fn: Option<&NotifyFn>, action: &str
                 Some(text),
                 None,
                 None,
+                agent_id,
             ) {
                 Ok(_) => {
                     notify_crate::send(title, text);
@@ -197,7 +200,7 @@ async fn handle_notify(store: &Store, notify_fn: Option<&NotifyFn>, action: &str
                 return ToolResult::error(errors::missing_param("alert", "text", "message(resource: \"notify\", action: \"alert\", title: \"Warning\", text: \"Something happened\")"));
             }
 
-            handle_alert(store, notify_fn, title, text).await
+            handle_alert(store, notify_fn, title, text, agent_id).await
         }
         "speak" => ToolResult::error(
             "speak has moved to the os tool: os(resource: \"tts\", action: \"speak\", text: \"...\")",
@@ -220,7 +223,7 @@ async fn handle_notify(store: &Store, notify_fn: Option<&NotifyFn>, action: &str
 /// osascript `display alert` modal (blocking, generic icon, never auto-dismisses).
 /// Falls back to a persisted-only notification when no broadcaster is wired
 /// (headless / no frontend) — never a modal.
-async fn handle_alert(store: &Store, notify_fn: Option<&NotifyFn>, title: &str, text: &str) -> ToolResult {
+async fn handle_alert(store: &Store, notify_fn: Option<&NotifyFn>, title: &str, text: &str, agent_id: Option<&str>) -> ToolResult {
     let id = uuid::Uuid::new_v4().to_string();
     // Notifications FK to users(id); resolve the real local user (same canonical
     // resolver the proactive-update notifications use) — "" would violate the FK.
@@ -235,6 +238,7 @@ async fn handle_alert(store: &Store, notify_fn: Option<&NotifyFn>, title: &str, 
         Some(text),
         None,
         None,
+        agent_id,
     ) {
         tracing::warn!(error = %e, "alert: could not persist notification row; broadcasting anyway");
     }
@@ -248,6 +252,7 @@ async fn handle_alert(store: &Store, notify_fn: Option<&NotifyFn>, title: &str, 
                 "kind": "alert",
                 "title": title,
                 "body": text,
+                "agentId": agent_id,
             }),
         );
     }

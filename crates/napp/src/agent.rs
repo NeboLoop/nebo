@@ -39,6 +39,11 @@ use crate::NappError;
 pub struct AgentRequires {
     #[serde(default)]
     pub plugins: Vec<String>,
+    /// Typed capability interfaces the seat binds (e.g. `["ledger", "mail"]`).
+    /// Each interface's gated operations become the items in the seat's
+    /// per-operation approval policy. Was previously dropped on parse.
+    #[serde(default)]
+    pub interfaces: Vec<String>,
 }
 
 /// A sidecar tool definition declared in agent.json.

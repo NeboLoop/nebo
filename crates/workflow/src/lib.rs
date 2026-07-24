@@ -45,6 +45,13 @@ pub enum WorkflowError {
     Blocked(String),
     #[error("workflow cancelled")]
     Cancelled,
+    /// The run reached a gated operation whose per-employee policy says
+    /// "Needs approval": it SUSPENDED at the checkpoint (state persisted in
+    /// workflow_run_suspensions, run status `awaiting_approval`) and waits for
+    /// the owner's decision. Not a failure — the manager notifies the owner
+    /// and the run resumes (or aborts) via the approval endpoint.
+    #[error("awaiting owner approval for operation: {operation}")]
+    AwaitingApproval { operation: String, display: String },
     #[error("circuit breaker tripped: {0}")]
     CircuitBreak(String),
     #[error("{0}")]

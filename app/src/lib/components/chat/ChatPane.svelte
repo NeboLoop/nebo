@@ -9,7 +9,6 @@
   import { downloadArtifact } from '$lib/chat/download';
   import { backendUrl, backendBase } from '$lib/api/base';
   import { addToast } from '$lib/stores/toast';
-  import { devMode } from '$lib/stores/devmode';
   import { marked } from 'marked';
   import FileText from 'lucide-svelte/icons/file-text';
   import Code from 'lucide-svelte/icons/code';
@@ -290,8 +289,13 @@
   // wide enough for the composer, message bubbles, and header controls.
   const CHAT_MIN = 400;
   let creationsWidth = $state(CREATIONS_MIN);
+  // The split is stored as a FRACTION of the container (default half) so a
+  // window resize keeps the proportion instead of letting the flex chat
+  // column absorb the whole delta. Dragging updates the fraction.
+  let creationsFraction = $state(0.5);
   let userResized = $state(false);
   let resizing = $state(false);
+  let workFull = $state(false);
   let containerEl = $state<HTMLDivElement | null>(null);
 
   // One clamp for every pathway that sets the panel width (open, drag,
@@ -310,7 +314,9 @@
   $effect(() => {
     if (!containerEl) return;
     const ro = new ResizeObserver(() => {
-      if (creationsOpen) creationsWidth = clampPanelWidth(creationsWidth);
+      if (!creationsOpen || !containerEl) return;
+      const total = containerEl.getBoundingClientRect().width;
+      creationsWidth = clampPanelWidth(total * creationsFraction);
     });
     ro.observe(containerEl);
     return () => ro.disconnect();
@@ -327,8 +333,9 @@
       activeVersion = null;
     }
     if (!userResized && containerEl) {
+      creationsFraction = 0.5;
       const w = containerEl.getBoundingClientRect().width;
-      creationsWidth = clampPanelWidth(Math.max(360, w * 0.5));
+      creationsWidth = clampPanelWidth(Math.max(360, w * creationsFraction));
     }
   }
 
@@ -339,6 +346,7 @@
       if (!containerEl) return;
       const rect = containerEl.getBoundingClientRect();
       creationsWidth = clampPanelWidth(rect.right - ev.clientX);
+      if (rect.width > 0) creationsFraction = creationsWidth / rect.width;
       userResized = true;
     };
     const onUp = () => {
@@ -1354,17 +1362,6 @@
   </div>
   {/if}
 
-  <!-- Token usage badge — dev mode only; regular users don't care about tokens -->
-  {#if tokenUsage && $devMode}
-    {@const totalPrompt = tokenUsage.input + (tokenUsage.cacheRead ?? 0) + (tokenUsage.cacheCreation ?? 0)}
-    {@const conversationIn = Math.max(0, totalPrompt - (tokenUsage.overhead ?? 0))}
-    <div class="max-w-3xl mx-auto w-full shrink-0 px-6 pb-1">
-      <span class="text-xs text-base-content/50 font-mono" title={$t('chat.tokenTooltip', { values: { total: totalPrompt.toLocaleString(), overhead: (tokenUsage.overhead ?? 0).toLocaleString(), cacheRead: (tokenUsage.cacheRead ?? 0).toLocaleString() } })}>
-        {$t('chat.tokensInOut', { values: { input: conversationIn.toLocaleString(), output: tokenUsage.output.toLocaleString() } })}
-      </span>
-    </div>
-  {/if}
-
   <!-- Quota warning banner -->
   {#if quotaWarning}
     <div class="max-w-3xl mx-auto w-full shrink-0 px-4 mb-2">
@@ -1438,7 +1435,7 @@
   </div>
   <!-- Creations panel. pointer-events-none while dragging the divider: the
        viewer iframe otherwise swallows mousemove and the resize stalls. -->
-  <div class="flex flex-col bg-base-100 min-h-0 min-w-0 overflow-hidden shrink-0 border-l border-base-300 max-md:fixed max-md:inset-0 max-md:z-[70] max-md:!w-full max-md:border-l-0 {resizing ? 'pointer-events-none' : ''}" style="width: {creationsWidth}px">
+  <div class="flex flex-col bg-base-100 min-h-0 min-w-0 overflow-hidden shrink-0 border-l border-base-300 max-md:fixed max-md:inset-0 max-md:z-[70] max-md:!w-full max-md:border-l-0 {workFull ? 'fixed inset-0 z-[70] !w-full border-l-0' : ''} {resizing ? 'pointer-events-none' : ''}" style="width: {creationsWidth}px">
     <!-- Creations header -->
     <div class="h-11 px-4 border-b border-base-content/10 flex items-center gap-2 shrink-0">
       {#if activeArtifact}
@@ -1545,8 +1542,19 @@
         </div>
       {/if}
       <button
+        class="max-md:hidden w-7 h-7 rounded-md flex items-center justify-center hover:bg-base-200 cursor-pointer bg-transparent border-none text-base-content/70 hover:text-base-content transition-colors shrink-0"
+        onclick={() => (workFull = !workFull)}
+        title={workFull ? $t('chat.exitFullView') : $t('chat.fullView')}
+      >
+        {#if workFull}
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><line x1="14" y1="10" x2="21" y2="3"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
+        {:else}
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
+        {/if}
+      </button>
+      <button
         class="w-7 h-7 rounded-md flex items-center justify-center hover:bg-base-200 cursor-pointer bg-transparent border-none text-base-content/70 hover:text-base-content transition-colors shrink-0"
-        onclick={() => creationsOpen = false}
+        onclick={() => { creationsOpen = false; workFull = false; }}
         title={$t('chat.closeWorkPanel')}
       >
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>

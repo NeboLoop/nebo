@@ -1,9 +1,22 @@
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::response::Json;
+use serde::Deserialize;
 
 use super::{HandlerResult, to_error_response};
 use crate::middleware::AuthClaims;
 use crate::state::AppState;
+
+#[derive(Debug, Deserialize)]
+pub struct ListQuery {
+    #[serde(default = "default_limit")]
+    pub limit: i64,
+    #[serde(default)]
+    pub offset: i64,
+}
+
+fn default_limit() -> i64 {
+    50
+}
 
 /// Extract user_id from optional JWT claims, falling back to the local user for desktop mode.
 fn user_id(claims: Option<axum::Extension<AuthClaims>>, state: &AppState) -> String {
@@ -17,10 +30,11 @@ fn user_id(claims: Option<axum::Extension<AuthClaims>>, state: &AppState) -> Str
 pub async fn list_notifications(
     State(state): State<AppState>,
     claims: Option<axum::Extension<AuthClaims>>,
+    Query(q): Query<ListQuery>,
 ) -> HandlerResult<serde_json::Value> {
     let notifs = state
         .store
-        .list_user_notifications(&user_id(claims, &state), 50, 0)
+        .list_user_notifications(&user_id(claims, &state), q.limit, q.offset)
         .map_err(to_error_response)?;
     Ok(Json(serde_json::json!({"notifications": notifs})))
 }

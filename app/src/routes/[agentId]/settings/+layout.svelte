@@ -24,10 +24,13 @@
     { id: 'skills', label: 'settings.navItems.skills' },
     { id: 'channels', label: 'agentSettings.channels' },
     { id: 'accounts', label: 'agentSettings.connectedAccounts' },
+    { id: 'approvals', label: 'agentSettings.approvals' },
     { id: 'memory', label: 'agentSettings.memory' },
-    // Permissions are managed once, globally, in Settings → Permissions and
-    // inherited by every agent. There is no per-agent permissions surface —
-    // a single source of truth is the right model for non-technical users.
+    // Ambient capability permissions (file/shell/web…) are managed once,
+    // globally, in Settings → Permissions and inherited by every agent.
+    // Approvals is different and deliberately per-employee: the three-state
+    // control over each employee's gated operations (money/outbound/
+    // irreversible), so a global setting never overrides a critical decision.
   ];
 
   const activeSection = $derived($page.params.section || 'general');

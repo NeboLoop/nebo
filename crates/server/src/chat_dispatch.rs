@@ -335,6 +335,7 @@ type EntityRunParams = (
     Option<String>,
     Option<String>,
     Vec<String>,
+    Option<tools::policy::OperationPolicy>,
 );
 fn entity_run_params(
     entity_config: Option<&crate::entity_config::ResolvedEntityConfig>,
@@ -346,8 +347,11 @@ fn entity_run_params(
             ec.model_preference.clone(),
             ec.personality_snippet.clone(),
             ec.allowed_paths.clone(),
+            ec.operation_policy
+                .as_deref()
+                .map(|j| tools::policy::OperationPolicy::from_json(Some(j))),
         ),
-        None => (None, None, None, None, Vec::new()),
+        None => (None, None, None, None, Vec::new(), None),
     }
 }
 
@@ -470,7 +474,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
         }
 
         // Extract per-entity overrides from resolved config
-        let (permissions, resource_grants, model_preference, personality_snippet, allowed_paths) =
+        let (permissions, resource_grants, model_preference, personality_snippet, allowed_paths, operation_policy) =
             entity_run_params(entity_cfg.as_ref());
 
         // Build progress tracker from RunHandle's shared Arcs
@@ -491,6 +495,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
             cancel_token: cancel_token.clone(),
             agent_id: agent_id.clone(),
             permissions,
+            operation_policy,
             resource_grants,
             model_preference,
             personality_snippet,
@@ -1541,7 +1546,7 @@ pub async fn run_chat_events(
     // Resolve display name + register the run (shared with run_chat).
     let (_agent_display_name, run_handle) = register_run(state, &config).await;
 
-    let (permissions, resource_grants, model_preference, personality_snippet, allowed_paths) =
+    let (permissions, resource_grants, model_preference, personality_snippet, allowed_paths, operation_policy) =
         entity_run_params(config.entity_config.as_ref());
 
     let progress = agent::RunProgress {
@@ -1561,6 +1566,7 @@ pub async fn run_chat_events(
         cancel_token: cancel_token.clone(),
         agent_id: agent_id.clone(),
         permissions,
+        operation_policy,
         resource_grants,
         model_preference,
         personality_snippet,
@@ -1771,6 +1777,10 @@ fn to_app_artifact_url(image_url: &str) -> Option<String> {
     };
     let files_dir = config::data_dir().ok()?.join("files");
     let p = std::path::Path::new(&abs_path);
+    if !media_bytes_match(p) {
+        tracing::warn!(path = %p.display(), "run-produced media rejected: file bytes don't match its extension (likely a saved error page)");
+        return None;
+    }
     if let Ok(rel) = p.strip_prefix(&files_dir) {
         return Some(format!("/api/v1/files/{}", rel.to_string_lossy()));
     }
@@ -1780,6 +1790,41 @@ fn to_app_artifact_url(image_url: &str) -> Option<String> {
     let dest = files_dir.join(&filename);
     std::fs::copy(p, &dest).ok()?;
     Some(format!("/api/v1/files/{}", filename))
+}
+
+/// True when a media-extension file's leading bytes actually look like that
+/// media type. Catches the classic failure of a download tool saving an HTML
+/// error page (403/404 body) as `.jpg` — which then renders as a broken tile
+/// and poisons any document that embeds it. Non-media extensions pass through.
+fn media_bytes_match(path: &std::path::Path) -> bool {
+    let ext = path
+        .extension()
+        .map(|e| e.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    if !MEDIA_EXTS.contains(&ext.as_str()) {
+        return true;
+    }
+    let mut head = [0u8; 16];
+    let n = match std::fs::File::open(path)
+        .and_then(|mut f| std::io::Read::read(&mut f, &mut head))
+    {
+        Ok(n) => n,
+        Err(_) => return true, // unreadable here ≠ corrupt; let serving decide
+    };
+    let head = &head[..n];
+    match ext.as_str() {
+        "jpg" | "jpeg" => head.starts_with(&[0xFF, 0xD8, 0xFF]),
+        "png" => head.starts_with(&[0x89, b'P', b'N', b'G']),
+        "gif" => head.starts_with(b"GIF8"),
+        "webp" => head.starts_with(b"RIFF") && n >= 12 && &head[8..12] == b"WEBP",
+        "svg" => {
+            let s = String::from_utf8_lossy(head).to_lowercase();
+            s.starts_with("<svg") || s.starts_with("<?xml")
+        }
+        "mp4" | "mov" => n >= 8 && &head[4..8] == b"ftyp",
+        "webm" => head.starts_with(&[0x1A, 0x45, 0xDF, 0xA3]),
+        _ => true,
+    }
 }
 
 /// Media (image/video) artifacts render inline and are never versioned.

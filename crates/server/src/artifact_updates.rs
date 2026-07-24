@@ -361,6 +361,7 @@ fn notify_updates_available(state: &AppState) {
                 Some(&body),
                 Some(&action_url),
                 None,
+                None,
             )
             .is_ok()
         {

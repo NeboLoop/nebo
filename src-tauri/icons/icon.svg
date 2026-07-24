@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" role="img" aria-label="NeboAI mark">
+  <title>NeboAI mark</title>
+  <!-- Master app-icon tile. Regenerate all platform icons with:
+       rsvg-convert icon.svg -w 1024 -h 1024 -o /tmp/icon-1024.png && cargo tauri icon /tmp/icon-1024.png -->
+  <rect width="1024" height="1024" rx="200" fill="#FFFFFF"/>
+  <!-- Navy #0D1A38 · Blue #2F60C9 — keyline around the diamond and the
+       valley notch are open space, not masks or white fills. -->
+  <svg x="182" y="263" width="660" height="498" viewBox="111 191 504 380" preserveAspectRatio="xMidYMid meet">
+    <path fill="#0D1A38" d="M111 571 L276 314 L399 453 L455 322 L615 571 L424 571 L284 413 L217 571 Z"/>
+    <!-- Diamond: lower-left edge runs parallel to the mountain face (+0.88 slope). Intentional. -->
+    <path fill="#2F60C9" d="M372.5 191 L436.5 305 L383 384 L311 306 Z"/>
+  </svg>
+</svg>

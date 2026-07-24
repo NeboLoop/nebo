@@ -8,10 +8,10 @@ const CHARS_PER_TOKEN: usize = 4;
 const IMAGE_CHAR_ESTIMATE: usize = 8000;
 /// Minimum token savings to bother micro-compacting.
 const MICRO_COMPACT_MIN_SAVINGS: usize = 1000;
-/// Protect the N most recent tool results from micro-compaction. Matches Claude
-/// Code's microcompact keep-recent (5): keeping only 3 stripped content the model
-/// was still actively working with, so mid-run reads it had just done looked
-/// "empty" once compacted. 5 leaves enough live context to reason over.
+/// Protect the N most recent tool results from micro-compaction. Keeping only 3
+/// stripped content the model was still actively working with, so mid-run reads
+/// it had just done looked "empty" once compacted. 5 leaves enough live context
+/// to reason over.
 const MICRO_COMPACT_KEEP_RECENT: usize = 5;
 /// When compactable tool results exceed this count, strip aggressively
 /// regardless of age (keep only MICRO_COMPACT_KEEP_RECENT most recent).
@@ -173,6 +173,14 @@ pub fn micro_compact(
     warning_threshold: usize,
 ) -> (Vec<ChatMessage>, usize) {
     let total_tokens = estimate_total_tokens(messages);
+    // Below the warning threshold the context fits comfortably — touch nothing.
+    // Stripping results the model is actively working with mid-run makes it
+    // "start over": it re-announces, re-reads, and spawns agents to recover
+    // instructions it just loaded. Compaction is a pressure valve, not a
+    // routine pass — it fires only when the context is actually near its limit.
+    if total_tokens < warning_threshold {
+        return (messages.to_vec(), 0);
+    }
     let mut result = messages.to_vec();
     let mut tokens_saved = 0usize;
 
@@ -311,7 +319,14 @@ pub fn time_based_micro_compact(
     messages: &[ChatMessage],
     keep_recent: usize,
     gap_threshold_secs: i64,
+    warning_threshold: usize,
 ) -> (Vec<ChatMessage>, usize) {
+    // Small contexts re-tokenize for pennies — clearing them saves nothing and
+    // deletes working knowledge (loaded skill instructions, fetched data) right
+    // as the user resumes. Only clear when the stale context is actually large.
+    if estimate_total_tokens(messages) < warning_threshold {
+        return (messages.to_vec(), 0);
+    }
     // Find the last assistant message timestamp
     let last_assistant_ts = messages
         .iter()
@@ -1112,8 +1127,9 @@ mod tests {
             make_tool_result_msg(&big_result, old_ts), // most recent tool result
         ];
 
-        // gap_threshold of 1 second — all messages are old, so gap is huge
-        let (result, tokens_saved) = time_based_micro_compact(&messages, 1, 1);
+        // gap_threshold of 1 second — all messages are old, so gap is huge.
+        // warning_threshold 0 opens the pressure gate (this test exercises clearing).
+        let (result, tokens_saved) = time_based_micro_compact(&messages, 1, 1, 0);
         assert!(tokens_saved > 0, "should save tokens on stale session");
 
         // Only the most recent tool result (index 6) should keep its content
@@ -1157,7 +1173,7 @@ mod tests {
             make_tool_result_msg(&big, old_ts), // most recent (kept anyway)
         ];
 
-        let (result, _) = time_based_micro_compact(&messages, 1, 1);
+        let (result, _) = time_based_micro_compact(&messages, 1, 1, 0);
         let tool_results: Vec<&ChatMessage> = result.iter().filter(|m| m.role == "tool").collect();
         // Older calendar result kept content despite being stale + not most-recent
         assert!(
@@ -1183,7 +1199,7 @@ mod tests {
         ];
 
         // gap_threshold of 300 seconds — session is active (10s ago)
-        let (_, tokens_saved) = time_based_micro_compact(&messages, 1, 300);
+        let (_, tokens_saved) = time_based_micro_compact(&messages, 1, 300, 0);
         assert_eq!(tokens_saved, 0, "active session should not be compacted");
     }
 
@@ -1209,7 +1225,8 @@ mod tests {
             messages.push(make_tool_result_msg(&big, 1000));
         }
 
-        let (result, tokens_saved) = micro_compact(&messages, 100_000);
+        // Threshold below the ~16K estimated total so the pressure gate opens.
+        let (result, tokens_saved) = micro_compact(&messages, 1_000);
         assert!(
             tokens_saved > 0,
             "non-standard tool results should be compactable (universal filter)"
@@ -1225,6 +1242,42 @@ mod tests {
             compacted_count >= 2,
             "should compact at least 2 old results, got {}",
             compacted_count
+        );
+    }
+
+    #[test]
+    fn test_compaction_pressure_gate() {
+        // Below the warning threshold neither compaction stage touches anything.
+        // Regression: stripping results mid-run (count trigger) or on resume
+        // (stale-session clear) deleted skill instructions the model had just
+        // loaded, making it "start over."
+        let big = "x".repeat(4000);
+        let mut messages = Vec::new();
+        for i in 0..8 {
+            let mut assistant = make_old_msg("assistant", "calling tool");
+            assistant.tool_calls = Some(
+                serde_json::json!([{
+                    "name": "search_emails",
+                    "id": format!("call_{}", i),
+                    "input": {}
+                }])
+                .to_string(),
+            );
+            messages.push(assistant);
+            messages.push(make_tool_result_msg(&big, 1000));
+        }
+
+        let (result, saved) = micro_compact(&messages, 100_000);
+        assert_eq!(saved, 0, "micro_compact must not fire under the threshold");
+        assert!(
+            result.iter().all(|m| !m.content.contains("[search_emails]")),
+            "no result may be summarized under the threshold"
+        );
+
+        let (_, tb_saved) = time_based_micro_compact(&messages, 1, 1, 100_000);
+        assert_eq!(
+            tb_saved, 0,
+            "stale-session clear must not fire under the threshold"
         );
     }
 

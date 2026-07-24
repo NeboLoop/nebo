@@ -188,6 +188,20 @@ export function listEventSources() {
 }
 
 /**
+ * @description "Get workflow approval status"
+ */
+export function getWorkflowApprovalStatus(runId: string) {
+	return webapi.get<components.GetWorkflowApprovalStatusResponse>(`/api/v1/agents/workflow-runs/${runId}/approval`)
+}
+
+/**
+ * @description "Resolve workflow approval"
+ */
+export function resolveWorkflowApproval(runId: string, req: Record<string, unknown> = {}) {
+	return webapi.post<components.ResolveWorkflowApprovalResponse>(`/api/v1/agents/workflow-runs/${runId}/approval`, req)
+}
+
+/**
  * @description "Get agent"
  */
 export function getAgent(id: string) {
@@ -304,6 +318,13 @@ export function duplicateAgent(id: string, req: Record<string, unknown> = {}) {
  */
 export function updateAgentInputs(id: string, req: Record<string, unknown> = {}) {
 	return webapi.put<components.UpdateAgentInputsResponse>(`/api/v1/agents/${id}/inputs`, req)
+}
+
+/**
+ * @description "Get agent operations"
+ */
+export function getAgentOperations(id: string) {
+	return webapi.get<components.GetAgentOperationsResponse>(`/api/v1/agents/${id}/operations`)
 }
 
 /**
@@ -619,6 +640,13 @@ export function getChatMessages(id: string, max_chars?: number, before?: string)
  */
 export function submitCode(req: Record<string, unknown> = {}) {
 	return webapi.post<unknown>(`/api/v1/codes`, req)
+}
+
+/**
+ * @description "Serve comm file"
+ */
+export function serveCommFile(id: string) {
+	return webapi.get<unknown>(`/api/v1/comm-files/${id}`)
 }
 
 /**
@@ -1107,8 +1135,8 @@ export function neboAIBotStatus() {
 /**
  * @description "List notifications"
  */
-export function listNotifications() {
-	return webapi.get<components.ListNotificationsResponse>(`/api/v1/notifications`)
+export function listNotifications(limit?: number, offset?: number) {
+	return webapi.get<components.ListNotificationsResponse>(`/api/v1/notifications`, { limit, offset })
 }
 
 /**

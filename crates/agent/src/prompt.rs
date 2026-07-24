@@ -42,6 +42,9 @@ pub struct PromptContext {
     pub agent_self_context: String,
     /// Compact agent catalog: "## Installed Agents (N)\n- name: description\n..."
     pub agent_catalog: String,
+    /// Compact skill catalog: "## Available Skills (N)\n- name: description\n..."
+    /// Discovery metadata only — full skill bodies load on demand via the skill tool.
+    pub skill_catalog: String,
     /// When set, research methodology is appended to the system prompt.
     /// Injected when agent(action: "research") activates research mode.
     pub research_prompt: Option<String>,
@@ -534,16 +537,16 @@ pub fn strap_context_doc(context_name: &str) -> Option<&'static str> {
 
 /// Build the per-iteration STRAP discovery section. Tools document themselves via
 /// their provider `tools`-field declarations (description + JSON schema) — the single
-/// source, like Claude's `## Tool Definitions`. This emits ONLY connected-MCP-server
-/// discovery, which is the one thing not already in the `tools` field.
+/// source. This emits ONLY connected-MCP-server discovery, which is the one thing
+/// not already in the `tools` field.
 pub fn build_strap_section(
     tool_names: &[String],
     _active_contexts: &[String],
     _called_tools: &[String],
 ) -> String {
     // Each native tool carries its own full declaration (description + JSON schema)
-    // in the provider `tools` field — that is the single source, like Claude's
-    // `## Tool Definitions`. We do NOT re-document tools in prose here; doing so
+    // in the provider `tools` field — that is the single source. We do NOT
+    // re-document tools in prose here; doing so
     // declared every tool twice and rebuilt per-turn, busting the prefix cache.
     // The only thing that isn't already in the tools field is discovery of
     // connected MCP servers, so that is all this section emits.
@@ -699,6 +702,10 @@ pub fn build_static(pctx: &PromptContext) -> String {
         // Installed agent catalog
         if !pctx.agent_catalog.is_empty() {
             parts.push(pctx.agent_catalog.clone());
+        }
+        // Installed skill listing (names + capped descriptions; bodies load on demand)
+        if !pctx.skill_catalog.is_empty() {
+            parts.push(pctx.skill_catalog.clone());
         }
     }
 

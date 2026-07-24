@@ -122,6 +122,33 @@ pub enum WorkflowProgress {
     },
 }
 
+/// Approval-checkpoint context for a run: the employee's per-operation policy
+/// plus, on a post-approval re-run, the one-shot token authorizing exactly the
+/// call the owner saw. Matched on operation suffix + exact input hash — a call
+/// that drifted on re-derivation re-asks rather than executing something the
+/// owner never approved.
+#[derive(Debug, Clone, Default)]
+pub struct CheckpointCtx {
+    pub operation_policy: Option<tools::policy::OperationPolicy>,
+    /// The seat binding name (for the suspension row / notification).
+    pub binding_name: String,
+}
+
+/// Durable resume state for a run parked at the approval checkpoint —
+/// Temporal-style semantics: the suspension persisted the full conversation,
+/// the pending (now owner-approved) tool call, and its exact position; resume
+/// rehydrates and continues AT the blocked call. Nothing before the pause
+/// re-executes, so non-idempotent side effects can never duplicate.
+#[derive(Debug, Clone)]
+pub struct ResumeState {
+    pub activity_id: String,
+    pub step_index: Option<i64>,
+    pub messages: Vec<ai::Message>,
+    /// The approved call — executed directly on resume (it IS what the owner
+    /// saw; the checkpoint is bypassed for exactly this call id).
+    pub pending: ai::ToolCall,
+}
+
 #[allow(unused_assignments)] // circuit breaker state is future-proofed for Fallback::Skip
 pub async fn execute_workflow(
     def: &WorkflowDef,
@@ -138,6 +165,8 @@ pub async fn execute_workflow(
     event_bus: Option<&tools::EventBus>,
     emit_source: Option<String>,
     progress_tx: Option<tokio::sync::mpsc::UnboundedSender<WorkflowProgress>>,
+    checkpoint: Option<&CheckpointCtx>,
+    resume: Option<ResumeState>,
 ) -> Result<(String, String), WorkflowError> {
     let run_id = match existing_run_id {
         Some(id) => id.to_string(),
@@ -183,6 +212,8 @@ pub async fn execute_workflow(
             event_bus,
             resolved_emit,
             progress_tx,
+            checkpoint,
+            resume,
         )
         .await;
     }
@@ -274,6 +305,8 @@ pub async fn execute_workflow(
             &def.id,
             progress_tx.as_ref(),
             &mut activity_spent,
+            checkpoint,
+            resume.as_ref().filter(|r| r.activity_id == activity.id),
         )
         .await
         {
@@ -295,6 +328,9 @@ pub async fn execute_workflow(
                 ) {
                     warn!(run_id = %run_id, activity = %activity.id, error = %e, "failed to record activity result");
                 }
+                // Output content backs the resume fast-forward — a parked run
+                // never re-executes an activity whose result is recorded.
+                let _ = store.set_activity_result_content(&run_id, &activity.id, &result_text);
 
                 // n8n-style branch termination: empty output = no downstream execution.
                 // If the activity produced no output (even after tool-result synthesis),
@@ -345,6 +381,13 @@ pub async fn execute_workflow(
                 );
                 info!(workflow = def.id.as_str(), run_id = %run_id, reason = %reason, "workflow exited early");
                 return Ok((run_id, prior_context));
+            }
+            // A suspension is NOT a failure: the engine already parked the run
+            // as awaiting_approval and persisted the pending call. Propagate
+            // untouched — the failure bookkeeping below would overwrite the
+            // parked status and paint the run red.
+            Err(e @ WorkflowError::AwaitingApproval { .. }) => {
+                return Err(e);
             }
             Err(e) => {
                 total_tokens += activity_spent;
@@ -471,7 +514,19 @@ pub(crate) async fn execute_activity_with_retry(
     workflow_id: &str,
     progress_tx: Option<&tokio::sync::mpsc::UnboundedSender<WorkflowProgress>>,
     spent: &mut u32,
+    checkpoint: Option<&CheckpointCtx>,
+    resume: Option<&ResumeState>,
 ) -> Result<(String, u32), WorkflowError> {
+    // Resume fast-forward: an activity this run already completed returns its
+    // recorded output instead of re-executing — the Temporal property that a
+    // resumed run never re-does finished (possibly non-idempotent) work. Fresh
+    // runs have no completed rows, so this is a no-op for them.
+    if let Ok(done) = store.completed_activity_contents(run_id) {
+        if let Some(content) = done.get(&activity.id) {
+            info!(activity = activity.id.as_str(), run_id, "resume: skipping completed activity");
+            return Ok((content.clone(), 0));
+        }
+    }
     let max_attempts = activity.on_error.retry.max(1);
 
     for attempt in 0..max_attempts {
@@ -489,17 +544,22 @@ pub(crate) async fn execute_activity_with_retry(
             workflow_id,
             progress_tx,
             spent,
+            checkpoint,
+            resume,
         )
         .await
         {
             Ok(result) => return Ok(result),
             // Deliberate stops are not failures — retrying would re-run the
             // activity's tool side effects from scratch. Blocked is terminal
-            // by definition (FRAMES): a retry hits the same wall.
+            // by definition (FRAMES): a retry hits the same wall. A suspension
+            // (AwaitingApproval) must surface untouched — the run is parked
+            // for the owner, not failed.
             Err(
                 e @ (WorkflowError::Exited(_)
                 | WorkflowError::Cancelled
-                | WorkflowError::Blocked(_)),
+                | WorkflowError::Blocked(_)
+                | WorkflowError::AwaitingApproval { .. }),
             ) => return Err(e),
             Err(e) if attempt + 1 < max_attempts => {
                 warn!(
@@ -535,6 +595,8 @@ pub async fn execute_activity(
     workflow_id: &str,
     progress_tx: Option<&tokio::sync::mpsc::UnboundedSender<WorkflowProgress>>,
     spent: &mut u32,
+    checkpoint: Option<&CheckpointCtx>,
+    resume: Option<&ResumeState>,
 ) -> Result<(String, u32), WorkflowError> {
     // Detect if browser tool is available for this activity
     let has_browser = tools.iter().any(|t| t.name() == "web");
@@ -585,7 +647,11 @@ pub async fn execute_activity(
             },
             ..Default::default()
         }];
-        return run_llm_loop(activity, provider, tools, &tool_defs, &system, messages, spent, make_trace(String::new())).await;
+        let (messages, pending) = match resume {
+            Some(r) => (r.messages.clone(), Some(r.pending.clone())),
+            None => (messages, None),
+        };
+        return run_llm_loop(activity, provider, tools, &tool_defs, &system, messages, spent, make_trace(String::new()), store, checkpoint, pending).await;
     }
 
     // --- Per-step execution ---
@@ -614,7 +680,15 @@ pub async fn execute_activity(
     let mut step_outputs: Vec<String> = Vec::new();
     let total_steps = activity.steps.len();
 
+    // Resume rehydration: earlier steps' work lives in the restored messages —
+    // skip re-executing them; enter the loop at the suspended step with the
+    // persisted conversation and the approved pending call.
+    let resume_step = resume.and_then(|r| r.step_index).unwrap_or(-1);
+    let mut resume_pending = resume.map(|r| r.pending.clone());
     for (i, step) in activity.steps.iter().enumerate() {
+        if resume.is_some() && (i as i64) < resume_step {
+            continue;
+        }
         let task_item = &task_items[i];
         let task_seq = task_item.seq.unwrap_or((i + 1) as i64);
 
@@ -631,13 +705,18 @@ pub async fn execute_activity(
             });
         }
 
-        // Send step as user message
-        let step_msg = format!("Step {}/{}: {}", i + 1, total_steps, step);
-        messages.push(ai::Message {
-            role: "user".into(),
-            content: step_msg,
-            ..Default::default()
-        });
+        // Send step as user message — except at the resumed step, whose
+        // conversation (step message included) is restored verbatim.
+        if resume.is_some() && (i as i64) == resume_step {
+            messages = resume.map(|r| r.messages.clone()).unwrap_or_default();
+        } else {
+            let step_msg = format!("Step {}/{}: {}", i + 1, total_steps, step);
+            messages.push(ai::Message {
+                role: "user".into(),
+                content: step_msg,
+                ..Default::default()
+            });
+        }
 
         // Run LLM loop for this step
         let (step_result, step_tokens) = run_llm_loop(
@@ -649,13 +728,19 @@ pub async fn execute_activity(
             messages.clone(),
             spent,
             make_trace(i.to_string()),
+            store,
+            checkpoint,
+            if resume.is_some() && (i as i64) == resume_step { resume_pending.take() } else { None },
         )
         .await
         .map_err(|e| {
             // Exit-by-design (exit tool) is a clean stop, not a step failure —
             // recording it as failed painted successful exited runs red in the UI.
+            // A suspension keeps the step pending: it re-runs after approval.
             let status = if matches!(e, WorkflowError::Exited(_)) {
                 "exited"
+            } else if matches!(e, WorkflowError::AwaitingApproval { .. }) {
+                "pending"
             } else {
                 "failed"
             };
@@ -871,6 +956,7 @@ async fn evaluate_step(
 /// `spent` accumulates EVERY token consumed, including turns that later end
 /// in an error — error variants can't carry token counts, so callers read
 /// the accumulator to keep run totals truthful across exits/failures/retries.
+#[allow(clippy::too_many_arguments)]
 async fn run_llm_loop(
     activity: &Activity,
     provider: &dyn ai::Provider,
@@ -880,6 +966,9 @@ async fn run_llm_loop(
     mut messages: Vec<ai::Message>,
     spent: &mut u32,
     trace: ai::RequestTrace,
+    store: &Arc<Store>,
+    checkpoint: Option<&CheckpointCtx>,
+    pending: Option<ai::ToolCall>,
 ) -> Result<(String, u32), WorkflowError> {
     let mut tokens_used: u32 = 0;
     let mut iterations: u32 = 0;
@@ -896,6 +985,44 @@ async fn run_llm_loop(
         tools::workflow_session_key(&trace.agent_id, &trace.run_id),
         trace.run_id.clone(),
     );
+
+    // ── Durable resume entry ──────────────────────────────────────────
+    // The restored conversation ends at the assistant message whose gated
+    // call the owner just approved. Execute exactly that call (checkpoint
+    // bypassed — it IS the approved call), append its result, and fall into
+    // the normal loop: the next model turn sees the outcome and continues
+    // the workflow from precisely where it paused. Nothing earlier re-runs.
+    if let Some(tc) = pending {
+        let tool = tools
+            .iter()
+            .find(|t| t.name() == tc.name)
+            .or_else(|| {
+                let stripped = strip_mcp_prefix(&tc.name);
+                tools.iter().find(|t| t.name() == stripped)
+            });
+        let result = match tool {
+            Some(t) => t.execute_dyn(&ctx, tc.input.clone()).await,
+            None => tools::ToolResult::error(format!("tool not found: {}", tc.name)),
+        };
+        if result.terminal {
+            return Err(WorkflowError::Blocked(result.content.clone()));
+        }
+        if !result.is_error {
+            if let Some(reason) = result.content.strip_prefix(tools::EXIT_SENTINEL) {
+                return Err(WorkflowError::Exited(reason.to_string()));
+            }
+        }
+        messages.push(ai::Message {
+            role: "tool".into(),
+            content: String::new(),
+            tool_results: Some(serde_json::Value::Array(vec![serde_json::json!({
+                "tool_call_id": tc.id,
+                "content": result.content,
+                "is_error": result.is_error,
+            })])),
+            ..Default::default()
+        });
+    }
 
     loop {
         if iterations >= MAX_ITERATIONS {
@@ -1022,6 +1149,98 @@ async fn run_llm_loop(
                         None
                     }
                 });
+            // ── Approval checkpoint (per-employee operation policy) ──────
+            // The headless analog of the chat runner's operation gate: a gated
+            // interface operation is decided by the SAME OperationPolicy.
+            // Always → run; Blocked → refuse (roster omission is the primary
+            // control, this is the backstop); Approval → SUSPEND the run
+            // (persist the pending call, park as awaiting_approval, notify the
+            // owner) instead of failing headless. On the post-approval re-run
+            // the one-shot token (operation + exact input hash) admits exactly
+            // the call the owner saw — a drifted re-derivation re-asks.
+            if tc.name == "plugin" {
+                if let Some(cp) = checkpoint {
+                    if let Some(policy) = &cp.operation_policy {
+                        let op = tc
+                            .input
+                            .get("operation")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        if !op.is_empty() {
+                            let suffix = tools::plugin_tool::port_suffix(&op);
+                            {
+                                match policy.decide(&op) {
+                                    tools::policy::OperationAccess::Always => {}
+                                    tools::policy::OperationAccess::Blocked => {
+                                        tool_result_entries.push(serde_json::json!({
+                                            "tool_call_id": tc.id,
+                                            "content": format!(
+                                                "The operation '{op}' is turned OFF (Blocked) for this AI employee in its Controls. Do not retry or work around it."
+                                            ),
+                                            "is_error": true,
+                                        }));
+                                        continue;
+                                    }
+                                    tools::policy::OperationAccess::Approval => {
+                                        let display = tc
+                                            .input
+                                            .get("display")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("")
+                                            .trim()
+                                            .to_string();
+                                        if display.is_empty() {
+                                            tool_result_entries.push(serde_json::json!({
+                                                "tool_call_id": tc.id,
+                                                "content": format!(
+                                                    "The operation '{op}' needs the owner's approval, and the approval prompt requires a `display` sentence. Retry the SAME call adding display: one plain-language sentence a non-technical person understands — real names and formatted amounts, never raw ids or cents."
+                                                ),
+                                                "is_error": true,
+                                            }));
+                                            continue;
+                                        }
+                                        let messages_json =
+                                            serde_json::to_string(&messages).unwrap_or_default();
+                                        let pending_json =
+                                            serde_json::to_string(tc).unwrap_or_default();
+                                        if let Err(e) = store.create_workflow_suspension(
+                                            &trace.run_id,
+                                            &trace.agent_id,
+                                            &cp.binding_name,
+                                            &activity.id,
+                                            trace.step_id.parse::<i64>().ok(),
+                                            &messages_json,
+                                            &pending_json,
+                                            &suffix,
+                                            &display,
+                                        ) {
+                                            // Can't persist the suspension → the run
+                                            // cannot park safely; fail loud, never
+                                            // silent-run the gated call.
+                                            return Err(WorkflowError::Database(format!(
+                                                "failed to persist approval suspension: {e}"
+                                            )));
+                                        }
+                                        let _ = store.update_workflow_run(
+                                            &trace.run_id,
+                                            Some("awaiting_approval"),
+                                            Some(&activity.id),
+                                            None,
+                                            None,
+                                            None,
+                                        );
+                                        return Err(WorkflowError::AwaitingApproval {
+                                            operation: suffix,
+                                            display,
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             let result = match tool {
                 Some(t) => t.execute_dyn(&ctx, tc.input.clone()).await,
                 None => tools::ToolResult::error(format!("tool not found: {}", tc.name)),
