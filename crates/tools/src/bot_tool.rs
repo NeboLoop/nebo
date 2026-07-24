@@ -1793,7 +1793,17 @@ impl AgentTool {
         }
         if confirm_gate {
             let widgets = serde_json::json!([{ "type": "buttons", "options": ["Start research", "Refine the plan", "Cancel"] }]);
-            if let Some(resp) = ctx.ask_user(&plan, widgets).await {
+            // Bounded gate: an unanswered plan must NEVER become a tool-timeout
+            // error (observed live: 300s timeout → the model 'tried different
+            // approaches' in a retry spiral, burning balance). No answer in 90s
+            // → start as planned; the run is cancelable and the plan is visible.
+            let gate = tokio::time::timeout(
+                std::time::Duration::from_secs(90),
+                ctx.ask_user(&plan, widgets),
+            )
+            .await
+            .unwrap_or(None); // timeout → treat as "start as planned"
+            if let Some(resp) = gate {
                 let r = resp.to_lowercase();
                 if r.contains("cancel") {
                     return ToolResult::ok(format!(

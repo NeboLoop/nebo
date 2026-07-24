@@ -3746,8 +3746,12 @@ async fn run_loop(
                     let input_str = tc.input.to_string();
                     let input_log = truncate_str(&input_str, 500);
                     info!(tool = %tc.name, id = %tc.id, input = %input_log, "executing tool (concurrent)");
+                    let budget = tools
+                        .execution_timeout(&tc.name, &tc.input)
+                        .await
+                        .unwrap_or(TOOL_EXECUTION_TIMEOUT);
                     let result = tokio::time::timeout(
-                        TOOL_EXECUTION_TIMEOUT,
+                        budget,
                         tools.execute(&ctx, &tc.name, tc.input.clone()),
                     )
                     .await;
@@ -3756,7 +3760,7 @@ async fn run_loop(
                         Err(_) => ToolResult::error(format!(
                             "Tool '{}' timed out after {}s",
                             tc.name,
-                            TOOL_EXECUTION_TIMEOUT.as_secs()
+                            budget.as_secs()
                         )),
                     };
                     let result_log = truncate_str(&result.content, 300);
@@ -3819,8 +3823,12 @@ async fn run_loop(
                 let input_str = tc.input.to_string();
                 let input_log = truncate_str(&input_str, 500);
                 info!(tool = %tc.name, id = %tc.id, input = %input_log, "executing tool (sequential)");
+                let budget = tools
+                    .execution_timeout(&tc.name, &tc.input)
+                    .await
+                    .unwrap_or(TOOL_EXECUTION_TIMEOUT);
                 let result = tokio::time::timeout(
-                    TOOL_EXECUTION_TIMEOUT,
+                    budget,
                     tools.execute(&ctx, &tc.name, tc.input.clone()),
                 )
                 .await;
@@ -3829,7 +3837,7 @@ async fn run_loop(
                     Err(_) => ToolResult::error(format!(
                         "Tool '{}' timed out after {}s",
                         tc.name,
-                        TOOL_EXECUTION_TIMEOUT.as_secs()
+                        budget.as_secs()
                     )),
                 };
                 let result_log = truncate_str(&result.content, 300);

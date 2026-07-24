@@ -2664,6 +2664,17 @@ impl DynTool for PersonaTool {
         false
     }
 
+    fn execution_timeout(&self, input: &serde_json::Value) -> Option<std::time::Duration> {
+        // Deep research runs multi-minute pipelines BY DESIGN (quick ~2min,
+        // standard ~5-8, deep ~10-20 through Janus). The 300s runner default
+        // killed them mid-flight; give research its own generous budget (the
+        // harness has its own cancellation + per-phase bounds).
+        if input.get("action").and_then(|v| v.as_str()) == Some("deep_research") {
+            return Some(std::time::Duration::from_secs(30 * 60));
+        }
+        None
+    }
+
     fn is_concurrent_safe(&self, input: &serde_json::Value) -> bool {
         let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
         matches!(action, "list" | "info" | "stats")

@@ -192,6 +192,14 @@ pub trait DynTool: Send + Sync {
     fn mcp_proxy_info(&self) -> Option<(String, String)> {
         None
     }
+    /// Execution budget for THIS call, when it legitimately exceeds the
+    /// runner's default tool timeout (e.g. deep research runs for many
+    /// minutes by design). `None` = use the runner default. Observed live:
+    /// the 300s default killed every standard/deep research mid-flight and
+    /// the model spiraled into retries.
+    fn execution_timeout(&self, _input: &serde_json::Value) -> Option<std::time::Duration> {
+        None
+    }
     fn execute_dyn<'a>(
         &'a self,
         ctx: &'a ToolContext,
@@ -452,6 +460,17 @@ impl Registry {
     pub async fn mcp_proxy_info(&self, name: &str) -> Option<(String, String)> {
         let tools = self.tools.read().await;
         tools.get(name).and_then(|t| t.mcp_proxy_info())
+    }
+
+    /// Per-call execution budget override (see DynTool::execution_timeout).
+    /// `None` = the runner's default applies.
+    pub async fn execution_timeout(
+        &self,
+        name: &str,
+        input: &serde_json::Value,
+    ) -> Option<std::time::Duration> {
+        let tools = self.tools.read().await;
+        tools.get(name).and_then(|t| t.execution_timeout(input))
     }
 
     /// Check whether a tool call is safe to run concurrently with other tools.
