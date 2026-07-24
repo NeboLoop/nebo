@@ -76,6 +76,10 @@ pub struct OrganizerInput {
     pub body: String,
     #[serde(default)]
     pub mailbox: String,
+    /// Mail account filter: account name ("Google") or address
+    /// ("sites@stadium.partners"). Empty = all accounts.
+    #[serde(default)]
+    pub account: String,
 
     // Contacts fields
     #[serde(default)]
