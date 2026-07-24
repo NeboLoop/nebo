@@ -335,6 +335,7 @@ type EntityRunParams = (
     Option<String>,
     Option<String>,
     Vec<String>,
+    Option<tools::policy::OperationPolicy>,
 );
 fn entity_run_params(
     entity_config: Option<&crate::entity_config::ResolvedEntityConfig>,
@@ -346,8 +347,11 @@ fn entity_run_params(
             ec.model_preference.clone(),
             ec.personality_snippet.clone(),
             ec.allowed_paths.clone(),
+            ec.operation_policy
+                .as_deref()
+                .map(|j| tools::policy::OperationPolicy::from_json(Some(j))),
         ),
-        None => (None, None, None, None, Vec::new()),
+        None => (None, None, None, None, Vec::new(), None),
     }
 }
 
@@ -470,7 +474,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
         }
 
         // Extract per-entity overrides from resolved config
-        let (permissions, resource_grants, model_preference, personality_snippet, allowed_paths) =
+        let (permissions, resource_grants, model_preference, personality_snippet, allowed_paths, operation_policy) =
             entity_run_params(entity_cfg.as_ref());
 
         // Build progress tracker from RunHandle's shared Arcs
@@ -491,6 +495,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
             cancel_token: cancel_token.clone(),
             agent_id: agent_id.clone(),
             permissions,
+            operation_policy,
             resource_grants,
             model_preference,
             personality_snippet,
@@ -1541,7 +1546,7 @@ pub async fn run_chat_events(
     // Resolve display name + register the run (shared with run_chat).
     let (_agent_display_name, run_handle) = register_run(state, &config).await;
 
-    let (permissions, resource_grants, model_preference, personality_snippet, allowed_paths) =
+    let (permissions, resource_grants, model_preference, personality_snippet, allowed_paths, operation_policy) =
         entity_run_params(config.entity_config.as_ref());
 
     let progress = agent::RunProgress {
@@ -1561,6 +1566,7 @@ pub async fn run_chat_events(
         cancel_token: cancel_token.clone(),
         agent_id: agent_id.clone(),
         permissions,
+        operation_policy,
         resource_grants,
         model_preference,
         personality_snippet,

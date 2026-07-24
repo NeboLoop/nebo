@@ -548,6 +548,7 @@ impl WorkflowManager for WorkflowManagerImpl {
                     event_bus.as_ref(),
                     None,
                     None,
+                    None, // standalone run — no per-employee approval policy
                 )
                 .await
                 {
@@ -870,6 +871,44 @@ impl WorkflowManager for WorkflowManagerImpl {
                 merged
             };
 
+            // Approval checkpoint context: the employee's per-operation policy
+            // plus, on a post-approval re-run, the one-shot token carried in
+            // the reserved `_approved_op` input ({operation, inputHash}) by the
+            // approval endpoint. Stripped before the model ever sees inputs.
+            let (inputs, checkpoint_ctx) = {
+                let mut inputs = inputs;
+                let approved: Option<(String, u64)> = inputs
+                    .as_object_mut()
+                    .and_then(|m| m.remove("_approved_op"))
+                    .and_then(|v| {
+                        Some((
+                            v.get("operation")?.as_str()?.to_string(),
+                            v.get("inputHash")?.as_u64()?,
+                        ))
+                    });
+                let policy = self
+                    .store
+                    .get_entity_config("agent", agent_id)
+                    .ok()
+                    .flatten()
+                    .and_then(|c| c.operation_policy)
+                    .map(|j| tools::policy::OperationPolicy::from_json(Some(&j)));
+                let binding = trigger_detail
+                    .as_deref()
+                    .map(|d| d.split(':').next().unwrap_or(d).to_string())
+                    .unwrap_or_default();
+                let ctx = if policy.is_some() || approved.is_some() {
+                    Some(workflow::engine::CheckpointCtx {
+                        operation_policy: policy,
+                        binding_name: binding,
+                        approved,
+                    })
+                } else {
+                    None
+                };
+                (inputs, ctx)
+            };
+
             // Resolve the concurrency semaphore for this binding. The permit
             // itself is acquired INSIDE the spawned task — acquiring here
             // would block the caller (the EventDispatcher consumer loop runs
@@ -1140,6 +1179,7 @@ impl WorkflowManager for WorkflowManagerImpl {
                     event_bus.as_ref(),
                     emit_source,
                     Some(progress_tx),
+                    checkpoint_ctx.as_ref(),
                 )
                 .await
                 {
@@ -1182,6 +1222,39 @@ impl WorkflowManager for WorkflowManagerImpl {
                             }),
                         );
                         info!(role = %agent_id_owned, run_id = %run_id_clone, "inline workflow completed");
+                    }
+                    Err(workflow::WorkflowError::AwaitingApproval { operation, display }) => {
+                        // Not a failure: the run is parked (engine persisted the
+                        // suspension + awaiting_approval status). Tell the owner
+                        // in chat + Inbox; the approval endpoint resumes/denies.
+                        post_automation_message(
+                            &store,
+                            &hub,
+                            &chat_session,
+                            &format!(
+                                "**Automation paused for your approval** — {} ({}): {}",
+                                binding_name, trigger, display
+                            ),
+                        );
+                        notify_workflow_approval(
+                            &store,
+                            &hub,
+                            &agent_id_owned,
+                            &run_id_clone,
+                            &binding_name,
+                            &display,
+                        );
+                        hub.broadcast(
+                            "workflow_run_awaiting_approval",
+                            serde_json::json!({
+                                "agentId": agent_id_owned,
+                                "runId": run_id_clone,
+                                "bindingName": binding_name,
+                                "operation": operation,
+                                "display": display,
+                            }),
+                        );
+                        info!(role = %agent_id_owned, run_id = %run_id_clone, %operation, "inline workflow awaiting approval");
                     }
                     Err(e) => {
                         let err_msg = e.to_string();
@@ -1333,6 +1406,48 @@ fn record_failure_should_notify(
 }
 
 /// Create an in-app notification for a workflow run failure, deep-linked to the run.
+/// Owner notification for a run parked at the approval checkpoint. Same
+/// Inbox + broadcast pathway as failure notifications; type "approval" so the
+/// Inbox can render Approve/Deny affordances against the approval endpoint.
+fn notify_workflow_approval(
+    store: &db::Store,
+    hub: &ClientHub,
+    agent_id: &str,
+    run_id: &str,
+    binding_name: &str,
+    display: &str,
+) {
+    let notif_id = format!("wf-approval:{}", run_id);
+    let title = format!("{} needs your approval", binding_name);
+    let action_url = format!("/{}/runs/{}", agent_id, run_id);
+    let user_id = store.ensure_local_user_id().unwrap_or_default();
+    if let Err(e) = store.create_notification(
+        &notif_id,
+        &user_id,
+        "approval",
+        &title,
+        Some(display),
+        Some(&action_url),
+        None,
+        Some(agent_id),
+    ) {
+        warn!(run_id = %run_id, error = %e, "failed to create workflow approval notification");
+    } else {
+        hub.broadcast(
+            "notification_created",
+            serde_json::json!({
+                "id": notif_id,
+                "type": "approval",
+                "title": title,
+                "body": display,
+                "actionUrl": action_url,
+                "agentId": agent_id,
+                "readAt": null,
+            }),
+        );
+    }
+}
+
 fn notify_workflow_failure(
     store: &db::Store,
     hub: &ClientHub,

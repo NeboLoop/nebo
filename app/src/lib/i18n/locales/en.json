@@ -1803,7 +1803,23 @@
     "threadOptions": "Chat options",
     "noChatsYet": "No chats yet. Start a new one."
   },
+  "agentApprovals": {
+    "title": "Approvals",
+    "intro": "Choose what this employee can do on its own. \"Always allow\" runs without asking, \"Needs approval\" pauses and asks you first, \"Blocked\" turns the action off entirely.",
+    "defaultLabel": "Default for sensitive actions",
+    "defaultHint": "Applies to any action below without its own setting",
+    "usingDefault": "default",
+    "critical": "Money",
+    "criticalHint": "Moves money or forms a contract — never loosened by the default. Set it per action.",
+    "criticalFootnote": "Actions marked \"Money\" move money or form contracts. The default never sets them to \"Always allow\" — you approve each one, or explicitly allow it here.",
+    "noOperations": "This employee has no sensitive actions to approve.",
+    "loadError": "Couldn't load this employee's actions.",
+    "alwaysAllow": "Always allow",
+    "needsApproval": "Needs approval",
+    "blocked": "Blocked"
+  },
   "agentSettings": {
+    "approvals": "Approvals",
     "general": "General",
     "nameLabel": "Name",
     "namePlaceholder": "Employee name",
@@ -2083,6 +2099,9 @@
       "openUrl": "Open URL",
       "title": "Action Requires Approval",
       "wantsToPerform": "{agent} wants to perform an action",
+      "technicalDetails": "Technical details",
+      "yes": "Yes",
+      "no": "No",
       "approveOnce": "Approve Once",
       "approveAlways": "Approve Always"
     },

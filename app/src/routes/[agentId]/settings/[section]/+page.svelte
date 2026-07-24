@@ -13,6 +13,7 @@
   import Check from 'lucide-svelte/icons/check';
   import AlertTriangle from 'lucide-svelte/icons/alert-triangle';
   import MemoryManager from '$lib/components/settings/MemoryManager.svelte';
+  import ApprovalControls from '$lib/components/settings/ApprovalControls.svelte';
   import type { AgentInputField } from '$lib/types/agentPage';
   import { installFlow } from '$lib/stores/installFlow';
   import type { PluginAccount } from '$lib/api/pluginAccounts';
@@ -58,6 +59,7 @@
     { id: 'skills', label: 'settings.navItems.skills' },
     { id: 'channels', label: 'agentSettings.channels' },
     { id: 'accounts', label: 'agentSettings.connectedAccounts' },
+    { id: 'approvals', label: 'agentSettings.approvals' },
     { id: 'memory', label: 'agentSettings.memory' },
   ];
 
@@ -1062,6 +1064,9 @@
           {/each}
         </div>
       {/if}
+
+    {:else if section === 'approvals'}
+      <ApprovalControls {agentId} />
 
     {:else if section === 'memory'}
       <MemoryManager {agentId} />

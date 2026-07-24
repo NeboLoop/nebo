@@ -456,6 +456,111 @@ impl McpServerPermissions {
     }
 }
 
+/// Three-state access for one gated interface operation (Settings → an AI
+/// employee → Controls). Mirrors `McpToolAccess` but is per-**operation**
+/// (`ledger.billpayment.create`) rather than per-MCP-tool, and is stored
+/// per-employee on `entity_config`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OperationAccess {
+    /// Always allow — run without a prompt.
+    Always,
+    /// Needs approval — pause for the owner (chat ask / workflow checkpoint).
+    Approval,
+    /// Blocked — the operation is removed from the employee's roster.
+    Blocked,
+}
+
+impl Default for OperationAccess {
+    fn default() -> Self {
+        // Safe default: a gated (money/outbound/irreversible) op asks unless the
+        // seat or the customer loosens it.
+        OperationAccess::Approval
+    }
+}
+
+impl OperationAccess {
+    /// Wire value ("always" / "approval" / "blocked") — matches the serde encoding.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            OperationAccess::Always => "always",
+            OperationAccess::Approval => "approval",
+            OperationAccess::Blocked => "blocked",
+        }
+    }
+
+    /// Parse a wire value; None for anything else.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "always" => Some(OperationAccess::Always),
+            "approval" => Some(OperationAccess::Approval),
+            "blocked" => Some(OperationAccess::Blocked),
+            _ => None,
+        }
+    }
+}
+
+/// Per-employee approval policy over gated interface operations: an employee-wide
+/// default plus per-operation overrides, persisted as JSON on the agent's
+/// `entity_config.operation_policy`. `decide()` is the single decision function
+/// both the chat gate and the workflow checkpoint consult (Rule 8.1).
+///
+/// Precedence: explicit per-operation override > employee default (with critical
+/// protection) > (non-gated ops are never gated). A "critical" op (money movement
+/// / contract formation, per `interface_catalog`) is never auto-loosened to
+/// `Always` by the employee-wide default — the customer must set it explicitly.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OperationPolicy {
+    /// Employee-wide default for gated operations without an explicit override.
+    #[serde(default)]
+    pub default: OperationAccess,
+    /// Per-operation overrides, keyed by operation suffix
+    /// (`capability.resource.action`). Beat the default.
+    #[serde(default)]
+    pub operations: HashMap<String, OperationAccess>,
+}
+
+impl Default for OperationPolicy {
+    fn default() -> Self {
+        Self {
+            default: OperationAccess::Approval,
+            operations: HashMap::new(),
+        }
+    }
+}
+
+impl OperationPolicy {
+    /// Parse the persisted JSON; missing or malformed → safe defaults (Approval).
+    pub fn from_json(json: Option<&str>) -> Self {
+        json.and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or_default()
+    }
+
+    /// Serialize for persistence.
+    pub fn to_json(&self) -> String {
+        serde_json::to_string(self).unwrap_or_else(|_| "{}".to_string())
+    }
+
+    /// The access decision for one operation (bare op or fully-qualified port).
+    /// Non-gated operations are never gated (`Always`). For a gated op: an explicit
+    /// per-operation override wins; otherwise the employee default applies, except
+    /// a `critical` op is never auto-loosened to `Always` by the default.
+    pub fn decide(&self, operation: &str) -> OperationAccess {
+        if !crate::interface_catalog::is_gated(operation) {
+            return OperationAccess::Always;
+        }
+        let suffix = crate::plugin_tool::port_suffix(operation);
+        if let Some(access) = self.operations.get(&suffix) {
+            return *access;
+        }
+        if self.default == OperationAccess::Always && crate::interface_catalog::is_critical(operation)
+        {
+            return OperationAccess::Approval;
+        }
+        self.default
+    }
+}
+
 /// Default per-origin tool restrictions.
 fn default_origin_deny_list() -> HashMap<Origin, HashSet<String>> {
     // The shell pathway is `os(resource:"shell")`, matched by the `os:shell`
@@ -485,6 +590,40 @@ mod tests {
         assert_eq!(p.ask_mode, AskMode::OnMiss);
         assert!(p.allowlist.contains("ls"));
         assert!(p.allowlist.contains("git status"));
+    }
+
+    #[test]
+    fn operation_policy_decide_precedence_and_critical() {
+        // Non-gated ops are never gated.
+        let p = OperationPolicy::default();
+        assert_eq!(p.decide("ledger.vendor.find"), OperationAccess::Always);
+        // Default (Approval) applies to a gated op with no override.
+        assert_eq!(p.decide("mail.message.send"), OperationAccess::Approval);
+
+        // Employee default = Always loosens ordinary gated ops...
+        let mut auto = OperationPolicy {
+            default: OperationAccess::Always,
+            operations: HashMap::new(),
+        };
+        assert_eq!(auto.decide("mail.message.send"), OperationAccess::Always);
+        // ...but NOT critical (money/contract) ops — those stay Approval.
+        assert_eq!(
+            auto.decide("ledger.billpayment.create"),
+            OperationAccess::Approval
+        );
+        // An explicit per-op override wins, even opting a critical op into Always.
+        auto.operations.insert(
+            "ledger.billpayment.create".to_string(),
+            OperationAccess::Always,
+        );
+        assert_eq!(
+            auto.decide("accounting.ap-specialist.ledger.billpayment.create"),
+            OperationAccess::Always
+        );
+        // Blocked override on a gated op.
+        auto.operations
+            .insert("esign.document.send".to_string(), OperationAccess::Blocked);
+        assert_eq!(auto.decide("esign.document.send"), OperationAccess::Blocked);
     }
 
     #[test]

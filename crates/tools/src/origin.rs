@@ -104,6 +104,11 @@ pub struct ToolContext {
     pub user_id: String,
     /// Per-entity permission overrides (tool category → allowed).
     pub entity_permissions: Option<std::collections::HashMap<String, bool>>,
+    /// Per-employee three-state approval policy over gated interface operations
+    /// (Always / Approval / Blocked). `None` = no per-employee overrides; the
+    /// gate falls back to the seat's declared defaults. The single decision
+    /// function both the chat gate and the workflow checkpoint consult.
+    pub operation_policy: Option<crate::policy::OperationPolicy>,
     /// Per-entity resource grant overrides (resource → "allow"|"deny"|"inherit").
     pub resource_grants: Option<std::collections::HashMap<String, String>>,
     /// Allowed filesystem paths — if set, file writes and shell commands are restricted

@@ -3534,3 +3534,175 @@ pub async fn handle_available(
         .map_err(|e| to_error_response(types::NeboError::Internal(e.to_string())))?;
     Ok(Json(HandleAvailableResponse { available }))
 }
+
+/// GET /api/v1/agents/{id}/operations — the per-employee Approvals view.
+///
+/// Lists every gated interface operation this employee can reach (from its
+/// bound `requires.interfaces` crossed with the interface catalog) with its
+/// three-state setting: the stored per-operation override, and the effective
+/// state after `OperationPolicy::decide` (which enforces critical-op
+/// protection). Writes go through the ONE canonical pathway — the
+/// entity-config PUT (`operationPolicy` patch key) — this endpoint is the
+/// read-side aggregation only (CODE_AUDITOR Rule 8).
+pub async fn get_agent_operations(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> HandlerResult<serde_json::Value> {
+    // Interfaces the seat binds, from the loaded agent's parsed agent.json.
+    let interfaces: Vec<String> = {
+        let registry = state.agent_registry.read().await;
+        registry
+            .get(&id)
+            .and_then(|a| a.config.as_ref())
+            .map(|c| c.requires.interfaces.clone())
+            .unwrap_or_default()
+    };
+
+    // Stored per-employee policy (None = not configured yet).
+    let stored = state
+        .store
+        .get_entity_config("agent", &id)
+        .ok()
+        .flatten()
+        .and_then(|c| c.operation_policy);
+    let configured = stored.is_some();
+    let policy = tools::policy::OperationPolicy::from_json(stored.as_deref());
+
+    let operations: Vec<serde_json::Value> = tools::interface_catalog::gated_operations()
+        .iter()
+        .filter(|op| {
+            let capability = op.split('.').next().unwrap_or("");
+            interfaces.iter().any(|i| i == capability)
+        })
+        .map(|op| {
+            let suffix = tools::plugin_tool::port_suffix(op);
+            serde_json::json!({
+                "operation": op,
+                "capability": op.split('.').next().unwrap_or(""),
+                "critical": tools::interface_catalog::is_critical(op),
+                "override": policy.operations.get(&suffix).map(|a| a.as_str()),
+                "effective": policy.decide(op).as_str(),
+            })
+        })
+        .collect();
+
+    Ok(Json(serde_json::json!({
+        "default": policy.default.as_str(),
+        "configured": configured,
+        "interfaces": interfaces,
+        "operations": operations,
+        "total": operations.len(),
+    })))
+}
+
+#[derive(Deserialize)]
+pub struct WorkflowApprovalBody {
+    pub approved: bool,
+}
+
+/// POST /api/v1/agents/workflow-runs/{run_id}/approval — resolve a run parked
+/// at the approval checkpoint.
+///
+/// Deny → the suspension is dropped and the run completes as denied.
+/// Approve → the run is re-triggered through the ONE `run_inline` pathway with
+/// the reserved `_approved_op` input: a one-shot token (operation + exact input
+/// hash) that admits exactly the call the owner saw. Re-derivation that drifts
+/// from that call re-suspends rather than executing something unapproved.
+pub async fn resolve_workflow_approval(
+    State(state): State<AppState>,
+    Path(run_id): Path<String>,
+    Json(body): Json<WorkflowApprovalBody>,
+) -> HandlerResult<serde_json::Value> {
+    let Some((agent_id, binding_name, _activity_id, _step, _messages, pending_tool, operation, display)) =
+        state
+            .store
+            .get_workflow_suspension(&run_id)
+            .map_err(to_error_response)?
+    else {
+        return Err(to_error_response(types::NeboError::NotFound));
+    };
+
+    state
+        .store
+        .delete_workflow_suspension(&run_id)
+        .map_err(to_error_response)?;
+
+    if !body.approved {
+        let _ = state.store.update_workflow_run(
+            &run_id,
+            Some("denied"),
+            None,
+            None,
+            Some(&format!("Owner denied: {}", display)),
+            None,
+        );
+        state.hub.broadcast(
+            "workflow_run_denied",
+            serde_json::json!({ "runId": run_id, "agentId": agent_id }),
+        );
+        return Ok(Json(serde_json::json!({ "status": "denied" })));
+    }
+
+    // Rebuild the binding definition exactly as the scheduler does (agent row →
+    // parsed config → binding → def json), and re-run with the approval token
+    // plus the original run's inputs.
+    let agent_rec = state
+        .store
+        .get_agent(&agent_id)
+        .map_err(to_error_response)?
+        .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
+    let config = napp::agent::parse_agent_config(&agent_rec.frontmatter)
+        .map_err(|e| to_error_response(types::NeboError::Internal(format!("parse agent config: {e}"))))?;
+    let binding = config
+        .workflows
+        .get(&binding_name)
+        .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
+    let def_json = binding.to_workflow_json(&binding_name);
+
+    let mut inputs: serde_json::Value = state
+        .store
+        .get_workflow_run(&run_id)
+        .ok()
+        .flatten()
+        .and_then(|r| r.inputs)
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    let input_hash = serde_json::from_str::<serde_json::Value>(&pending_tool)
+        .ok()
+        .and_then(|tc| tc.get("input").and_then(|i| i.get("input")).cloned())
+        .map(|v| workflow::engine::checkpoint_input_hash(&v))
+        .unwrap_or_default();
+    if let Some(m) = inputs.as_object_mut() {
+        m.insert(
+            "_approved_op".into(),
+            serde_json::json!({ "operation": operation, "inputHash": input_hash }),
+        );
+    }
+
+    // The old run is superseded by the approved re-run.
+    let _ = state.store.update_workflow_run(
+        &run_id,
+        Some("resumed"),
+        None,
+        None,
+        None,
+        None,
+    );
+
+    use tools::workflows::WorkflowManager;
+    let new_run_id = state
+        .workflow_manager
+        .run_inline(
+            def_json,
+            inputs,
+            "approval",
+            Some(binding_name.clone()),
+            &agent_id,
+            None,
+        )
+        .await
+        .map_err(|e| to_error_response(types::NeboError::Internal(e)))?;
+
+    info!(run_id, new_run_id, agent_id, "workflow approval accepted — re-running with one-shot token");
+    Ok(Json(serde_json::json!({ "status": "approved", "newRunId": new_run_id })))
+}

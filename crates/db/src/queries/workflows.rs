@@ -502,6 +502,139 @@ impl Store {
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(|e| NeboError::Database(e.to_string()))
     }
+
+    // ── Approval-checkpoint suspensions (headless pause-and-resume) ──
+
+    /// Record a completed activity's output so a suspended run can rebuild the
+    /// downstream context on resume. Additive alongside create_activity_result
+    /// (whose signature many call sites share).
+    pub fn set_activity_result_content(
+        &self,
+        run_id: &str,
+        activity_id: &str,
+        content: &str,
+    ) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE workflow_activity_results SET result_content = ?3
+             WHERE run_id = ?1 AND activity_id = ?2",
+            params![run_id, activity_id, content],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Outputs of every completed activity in a run (activity_id → content).
+    /// Used on resume to skip finished work and rebuild prior context.
+    pub fn completed_activity_contents(
+        &self,
+        run_id: &str,
+    ) -> Result<std::collections::HashMap<String, String>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT activity_id, COALESCE(result_content, '')
+                 FROM workflow_activity_results
+                 WHERE run_id = ?1 AND status = 'completed'",
+            )
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map(params![run_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        rows.collect::<Result<std::collections::HashMap<_, _>, _>>()
+            .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
+    /// Persist a run's approval suspension (one per run; replace on conflict).
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_workflow_suspension(
+        &self,
+        run_id: &str,
+        agent_id: &str,
+        binding_name: &str,
+        activity_id: &str,
+        step_index: Option<i64>,
+        messages: &str,
+        pending_tool: &str,
+        operation: &str,
+        display: &str,
+    ) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "INSERT OR REPLACE INTO workflow_run_suspensions
+             (run_id, agent_id, binding_name, activity_id, step_index, messages, pending_tool, operation, display)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                run_id,
+                agent_id,
+                binding_name,
+                activity_id,
+                step_index,
+                messages,
+                pending_tool,
+                operation,
+                display
+            ],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Load a run's suspension: (agent_id, binding_name, activity_id,
+    /// step_index, messages, pending_tool, operation, display).
+    #[allow(clippy::type_complexity)]
+    pub fn get_workflow_suspension(
+        &self,
+        run_id: &str,
+    ) -> Result<
+        Option<(
+            String,
+            String,
+            String,
+            Option<i64>,
+            String,
+            String,
+            String,
+            String,
+        )>,
+        NeboError,
+    > {
+        let conn = self.conn()?;
+        match conn.query_row(
+            "SELECT agent_id, binding_name, activity_id, step_index, messages, pending_tool, operation, display
+             FROM workflow_run_suspensions WHERE run_id = ?1",
+            params![run_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                ))
+            },
+        ) {
+            Ok(v) => Ok(Some(v)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(NeboError::Database(e.to_string())),
+        }
+    }
+
+    /// Remove a suspension after resume or deny.
+    pub fn delete_workflow_suspension(&self, run_id: &str) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "DELETE FROM workflow_run_suspensions WHERE run_id = ?1",
+            params![run_id],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
 }
 
 fn row_to_workflow(row: &rusqlite::Row) -> rusqlite::Result<Workflow> {

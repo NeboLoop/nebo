@@ -56,6 +56,8 @@ struct GraphCtx<'a> {
     event_bus: Option<&'a tools::EventBus>,
     emit_source: Option<String>,
     progress_tx: Option<tokio::sync::mpsc::UnboundedSender<WorkflowProgress>>,
+    /// Per-employee approval-checkpoint context (policy + one-shot token).
+    checkpoint: Option<crate::engine::CheckpointCtx>,
     run_id: String,
     /// Owning agent for usage attribution; "" for standalone workflow runs.
     agent_id: String,
@@ -102,6 +104,7 @@ pub(crate) async fn execute_graph(
     event_bus: Option<&tools::EventBus>,
     emit_source: Option<String>,
     progress_tx: Option<tokio::sync::mpsc::UnboundedSender<WorkflowProgress>>,
+    checkpoint: Option<&crate::engine::CheckpointCtx>,
 ) -> Result<(String, String), WorkflowError> {
     let ctx = build_ctx(
         def,
@@ -115,6 +118,7 @@ pub(crate) async fn execute_graph(
         event_bus,
         emit_source,
         progress_tx,
+        checkpoint,
         run_id,
     );
 
@@ -203,6 +207,7 @@ fn build_ctx<'a>(
     event_bus: Option<&'a tools::EventBus>,
     emit_source: Option<String>,
     progress_tx: Option<tokio::sync::mpsc::UnboundedSender<WorkflowProgress>>,
+    checkpoint: Option<&crate::engine::CheckpointCtx>,
     run_id: &str,
 ) -> GraphCtx<'a> {
     let by_id: HashMap<String, &Activity> = def
@@ -275,6 +280,7 @@ fn build_ctx<'a>(
         event_bus,
         emit_source,
         progress_tx,
+        checkpoint: checkpoint.cloned(),
         run_id: run_id.to_string(),
         agent_id: agent_id.to_string(),
         by_id,
@@ -624,6 +630,8 @@ async fn run_condition<'a>(
             info!(activity = activity.id.as_str(), verdict = chosen, "condition evaluated");
             route(ctx, scope, &activity.id, |label| label == Some(chosen)).await
         }
+                // Suspension passes through untouched — the run is parked, not failed.
+        Err(e @ WorkflowError::AwaitingApproval { .. }) => Err(e),
         Err(e) => {
             let completed_at = chrono::Utc::now().timestamp();
             let err_msg = e.to_string();
@@ -789,6 +797,7 @@ async fn run_llm_activity<'a>(
         &ctx.def.id,
         ctx.progress_tx.as_ref(),
         &mut spent,
+        ctx.checkpoint.as_ref(),
     )
     .await
     {
@@ -1163,6 +1172,7 @@ mod walk_tests {
             provider,
             &[],
             &run_id,
+            None,
             None,
             None,
             None,

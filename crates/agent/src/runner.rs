@@ -346,6 +346,9 @@ pub struct RunRequest {
     pub agent_id: String,
     /// Per-entity permission overrides (tool category → allowed).
     pub permissions: Option<HashMap<String, bool>>,
+    /// Per-employee three-state approval policy over gated interface operations
+    /// (Always / Approval / Blocked). None = inherit seat defaults.
+    pub operation_policy: Option<tools::policy::OperationPolicy>,
     /// Per-entity resource grant overrides (resource → "allow"|"deny"|"inherit").
     pub resource_grants: Option<HashMap<String, String>>,
     /// Per-entity model preference (fuzzy-resolved before provider selection).
@@ -893,6 +896,7 @@ impl Runner {
         };
         let min_iterations = req.min_iterations;
         let entity_permissions = req.permissions.clone();
+        let operation_policy = req.operation_policy.clone();
         let entity_resource_grants = req.resource_grants.clone();
         let personality_snippet = req.personality_snippet.clone();
         let allowed_paths = req.allowed_paths.clone();
@@ -984,6 +988,7 @@ impl Runner {
                         &agent_id,
                         personality_snippet.as_deref(),
                         entity_permissions.as_ref(),
+                        operation_policy.as_ref(),
                         entity_resource_grants.as_ref(),
                         &user_prompt,
                         &force_skill,
@@ -1067,6 +1072,7 @@ impl Runner {
                 &agent_id,
                 personality_snippet.as_deref(),
                 entity_permissions.as_ref(),
+                operation_policy.as_ref(),
                 entity_resource_grants.as_ref(),
                 &user_prompt,
                 &force_skill,
@@ -1268,6 +1274,7 @@ async fn run_loop(
     agent_id: &str,
     personality_snippet: Option<&str>,
     entity_permissions: Option<&HashMap<String, bool>>,
+    operation_policy: Option<&tools::policy::OperationPolicy>,
     entity_resource_grants: Option<&HashMap<String, String>>,
     user_prompt: &str,
     force_skill: &str,
@@ -3348,6 +3355,7 @@ async fn run_loop(
                 session_id: session_id.to_string(),
                 user_id: memory_user_id.clone(),
                 entity_permissions: entity_permissions.cloned(),
+                operation_policy: operation_policy.cloned(),
                 resource_grants: entity_resource_grants.cloned(),
                 allowed_paths: allowed_paths.to_vec(),
                 cancel_token: cancel_token.clone(),
@@ -3620,6 +3628,150 @@ async fn run_loop(
                             }
                         }
                     }
+                    continue;
+                }
+                // ── Per-operation approval gate (per-employee three-state policy) ──
+                // A gated interface operation (the `plugin` tool with a typed
+                // `operation`) is decided by the employee's OperationPolicy: Always
+                // runs, Approval asks the owner (interactive) / refuses when
+                // unattended, Blocked is refused (the toolset also omits it — this
+                // is the hard backstop). Only enforced when a policy is set; with
+                // none, plugin ops stay ungated (installation is the grant). The
+                // workflow path enforces the same decision at its checkpoint.
+                if tool_calls[idx].name == "plugin" {
+                    if let (Some(policy), Some(op)) = (
+                        operation_policy,
+                        tool_calls[idx]
+                            .input
+                            .get("operation")
+                            .and_then(|v| v.as_str())
+                            .filter(|s| !s.is_empty()),
+                    ) {
+                        match policy.decide(op) {
+                            tools::policy::OperationAccess::Always => {}
+                            tools::policy::OperationAccess::Blocked => {
+                                blocked_results[idx] = Some((
+                                    tool_calls[idx].clone(),
+                                    ToolResult::error(format!(
+                                        "The operation '{op}' is turned OFF (Blocked) for this AI \
+                                         employee in its Controls. Tell the user it's blocked and \
+                                         stop — do not retry or work around it."
+                                    )),
+                                ));
+                            }
+                            tools::policy::OperationAccess::Approval => {
+                                // NOTE: deliberately NO full_access bypass here. The
+                                // per-employee operation policy is an explicit setting;
+                                // the whole point is that a global convenience (Full
+                                // Access) never overrides a per-employee gate on money/
+                                // outbound/irreversible operations. decide() rules.
+                                //
+                                // The approval prompt must be comprehensible to a
+                                // non-technical owner: require the `display` sentence
+                                // (real names + formatted amounts, not ids/cents).
+                                // Missing → corrective retry, never a raw-JSON prompt.
+                                let display = tool_calls[idx]
+                                    .input
+                                    .get("display")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .trim()
+                                    .to_string();
+                                if display.is_empty() {
+                                    blocked_results[idx] = Some((
+                                        tool_calls[idx].clone(),
+                                        ToolResult::error(format!(
+                                            "The operation '{op}' needs the owner's approval, and \
+                                             the approval prompt requires a `display` sentence. \
+                                             Retry the SAME call adding display: one plain-language \
+                                             sentence a non-technical person understands — real \
+                                             names and formatted amounts (e.g. \"Pay Acme Supplies \
+                                             $2,500.00 for bill #1042\"), never raw ids or cents."
+                                        )),
+                                    ));
+                                } else if tools::ExecutionMode::from(origin)
+                                    == tools::ExecutionMode::Interactive
+                                {
+                                    match approval_channels {
+                                        Some(chs) => {
+                                            let decision = ask_tool_approval(
+                                                chs,
+                                                tx,
+                                                cancel_token,
+                                                &tool_calls[idx],
+                                                session_id,
+                                                "operation",
+                                            )
+                                            .await;
+                                            match decision.as_str() {
+                                                "always" => {
+                                                    // Approve Always → persist this op as
+                                                    // Always in the employee's policy so the
+                                                    // button does what it says.
+                                                    if !agent_id.is_empty() {
+                                                        let mut policy = operation_policy
+                                                            .cloned()
+                                                            .unwrap_or_default();
+                                                        policy.operations.insert(
+                                                            tools::plugin_tool::port_suffix(op),
+                                                            tools::policy::OperationAccess::Always,
+                                                        );
+                                                        let patch = serde_json::json!({
+                                                            "operationPolicy": policy.to_json()
+                                                        });
+                                                        if let Err(e) = store
+                                                            .upsert_entity_config(
+                                                                "agent", agent_id, &patch,
+                                                            )
+                                                        {
+                                                            warn!(session_id, op, error = %e, "failed to persist operation Always grant");
+                                                        }
+                                                    }
+                                                }
+                                                "once" | "approve" | "approved" | "yes"
+                                                | "true" => {}
+                                                _ => {
+                                                    blocked_results[idx] = Some((
+                                                        tool_calls[idx].clone(),
+                                                        ToolResult::error(format!(
+                                                            "The user declined to approve the \
+                                                             operation '{op}'. Tell the user it \
+                                                             needs their approval and stop — do \
+                                                             not retry or work around it."
+                                                        )),
+                                                    ));
+                                                }
+                                            }
+                                        }
+                                        None => {
+                                            blocked_results[idx] = Some((
+                                                tool_calls[idx].clone(),
+                                                ToolResult::error(format!(
+                                                    "The operation '{op}' needs approval and no \
+                                                     one is available to approve it in this run. \
+                                                     Report this and stop."
+                                                )),
+                                            ));
+                                        }
+                                    }
+                                } else {
+                                    // Unattended chat origin (cron/comm/subagent): the chat
+                                    // gate can't pause. The workflow path handles suspend/
+                                    // resume at its checkpoint; other unattended origins refuse.
+                                    blocked_results[idx] = Some((
+                                        tool_calls[idx].clone(),
+                                        ToolResult::error(format!(
+                                            "The operation '{op}' needs your approval and this is \
+                                             an unattended run. It was not performed."
+                                        )),
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                    // `plugin` calls without a typed operation (list/discover/exec-by-
+                    // slug) fall through ungated — the capability gate returns None
+                    // for `plugin`.
                     continue;
                 }
                 let category = match tools::capabilities::gating_capability(

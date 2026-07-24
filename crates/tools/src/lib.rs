@@ -19,6 +19,7 @@ pub mod execute_tool;
 pub mod exit_tool;
 pub mod file_tool;
 pub mod grep_tool;
+pub mod interface_catalog;
 pub mod keychain_tool;
 pub mod loop_tool;
 pub mod mcp_tool;

@@ -772,6 +772,9 @@ pub struct EntityConfig {
     pub allowed_paths: Option<String>,
     pub pinned: Option<i64>,
     pub multi_chat: Option<i64>,
+    /// JSON of tools::policy::OperationPolicy — per-employee three-state approval
+    /// policy over gated interface operations. NULL = inherit seat defaults.
+    pub operation_policy: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
     pub last_heartbeat_at: Option<String>,

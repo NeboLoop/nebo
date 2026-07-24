@@ -188,6 +188,13 @@ export function listEventSources() {
 }
 
 /**
+ * @description "Resolve workflow approval"
+ */
+export function resolveWorkflowApproval(runId: string, req: Record<string, unknown> = {}) {
+	return webapi.post<components.ResolveWorkflowApprovalResponse>(`/api/v1/agents/workflow-runs/${runId}/approval`, req)
+}
+
+/**
  * @description "Get agent"
  */
 export function getAgent(id: string) {
@@ -304,6 +311,13 @@ export function duplicateAgent(id: string, req: Record<string, unknown> = {}) {
  */
 export function updateAgentInputs(id: string, req: Record<string, unknown> = {}) {
 	return webapi.put<components.UpdateAgentInputsResponse>(`/api/v1/agents/${id}/inputs`, req)
+}
+
+/**
+ * @description "Get agent operations"
+ */
+export function getAgentOperations(id: string) {
+	return webapi.get<components.GetAgentOperationsResponse>(`/api/v1/agents/${id}/operations`)
 }
 
 /**

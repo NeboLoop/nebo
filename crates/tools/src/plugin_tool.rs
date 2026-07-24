@@ -60,6 +60,12 @@ struct PluginInput {
     /// Typed input object for a port `operation`; each field becomes a `--key value` flag.
     #[serde(default)]
     input: serde_json::Value,
+    /// Plain-language description of a gated operation for the owner's approval
+    /// prompt (e.g. "Pay Acme Supplies $2,500.00 for bill #1042"). Required by
+    /// the approval gate for gated operations; shown to the owner as the
+    /// headline. Never forwarded to the plugin binary.
+    #[serde(default)]
+    display: String,
 }
 
 fn default_action() -> String {
@@ -70,7 +76,7 @@ fn default_action() -> String {
 /// qualified port (`department.role.capability.resource.action`) reduces to its
 /// last three segments; a bare operation is returned unchanged. This is what keeps
 /// one plugin binding (`ledger.bill.create`) satisfying every seat that calls it.
-fn port_suffix(operation: &str) -> String {
+pub fn port_suffix(operation: &str) -> String {
     let parts: Vec<&str> = operation.split('.').collect();
     if parts.len() > 3 {
         parts[parts.len() - 3..].join(".")
@@ -587,6 +593,13 @@ impl DynTool for PluginTool {
                 "description": "Typed input for a port `operation`. Each field is passed to the bound plugin as a --key value flag."
             }),
         );
+        props.insert(
+            "display".into(),
+            serde_json::json!({
+                "type": "string",
+                "description": "REQUIRED with any gated `operation` (money movement, outbound send, irreversible write): ONE plain-language sentence describing the action for the business owner's approval prompt. Use real names a non-technical person recognizes — company/person names, formatted amounts ('$2,500.00'), dates — never raw ids or cents. Example: 'Pay Acme Supplies $2,500.00 for bill #1042, due Jul 28'."
+            }),
+        );
 
         serde_json::json!({
             "type": "object",
@@ -655,6 +668,8 @@ impl DynTool for PluginTool {
                     query: String::new(),
                     operation: String::new(),
                     input: serde_json::Value::Null,
+                    // Approval-prompt text only — never forwarded to the binary.
+                    display: String::new(),
                 };
                 return self.handle_exec(&port_pi, ctx).await;
             }

@@ -323,6 +323,7 @@ export interface EntityConfig {
 	allowedPaths?: string
 	pinned?: number
 	multiChat?: number
+	operationPolicy?: string
 	createdAt: number
 	updatedAt: number
 	lastHeartbeatAt?: string
@@ -1018,6 +1019,14 @@ export interface EnableAgentChannelResponse {
 	ok: boolean
 }
 
+export interface GetAgentOperationsResponse {
+	default: unknown
+	configured: unknown
+	interfaces: string[]
+	operations: unknown[]
+	total: number
+}
+
 export interface GetAgentResponse {
 	agent: Agent
 	displayName: string
@@ -1467,6 +1476,11 @@ export interface RemoveCollectionItemResponse {
 
 export interface RemovePluginResponse {
 	message: string
+}
+
+export interface ResolveWorkflowApprovalResponse {
+	status: string
+	newRunId: string
 }
 
 export interface RunAgentWorkflowResponse {
