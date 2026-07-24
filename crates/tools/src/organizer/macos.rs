@@ -12,12 +12,34 @@ use crate::registry::ToolResult;
 pub async fn handle_mail(action: &str, input: &OrganizerInput) -> ToolResult {
     match action {
         "accounts" => {
-            run_osascript("tell application \"Mail\" to return name of every account").await
+            run_osascript(
+                r#"tell application "Mail"
+    set out to ""
+    repeat with a in accounts
+        set out to out & (name of a) & " = " & (email addresses of a as string) & linefeed
+    end repeat
+    return out
+end tell"#,
+            )
+            .await
         }
         "unread" => {
+            // Per-account breakdown so the caller can tell which account the
+            // unread mail lives in (the unified count alone is ambiguous).
             run_osascript(
-                "tell application \"Mail\" to return count of \
-                 (messages of inbox whose read status is false)",
+                r#"tell application "Mail"
+    set total to 0
+    set out to ""
+    repeat with a in accounts
+        try
+            set mb to mailbox "INBOX" of a
+            set u to count of (messages of mb whose read status is false)
+            set total to total + u
+            set out to out & (name of a) & " (" & (email addresses of a as string) & "): " & u & " unread" & linefeed
+        end try
+    end repeat
+    return out & "Total: " & total & " unread"
+end tell"#,
             )
             .await
         }
@@ -25,45 +47,47 @@ pub async fn handle_mail(action: &str, input: &OrganizerInput) -> ToolResult {
             // Content snippets cost ~0.8s/message via AppleScript, so the cap is
             // 20 (not 50) to stay inside the 30s subprocess budget.
             let limit = input.limit.unwrap_or(10).clamp(1, 20);
-            // A bare `mailbox "X"` only resolves "On My Mac" mailboxes — account
-            // mailboxes (the normal case) need resolving through their account,
-            // so non-inbox reads search every account for the name.
-            let resolve = if input.mailbox.is_empty() {
-                "set box to inbox".to_string()
-            } else {
-                format!(
-                    r#"set box to missing value
-    set wanted to "{name}"
-    repeat with acct in accounts
-        repeat with mb in (mailboxes of acct)
-            if name of mb is wanted then
-                set box to mb
-                exit repeat
-            end if
-        end repeat
-        if box is not missing value then exit repeat
-    end repeat
-    if box is missing value then return "Mailbox '" & wanted & "' not found in any account""#,
-                    name = escape_applescript(&input.mailbox)
-                )
-            };
+            // Read per-account INBOXes (newest-first), never the unified `inbox`:
+            // the unified object orders by account, so a chatty secondary account
+            // (e.g. iCloud onboarding mail) shadows the one that matters. An
+            // optional `account` filter (name or address) narrows to one account;
+            // `mailbox` names a non-INBOX mailbox within the account(s).
             let script = format!(
                 r#"tell application "Mail"
-    {resolve}
-    set n to count of messages of box
-    if n is 0 then return "No messages"
-    set lim to {limit}
-    if n < lim then set lim to n
-    set output to ""
-    repeat with i from 1 to lim
-        set m to message i of box
-        set c to content of m
-        if c is missing value then set c to ""
-        if length of c > 200 then set c to (characters 1 through 200 of c) as string
-        set output to output & "From: " & (sender of m) & linefeed & "Subject: " & (subject of m) & linefeed & "Date: " & (date received of m as text) & linefeed & c & linefeed & "---" & linefeed
+    set wantedAcct to "{acct}"
+    set wantedBox to "{mbox}"
+    if wantedBox is "" then set wantedBox to "INBOX"
+    set targets to {{}}
+    repeat with a in accounts
+        if wantedAcct is "" or (name of a is wantedAcct) or ((email addresses of a as string) contains wantedAcct) then
+            try
+                set end of targets to mailbox wantedBox of a
+            end try
+        end if
     end repeat
+    if (count of targets) is 0 then return "No matching account/mailbox. Use action 'accounts' to list accounts."
+    set lim to {limit}
+    set output to ""
+    set taken to 0
+    repeat with box in targets
+        set acctName to name of account of box
+        set n to count of messages of box
+        set i to 1
+        repeat while i <= n and taken < lim
+            set m to message i of box
+            set c to content of m
+            if c is missing value then set c to ""
+            if length of c > 200 then set c to (characters 1 through 200 of c) as string
+            set output to output & "Account: " & acctName & linefeed & "From: " & (sender of m) & linefeed & "Subject: " & (subject of m) & linefeed & "Date: " & (date received of m as text) & linefeed & c & linefeed & "---" & linefeed
+            set taken to taken + 1
+            set i to i + 1
+        end repeat
+    end repeat
+    if output is "" then return "No messages"
     return output
 end tell"#,
+                acct = escape_applescript(&input.account),
+                mbox = escape_applescript(&input.mailbox),
             );
             run_osascript(&script).await
         }
@@ -109,21 +133,32 @@ end tell"#,
             // Mail's scripting suite has NO `search` verb (the previous
             // `search inbox for …` never even parsed) — a whose-clause over
             // subject + sender is the supported query form, and it's fast
-            // (measured ~0.15s over a few-hundred-message inbox).
+            // (measured ~0.15s over a few-hundred-message inbox). Searched
+            // per-account (see `read` for why the unified inbox misleads);
+            // optional `account` narrows to one.
             let limit = input.limit.unwrap_or(20).clamp(1, 50);
             let script = format!(
                 r#"tell application "Mail"
-    set found to (messages of inbox whose subject contains "{query}" or sender contains "{query}")
-    if (count of found) is 0 then return "No messages found"
+    set wantedAcct to "{acct}"
     set output to ""
-    set i to 0
-    repeat with m in found
-        if i >= {limit} then exit repeat
-        set output to output & "From: " & (sender of m) & " | Subject: " & (subject of m) & " | " & (date received of m as text) & linefeed
-        set i to i + 1
+    set taken to 0
+    repeat with a in accounts
+        if wantedAcct is "" or (name of a is wantedAcct) or ((email addresses of a as string) contains wantedAcct) then
+            try
+                set mb to mailbox "INBOX" of a
+                set found to (messages of mb whose subject contains "{query}" or sender contains "{query}")
+                repeat with m in found
+                    if taken >= {limit} then exit repeat
+                    set output to output & (name of a) & " | From: " & (sender of m) & " | Subject: " & (subject of m) & " | " & (date received of m as text) & linefeed
+                    set taken to taken + 1
+                end repeat
+            end try
+        end if
     end repeat
+    if output is "" then return "No messages found (search matches subject/sender substrings only — try a broker name, site name, or domain like stadium.partners; NOT operators like from:)"
     return output
 end tell"#,
+                acct = escape_applescript(&input.account),
                 query = escape_applescript(query),
             );
             run_osascript(&script).await
