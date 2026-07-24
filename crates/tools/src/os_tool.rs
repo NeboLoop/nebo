@@ -357,7 +357,7 @@ impl DynTool for OsTool {
          - music: play, pause, next, previous, status, search, volume, playlists, shuffle\n\
          - keychain: get, find, add, delete\n\
          - search: search (file search via OS index)\n\
-         - mail: accounts, unread, read, send, search\n\
+         - mail: accounts, unread, read, send, search — LOCAL Apple Mail. read/search take optional account (name or address, e.g. \"sites@stadium.partners\") + mailbox; search is a SUBSTRING match on subject/sender (no Gmail operators like from:)\n\
          - contacts: search, get, create, groups\n\
          - calendar: calendars, today, upcoming, create, delete, pending, accept, decline, auto_accept, list, configure — the LOCAL Apple/Mac calendar (for Google Calendar use plugin(resource: \"gws\", ...))\n\
          - reminders: lists, list, create, complete, delete\n\n\
@@ -528,7 +528,7 @@ impl DynTool for OsTool {
         );
         // Keychain
         props.insert("service".into(), prop("string", "Keychain service name"));
-        props.insert("account".into(), prop("string", "Keychain account"));
+        props.insert("account".into(), prop("string", "Keychain account, or Mail account filter (name or address) for mail read/search"));
         props.insert("password".into(), prop("string", "Password to store"));
         // Search
         props.insert("query".into(), prop("string", "Search query"));
