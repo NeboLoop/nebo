@@ -139,7 +139,8 @@
 		"collapseSidebar": "طي الشريط الجانبي",
 		"agents": "الموظفون",
 		"schedule": "الجدولة",
-		"searchOrRun": "ابحث أو شغّل..."
+		"searchOrRun": "ابحث أو شغّل...",
+		"inbox": "البريد الوارد"
 	},
 	"sidebar": {
 		"agents": "الموظفون",
@@ -372,7 +373,9 @@
 		"markAsRead": "تعليم كمقروء",
 		"viewAll": "عرض جميع الإشعارات",
 		"closeNotification": "إغلاق الإشعار",
-		"overflow": "+99"
+		"overflow": "+99",
+		"noDetail": "لا توجد تفاصيل إضافية.",
+		"takeAction": "عرض"
 	},
 	"slashPicker": {
 		"placeholder": "أوامر، MCP، مهارات، موظفون...",
@@ -1881,7 +1884,9 @@
 		"noActivityRecords": "لا توجد سجلات نشاط لهذا التشغيل.",
 		"runAgain": "تشغيل مرة أخرى",
 		"runNotFound": "التشغيل غير موجود",
-		"backToRuns": "العودة إلى التشغيلات"
+		"backToRuns": "العودة إلى التشغيلات",
+		"viewRaw": "خام",
+		"viewPretty": "منسق"
 	},
 	"automations": {
 		"title": "الأتمتة",
@@ -2498,5 +2503,13 @@
 		"checkEvery": "التحقق كل",
 		"hours6": "6 ساعات",
 		"history": "السجل"
+	},
+	"inbox": {
+		"title": "البريد الوارد",
+		"needsYou": "يتطلب انتباهك",
+		"delivered": "تم التسليم",
+		"done": "منجز",
+		"empty": "كل شيء على ما يرام",
+		"emptyDesc": "لا شيء يتطلب انتباهك الآن."
 	}
 }

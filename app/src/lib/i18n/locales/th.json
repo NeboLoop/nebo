@@ -139,7 +139,8 @@
 		"collapseSidebar": "ย่อแถบข้าง",
 		"agents": "พนักงาน",
 		"schedule": "ตารางเวลา",
-		"searchOrRun": "ค้นหาหรือเรียกใช้..."
+		"searchOrRun": "ค้นหาหรือเรียกใช้...",
+		"inbox": "กล่องข้อความ"
 	},
 	"sidebar": {
 		"agents": "พนักงาน",
@@ -372,7 +373,9 @@
 		"markAsRead": "ทำเครื่องหมายว่าอ่านแล้ว",
 		"viewAll": "ดูการแจ้งเตือนทั้งหมด",
 		"closeNotification": "ปิดการแจ้งเตือน",
-		"overflow": "99+"
+		"overflow": "99+",
+		"noDetail": "ไม่มีรายละเอียดเพิ่มเติม",
+		"takeAction": "ดู"
 	},
 	"slashPicker": {
 		"placeholder": "คำสั่ง, MCP, ทักษะ, พนักงาน...",
@@ -1948,7 +1951,9 @@
 		"noActivityRecords": "ไม่มีบันทึกกิจกรรมสำหรับการทำงานนี้",
 		"runAgain": "ทำงานอีกครั้ง",
 		"runNotFound": "ไม่พบการทำงาน",
-		"backToRuns": "กลับไปยังการทำงาน"
+		"backToRuns": "กลับไปยังการทำงาน",
+		"viewRaw": "ข้อมูลดิบ",
+		"viewPretty": "จัดรูปแบบ"
 	},
 	"automations": {
 		"title": "ระบบอัตโนมัติ",
@@ -2498,5 +2503,13 @@
 		"checkEvery": "ตรวจทุก",
 		"hours6": "6 ชั่วโมง",
 		"history": "ประวัติ"
+	},
+	"inbox": {
+		"title": "กล่องข้อความ",
+		"needsYou": "ต้องการคุณ",
+		"delivered": "ส่งแล้ว",
+		"done": "เสร็จสิ้น",
+		"empty": "เคลียร์หมดแล้ว",
+		"emptyDesc": "ตอนนี้ไม่มีอะไรที่ต้องให้คุณดูแล"
 	}
 }

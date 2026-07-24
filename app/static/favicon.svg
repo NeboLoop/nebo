@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="83 101 560 560" role="img" aria-label="NeboAI mark">
+  <title>NeboAI mark</title>
+  <!-- Navy #0D1A38 · Blue #2F60C9 — keyline around the diamond and the
+       valley notch are open space, not masks or white fills. -->
+  <path fill="#0D1A38" d="M111 571 L276 314 L399 453 L455 322 L615 571 L424 571 L284 413 L217 571 Z"/>
+  <!-- Diamond: lower-left edge runs parallel to the mountain face (+0.88 slope). Intentional. -->
+  <path fill="#2F60C9" d="M372.5 191 L436.5 305 L383 384 L311 306 Z"/>
+</svg>

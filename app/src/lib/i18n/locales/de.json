@@ -139,7 +139,8 @@
 		"collapseSidebar": "Seitenleiste einklappen",
 		"agents": "Mitarbeiter",
 		"schedule": "Zeitplan",
-		"searchOrRun": "Suchen oder ausführen..."
+		"searchOrRun": "Suchen oder ausführen...",
+		"inbox": "Posteingang"
 	},
 	"sidebar": {
 		"agents": "Mitarbeiter",
@@ -372,7 +373,9 @@
 		"markAsRead": "Als gelesen markieren",
 		"viewAll": "Alle Benachrichtigungen anzeigen",
 		"closeNotification": "Benachrichtigung schließen",
-		"overflow": "99+"
+		"overflow": "99+",
+		"noDetail": "Keine weiteren Details.",
+		"takeAction": "Anzeigen"
 	},
 	"slashPicker": {
 		"placeholder": "Befehle, MCPs, Skills, Mitarbeiter...",
@@ -1881,7 +1884,9 @@
 		"noActivityRecords": "Keine Aktivitätseinträge für diesen Lauf.",
 		"runAgain": "Erneut ausführen",
 		"runNotFound": "Lauf nicht gefunden",
-		"backToRuns": "Zurück zu den Läufen"
+		"backToRuns": "Zurück zu den Läufen",
+		"viewRaw": "Roh",
+		"viewPretty": "Formatiert"
 	},
 	"automations": {
 		"title": "Automatisierungen",
@@ -2498,5 +2503,13 @@
 		"checkEvery": "Prüfen alle",
 		"hours6": "6 Stunden",
 		"history": "Verlauf"
+	},
+	"inbox": {
+		"title": "Posteingang",
+		"needsYou": "Braucht dich",
+		"delivered": "Zugestellt",
+		"done": "Erledigt",
+		"empty": "Alles erledigt",
+		"emptyDesc": "Im Moment braucht nichts deine Aufmerksamkeit."
 	}
 }

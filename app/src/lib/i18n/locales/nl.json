@@ -139,7 +139,8 @@
 		"collapseSidebar": "Zijbalk inklappen",
 		"agents": "Medewerkers",
 		"schedule": "Planning",
-		"searchOrRun": "Zoeken of uitvoeren..."
+		"searchOrRun": "Zoeken of uitvoeren...",
+		"inbox": "Postvak IN"
 	},
 	"sidebar": {
 		"agents": "Medewerkers",
@@ -372,7 +373,9 @@
 		"markAsRead": "Als gelezen markeren",
 		"viewAll": "Alle meldingen bekijken",
 		"closeNotification": "Melding sluiten",
-		"overflow": "99+"
+		"overflow": "99+",
+		"noDetail": "Geen aanvullende details.",
+		"takeAction": "Bekijken"
 	},
 	"slashPicker": {
 		"placeholder": "Commando's, MCP's, Skills, Medewerkers...",
@@ -1881,7 +1884,9 @@
 		"noActivityRecords": "Geen activiteiten voor deze run.",
 		"runAgain": "Opnieuw uitvoeren",
 		"runNotFound": "Run niet gevonden",
-		"backToRuns": "Terug naar runs"
+		"backToRuns": "Terug naar runs",
+		"viewRaw": "Onbewerkt",
+		"viewPretty": "Opgemaakt"
 	},
 	"automations": {
 		"title": "Automatiseringen",
@@ -2498,5 +2503,13 @@
 		"checkEvery": "Controleren elke",
 		"hours6": "6 uur",
 		"history": "Geschiedenis"
+	},
+	"inbox": {
+		"title": "Postvak IN",
+		"needsYou": "Vraagt om je aandacht",
+		"delivered": "Bezorgd",
+		"done": "Voltooid",
+		"empty": "Alles is klaar",
+		"emptyDesc": "Er is nu niets dat je aandacht nodig heeft."
 	}
 }

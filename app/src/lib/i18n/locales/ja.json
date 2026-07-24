@@ -139,7 +139,8 @@
 		"collapseSidebar": "サイドバーを折りたたむ",
 		"agents": "社員",
 		"schedule": "スケジュール",
-		"searchOrRun": "検索または実行..."
+		"searchOrRun": "検索または実行...",
+		"inbox": "受信トレイ"
 	},
 	"sidebar": {
 		"agents": "社員",
@@ -372,7 +373,9 @@
 		"markAsRead": "既読にする",
 		"viewAll": "すべての通知を表示",
 		"closeNotification": "通知を閉じる",
-		"overflow": "99+"
+		"overflow": "99+",
+		"noDetail": "追加の詳細はありません。",
+		"takeAction": "表示"
 	},
 	"slashPicker": {
 		"placeholder": "コマンド、MCP、スキル、社員...",
@@ -1881,7 +1884,9 @@
 		"noActivityRecords": "この実行にはアクティビティ記録がありません。",
 		"runAgain": "再実行",
 		"runNotFound": "実行が見つかりません",
-		"backToRuns": "実行一覧に戻る"
+		"backToRuns": "実行一覧に戻る",
+		"viewRaw": "生データ",
+		"viewPretty": "整形"
 	},
 	"automations": {
 		"title": "自動化",
@@ -2498,5 +2503,13 @@
 		"checkEvery": "確認間隔",
 		"hours6": "6時間",
 		"history": "履歴"
+	},
+	"inbox": {
+		"title": "受信トレイ",
+		"needsYou": "要対応",
+		"delivered": "配信済み",
+		"done": "完了",
+		"empty": "すべて完了しています",
+		"emptyDesc": "今のところ対応が必要なものはありません。"
 	}
 }

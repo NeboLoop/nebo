@@ -139,7 +139,8 @@
 		"collapseSidebar": "সাইডবার সংকুচিত করুন",
 		"agents": "এজেন্ট",
 		"schedule": "সময়সূচি",
-		"searchOrRun": "অনুসন্ধান বা চালান..."
+		"searchOrRun": "অনুসন্ধান বা চালান...",
+		"inbox": "ইনবক্স"
 	},
 	"sidebar": {
 		"agents": "কর্মী",
@@ -372,7 +373,9 @@
 		"markAsRead": "পঠিত হিসেবে চিহ্নিত করুন",
 		"viewAll": "সব বিজ্ঞপ্তি দেখুন",
 		"closeNotification": "বিজ্ঞপ্তি বন্ধ করুন",
-		"overflow": "99+"
+		"overflow": "99+",
+		"noDetail": "কোনো অতিরিক্ত বিবরণ নেই।",
+		"takeAction": "দেখুন"
 	},
 	"slashPicker": {
 		"placeholder": "কমান্ড, MCP, দক্ষতা, কর্মী...",
@@ -1948,7 +1951,9 @@
 		"noActivityRecords": "এই রানের জন্য কোনো কার্যকলাপ রেকর্ড নেই।",
 		"runAgain": "আবার চালান",
 		"runNotFound": "রান পাওয়া যায়নি",
-		"backToRuns": "রানে ফিরে যান"
+		"backToRuns": "রানে ফিরে যান",
+		"viewRaw": "কাঁচা",
+		"viewPretty": "সুন্দর"
 	},
 	"automations": {
 		"title": "অটোমেশন",
@@ -2498,5 +2503,13 @@
 		"checkEvery": "পরীক্ষার ব্যবধান",
 		"hours6": "৬ ঘণ্টা",
 		"history": "ইতিহাস"
+	},
+	"inbox": {
+		"title": "ইনবক্স",
+		"needsYou": "আপনার প্রয়োজন",
+		"delivered": "বিতরণ করা হয়েছে",
+		"done": "সম্পন্ন",
+		"empty": "সব পরিষ্কার",
+		"emptyDesc": "এই মুহূর্তে আপনার মনোযোগের প্রয়োজন এমন কিছু নেই।"
 	}
 }

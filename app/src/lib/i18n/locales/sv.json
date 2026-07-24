@@ -139,7 +139,8 @@
 		"collapseSidebar": "Fäll ihop sidofältet",
 		"agents": "Medarbetare",
 		"schedule": "Schema",
-		"searchOrRun": "Sök eller kör..."
+		"searchOrRun": "Sök eller kör...",
+		"inbox": "Inkorg"
 	},
 	"sidebar": {
 		"agents": "Medarbetare",
@@ -372,7 +373,9 @@
 		"markAsRead": "Markera som läst",
 		"viewAll": "Visa alla aviseringar",
 		"closeNotification": "Stäng avisering",
-		"overflow": "99+"
+		"overflow": "99+",
+		"noDetail": "Inga ytterligare detaljer.",
+		"takeAction": "Visa"
 	},
 	"slashPicker": {
 		"placeholder": "Kommandon, MCP:er, färdigheter, medarbetare...",
@@ -1948,7 +1951,9 @@
 		"noActivityRecords": "Inga aktivitetsposter för denna körning.",
 		"runAgain": "Kör igen",
 		"runNotFound": "Körningen hittades inte",
-		"backToRuns": "Tillbaka till körningar"
+		"backToRuns": "Tillbaka till körningar",
+		"viewRaw": "Rå",
+		"viewPretty": "Snyggt"
 	},
 	"automations": {
 		"title": "Automationer",
@@ -2498,5 +2503,13 @@
 		"checkEvery": "Kontrollera varje",
 		"hours6": "6 timmar",
 		"history": "Historik"
+	},
+	"inbox": {
+		"title": "Inkorg",
+		"needsYou": "Behöver dig",
+		"delivered": "Levererat",
+		"done": "Klart",
+		"empty": "Allt är klart",
+		"emptyDesc": "Inget behöver din uppmärksamhet just nu."
 	}
 }

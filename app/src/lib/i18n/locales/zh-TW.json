@@ -139,7 +139,8 @@
 		"collapseSidebar": "收合側邊欄",
 		"agents": "員工",
 		"schedule": "排程",
-		"searchOrRun": "搜尋或執行..."
+		"searchOrRun": "搜尋或執行...",
+		"inbox": "收件匣"
 	},
 	"sidebar": {
 		"agents": "員工",
@@ -372,7 +373,9 @@
 		"markAsRead": "標為已讀",
 		"viewAll": "檢視所有通知",
 		"closeNotification": "關閉通知",
-		"overflow": "99+"
+		"overflow": "99+",
+		"noDetail": "沒有更多詳情。",
+		"takeAction": "檢視"
 	},
 	"slashPicker": {
 		"placeholder": "指令、MCP、技能、員工...",
@@ -1881,7 +1884,9 @@
 		"noActivityRecords": "此執行紀錄沒有活動記錄。",
 		"runAgain": "再次執行",
 		"runNotFound": "找不到執行紀錄",
-		"backToRuns": "返回執行紀錄"
+		"backToRuns": "返回執行紀錄",
+		"viewRaw": "原始",
+		"viewPretty": "美化"
 	},
 	"automations": {
 		"title": "自動化",
@@ -2498,5 +2503,13 @@
 		"checkEvery": "檢查頻率",
 		"hours6": "6 小時",
 		"history": "歷史紀錄"
+	},
+	"inbox": {
+		"title": "收件匣",
+		"needsYou": "需要您處理",
+		"delivered": "已送達",
+		"done": "已完成",
+		"empty": "一切就緒",
+		"emptyDesc": "目前沒有需要您關注的內容。"
 	}
 }

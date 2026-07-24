@@ -139,7 +139,8 @@
 		"collapseSidebar": "Kuncupkan bar sisi",
 		"agents": "Pekerja",
 		"schedule": "Jadual",
-		"searchOrRun": "Cari atau jalankan..."
+		"searchOrRun": "Cari atau jalankan...",
+		"inbox": "Peti Masuk"
 	},
 	"sidebar": {
 		"agents": "Pekerja",
@@ -372,7 +373,9 @@
 		"markAsRead": "Tandakan sebagai dibaca",
 		"viewAll": "Lihat semua pemberitahuan",
 		"closeNotification": "Tutup pemberitahuan",
-		"overflow": "99+"
+		"overflow": "99+",
+		"noDetail": "Tiada butiran tambahan.",
+		"takeAction": "Lihat"
 	},
 	"slashPicker": {
 		"placeholder": "Arahan, MCP, Kemahiran, Pekerja...",
@@ -1948,7 +1951,9 @@
 		"noActivityRecords": "Tiada rekod aktiviti untuk larian ini.",
 		"runAgain": "Jalankan Semula",
 		"runNotFound": "Larian tidak ditemui",
-		"backToRuns": "Kembali ke larian"
+		"backToRuns": "Kembali ke larian",
+		"viewRaw": "Mentah",
+		"viewPretty": "Kemas"
 	},
 	"automations": {
 		"title": "Automasi",
@@ -2498,5 +2503,13 @@
 		"finaleBody": "Mahu saya sediakan alat teras anda sekarang? Saya akan tambah penyuntingan dokumen (Word, Excel, PowerPoint, PDF), reka bentuk, dan penerbitan — supaya anda boleh mula menghasilkan sesuatu yang sebenar dengan serta-merta.",
 		"maybeLater": "Mungkin kemudian",
 		"setMeUp": "Sediakan saya"
+	},
+	"inbox": {
+		"title": "Peti Masuk",
+		"needsYou": "Perlukan perhatian anda",
+		"delivered": "Dihantar",
+		"done": "Selesai",
+		"empty": "Semua selesai",
+		"emptyDesc": "Tiada apa-apa yang memerlukan perhatian anda sekarang."
 	}
 }

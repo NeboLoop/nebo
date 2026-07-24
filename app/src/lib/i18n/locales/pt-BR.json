@@ -139,7 +139,8 @@
 		"collapseSidebar": "Recolher barra lateral",
 		"agents": "Funcionários",
 		"schedule": "Agenda",
-		"searchOrRun": "Buscar ou executar..."
+		"searchOrRun": "Buscar ou executar...",
+		"inbox": "Caixa de entrada"
 	},
 	"sidebar": {
 		"agents": "Funcionários",
@@ -372,7 +373,9 @@
 		"markAsRead": "Marcar como lido",
 		"viewAll": "Ver todas as notificações",
 		"closeNotification": "Fechar notificação",
-		"overflow": "99+"
+		"overflow": "99+",
+		"noDetail": "Sem detalhes adicionais.",
+		"takeAction": "Ver"
 	},
 	"slashPicker": {
 		"placeholder": "Comandos, MCPs, Skills, Funcionários...",
@@ -1881,7 +1884,9 @@
 		"noActivityRecords": "Nenhum registro de atividade para esta execução.",
 		"runAgain": "Executar Novamente",
 		"runNotFound": "Execução não encontrada",
-		"backToRuns": "Voltar às execuções"
+		"backToRuns": "Voltar às execuções",
+		"viewRaw": "Bruto",
+		"viewPretty": "Formatado"
 	},
 	"automations": {
 		"title": "Automações",
@@ -2498,5 +2503,13 @@
 		"checkEvery": "Verificar a cada",
 		"hours6": "6 horas",
 		"history": "Histórico"
+	},
+	"inbox": {
+		"title": "Caixa de entrada",
+		"needsYou": "Precisa de você",
+		"delivered": "Entregue",
+		"done": "Concluído",
+		"empty": "Tudo em dia",
+		"emptyDesc": "Nada precisa da sua atenção agora."
 	}
 }

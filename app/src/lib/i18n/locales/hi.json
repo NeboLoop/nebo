@@ -139,7 +139,8 @@
 		"collapseSidebar": "साइडबार संक्षिप्त करें",
 		"agents": "कर्मचारी",
 		"schedule": "शेड्यूल",
-		"searchOrRun": "खोजें या चलाएं..."
+		"searchOrRun": "खोजें या चलाएं...",
+		"inbox": "इनबॉक्स"
 	},
 	"sidebar": {
 		"agents": "कर्मचारी",
@@ -372,7 +373,9 @@
 		"markAsRead": "पढ़ा हुआ चिह्नित करें",
 		"viewAll": "सभी सूचनाएं देखें",
 		"closeNotification": "सूचना बंद करें",
-		"overflow": "99+"
+		"overflow": "99+",
+		"noDetail": "कोई अतिरिक्त विवरण नहीं।",
+		"takeAction": "देखें"
 	},
 	"slashPicker": {
 		"placeholder": "कमांड, MCP, स्किल, कर्मचारी...",
@@ -1881,7 +1884,9 @@
 		"runNotFound": "रन नहीं मिला",
 		"selectRun": "गतिविधियां देखने के लिए एक रन चुनें।",
 		"stepN": "चरण {n}",
-		"tokensCount": "{count} टोकन"
+		"tokensCount": "{count} टोकन",
+		"viewRaw": "रॉ",
+		"viewPretty": "सुव्यवस्थित"
 	},
 	"automations": {
 		"title": "ऑटोमेशन",
@@ -2498,5 +2503,13 @@
 		"lastFired": "अंतिम बार चला",
 		"activities": "गतिविधियां",
 		"backToOverview": "← वर्कफ़्लो अवलोकन पर वापस जाएं"
+	},
+	"inbox": {
+		"title": "इनबॉक्स",
+		"needsYou": "आपकी ज़रूरत है",
+		"delivered": "वितरित",
+		"done": "पूर्ण",
+		"empty": "सब कुछ साफ़ है",
+		"emptyDesc": "अभी आपके ध्यान की कोई ज़रूरत नहीं है।"
 	}
 }

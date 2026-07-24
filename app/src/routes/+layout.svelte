@@ -25,6 +25,7 @@
   import { onboardingComplete, onboardingChecked, backendReady, backendChecking, checkOnboardingStatus, retryBackendConnection } from '$lib/stores/onboarding';
   import Toast from '$lib/components/Toast.svelte';
   import NotificationBell from '$lib/components/NotificationBell.svelte';
+  import { unreadCount, loadNotifications } from '$lib/stores/notifications';
   import CommandPalette from '$lib/components/CommandPalette.svelte';
   import UpgradeSuccessModal from '$lib/components/UpgradeSuccessModal.svelte';
   import OnboardingTour from '$lib/components/onboarding/OnboardingTour.svelte';
@@ -47,6 +48,8 @@
   // Check onboarding status and initialize WebSocket on mount
   onMount(() => {
     checkOnboardingStatus();
+    // Load notifications once so the Inbox badge is populated app-wide (idempotent).
+    loadNotifications();
 
     // Expose global for the Tauri tray + app menu "Check for Updates" items
     (window as any).__NEBO_CHECK_UPDATE__ = async () => {
@@ -120,6 +123,7 @@
 
   const sections = [
     { id: 'agents', path: '/', label: 'nav.agents' },
+    { id: 'inbox', path: '/inbox', label: 'nav.inbox' },
     { id: 'schedule', path: '/schedule', label: 'nav.schedule' },
     { id: 'marketplace', path: '/marketplace', label: 'nav.marketplace' },
   ];
@@ -150,7 +154,7 @@
   {@render children()}
 {:else if !$backendReady && !$onboardingChecked}
   <div class="h-dvh flex flex-col items-center justify-center bg-base-100 gap-4">
-    <div class="w-10 h-10 rounded-lg bg-primary text-primary-content flex items-center justify-center font-mono text-xl font-bold">N</div>
+    <img src="{base}/favicon.svg" alt="Nebo" class="w-12 h-12" />
     {#if $backendChecking}
       <span class="loading loading-spinner loading-md"></span>
       <p class="text-sm text-base-content/70">{$t('layout.connectingToNebo')}</p>
@@ -195,7 +199,8 @@
           </button>
         {/if}
         <a href="/" class="flex items-center gap-1.5 font-semibold text-sm tracking-tight mr-2 md:mr-4">
-          <div class="w-5 h-5 rounded bg-primary text-primary-content flex items-center justify-center font-mono text-sm font-bold">N</div>
+          <!-- {base}-prefixed: a raw /favicon.svg would escape the tunnel base -->
+          <img src="{base}/favicon.svg" alt="" class="w-6 h-6" />
           <span class="hidden sm:inline">Nebo</span>
         </a>
         <nav class="flex items-center h-full gap-0.5 md:gap-1 min-w-0 overflow-x-auto">
@@ -203,17 +208,22 @@
             <a
               href={s.path}
               data-tour={s.id}
-              class="px-2 md:px-3 h-full flex items-center text-sm font-medium border-b-3 transition-colors whitespace-nowrap shrink-0 {activeSection === s.id
+              class="px-2 md:px-3 h-full flex items-center gap-1.5 text-sm font-medium border-b-3 transition-colors whitespace-nowrap shrink-0 {activeSection === s.id
                 ? 'border-primary text-base-content'
                 : 'border-transparent text-base-content/70 hover:text-base-content'}"
-            >{$t(s.label)}</a>
+            >
+              {$t(s.label)}
+              {#if s.id === 'inbox' && $unreadCount > 0}
+                <span class="badge badge-error badge-xs text-error-content font-semibold">{$unreadCount > 9 ? '9+' : $unreadCount}</span>
+              {/if}
+            </a>
           {/each}
         </nav>
         <div class="flex-1"></div>
         <button
           onclick={() => (showCommandPalette = true)}
           data-tour="search"
-          class="flex items-center h-8 w-auto md:w-48 rounded-field px-2 md:px-3 gap-1.5 text-sm cursor-pointer border border-base-300 bg-base-100"
+          class="hidden md:flex items-center h-8 w-auto md:w-48 rounded-field px-2 md:px-3 gap-1.5 text-sm cursor-pointer border border-base-300 bg-base-100"
         >
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="md:hidden text-base-content/70"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
           <span class="font-mono text-sm py-px px-1 rounded-sm bg-base-200 hidden md:inline">&#x2318;K</span>

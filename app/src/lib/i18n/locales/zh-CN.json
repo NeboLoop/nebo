@@ -139,7 +139,8 @@
 		"collapseSidebar": "收起侧边栏",
 		"agents": "员工",
 		"schedule": "日程",
-		"searchOrRun": "搜索或运行..."
+		"searchOrRun": "搜索或运行...",
+		"inbox": "收件箱"
 	},
 	"sidebar": {
 		"agents": "员工",
@@ -372,7 +373,9 @@
 		"markAsRead": "标为已读",
 		"viewAll": "查看所有通知",
 		"closeNotification": "关闭通知",
-		"overflow": "99+"
+		"overflow": "99+",
+		"noDetail": "没有更多详情。",
+		"takeAction": "查看"
 	},
 	"slashPicker": {
 		"placeholder": "命令、MCP、技能、员工...",
@@ -1881,7 +1884,9 @@
 		"noActivityRecords": "此运行没有活动记录。",
 		"runAgain": "再次运行",
 		"runNotFound": "未找到该运行记录",
-		"backToRuns": "返回运行列表"
+		"backToRuns": "返回运行列表",
+		"viewRaw": "原始",
+		"viewPretty": "美化"
 	},
 	"automations": {
 		"title": "自动化",
@@ -2498,5 +2503,13 @@
 		"checkEvery": "检查频率",
 		"hours6": "6 小时",
 		"history": "历史"
+	},
+	"inbox": {
+		"title": "收件箱",
+		"needsYou": "需要您处理",
+		"delivered": "已送达",
+		"done": "已完成",
+		"empty": "一切就绪",
+		"emptyDesc": "目前没有需要您关注的内容。"
 	}
 }

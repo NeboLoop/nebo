@@ -139,7 +139,8 @@
 		"collapseSidebar": "Thu gọn thanh bên",
 		"agents": "Nhân viên",
 		"schedule": "Lịch trình",
-		"searchOrRun": "Tìm kiếm hoặc chạy..."
+		"searchOrRun": "Tìm kiếm hoặc chạy...",
+		"inbox": "Hộp thư đến"
 	},
 	"sidebar": {
 		"agents": "Nhân viên",
@@ -372,7 +373,9 @@
 		"markAsRead": "Đánh dấu đã đọc",
 		"viewAll": "Xem tất cả thông báo",
 		"closeNotification": "Đóng thông báo",
-		"overflow": "99+"
+		"overflow": "99+",
+		"noDetail": "Không có chi tiết bổ sung.",
+		"takeAction": "Xem"
 	},
 	"slashPicker": {
 		"placeholder": "Lệnh, MCP, Kỹ năng, Nhân viên...",
@@ -1881,7 +1884,9 @@
 		"runNotFound": "Không tìm thấy lượt chạy",
 		"selectRun": "Chọn một lượt chạy để xem hoạt động của nó.",
 		"stepN": "Bước {n}",
-		"tokensCount": "{count} token"
+		"tokensCount": "{count} token",
+		"viewRaw": "Thô",
+		"viewPretty": "Đẹp"
 	},
 	"automations": {
 		"title": "Tự động hóa",
@@ -2498,5 +2503,13 @@
 		"fitToScreen": "Vừa màn hình",
 		"lastFired": "Lần chạy cuối",
 		"noWorkflows": "Không có quy trình nào để hiển thị"
+	},
+	"inbox": {
+		"title": "Hộp thư đến",
+		"needsYou": "Cần bạn",
+		"delivered": "Đã gửi",
+		"done": "Xong",
+		"empty": "Mọi thứ đã xong",
+		"emptyDesc": "Hiện không có gì cần bạn chú ý."
 	}
 }

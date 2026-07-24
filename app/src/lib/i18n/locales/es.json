@@ -139,7 +139,8 @@
 		"collapseSidebar": "Contraer barra lateral",
 		"agents": "Empleados",
 		"schedule": "Agenda",
-		"searchOrRun": "Buscar o ejecutar..."
+		"searchOrRun": "Buscar o ejecutar...",
+		"inbox": "Bandeja de entrada"
 	},
 	"sidebar": {
 		"agents": "Empleados",
@@ -372,7 +373,9 @@
 		"markAsRead": "Marcar como leído",
 		"viewAll": "Ver todas las notificaciones",
 		"closeNotification": "Cerrar notificación",
-		"overflow": "99+"
+		"overflow": "99+",
+		"noDetail": "Sin detalles adicionales.",
+		"takeAction": "Ver"
 	},
 	"slashPicker": {
 		"placeholder": "Comandos, MCPs, Skills, Empleados...",
@@ -1881,7 +1884,9 @@
 		"noActivityRecords": "No hay registros de actividad para esta ejecución.",
 		"runAgain": "Ejecutar de nuevo",
 		"runNotFound": "Ejecución no encontrada",
-		"backToRuns": "Volver a ejecuciones"
+		"backToRuns": "Volver a ejecuciones",
+		"viewRaw": "Sin formato",
+		"viewPretty": "Con formato"
 	},
 	"automations": {
 		"title": "Automatizaciones",
@@ -2498,5 +2503,13 @@
 		"checkEvery": "Comprobar cada",
 		"hours6": "6 horas",
 		"history": "Historial"
+	},
+	"inbox": {
+		"title": "Bandeja de entrada",
+		"needsYou": "Requiere tu atención",
+		"delivered": "Entregado",
+		"done": "Hecho",
+		"empty": "Todo en orden",
+		"emptyDesc": "Nada requiere tu atención en este momento."
 	}
 }

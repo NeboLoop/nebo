@@ -139,7 +139,8 @@
 		"collapseSidebar": "Згорнути бічну панель",
 		"agents": "Співробітники",
 		"schedule": "Розклад",
-		"searchOrRun": "Шукати або виконати..."
+		"searchOrRun": "Шукати або виконати...",
+		"inbox": "Вхідні"
 	},
 	"sidebar": {
 		"agents": "Співробітники",
@@ -372,7 +373,9 @@
 		"markAsRead": "Позначити як прочитане",
 		"viewAll": "Переглянути всі сповіщення",
 		"closeNotification": "Закрити сповіщення",
-		"overflow": "99+"
+		"overflow": "99+",
+		"noDetail": "Додаткових деталей немає.",
+		"takeAction": "Переглянути"
 	},
 	"slashPicker": {
 		"placeholder": "Команди, MCP, Навички, Співробітники...",
@@ -1881,7 +1884,9 @@
 		"noActivityRecords": "Немає записів дій для цього запуску.",
 		"runAgain": "Запустити знову",
 		"runNotFound": "Запуск не знайдено",
-		"backToRuns": "Назад до запусків"
+		"backToRuns": "Назад до запусків",
+		"viewRaw": "Необроблені",
+		"viewPretty": "Форматований"
 	},
 	"automations": {
 		"title": "Автоматизації",
@@ -2498,5 +2503,13 @@
 	},
 	"confirmModal": {
 		"removing": "Видалення…"
+	},
+	"inbox": {
+		"title": "Вхідні",
+		"needsYou": "Потребує уваги",
+		"delivered": "Доставлено",
+		"done": "Готово",
+		"empty": "Усе чисто",
+		"emptyDesc": "Наразі ніщо не потребує вашої уваги."
 	}
 }

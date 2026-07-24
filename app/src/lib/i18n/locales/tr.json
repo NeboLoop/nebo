@@ -139,7 +139,8 @@
 		"collapseSidebar": "Kenar çubuğunu daralt",
 		"agents": "Çalışanlar",
 		"schedule": "Zamanlama",
-		"searchOrRun": "Ara veya çalıştır..."
+		"searchOrRun": "Ara veya çalıştır...",
+		"inbox": "Gelen Kutusu"
 	},
 	"sidebar": {
 		"agents": "Çalışanlar",
@@ -372,7 +373,9 @@
 		"markAsRead": "Okundu olarak işaretle",
 		"viewAll": "Tüm bildirimleri görüntüle",
 		"closeNotification": "Bildirimi kapat",
-		"overflow": "99+"
+		"overflow": "99+",
+		"noDetail": "Ek ayrıntı yok.",
+		"takeAction": "Görüntüle"
 	},
 	"slashPicker": {
 		"placeholder": "Komutlar, MCP'ler, Beceriler, Çalışanlar...",
@@ -1881,7 +1884,9 @@
 		"runNotFound": "Çalıştırma bulunamadı",
 		"selectRun": "Aktivitelerini görmek için bir çalıştırma seçin.",
 		"stepN": "Adım {n}",
-		"tokensCount": "{count} token"
+		"tokensCount": "{count} token",
+		"viewRaw": "Ham",
+		"viewPretty": "Biçimli"
 	},
 	"automations": {
 		"title": "Otomasyonlar",
@@ -2498,5 +2503,13 @@
 		"fitToScreen": "Ekrana sığdır",
 		"lastFired": "Son Tetiklenme",
 		"noWorkflows": "Görselleştirilecek iş akışı yok"
+	},
+	"inbox": {
+		"title": "Gelen Kutusu",
+		"needsYou": "İlgi bekliyor",
+		"delivered": "Teslim edildi",
+		"done": "Tamamlandı",
+		"empty": "Her şey yolunda",
+		"emptyDesc": "Şu anda ilginizi gerektiren bir şey yok."
 	}
 }

@@ -139,7 +139,8 @@
 		"collapseSidebar": "כווץ סרגל צד",
 		"agents": "עובדים",
 		"schedule": "לוח זמנים",
-		"searchOrRun": "חפש או הרץ..."
+		"searchOrRun": "חפש או הרץ...",
+		"inbox": "תיבת דואר נכנס"
 	},
 	"sidebar": {
 		"agents": "עובדים",
@@ -372,7 +373,9 @@
 		"markAsRead": "סמן כנקרא",
 		"viewAll": "הצג את כל ההתראות",
 		"closeNotification": "סגור התראה",
-		"overflow": "99+"
+		"overflow": "99+",
+		"noDetail": "אין פרטים נוספים.",
+		"takeAction": "הצג"
 	},
 	"slashPicker": {
 		"placeholder": "פקודות, MCP, כישורים, עובדים...",
@@ -1948,7 +1951,9 @@
 		"noActivityRecords": "אין רשומות פעילות לריצה זו.",
 		"runAgain": "הרץ שוב",
 		"runNotFound": "הריצה לא נמצאה",
-		"backToRuns": "חזרה לריצות"
+		"backToRuns": "חזרה לריצות",
+		"viewRaw": "גולמי",
+		"viewPretty": "מעוצב"
 	},
 	"automations": {
 		"title": "אוטומציות",
@@ -2498,5 +2503,13 @@
 		"title": "אירועי מערכת",
 		"description": "תצוגה חיה של מקורות אירועים של עובדים, תהליכי עבודה, כלים ומנטרים.",
 		"noEvents": "אין אירועים."
+	},
+	"inbox": {
+		"title": "תיבת דואר נכנס",
+		"needsYou": "דורש את תשומת לבך",
+		"delivered": "נמסר",
+		"done": "הושלם",
+		"empty": "הכול נקי",
+		"emptyDesc": "כרגע שום דבר לא דורש את תשומת לבך."
 	}
 }

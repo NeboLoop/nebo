@@ -139,7 +139,8 @@
 		"collapseSidebar": "Ciutkan bilah sisi",
 		"agents": "Agen",
 		"schedule": "Jadwal",
-		"searchOrRun": "Cari atau jalankan..."
+		"searchOrRun": "Cari atau jalankan...",
+		"inbox": "Kotak Masuk"
 	},
 	"sidebar": {
 		"agents": "Karyawan",
@@ -372,7 +373,9 @@
 		"markAsRead": "Tandai sudah dibaca",
 		"viewAll": "Lihat semua notifikasi",
 		"closeNotification": "Tutup notifikasi",
-		"overflow": "99+"
+		"overflow": "99+",
+		"noDetail": "Tidak ada detail tambahan.",
+		"takeAction": "Lihat"
 	},
 	"slashPicker": {
 		"placeholder": "Perintah, MCP, Skill, Karyawan...",
@@ -1948,7 +1951,9 @@
 		"noActivityRecords": "Tidak ada catatan aktivitas untuk eksekusi ini.",
 		"runAgain": "Jalankan Lagi",
 		"runNotFound": "Eksekusi tidak ditemukan",
-		"backToRuns": "Kembali ke daftar eksekusi"
+		"backToRuns": "Kembali ke daftar eksekusi",
+		"viewRaw": "Mentah",
+		"viewPretty": "Rapi"
 	},
 	"automations": {
 		"title": "Otomasi",
@@ -2498,5 +2503,13 @@
 		"checkEvery": "Periksa setiap",
 		"hours6": "6 jam",
 		"history": "Riwayat"
+	},
+	"inbox": {
+		"title": "Kotak Masuk",
+		"needsYou": "Perlu perhatian Anda",
+		"delivered": "Terkirim",
+		"done": "Selesai",
+		"empty": "Semua beres",
+		"emptyDesc": "Tidak ada yang perlu perhatian Anda saat ini."
 	}
 }

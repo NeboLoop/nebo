@@ -139,7 +139,8 @@
 		"collapseSidebar": "Zwiń pasek boczny",
 		"agents": "Agenci",
 		"schedule": "Harmonogram",
-		"searchOrRun": "Szukaj lub uruchom..."
+		"searchOrRun": "Szukaj lub uruchom...",
+		"inbox": "Skrzynka odbiorcza"
 	},
 	"sidebar": {
 		"agents": "Pracownicy",
@@ -372,7 +373,9 @@
 		"markAsRead": "Oznacz jako przeczytane",
 		"viewAll": "Wyświetl wszystkie powiadomienia",
 		"closeNotification": "Zamknij powiadomienie",
-		"overflow": "99+"
+		"overflow": "99+",
+		"noDetail": "Brak dodatkowych szczegółów.",
+		"takeAction": "Wyświetl"
 	},
 	"slashPicker": {
 		"placeholder": "Polecenia, MCP, Umiejętności, Pracownicy...",
@@ -1881,7 +1884,9 @@
 		"noActivityRecords": "Brak zapisów aktywności dla tego uruchomienia.",
 		"runAgain": "Uruchom ponownie",
 		"runNotFound": "Nie znaleziono uruchomienia",
-		"backToRuns": "Wróć do uruchomień"
+		"backToRuns": "Wróć do uruchomień",
+		"viewRaw": "Surowe",
+		"viewPretty": "Sformatowane"
 	},
 	"automations": {
 		"title": "Automatyzacje",
@@ -2498,5 +2503,13 @@
 		"checkEvery": "Sprawdzaj co",
 		"hours6": "6 godzin",
 		"history": "Historia"
+	},
+	"inbox": {
+		"title": "Skrzynka odbiorcza",
+		"needsYou": "Wymaga uwagi",
+		"delivered": "Dostarczone",
+		"done": "Gotowe",
+		"empty": "Wszystko gotowe",
+		"emptyDesc": "Nic teraz nie wymaga Twojej uwagi."
 	}
 }
