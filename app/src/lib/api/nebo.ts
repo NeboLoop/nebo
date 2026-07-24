@@ -622,6 +622,13 @@ export function submitCode(req: Record<string, unknown> = {}) {
 }
 
 /**
+ * @description "Serve comm file"
+ */
+export function serveCommFile(id: string) {
+	return webapi.get<unknown>(`/api/v1/comm-files/${id}`)
+}
+
+/**
  * @description "Create edge"
  */
 export function createEdge(req: Record<string, unknown> = {}) {
@@ -1107,8 +1114,8 @@ export function neboAIBotStatus() {
 /**
  * @description "List notifications"
  */
-export function listNotifications() {
-	return webapi.get<components.ListNotificationsResponse>(`/api/v1/notifications`)
+export function listNotifications(limit?: number, offset?: number) {
+	return webapi.get<components.ListNotificationsResponse>(`/api/v1/notifications`, { limit, offset })
 }
 
 /**

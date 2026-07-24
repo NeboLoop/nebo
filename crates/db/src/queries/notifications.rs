@@ -14,12 +14,13 @@ impl Store {
         body: Option<&str>,
         action_url: Option<&str>,
         icon: Option<&str>,
+        agent_id: Option<&str>,
     ) -> Result<Notification, NeboError> {
         let conn = self.conn()?;
         conn.query_row(
-            "INSERT INTO notifications (id, user_id, type, title, body, action_url, icon, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, strftime('%s', 'now')) RETURNING *",
-            params![id, user_id, notification_type, title, body, action_url, icon],
+            "INSERT INTO notifications (id, user_id, type, title, body, action_url, icon, agent_id, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, strftime('%s', 'now')) RETURNING *",
+            params![id, user_id, notification_type, title, body, action_url, icon, agent_id],
             row_to_notification,
         )
         .db_err("notifications")
@@ -132,12 +133,13 @@ impl Store {
         body: Option<&str>,
         action_url: Option<&str>,
         icon: Option<&str>,
+        agent_id: Option<&str>,
     ) -> Result<(), NeboError> {
         let conn = self.conn()?;
         conn.execute(
-            "INSERT OR IGNORE INTO notifications (id, user_id, type, title, body, action_url, icon, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, strftime('%s', 'now'))",
-            params![id, user_id, notification_type, title, body, action_url, icon],
+            "INSERT OR IGNORE INTO notifications (id, user_id, type, title, body, action_url, icon, agent_id, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, strftime('%s', 'now'))",
+            params![id, user_id, notification_type, title, body, action_url, icon, agent_id],
         )
         .db_err("notifications")?;
         Ok(())
@@ -163,6 +165,7 @@ fn row_to_notification(row: &rusqlite::Row) -> rusqlite::Result<Notification> {
         body: row.get("body")?,
         action_url: row.get("action_url")?,
         icon: row.get("icon")?,
+        agent_id: row.get("agent_id")?,
         read_at: row.get("read_at")?,
         created_at: row.get("created_at")?,
     })

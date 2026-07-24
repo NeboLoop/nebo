@@ -1360,6 +1360,7 @@ fn notify_workflow_failure(
         Some(body),
         Some(&action_url),
         None,
+        Some(agent_id),
     ) {
         warn!(run_id = %run_id, error = %e, "failed to create workflow failure notification");
     } else {
@@ -1371,6 +1372,7 @@ fn notify_workflow_failure(
                 "title": title,
                 "body": body,
                 "actionUrl": action_url,
+                "agentId": agent_id,
                 "readAt": null,
                 "createdAt": std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)

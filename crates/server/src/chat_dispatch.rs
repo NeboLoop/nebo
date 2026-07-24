@@ -1771,6 +1771,10 @@ fn to_app_artifact_url(image_url: &str) -> Option<String> {
     };
     let files_dir = config::data_dir().ok()?.join("files");
     let p = std::path::Path::new(&abs_path);
+    if !media_bytes_match(p) {
+        tracing::warn!(path = %p.display(), "run-produced media rejected: file bytes don't match its extension (likely a saved error page)");
+        return None;
+    }
     if let Ok(rel) = p.strip_prefix(&files_dir) {
         return Some(format!("/api/v1/files/{}", rel.to_string_lossy()));
     }
@@ -1780,6 +1784,41 @@ fn to_app_artifact_url(image_url: &str) -> Option<String> {
     let dest = files_dir.join(&filename);
     std::fs::copy(p, &dest).ok()?;
     Some(format!("/api/v1/files/{}", filename))
+}
+
+/// True when a media-extension file's leading bytes actually look like that
+/// media type. Catches the classic failure of a download tool saving an HTML
+/// error page (403/404 body) as `.jpg` — which then renders as a broken tile
+/// and poisons any document that embeds it. Non-media extensions pass through.
+fn media_bytes_match(path: &std::path::Path) -> bool {
+    let ext = path
+        .extension()
+        .map(|e| e.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    if !MEDIA_EXTS.contains(&ext.as_str()) {
+        return true;
+    }
+    let mut head = [0u8; 16];
+    let n = match std::fs::File::open(path)
+        .and_then(|mut f| std::io::Read::read(&mut f, &mut head))
+    {
+        Ok(n) => n,
+        Err(_) => return true, // unreadable here ≠ corrupt; let serving decide
+    };
+    let head = &head[..n];
+    match ext.as_str() {
+        "jpg" | "jpeg" => head.starts_with(&[0xFF, 0xD8, 0xFF]),
+        "png" => head.starts_with(&[0x89, b'P', b'N', b'G']),
+        "gif" => head.starts_with(b"GIF8"),
+        "webp" => head.starts_with(b"RIFF") && n >= 12 && &head[8..12] == b"WEBP",
+        "svg" => {
+            let s = String::from_utf8_lossy(head).to_lowercase();
+            s.starts_with("<svg") || s.starts_with("<?xml")
+        }
+        "mp4" | "mov" => n >= 8 && &head[4..8] == b"ftyp",
+        "webm" => head.starts_with(&[0x1A, 0x45, 0xDF, 0xA3]),
+        _ => true,
+    }
 }
 
 /// Media (image/video) artifacts render inline and are never versioned.

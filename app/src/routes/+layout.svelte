@@ -9,6 +9,7 @@
   import { mobileAgentsOpen } from '$lib/stores/mobileNav';
   import { storage } from '$lib/storage';
   import { onMount } from 'svelte';
+  import BrandMark from '$lib/components/BrandMark.svelte';
 
   // Under the tunnel base (/t/<botID>/), goto() is base-aware via $lib/nav but
   // raw <a href="/x"> links would still escape the prefix onto the hub's site.
@@ -153,7 +154,7 @@
   {@render children()}
 {:else if !$backendReady && !$onboardingChecked}
   <div class="h-dvh flex flex-col items-center justify-center bg-base-100 gap-4">
-    <img src="{base}/favicon.svg" alt="Nebo" class="w-12 h-12" />
+    <BrandMark class="w-12 h-12" />
     {#if $backendChecking}
       <span class="loading loading-spinner loading-md"></span>
       <p class="text-sm text-base-content/70">{$t('layout.connectingToNebo')}</p>
@@ -197,17 +198,18 @@
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
           </button>
         {/if}
-        <a href="/" class="flex items-center gap-1.5 font-semibold text-sm tracking-tight mr-2 md:mr-4">
-          <!-- {base}-prefixed: a raw /favicon.svg would escape the tunnel base -->
-          <img src="{base}/favicon.svg" alt="" class="w-6 h-6" />
+        <a href="/" class="hidden md:flex items-center gap-1.5 font-semibold text-sm tracking-tight mr-2 md:mr-4">
+          <BrandMark class="w-6 h-6" />
           <span class="hidden md:inline">Nebo</span>
         </a>
-        <nav class="flex items-center h-full gap-0.5 md:gap-1 min-w-0 overflow-x-auto">
+        <!-- eager code preload: over the tunnel a lazy route chunk costs a full
+             round-trip on first tap; fetch all nav chunks up front instead -->
+        <nav class="flex items-center h-full gap-0.5 md:gap-1 min-w-0 overflow-x-auto" data-sveltekit-preload-code="eager">
           {#each sections as s}
             <a
               href={s.path}
               data-tour={s.id}
-              class="px-2 md:px-3 h-full flex items-center gap-1.5 text-sm font-medium border-b-3 transition-colors whitespace-nowrap shrink-0 {activeSection === s.id
+              class="px-2 md:px-3 h-full flex items-center gap-1.5 text-sm font-medium border-t-3 border-t-transparent border-b-3 transition-colors whitespace-nowrap shrink-0 {activeSection === s.id
                 ? 'border-primary text-base-content'
                 : 'border-transparent text-base-content/70 hover:text-base-content'}"
             >

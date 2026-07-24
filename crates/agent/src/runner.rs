@@ -1870,9 +1870,12 @@ async fn run_loop(
         String::new()
     };
 
-    // Build compact skill catalog (replaces old keyword-triggered skill_hints).
-    // The full skill body is now in active_skill_template (agent-declared skills)
-    // or loaded on-demand via the skill tool.
+    // Compact skill listing (name + capped description per enabled skill).
+    // Discovery metadata only — full bodies load on demand via skill(action: "load").
+    let skill_catalog = match skill_loader {
+        Some(loader) => loader.compact_catalog().await,
+        None => String::new(),
+    };
 
     // Build compact agent catalog from DB (installed + user agents).
     let agent_catalog = match store.list_agents(100, 0) {
@@ -1911,6 +1914,7 @@ async fn run_loop(
             agent_name: agent_name.clone(),
             active_skill: active_skill_template,
             agent_catalog,
+            skill_catalog,
             model_aliases: model_aliases.to_string(),
             channel: channel.to_string(),
             platform: std::env::consts::OS.to_string(),
@@ -2175,6 +2179,7 @@ async fn run_loop(
             &all_messages,
             pruning::TIME_BASED_KEEP_RECENT,
             pruning::TIME_BASED_GAP_THRESHOLD_SECS,
+            thresholds.warning,
         );
         if tb_saved > 0 {
             debug!(tokens_saved = tb_saved, "Stage 1: time-based micro-compact");
@@ -2527,7 +2532,7 @@ async fn run_loop(
         let dynamic_suffix = prompt::build_dynamic_suffix(&dctx);
 
         // Each tool's full declaration (description + JSON schema) lives in the
-        // provider `tools` field — the single source, like Claude. We do NOT add a
+        // provider `tools` field — the single source. We do NOT add a
         // prose tool roster ("these are your ONLY tools this turn") or re-document
         // tools here; the model reads its tools natively. The system prompt only
         // carries behavior + MCP-server discovery + deferred-tool discovery.

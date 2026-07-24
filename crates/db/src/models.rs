@@ -328,6 +328,8 @@ pub struct Notification {
     pub body: Option<String>,
     pub action_url: Option<String>,
     pub icon: Option<String>,
+    /// The AI employee that produced this notification; None for system events.
+    pub agent_id: Option<String>,
     pub read_at: Option<i64>,
     pub created_at: i64,
 }
@@ -682,6 +684,9 @@ pub struct Agent {
     /// `<@{loop_agent_id}>` mention tokens; the channel branch maps that token
     /// back to this local agent. NULL when the agent isn't registered remotely.
     pub loop_agent_id: Option<String>,
+    /// Marketplace department slug (e.g. "sales") for hired agents; None for
+    /// user-authored agents or pre-taxonomy installs.
+    pub department: Option<String>,
 }
 
 fn default_input_values() -> String {

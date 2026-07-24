@@ -1482,7 +1482,7 @@ pub(crate) fn produced_work_document(
     })
 }
 
-fn agent_id_from_session_key(key: &str) -> Option<String> {
+pub(crate) fn agent_id_from_session_key(key: &str) -> Option<String> {
     // Delegated (subagent) runs nest the parent's FULL session key:
     //   subagent:<parent_session_key>:<task_id>
     // and <parent_session_key> is itself `agent:<id>:…`. So a naive split on a

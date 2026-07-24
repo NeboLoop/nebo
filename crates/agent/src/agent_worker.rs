@@ -1418,6 +1418,7 @@ async fn watch_loop(
                     )),
                     Some("/settings/plugins"),
                     None,
+                    Some(agent_id.as_ref()),
                 ) {
                     warn!(error = %e, "failed to create auth notification");
                 }
@@ -2441,6 +2442,7 @@ async fn channel_loop(
                     )),
                     Some("/settings/plugins"),
                     None,
+                    Some(agent_id.as_ref()),
                 ) {
                     warn!(error = %e, "failed to create auth notification");
                 }

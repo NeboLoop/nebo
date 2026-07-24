@@ -428,6 +428,7 @@ pub async fn persist_agent_from_api(
     // Try agent-specific endpoint first (GET /api/v1/agents/{slug}),
     // fall back to skill endpoint (GET /api/v1/skills/{id}) for older NeboAI versions.
     let derived_slug = name.to_lowercase().replace(' ', "-");
+    let mut department: Option<String> = None;
 
     let (
         manifest_text,
@@ -465,6 +466,9 @@ pub async fn persist_agent_from_api(
         // the whole install even though the full agent content was already in
         // this manifest response.
         let dl = detail.download_url.clone();
+        // Department (first slug) — recorded post-insert below; the /skills
+        // fallback carries none.
+        department = detail.departments.first().cloned();
         (
             md,
             fm,
@@ -691,6 +695,10 @@ pub async fn persist_agent_from_api(
                 None,
             )
             .map_err(|e| format!("create_agent: {e}"))?;
+    }
+
+    if let Some(dept) = &department {
+        let _ = store.set_agent_department(artifact_id, Some(dept));
     }
 
     tracing::info!(agent = name, dir = %version_dir.display(), "persisted agent artifact");

@@ -1151,6 +1151,11 @@ async fn handle_plugin_code(state: &AppState, code: &str) -> Result<CodeHandlerR
         );
     }
 
+    // Plugins ship embedded skills (loader step 2.5) — without a reload they
+    // stay invisible until the next boot and the model can't discover them
+    // (the nebo-office pptx flail). Same warm-reload rule as skill installs.
+    state.skill_loader.reload_from_disk().await;
+
     Ok(CodeHandlerResult {
         message: format!("Installed plugin: {}", name),
         artifact_name: Some(name),

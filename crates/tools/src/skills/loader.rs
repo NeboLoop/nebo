@@ -527,7 +527,8 @@ impl Loader {
     }
 
     /// Return the pre-built compact skill catalog for the system prompt.
-    /// Names-only format (rebuilt on load_all / watcher reload).
+    /// Name + capped description per enabled skill (rebuilt on load_all /
+    /// watcher reload); see build_catalog_string for the budget rules.
     pub async fn compact_catalog(&self) -> String {
         self.cached_catalog.read().await.clone()
     }
@@ -1109,22 +1110,114 @@ impl Loader {
     }
 }
 
-/// Build a compact catalog header for the system prompt.
+/// Build the skill listing for the system prompt: discovery metadata in
+/// context, full SKILL.md loads on invoke.
 ///
-/// Does NOT list all skill names — the model uses skill(action: "discover")
-/// to search on demand. Only shows the count so the model knows skills exist.
+/// Plugins ship whole skill packs (gws ~99, zendesk ~77), so a flat listing
+/// can't fit any sane budget. Two tiers instead:
+/// - **Entries** (`- name: description`, description capped): standalone
+///   skills plus pack *entry* skills — a skill whose name is a hyphen-prefix
+///   of a sibling's (`pptx` → `pptx-shapes`). Entry bodies link their helper
+///   sub-skills, so listing the entry is enough to reach the whole family.
+/// - **Packs**: remaining plugin-embedded skills collapse to `slug (count)`
+///   in one line — the model drills in with skill(action: "discover").
+///
+/// Without this listing the model has no way to know a matching skill exists
+/// and hand-rolls the task (the nebo-office pptx flail).
 fn build_catalog_string(skills: &HashMap<String, Skill>) -> String {
-    let count = skills.values().filter(|s| s.enabled).count();
+    const MAX_DESC_CHARS: usize = 250;
+    const CHAR_BUDGET: usize = 8_000;
 
-    if count == 0 {
+    let enabled: Vec<&Skill> = skills.values().filter(|s| s.enabled).collect();
+    if enabled.is_empty() {
         return String::new();
     }
 
+    // ponytail: O(n²) prefix scan, runs only on load/reload (~542 skills = instant)
+    let is_entry = |name: &str| -> bool {
+        enabled.iter().any(|o| {
+            o.name.len() > name.len()
+                && o.name.starts_with(name)
+                && o.name.as_bytes()[name.len()] == b'-'
+        })
+    };
+    let pack_of = |s: &Skill| s.plugins.first().map(|p| p.name.clone());
+
+    let mut tier_entries: Vec<&Skill> = enabled
+        .iter()
+        .copied()
+        .filter(|s| pack_of(s).is_none() || is_entry(&s.name))
+        .collect();
+    tier_entries.sort_by(|a, b| a.name.cmp(&b.name));
+
+    let mut pack_counts: std::collections::BTreeMap<String, usize> = Default::default();
+    for s in &enabled {
+        if let Some(pack) = pack_of(s) {
+            if !is_entry(&s.name) {
+                *pack_counts.entry(pack).or_default() += 1;
+            }
+        }
+    }
+
+    let mut body = String::new();
+    let mut listed = 0usize;
+    for s in &tier_entries {
+        let desc = s.description.trim();
+        // Surface up to 3 declared triggers as aliases ("pptx" alone doesn't
+        // say "powerpoint"; the triggers do). Skip ones redundant with the name.
+        let name_lower = s.name.to_lowercase();
+        let aliases: Vec<&str> = s
+            .triggers
+            .iter()
+            .map(|t| t.trim())
+            .filter(|t| {
+                let tl = t.to_lowercase();
+                !tl.is_empty() && !name_lower.contains(&tl) && !tl.contains(&name_lower)
+            })
+            .take(3)
+            .collect();
+        let label = if aliases.is_empty() {
+            s.name.clone()
+        } else {
+            format!("{} ({})", s.name, aliases.join(", "))
+        };
+        let line = if desc.is_empty() {
+            format!("- {}\n", label)
+        } else if desc.chars().count() > MAX_DESC_CHARS {
+            let truncated: String = desc.chars().take(MAX_DESC_CHARS - 1).collect();
+            format!("- {}: {}…\n", label, truncated)
+        } else {
+            format!("- {}: {}\n", label, desc)
+        };
+        if body.len() + line.len() > CHAR_BUDGET {
+            break;
+        }
+        body.push_str(&line);
+        listed += 1;
+    }
+    if listed < tier_entries.len() {
+        body.push_str(&format!(
+            "- …and {} more — find them with skill(action: \"discover\", query: \"...\")\n",
+            tier_entries.len() - listed
+        ));
+    }
+
+    if !pack_counts.is_empty() {
+        let packs: Vec<String> = pack_counts
+            .iter()
+            .map(|(slug, n)| format!("{} ({})", slug, n))
+            .collect();
+        body.push_str(&format!(
+            "\nSkill packs with more per-command recipes — search with skill(action: \"discover\", query: \"<pack> <task>\"): {}.\n",
+            packs.join(", ")
+        ));
+    }
+
     format!(
-        "## Available Skills ({} installed)\n\n\
-         Use skill(action: \"discover\", query: \"...\") to find skills by capability.\n\
-         Use skill(action: \"help\", name: \"...\") for full instructions before using a skill.",
-        count
+        "## Available Skills ({})\n\n{}\n\
+         When a skill matches the task, load it BEFORE acting: skill(action: \"load\", name: \"...\"), then follow its instructions.",
+        enabled.len(),
+        body
     )
 }
 

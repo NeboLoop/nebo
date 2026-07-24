@@ -11,6 +11,8 @@
   interface UsagePool {
     resetAt?: string;
     percentUsed?: number;
+    limitCredits?: number;
+    remainingCredits?: number;
     activePool?: string;
     freeAvailable?: number;
     giftAvailable?: number;
@@ -92,9 +94,9 @@
   });
 
   function formatDollars(microdollars: number): string {
+    // Full dollars, always — never abbreviate money ("$1.8K" hides real balance).
     const dollars = microdollars / 1_000_000;
-    if (dollars >= 1000) return `$${(dollars / 1000).toFixed(1)}K`;
-    return `$${dollars.toFixed(2)}`;
+    return `$${dollars.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   }
 
   function timeUntilReset(resetAt?: string): string {

@@ -62,6 +62,7 @@ export interface Agent {
 	color?: string
 	loopExposed: boolean
 	loopAgentId?: string
+	department?: string
 }
 
 export interface AgentProfile {
@@ -457,6 +458,7 @@ export interface Notification {
 	body?: string
 	actionUrl?: string
 	icon?: string
+	agentId?: string
 	readAt?: number
 	createdAt: number
 }

@@ -164,7 +164,10 @@ export function artifactsToAttachments(artifacts: unknown): UploadedAttachment[]
           webp: 'image/webp', svg: 'image/svg+xml', mp4: 'video/mp4', webm: 'video/webm',
           mov: 'video/quicktime',
         } as Record<string, string>)[ext] || 'application/octet-stream';
-      return { fileId: url, filename, mimeType, size: 0, url };
+      // fileId stays empty: these are LOCAL run outputs served straight from
+      // /api/v1/files — a non-empty fileId routes through the comm-files
+      // proxy (for loop uploads) and double-prefixes the URL into a 404.
+      return { fileId: '', filename, mimeType, size: 0, url };
     });
 }
 

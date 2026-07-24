@@ -46,18 +46,19 @@ export function attachWebSocketListeners(): void {
   unsubs.push(
     ws.on('notification', (data: any) => {
       log.debug('WS notification received');
+      // ONE insert pathway: the store's pushNotification upserts by id, so a
+      // WS re-broadcast can never duplicate a row the REST load already holds
+      // (duplicate keys crash the Inbox's keyed each).
       const n = {
         id: data.id || `ws-${Date.now()}`,
-        type: data.type || 'system',
+        type: data.type || undefined,
         title: data.title || '',
-        message: data.message || data.body || '',
-        time: 'just now',
-        createdAt: Date.now(),
-        read: false,
-        link: data.link || data.actionUrl || undefined,
+        body: data.message || data.body || '',
+        actionUrl: data.link || data.actionUrl || undefined,
+        agentId: data.agentId || undefined,
       };
-      notifications.update(list => [n, ...list]);
-      addToast(n.title || n.message, n.type === 'error' ? 'error' : 'info');
+      pushNotification(n);
+      addToast(n.title || n.body, n.type === 'error' ? 'error' : 'info');
 
       // Desktop: a NATIVE macOS notification — system-wide (shows over any app),
       // auto-dismisses, and carries Nebo's icon. No webview window, so it cannot hang
@@ -70,7 +71,7 @@ export function attachWebSocketListeners(): void {
           let granted = await notif.isPermissionGranted();
           if (!granted) granted = (await notif.requestPermission()) === 'granted';
           if (granted) {
-            notif.sendNotification({ title: n.title || 'Nebo', body: n.message || '' });
+            notif.sendNotification({ title: n.title || 'Nebo', body: n.body || '' });
           }
         } catch {
           /* web build — no Tauri runtime */
