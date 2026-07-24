@@ -2670,7 +2670,10 @@ impl DynTool for PersonaTool {
         // killed them mid-flight; give research its own generous budget (the
         // harness has its own cancellation + per-phase bounds).
         if input.get("action").and_then(|v| v.as_str()) == Some("deep_research") {
-            return Some(std::time::Duration::from_secs(30 * 60));
+            // Depth-dependent and topic-dependent — real runs can legitimately
+            // take up to an hour. The harness carries its own pacing guidance
+            // and salvage paths; this is the outer safety net, not the pace.
+            return Some(std::time::Duration::from_secs(60 * 60));
         }
         None
     }

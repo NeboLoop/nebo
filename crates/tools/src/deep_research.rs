@@ -817,14 +817,18 @@ const UNTRUSTED_GUARD: &str =
 const SCOPE_SYS: &str =
     "You decompose a research question into complementary web-search angles. Structured output only.";
 const SEARCH_SYS: &str =
-    "You are a web searcher. Use the `web` tool (resource:\"search\") to find sources, then \
-     return the most relevant results. Structured output only.";
+    "You are a web searcher on a TIME BUDGET. Use the `web` tool (resource:\"search\") — \
+     prefer ONE call with a `queries` array of 2-3 phrasings over sequential singles. Take \
+     the best results you have after at most two search calls and return them; do NOT keep \
+     reformulating a query that already surfaced usable sources. Structured output only.";
 const EXTRACT_SYS: &str =
     "You extract falsifiable, quote-backed claims from a single source's text. Structured output only.";
 const VERIFY_SYS: &str =
-    "You are an adversarial fact-checker. Be skeptical and try to REFUTE the claim. \
-     You may use the `web` tool (resource:\"search\") to find contradicting evidence. \
-     Default to refuted=true if uncertain. Structured output only.";
+    "You are an adversarial fact-checker on a TIME BUDGET. Be skeptical and try to REFUTE \
+     the claim. You may use the `web` tool (resource:\"search\") to find contradicting \
+     evidence — at most ONE search; decide from what it returns. Default to refuted=true \
+     if uncertain. Deciding quickly with the evidence at hand beats endless searching. \
+     Structured output only.";
 const SYNTH_SYS: &str =
     "You synthesize verified claims into a cited research report, merging duplicates. Structured output only.";
 
@@ -1201,6 +1205,7 @@ pub async fn run(
     let dir = crate::research::create_run_dir(&data_dir, &run_id, &question)?;
     let _ = crate::research::update_run_status(&dir, crate::research::RunStatus::Running);
     emit_progress(&progress, "Scoping the research question…");
+    let run_started = std::time::Instant::now();
     // Live panel snapshot — replaced whole on every emission (see PanelState).
     let panel = Arc::new(Mutex::new(PanelState {
         question: question.clone(),
@@ -1437,6 +1442,15 @@ pub async fn run(
     }
 
     // ── Phase 3: Verify (barrier — 3 adversarial votes per claim) ──
+    // Wall-clock salvage guard: a topic-heavy run must still land inside its
+    // hour. Past 45 minutes, verify only the top claims (ranking already put
+    // the strongest first); a smaller verified report beats a timeout.
+    let ranked: Vec<_> = if run_started.elapsed() > std::time::Duration::from_secs(45 * 60) {
+        warn!(elapsed_min = run_started.elapsed().as_secs() / 60, "deep_research: wall-clock guard — verifying top claims only");
+        ranked.into_iter().take(5).collect()
+    } else {
+        ranked
+    };
     let votes_per = cfg.votes_per_claim;
     emit_progress(&progress, format!("Verifying {} claims (×{} adversarial votes)…", ranked.len(), votes_per));
     {
