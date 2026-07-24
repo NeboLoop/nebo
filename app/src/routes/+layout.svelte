@@ -24,7 +24,6 @@
   import { theme } from '$lib/stores/theme.js';
   import { onboardingComplete, onboardingChecked, backendReady, backendChecking, checkOnboardingStatus, retryBackendConnection } from '$lib/stores/onboarding';
   import Toast from '$lib/components/Toast.svelte';
-  import NotificationBell from '$lib/components/NotificationBell.svelte';
   import { unreadCount, loadNotifications } from '$lib/stores/notifications';
   import CommandPalette from '$lib/components/CommandPalette.svelte';
   import UpgradeSuccessModal from '$lib/components/UpgradeSuccessModal.svelte';
@@ -201,7 +200,7 @@
         <a href="/" class="flex items-center gap-1.5 font-semibold text-sm tracking-tight mr-2 md:mr-4">
           <!-- {base}-prefixed: a raw /favicon.svg would escape the tunnel base -->
           <img src="{base}/favicon.svg" alt="" class="w-6 h-6" />
-          <span class="hidden sm:inline">Nebo</span>
+          <span class="hidden md:inline">Nebo</span>
         </a>
         <nav class="flex items-center h-full gap-0.5 md:gap-1 min-w-0 overflow-x-auto">
           {#each sections as s}
@@ -225,11 +224,9 @@
           data-tour="search"
           class="hidden md:flex items-center h-8 w-auto md:w-48 rounded-field px-2 md:px-3 gap-1.5 text-sm cursor-pointer border border-base-300 bg-base-100"
         >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="md:hidden text-base-content/70"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
-          <span class="font-mono text-sm py-px px-1 rounded-sm bg-base-200 hidden md:inline">&#x2318;K</span>
-          <span class="text-base-content/70 hidden md:inline">{$t('nav.searchOrRun')}</span>
+          <span class="font-mono text-sm py-px px-1 rounded-sm bg-base-200">&#x2318;K</span>
+          <span class="text-base-content/70">{$t('nav.searchOrRun')}</span>
         </button>
-        <NotificationBell />
       </header>
     {/if}
     <div class="flex-1 flex min-h-0">

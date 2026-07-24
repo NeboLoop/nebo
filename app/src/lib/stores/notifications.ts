@@ -9,6 +9,7 @@ export interface Notification {
   title: string;
   message: string;
   time: string;
+  createdAt: number; // epoch ms — the Inbox groups by day with this
   read: boolean;
   link?: string;
 }
@@ -36,6 +37,7 @@ export async function loadNotifications(): Promise<void> {
       title: n.title,
       message: n.body || '',
       time: n.createdAt ? formatRelativeTime(n.createdAt * 1000) : 'just now',
+      createdAt: n.createdAt ? n.createdAt * 1000 : Date.now(),
       read: !!n.readAt,
       link: n.actionUrl || undefined,
     }));
@@ -67,6 +69,7 @@ export function pushNotification(data: {
     title: data.title,
     message: data.body || '',
     time: data.createdAt ? formatRelativeTime(data.createdAt * 1000) : 'just now',
+    createdAt: data.createdAt ? data.createdAt * 1000 : Date.now(),
     read: !!data.readAt,
     link: data.actionUrl || undefined,
   };

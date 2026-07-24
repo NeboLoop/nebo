@@ -52,6 +52,7 @@ export function attachWebSocketListeners(): void {
         title: data.title || '',
         message: data.message || data.body || '',
         time: 'just now',
+        createdAt: Date.now(),
         read: false,
         link: data.link || data.actionUrl || undefined,
       };
