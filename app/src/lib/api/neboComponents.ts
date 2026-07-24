@@ -1180,6 +1180,10 @@ export interface GetToolOutputResponse {
 	isError: boolean
 }
 
+export interface GetWorkflowApprovalStatusResponse {
+	status: string
+}
+
 export interface GetWorkflowResponse {
 	workflow: Workflow
 }
@@ -1480,7 +1484,7 @@ export interface RemovePluginResponse {
 
 export interface ResolveWorkflowApprovalResponse {
 	status: string
-	newRunId: string
+	runId: unknown
 }
 
 export interface RunAgentWorkflowResponse {

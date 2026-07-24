@@ -56,8 +56,10 @@ struct GraphCtx<'a> {
     event_bus: Option<&'a tools::EventBus>,
     emit_source: Option<String>,
     progress_tx: Option<tokio::sync::mpsc::UnboundedSender<WorkflowProgress>>,
-    /// Per-employee approval-checkpoint context (policy + one-shot token).
+    /// Per-employee approval-checkpoint context (policy).
     checkpoint: Option<crate::engine::CheckpointCtx>,
+    /// Durable resume state when this run was re-entered after an approval.
+    resume: Option<crate::engine::ResumeState>,
     run_id: String,
     /// Owning agent for usage attribution; "" for standalone workflow runs.
     agent_id: String,
@@ -105,6 +107,7 @@ pub(crate) async fn execute_graph(
     emit_source: Option<String>,
     progress_tx: Option<tokio::sync::mpsc::UnboundedSender<WorkflowProgress>>,
     checkpoint: Option<&crate::engine::CheckpointCtx>,
+    resume: Option<crate::engine::ResumeState>,
 ) -> Result<(String, String), WorkflowError> {
     let ctx = build_ctx(
         def,
@@ -119,6 +122,7 @@ pub(crate) async fn execute_graph(
         emit_source,
         progress_tx,
         checkpoint,
+        resume,
         run_id,
     );
 
@@ -208,6 +212,7 @@ fn build_ctx<'a>(
     emit_source: Option<String>,
     progress_tx: Option<tokio::sync::mpsc::UnboundedSender<WorkflowProgress>>,
     checkpoint: Option<&crate::engine::CheckpointCtx>,
+    resume: Option<crate::engine::ResumeState>,
     run_id: &str,
 ) -> GraphCtx<'a> {
     let by_id: HashMap<String, &Activity> = def
@@ -281,6 +286,7 @@ fn build_ctx<'a>(
         emit_source,
         progress_tx,
         checkpoint: checkpoint.cloned(),
+        resume,
         run_id: run_id.to_string(),
         agent_id: agent_id.to_string(),
         by_id,
@@ -798,6 +804,7 @@ async fn run_llm_activity<'a>(
         ctx.progress_tx.as_ref(),
         &mut spent,
         ctx.checkpoint.as_ref(),
+        ctx.resume.as_ref().filter(|r| r.activity_id == activity.id),
     )
     .await
     {
@@ -813,6 +820,10 @@ async fn run_llm_activity<'a>(
                 started_at,
                 Some(completed_at),
             );
+            // Output content backs the resume fast-forward (UPDATE — after the row exists).
+            let _ = ctx
+                .store
+                .set_activity_result_content(&ctx.run_id, &activity.id, &result_text);
 
             let over_budget = {
                 let mut st = ctx.state.lock().unwrap();
@@ -1172,6 +1183,7 @@ mod walk_tests {
             provider,
             &[],
             &run_id,
+            None,
             None,
             None,
             None,

@@ -549,6 +549,7 @@ impl WorkflowManager for WorkflowManagerImpl {
                     None,
                     None,
                     None, // standalone run — no per-employee approval policy
+                    None,
                 )
                 .await
                 {
@@ -871,21 +872,39 @@ impl WorkflowManager for WorkflowManagerImpl {
                 merged
             };
 
-            // Approval checkpoint context: the employee's per-operation policy
-            // plus, on a post-approval re-run, the one-shot token carried in
-            // the reserved `_approved_op` input ({operation, inputHash}) by the
-            // approval endpoint. Stripped before the model ever sees inputs.
-            let (inputs, checkpoint_ctx) = {
+            // Approval checkpoint context (the employee's per-operation policy)
+            // and, for a post-approval re-entry, the durable resume state loaded
+            // from the run's suspension row (Temporal semantics: rehydrate and
+            // continue AT the blocked call — never re-run). The approval
+            // endpoint passes the reserved `_resume_run` input with the parked
+            // run's id; it is stripped before the model ever sees inputs.
+            let (inputs, checkpoint_ctx, resume_state, resume_run_id) = {
                 let mut inputs = inputs;
-                let approved: Option<(String, u64)> = inputs
+                let resume_run: Option<String> = inputs
                     .as_object_mut()
-                    .and_then(|m| m.remove("_approved_op"))
-                    .and_then(|v| {
-                        Some((
-                            v.get("operation")?.as_str()?.to_string(),
-                            v.get("inputHash")?.as_u64()?,
-                        ))
-                    });
+                    .and_then(|m| m.remove("_resume_run"))
+                    .and_then(|v| v.as_str().map(|s| s.to_string()));
+                let resume_state = match &resume_run {
+                    Some(rid) => {
+                        let row = self
+                            .store
+                            .get_workflow_suspension(rid)
+                            .map_err(|e| format!("load suspension: {e}"))?
+                            .ok_or_else(|| format!("no suspension for run {rid}"))?;
+                        let (_agent, _binding, activity_id, step_index, messages_json, pending_json, _op, _display) = row;
+                        let messages: Vec<ai::Message> = serde_json::from_str(&messages_json)
+                            .map_err(|e| format!("suspension messages corrupt: {e}"))?;
+                        let pending: ai::ToolCall = serde_json::from_str(&pending_json)
+                            .map_err(|e| format!("suspension pending call corrupt: {e}"))?;
+                        Some(workflow::engine::ResumeState {
+                            activity_id,
+                            step_index,
+                            messages,
+                            pending,
+                        })
+                    }
+                    None => None,
+                };
                 let policy = self
                     .store
                     .get_entity_config("agent", agent_id)
@@ -897,16 +916,11 @@ impl WorkflowManager for WorkflowManagerImpl {
                     .as_deref()
                     .map(|d| d.split(':').next().unwrap_or(d).to_string())
                     .unwrap_or_default();
-                let ctx = if policy.is_some() || approved.is_some() {
-                    Some(workflow::engine::CheckpointCtx {
-                        operation_policy: policy,
-                        binding_name: binding,
-                        approved,
-                    })
-                } else {
-                    None
-                };
-                (inputs, ctx)
+                let ctx = policy.map(|p| workflow::engine::CheckpointCtx {
+                    operation_policy: Some(p),
+                    binding_name: binding,
+                });
+                (inputs, ctx, resume_state, resume_run)
             };
 
             // Resolve the concurrency semaphore for this binding. The permit
@@ -923,22 +937,35 @@ impl WorkflowManager for WorkflowManagerImpl {
                     .clone()
             });
 
-            // Create run record using agent_id for tracking
-            let run_id = uuid::Uuid::new_v4().to_string();
+            // Create run record using agent_id for tracking. A resumed run
+            // keeps ITS OWN id — the parked row flips back to running; no new
+            // run row, no re-created history.
+            let run_id = resume_run_id
+                .clone()
+                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
             // Canonical agent session key — tools parse the `agent:<id>:` prefix
             // to resolve per-agent plugin accounts and memory scope. The old
             // dash format resolved nothing (briefings ran with no account).
             let session_key = tools::workflow_session_key(agent_id, &run_id);
-            self.store
-                .create_workflow_run(
-                    &run_id,
-                    &format!("agent:{}", agent_id),
-                    trigger_type,
-                    trigger_detail.as_deref(),
-                    Some(&inputs.to_string()),
-                    Some(&session_key),
-                )
-                .map_err(|e| format!("create_workflow_run: {}", e))?;
+            if resume_run_id.is_some() {
+                // Consume the suspension (the signal is being handled) and
+                // wake the parked run.
+                let _ = self.store.delete_workflow_suspension(&run_id);
+                self.store
+                    .update_workflow_run(&run_id, Some("running"), None, None, None, None)
+                    .map_err(|e| format!("resume run: {e}"))?;
+            } else {
+                self.store
+                    .create_workflow_run(
+                        &run_id,
+                        &format!("agent:{}", agent_id),
+                        trigger_type,
+                        trigger_detail.as_deref(),
+                        Some(&inputs.to_string()),
+                        Some(&session_key),
+                    )
+                    .map_err(|e| format!("create_workflow_run: {}", e))?;
+            }
 
             // Create cancellation token
             let cancel_token = CancellationToken::new();
@@ -1180,6 +1207,7 @@ impl WorkflowManager for WorkflowManagerImpl {
                     emit_source,
                     Some(progress_tx),
                     checkpoint_ctx.as_ref(),
+                    resume_state,
                 )
                 .await
                 {

@@ -17,6 +17,9 @@
     notifications, unreadCount, hasMore, loadNotifications, loadMore, markAsRead, markAllRead, removeNotification, type Notification,
   } from '$lib/stores/notifications';
 
+  import Hand from 'lucide-svelte/icons/hand';
+  import { getWorkflowApprovalStatus, resolveWorkflowApproval } from '$lib/api/nebo';
+
   let copied = $state(false);
   let filter = $state<'all' | 'agent' | 'system' | 'warning' | 'error'>('all');
   let employeeFilter = $state('all');
@@ -55,8 +58,61 @@
   });
 
   const typeColors: Record<string, string> = {
-    agent: 'bg-success', system: 'bg-info', warning: 'bg-warning', error: 'bg-error',
+    agent: 'bg-success', system: 'bg-info', warning: 'bg-warning', error: 'bg-error', approval: 'bg-warning',
   };
+
+  // ── Approvals: a pending decision is a task, not mail. Pending approvals
+  // live in a pinned band above the chronological stream with inline
+  // Approve/Deny; once resolved they fall back into the stream with a status
+  // chip. Notification id carries the run: `wf-approval:<run_id>`.
+  const approvalRunId = (n: Notification): string | null =>
+    n.id.startsWith('wf-approval:') ? n.id.slice('wf-approval:'.length) : null;
+
+  let approvalStatuses = $state<Record<string, string>>({});
+  let deciding = $state<Record<string, boolean>>({});
+  const statusFetched = new Set<string>();
+
+  $effect(() => {
+    for (const n of $notifications) {
+      const runId = approvalRunId(n);
+      if (!runId || statusFetched.has(runId)) continue;
+      statusFetched.add(runId);
+      getWorkflowApprovalStatus(runId)
+        .then((r) => {
+          approvalStatuses = { ...approvalStatuses, [runId]: (r as { status?: string }).status ?? 'unknown' };
+        })
+        .catch(() => statusFetched.delete(runId));
+    }
+  });
+
+  const pendingApprovals = $derived(
+    [...$notifications]
+      .filter(n => { const r = approvalRunId(n); return r && approvalStatuses[r] === 'pending'; })
+      .sort((a, b) => b.createdAt - a.createdAt)
+  );
+
+  /** Resolved-state chip label key for an approval row, or null. */
+  function approvalChip(n: Notification): string | null {
+    const r = approvalRunId(n);
+    if (!r) return null;
+    const s = approvalStatuses[r];
+    if (s === 'approved') return 'inbox.approved';
+    if (s === 'denied') return 'inbox.denied';
+    return null;
+  }
+
+  async function decide(n: Notification, approved: boolean) {
+    const runId = approvalRunId(n);
+    if (!runId || deciding[runId]) return;
+    deciding = { ...deciding, [runId]: true };
+    try {
+      await resolveWorkflowApproval(runId, { approved });
+      approvalStatuses = { ...approvalStatuses, [runId]: approved ? 'approved' : 'denied' };
+      markAsRead(n.id);
+    } finally {
+      deciding = { ...deciding, [runId]: false };
+    }
+  }
   const filters = [
     { id: 'all', label: 'inbox.filterAll' },
     { id: 'agent', label: 'inbox.filterAgent' },
@@ -87,6 +143,8 @@
         return n.title.toLowerCase().includes(q) || n.message.toLowerCase().includes(q);
       })
       .sort((a, b) => b.createdAt - a.createdAt)
+      // Pending approvals live in the pinned band, not the stream.
+      .filter(n => { const r = approvalRunId(n); return !(r && approvalStatuses[r] === 'pending'); })
   );
 
   const deptLabel = (slug: string) => slug.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
@@ -94,7 +152,8 @@
   // OS back gesture / browser back returns to the list. Desktop replaces the
   // entry instead so flipping through messages doesn't pile up history.
   const selectedId = $derived($page.url.searchParams.get('m'));
-  const selected = $derived(sorted.find(n => n.id === selectedId) ?? null);
+  // Search ALL notifications (not the filtered stream) so band rows open too.
+  const selected = $derived($notifications.find(n => n.id === selectedId) ?? null);
   const isDesktop = () => window.matchMedia('(min-width: 768px)').matches;
 
   function open(n: Notification) {
@@ -175,7 +234,49 @@
       {/if}
     </div>
     <div class="flex-1 overflow-y-auto">
-      {#if sorted.length === 0}
+      <!-- Pinned "Needs your approval" band — pending decisions are tasks,
+           not mail; they sit above the chronological stream with inline
+           Approve/Deny and fall back into the stream once resolved. -->
+      {#if pendingApprovals.length > 0}
+        <div class="border-b border-warning/20 bg-warning/5">
+          <div class="flex items-center gap-1.5 px-4 pt-2.5 pb-1 text-[10px] font-semibold uppercase tracking-wider text-warning">
+            <Hand class="w-3 h-3" />
+            {$t('inbox.needsApproval')}
+          </div>
+          {#each pendingApprovals as n (n.id)}
+            {@const runId = approvalRunId(n)}
+            <div
+              class="px-4 py-2.5 cursor-pointer transition-colors border-l-2 {selectedId === n.id ? 'bg-base-100 border-l-warning' : 'border-l-transparent hover:bg-warning/10'}"
+              onclick={() => open(n)}
+              onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(n); } }}
+              role="button"
+              tabindex="0"
+            >
+              <div class="flex items-baseline gap-2">
+                {#if n.agentId && roster[n.agentId]}
+                  <span class="text-xs shrink-0 font-medium text-base-content/70">{roster[n.agentId].name}</span>
+                {/if}
+                <span class="text-sm font-semibold truncate text-base-content">{n.title}</span>
+                <span class="text-xs text-base-content/50 font-mono shrink-0 ml-auto">{n.time}</span>
+              </div>
+              <p class="text-xs text-base-content/70 mt-0.5">{n.message}</p>
+              <div class="flex items-center gap-2 mt-2">
+                <button
+                  class="btn btn-xs btn-success"
+                  disabled={!!(runId && deciding[runId])}
+                  onclick={(e) => { e.stopPropagation(); decide(n, true); }}
+                >{$t('inbox.approve')}</button>
+                <button
+                  class="btn btn-xs btn-ghost border border-base-content/15"
+                  disabled={!!(runId && deciding[runId])}
+                  onclick={(e) => { e.stopPropagation(); decide(n, false); }}
+                >{$t('inbox.deny')}</button>
+              </div>
+            </div>
+          {/each}
+        </div>
+      {/if}
+      {#if sorted.length === 0 && pendingApprovals.length === 0}
         <div class="flex flex-col items-center justify-center text-center py-24 gap-2 px-4">
           <CheckCircle2 class="w-8 h-8 text-success/60" />
           <div class="text-sm font-medium">{$t('inbox.empty')}</div>
@@ -199,6 +300,9 @@
                   <span class="text-xs shrink-0 {n.read ? 'text-base-content/50' : 'text-base-content/70 font-medium'}">{roster[n.agentId].name}</span>
                 {/if}
                 <span class="text-sm truncate {n.read ? 'font-normal text-base-content/70' : 'font-semibold text-base-content'}">{n.title}</span>
+                {#if approvalChip(n)}
+                  <span class="badge badge-sm shrink-0 {approvalChip(n) === 'inbox.approved' ? 'badge-success badge-outline' : 'badge-ghost text-base-content/60'}">{$t(approvalChip(n)!)}</span>
+                {/if}
                 <span class="text-xs text-base-content/50 font-mono shrink-0 ml-auto">{n.time}</span>
               </div>
               <p class="text-xs text-base-content/60 truncate mt-0.5">{n.message}</p>
@@ -255,6 +359,22 @@
           <div class="prose prose-sm max-w-none [&>:first-child]:mt-0">
             {@html marked.parse(selected.message, { async: false })}
           </div>
+          {#if approvalRunId(selected)}
+            {@const runId = approvalRunId(selected)!}
+            {@const status = approvalStatuses[runId]}
+            <div class="mt-6 pt-4 border-t border-base-content/10">
+              {#if status === 'pending'}
+                <div class="flex items-center gap-2">
+                  <button class="btn btn-sm btn-success" disabled={!!deciding[runId]} onclick={() => selected && decide(selected, true)}>{$t('inbox.approve')}</button>
+                  <button class="btn btn-sm btn-ghost border border-base-content/15" disabled={!!deciding[runId]} onclick={() => selected && decide(selected, false)}>{$t('inbox.deny')}</button>
+                </div>
+              {:else if status === 'approved' || status === 'denied'}
+                <span class="badge {status === 'approved' ? 'badge-success badge-outline' : 'badge-ghost text-base-content/60'}">{$t(status === 'approved' ? 'inbox.approved' : 'inbox.denied')}</span>
+              {:else if status}
+                <span class="badge badge-ghost text-base-content/60">{status}</span>
+              {/if}
+            </div>
+          {/if}
         </div>
       </div>
     {:else}

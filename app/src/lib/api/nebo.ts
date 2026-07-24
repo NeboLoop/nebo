@@ -188,6 +188,13 @@ export function listEventSources() {
 }
 
 /**
+ * @description "Get workflow approval status"
+ */
+export function getWorkflowApprovalStatus(runId: string) {
+	return webapi.get<components.GetWorkflowApprovalStatusResponse>(`/api/v1/agents/workflow-runs/${runId}/approval`)
+}
+
+/**
  * @description "Resolve workflow approval"
  */
 export function resolveWorkflowApproval(runId: string, req: Record<string, unknown> = {}) {

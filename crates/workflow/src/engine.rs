@@ -132,16 +132,21 @@ pub struct CheckpointCtx {
     pub operation_policy: Option<tools::policy::OperationPolicy>,
     /// The seat binding name (for the suspension row / notification).
     pub binding_name: String,
-    /// One-shot approval from the owner: (operation suffix, input hash).
-    pub approved: Option<(String, u64)>,
 }
 
-/// Stable hash of a gated call's input for the one-shot approval match.
-pub fn checkpoint_input_hash(input: &serde_json::Value) -> u64 {
-    use std::hash::{Hash, Hasher};
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    input.to_string().hash(&mut h);
-    h.finish()
+/// Durable resume state for a run parked at the approval checkpoint —
+/// Temporal-style semantics: the suspension persisted the full conversation,
+/// the pending (now owner-approved) tool call, and its exact position; resume
+/// rehydrates and continues AT the blocked call. Nothing before the pause
+/// re-executes, so non-idempotent side effects can never duplicate.
+#[derive(Debug, Clone)]
+pub struct ResumeState {
+    pub activity_id: String,
+    pub step_index: Option<i64>,
+    pub messages: Vec<ai::Message>,
+    /// The approved call — executed directly on resume (it IS what the owner
+    /// saw; the checkpoint is bypassed for exactly this call id).
+    pub pending: ai::ToolCall,
 }
 
 #[allow(unused_assignments)] // circuit breaker state is future-proofed for Fallback::Skip
@@ -161,6 +166,7 @@ pub async fn execute_workflow(
     emit_source: Option<String>,
     progress_tx: Option<tokio::sync::mpsc::UnboundedSender<WorkflowProgress>>,
     checkpoint: Option<&CheckpointCtx>,
+    resume: Option<ResumeState>,
 ) -> Result<(String, String), WorkflowError> {
     let run_id = match existing_run_id {
         Some(id) => id.to_string(),
@@ -207,6 +213,7 @@ pub async fn execute_workflow(
             resolved_emit,
             progress_tx,
             checkpoint,
+            resume,
         )
         .await;
     }
@@ -299,6 +306,7 @@ pub async fn execute_workflow(
             progress_tx.as_ref(),
             &mut activity_spent,
             checkpoint,
+            resume.as_ref().filter(|r| r.activity_id == activity.id),
         )
         .await
         {
@@ -320,6 +328,9 @@ pub async fn execute_workflow(
                 ) {
                     warn!(run_id = %run_id, activity = %activity.id, error = %e, "failed to record activity result");
                 }
+                // Output content backs the resume fast-forward — a parked run
+                // never re-executes an activity whose result is recorded.
+                let _ = store.set_activity_result_content(&run_id, &activity.id, &result_text);
 
                 // n8n-style branch termination: empty output = no downstream execution.
                 // If the activity produced no output (even after tool-result synthesis),
@@ -504,7 +515,18 @@ pub(crate) async fn execute_activity_with_retry(
     progress_tx: Option<&tokio::sync::mpsc::UnboundedSender<WorkflowProgress>>,
     spent: &mut u32,
     checkpoint: Option<&CheckpointCtx>,
+    resume: Option<&ResumeState>,
 ) -> Result<(String, u32), WorkflowError> {
+    // Resume fast-forward: an activity this run already completed returns its
+    // recorded output instead of re-executing — the Temporal property that a
+    // resumed run never re-does finished (possibly non-idempotent) work. Fresh
+    // runs have no completed rows, so this is a no-op for them.
+    if let Ok(done) = store.completed_activity_contents(run_id) {
+        if let Some(content) = done.get(&activity.id) {
+            info!(activity = activity.id.as_str(), run_id, "resume: skipping completed activity");
+            return Ok((content.clone(), 0));
+        }
+    }
     let max_attempts = activity.on_error.retry.max(1);
 
     for attempt in 0..max_attempts {
@@ -523,6 +545,7 @@ pub(crate) async fn execute_activity_with_retry(
             progress_tx,
             spent,
             checkpoint,
+            resume,
         )
         .await
         {
@@ -573,6 +596,7 @@ pub async fn execute_activity(
     progress_tx: Option<&tokio::sync::mpsc::UnboundedSender<WorkflowProgress>>,
     spent: &mut u32,
     checkpoint: Option<&CheckpointCtx>,
+    resume: Option<&ResumeState>,
 ) -> Result<(String, u32), WorkflowError> {
     // Detect if browser tool is available for this activity
     let has_browser = tools.iter().any(|t| t.name() == "web");
@@ -623,7 +647,11 @@ pub async fn execute_activity(
             },
             ..Default::default()
         }];
-        return run_llm_loop(activity, provider, tools, &tool_defs, &system, messages, spent, make_trace(String::new()), store, checkpoint).await;
+        let (messages, pending) = match resume {
+            Some(r) => (r.messages.clone(), Some(r.pending.clone())),
+            None => (messages, None),
+        };
+        return run_llm_loop(activity, provider, tools, &tool_defs, &system, messages, spent, make_trace(String::new()), store, checkpoint, pending).await;
     }
 
     // --- Per-step execution ---
@@ -652,7 +680,15 @@ pub async fn execute_activity(
     let mut step_outputs: Vec<String> = Vec::new();
     let total_steps = activity.steps.len();
 
+    // Resume rehydration: earlier steps' work lives in the restored messages —
+    // skip re-executing them; enter the loop at the suspended step with the
+    // persisted conversation and the approved pending call.
+    let resume_step = resume.and_then(|r| r.step_index).unwrap_or(-1);
+    let mut resume_pending = resume.map(|r| r.pending.clone());
     for (i, step) in activity.steps.iter().enumerate() {
+        if resume.is_some() && (i as i64) < resume_step {
+            continue;
+        }
         let task_item = &task_items[i];
         let task_seq = task_item.seq.unwrap_or((i + 1) as i64);
 
@@ -669,13 +705,18 @@ pub async fn execute_activity(
             });
         }
 
-        // Send step as user message
-        let step_msg = format!("Step {}/{}: {}", i + 1, total_steps, step);
-        messages.push(ai::Message {
-            role: "user".into(),
-            content: step_msg,
-            ..Default::default()
-        });
+        // Send step as user message — except at the resumed step, whose
+        // conversation (step message included) is restored verbatim.
+        if resume.is_some() && (i as i64) == resume_step {
+            messages = resume.map(|r| r.messages.clone()).unwrap_or_default();
+        } else {
+            let step_msg = format!("Step {}/{}: {}", i + 1, total_steps, step);
+            messages.push(ai::Message {
+                role: "user".into(),
+                content: step_msg,
+                ..Default::default()
+            });
+        }
 
         // Run LLM loop for this step
         let (step_result, step_tokens) = run_llm_loop(
@@ -689,6 +730,7 @@ pub async fn execute_activity(
             make_trace(i.to_string()),
             store,
             checkpoint,
+            if resume.is_some() && (i as i64) == resume_step { resume_pending.take() } else { None },
         )
         .await
         .map_err(|e| {
@@ -926,6 +968,7 @@ async fn run_llm_loop(
     trace: ai::RequestTrace,
     store: &Arc<Store>,
     checkpoint: Option<&CheckpointCtx>,
+    pending: Option<ai::ToolCall>,
 ) -> Result<(String, u32), WorkflowError> {
     let mut tokens_used: u32 = 0;
     let mut iterations: u32 = 0;
@@ -942,6 +985,44 @@ async fn run_llm_loop(
         tools::workflow_session_key(&trace.agent_id, &trace.run_id),
         trace.run_id.clone(),
     );
+
+    // ── Durable resume entry ──────────────────────────────────────────
+    // The restored conversation ends at the assistant message whose gated
+    // call the owner just approved. Execute exactly that call (checkpoint
+    // bypassed — it IS the approved call), append its result, and fall into
+    // the normal loop: the next model turn sees the outcome and continues
+    // the workflow from precisely where it paused. Nothing earlier re-runs.
+    if let Some(tc) = pending {
+        let tool = tools
+            .iter()
+            .find(|t| t.name() == tc.name)
+            .or_else(|| {
+                let stripped = strip_mcp_prefix(&tc.name);
+                tools.iter().find(|t| t.name() == stripped)
+            });
+        let result = match tool {
+            Some(t) => t.execute_dyn(&ctx, tc.input.clone()).await,
+            None => tools::ToolResult::error(format!("tool not found: {}", tc.name)),
+        };
+        if result.terminal {
+            return Err(WorkflowError::Blocked(result.content.clone()));
+        }
+        if !result.is_error {
+            if let Some(reason) = result.content.strip_prefix(tools::EXIT_SENTINEL) {
+                return Err(WorkflowError::Exited(reason.to_string()));
+            }
+        }
+        messages.push(ai::Message {
+            role: "tool".into(),
+            content: String::new(),
+            tool_results: Some(serde_json::Value::Array(vec![serde_json::json!({
+                "tool_call_id": tc.id,
+                "content": result.content,
+                "is_error": result.is_error,
+            })])),
+            ..Default::default()
+        });
+    }
 
     loop {
         if iterations >= MAX_ITERATIONS {
@@ -1088,15 +1169,7 @@ async fn run_llm_loop(
                             .to_string();
                         if !op.is_empty() {
                             let suffix = tools::plugin_tool::port_suffix(&op);
-                            let input_hash = checkpoint_input_hash(
-                                &tc.input.get("input").cloned().unwrap_or(serde_json::Value::Null),
-                            );
-                            let pre_approved = cp
-                                .approved
-                                .as_ref()
-                                .map(|(s, h)| *s == suffix && *h == input_hash)
-                                .unwrap_or(false);
-                            if !pre_approved {
+                            {
                                 match policy.decide(&op) {
                                     tools::policy::OperationAccess::Always => {}
                                     tools::policy::OperationAccess::Blocked => {

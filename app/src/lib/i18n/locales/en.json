@@ -2577,6 +2577,11 @@
     "filterWarning": "Warnings",
     "filterError": "Errors",
     "byEmployee": "Employee",
-    "byDepartment": "Department"
+    "byDepartment": "Department",
+    "needsApproval": "Needs your approval",
+    "approve": "Approve",
+    "deny": "Deny",
+    "approved": "Approved",
+    "denied": "Denied"
   }
 }

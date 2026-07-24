@@ -3613,7 +3613,7 @@ pub async fn resolve_workflow_approval(
     Path(run_id): Path<String>,
     Json(body): Json<WorkflowApprovalBody>,
 ) -> HandlerResult<serde_json::Value> {
-    let Some((agent_id, binding_name, _activity_id, _step, _messages, pending_tool, operation, display)) =
+    let Some((agent_id, binding_name, suspended_activity, _step, _messages, _pending_tool, _operation, display)) =
         state
             .store
             .get_workflow_suspension(&run_id)
@@ -3622,12 +3622,11 @@ pub async fn resolve_workflow_approval(
         return Err(to_error_response(types::NeboError::NotFound));
     };
 
-    state
-        .store
-        .delete_workflow_suspension(&run_id)
-        .map_err(to_error_response)?;
-
     if !body.approved {
+        state
+            .store
+            .delete_workflow_suspension(&run_id)
+            .map_err(to_error_response)?;
         let _ = state.store.update_workflow_run(
             &run_id,
             Some("denied"),
@@ -3659,6 +3658,20 @@ pub async fn resolve_workflow_approval(
         .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
     let def_json = binding.to_workflow_json(&binding_name);
 
+    // Definition-drift guard for long-tail resumes (days/months later): if the
+    // seat's current definition no longer contains the suspended activity, a
+    // silent resume would fall through to a fresh full run — refuse instead.
+    if !binding.activities.iter().any(|a| a.id == suspended_activity) {
+        return Err(to_error_response(types::NeboError::Validation(format!(
+            "the workflow definition changed since this run paused (activity '{}' no longer exists); the run cannot be resumed safely — deny it and re-run the workflow",
+            suspended_activity
+        ))));
+    }
+
+    // Durable resume (Temporal semantics): pass the parked run's id through the
+    // ONE run_inline pathway; it consumes the suspension, flips the run back to
+    // running, rehydrates the conversation, executes the approved call, and
+    // continues from exactly where it paused. Same run id throughout.
     let mut inputs: serde_json::Value = state
         .store
         .get_workflow_run(&run_id)
@@ -3667,30 +3680,12 @@ pub async fn resolve_workflow_approval(
         .and_then(|r| r.inputs)
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_else(|| serde_json::json!({}));
-    let input_hash = serde_json::from_str::<serde_json::Value>(&pending_tool)
-        .ok()
-        .and_then(|tc| tc.get("input").and_then(|i| i.get("input")).cloned())
-        .map(|v| workflow::engine::checkpoint_input_hash(&v))
-        .unwrap_or_default();
     if let Some(m) = inputs.as_object_mut() {
-        m.insert(
-            "_approved_op".into(),
-            serde_json::json!({ "operation": operation, "inputHash": input_hash }),
-        );
+        m.insert("_resume_run".into(), serde_json::json!(run_id));
     }
 
-    // The old run is superseded by the approved re-run.
-    let _ = state.store.update_workflow_run(
-        &run_id,
-        Some("resumed"),
-        None,
-        None,
-        None,
-        None,
-    );
-
     use tools::workflows::WorkflowManager;
-    let new_run_id = state
+    let resumed = state
         .workflow_manager
         .run_inline(
             def_json,
@@ -3703,6 +3698,37 @@ pub async fn resolve_workflow_approval(
         .await
         .map_err(|e| to_error_response(types::NeboError::Internal(e)))?;
 
-    info!(run_id, new_run_id, agent_id, "workflow approval accepted — re-running with one-shot token");
-    Ok(Json(serde_json::json!({ "status": "approved", "newRunId": new_run_id })))
+    info!(run_id, resumed, agent_id, "workflow approval accepted — resuming parked run");
+    Ok(Json(serde_json::json!({ "status": "approved", "runId": resumed })))
+}
+
+/// GET /api/v1/agents/workflow-runs/{run_id}/approval — approval status for
+/// the Inbox: "pending" while the suspension row exists, otherwise the run's
+/// resolved state (approved runs were superseded → "resumed", plus "denied" /
+/// "completed" / "failed"). Read-side only; the POST above is the resolver.
+pub async fn get_workflow_approval_status(
+    State(state): State<AppState>,
+    Path(run_id): Path<String>,
+) -> HandlerResult<serde_json::Value> {
+    let pending = state
+        .store
+        .get_workflow_suspension(&run_id)
+        .map_err(to_error_response)?
+        .is_some();
+    if pending {
+        return Ok(Json(serde_json::json!({ "status": "pending" })));
+    }
+    let run_status = state
+        .store
+        .get_workflow_run(&run_id)
+        .ok()
+        .flatten()
+        .map(|r| r.status)
+        .unwrap_or_else(|| "unknown".to_string());
+    // "resumed" means the owner approved and the run was re-executed.
+    let status = match run_status.as_str() {
+        "resumed" => "approved",
+        other => other,
+    };
+    Ok(Json(serde_json::json!({ "status": status })))
 }
