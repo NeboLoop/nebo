@@ -167,6 +167,7 @@ mod tests {
             degraded: None,
             source_path: None,
             source: crate::skills::SkillSource::User,
+            owner_agent_id: None,
             base_dir: None,
             napp_path: None,
             license_key: None,

@@ -11,8 +11,11 @@
 
   let user = $state({ displayName: '', occupation: '', location: '', timezone: '', interests: [] as string[], goals: '', commStyle: 'adaptive' });
   let saved = $state(false);
+  let saveError = $state(false);
   let saveTimer: ReturnType<typeof setTimeout> | null = null;
   let newInterest = $state('');
+  // Native IANA zone list for the timezone picker (datalist autocomplete).
+  const timezones: string[] = Intl.supportedValuesOf?.('timeZone') ?? [];
 
   // Snapshot for revert
   let snapshot = $state({ displayName: '', occupation: '', location: '', timezone: '', interests: [] as string[], goals: '', commStyle: 'adaptive' });
@@ -56,9 +59,13 @@
         communicationStyle: user.commStyle,
       });
       snapshot = { ...user, interests: [...user.interests] };
+      saveError = false;
       saved = true;
       setTimeout(() => saved = false, 2000);
-    } catch { /* silent */ }
+    } catch {
+      // A swallowed failure here read as "nothing ever saves" — show it.
+      saveError = true;
+    }
   }
 
   function revert() {
@@ -105,7 +112,9 @@
 
 <SettingsHeader title={$t('settingsProfile.title')} description={$t('settingsProfile.pageDescription')}>
   {#snippet action()}
-    {#if saved}
+    {#if saveError}
+      <button class="text-xs text-error flex items-center gap-1 cursor-pointer bg-transparent border-none" onclick={persistProfile}>{$t('settingsProfile.saveFailed')}</button>
+    {:else if saved}
       <span class="text-xs text-success flex items-center gap-1"><Check class="w-3 h-3" /> {$t('common.saved')}</span>
     {/if}
     <button onclick={revert} class="p-1.5 rounded-md hover:bg-base-200 transition-colors cursor-pointer bg-transparent border-none" title={$t('common.revertToLastSaved')}>
@@ -150,26 +159,29 @@
 <!-- Display name -->
 <label class="block mb-4">
   <span class="block text-xs font-semibold mb-1.5">{$t('settingsProfile.displayName')}</span>
-  <input type="text" bind:value={user.displayName} oninput={debounceSave} class="w-full py-2 px-3 rounded-lg border border-base-content/10 bg-base-100 text-sm outline-none focus:border-base-content/30" />
+  <input type="text" bind:value={user.displayName} oninput={debounceSave} class="w-full py-2 px-3 rounded-lg border border-base-content/25 bg-base-200/40 text-sm outline-none focus:border-base-content/50" />
 </label>
 
 <!-- Occupation -->
 <label class="block mb-4">
   <span class="block text-xs font-semibold mb-1.5">{$t('settingsProfile.occupation')}</span>
-  <input type="text" bind:value={user.occupation} oninput={debounceSave} class="w-full py-2 px-3 rounded-lg border border-base-content/10 bg-base-100 text-sm outline-none focus:border-base-content/30" />
+  <input type="text" bind:value={user.occupation} oninput={debounceSave} class="w-full py-2 px-3 rounded-lg border border-base-content/25 bg-base-200/40 text-sm outline-none focus:border-base-content/50" />
 </label>
 
 <!-- Location -->
 <label class="block mb-4">
   <span class="block text-xs font-semibold mb-1.5">{$t('settingsProfile.locationLabel')}</span>
-  <input type="text" bind:value={user.location} oninput={debounceSave} class="w-full py-2 px-3 rounded-lg border border-base-content/10 bg-base-100 text-sm outline-none focus:border-base-content/30" />
+  <input type="text" bind:value={user.location} oninput={debounceSave} class="w-full py-2 px-3 rounded-lg border border-base-content/25 bg-base-200/40 text-sm outline-none focus:border-base-content/50" />
 </label>
 
 <!-- Timezone -->
 <label class="block mb-4">
   <span class="block text-xs font-semibold mb-1.5">{$t('settingsProfile.timezoneLabel')}</span>
   <div class="flex gap-2">
-    <input type="text" bind:value={user.timezone} oninput={debounceSave} class="flex-1 py-2 px-3 rounded-lg border border-base-content/10 bg-base-100 text-sm outline-none focus:border-base-content/30" />
+    <input type="text" list="tz-options" bind:value={user.timezone} oninput={debounceSave} onchange={persistProfile} placeholder="America/Denver" class="flex-1 py-2 px-3 rounded-lg border border-base-content/25 bg-base-200/40 text-sm outline-none focus:border-base-content/50" />
+    <datalist id="tz-options">
+      {#each timezones as tz (tz)}<option value={tz}></option>{/each}
+    </datalist>
     <button class="px-3 py-2 rounded-lg border border-base-content/10 text-xs cursor-pointer hover:bg-base-200 transition-colors bg-transparent" onclick={autoDetectTimezone}>{$t('settingsProfile.autoDetect')}</button>
   </div>
 </label>
@@ -184,14 +196,14 @@
       </span>
     {/each}
   </div>
-  <input type="text" bind:value={newInterest} placeholder={$t('settingsProfile.addInterestPlaceholder')} class="w-full py-2 px-3 rounded-lg border border-base-content/10 bg-base-100 text-sm outline-none focus:border-base-content/30"
+  <input type="text" bind:value={newInterest} placeholder={$t('settingsProfile.addInterestPlaceholder')} class="w-full py-2 px-3 rounded-lg border border-base-content/25 bg-base-200/40 text-sm outline-none focus:border-base-content/50"
     onkeydown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addInterest(); } }} />
 </div>
 
 <!-- Goals -->
 <label class="block mb-4">
   <span class="block text-xs font-semibold mb-1.5">{$t('settingsProfile.goals')}</span>
-  <textarea rows="2" class="w-full py-2 px-3 rounded-lg border border-base-content/10 bg-base-100 text-sm outline-none focus:border-base-content/30 resize-y" bind:value={user.goals} oninput={debounceSave}></textarea>
+  <textarea rows="2" class="w-full py-2 px-3 rounded-lg border border-base-content/25 bg-base-200/40 text-sm outline-none focus:border-base-content/50 resize-y" bind:value={user.goals} oninput={debounceSave}></textarea>
 </label>
 
 <!-- Communication style -->

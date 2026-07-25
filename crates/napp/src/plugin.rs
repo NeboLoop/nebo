@@ -324,6 +324,13 @@ pub struct PluginAuthCommands {
     /// Subcommand to check auth status, must return JSON (e.g., "auth status").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
+    /// Subcommand for a SILENT, non-interactive token renewal using the stored
+    /// refresh token (e.g., "auth refresh"). Must never open a browser or
+    /// prompt. Declared by plugins whose tokens can be renewed headlessly; the
+    /// host runs it proactively (token refresher) and as a mid-run self-heal
+    /// before falling back to interactive login.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refresh: Option<String>,
     /// Subcommand to clear credentials (e.g., "auth logout").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub logout: Option<String>,
@@ -846,6 +853,66 @@ impl PluginStore {
     ) -> Option<bool> {
         let path_env = self.path_with_plugins();
         run_auth_status_check_inner(self, slug, &path_env, Some((profile_dir_env, config_dir))).await
+    }
+
+    /// Run a plugin's manifest-declared auth `refresh` command — a SILENT,
+    /// non-interactive token renewal (e.g. `gws auth refresh`) — optionally
+    /// against one account's config dir via the manifest's `profile_dir_env`
+    /// (the same injection as the status probe). Returns `true` when the
+    /// command ran and exited zero; `false` otherwise, including when no
+    /// refresh command is declared. This only RENEWS — callers still decide
+    /// health via the status probe (the one canonical auth decision).
+    pub async fn run_auth_refresh(
+        &self,
+        slug: &str,
+        profile_dir: Option<(&str, &str)>,
+    ) -> bool {
+        let Some((binary_path, auth)) = self.get_auth_info(slug) else {
+            return false;
+        };
+        let Some(refresh_cmd) = auth.commands.refresh.as_deref() else {
+            return false;
+        };
+        let path_env = self.path_with_plugins();
+        let resolved_env = self.resolved_auth_env(slug);
+        let args: Vec<&str> = refresh_cmd.split_whitespace().collect();
+        let mut cmd = tokio::process::Command::new(&binary_path);
+        cmd.args(&args);
+        cmd.env("PATH", &path_env);
+        for (key, value) in &resolved_env {
+            cmd.env(key, value);
+        }
+        // Per-account isolation: set last so it wins over any global config-dir value.
+        if let Some((env_name, config_dir)) = profile_dir {
+            cmd.env(env_name, config_dir);
+        }
+        // Refresh commands are required to be non-interactive — close stdin so a
+        // misbehaving plugin can never sit waiting for input.
+        cmd.stdin(std::process::Stdio::null());
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::piped());
+        // One token-endpoint round-trip; if it wedges, don't hang the caller
+        // (this also runs mid chat turn) — the timeout below drops-and-kills.
+        cmd.kill_on_drop(true);
+        let child = match cmd.spawn() {
+            Ok(c) => c,
+            Err(_) => return false,
+        };
+        // Track with the child guard so the reaper doesn't SIGKILL the probe
+        // mid-flight (same reasoning as the status check below).
+        let pid = child.id();
+        if let Some(p) = pid {
+            crate::child_guard::register_child(p);
+        }
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            child.wait_with_output(),
+        )
+        .await;
+        if let Some(p) = pid {
+            crate::child_guard::unregister_child(p);
+        }
+        matches!(result, Ok(Ok(output)) if output.status.success())
     }
 
     /// Check auth status for a single plugin on first access. Caches the result.
@@ -2475,6 +2542,28 @@ async fn run_auth_status_check_inner(
             // A non-zero exit means the status command itself failed (or signals
             // "not authenticated" for CLIs that follow the exit-code convention).
             if !output.status.success() {
+                // Keyring / Secret-Service unavailability is an ENVIRONMENT
+                // failure, not an auth verdict: a locked keychain or headless
+                // host without D-Bus would otherwise flag a perfectly valid
+                // account needs_reauth. Inconclusive — don't decide.
+                let err_text = format!(
+                    "{}{}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                )
+                .to_lowercase();
+                const KEYRING_SIGNATURES: &[&str] = &[
+                    "keyring",
+                    "secret service",
+                    "secret-service",
+                    "d-bus",
+                    "dbus",
+                    "keychain locked",
+                    "no such interface",
+                ];
+                if KEYRING_SIGNATURES.iter().any(|s| err_text.contains(s)) {
+                    return None;
+                }
                 return Some(false);
             }
             // Many status commands are *reporters*: they exit 0 and describe the
@@ -2822,6 +2911,7 @@ mod tests {
                 "commands": {
                     "login": "auth login",
                     "status": "auth status",
+                    "refresh": "auth refresh",
                     "logout": "auth logout"
                 },
                 "label": "Google Account",
@@ -2834,6 +2924,7 @@ mod tests {
         assert_eq!(auth.auth_type, "oauth_cli");
         assert_eq!(auth.commands.login, "auth login");
         assert_eq!(auth.commands.status.as_deref(), Some("auth status"));
+        assert_eq!(auth.commands.refresh.as_deref(), Some("auth refresh"));
         assert_eq!(auth.env.len(), 2);
         assert_eq!(auth.label, "Google Account");
     }
@@ -3045,6 +3136,7 @@ mod tests {
             commands: PluginAuthCommands {
                 login: String::new(),
                 status: None,
+                refresh: None,
                 logout: None,
             },
             label: String::new(),

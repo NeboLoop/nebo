@@ -14,6 +14,7 @@
   import AlertTriangle from 'lucide-svelte/icons/alert-triangle';
   import MemoryManager from '$lib/components/settings/MemoryManager.svelte';
   import ApprovalControls from '$lib/components/settings/ApprovalControls.svelte';
+  import LearningControls from '$lib/components/settings/LearningControls.svelte';
   import type { AgentInputField } from '$lib/types/agentPage';
   import { installFlow } from '$lib/stores/installFlow';
   import type { PluginAccount } from '$lib/api/pluginAccounts';
@@ -29,6 +30,7 @@
   const devMode = $derived(ctx.devMode);
 
   const section = $derived($page.params.section);
+  const isFullHeightEditor = $derived(section === 'persona' || section === 'soul');
 
   function createNewWorkflow() {
     const existing = workflowEntries.map(([name]: [string, WorkflowConfig]) => name);
@@ -180,7 +182,9 @@
 
   function selectColor(color: string) {
     if (!agent?.editable) return;
-    editColor = color;
+    // Clicking the already-selected swatch clears the override back to the
+    // default — same toggle interaction as the Approvals controls.
+    editColor = editColor === color ? '' : color;
     debounceIdentitySave();
   }
 
@@ -601,11 +605,15 @@
 <div class="h-11 px-[18px] border-b border-base-content/10 flex items-center gap-2 shrink-0">
   <span class="text-sm font-semibold">{agent?.name} &mdash; {$t(settingsSections.find(s => s.id === section)?.label ?? 'settings.title')}</span>
 </div>
-<div class="flex-1 overflow-y-auto p-6">
-  <div class="max-w-[480px] flex flex-col gap-5">
+<div class="flex-1 p-6 {isFullHeightEditor ? 'min-h-0 flex flex-col overflow-hidden' : 'overflow-y-auto'}">
+  <div class="max-w-[480px] flex flex-col gap-5 {isFullHeightEditor ? 'flex-1 min-h-0 w-full' : ''}">
 
     {#if section === 'general'}
       {@const gc = agent ? AGENT_COLORS_MAP[agent.color] : null}
+      <div>
+        <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('agentSettings.general')}</div>
+        <div class="text-xs text-base-content/70 mt-1">{$t('agentSettings.generalBlurb')}</div>
+      </div>
       <div class="flex items-start gap-4 pb-5 border-b border-base-300">
         <div class="w-12 h-12 rounded-field flex items-center justify-center font-mono text-base font-semibold shrink-0 {gc?.bgClass} {gc?.inkClass}">{agent?.initial}</div>
         <div class="flex-1 min-w-0">
@@ -634,6 +642,8 @@
           <div class="text-xs text-base-content/70">{$t('agentSettings.configManagedPrefix')} <span class="font-mono">agent.json</span> {$t('agentSettings.configManagedSuffix')}</div>
         </div>
       {/if}
+
+      <LearningControls {agentId} />
 
       {#if devMode}
         <div>
@@ -705,7 +715,10 @@
 
     {:else if section === 'identity'}
       <div class="flex items-center justify-between mb-1">
-        <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('settings.navItems.identity')}</div>
+        <div>
+          <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('settings.navItems.identity')}</div>
+          <div class="text-xs text-base-content/70 mt-1">{$t('agentSettings.identityBlurb')}</div>
+        </div>
         {#if identitySaved}
           <span class="text-xs text-success flex items-center gap-1"><Check class="w-3 h-3" /> {$t('common.saved')}</span>
         {/if}
@@ -723,7 +736,7 @@
       </label>
       <div>
         <div class="text-xs font-semibold uppercase tracking-wider mb-1.5">{$t('agentSettings.color')}</div>
-        <div class="flex gap-2">
+        <div class="flex gap-2 items-center">
           {#each ['violet', 'green', 'sky', 'amber', 'rose', 'mint', 'slate', 'peach'] as color}
             {@const c = AGENT_COLORS_MAP[color]}
             <button
@@ -733,6 +746,14 @@
               onclick={() => selectColor(color)}
             ></button>
           {/each}
+          {#if editColor}
+            <button
+              class="text-xs text-base-content/50 hover:text-base-content cursor-pointer bg-transparent border-none ml-1"
+              onclick={() => selectColor(editColor)}
+            >{$t('agentSettings.colorReset')}</button>
+          {:else}
+            <span class="text-xs text-base-content/40 ml-1">{$t('agentSettings.colorDefault')}</span>
+          {/if}
         </div>
       </div>
       <div>
@@ -744,46 +765,56 @@
       </div>
 
     {:else if section === 'persona'}
-      <div class="flex items-center justify-between mb-1">
-        <div>
-          <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('agentPersona.title')}</div>
-          <div class="text-xs text-base-content/70 mt-1">{$t('agentSettings.personaDesc')}</div>
-        </div>
-        {#if personaSaved}
-          <span class="text-xs text-success flex items-center gap-1"><Check class="w-3 h-3" /> {$t('common.saved')}</span>
-        {/if}
+      <div class="shrink-0">
+        <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('agentPersona.title')}</div>
+        <div class="text-xs text-base-content/70 mt-1">{$t('agentSettings.personaDesc')}</div>
       </div>
       {#if !agent?.editable}
-        <div class="rounded-lg border border-base-300 bg-base-200/50 px-3.5 py-2.5 text-xs text-base-content/70">{$t('agentSettings.managedByPrefix')} <span class="font-mono">AGENT.md</span> {$t('agentSettings.managedReadOnlySuffix')}</div>
+        <div class="shrink-0 rounded-lg border border-base-300 bg-base-200/50 px-3.5 py-2.5 text-xs text-base-content/70">{$t('agentSettings.managedByPrefix')} <span class="font-mono">AGENT.md</span> {$t('agentSettings.managedReadOnlySuffix')}</div>
       {/if}
-      <textarea rows="20"
+      <textarea
         bind:value={editPersona}
         oninput={debouncePersonaSave}
         disabled={!agent?.editable}
         placeholder={$t('agentSettings.personaPlaceholder')}
-        class="w-full py-[7px] px-2.5 rounded-md border border-base-300 text-sm bg-base-100 outline-none resize-y font-mono leading-relaxed disabled:opacity-60 disabled:cursor-not-allowed"
+        class="w-full flex-1 min-h-0 py-[7px] px-2.5 rounded-md border border-base-300 text-sm bg-base-100 outline-none resize-none font-mono leading-relaxed disabled:opacity-60 disabled:cursor-not-allowed"
       ></textarea>
-
-    {:else if section === 'soul'}
-      <div class="flex items-center justify-between mb-1">
-        <div>
-          <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('settings.navItems.soul')}</div>
-          <div class="text-xs text-base-content/70 mt-1">{$t('agentSettings.soulDesc')}</div>
-        </div>
-        {#if soulSaved}
+      <div class="shrink-0 flex items-center justify-end gap-3">
+        {#if personaSaved}
           <span class="text-xs text-success flex items-center gap-1"><Check class="w-3 h-3" /> {$t('common.saved')}</span>
         {/if}
+        <button
+          class="btn btn-primary btn-sm"
+          disabled={!agent?.editable}
+          onclick={() => { if (personaSaveTimer) clearTimeout(personaSaveTimer); savePersona(); }}
+        >{$t('common.save')}</button>
+      </div>
+
+    {:else if section === 'soul'}
+      <div class="shrink-0">
+        <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('settings.navItems.soul')}</div>
+        <div class="text-xs text-base-content/70 mt-1">{$t('agentSettings.soulDesc')}</div>
       </div>
       {#if !agent?.editable}
-        <div class="rounded-lg border border-base-300 bg-base-200/50 px-3.5 py-2.5 text-xs text-base-content/70">{$t('agentSettings.managedExternally')}</div>
+        <div class="shrink-0 rounded-lg border border-base-300 bg-base-200/50 px-3.5 py-2.5 text-xs text-base-content/70">{$t('agentSettings.managedExternally')}</div>
       {/if}
-      <textarea rows="20"
+      <textarea
         bind:value={editSoul}
         oninput={debounceSoulSave}
         disabled={!agent?.editable}
         placeholder={$t('agentSettings.soulPlaceholder')}
-        class="w-full py-[7px] px-2.5 rounded-md border border-base-300 text-sm bg-base-100 outline-none resize-y font-mono leading-relaxed disabled:opacity-60 disabled:cursor-not-allowed"
+        class="w-full flex-1 min-h-0 py-[7px] px-2.5 rounded-md border border-base-300 text-sm bg-base-100 outline-none resize-none font-mono leading-relaxed disabled:opacity-60 disabled:cursor-not-allowed"
       ></textarea>
+      <div class="shrink-0 flex items-center justify-end gap-3">
+        {#if soulSaved}
+          <span class="text-xs text-success flex items-center gap-1"><Check class="w-3 h-3" /> {$t('common.saved')}</span>
+        {/if}
+        <button
+          class="btn btn-primary btn-sm"
+          disabled={!agent?.editable}
+          onclick={() => { if (soulSaveTimer) clearTimeout(soulSaveTimer); saveSoul(); }}
+        >{$t('common.save')}</button>
+      </div>
 
     {:else if section === 'rules'}
       <div class="flex items-center justify-between mb-1">
@@ -808,7 +839,10 @@
 
     {:else if section === 'configure'}
       <div class="flex items-center justify-between gap-3 mb-1">
-        <div class="text-sm">{$t('agentConfigure.inputsCustomize', { values: { name: agent?.name ?? '' } })}</div>
+        <div>
+          <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('agent.configure')}</div>
+          <div class="text-xs text-base-content/70 mt-1">{$t('agentConfigure.inputsCustomize', { values: { name: agent?.name ?? '' } })}</div>
+        </div>
         {#if configFields.length > 0}
           <button type="button" class="btn btn-sm btn-primary shrink-0" onclick={openConfigure}>{$t('agent.configure')}</button>
         {/if}
@@ -832,6 +866,23 @@
       {/if}
 
     {:else if section === 'workflows'}
+      <div class="flex items-center justify-between gap-3 mb-1">
+        <div>
+          <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('marketplace.workflows')}</div>
+          <div class="text-xs text-base-content/70 mt-1">{$t('agentSettings.automatedSequencesFor', { values: { name: agent?.name ?? '' } })}</div>
+        </div>
+        {#if workflowEntries.length > 0}
+          <button
+            class="flex items-center gap-1.5 py-1 px-2.5 rounded-lg border border-base-300 text-xs font-medium cursor-pointer bg-base-100 hover:bg-base-200 transition-colors shrink-0"
+            onclick={() => ctx.openCanvas()}
+            title={$t('agentSettings.openCanvasEditor')}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="8" y="14" width="7" height="7" rx="1"/><line x1="6.5" y1="10" x2="11.5" y2="14"/><line x1="17.5" y1="10" x2="11.5" y2="14"/></svg>
+            {$t('agentSettings.canvas')}
+          </button>
+        {/if}
+      </div>
+
       <!-- Stats cards -->
       {#if workflowStats.totalRuns > 0}
         <div class="grid grid-cols-4 gap-2 mb-4">
@@ -853,21 +904,6 @@
           </div>
         </div>
       {/if}
-
-      <!-- Header with canvas button -->
-      <div class="flex items-center justify-between mb-3">
-        <div class="text-sm">{$t('agentSettings.automatedSequencesFor', { values: { name: agent?.name ?? '' } })}</div>
-        {#if workflowEntries.length > 0}
-          <button
-            class="flex items-center gap-1.5 py-1 px-2.5 rounded-lg border border-base-300 text-xs font-medium cursor-pointer bg-base-100 hover:bg-base-200 transition-colors"
-            onclick={() => ctx.openCanvas()}
-            title={$t('agentSettings.openCanvasEditor')}
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="8" y="14" width="7" height="7" rx="1"/><line x1="6.5" y1="10" x2="11.5" y2="14"/><line x1="17.5" y1="10" x2="11.5" y2="14"/></svg>
-            {$t('agentSettings.canvas')}
-          </button>
-        {/if}
-      </div>
 
       {#if workflowEntries.length === 0}
         <div class="text-center py-8 text-sm">
@@ -919,7 +955,10 @@
       <button class="mt-3 w-full py-2.5 rounded-lg border border-dashed border-base-300 text-sm text-primary font-medium cursor-pointer bg-transparent hover:bg-base-200 transition-colors" onclick={createNewWorkflow}>{$t('agentSettings.newWorkflow')}</button>
 
     {:else if section === 'skills'}
-      <div class="text-xs text-base-content/70 mb-2">{$t('agentSettings.skillsAssignedTo', { values: { name: agent?.name ?? '' } })}</div>
+      <div class="mb-1">
+        <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('settings.navItems.skills')}</div>
+        <div class="text-xs text-base-content/70 mt-1">{$t('agentSettings.skillsAssignedTo', { values: { name: agent?.name ?? '' } })}</div>
+      </div>
       {#each skills as skill}
         <div class="flex items-center gap-2.5 py-2 px-3 rounded-lg border border-base-300 bg-base-100">
           <div class="w-7 h-7 rounded-md bg-base-200 flex items-center justify-center text-sm shrink-0">&#9889;</div>
@@ -930,6 +969,10 @@
       <a href="/marketplace/skills" class="inline-flex items-center gap-1 text-sm text-primary font-medium mt-1">{$t('agentSettings.addFromMarketplace')}</a>
 
     {:else if section === 'channels'}
+      <div class="mb-1">
+        <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('agentSettings.channels')}</div>
+        <div class="text-xs text-base-content/70 mt-1">{$t('agentSettings.channelsDesc', { values: { name: agent?.name ?? '' } })}</div>
+      </div>
       <div class="flex items-center gap-3 py-2.5 px-3 rounded-lg border border-base-300 bg-base-100 mb-3">
         <div class="flex-1 min-w-0">
           <div class="text-sm font-medium">{$t('agentSettings.exposeToLoop')}</div>
@@ -944,7 +987,6 @@
           onchange={saveLoopExposed}
         />
       </div>
-      <div class="text-xs text-base-content/70 mb-2">{$t('agentSettings.channelsDesc', { values: { name: agent?.name ?? '' } })}</div>
       {#if channelsLoading}
         <div class="text-xs text-base-content/50 py-6 text-center">{$t('agentSettings.loadingChannels')}</div>
       {:else if channelList.length === 0}
@@ -1001,7 +1043,10 @@
       {/if}
 
     {:else if section === 'accounts'}
-      <div class="text-xs text-base-content/70 mb-2">{$t('agentSettings.accountsDesc', { values: { name: agent?.name ?? '' } })}</div>
+      <div class="mb-1">
+        <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('agentSettings.connectedAccounts')}</div>
+        <div class="text-xs text-base-content/70 mt-1">{$t('agentSettings.accountsDesc', { values: { name: agent?.name ?? '' } })}</div>
+      </div>
       {#if accountsLoading}
         <div class="text-xs text-base-content/50 py-6 text-center">{$t('agentSettings.loadingAccounts')}</div>
       {:else if accountPlugins.length === 0}
@@ -1066,6 +1111,10 @@
       {/if}
 
     {:else if section === 'approvals'}
+      <div class="mb-1">
+        <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('agentSettings.approvals')}</div>
+        <div class="text-xs text-base-content/70 mt-1">{$t('agentSettings.approvalsBlurb')}</div>
+      </div>
       <ApprovalControls {agentId} />
 
     {:else if section === 'memory'}

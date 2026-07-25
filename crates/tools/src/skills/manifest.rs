@@ -53,6 +53,10 @@ pub struct SkillEntry {
     pub plugins: Vec<PluginDependency>,
     pub requires: Vec<SkillRequirement>,
     pub source: SkillSource,
+    /// Owning agent for Learned skills (None for global). `default` so
+    /// manifests written before this field existed still load.
+    #[serde(default)]
+    pub owner_agent_id: Option<String>,
 
     // ── Fields marked #[serde(skip)] on Skill — stored explicitly ──
     pub enabled: bool,
@@ -118,6 +122,7 @@ impl SkillManifest {
                     plugins: entry.plugins,
                     requires: entry.requires,
                     source: entry.source,
+                    owner_agent_id: entry.owner_agent_id,
                     // #[serde(skip)] fields restored from manifest
                     enabled: entry.enabled,
                     degraded: entry.degraded,
@@ -158,6 +163,7 @@ impl SkillManifest {
                     plugins: skill.plugins.clone(),
                     requires: skill.requires.clone(),
                     source: skill.source,
+                    owner_agent_id: skill.owner_agent_id.clone(),
                     enabled: skill.enabled,
                     degraded: skill.degraded.clone(),
                     source_path: skill.source_path.clone(),
@@ -300,6 +306,7 @@ mod tests {
             degraded: None,
             source_path: Some(PathBuf::from("/tmp/test/SKILL.md")),
             source: SkillSource::User,
+            owner_agent_id: None,
             base_dir: Some(PathBuf::from("/tmp/test")),
             napp_path: None,
             license_key: None,

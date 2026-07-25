@@ -1221,6 +1221,7 @@
     "displayName": "Display Name",
     "occupation": "Occupation",
     "autoDetect": "Auto-detect",
+    "saveFailed": "Couldn't save — click to retry",
     "addInterestPlaceholder": "Add interest…",
     "goals": "Goals"
   },
@@ -1803,6 +1804,15 @@
     "threadOptions": "Chat options",
     "noChatsYet": "No chats yet. Start a new one."
   },
+  "agentLearning": {
+    "title": "Self-improvement",
+    "auto": "Learn freely",
+    "autoHint": "This employee saves lessons from your corrections on its own",
+    "staged": "Ask me first",
+    "stagedHint": "New lessons wait in your Inbox until you approve them",
+    "off": "Off",
+    "offHint": "This employee does not learn from conversations"
+  },
   "agentApprovals": {
     "title": "Approvals",
     "intro": "Choose what this employee can do on its own. \"Always allow\" runs without asking, \"Needs approval\" pauses and asks you first, \"Blocked\" turns the action off entirely.",
@@ -1820,7 +1830,10 @@
   },
   "agentSettings": {
     "approvals": "Approvals",
+    "approvalsBlurb": "What this employee may do on its own, and what waits for you.",
     "general": "General",
+    "generalBlurb": "An overview of this employee — status, skills, workflows, and housekeeping.",
+    "identityBlurb": "Name, color, and status — how this employee appears across the app.",
     "nameLabel": "Name",
     "namePlaceholder": "Employee name",
     "descriptionLabel": "Description",
@@ -1869,6 +1882,8 @@
     "agentName": "Agent Name",
     "role": "Role",
     "color": "Color",
+    "colorReset": "Reset to default",
+    "colorDefault": "Default",
     "personaDesc": "The agent's operating instructions — what it does, how it works, what rules it follows.",
     "personaPlaceholder": "You are an AI employee who specializes in...\n\n## Rules\n- Always confirm before taking consequential actions\n- Be concise but thorough when needed\n\n## Capabilities\n- Research and analysis\n- Document drafting\n- Task automation",
     "soulDesc": "Who this agent IS — voice, tone, personality, values, and boundaries. Not what it does, but how it speaks and who it is.",
@@ -2285,6 +2300,7 @@
     "entityBlurb": "What this employee knows about the specific people, companies, and things it deals with.",
     "deleteMemory": "Delete memory",
     "deleteThisMemory": "Delete this memory",
+    "confirmDelete": "Click again to confirm",
     "howItWorks": "How memory works",
     "howItWorksIntro": "This employee remembers across conversations in three layers — and only its own:"
   },
@@ -2582,6 +2598,7 @@
     "approve": "Approve",
     "deny": "Deny",
     "approved": "Approved",
-    "denied": "Denied"
+    "denied": "Denied",
+    "conflict": "Skill changed — discarded"
   }
 }

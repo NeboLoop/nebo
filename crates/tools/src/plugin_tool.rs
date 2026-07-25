@@ -19,8 +19,12 @@ use crate::registry::{DynTool, ToolResult};
 /// flags, and examples. The plugin tool routes to them via `action: "help"`.
 ///
 /// When a plugin command fails due to stale OAuth credentials, the tool
-/// automatically detects the auth failure, triggers re-authentication via
-/// the plugin's declared `auth login` command, and retries the original command.
+/// automatically detects the auth failure and self-heals: first a SILENT
+/// token renewal via the manifest's `auth.commands.refresh` (when declared),
+/// and only then — in interactive chat — browser re-authentication via the
+/// plugin's `auth login` command, retrying the original command on success.
+/// Unattended runs (workflow/channel/schedule) never block on interactive
+/// login: the account is flagged `needs_reauth` and the turn ends.
 pub struct PluginTool {
     plugin_store: Arc<napp::plugin::PluginStore>,
     db_store: Arc<db::Store>,
@@ -835,21 +839,108 @@ impl PluginTool {
 
         let result = self.run_plugin_command(pi, ctx).await;
 
-        // On error, check if it's an auth failure and attempt re-auth.
+        // On error, check if it's an auth failure and attempt self-heal:
+        // silent refresh first (manifest `auth.commands.refresh`), interactive
+        // browser login only as the last resort — and never when unattended.
         if result.is_error {
             if let Some((binary, auth)) = self.plugin_store.get_auth_info(&pi.resource) {
                 if is_auth_error(&result.content) {
+                    // Resolve this agent's account profile for profile-dir
+                    // plugins (e.g. gws) so the confirm probe and the silent
+                    // refresh hit the SAME config dir the failing command ran
+                    // against — the plugin's global default dir may be a
+                    // different (healthy) account.
+                    let profile = auth.profile_dir_env.as_deref().and_then(|_| {
+                        let selected = pi.args.get("account").cloned().or_else(|| {
+                            shlex::split(&pi.command)
+                                .and_then(|mut a| extract_and_strip_flag(&mut a, "account"))
+                        });
+                        agent_id_from_session_key(&ctx.session_key).and_then(|agent_id| {
+                            self.db_store
+                                .resolve_plugin_account_profile(
+                                    &agent_id,
+                                    &pi.resource,
+                                    selected.as_deref(),
+                                )
+                                .ok()
+                                .flatten()
+                        })
+                    });
+                    let probe_dir: Option<(&str, &str)> =
+                        match (auth.profile_dir_env.as_deref(), profile.as_ref()) {
+                            (Some(env), Some(p)) => Some((env, p.config_dir.as_str())),
+                            _ => None,
+                        };
+
                     // Confirm with a fresh auth-status check (the one canonical
                     // decision, via PluginStore) if the command is available.
                     if auth.commands.status.is_some()
-                        && self.plugin_store.check_auth_now(&pi.resource).await
+                        && self.probe_auth(&pi.resource, probe_dir).await == Some(true)
                     {
                         // Status says authenticated — false positive, return original error
                         return result;
                     }
 
-                    info!(plugin = %pi.resource, "auth failure detected, triggering re-authentication");
+                    info!(plugin = %pi.resource, "auth failure detected");
 
+                    // FIRST: silent, non-interactive token renewal when the
+                    // manifest declares a refresh command. No user interruption,
+                    // no browser — renew, re-probe, retry.
+                    if auth.commands.refresh.is_some() {
+                        self.plugin_store
+                            .run_auth_refresh(&pi.resource, probe_dir)
+                            .await;
+                        if self.probe_auth(&pi.resource, probe_dir).await == Some(true) {
+                            info!(plugin = %pi.resource, "silent token refresh healed auth, retrying command");
+                            return self.run_plugin_command(pi, ctx).await;
+                        }
+                    }
+
+                    // Unattended run (workflow / channel / schedule — nobody at
+                    // the keyboard): NEVER block on interactive browser login.
+                    // Flag the account for reconnect + fire the one canonical
+                    // reauth notification, then end the turn.
+                    let interactive = crate::origin::ExecutionMode::from(ctx.origin)
+                        == crate::origin::ExecutionMode::Interactive
+                        && ctx.ask_channels.is_some();
+                    if !interactive {
+                        warn!(plugin = %pi.resource, "auth expired in unattended run; silent refresh failed");
+                        if let Some(p) = profile.as_ref() {
+                            if let Err(e) = self.db_store.set_plugin_account_reauth(&p.id, true) {
+                                warn!(error = %e, "failed to set plugin reauth flag");
+                            }
+                            if !p.reauth_notified {
+                                notify_plugin_needs_reauth(
+                                    &self.db_store,
+                                    |ev, data| {
+                                        if let Some(ref bc) = self.broadcaster {
+                                            bc(ev, data);
+                                        }
+                                    },
+                                    p,
+                                );
+                                let _ =
+                                    self.db_store.mark_plugin_account_reauth_notified(&p.id);
+                            }
+                        }
+                        if let Some(ref bc) = self.broadcaster {
+                            bc(
+                                "plugin_auth_error",
+                                serde_json::json!({
+                                    "plugin": &pi.resource,
+                                    "error": "Authentication expired and silent refresh failed",
+                                }),
+                            );
+                        }
+                        return ToolResult::terminal(format!(
+                            "I couldn't reach **{}** — its authentication expired and automatic \
+                             renewal didn't work. Please reconnect this account in the agent's \
+                             Connected Accounts (Settings), then ask me again.",
+                            pi.resource
+                        ));
+                    }
+
+                    // Interactive chat: fall through to today's browser OAuth path.
                     // Broadcast re-auth request so frontend can show a notification
                     if let Some(ref bc) = self.broadcaster {
                         bc(
@@ -1290,6 +1381,21 @@ impl PluginTool {
     /// Run the plugin's `auth login` command to trigger OAuth re-authentication.
     /// Opens the browser for the user to complete the OAuth flow.
     /// Returns `true` if login succeeded (exit code 0).
+    /// Fresh auth probe against the exact credential dir the failing command
+    /// used: profile-aware when the plugin declares per-account config dirs,
+    /// otherwise the global slug-level check. `Some(true)` = authenticated,
+    /// `Some(false)` = definitively not, `None` = inconclusive.
+    async fn probe_auth(&self, slug: &str, profile_dir: Option<(&str, &str)>) -> Option<bool> {
+        match profile_dir {
+            Some((env, dir)) => {
+                self.plugin_store
+                    .check_auth_for_profile(slug, env, dir)
+                    .await
+            }
+            None => Some(self.plugin_store.check_auth_now(slug).await),
+        }
+    }
+
     async fn run_auth_login(
         &self,
         slug: &str,
@@ -1495,6 +1601,58 @@ pub(crate) fn produced_work_document(
             .unwrap_or(false);
         fresh.then(|| path.to_string_lossy().to_string())
     })
+}
+
+/// Fire the one-time "reconnect this account" notification (bell + toast) and
+/// broadcast it, mirroring the canonical proactive-notification pathway. This
+/// is the ONE pathway for plugin-account reauth notifications — used by the
+/// server's proactive token refresher (`spawn_plugin_token_refresher`) and by
+/// the mid-run unattended auth-failure path above. `broadcast` is the caller's
+/// event fan-out (hub broadcast / tool broadcaster).
+pub fn notify_plugin_needs_reauth(
+    store: &db::Store,
+    broadcast: impl Fn(&str, serde_json::Value),
+    p: &db::PluginAccountProfile,
+) {
+    let user_id = store.ensure_local_user_id().unwrap_or_default();
+    // Fresh id per occurrence: the `reauth_notified` flag (reset on recovery) is
+    // the once-per-spell guard, so a unique id lets a *future* expiry notify again
+    // rather than being suppressed by a stale, already-read notification.
+    let notif_id = uuid::Uuid::new_v4().to_string();
+    let title = format!("Reconnect {}", p.account_label);
+    let body = format!(
+        "{}'s connection to {} expired. Reconnect it in the agent's Connected Accounts.",
+        p.account_label, p.plugin_slug
+    );
+    let action_url = format!("/{}/settings/accounts", p.agent_id);
+    if let Err(e) = store.create_notification(
+        &notif_id,
+        &user_id,
+        "warning",
+        &title,
+        Some(&body),
+        Some(&action_url),
+        None,
+        Some(p.agent_id.as_ref()),
+    ) {
+        warn!(error = %e, "failed to create plugin reauth notification");
+        return;
+    }
+    broadcast(
+        "notification_created",
+        serde_json::json!({
+            "id": notif_id,
+            "type": "warning",
+            "title": title,
+            "body": body,
+            "actionUrl": action_url,
+            "readAt": null,
+            "createdAt": std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+        }),
+    );
 }
 
 pub(crate) fn agent_id_from_session_key(key: &str) -> Option<String> {

@@ -634,7 +634,7 @@ impl Runner {
         if !req.preload_skills.is_empty() {
             if let Some(ref loader) = self.skill_loader {
                 for skill_name in &req.preload_skills {
-                    if let Some(skill) = loader.get(skill_name).await {
+                    if let Some(skill) = loader.get(skill_name, None).await {
                         if skill.enabled {
                             let content = loader.expand_template(&skill, Some(&self.store));
                             if !content.is_empty() {
@@ -1009,6 +1009,7 @@ impl Runner {
                         &preactivate_tools,
                         channel_ctx.as_ref(),
                         None, // forks carry no mention context
+                        None, // command forks are not review forks
                     )
                     .await;
 
@@ -1081,7 +1082,7 @@ impl Runner {
                 presence_tracker.as_ref(),
                 proactive_inbox.as_ref(),
                 min_iterations,
-                prompt_mode,
+                prompt_mode.clone(),
                 progress.as_ref(),
                 ask_channels.as_ref(),
                 approval_channels.as_ref(),
@@ -1093,9 +1094,11 @@ impl Runner {
                 &preactivate_tools,
                 channel_ctx.as_ref(),
                 mention_context.as_deref(),
+                None, // top-level runs are never review forks
             )
             .await;
 
+            let run_ok = result.is_ok();
             if let Err(e) = result {
                 let _ = tx
                     .send(StreamEvent::error(format!("Agent error: {}", e)))
@@ -1164,6 +1167,178 @@ impl Runner {
                         }
                     }
                 });
+            }
+
+            // ── Self-improvement review fork (docs/design/SELF_IMPROVEMENT.md WS2) ──
+            // After REVIEW_TURN_INTERVAL turns without a voluntary skill save,
+            // fork the conversation into its own throwaway session
+            // (fork:<id>:review-*), replay the history verbatim (warm prefix
+            // cache), and ask "what should be learned?". Gated on the
+            // employee's learning_mode = "auto"; single-flight per session.
+            // The fork runs with skip_memory=true, so it can never spawn a
+            // review of itself, and its harness prompt never touches the
+            // user's chat (the Hermes "curator takeover" lesson — STUDY §2).
+            if !skip_memory && run_ok && !cancel_token.is_cancelled() && !agent_id.is_empty() {
+                // "auto" commits directly; "staged" stages to pending_writes
+                // for Inbox approval; anything else (off/NULL) = no fork.
+                let learning_mode = store
+                    .get_entity_config("agent", &agent_id)
+                    .ok()
+                    .flatten()
+                    .and_then(|c| c.learning_mode)
+                    .map(|m| m.to_ascii_lowercase())
+                    .unwrap_or_default();
+                let learning_staged = learning_mode == "staged";
+                if (learning_mode == "auto" || learning_staged)
+                    && crate::review_fork::should_review(&session_id)
+                    && crate::review_fork::try_begin(&session_id)
+                {
+                    let session_mgr_rf = session_mgr.clone();
+                    let tools_rf = tools.clone();
+                    let store_rf = store.clone();
+                    let providers_rf = providers.clone();
+                    let concurrency_rf = concurrency.clone();
+                    let selector_rf = selector.clone();
+                    let hooks_rf = hooks.clone();
+                    let session_id_rf = session_id.clone();
+                    let system_prompt_rf = system_prompt.clone();
+                    let model_override_rf = model_override.clone();
+                    let user_id_rf = user_id.clone();
+                    let channel_rf = channel.clone();
+                    let model_aliases_rf = model_aliases.clone();
+                    let agent_registry_rf = agent_registry.clone();
+                    let agent_id_rf = agent_id.clone();
+                    let personality_snippet_rf = personality_snippet.clone();
+                    let entity_permissions_rf = entity_permissions.clone();
+                    let operation_policy_rf = operation_policy.clone();
+                    let entity_resource_grants_rf = entity_resource_grants.clone();
+                    let skill_loader_rf = skill_loader.clone();
+                    let allowed_paths_rf = allowed_paths.clone();
+                    let embedding_provider_rf = embedding_provider.clone();
+                    let hybrid_searcher_rf = hybrid_searcher.clone();
+                    let tool_scope_rf = tool_scope.clone();
+                    let channel_ctx_rf = channel_ctx.clone();
+                    let prompt_mode_rf = prompt_mode.clone();
+                    tokio::spawn(async move {
+                        info!(session_id = %session_id_rf, agent_id = %agent_id_rf, "self-improvement review fork starting");
+                        let fork_key =
+                            format!("fork:{}:review-{}", session_id_rf, uuid::Uuid::new_v4());
+                        let fork_session =
+                            match session_mgr_rf.get_or_create(&fork_key, &user_id_rf) {
+                                Ok(s) => s,
+                                Err(e) => {
+                                    warn!(error = %e, "review fork: failed to create session");
+                                    crate::review_fork::finish(&session_id_rf);
+                                    return;
+                                }
+                            };
+                        // Replay the parent conversation verbatim so the fork's
+                        // request shares the parent's prefix (cache reads).
+                        let msgs = session_mgr_rf
+                            .get_messages(&session_id_rf)
+                            .unwrap_or_default();
+                        for m in &msgs {
+                            let _ = session_mgr_rf.append_message(
+                                &fork_session.id,
+                                &m.role,
+                                &m.content,
+                                m.tool_calls.as_deref(),
+                                m.tool_results.as_deref(),
+                                m.metadata.as_deref(),
+                            );
+                        }
+                        let _ = session_mgr_rf.append_message(
+                            &fork_session.id,
+                            "user",
+                            crate::review_fork::REVIEW_PROMPT,
+                            None,
+                            None,
+                            None,
+                        );
+
+                        let (sub_tx, mut sub_rx) = mpsc::channel::<StreamEvent>(256);
+                        // Drain concurrently — a full channel would wedge the
+                        // fork and hold the single-flight slot forever.
+                        let drainer = tokio::spawn(async move {
+                            let mut text = String::new();
+                            while let Some(ev) = sub_rx.recv().await {
+                                if ev.event_type == StreamEventType::Text {
+                                    text.push_str(&ev.text);
+                                }
+                            }
+                            text
+                        });
+
+                        let fork_cancel = CancellationToken::new();
+                        let rfctx =
+                            crate::review_fork::ReviewForkCtx::new(agent_id_rf.clone(), learning_staged);
+                        let fork_result = run_loop(
+                            &session_mgr_rf,
+                            &tools_rf,
+                            &store_rf,
+                            &providers_rf,
+                            &concurrency_rf,
+                            &selector_rf,
+                            &hooks_rf,
+                            &sub_tx,
+                            &fork_session.id,
+                            &system_prompt_rf,
+                            &model_override_rf,
+                            &user_id_rf,
+                            &channel_rf,
+                            &model_aliases_rf,
+                            Origin::System,
+                            true, // skip_memory: no extraction/title/recursion from the fork
+                            crate::review_fork::REVIEW_MAX_ITERATIONS,
+                            &fork_cancel,
+                            &agent_registry_rf,
+                            &agent_id_rf,
+                            personality_snippet_rf.as_deref(),
+                            entity_permissions_rf.as_ref(),
+                            operation_policy_rf.as_ref(),
+                            entity_resource_grants_rf.as_ref(),
+                            crate::review_fork::REVIEW_PROMPT,
+                            "",
+                            skill_loader_rf.as_deref(),
+                            &allowed_paths_rf,
+                            None,
+                            None,
+                            0,
+                            prompt_mode_rf,
+                            None,
+                            None,
+                            None,
+                            false, // no full_access — the whitelist blocks shell anyway
+                            embedding_provider_rf.as_ref(),
+                            hybrid_searcher_rf.as_ref(),
+                            tool_scope_rf.as_deref(),
+                            false,
+                            &[],
+                            channel_ctx_rf.as_ref(),
+                            None,
+                            Some(rfctx),
+                        )
+                        .await;
+                        drop(sub_tx);
+
+                        let summary = drainer.await.unwrap_or_default();
+                        match fork_result {
+                            Ok(()) => {
+                                let line = summary.trim().chars().take(300).collect::<String>();
+                                info!(
+                                    session_id = %session_id_rf,
+                                    agent_id = %agent_id_rf,
+                                    summary = %line,
+                                    "self-improvement review finished"
+                                );
+                            }
+                            Err(e) => {
+                                warn!(session_id = %session_id_rf, error = %e, "self-improvement review failed");
+                            }
+                        }
+                        crate::review_fork::finish(&session_id_rf);
+                    });
+                }
             }
         });
 
@@ -1295,6 +1470,7 @@ async fn run_loop(
     preactivate_tools: &[String],
     channel_ctx: Option<&tools::ChannelContext>,
     mention_context: Option<&str>,
+    review_fork: Option<crate::review_fork::ReviewForkCtx>,
 ) -> Result<(), String> {
     let mut state = RunState::new();
     // Stream reminders are EPHEMERAL: queued here, injected into the NEXT
@@ -1596,7 +1772,7 @@ async fn run_loop(
     // (part of the job definition — always present for that agent).
     let active_skill_template = if let Some(loader) = skill_loader {
         if !force_skill.is_empty() {
-            match loader.get(force_skill).await {
+            match loader.get(force_skill, None).await {
                 Some(skill) if skill.enabled => {
                     info!(skill = %skill.name, "force-activated skill");
                     Some(loader.expand_template(&skill, Some(store)))
@@ -1637,7 +1813,16 @@ async fn run_loop(
         .await;
         recalled_ids = ids;
         if !relevant.is_empty() {
-            db_context_formatted.push_str(&relevant);
+            // Recall rides the first LLM call as an EPHEMERAL stream reminder
+            // (message side) instead of the system prompt: per-turn content in
+            // the prompt busts the prompt-cache prefix every turn, while the
+            // identity slice above stays byte-stable. Same drain as the
+            // timestamp reminder — injected once, never persisted.
+            pending_stream_reminders.push(steering::wrap_system_reminder(&format!(
+                "Recalled from your persistent memory (not new user input — \
+                 treat as authoritative reference):\n{}",
+                relevant
+            )));
         }
         info!(
             wait_ms = t_join.elapsed().as_millis() as u64,
@@ -1645,8 +1830,9 @@ async fn run_loop(
         );
     }
 
-    // Access accounting: memories actually injected into this prompt — the
-    // identity slice plus per-message recall — get their access_count bumped
+    // Access accounting: memories actually injected into this turn's context —
+    // the identity slice (system prompt) plus per-message recall (stream
+    // reminder) — get their access_count bumped
     // so decay ranking reflects real usefulness (without this, a new correct
     // memory loses to an old touched one forever). Spawned: never blocks the
     // hot path.
@@ -1879,8 +2065,12 @@ async fn run_loop(
 
     // Compact skill listing (name + capped description per enabled skill).
     // Discovery metadata only — full bodies load on demand via skill(action: "load").
+    // Agent-scoped runs also see their own Learned skills in the index.
     let skill_catalog = match skill_loader {
-        Some(loader) => loader.compact_catalog().await,
+        Some(loader) => {
+            let scope = (!agent_id.is_empty()).then_some(agent_id);
+            loader.compact_catalog(scope).await
+        }
         None => String::new(),
     };
 
@@ -3107,10 +3297,42 @@ async fn run_loop(
             let err = ProviderError::Stream(err_msg.clone());
             let reason = ai::classify_error_reason(&err);
 
+            // Mid-stream cutoff continuation: partial text the user already
+            // watched stream would die with the retry `continue` below (which
+            // skips the normal end-of-iteration save), so the retried call
+            // would regenerate — repeating or restarting what was already
+            // delivered. Persist the partial turn (same append pathway as the
+            // cancel save in the stream loop) and steer the retry to resume in
+            // place. Partial tool calls are NOT saved — an assistant tool_use
+            // with no tool result is an invalid sequence for every provider.
+            // Called only on the branches that actually retry; the
+            // non-retryable fall-through persists via the normal save.
+            let mut queue_cutoff_continuation = || {
+                if assistant_content.is_empty() {
+                    return;
+                }
+                if let Err(e) = sessions.append_message(
+                    session_id,
+                    "assistant",
+                    &assistant_content,
+                    None,
+                    None,
+                    None,
+                ) {
+                    warn!(session_id = %session_id, error = %e, "failed to save partial assistant message before stream retry");
+                }
+                pending_stream_reminders.push(steering::wrap_system_reminder(
+                    "Your previous response was cut off mid-stream by a \
+                     connection error. Continue EXACTLY where you left off — \
+                     do not repeat or restart.",
+                ));
+            };
+
             // Layer 1: Transient errors (connection reset, timeout, EOF)
             if ai::is_transient_error(&err) {
                 transient_retries += 1;
                 if transient_retries <= MAX_TRANSIENT_RETRIES {
+                    queue_cutoff_continuation();
                     let prov_count = providers.read().await.len();
                     if prov_count > 1 {
                         provider_idx += 1;
@@ -3149,6 +3371,7 @@ async fn run_loop(
                     reason,
                     retryable_retries, "retryable stream error, trying next provider"
                 );
+                queue_cutoff_continuation();
                 let prov_count = providers.read().await.len();
                 if prov_count > 1 {
                     provider_idx += 1;
@@ -3368,6 +3591,14 @@ async fn run_loop(
                 memory_writes_disabled,
                 // Populated by the approval gate below, before tool execution.
                 approved_categories: std::collections::HashSet::new(),
+                // Review-fork restrictions (None/default for normal runs).
+                tool_whitelist: review_fork.as_ref().map(|r| r.whitelist.clone()),
+                learned_write_agent: review_fork.as_ref().map(|r| r.owner_agent_id.clone()),
+                learned_write_staged: review_fork.as_ref().map(|r| r.staged).unwrap_or(false),
+                skills_read: review_fork
+                    .as_ref()
+                    .map(|r| r.skills_read.clone())
+                    .unwrap_or_default(),
             };
 
             // Track tool names for context filtering
@@ -3503,6 +3734,26 @@ async fn run_loop(
                             key, SAME_ACTION_LIMIT
                         )),
                     ));
+                }
+            }
+
+            // ── Review-fork whitelist (docs/design/SELF_IMPROVEMENT.md WS2) ──
+            // The fork DECLARES the full roster (prompt-cache byte parity) but
+            // may only EXECUTE whitelisted tools; everything else is denied
+            // here with a corrective error — the ONE dispatch choke point.
+            if let Some(ref rf) = review_fork {
+                for (idx, tc) in tool_calls.iter().enumerate() {
+                    if blocked_results[idx].is_none() && !rf.whitelist.contains(&tc.name) {
+                        blocked_results[idx] = Some((
+                            tc.clone(),
+                            ToolResult::error(format!(
+                                "Background review denied non-whitelisted tool: {}. \
+                                 Only the skill tool is available in this review pass — \
+                                 save the learning with it or reply 'Nothing to save.'",
+                                tc.name
+                            )),
+                        ));
+                    }
                 }
             }
 
@@ -4347,6 +4598,16 @@ async fn run_loop(
                                 debug!(tools = ?names, "tool_search discovered tools (active next turn)");
                             }
                         }
+                    }
+                }
+
+                // Voluntary skill save: the model updated its library on its
+                // own — push the self-improvement review backstop out (the
+                // review only fires when organic learning has stalled).
+                if !result.is_error && tc.name == "skill" {
+                    let action = tc.input.get("action").and_then(|v| v.as_str()).unwrap_or("");
+                    if matches!(action, "create" | "update") {
+                        crate::review_fork::note_voluntary_save(session_id);
                     }
                 }
 

@@ -344,13 +344,21 @@ async fn sync_bridge(state: &AppState) {
 /// expiring within the window so it never reaches expiry (and never 401s / drops a
 /// server on reconnect or restart). This is the "fresh 100% of the time" guarantee:
 /// renew proactively rather than reactively at connect time. Runs on an interval.
-pub fn spawn_mcp_token_refresher(state: AppState) {
+pub fn spawn_mcp_token_refresher(state: AppState, wake: std::sync::Arc<tokio::sync::Notify>) {
     const REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(300); // 5 min
     const REFRESH_WINDOW_SECS: i64 = 900; // renew when < 15 min to expiry
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(REFRESH_INTERVAL);
         loop {
-            tick.tick().await; // first tick fires immediately, so we also catch startup
+            // First interval tick fires immediately (catches startup); `wake` is
+            // pinged by the sleep detector so tokens that expired while the
+            // machine slept are renewed NOW, not at the frozen timer's leisure.
+            tokio::select! {
+                _ = tick.tick() => {}
+                _ = wake.notified() => {
+                    info!("mcp token refresher: wake kick, refreshing immediately");
+                }
+            }
             let integrations = match state.store.list_mcp_integrations() {
                 Ok(v) => v,
                 Err(e) => {
@@ -396,12 +404,20 @@ pub fn spawn_mcp_token_refresher(state: AppState) {
 /// auth `status` command (which exercises the token) and, when it reports an
 /// unrecoverable failure, mark the account `needs_reauth` + fire ONE notification
 /// so the user can reconnect — instead of discovering it mid-task.
-pub fn spawn_plugin_token_refresher(state: AppState) {
+pub fn spawn_plugin_token_refresher(state: AppState, wake: std::sync::Arc<tokio::sync::Notify>) {
     const REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1800); // 30 min
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(REFRESH_INTERVAL);
         loop {
-            tick.tick().await; // first tick fires immediately, so we also catch startup
+            // First interval tick fires immediately (catches startup); `wake` is
+            // pinged by the sleep detector so accounts whose tokens went stale
+            // during system sleep are renewed NOW instead of next half-hour tick.
+            tokio::select! {
+                _ = tick.tick() => {}
+                _ = wake.notified() => {
+                    info!("plugin token refresher: wake kick, refreshing immediately");
+                }
+            }
             let profiles = match state.store.list_all_plugin_account_profiles() {
                 Ok(v) => v,
                 Err(e) => {
@@ -423,6 +439,17 @@ pub fn spawn_plugin_token_refresher(state: AppState) {
                 let Some(env_name) = auth.profile_dir_env.as_deref() else {
                     continue;
                 };
+
+                // When the manifest declares a silent `refresh` command, run it
+                // FIRST so the account's tokens are actually RENEWED each tick —
+                // not merely probed. The status check below stays the single
+                // health verdict (refresh output is never interpreted here).
+                if auth.commands.refresh.is_some() {
+                    state
+                        .plugin_store
+                        .run_auth_refresh(&p.plugin_slug, Some((env_name, &p.config_dir)))
+                        .await;
+                }
 
                 // `None` = inconclusive (probe couldn't run / was reaped): leave the
                 // account's current state untouched and retry next tick — never let
@@ -464,46 +491,14 @@ pub fn spawn_plugin_token_refresher(state: AppState) {
 }
 
 /// Fire the one-time "reconnect this account" notification (bell + toast) and
-/// broadcast it, mirroring the canonical proactive-notification pathway.
+/// broadcast it. Thin adapter over the ONE shared pathway in
+/// `tools::plugin_tool::notify_plugin_needs_reauth` (also used by the mid-run
+/// unattended auth-failure path in the plugin tool).
 fn notify_plugin_needs_reauth(state: &AppState, p: &db::PluginAccountProfile) {
-    let user_id = state.store.ensure_local_user_id().unwrap_or_default();
-    // Fresh id per occurrence: the `reauth_notified` flag (reset on recovery) is
-    // the once-per-spell guard, so a unique id lets a *future* expiry notify again
-    // rather than being suppressed by a stale, already-read notification.
-    let notif_id = uuid::Uuid::new_v4().to_string();
-    let title = format!("Reconnect {}", p.account_label);
-    let body = format!(
-        "{}'s connection to {} expired. Reconnect it in the agent's Connected Accounts.",
-        p.account_label, p.plugin_slug
-    );
-    let action_url = format!("/{}/settings/accounts", p.agent_id);
-    if let Err(e) = state.store.create_notification(
-        &notif_id,
-        &user_id,
-        "warning",
-        &title,
-        Some(&body),
-        Some(&action_url),
-        None,
-        Some(p.agent_id.as_ref()),
-    ) {
-        warn!(error = %e, "failed to create plugin reauth notification");
-        return;
-    }
-    state.hub.broadcast(
-        "notification_created",
-        serde_json::json!({
-            "id": notif_id,
-            "type": "warning",
-            "title": title,
-            "body": body,
-            "actionUrl": action_url,
-            "readAt": null,
-            "createdAt": std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs(),
-        }),
+    tools::plugin_tool::notify_plugin_needs_reauth(
+        &state.store,
+        |event, data| state.hub.broadcast(event, data),
+        p,
     );
 }
 

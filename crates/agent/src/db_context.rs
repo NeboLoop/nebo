@@ -331,9 +331,10 @@ pub fn format_for_system_prompt(ctx: &DBContext, agent_name: &str) -> String {
     result
 }
 
-/// Character budget for the per-message "Relevant to This Conversation" slice.
+/// Character budget for the per-message recall slice (delivered as an
+/// ephemeral stream reminder).
 /// ~1,200 chars ≈ 300 tokens: room for roughly 5-8 short facts while keeping
-/// recall a small, bounded fraction of the system prompt. A char budget
+/// recall a small, bounded fraction of the context. A char budget
 /// replaces the old bare 5-line cap, which could blow past any size target
 /// with long values or waste headroom on short ones.
 const PROMPT_MEMORY_CHAR_BUDGET: usize = 1200;
@@ -415,7 +416,9 @@ pub async fn join_prompt_recall(
 }
 
 /// Filter, budget, and format hybrid-search results into the per-message
-/// "Relevant to This Conversation" prompt slice. The search itself is issued
+/// recall slice (injected by the runner as an ephemeral stream reminder,
+/// NOT into the system prompt — keeping the prompt prefix byte-stable for
+/// prompt caching). The search itself is issued
 /// by the runner through the ONE hybrid pathway the memory tool uses
 /// (`agent::search::hybrid_search` behind the [`tools::HybridSearcher`]
 /// adapter — FTS + vector when an embedding provider exists, FTS-only
@@ -453,13 +456,10 @@ pub fn format_prompt_relevant_memories(
     }
 
     debug!(count = lines.len(), "injected prompt-relevant memories");
-    (
-        format!(
-            "\n\n## Relevant to This Conversation\n{}",
-            group_memories_by_section(&lines)
-        ),
-        injected_ids,
-    )
+    // No prompt heading here: the runner delivers this slice as an ephemeral
+    // stream reminder on the message side (keeping the system prompt
+    // byte-stable for prompt caching), so it supplies its own framing.
+    (group_memories_by_section(&lines), injected_ids)
 }
 
 /// Group memory strings by `[category]` prefix into markdown sections.

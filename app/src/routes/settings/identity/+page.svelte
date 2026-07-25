@@ -93,19 +93,19 @@
 <!-- Agent name -->
 <label class="block mb-4">
   <span class="block text-xs font-semibold mb-1.5">{$t('settingsIdentity.employeeName')}</span>
-  <input type="text" bind:value={agentName} oninput={debounceSave} class="w-full py-2 px-3 rounded-lg border border-base-content/10 bg-base-100 text-sm outline-none focus:border-base-content/30" />
+  <input type="text" bind:value={agentName} oninput={debounceSave} class="w-full py-2 px-3 rounded-lg border border-base-content/25 bg-base-200/40 text-sm outline-none focus:border-base-content/50" />
 </label>
 
 <!-- Emoji -->
 <label class="block mb-4">
   <span class="block text-xs font-semibold mb-1.5">{$t('settingsIdentity.emojiLabel')}</span>
-  <input type="text" bind:value={emoji} oninput={debounceSave} class="w-20 py-2 px-3 rounded-lg border border-base-content/10 bg-base-100 text-sm outline-none focus:border-base-content/30 text-center text-lg" />
+  <input type="text" bind:value={emoji} oninput={debounceSave} class="w-20 py-2 px-3 rounded-lg border border-base-content/25 bg-base-200/40 text-sm outline-none focus:border-base-content/50 text-center text-lg" />
 </label>
 
 <!-- Role -->
 <label class="block mb-4">
   <span class="block text-xs font-semibold mb-1.5">{$t('settingsIdentity.role')}</span>
-  <input type="text" bind:value={role} oninput={debounceSave} class="w-full py-2 px-3 rounded-lg border border-base-content/10 bg-base-100 text-sm outline-none focus:border-base-content/30" />
+  <input type="text" bind:value={role} oninput={debounceSave} class="w-full py-2 px-3 rounded-lg border border-base-content/25 bg-base-200/40 text-sm outline-none focus:border-base-content/50" />
 </label>
 
 <!-- Persona section -->
@@ -116,7 +116,7 @@
 <!-- Creature -->
 <label class="block mb-4">
   <span class="block text-xs font-semibold mb-1.5">{$t('settingsIdentity.creatureArchetype')}</span>
-  <select bind:value={creature} onchange={saveNow} class="w-full py-2 px-3 rounded-lg border border-base-content/10 bg-base-100 text-sm outline-none cursor-pointer">
+  <select bind:value={creature} onchange={saveNow} class="w-full py-2 px-3 rounded-lg border border-base-content/25 bg-base-200/40 text-sm outline-none cursor-pointer">
     <option value="">{$t('common.select')}</option>
     <option value="owl">{$t('settingsIdentity.creatureOwl')}</option>
     <option value="fox">{$t('settingsIdentity.creatureFox')}</option>
@@ -128,5 +128,5 @@
 <!-- Vibe -->
 <label class="block mb-6">
   <span class="block text-xs font-semibold mb-1.5">{$t('settingsIdentity.vibe')}</span>
-  <textarea rows="3" bind:value={vibe} oninput={debounceSave} class="w-full py-2 px-3 rounded-lg border border-base-content/10 bg-base-100 text-sm outline-none focus:border-base-content/30 resize-y" placeholder={$t('settingsIdentity.vibeDescPlaceholder')}></textarea>
+  <textarea rows="3" bind:value={vibe} oninput={debounceSave} class="w-full py-2 px-3 rounded-lg border border-base-content/25 bg-base-200/40 text-sm outline-none focus:border-base-content/50 resize-y" placeholder={$t('settingsIdentity.vibeDescPlaceholder')}></textarea>
 </label>

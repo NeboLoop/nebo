@@ -324,6 +324,7 @@ export interface EntityConfig {
 	pinned?: number
 	multiChat?: number
 	operationPolicy?: string
+	learningMode?: string
 	createdAt: number
 	updatedAt: number
 	lastHeartbeatAt?: string
@@ -525,6 +526,20 @@ export interface PendingTask {
 	tokensInput?: number
 	tokensOutput?: number
 	metadata?: string
+}
+
+export interface PendingWrite {
+	id: string
+	agentId: string
+	kind: string
+	action: string
+	target: string
+	content?: string
+	gist: string
+	targetHash: string
+	status: string
+	createdAt: number
+	resolvedAt?: number
 }
 
 export interface PluginRegistry {
@@ -1480,6 +1495,10 @@ export interface RemoveCollectionItemResponse {
 
 export interface RemovePluginResponse {
 	message: string
+}
+
+export interface ResolveLearningResponse {
+	status: string
 }
 
 export interface ResolveWorkflowApprovalResponse {

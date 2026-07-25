@@ -34,6 +34,9 @@ pub struct ResolvedEntityConfig {
     /// (raw JSON of tools::policy::OperationPolicy). None = inherit seat defaults.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub operation_policy: Option<String>,
+    /// Self-improvement mode: "auto" | "staged" | "off". None = off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub learning_mode: Option<String>,
 }
 
 /// Resolve entity config by layering overrides on global defaults.
@@ -161,6 +164,12 @@ pub fn resolve(
         overrides.insert("operationPolicy".into(), true);
     }
 
+    // Self-improvement mode (per-employee only; no global layer).
+    let learning_mode = entity.and_then(|e| e.learning_mode.clone());
+    if learning_mode.is_some() {
+        overrides.insert("learningMode".into(), true);
+    }
+
     ResolvedEntityConfig {
         entity_type: entity_type.to_string(),
         entity_id: entity_id.to_string(),
@@ -177,6 +186,7 @@ pub fn resolve(
         pinned,
         multi_chat,
         operation_policy,
+        learning_mode,
     }
 }
 

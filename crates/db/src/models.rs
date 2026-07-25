@@ -775,9 +775,37 @@ pub struct EntityConfig {
     /// JSON of tools::policy::OperationPolicy — per-employee three-state approval
     /// policy over gated interface operations. NULL = inherit seat defaults.
     pub operation_policy: Option<String>,
+    /// Self-improvement mode: "auto" | "staged" | "off". NULL = off.
+    pub learning_mode: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
     pub last_heartbeat_at: Option<String>,
+}
+
+// ── Pending self-improvement writes ────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingWrite {
+    pub id: String,
+    pub agent_id: String,
+    /// Write kind — 'skill' (memory writes stay ungated; see design WS3).
+    pub kind: String,
+    /// create | update | delete
+    pub action: String,
+    /// Skill name.
+    pub target: String,
+    /// Full staged SKILL.md content (None for delete).
+    pub content: Option<String>,
+    /// One-line human summary for the Inbox card.
+    pub gist: String,
+    /// Hash of the on-disk target at stage time ('' for create); re-checked
+    /// at approve to surface conflicts instead of blind-replaying.
+    pub target_hash: String,
+    /// pending | approved | rejected | expired | conflict
+    pub status: String,
+    pub created_at: i64,
+    pub resolved_at: Option<i64>,
 }
 
 // ── Commander ──────────────────────────────────────────────────────────────

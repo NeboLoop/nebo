@@ -209,6 +209,14 @@ pub async fn extract_facts(
          - session mechanics: which tools ran, message/input sizes, the current date, iteration details\n\
          - anything trivially re-derivable from the user's files, calendar, or connected tools\n\
          - secrets, credentials, API keys\n\
+         - environment-dependent failures: missing binaries, 'command not found', unconfigured\n\
+           credentials, uninstalled packages, fresh-install errors. These get fixed and are not\n\
+           durable rules. If a tool failed because of setup state, capture the FIX (install\n\
+           command, config step) — never the failure itself\n\
+         - negative claims about tools or features ('X does not work', 'Y is broken', 'cannot\n\
+           use Z'). These harden into refusals cited long after the actual problem was fixed\n\
+         - transient errors that resolved before the conversation ended — if retrying worked,\n\
+           the lesson is the retry pattern, not the original failure\n\
          - sensitive personal information — protected attributes (race, ethnicity, national origin,\n\
            religion, age, sex, sexual orientation, gender identity, immigration status, disability,\n\
            serious illness, union membership), government identifiers, financial account numbers,\n\

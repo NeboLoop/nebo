@@ -737,6 +737,24 @@ pub(crate) async fn finalize_agent_install(state: &AppState, artifact_id: &str, 
                         }
                     }
                 }
+
+                // Seed learning_mode = "staged" for newly hired employees: the
+                // self-improvement loop is on from day one but every learned
+                // skill goes through the owner's Inbox. Seed-if-absent —
+                // existing employees stay as the customer set them (NULL=off).
+                let has_mode = state
+                    .store
+                    .get_entity_config("agent", artifact_id)
+                    .ok()
+                    .flatten()
+                    .and_then(|c| c.learning_mode)
+                    .is_some();
+                if !has_mode {
+                    let patch = serde_json::json!({ "learningMode": "staged" });
+                    if let Err(e) = state.store.upsert_entity_config("agent", artifact_id, &patch) {
+                        tracing::warn!(agent = artifact_id, error = %e, "failed to seed learning mode");
+                    }
+                }
             }
         }
     }

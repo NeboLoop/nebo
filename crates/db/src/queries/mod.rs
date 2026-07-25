@@ -15,6 +15,7 @@ mod license_keys;
 mod mcp_integrations;
 mod memories;
 mod notifications;
+pub mod pending_writes;
 mod pending_tasks;
 mod plugin_account_profiles;
 mod plugins;

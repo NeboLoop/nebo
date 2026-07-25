@@ -440,10 +440,18 @@ impl DynTool for ExecuteTool {
 
     fn execute_dyn<'a>(
         &'a self,
-        _ctx: &'a ToolContext,
+        ctx: &'a ToolContext,
         input: serde_json::Value,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send + 'a>> {
         Box::pin(async move {
+            // Same per-employee scope rule as the skill tool: agent-bound runs
+            // may execute their own Learned skills.
+            let agent_scope = ctx
+                .session_key
+                .strip_prefix("agent:")
+                .and_then(|rest| rest.split(':').next())
+                .filter(|id| !id.is_empty())
+                .map(String::from);
             let skill_name = match input["skill"].as_str() {
                 Some(s) if !s.is_empty() => s,
                 _ => return ToolResult::error(crate::errors::missing_param(
@@ -467,7 +475,7 @@ impl DynTool for ExecuteTool {
             let timeout = input["timeout"].as_u64().unwrap_or(30);
 
             // 1. Look up skill
-            let skill = match self.loader.get(skill_name).await {
+            let skill = match self.loader.get(skill_name, agent_scope.as_deref()).await {
                 Some(s) => s,
                 None => return ToolResult::error(format!("Skill '{}' not found", skill_name)),
             };

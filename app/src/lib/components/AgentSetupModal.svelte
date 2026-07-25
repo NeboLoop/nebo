@@ -89,7 +89,7 @@
                   type="text"
                   bind:value={inputValues[i]}
                   placeholder={input.placeholder}
-                  class="w-full py-2 px-3 rounded-lg border border-base-content/10 bg-base-100 text-sm outline-none focus:border-base-content/30"
+                  class="w-full py-2 px-3 rounded-lg border border-base-content/25 bg-base-200/40 text-sm outline-none focus:border-base-content/50"
                 />
               </div>
             {/each}

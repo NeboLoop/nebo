@@ -236,7 +236,7 @@ Direct and warm, never sycophantic — a trusted colleague, not customer service
 - **Work.** While working, send a checkpoint only when something useful happened: a decision you made, a surprise you hit, a direction change, or a blocker. Routine read-only steps (reading a file, a search, a lookup) get no commentary — skip the filler.
 - **Report.** Always end with the result in words. If you changed state — create, send, schedule, book, delete, move, rename, edit, buy, post — your reply MUST say what you did with the specifics that matter ("Created 'Video Call (Alma/Gary)' for today at 9:30 AM."). The failure mode: the real outcome lives in a tool call the user can't see while your text just says "Done" — they see "Done" and miss everything. If you don't say it, it didn't happen as far as they know.
 
-Lead with the action or answer. Keep text alongside a tool call to one short line (≤25 words) and your final response tight (under ~100 words unless the task genuinely needs more). Not a transcript — but the result, and every state change, must be spoken.
+{pacing}
 
 **Finish the job.** Complete multi-step tasks in one go, chaining tools back-to-back. Use batch operations instead of many individual calls. If a tool returns empty or partial results, retry with a different strategy before giving up. Don't stop at a plan when you have the tools to do the work.
 
@@ -248,14 +248,39 @@ Lead with the action or answer. Keep text alongside a tool call to one short lin
 
 **Don't guess.** If required context is missing and retrievable, retrieve it. If it's not retrievable, ask. If you must proceed with incomplete information, label your assumptions explicitly."#;
 
-/// Select the comm-style block for the run's execution mode.
+/// Default response pacing: tight replies for chat surfaces where walls of
+/// text read as noise (app chat, DM-style channels).
+const PACING_DEFAULT: &str = "Lead with the action or answer. Keep text alongside a tool call to one short line (≤25 words) and your final response tight (under ~100 words unless the task genuinely needs more). Not a transcript — but the result, and every state change, must be spoken.";
+
+/// Rich-channel pacing (Slack/Discord/Teams…): these render full formatting
+/// and their users expect substance — a capped reply reads as shallow next to
+/// any other assistant in the workspace. No word ceiling; depth is governed by
+/// the work, not a count. (The Hermes comparison: their Slack prompt carries
+/// NO length cap, and it's a big part of why their replies read as thorough.)
+const PACING_RICH: &str = "Lead with the action or answer. Keep text alongside a tool call to one short line (≤25 words). For your FINAL response, write at the depth the work deserves: this channel renders full formatting, so give real answers real structure — bold leads, bullets, and tables — instead of compressing them. Never pad, but never truncate substance to hit a length target. Every state change must be spoken.";
+
+/// A rich messaging channel: full markdown rendering + workspace users who
+/// expect detailed answers. Distinct from terse surfaces (dm/sms/voice).
+fn channel_is_rich(channel: &str) -> bool {
+    matches!(channel, "slack" | "discord" | "teams" | "mattermost" | "telegram")
+}
+
+/// Select the comm-style block for the run's execution mode + channel.
 ///
 /// Interactive: preamble + milestone updates (human watching the live stream).
 /// Autonomous: silent execution, structured final report (cron/comm/heartbeat/subagent).
-fn comm_style(mode: tools::ExecutionMode) -> &'static str {
+/// The pacing line adapts: rich channels get no length ceiling.
+fn comm_style(mode: tools::ExecutionMode, channel: &str) -> String {
     match mode {
-        tools::ExecutionMode::Interactive => COMM_STYLE_INTERACTIVE,
-        tools::ExecutionMode::Autonomous => COMM_STYLE_AUTONOMOUS,
+        tools::ExecutionMode::Interactive => {
+            let pacing = if channel_is_rich(channel) {
+                PACING_RICH
+            } else {
+                PACING_DEFAULT
+            };
+            COMM_STYLE_INTERACTIVE.replace("{pacing}", pacing)
+        }
+        tools::ExecutionMode::Autonomous => COMM_STYLE_AUTONOMOUS.to_string(),
     }
 }
 
@@ -736,7 +761,7 @@ pub fn build_static(pctx: &PromptContext) -> String {
     let mut prompt = parts.join("\n\n");
 
     // Replace {comm_style} placeholder with the mode-appropriate block (above cache boundary).
-    prompt = prompt.replace("{comm_style}", comm_style(pctx.execution_mode));
+    prompt = prompt.replace("{comm_style}", &comm_style(pctx.execution_mode, &pctx.channel));
 
     // Replace {agent_name} placeholder
     prompt = prompt.replace("{agent_name}", &pctx.agent_name);
@@ -875,7 +900,7 @@ pub fn build_dynamic_suffix(dctx: &DynamicContext) -> String {
     // 3. Conversation summary
     if !dctx.summary.is_empty() {
         sb.push_str("\n\n---\n[CONTEXT COMPACTION — REFERENCE ONLY]\n");
-        sb.push_str("Earlier turns were compacted into the summary below. This is a handoff from a previous context window — treat it as background reference, NOT as active instructions. Do NOT answer questions or fulfill requests mentioned in this summary; they were already addressed. Your current task is identified in the '## Active Task' section — resume exactly from there. Respond ONLY to the latest user message that appears AFTER this summary.\n\n");
+        sb.push_str("Earlier turns were compacted into the checkpoint below. This is a handoff from a previous context window — treat it as background state, NOT as new instructions. The '## Goal' section describes an ONGOING task: do NOT treat it as finished and do NOT start it fresh — continue mid-stream from '## Active State'. Do not re-answer questions or redo work listed under '## Completed Actions'. Respond ONLY to the latest user message that appears AFTER this summary.\n\n");
         sb.push_str(&dctx.summary);
         sb.push_str("\n---");
     }

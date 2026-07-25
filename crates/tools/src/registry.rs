@@ -823,7 +823,8 @@ impl Registry {
         }
 
         // Agent tool (memory, tasks, sessions, context, advisors, ask, runs, registry) — always registered (core)
-        let mut agent_tool = crate::bot_tool::AgentTool::new(store.clone(), orchestrator.clone());
+        let mut agent_tool = crate::bot_tool::AgentTool::new(store.clone(), orchestrator.clone())
+            .with_notify_fn(self.notify_fn.clone());
         let runner_for_events = advisor_runner.clone();
         if let Some(runner) = advisor_runner {
             agent_tool = agent_tool.with_advisor_runner(runner);
@@ -881,6 +882,7 @@ impl Registry {
         if let Some(ref loader) = skill_loader {
             let mut skill_tool = crate::skill_tool::SkillTool::new(loader.clone())
                 .with_store(store.clone())
+                .with_notify_fn(self.notify_fn.clone())
                 .with_code_installer(self.code_installer.clone());
             // Wire the plugin registry so skill discover/help can redirect
             // when the LLM confuses a plugin slug for a skill name.

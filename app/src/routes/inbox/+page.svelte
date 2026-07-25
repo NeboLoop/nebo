@@ -18,7 +18,7 @@
   } from '$lib/stores/notifications';
 
   import Hand from 'lucide-svelte/icons/hand';
-  import { getWorkflowApprovalStatus, resolveWorkflowApproval } from '$lib/api/nebo';
+  import { getLearning, getWorkflowApprovalStatus, resolveLearning, resolveWorkflowApproval } from '$lib/api/nebo';
 
   let copied = $state(false);
   let filter = $state<'all' | 'agent' | 'system' | 'warning' | 'error'>('all');
@@ -64,9 +64,17 @@
   // ── Approvals: a pending decision is a task, not mail. Pending approvals
   // live in a pinned band above the chronological stream with inline
   // Approve/Deny; once resolved they fall back into the stream with a status
-  // chip. Notification id carries the run: `wf-approval:<run_id>`.
-  const approvalRunId = (n: Notification): string | null =>
-    n.id.startsWith('wf-approval:') ? n.id.slice('wf-approval:'.length) : null;
+  // chip. Two kinds share the ONE band: `wf-approval:<run_id>` (workflow
+  // suspensions) and `learn:<pending_id>` (staged self-improvement writes).
+  type ApprovalRef = { kind: 'workflow' | 'learning'; id: string };
+  const approvalRef = (n: Notification): ApprovalRef | null =>
+    n.id.startsWith('wf-approval:')
+      ? { kind: 'workflow', id: n.id.slice('wf-approval:'.length) }
+      : n.id.startsWith('learn:')
+        ? { kind: 'learning', id: n.id.slice('learn:'.length) }
+        : null;
+  // Status/deciding maps are keyed by the full notification id (unique across kinds).
+  const approvalRunId = (n: Notification): string | null => (approvalRef(n) ? n.id : null);
 
   let approvalStatuses = $state<Record<string, string>>({});
   let deciding = $state<Record<string, boolean>>({});
@@ -74,14 +82,15 @@
 
   $effect(() => {
     for (const n of $notifications) {
-      const runId = approvalRunId(n);
-      if (!runId || statusFetched.has(runId)) continue;
-      statusFetched.add(runId);
-      getWorkflowApprovalStatus(runId)
+      const ref = approvalRef(n);
+      if (!ref || statusFetched.has(n.id)) continue;
+      statusFetched.add(n.id);
+      const fetch = ref.kind === 'workflow' ? getWorkflowApprovalStatus(ref.id) : getLearning(ref.id);
+      fetch
         .then((r) => {
-          approvalStatuses = { ...approvalStatuses, [runId]: (r as { status?: string }).status ?? 'unknown' };
+          approvalStatuses = { ...approvalStatuses, [n.id]: (r as { status?: string }).status ?? 'unknown' };
         })
-        .catch(() => statusFetched.delete(runId));
+        .catch(() => statusFetched.delete(n.id));
     }
   });
 
@@ -97,20 +106,28 @@
     if (!r) return null;
     const s = approvalStatuses[r];
     if (s === 'approved') return 'inbox.approved';
-    if (s === 'denied') return 'inbox.denied';
+    if (s === 'denied' || s === 'rejected') return 'inbox.denied';
+    if (s === 'conflict') return 'inbox.conflict';
     return null;
   }
 
   async function decide(n: Notification, approved: boolean) {
-    const runId = approvalRunId(n);
-    if (!runId || deciding[runId]) return;
-    deciding = { ...deciding, [runId]: true };
+    const ref = approvalRef(n);
+    if (!ref || deciding[n.id]) return;
+    deciding = { ...deciding, [n.id]: true };
     try {
-      await resolveWorkflowApproval(runId, { approved });
-      approvalStatuses = { ...approvalStatuses, [runId]: approved ? 'approved' : 'denied' };
+      let status = approved ? 'approved' : ref.kind === 'workflow' ? 'denied' : 'rejected';
+      if (ref.kind === 'workflow') {
+        await resolveWorkflowApproval(ref.id, { approved });
+      } else {
+        // Approve may come back 'conflict' (skill changed since staging).
+        const r = await resolveLearning(ref.id, { approved });
+        status = (r as { status?: string }).status ?? status;
+      }
+      approvalStatuses = { ...approvalStatuses, [n.id]: status };
       markAsRead(n.id);
     } finally {
-      deciding = { ...deciding, [runId]: false };
+      deciding = { ...deciding, [n.id]: false };
     }
   }
   const filters = [
@@ -368,8 +385,10 @@
                   <button class="btn btn-sm btn-success" disabled={!!deciding[runId]} onclick={() => selected && decide(selected, true)}>{$t('inbox.approve')}</button>
                   <button class="btn btn-sm btn-ghost border border-base-content/15" disabled={!!deciding[runId]} onclick={() => selected && decide(selected, false)}>{$t('inbox.deny')}</button>
                 </div>
-              {:else if status === 'approved' || status === 'denied'}
+              {:else if status === 'approved' || status === 'denied' || status === 'rejected'}
                 <span class="badge {status === 'approved' ? 'badge-success badge-outline' : 'badge-ghost text-base-content/60'}">{$t(status === 'approved' ? 'inbox.approved' : 'inbox.denied')}</span>
+              {:else if status === 'conflict'}
+                <span class="badge badge-warning badge-outline">{$t('inbox.conflict')}</span>
               {:else if status}
                 <span class="badge badge-ghost text-base-content/60">{status}</span>
               {/if}

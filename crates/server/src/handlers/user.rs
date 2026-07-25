@@ -104,6 +104,13 @@ pub async fn update_profile(
             .map_err(to_error_response)?;
     }
 
+    // interests arrives as a JSON array from the settings page; the column is
+    // TEXT, so serialize it. A plain string is accepted too (legacy callers).
+    let interests_json = if body["interests"].is_array() {
+        Some(body["interests"].to_string())
+    } else {
+        body["interests"].as_str().map(String::from)
+    };
     state
         .store
         .update_user_profile(
@@ -112,7 +119,7 @@ pub async fn update_profile(
             body["location"].as_str(),
             body["timezone"].as_str(),
             body["occupation"].as_str(),
-            body["interests"].as_str(),
+            interests_json.as_deref(),
             body["communicationStyle"].as_str(),
             body["goals"].as_str(),
             body["context"].as_str(),
@@ -135,7 +142,11 @@ fn profile_to_json(profile: Option<db::models::UserProfile>) -> serde_json::Valu
             "location": p.location,
             "timezone": p.timezone,
             "occupation": p.occupation,
-            "interests": p.interests,
+            // Stored as JSON text; hand the frontend a real array.
+            "interests": p.interests.as_deref()
+                .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+                .filter(|v| v.is_array())
+                .unwrap_or_else(|| serde_json::json!([])),
             "communicationStyle": p.communication_style,
             "goals": p.goals,
             "context": p.context,

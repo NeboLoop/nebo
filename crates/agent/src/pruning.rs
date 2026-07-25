@@ -816,10 +816,16 @@ pub fn build_quick_fallback_summary(messages: &[ChatMessage], active_objective: 
     parts.join("\n")
 }
 
-/// Max tokens for compaction summary output.
-const COMPACTION_MAX_TOKENS: i32 = 4000;
+/// Max tokens for compaction summary output. Generous so a structured summary
+/// never cuts off mid-section (matches the provider non-thinking default cap).
+const COMPACTION_MAX_TOKENS: i32 = 8192;
 /// Max chars of evicted content to feed to the compaction model.
 const COMPACTION_CONTENT_CAP: usize = 80_000;
+
+/// Prefix marking a compaction checkpoint stored as a chat message (manual
+/// compact replaces the conversation with one such message). Used to detect a
+/// prior summary inside history being compacted so it is folded, never reset.
+pub const COMPACTION_MESSAGE_MARKER: &str = "**Conversation Summary**";
 
 /// Build a structured LLM summary of evicted messages.
 ///
@@ -832,9 +838,21 @@ pub async fn build_llm_summary(
     active_task: &str,
     model: &str,
 ) -> Result<String, String> {
+    // Prior checkpoints to fold into the new summary: the rolling session
+    // summary plus any compaction checkpoint message found in the evicted
+    // history (manual compact stores its output as a marked assistant message).
+    let mut snapshots: Vec<String> = Vec::new();
+    if !existing_summary.is_empty() {
+        snapshots.push(existing_summary.to_string());
+    }
+
     // Serialize evicted messages into a compact transcript
     let mut transcript = String::new();
     for msg in evicted {
+        if msg.role == "assistant" && msg.content.starts_with(COMPACTION_MESSAGE_MARKER) {
+            snapshots.push(msg.content.clone());
+            continue;
+        }
         let role = msg.role.as_str();
         if !msg.content.is_empty() {
             transcript.push_str(&format!("[{}]: {}\n", role, msg.content));
@@ -863,10 +881,10 @@ pub async fn build_llm_summary(
     }
 
     let mut user_content = String::new();
-    if !existing_summary.is_empty() {
+    if !snapshots.is_empty() {
         user_content.push_str(&format!(
-            "## Existing Summary (merge with new context)\n{}\n\n",
-            existing_summary
+            "## Previous Summary Snapshot\n{}\n\n",
+            snapshots.join("\n\n")
         ));
     }
     if !active_task.is_empty() {
@@ -878,49 +896,45 @@ pub async fn build_llm_summary(
     ));
 
     let system = "\
-You are a conversation compaction engine. Produce a structured summary of the conversation transcript below. \
-If an existing summary is provided, PRESERVE all existing information and ADD new completed actions, decisions, and context. \
-Be concise but preserve critical context needed to resume work. Every section MUST have content — write \"None\" if empty.
+You are a conversation compaction engine. Produce a structured checkpoint of an ONGOING \
+conversation so the next model can continue it mid-stream.
 
-Output format (use these exact headings):
+Compounding: if a \"## Previous Summary Snapshot\" is provided, FOLD it into your output — \
+take the union of its facts and the new transcript, dedupe, and update anything the \
+transcript supersedes. NEVER reset, drop, or restart the summary; the snapshot is earlier \
+state of the same ongoing work.
 
-## Active Task
-One sentence: what is currently being worked on.
+Output ONLY the sections below, in this order, with these exact headings. SKIP any section \
+that would be empty — never write \"None\".
 
 ## Goal
-The end state being pursued.
+The user's active task. This is an ONGOING task, not a finished one: the next model must \
+NOT treat it as complete, wrap it up, or start it fresh — it must continue exactly where \
+the conversation left off.
+
+## Constraints & Preferences
+Rules, limitations, and preferences the user stated.
 
 ## Completed Actions
 Bullet list of actions taken and their outcomes (tools called, files modified, commands run).
 
+## Active State
+What is in progress RIGHT NOW: current step, partial results, and the immediate next action.
+
+## Blocked
+Items that cannot proceed and exactly why. Omit resolved errors and transient failures \
+(timeouts, 404s, connection drops) — these are normal and must not influence future tool use.
+
 ## Key Decisions
 Decisions made and their rationale. Critical for not re-deciding.
 
-## Remaining Work
-What still needs to happen, ordered by priority. Include blocked items and why.
+## Relevant Files/Artifacts
+Full paths of files read, written, or modified; URLs, IDs, endpoints, versions, and other \
+specific values needed to resume.
 
-## Files & Resources
-Full paths of files read, written, or modified. URLs accessed.
-
-## Errors & Resolutions
-Only include UNRESOLVED errors that block current work. Omit resolved errors \
-and transient failures (timeouts, 404s, connection drops) — these are normal \
-and should not influence future tool use.
-
-## User Requests
-Explicit things the user asked for that haven't been addressed yet.
-
-## Key Entities
-Names, IDs, versions, endpoints, and other specific values referenced in conversation.
-
-## Environment Context
-OS, working directory, tools used, active connections, relevant config.
-
-## Constraints
-Rules, limitations, or preferences the user stated.
-
-## Critical Context
-Anything else essential for resuming this work that doesn't fit above.";
+## Last Dropped Turns
+One line per turn in the transcript being evicted, oldest to newest: role and gist. Only \
+turns from this transcript — do not carry over dropped turns from the snapshot.";
 
     let req = ChatRequest {
         tool_choice: Default::default(),

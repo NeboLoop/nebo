@@ -18,6 +18,10 @@ pub struct Loader {
     user_dir: PathBuf,
     /// Installed (marketplace) skills directory (e.g. <data_dir>/nebo/skills/).
     installed_dir: PathBuf,
+    /// Learned skills root (e.g. <data_dir>/learned/skills/), laid out as
+    /// <root>/<agent_id>/<skill>/SKILL.md. Written by the self-improvement
+    /// loop; skills here are per-employee (see `Skill::visible_to`).
+    learned_dir: Option<PathBuf>,
     /// Loaded skills keyed by name.
     skills: Arc<RwLock<HashMap<String, Skill>>>,
     /// Optional plugin store for verifying plugin dependencies.
@@ -51,6 +55,7 @@ impl Loader {
         Self {
             user_dir,
             installed_dir,
+            learned_dir: None,
             skills: Arc::new(RwLock::new(HashMap::new())),
             plugin_store: None,
             db_store: None,
@@ -80,6 +85,13 @@ impl Loader {
     /// Set the DB store for checking plugin enabled/disabled state during load.
     pub fn with_db_store(mut self, store: Arc<db::Store>) -> Self {
         self.db_store = Some(store);
+        self
+    }
+
+    /// Set the learned-skills root (<data_dir>/learned/skills/). Enables the
+    /// per-employee Learned tier.
+    pub fn with_learned_dir(mut self, dir: PathBuf) -> Self {
+        self.learned_dir = Some(dir);
         self
     }
 
@@ -296,6 +308,13 @@ impl Loader {
             }
         }
 
+        // 4. Load learned skills (per-employee, written by the self-improvement
+        //    loop). Keyed "<agent_id>::<name>" so they never collide with or
+        //    override the global roster; read paths filter via visible_to().
+        if let Some(ref learned_root) = self.learned_dir {
+            load_learned_skills(learned_root, &mut loaded);
+        }
+
         // Verify dependencies — skip skills with missing deps or required plugins
         verify_dependencies(&mut loaded, self.plugin_store.as_deref());
 
@@ -386,7 +405,15 @@ impl Loader {
                             skill.source_path = Some(path.clone());
                             skill.base_dir = entry.base_dir.clone();
                             skill.napp_path = entry.napp_path.clone();
-                            self.skills.write().await.insert(skill.name.clone(), skill);
+                            // Learned entries keep their owner + namespaced
+                            // key — a plain-name insert would leak them into
+                            // the global roster.
+                            skill.owner_agent_id = entry.owner_agent_id.clone();
+                            let key = match entry.owner_agent_id.as_deref() {
+                                Some(owner) => learned_key(owner, &skill.name),
+                                None => skill.name.clone(),
+                            };
+                            self.skills.write().await.insert(key, skill);
                         }
                     }
                 }
@@ -419,8 +446,19 @@ impl Loader {
     }
 
     /// Get a skill by name, lazily loading the template body if needed.
-    pub async fn get(&self, name: &str) -> Option<Skill> {
-        let mut skill = self.skills.read().await.get(name).cloned()?;
+    /// `agent` scopes the lookup: the agent's own Learned skill wins over a
+    /// same-named global (most-specific-first, mirroring load order); other
+    /// agents' learned skills are never returned.
+    pub async fn get(&self, name: &str, agent: Option<&str>) -> Option<Skill> {
+        let skills = self.skills.read().await;
+        let mut skill = agent
+            .and_then(|a| skills.get(&learned_key(a, name)))
+            .or_else(|| skills.get(name))
+            .cloned()?;
+        drop(skills);
+        if !skill.visible_to(agent) {
+            return None;
+        }
         if skill.template.is_empty() {
             self.load_template(&mut skill);
         }
@@ -501,10 +539,14 @@ impl Loader {
         }
     }
 
-    /// List all loaded skills.
-    pub async fn list(&self) -> Vec<Skill> {
+    /// List all skills visible to `agent` (None = main bot: globals only).
+    pub async fn list(&self, agent: Option<&str>) -> Vec<Skill> {
         let skills = self.skills.read().await;
-        let mut list: Vec<Skill> = skills.values().cloned().collect();
+        let mut list: Vec<Skill> = skills
+            .values()
+            .filter(|s| s.visible_to(agent))
+            .cloned()
+            .collect();
         list.sort_by(|a, b| {
             b.priority
                 .cmp(&a.priority)
@@ -513,30 +555,65 @@ impl Loader {
         list
     }
 
-    /// Find skills whose triggers match the given message.
+    /// Find skills whose triggers match the given message, scoped to `agent`.
     /// Returns up to `max` matches sorted by priority (highest first).
-    pub async fn match_triggers(&self, message: &str, max: usize) -> Vec<Skill> {
+    pub async fn match_triggers(&self, message: &str, max: usize, agent: Option<&str>) -> Vec<Skill> {
         let skills = self.skills.read().await;
         let mut matches: Vec<&Skill> = skills
             .values()
-            .filter(|s| s.enabled && s.matches_trigger(message))
+            .filter(|s| s.enabled && s.visible_to(agent) && s.matches_trigger(message))
             .collect();
         matches.sort_by(|a, b| b.priority.cmp(&a.priority));
         matches.truncate(max);
         matches.into_iter().cloned().collect()
     }
 
-    /// Return the pre-built compact skill catalog for the system prompt.
-    /// Name + capped description per enabled skill (rebuilt on load_all /
-    /// watcher reload); see build_catalog_string for the budget rules.
-    pub async fn compact_catalog(&self) -> String {
-        self.cached_catalog.read().await.clone()
+    /// Return the compact skill catalog for the system prompt: the cached
+    /// global catalog (rebuilt on load_all / watcher reload) plus, when the
+    /// run is agent-scoped, that agent's own learned skills rendered with the
+    /// same budget rules.
+    pub async fn compact_catalog(&self, agent: Option<&str>) -> String {
+        let global = self.cached_catalog.read().await.clone();
+        let Some(agent_id) = agent else {
+            return global;
+        };
+        let skills = self.skills.read().await;
+        let learned: HashMap<String, Skill> = skills
+            .iter()
+            .filter(|(_, s)| s.owner_agent_id.as_deref() == Some(agent_id))
+            .map(|(k, s)| {
+                // Mask ownership so build_catalog_string (which excludes
+                // owner-scoped skills from the shared catalog) renders them.
+                let mut s = s.clone();
+                s.owner_agent_id = None;
+                (k.clone(), s)
+            })
+            .collect();
+        drop(skills);
+        if learned.is_empty() {
+            return global;
+        }
+        let learned_catalog = build_catalog_string(&learned);
+        if learned_catalog.is_empty() {
+            return global;
+        }
+        // build_catalog_string skips owner-scoped skills by design; render the
+        // learned subset through the same formatter with ownership masked.
+        if global.is_empty() {
+            learned_catalog
+        } else {
+            format!("{}\n{}", global, learned_catalog)
+        }
     }
 
-    /// List lightweight summaries of all loaded skills.
-    pub async fn list_summaries(&self) -> Vec<SkillSummary> {
+    /// List lightweight summaries of all skills visible to `agent`.
+    pub async fn list_summaries(&self, agent: Option<&str>) -> Vec<SkillSummary> {
         let skills = self.skills.read().await;
-        let mut list: Vec<SkillSummary> = skills.values().map(|s| s.to_summary()).collect();
+        let mut list: Vec<SkillSummary> = skills
+            .values()
+            .filter(|s| s.visible_to(agent))
+            .map(|s| s.to_summary())
+            .collect();
         list.sort_by(|a, b| {
             b.priority
                 .cmp(&a.priority)
@@ -559,7 +636,7 @@ impl Loader {
     /// de-hyphenated name "nebo design". Without this a `-` stayed in the token
     /// and could never match — discover missed installed skills looked up by
     /// their exact hyphenated name.
-    async fn discover_scored(&self, query: &str) -> Vec<Skill> {
+    async fn discover_scored(&self, query: &str, agent: Option<&str>) -> Vec<Skill> {
         // Cap on returned matches — discovery is a search, not a dump. Callers
         // surface the top hits; the agent loads the one it wants.
         const MAX_RESULTS: usize = 12;
@@ -591,7 +668,7 @@ impl Loader {
 
         let mut matches: Vec<(usize, Skill)> = skills
             .values()
-            .filter(|s| s.enabled)
+            .filter(|s| s.enabled && s.visible_to(agent))
             .filter_map(|s| {
                 let name_lower = s.name.to_lowercase().replace('-', " ");
                 let desc_lower = s.description.to_lowercase();
@@ -636,8 +713,8 @@ impl Loader {
         matches.into_iter().map(|(_, s)| s).collect()
     }
 
-    pub async fn discover_summaries(&self, query: &str) -> Vec<SkillSummary> {
-        self.discover_scored(query)
+    pub async fn discover_summaries(&self, query: &str, agent: Option<&str>) -> Vec<SkillSummary> {
+        self.discover_scored(query, agent)
             .await
             .iter()
             .map(|s| s.to_summary())
@@ -645,8 +722,8 @@ impl Loader {
     }
 
     /// Search skills by query (name/description/trigger match), sorted by relevance.
-    pub async fn discover(&self, query: &str) -> Vec<Skill> {
-        self.discover_scored(query).await
+    pub async fn discover(&self, query: &str, agent: Option<&str>) -> Vec<Skill> {
+        self.discover_scored(query, agent).await
     }
 
     /// Build a compact plugin inventory for the system prompt.
@@ -834,6 +911,7 @@ impl Loader {
     pub fn watch(&self) -> tokio::task::JoinHandle<()> {
         let user_dir = self.user_dir.clone();
         let installed_dir = self.installed_dir.clone();
+        let learned_dir = self.learned_dir.clone();
         let skills = self.skills.clone();
         let cached_catalog = self.cached_catalog.clone();
         let plugin_store = self.plugin_store.clone();
@@ -880,6 +958,14 @@ impl Loader {
             if installed_dir.exists() {
                 if let Err(e) = watcher.watch(&installed_dir, RecursiveMode::Recursive) {
                     warn!(error = %e, dir = %installed_dir.display(), "failed to watch installed skills dir");
+                }
+            }
+
+            if let Some(ref ldir) = learned_dir {
+                if ldir.exists() {
+                    if let Err(e) = watcher.watch(ldir, RecursiveMode::Recursive) {
+                        warn!(error = %e, dir = %ldir.display(), "failed to watch learned skills dir");
+                    }
                 }
             }
 
@@ -1055,6 +1141,10 @@ impl Loader {
                             }
                         }
 
+                        if let Some(ref ldir) = learned_dir {
+                            load_learned_skills(ldir, &mut loaded);
+                        }
+
                         verify_dependencies(&mut loaded, plugin_store.as_deref());
 
                         let count = loaded.len();
@@ -1078,6 +1168,11 @@ impl Loader {
                 }
             }
         })
+    }
+
+    /// Get the learned skills root (None when the tier is not enabled).
+    pub fn learned_dir(&self) -> Option<&Path> {
+        self.learned_dir.as_deref()
     }
 
     /// Get the user skills directory path.
@@ -1124,11 +1219,47 @@ impl Loader {
 ///
 /// Without this listing the model has no way to know a matching skill exists
 /// and hand-rolls the task (the nebo-office pptx flail).
+/// Map key for a learned skill: namespaced by owner so per-employee skills
+/// can never collide with or shadow the global roster (skill names cannot
+/// contain ':', so "::" is unambiguous).
+fn learned_key(agent_id: &str, name: &str) -> String {
+    format!("{}::{}", agent_id, name)
+}
+
+/// Load the learned tree (<root>/<agent_id>/<skill>/SKILL.md) into `loaded`.
+/// Shared by cold load and the watcher reload — the ONE learned-load pathway.
+fn load_learned_skills(learned_root: &Path, loaded: &mut HashMap<String, Skill>) {
+    if !learned_root.exists() {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(learned_root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let agent_dir = entry.path();
+        if !agent_dir.is_dir() {
+            continue;
+        }
+        let Some(agent_id) = entry.file_name().to_str().map(String::from) else {
+            continue;
+        };
+        for mut skill in load_skills_from_dir(&agent_dir, SkillSource::Learned) {
+            skill.owner_agent_id = Some(agent_id.clone());
+            loaded.insert(learned_key(&agent_id, &skill.name), skill);
+        }
+    }
+}
+
 fn build_catalog_string(skills: &HashMap<String, Skill>) -> String {
     const MAX_DESC_CHARS: usize = 250;
     const CHAR_BUDGET: usize = 8_000;
 
-    let enabled: Vec<&Skill> = skills.values().filter(|s| s.enabled).collect();
+    // Learned skills are per-employee — excluded from the shared cached
+    // catalog; compact_catalog() appends the caller's own on demand.
+    let enabled: Vec<&Skill> = skills
+        .values()
+        .filter(|s| s.enabled && s.owner_agent_id.is_none())
+        .collect();
     if enabled.is_empty() {
         return String::new();
     }
@@ -1641,7 +1772,7 @@ Windows specific instructions.
             "should load at least the user skill (plus bundled)"
         );
 
-        let skill = loader.get("test-skill").await.unwrap();
+        let skill = loader.get("test-skill", None).await.unwrap();
         assert_eq!(skill.description, "A test skill");
         assert_eq!(skill.priority, 5);
         assert!(skill.template.contains("test skill template"));
@@ -1667,7 +1798,7 @@ Windows specific instructions.
             "should load at least the installed skill (plus bundled)"
         );
 
-        let skill = loader.get("test-skill").await.unwrap();
+        let skill = loader.get("test-skill", None).await.unwrap();
         assert_eq!(skill.source, SkillSource::Installed);
         assert!(skill.base_dir.is_some());
     }
@@ -1692,7 +1823,7 @@ Windows specific instructions.
         let loader = Loader::new(installed.path().to_path_buf(), user.path().to_path_buf());
         loader.load_all().await;
 
-        let skill = loader.get("test-skill").await.unwrap();
+        let skill = loader.get("test-skill", None).await.unwrap();
         assert_eq!(skill.description, "User override");
         assert_eq!(skill.source, SkillSource::User);
     }
@@ -1707,12 +1838,12 @@ Windows specific instructions.
         let loader = Loader::new(installed.path().to_path_buf(), tmp.path().to_path_buf());
         loader.load_all().await;
 
-        assert!(loader.get("test-skill").await.is_some());
+        assert!(loader.get("test-skill", None).await.is_some());
 
         if cfg!(target_os = "windows") {
-            assert!(loader.get("windows-only").await.is_some());
+            assert!(loader.get("windows-only", None).await.is_some());
         } else {
-            assert!(loader.get("windows-only").await.is_none());
+            assert!(loader.get("windows-only", None).await.is_none());
         }
     }
 
@@ -1725,11 +1856,11 @@ Windows specific instructions.
         let loader = Loader::new(installed.path().to_path_buf(), tmp.path().to_path_buf());
         loader.load_all().await;
 
-        let matches = loader.match_triggers("please test trigger this", 3).await;
+        let matches = loader.match_triggers("please test trigger this", 3, None).await;
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].name, "test-skill");
 
-        let no_match = loader.match_triggers("unrelated message", 3).await;
+        let no_match = loader.match_triggers("unrelated message", 3, None).await;
         assert!(no_match.is_empty());
     }
 
@@ -1759,13 +1890,13 @@ Design instructions.
         // some of which legitimately match these tokens.
         let has = |v: Vec<SkillSummary>| v.iter().any(|s| s.name == "nebo-design");
         assert!(
-            has(loader.discover_summaries("nebo-design").await),
+            has(loader.discover_summaries("nebo-design", None).await),
             "exact hyphenated name should be found (was the bug)"
         );
-        assert!(has(loader.discover_summaries("nebo design").await));
-        assert!(has(loader.discover_summaries("design").await));
+        assert!(has(loader.discover_summaries("nebo design", None).await));
+        assert!(has(loader.discover_summaries("design", None).await));
         assert!(
-            !has(loader.discover_summaries("unrelated").await),
+            !has(loader.discover_summaries("unrelated", None).await),
             "unrelated query must not surface nebo-design"
         );
     }
@@ -1792,13 +1923,13 @@ Triage instructions.
         let has = |v: Vec<SkillSummary>| v.iter().any(|s| s.name == "gws-gmail-triage");
         // "check"/"my" are filler; "inbox" carries the intent — must still match.
         assert!(
-            has(loader.discover_summaries("check my inbox").await),
+            has(loader.discover_summaries("check my inbox", None).await),
             "natural phrasing with stopwords should still find the triage skill"
         );
-        assert!(has(loader.discover_summaries("inbox").await));
+        assert!(has(loader.discover_summaries("inbox", None).await));
         // A query with no meaningful overlap must not surface it.
         assert!(
-            !has(loader.discover_summaries("calendar meeting room").await),
+            !has(loader.discover_summaries("calendar meeting room", None).await),
             "unrelated query must not surface the triage skill"
         );
     }
@@ -1856,7 +1987,7 @@ Triage instructions.
             "should load at least the plugin skill (plus bundled)"
         );
 
-        let skill = loader.get("outreach-email").await.unwrap();
+        let skill = loader.get("outreach-email", None).await.unwrap();
         assert_eq!(skill.description, "Send outreach emails");
         assert!(skill.enabled);
         // Should auto-inject the parent plugin as a dependency
@@ -1903,7 +2034,7 @@ Triage instructions.
             .with_plugin_store(plugin_store);
         loader.load_all().await;
 
-        let skill = loader.get("gws-gmail").await.unwrap();
+        let skill = loader.get("gws-gmail", None).await.unwrap();
         assert_eq!(
             skill.description, "User version",
             "user plugin skills should override marketplace plugin skills"
@@ -1932,7 +2063,7 @@ Triage instructions.
         let loader = Loader::new(installed.path().to_path_buf(), tmp.path().to_path_buf());
         loader.load_all().await;
 
-        let list = loader.list().await;
+        let list = loader.list(None).await;
         assert!(list.len() >= 2, "should have at least the two user skills");
         // Priority 100 should sort before priority 1 (and before bundled defaults at priority 5)
         assert_eq!(list[0].name, "high");

@@ -251,7 +251,7 @@
           <input
             id="confirm-enable"
             type="text"
-            class="w-full h-9 rounded-lg bg-base-200 border border-base-content/10 px-3 text-sm focus:outline-none focus:border-primary/50 transition-colors"
+            class="w-full h-9 rounded-lg bg-base-200 border border-base-content/25 px-3 text-sm focus:outline-none focus:border-primary/50 transition-colors"
             placeholder={$t('settingsPermissions.enableWord')}
             bind:value={confirmText}
             onkeydown={(e) => { if (e.key === 'Enter' && canConfirm) confirmEnable(); }}

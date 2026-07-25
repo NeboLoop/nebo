@@ -22,6 +22,7 @@ fn row_to_entity_config(row: &rusqlite::Row) -> rusqlite::Result<EntityConfig> {
         pinned: row.get("pinned")?,
         multi_chat: row.get("multi_chat")?,
         operation_policy: row.get("operation_policy")?,
+        learning_mode: row.get("learning_mode")?,
         created_at: row.get("created_at")?,
         updated_at: row.get("updated_at")?,
         last_heartbeat_at: row.get("last_heartbeat_at")?,
@@ -77,6 +78,7 @@ impl Store {
             ("pinned", "pinned"),
             ("multi_chat", "multiChat"),
             ("operation_policy", "operationPolicy"),
+            ("learning_mode", "learningMode"),
         ];
 
         for (col, json_key) in &columns {

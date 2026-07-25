@@ -62,7 +62,7 @@
 <!-- System prompt -->
 <label class="block mb-8">
   <span class="block text-sm font-semibold mb-1.5">{$t('settingsPersonality.customSystemPrompt')}</span>
-  <textarea rows="4" class="w-full py-2.5 px-3 rounded-lg border border-base-content/10 bg-base-100 text-sm outline-none focus:border-base-content/30 resize-y font-mono leading-relaxed" placeholder={$t('settingsPersonality.customPromptPlaceholder')}>You are a professional AI employee. Be clear, concise, and business-focused. Prioritize accuracy and actionable insights.</textarea>
+  <textarea rows="4" class="w-full py-2.5 px-3 rounded-lg border border-base-content/25 bg-base-200/40 text-sm outline-none focus:border-base-content/50 resize-y font-mono leading-relaxed" placeholder={$t('settingsPersonality.customPromptPlaceholder')}>You are a professional AI employee. Be clear, concise, and business-focused. Prioritize accuracy and actionable insights.</textarea>
 </label>
 
 <!-- Tuning dimensions -->

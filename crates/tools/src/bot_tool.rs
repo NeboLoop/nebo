@@ -188,6 +188,9 @@ pub struct AgentTool {
     run_querier: RunQuerierHandle,
     persona: Option<crate::agent_tool::PersonaTool>,
     keychain: Arc<dyn KeychainStore>,
+    /// Shared broadcast cell (from the `Registry`) — lets profile renames emit
+    /// the same `agent_updated` event the updateAgent handler broadcasts.
+    notify_fn: Arc<std::sync::RwLock<Option<crate::message_tool::NotifyFn>>>,
 }
 
 impl AgentTool {
@@ -202,7 +205,17 @@ impl AgentTool {
             run_querier: crate::run_querier::new_handle(),
             persona: None,
             keychain: Arc::new(OsKeychain),
+            notify_fn: Arc::new(std::sync::RwLock::new(None)),
         }
+    }
+
+    /// Inject the shared broadcast cell (from the `Registry`).
+    pub fn with_notify_fn(
+        mut self,
+        cell: Arc<std::sync::RwLock<Option<crate::message_tool::NotifyFn>>>,
+    ) -> Self {
+        self.notify_fn = cell;
+        self
     }
 
     /// Override the OS keychain used for credential routing (tests inject a
@@ -1545,7 +1558,7 @@ impl AgentTool {
     }
 
     /// Owner/account profile: read account info, update the bot's identity, or open billing.
-    async fn handle_profile(&self, input: &serde_json::Value) -> ToolResult {
+    async fn handle_profile(&self, input: &serde_json::Value, ctx: &ToolContext) -> ToolResult {
         let action = input["action"].as_str().unwrap_or("get");
         let api = match crate::build_neboai_api(&self.store) {
             Ok(a) => a,
@@ -1575,13 +1588,114 @@ impl AgentTool {
                         "agent(resource: \"profile\", action: \"update\", name: \"...\", role: \"...\")",
                     ));
                 }
-                match api.update_bot_identity(name, role).await {
-                    Ok(_) => ToolResult::ok(format!(
-                        "Updated bot identity (name: {:?}, role: {:?})",
-                        name, role
-                    )),
-                    Err(e) => ToolResult::error(format!("Failed to update profile: {}", e)),
+                // Local identity FIRST: agent_profile.name is what feeds
+                // {agent_name} in the system prompt and the UI. Without this
+                // the rename was cosmetic — a memory said "Javis" while the
+                // prompt still said "You are Nebo", and every new session
+                // answered with the old name.
+                if let Err(e) = self.store.update_agent_profile(
+                    (!name.is_empty()).then_some(name),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    (!role.is_empty()).then_some(role),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                ) {
+                    return ToolResult::error(format!(
+                        "Failed to update identity: {}. Do not retry — this is a database error.",
+                        e
+                    ));
                 }
+                // The agents-table row is what the UI reads (employee roster,
+                // agent header, Identity settings) — agent_profile above only
+                // feeds the prompt fallback. Without this the rename never
+                // shows: agent_profile said 'Javis' while the roster still
+                // said 'Nebo'. Reuses the same store.update_agent the
+                // updateAgent handler uses (one canonical write path).
+                let agent_id = ctx
+                    .session_key
+                    .strip_prefix("agent:")
+                    .and_then(|rest| rest.split(':').next())
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or("assistant")
+                    .to_string();
+                match self.store.get_agent(&agent_id) {
+                    Ok(Some(existing)) => {
+                        let new_name = if name.is_empty() {
+                            existing.name.clone()
+                        } else {
+                            name.to_string()
+                        };
+                        let new_desc = if role.is_empty() {
+                            existing.description.clone()
+                        } else {
+                            role.to_string()
+                        };
+                        if let Err(e) = self.store.update_agent(
+                            &agent_id,
+                            &new_name,
+                            &new_desc,
+                            &existing.agent_md,
+                            &existing.frontmatter,
+                            existing.pricing_model.as_deref(),
+                            existing.pricing_cost,
+                            None,
+                            None,
+                            None,
+                            None,
+                            None,
+                        ) {
+                            return ToolResult::error(format!(
+                                "Failed to update agent record: {}. Do not retry — this is a database error.",
+                                e
+                            ));
+                        }
+                        // Live roster update — same event name + payload shape
+                        // the updateAgent handler broadcasts, so the sidebar
+                        // row and agent header patch in place immediately.
+                        let notify = self.notify_fn.read().ok().and_then(|g| g.clone());
+                        if let Some(notify) = notify {
+                            notify(
+                                "agent_updated",
+                                serde_json::json!({
+                                    "agentId": agent_id,
+                                    "name": new_name,
+                                    "description": new_desc,
+                                }),
+                            );
+                        }
+                    }
+                    Ok(None) => {
+                        tracing::warn!(agent_id = %agent_id, "profile update: no agents row to sync");
+                    }
+                    Err(e) => {
+                        return ToolResult::error(format!(
+                            "Failed to load agent record: {}. Do not retry — this is a database error.",
+                            e
+                        ));
+                    }
+                }
+                // Cloud identity (NeboAI directory) — best-effort; the local
+                // rename above is the one the user experiences.
+                if let Err(e) = api.update_bot_identity(name, role).await {
+                    tracing::warn!(error = %e, "cloud bot identity sync failed (local rename applied)");
+                }
+                ToolResult::ok(format!(
+                    "Updated identity{}{}. This takes effect in new conversations.",
+                    if name.is_empty() { String::new() } else { format!(" — name is now '{}'", name) },
+                    if role.is_empty() { String::new() } else { format!(", role: '{}'", role) },
+                ))
             }
             "open_billing" => match api.billing_portal().await {
                 Ok(v) => {
@@ -1933,7 +2047,9 @@ impl DynTool for AgentTool {
          Sessions:\n\
          - agent(resource: \"session\", action: \"list\") / history / status / clear / query\n\n\
          Profile:\n\
-         - agent(resource: \"profile\", action: \"get\") / update / open_billing\n\n\
+         - agent(resource: \"profile\", action: \"get\") / update / open_billing\n\
+           profile update RENAMES you (name/role) — when the owner says to use a different name, \
+           call it; storing a memory alone will NOT change your name.\n\n\
          Advisors (internal deliberation):\n\
          - agent(resource: \"advisors\", action: \"deliberate\", task: \"Should we use PostgreSQL or SQLite?\")\n\n\
          Research (deterministic deep-research harness — fans out searches, fetches sources, adversarially fact-checks claims, returns a cited report):\n\
@@ -2063,7 +2179,7 @@ impl DynTool for AgentTool {
                 "ask" => self.handle_ask(&input, ctx).await,
                 "runs" => self.handle_runs(&input, ctx).await,
                 "research" => self.handle_research(&input, ctx).await,
-                "profile" => self.handle_profile(&input).await,
+                "profile" => self.handle_profile(&input, ctx).await,
                 "registry" => {
                     if let Some(ref persona) = self.persona {
                         persona.handle_action(&input, ctx).await

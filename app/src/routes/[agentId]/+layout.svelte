@@ -700,11 +700,12 @@
       <div class="flex flex-col items-center gap-1 py-1">
         {#each sortedAgents as a}
           {@const st = agentStatus(a.id)}
+          {@const ac = AGENT_COLORS_MAP[a.color] ?? AGENT_COLORS_MAP['teal']}
           <div class="relative">
             <button
-              class="w-8 h-8 rounded-field flex items-center justify-center font-mono text-sm font-semibold shrink-0 cursor-pointer transition-colors {agentId === a.id
-                ? 'bg-primary text-primary-content border-none'
-                : 'border border-base-300 bg-base-100'} {st === 'paused' ? 'opacity-50' : ''}"
+              class="w-8 h-8 rounded-field flex items-center justify-center font-mono text-sm font-semibold shrink-0 cursor-pointer transition-colors border-none {ac.bgClass} {ac.inkClass} {agentId === a.id
+                ? 'ring-2 ring-base-content/40'
+                : ''} {st === 'paused' ? 'opacity-50' : ''}"
               onclick={() => selectAgent(a.id)}
               oncontextmenu={(e) => handleAgentContext(e, a.id)}
               data-context-menu
@@ -733,6 +734,7 @@
     {:else}
       {#each sortedAgents as a}
         {@const st = agentStatus(a.id)}
+        {@const ac = AGENT_COLORS_MAP[a.color] ?? AGENT_COLORS_MAP['teal']}
         <div
           class="group/agent flex items-center gap-2.5 py-2 px-2.5 mx-1.5 cursor-pointer transition-colors text-left {agentId === a.id
             ? 'rounded-box border border-base-300 bg-base-100 shadow-sm'
@@ -744,9 +746,9 @@
             oncontextmenu={(e) => handleAgentContext(e, a.id)}
             data-context-menu
           >
-            <div class="w-8 h-8 rounded-field flex items-center justify-center font-mono text-sm font-semibold shrink-0 {agentId === a.id
-              ? 'bg-primary text-primary-content'
-              : 'border border-base-300 bg-base-100'}">{a.initial}</div>
+            <div class="w-8 h-8 rounded-field flex items-center justify-center font-mono text-sm font-semibold shrink-0 {ac.bgClass} {ac.inkClass} {agentId === a.id
+              ? 'ring-2 ring-base-content/40'
+              : ''}">{a.initial}</div>
             <div class="flex-1 min-w-0">
               <div class="text-sm font-medium truncate">{a.name}</div>
               <div class="text-xs text-base-content/70 truncate">{a.role}</div>

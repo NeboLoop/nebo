@@ -791,7 +791,7 @@ pub async fn list_dependents(
 ) -> HandlerResult<serde_json::Value> {
     // Skills that declare this plugin as a dependency, excluding skills bundled
     // inside the plugin's own directory (those are part of the plugin itself).
-    let all_skills = state.skill_loader.list().await;
+    let all_skills = state.skill_loader.list(None).await;
     let plugin_skills_prefix = format!("/plugins/{}/", slug);
     let skill_dependents: Vec<serde_json::Value> = all_skills
         .iter()

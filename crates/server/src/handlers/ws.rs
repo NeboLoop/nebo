@@ -625,20 +625,16 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState) {
                                             return;
                                         }
 
-                                        // 2. Build summary prompt from messages
-                                        let mut transcript = String::new();
-                                        for msg in &messages {
-                                            let role = match msg.role.as_str() {
-                                                "user" => "User",
-                                                "assistant" => "Assistant",
-                                                _ => continue,
-                                            };
-                                            if !msg.content.is_empty() {
-                                                transcript.push_str(&format!("{}: {}\n\n", role, msg.content));
-                                            }
-                                        }
+                                        // 2. Gather compounding inputs: rolling summary + active task
+                                        let existing_summary = state_clone.runner.sessions()
+                                            .get_summary(&internal_sid)
+                                            .unwrap_or_default();
+                                        let active_task = state_clone.runner.sessions()
+                                            .get_active_task(&internal_sid)
+                                            .unwrap_or_default();
 
-                                        // 3. Call LLM to summarize
+                                        // 3. Call the one compaction pathway (structured
+                                        // compounding checkpoint; folds prior summaries).
                                         let providers = state_clone.runner.providers();
                                         let providers = providers.read().await;
                                         let provider = match providers.first() {
@@ -652,34 +648,16 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState) {
                                         };
                                         drop(providers);
 
-                                        let summary_prompt = format!(
-                                            "Summarize this conversation concisely. Capture all key decisions, facts, requests, and context. \
-                                             This summary will replace the full conversation so nothing important should be lost.\n\n---\n\n{}",
-                                            transcript
-                                        );
-
-                                        let req = ai::ChatRequest {
-                                            tool_choice: Default::default(),
-                                            messages: vec![ai::Message {
-                                                role: "user".into(),
-                                                content: summary_prompt,
-                                                ..Default::default()
-                                            }],
-                                            tools: vec![],
-                                            max_tokens: 2000,
-                                            temperature: 0.0,
-                                            system: "You are a conversation summarizer. Produce a concise summary that preserves all important context.".into(),
-                                            static_system: String::new(),
-                                            model: String::new(),
-                                            enable_thinking: false,
-                                            metadata: None,
-                                            cache_breakpoints: vec![],
-                                            cancel_token: None,
-                                            trace: None,
-                                        };
-
-                                        let mut rx = match provider.stream(&req).await {
-                                            Ok(rx) => rx,
+                                        let summary = match agent::pruning::build_llm_summary(
+                                            provider.as_ref(),
+                                            &messages,
+                                            &existing_summary,
+                                            &active_task,
+                                            "",
+                                        )
+                                        .await
+                                        {
+                                            Ok(s) => s,
                                             Err(e) => {
                                                 state_clone.hub.broadcast("session_compact", serde_json::json!({
                                                     "session_id": skey, "success": false, "error": format!("LLM error: {}", e)
@@ -688,25 +666,11 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState) {
                                             }
                                         };
 
-                                        let mut summary = String::new();
-                                        while let Some(event) = rx.recv().await {
-                                            if event.event_type == ai::StreamEventType::Text {
-                                                summary.push_str(&event.text);
-                                            }
-                                        }
-
-                                        if summary.is_empty() {
-                                            state_clone.hub.broadcast("session_compact", serde_json::json!({
-                                                "session_id": skey, "success": false, "error": "empty summary generated"
-                                            }));
-                                            return;
-                                        }
-
                                         // 4. Atomically replace the conversation with the summary.
                                         // On failure the original conversation is left intact.
                                         match state_clone.runner.sessions().compact_current_messages(
                                             &internal_sid,
-                                            &format!("**Conversation Summary**\n\n{}", summary),
+                                            &format!("{}\n\n{}", agent::pruning::COMPACTION_MESSAGE_MARKER, summary),
                                         ) {
                                             Ok(()) => {
                                                 state_clone.hub.broadcast("session_compact", serde_json::json!({

@@ -13,7 +13,7 @@ pub async fn list_skill_secrets(
 ) -> HandlerResult<serde_json::Value> {
     let skill = state
         .skill_loader
-        .get(&name)
+        .get(&name, None)
         .await
         .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
 
@@ -136,13 +136,14 @@ pub struct ListExtensionsResponse {
 pub async fn list_extensions(
     State(state): State<AppState>,
 ) -> HandlerResult<ListExtensionsResponse> {
-    let summaries = state.skill_loader.list_summaries().await;
+    let summaries = state.skill_loader.list_summaries(None).await;
     let mut extensions = Vec::with_capacity(summaries.len());
 
     for s in &summaries {
         let source = match s.source {
             tools::skills::SkillSource::User => "user",
             tools::skills::SkillSource::Installed => "installed",
+            tools::skills::SkillSource::Learned => "learned",
         }
         .to_string();
 
@@ -150,7 +151,7 @@ pub async fn list_extensions(
         let mut secrets = Vec::new();
         let mut needs_configuration = false;
         if s.has_secrets {
-            if let Some(full) = state.skill_loader.get(&s.name).await {
+            if let Some(full) = state.skill_loader.get(&s.name, None).await {
                 let declarations = full.secrets();
                 if !declarations.is_empty() {
                     let stored = state.store.list_skill_secrets(&s.name).unwrap_or_default();

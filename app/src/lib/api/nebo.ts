@@ -188,6 +188,20 @@ export function listEventSources() {
 }
 
 /**
+ * @description "Get learning"
+ */
+export function getLearning(id: string) {
+	return webapi.get<unknown>(`/api/v1/agents/learnings/${id}`)
+}
+
+/**
+ * @description "Resolve learning"
+ */
+export function resolveLearning(id: string, req: Record<string, unknown> = {}) {
+	return webapi.post<components.ResolveLearningResponse>(`/api/v1/agents/learnings/${id}/resolve`, req)
+}
+
+/**
  * @description "Get workflow approval status"
  */
 export function getWorkflowApprovalStatus(runId: string) {

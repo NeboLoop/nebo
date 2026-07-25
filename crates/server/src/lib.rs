@@ -917,11 +917,17 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         }
     }
 
-    // Initialize skill loader (embedded bundled + marketplace nebo/skills/ + user/skills/)
+    // Initialize skill loader (embedded bundled + marketplace nebo/skills/ +
+    // user/skills/ + per-employee learned/skills/<agent_id>/)
     let installed_skills_dir = data_dir.join("nebo").join("skills");
     let user_skills_dir = data_dir.join("user").join("skills");
+    let learned_skills_dir = data_dir.join("learned").join("skills");
+    if let Err(e) = std::fs::create_dir_all(&learned_skills_dir) {
+        tracing::warn!(error = %e, dir = %learned_skills_dir.display(), "failed to create learned skills dir");
+    }
     let skill_loader = Arc::new(
         tools::skills::Loader::new(installed_skills_dir, user_skills_dir)
+            .with_learned_dir(learned_skills_dir)
             .with_plugin_store(plugin_store.clone())
             .with_db_store(store.clone()),
     );
@@ -1853,14 +1859,28 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // agent_worker can reach the same registry without an AppState back-reference.
     tools::set_channel_bridges(state.channel_bridges.clone());
 
+    // Wake kicks for the token refreshers: their interval timers freeze during
+    // system sleep, so the sleep detector below pings these to force an
+    // immediate refresh tick on wake (one Notify per loop — `notify_one` stores
+    // a permit, so a kick landing mid-tick is honored right after, never lost).
+    let mcp_refresh_wake = Arc::new(tokio::sync::Notify::new());
+    let plugin_refresh_wake = Arc::new(tokio::sync::Notify::new());
+
     // Keep OAuth MCP tokens fresh continuously so they never expire and drop a
     // server on reconnect/restart (renew proactively, not reactively at connect).
-    crate::handlers::integrations::spawn_mcp_token_refresher(state.clone());
+    crate::handlers::integrations::spawn_mcp_token_refresher(
+        state.clone(),
+        mcp_refresh_wake.clone(),
+    );
 
-    // Same guarantee for OAuth plugin accounts (e.g. Google Workspace): probe each
-    // connected account's auth periodically so its token stays fresh, and surface a
-    // "Reconnect" prompt the moment a token can no longer be refreshed.
-    crate::handlers::integrations::spawn_plugin_token_refresher(state.clone());
+    // Same guarantee for OAuth plugin accounts (e.g. Google Workspace): renew each
+    // connected account's tokens periodically (silent `auth refresh` when declared,
+    // then the status probe as the health verdict), and surface a "Reconnect"
+    // prompt the moment a token can no longer be refreshed.
+    crate::handlers::integrations::spawn_plugin_token_refresher(
+        state.clone(),
+        plugin_refresh_wake.clone(),
+    );
 
     // Wire channel dispatcher into agent workers (late binding via OnceLock).
     // Workers started before this point have channel_dispatch = None, so channels
@@ -2067,6 +2087,8 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // Wall-clock drift detects system sleep/wake (tokio timers freeze during sleep).
     if cfg.is_neboai_enabled() {
         let reconnect_state = state.clone();
+        let mcp_refresh_wake = mcp_refresh_wake.clone();
+        let plugin_refresh_wake = plugin_refresh_wake.clone();
         tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_secs(60)).await;
             let mut backoff_secs: u64 = 30;
@@ -2095,6 +2117,11 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
                         drift_secs = drift.as_secs(),
                         "neboai: detected system sleep, forcing reconnect"
                     );
+                    // Kick both token refreshers: their interval timers froze
+                    // during sleep, and MCP/plugin OAuth tokens may have expired
+                    // while the machine was off — renew now, not next tick.
+                    mcp_refresh_wake.notify_one();
+                    plugin_refresh_wake.notify_one();
                     // Tear down stale connection (read/write loops may still be blocked)
                     reconnect_state.comm_manager.shutdown().await;
                     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -2348,8 +2375,8 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         .route("/ws", axum::routing::get(handlers::ws::client_ws_handler))
         .route("/ws/app/{agent_id}", axum::routing::get(handlers::ws::app_ws_handler))
         .route("/ws/extension", axum::routing::get(handlers::ws::extension_ws_handler))
-        // [VOICE DISABLED] .route("/ws/voice/dictation", axum::routing::get(handlers::voice::dictation_ws_handler))
-        // [VOICE DISABLED] .route("/ws/voice/conversation", axum::routing::get(handlers::voice::conversation_ws_handler))
+        .route("/ws/voice/dictation", axum::routing::get(handlers::voice::dictation_ws_handler))
+        .route("/ws/voice/conversation", axum::routing::get(handlers::voice::conversation_ws_handler))
         .route("/apps/{agent_id}/ui/{*path}", axum::routing::get(handlers::apps::serve_app_ui))
         .route("/sdk/nebo.global.js", axum::routing::get(handlers::apps::serve_sdk_iife))
         .merge(http_routes)

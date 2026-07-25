@@ -73,6 +73,20 @@ async fn tick(
         warn!("failed to cleanup old tasks: {}", e);
     }
 
+    // Expire staged self-improvement writes past their 30-day TTL and clear
+    // their Inbox cards (the audited Hermes gap: pending forever).
+    match store.expire_pending_writes() {
+        Ok(ids) => {
+            if !ids.is_empty() {
+                let user_id = store.ensure_local_user_id().unwrap_or_default();
+                for pid in ids {
+                    let _ = store.delete_notification(&format!("learn:{}", pid), &user_id);
+                }
+            }
+        }
+        Err(e) => warn!("failed to expire pending writes: {}", e),
+    }
+
     let jobs = store.list_enabled_cron_jobs().map_err(|e| e.to_string())?;
 
     // Crons are evaluated in the machine's local timezone — Nebo is a desktop

@@ -31,7 +31,7 @@
   <div class="mb-6">
     <h3 class="text-base font-semibold mb-3">{$t('settingsDeveloper.sideloadApp')}</h3>
     <div class="flex gap-2">
-      <input type="text" bind:value={appPath} placeholder={$t('settingsDeveloper.appPathPlaceholder')} class="flex-1 py-2 px-3 rounded-lg border border-base-content/10 bg-base-100 text-sm font-mono outline-none focus:border-base-content/30" />
+      <input type="text" bind:value={appPath} placeholder={$t('settingsDeveloper.appPathPlaceholder')} class="flex-1 py-2 px-3 rounded-lg border border-base-content/25 bg-base-200/40 text-sm font-mono outline-none focus:border-base-content/50" />
       <button class="px-4 py-2 rounded-lg border border-base-content/10 text-sm font-medium cursor-pointer bg-base-100 hover:bg-base-200 transition-colors" disabled={!appPath.trim()}>{$t('settingsDeveloper.load')}</button>
     </div>
   </div>

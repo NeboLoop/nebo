@@ -18,6 +18,7 @@ pub mod memory_debounce;
 pub mod memory_flush;
 pub mod orchestrator;
 pub mod personality;
+pub mod review_fork;
 pub mod proactive;
 pub mod prompt;
 pub mod pruning;

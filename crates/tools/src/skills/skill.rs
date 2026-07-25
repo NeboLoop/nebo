@@ -67,6 +67,10 @@ pub enum SkillSource {
     Installed,
     /// User-created (loose files in user/ directory).
     User,
+    /// Written by the self-improvement loop for one employee (learned/ tree).
+    /// Machine-managed: visible only to the owning agent, never packaged or
+    /// published, and not editable through the foreground skill tool.
+    Learned,
 }
 
 /// Lightweight view of a skill for list/search/catalog operations.
@@ -80,6 +84,7 @@ pub struct SkillSummary {
     pub version: String,
     pub enabled: bool,
     pub source: SkillSource,
+    pub owner_agent_id: Option<String>,
     pub triggers: Vec<String>,
     pub capabilities: Vec<String>,
     pub source_path: Option<PathBuf>,
@@ -154,6 +159,10 @@ pub struct Skill {
     /// Where this skill was loaded from (marketplace vs user).
     #[serde(default = "default_source")]
     pub source: SkillSource,
+    /// Owning agent for Learned skills (None for global skills). A learned
+    /// skill is visible only to runs of this agent — see `visible_to`.
+    #[serde(default)]
+    pub owner_agent_id: Option<String>,
     /// Root directory of the skill (parent of SKILL.md).
     #[serde(skip)]
     pub base_dir: Option<PathBuf>,
@@ -182,6 +191,7 @@ impl Skill {
             version: self.version.clone(),
             enabled: self.enabled,
             source: self.source,
+            owner_agent_id: self.owner_agent_id.clone(),
             triggers: self.triggers.clone(),
             capabilities: self.capabilities.clone(),
             source_path: self.source_path.clone(),
@@ -189,6 +199,17 @@ impl Skill {
             priority: self.priority,
             has_secrets: self.metadata.contains_key("secrets"),
             degraded: self.degraded.clone(),
+        }
+    }
+
+    /// Whether this skill is visible to a run scoped to `agent` (None = main
+    /// bot / no agent). Global skills are visible everywhere; Learned skills
+    /// only to their owning agent. The ONE visibility rule — every loader
+    /// read path filters through this.
+    pub fn visible_to(&self, agent: Option<&str>) -> bool {
+        match self.owner_agent_id.as_deref() {
+            None => true,
+            Some(owner) => agent == Some(owner),
         }
     }
 
@@ -597,6 +618,7 @@ You are a research specialist. When activated, focus on:
             degraded: None,
             source_path: None,
             source: SkillSource::User,
+            owner_agent_id: None,
             base_dir: None,
             napp_path: None,
             license_key: None,

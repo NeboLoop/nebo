@@ -3732,3 +3732,130 @@ pub async fn get_workflow_approval_status(
     };
     Ok(Json(serde_json::json!({ "status": status })))
 }
+
+#[derive(serde::Deserialize)]
+pub struct LearningResolveBody {
+    pub approved: bool,
+}
+
+/// GET /api/v1/agents/learnings/{id} — a staged self-improvement write for
+/// the Inbox card: status, gist, action/target, staged content, agent.
+pub async fn get_learning(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> HandlerResult<serde_json::Value> {
+    let row = state
+        .store
+        .get_pending_write(&id)
+        .map_err(to_error_response)?
+        .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
+    let agent_name = state
+        .store
+        .get_agent(&row.agent_id)
+        .ok()
+        .flatten()
+        .map(|a| a.name)
+        .unwrap_or_default();
+    let mut v = serde_json::to_value(&row).unwrap_or_default();
+    if let Some(m) = v.as_object_mut() {
+        m.insert("agentName".into(), serde_json::json!(agent_name));
+    }
+    Ok(Json(v))
+}
+
+/// POST /api/v1/agents/learnings/{id}/resolve — approve or reject a staged
+/// self-improvement write. Approve re-checks the stage-time content hash
+/// (a target that changed meanwhile becomes a CONFLICT, never a blind
+/// replay — the gap Hermes left open), then applies through the ONE skill
+/// tool pathway with the read-mark pre-set (the content was human-reviewed).
+pub async fn resolve_learning(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<LearningResolveBody>,
+) -> HandlerResult<serde_json::Value> {
+    let row = state
+        .store
+        .get_pending_write(&id)
+        .map_err(to_error_response)?
+        .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
+    if row.status != "pending" {
+        return Ok(Json(serde_json::json!({ "status": row.status })));
+    }
+
+    if !body.approved {
+        state
+            .store
+            .resolve_pending_write(&id, "rejected")
+            .map_err(to_error_response)?;
+        state.hub.broadcast(
+            "learning_resolved",
+            serde_json::json!({ "id": id, "status": "rejected", "agentId": row.agent_id }),
+        );
+        return Ok(Json(serde_json::json!({ "status": "rejected" })));
+    }
+
+    // Conflict check: the on-disk target must match its stage-time hash.
+    let current = state
+        .skill_loader
+        .get(&row.target, Some(&row.agent_id))
+        .await;
+    let conflict = match row.action.as_str() {
+        // Create conflicts when a skill with that name has appeared since.
+        "create" => current.is_some(),
+        // Update/delete conflict when the target vanished or its bytes changed.
+        _ => match current.as_ref().and_then(|s| s.source_path.as_deref()) {
+            Some(path) => tools::skills::hash_skill_file(path) != row.target_hash,
+            None => true,
+        },
+    };
+    if conflict {
+        state
+            .store
+            .resolve_pending_write(&id, "conflict")
+            .map_err(to_error_response)?;
+        state.hub.broadcast(
+            "learning_resolved",
+            serde_json::json!({ "id": id, "status": "conflict", "agentId": row.agent_id }),
+        );
+        return Ok(Json(serde_json::json!({
+            "status": "conflict",
+            "message": "The skill changed after this was staged; the learning was discarded rather than overwriting it. The employee will re-learn if it still matters."
+        })));
+    }
+
+    // Apply through the ONE skill write pathway. The read-mark is pre-set:
+    // read-before-write is satisfied by the owner having reviewed the content.
+    let skills_read: std::collections::HashSet<String> =
+        std::collections::HashSet::from([row.target.clone()]);
+    let ctx = tools::ToolContext {
+        origin: tools::Origin::System,
+        session_key: format!("agent:{}:learning-approval", row.agent_id),
+        learned_write_agent: Some(row.agent_id.clone()),
+        learned_write_staged: false,
+        skills_read: std::sync::Arc::new(std::sync::Mutex::new(skills_read)),
+        ..Default::default()
+    };
+    let mut input = serde_json::json!({ "action": row.action, "name": row.target });
+    if let Some(ref content) = row.content {
+        input["content"] = serde_json::json!(content);
+    }
+    let result = state.tools.execute(&ctx, "skill", input).await;
+    if result.is_error {
+        // Leave the row pending — the owner can retry after the cause clears.
+        return Err(to_error_response(types::NeboError::Internal(format!(
+            "apply failed: {}",
+            result.content
+        ))));
+    }
+
+    state
+        .store
+        .resolve_pending_write(&id, "approved")
+        .map_err(to_error_response)?;
+    state.hub.broadcast(
+        "learning_resolved",
+        serde_json::json!({ "id": id, "status": "approved", "agentId": row.agent_id }),
+    );
+    info!(id, agent_id = %row.agent_id, target = %row.target, action = %row.action, "learning approved and applied");
+    Ok(Json(serde_json::json!({ "status": "approved" })))
+}

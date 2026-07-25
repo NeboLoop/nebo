@@ -111,6 +111,26 @@ pub struct ToolContext {
     pub operation_policy: Option<crate::policy::OperationPolicy>,
     /// Per-entity resource grant overrides (resource → "allow"|"deny"|"inherit").
     pub resource_grants: Option<std::collections::HashMap<String, String>>,
+    /// Dispatch-time tool whitelist for restricted internal runs (the
+    /// self-improvement review fork). `Some` = only these tool names may
+    /// execute; everything else is denied with a corrective error at the ONE
+    /// dispatch choke point. `None` for every normal run. The full roster is
+    /// still DECLARED to the model (prompt-cache byte parity) — restriction
+    /// happens here, never by narrowing the registry.
+    pub tool_whitelist: Option<std::collections::HashSet<String>>,
+    /// Set when this run is the self-improvement review fork (or curator):
+    /// the skill tool's writes target the LEARNED tree of this agent instead
+    /// of user/skills/, and update/delete require the skill to have been
+    /// loaded this run (read-before-write, see `skills_read`).
+    pub learned_write_agent: Option<String>,
+    /// With `learned_write_agent`: stage writes to pending_writes for Inbox
+    /// approval instead of committing (employee's learning_mode = "staged").
+    pub learned_write_staged: bool,
+    /// Read marks for the review fork: learned-skill names loaded via the
+    /// skill tool THIS run. update/delete on a learned skill is refused
+    /// unless its name is here — the fork must write against actual on-disk
+    /// content, never a recollection inferred from the transcript.
+    pub skills_read: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
     /// Allowed filesystem paths — if set, file writes and shell commands are restricted
     /// to these directories and their children. Empty = unrestricted.
     pub allowed_paths: Vec<String>,

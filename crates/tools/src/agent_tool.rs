@@ -52,7 +52,7 @@ pub async fn validate_agent_dependencies(
     agent_registry: &AgentRegistry,
     skill_loader: &crate::skills::Loader,
 ) {
-    let loaded_skills = skill_loader.list_summaries().await;
+    let loaded_skills = skill_loader.list_summaries(None).await;
     let skill_names: HashSet<String> = loaded_skills.iter().map(|s| s.name.clone()).collect();
 
     let mut registry = agent_registry.write().await;

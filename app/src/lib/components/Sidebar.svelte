@@ -201,7 +201,7 @@
 
       <div class="px-3 pb-2">
         <input type="text" placeholder={$t('sidebar.searchChats')} bind:value={searchText}
-          class="w-full py-1.5 px-2.5 rounded-md border border-base-content/10 bg-base-100 text-sm outline-none focus:border-base-content/30 placeholder:text-base-content" />
+          class="w-full py-1.5 px-2.5 rounded-md border border-base-content/25 bg-base-200/40 text-sm outline-none focus:border-base-content/50 placeholder:text-base-content" />
       </div>
 
       <div class="px-4 pt-2 pb-1 text-xs font-semibold uppercase tracking-wider">{$t('sidebar.agents')}</div>

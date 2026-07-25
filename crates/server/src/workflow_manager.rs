@@ -519,7 +519,9 @@ impl WorkflowManager for WorkflowManagerImpl {
                     for activity in &def.activities {
                         for skill_name in &activity.skills {
                             if !map.contains_key(skill_name) {
-                                if let Some(skill) = loader.get(skill_name).await {
+                                // Global scope: Learned skills are per-employee
+                                // and not declarable in workflow activities.
+                                if let Some(skill) = loader.get(skill_name, None).await {
                                     if !skill.template.is_empty() {
                                         let expanded = loader.expand_template(&skill, Some(&store));
                                         map.insert(skill_name.clone(), expanded);
@@ -1129,7 +1131,9 @@ impl WorkflowManager for WorkflowManagerImpl {
                     for activity in &def.activities {
                         for skill_name in &activity.skills {
                             if !map.contains_key(skill_name) {
-                                if let Some(skill) = loader.get(skill_name).await {
+                                // Global scope: Learned skills are per-employee
+                                // and not declarable in workflow activities.
+                                if let Some(skill) = loader.get(skill_name, None).await {
                                     if !skill.template.is_empty() {
                                         map.insert(skill_name.clone(), skill.template.clone());
                                     }

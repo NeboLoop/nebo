@@ -12,6 +12,10 @@ use crate::skills::{Loader, SkillSource};
 pub struct SkillTool {
     loader: Arc<Loader>,
     store: Option<Arc<db::Store>>,
+    /// Live-broadcast callback (wired to ClientHub via the registry cell, same
+    /// pattern as MessageTool). Used so a staged learned-skill write surfaces
+    /// in the Inbox immediately, not on next load.
+    notify_fn: Arc<std::sync::RwLock<Option<crate::message_tool::NotifyFn>>>,
     /// Optional reference to the live plugin registry. When set, skill
     /// discover/help can detect when the LLM has confused a plugin slug
     /// for a skill name and redirect to the `plugin` tool instead of
@@ -27,6 +31,7 @@ impl SkillTool {
         Self {
             loader,
             store: None,
+            notify_fn: Arc::new(std::sync::RwLock::new(None)),
             plugin_store: None,
             code_installer: Arc::new(std::sync::RwLock::new(None)),
         }
@@ -35,6 +40,78 @@ impl SkillTool {
     pub fn with_store(mut self, store: Arc<db::Store>) -> Self {
         self.store = Some(store);
         self
+    }
+
+    /// Inject the shared broadcast cell (from the `Registry`).
+    pub fn with_notify_fn(
+        mut self,
+        cell: Arc<std::sync::RwLock<Option<crate::message_tool::NotifyFn>>>,
+    ) -> Self {
+        self.notify_fn = cell;
+        self
+    }
+
+    /// Stage a learned-skill write for owner approval: pending_writes row +
+    /// Inbox notification (`learn:<id>`) + live broadcast. The ONE staging
+    /// pathway for every learned write when learning_mode = "staged".
+    fn stage_learned_write(
+        &self,
+        agent_id: &str,
+        action: &str,
+        target: &str,
+        content: Option<&str>,
+        gist: &str,
+        target_hash: &str,
+    ) -> ToolResult {
+        let Some(store) = self.store.as_ref() else {
+            return ToolResult::error("Staging unavailable: no store configured.");
+        };
+        let pending_id = uuid::Uuid::new_v4().to_string();
+        if let Err(e) = store.create_pending_write(
+            &pending_id, agent_id, "skill", action, target, content, gist, target_hash,
+        ) {
+            return ToolResult::error(format!("Failed to stage write: {}. Do not retry — this is a database error.", e));
+        }
+        let user_id = store.ensure_local_user_id().unwrap_or_default();
+        let agent_name = store
+            .get_agent(agent_id)
+            .ok()
+            .flatten()
+            .map(|a| a.name)
+            .unwrap_or_else(|| "An employee".to_string());
+        let notif_id = format!("learn:{}", pending_id);
+        let title = format!("{} wants to learn something new", agent_name);
+        if let Err(e) = store.create_notification_if_not_exists(
+            &notif_id,
+            &user_id,
+            "approval",
+            &title,
+            Some(gist),
+            Some("/inbox"),
+            None,
+            Some(agent_id),
+        ) {
+            tracing::warn!(error = %e, "staged learned write: could not persist notification");
+        }
+        let notify = self.notify_fn.read().ok().and_then(|g| g.clone());
+        if let Some(notify) = notify {
+            notify(
+                "notification_created",
+                serde_json::json!({
+                    "id": notif_id,
+                    "type": "approval",
+                    "title": title,
+                    "body": gist,
+                    "actionUrl": "/inbox",
+                    "agentId": agent_id,
+                    "readAt": null,
+                }),
+            );
+        }
+        ToolResult::ok(format!(
+            "Staged for the owner's approval: {}. NOTHING has been saved yet — the owner reviews this from their Inbox. Report it as 'staged for approval', never as 'saved'.",
+            gist
+        ))
     }
 
     /// Inject the shared canonical-installer cell (from the `Registry`).
@@ -80,12 +157,10 @@ impl SkillTool {
             .map_err(|e| format!("data dir error: {}", e))
     }
 
-    /// Resolve a skill name to its directory under the user skills dir.
-    /// The ONE pathway for turning tool-input names into filesystem paths:
-    /// rejects names containing path separators, `..`, or `.` so input like
-    /// `../../foo` can never escape the skills directory (create/read/update/
-    /// enable/disable/delete all go through here).
-    fn user_skill_dir(name: &str) -> Result<std::path::PathBuf, String> {
+    /// Validate a tool-input skill name: rejects path separators, `..`, or `.`
+    /// so input like `../../foo` can never escape a skills directory. The ONE
+    /// name check for both the user and learned write pathways.
+    fn validate_skill_name(name: &str) -> Result<(), String> {
         if name.is_empty()
             || name == "."
             || name.contains("..")
@@ -97,10 +172,33 @@ impl SkillTool {
                 name
             ));
         }
+        Ok(())
+    }
+
+    /// Resolve a skill name to its directory under the user skills dir
+    /// (create/read/update/enable/disable/delete all go through here).
+    fn user_skill_dir(name: &str) -> Result<std::path::PathBuf, String> {
+        Self::validate_skill_name(name)?;
         let dir = Self::user_skills_dir()?;
         let skill_dir = dir.join(name);
         // Belt and braces: the joined path must still be inside the skills dir.
         if !skill_dir.starts_with(&dir) {
+            return Err(format!("Invalid skill name '{}'", name));
+        }
+        Ok(skill_dir)
+    }
+
+    /// Resolve a skill name to its directory under the learned tree for
+    /// `owner` — the review fork's write target. Same name validation as
+    /// user_skill_dir; the base comes from the loader's learned root.
+    fn learned_skill_dir(&self, owner: &str, name: &str) -> Result<std::path::PathBuf, String> {
+        Self::validate_skill_name(name)?;
+        let base = self
+            .loader
+            .learned_dir()
+            .ok_or_else(|| "learned skills are not enabled on this install".to_string())?;
+        let skill_dir = base.join(owner).join(name);
+        if !skill_dir.starts_with(base) {
             return Err(format!("Invalid skill name '{}'", name));
         }
         Ok(skill_dir)
@@ -203,7 +301,7 @@ impl DynTool for SkillTool {
 
     fn execute_dyn<'a>(
         &'a self,
-        _ctx: &'a ToolContext,
+        ctx: &'a ToolContext,
         input: serde_json::Value,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send + 'a>> {
         Box::pin(async move {
@@ -211,6 +309,20 @@ impl DynTool for SkillTool {
                 Ok(v) => v,
                 Err(e) => return ToolResult::error(format!("Failed to parse input: {}. Do not retry — this is a schema error.", e)),
             };
+
+            // Per-employee skill scope: runs bound to an agent (session key
+            // "agent:<id>:...") also see that agent's Learned skills.
+            let agent_scope = ctx
+                .session_key
+                .strip_prefix("agent:")
+                .and_then(|rest| rest.split(':').next())
+                .filter(|id| !id.is_empty())
+                .map(String::from);
+            // Review-fork marker: when set, create/update/delete target the
+            // learned tree of this agent (with read-before-write) instead of
+            // user/skills/. The owner is also the read scope.
+            let learned_owner = ctx.learned_write_agent.clone();
+            let agent = learned_owner.as_deref().or(agent_scope.as_deref());
 
             match domain_input.action.as_str() {
                 "list" => {
@@ -220,7 +332,7 @@ impl DynTool for SkillTool {
                     const MAX_CATALOG_ENTRIES: usize = 30;
                     const MAX_DESC_CHARS: usize = 120;
 
-                    let skills = self.loader.list_summaries().await;
+                    let skills = self.loader.list_summaries(agent).await;
                     if skills.is_empty() {
                         ToolResult::ok(
                             "No skills installed. Create one with skill(action: \"create\", name: \"my-skill\", content: \"...\")",
@@ -262,7 +374,7 @@ impl DynTool for SkillTool {
                             "skill(action: \"discover\", query: \"email management\")",
                         ));
                     }
-                    let matches = self.loader.discover_summaries(query).await;
+                    let matches = self.loader.discover_summaries(query, agent).await;
                     if matches.is_empty() {
                         // If the query matches a registered plugin slug
                         // (channel plugins like slack/discord, or any
@@ -310,7 +422,7 @@ impl DynTool for SkillTool {
                         ));
                     }
 
-                    match self.loader.get(name).await {
+                    match self.loader.get(name, agent).await {
                         Some(skill) => {
                             let mut output = format!("# Skill: {}\n\n", skill.name);
                             output.push_str(&format!("**Description:** {}\n", skill.description));
@@ -424,7 +536,7 @@ impl DynTool for SkillTool {
                     }
                     let filter_path = input["path"].as_str().unwrap_or("");
 
-                    match self.loader.get(name).await {
+                    match self.loader.get(name, agent).await {
                         Some(skill) => match skill.list_resources() {
                             Ok(mut resources) => {
                                 if !filter_path.is_empty() {
@@ -485,7 +597,7 @@ impl DynTool for SkillTool {
                         ));
                     }
 
-                    match self.loader.get(name).await {
+                    match self.loader.get(name, agent).await {
                         Some(skill) => match skill.read_resource(path) {
                             Ok(data) => match String::from_utf8(data.clone()) {
                                 Ok(text) => ToolResult::ok(text),
@@ -510,8 +622,32 @@ impl DynTool for SkillTool {
                     // Canonical "give me this skill's instructions": if enabled, return
                     // its expanded body so you can follow it now (loaded inline, rides in
                     // message history, unloads via the sliding window).
-                    if let Some(skill) = self.loader.get(name).await {
+                    if let Some(skill) = self.loader.get(name, agent).await {
                         if skill.enabled {
+                            // Read mark for the review fork: update/delete of a
+                            // learned skill requires it was loaded THIS run.
+                            if let Ok(mut read) = ctx.skills_read.lock() {
+                                read.insert(skill.name.clone());
+                            }
+                            // The review fork rewrites whole files — hand it the
+                            // FULL source (frontmatter + body) so an update
+                            // preserves triggers/priority/version instead of
+                            // reconstructing frontmatter blind. Normal runs keep
+                            // the expanded body (instructions to follow).
+                            if learned_owner.is_some()
+                                && matches!(skill.source, SkillSource::Learned)
+                            {
+                                if let Some(raw) = skill
+                                    .source_path
+                                    .as_deref()
+                                    .and_then(|p| std::fs::read_to_string(p).ok())
+                                {
+                                    return ToolResult::ok(format!(
+                                        "Loaded skill '{}'. CURRENT FULL SKILL.md (rewrite the whole file, keeping frontmatter fields you don't mean to change):\n\n{}",
+                                        skill.name, raw
+                                    ));
+                                }
+                            }
                             let body = self.loader.expand_template(&skill, self.store.as_deref());
                             return ToolResult::ok(format!(
                                 "Loaded skill '{}'. Follow these instructions:\n\n{}",
@@ -585,9 +721,24 @@ impl DynTool for SkillTool {
                     // LLMs often send literal \n instead of real newlines in tool call strings.
                     let content = content_raw.replace("\\n", "\n");
 
-                    let skill_dir = match Self::user_skill_dir(name) {
-                        Ok(d) => d,
-                        Err(e) => return ToolResult::error(e),
+                    let skill_dir = match learned_owner.as_deref() {
+                        // Review fork: create in the learned tree, never user/skills/.
+                        Some(owner) => {
+                            if let Some(existing) = self.loader.get(name, Some(owner)).await {
+                                return ToolResult::error(format!(
+                                    "Skill '{}' already exists ({:?}). Load it and use skill(action: \"update\") to extend it instead of creating a duplicate.",
+                                    name, existing.source
+                                ));
+                            }
+                            match self.learned_skill_dir(owner, name) {
+                                Ok(d) => d,
+                                Err(e) => return ToolResult::error(e),
+                            }
+                        }
+                        None => match Self::user_skill_dir(name) {
+                            Ok(d) => d,
+                            Err(e) => return ToolResult::error(e),
+                        },
                     };
 
                     // Always write as {name}/SKILL.md per Agent Skills spec
@@ -599,6 +750,22 @@ impl DynTool for SkillTool {
                             name, name, content
                         )
                     };
+
+                    // Staged learning: the create becomes a pending write for
+                    // the owner to approve from the Inbox.
+                    if ctx.learned_write_staged {
+                        if let Some(owner) = learned_owner.as_deref() {
+                            let gist = format!("Create learned skill '{}'", name);
+                            return self.stage_learned_write(
+                                owner,
+                                "create",
+                                name,
+                                Some(&final_content),
+                                &gist,
+                                "",
+                            );
+                        }
+                    }
 
                     if let Err(e) = std::fs::create_dir_all(&skill_dir) {
                         return ToolResult::error(format!("Failed to create skill dir: {}. Do not retry — this is a filesystem error.", e));
@@ -632,7 +799,7 @@ impl DynTool for SkillTool {
                     }
 
                     // Check if skill exists in loader or as file
-                    if let Some(skill) = self.loader.get(name).await {
+                    if let Some(skill) = self.loader.get(name, agent).await {
                         // Protect marketplace (installed) skills from modification
                         if matches!(skill.source, SkillSource::Installed) {
                             return ToolResult::error(format!(
@@ -640,9 +807,96 @@ impl DynTool for SkillTool {
                                 name
                             ));
                         }
+                        if matches!(skill.source, SkillSource::Learned) {
+                            // Only the review fork may rewrite learned skills,
+                            // only its own, and only after loading them THIS
+                            // run (read-before-write: rewrite from actual
+                            // content, never a transcript-inferred recollection).
+                            let Some(owner) = learned_owner.as_deref() else {
+                                return ToolResult::error(format!(
+                                    "Cannot update learned skill '{}'. It is managed by the self-improvement loop; review changes from the Inbox.",
+                                    name
+                                ));
+                            };
+                            if skill.owner_agent_id.as_deref() != Some(owner) {
+                                return ToolResult::error(format!(
+                                    "Cannot update learned skill '{}': it belongs to a different employee.",
+                                    name
+                                ));
+                            }
+                            let read = ctx
+                                .skills_read
+                                .lock()
+                                .map(|r| r.contains(&skill.name))
+                                .unwrap_or(false);
+                            if !read {
+                                return ToolResult::error(format!(
+                                    "Read-before-write: load skill '{}' first (skill(action: \"load\", name: \"{}\")) and rewrite from its returned content, then retry the update.",
+                                    name, name
+                                ));
+                            }
+                            // Staged learning: normalize + validate now (so
+                            // approve can't fail parsing), then park the write.
+                            if ctx.learned_write_staged {
+                                let normalized = content.replace("\\n", "\n");
+                                let final_content = if normalized.trim_start().starts_with("---") {
+                                    normalized
+                                } else {
+                                    format!(
+                                        "---\nname: {}\ndescription: {}\n---\n{}",
+                                        skill.name, skill.description, normalized
+                                    )
+                                };
+                                if let Err(e) = crate::skills::parse_skill_frontmatter(
+                                    final_content.as_bytes(),
+                                ) {
+                                    return ToolResult::error(format!(
+                                        "Update rejected: content would not parse as a valid skill ({}). Send the FULL SKILL.md including the --- frontmatter block.",
+                                        e
+                                    ));
+                                }
+                                let hash = skill
+                                    .source_path
+                                    .as_deref()
+                                    .map(crate::skills::hash_skill_file)
+                                    .unwrap_or_default();
+                                let gist = format!("Update learned skill '{}'", name);
+                                return self.stage_learned_write(
+                                    owner,
+                                    "update",
+                                    name,
+                                    Some(&final_content),
+                                    &gist,
+                                    &hash,
+                                );
+                            }
+                        }
                         if let Some(ref path) = skill.source_path {
-                            match std::fs::write(path, content) {
+                            // Models routinely send the body without the YAML
+                            // header; writing that verbatim knocks the skill
+                            // out of the loader on the next reload. Re-wrap
+                            // bare content with the skill's existing identity,
+                            // then refuse anything that still doesn't parse.
+                            let normalized = content.replace("\\n", "\n");
+                            let final_content = if normalized.trim_start().starts_with("---") {
+                                normalized
+                            } else {
+                                format!(
+                                    "---\nname: {}\ndescription: {}\n---\n{}",
+                                    skill.name, skill.description, normalized
+                                )
+                            };
+                            if let Err(e) =
+                                crate::skills::parse_skill_frontmatter(final_content.as_bytes())
+                            {
+                                return ToolResult::error(format!(
+                                    "Update rejected: content would not parse as a valid skill ({}). Send the FULL SKILL.md including the --- frontmatter block.",
+                                    e
+                                ));
+                            }
+                            match std::fs::write(path, final_content) {
                                 Ok(_) => {
+                                    self.loader.reload_from_disk().await;
                                     return ToolResult::ok(format!("Updated skill '{}'", name));
                                 }
                                 Err(e) => {
@@ -676,12 +930,65 @@ impl DynTool for SkillTool {
                     }
 
                     // Protect marketplace (installed) skills from deletion
-                    if let Some(skill) = self.loader.get(name).await {
+                    if let Some(skill) = self.loader.get(name, agent).await {
                         if matches!(skill.source, SkillSource::Installed) {
                             return ToolResult::error(format!(
                                 "Cannot delete marketplace skill '{}'. It was installed from NeboAI and is read-only.",
                                 name
                             ));
+                        }
+                        if matches!(skill.source, SkillSource::Learned) {
+                            // Fork-only, own-skill-only, read-before-write —
+                            // same rules as update. Deletes the learned dir.
+                            let Some(owner) = learned_owner.as_deref() else {
+                                return ToolResult::error(format!(
+                                    "Cannot delete learned skill '{}'. It is managed by the self-improvement loop; review changes from the Inbox.",
+                                    name
+                                ));
+                            };
+                            if skill.owner_agent_id.as_deref() != Some(owner) {
+                                return ToolResult::error(format!(
+                                    "Cannot delete learned skill '{}': it belongs to a different employee.",
+                                    name
+                                ));
+                            }
+                            let read = ctx
+                                .skills_read
+                                .lock()
+                                .map(|r| r.contains(&skill.name))
+                                .unwrap_or(false);
+                            if !read {
+                                return ToolResult::error(format!(
+                                    "Read-before-write: load skill '{}' first to confirm what you are deleting, then retry.",
+                                    name
+                                ));
+                            }
+                            // Staged learning: park the delete for approval.
+                            if ctx.learned_write_staged {
+                                let hash = skill
+                                    .source_path
+                                    .as_deref()
+                                    .map(crate::skills::hash_skill_file)
+                                    .unwrap_or_default();
+                                let gist = format!("Delete learned skill '{}'", name);
+                                return self.stage_learned_write(
+                                    owner, "delete", name, None, &gist, &hash,
+                                );
+                            }
+                            let dir = match self.learned_skill_dir(owner, name) {
+                                Ok(d) => d,
+                                Err(e) => return ToolResult::error(e),
+                            };
+                            if dir.is_dir() {
+                                if let Err(e) = std::fs::remove_dir_all(&dir) {
+                                    return ToolResult::error(format!(
+                                        "Failed to delete learned skill: {}. Do not retry — this is a filesystem error.",
+                                        e
+                                    ));
+                                }
+                            }
+                            self.loader.reload_from_disk().await;
+                            return ToolResult::ok(format!("Deleted learned skill '{}'", name));
                         }
                     }
 
@@ -720,7 +1027,7 @@ impl DynTool for SkillTool {
                     };
 
                     // Validate key name matches a declared secret in the skill
-                    if let Some(skill) = self.loader.get(name).await {
+                    if let Some(skill) = self.loader.get(name, agent).await {
                         let declarations = skill.secrets();
                         if !declarations.is_empty() && !declarations.iter().any(|d| d.key == key) {
                             let valid_keys: Vec<&str> =
@@ -759,7 +1066,7 @@ impl DynTool for SkillTool {
                     }
 
                     // Show declared secrets and their configuration status
-                    let skill = match self.loader.get(name).await {
+                    let skill = match self.loader.get(name, agent).await {
                         Some(s) => s,
                         None => return ToolResult::error(format!("Skill '{}' not found", name)),
                     };
