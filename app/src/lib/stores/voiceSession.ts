@@ -299,12 +299,21 @@ function createVoiceSessionStore() {
 					// Agent transcript arrives as DELTAS from the realtime engine —
 					// append to the current agent entry (opened by playback_start),
 					// creating it if the delta beats the playback frame.
+					// xAI emits sentence-level segments with NO separator between
+					// them ("...asking!What can I..."), so restore the space when a
+					// segment ends a sentence and the next opens one. Uppercase
+					// check keeps mid-token continuations (e.g. "3." + "14") intact.
 					if (msg.text) {
 						update((s) => {
 							const t = [...s.transcripts];
 							const last = t[t.length - 1];
 							if (last && last.speaker === 'agent' && agentEntryOpen) {
-								t[t.length - 1] = { speaker: 'agent', text: last.text + msg.text };
+								const needsSpace =
+									/[.!?…]["')\]]?$/.test(last.text) && /^["'([]?[A-Z]/.test(msg.text);
+								t[t.length - 1] = {
+									speaker: 'agent',
+									text: last.text + (needsSpace ? ' ' : '') + msg.text
+								};
 							} else {
 								agentEntryOpen = true;
 								t.push({ speaker: 'agent', text: msg.text });
@@ -333,7 +342,13 @@ function createVoiceSessionStore() {
 		 * Start a voice conversation session.
 		 * Connects WebSocket, acquires mic, starts PCM capture.
 		 */
-		async start(agentId: string) {
+		/**
+		 * @param agentId - the employee this call belongs to (tool/session scope)
+		 * @param chatId - the chat thread the transcript persists into; every
+		 *   finished turn lands there as a normal message, so closing the call
+		 *   leaves the whole exchange in the chat window.
+		 */
+		async start(agentId: string, chatId?: string) {
 			const current = readState();
 			if (current.status !== 'idle') {
 				log.warn('Cannot start voice session — status is ' + current.status);
@@ -372,7 +387,11 @@ function createVoiceSessionStore() {
 				// PARALLEL INIT: open the WebSocket and acquire the mic at the same
 				// time (serializing them wastes the slower of the two); mic chunks
 				// captured before the socket opens are buffered and flushed on open.
-				const wsUrl = `${backendWsBase()}/ws/voice/conversation`;
+				const params = new URLSearchParams();
+				if (agentId) params.set('agent_id', agentId);
+				if (chatId) params.set('chat_id', chatId);
+				const qs = params.size > 0 ? `?${params.toString()}` : '';
+				const wsUrl = `${backendWsBase()}/ws/voice/conversation${qs}`;
 				ws = new WebSocket(wsUrl);
 				ws.binaryType = 'arraybuffer';
 

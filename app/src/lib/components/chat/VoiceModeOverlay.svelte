@@ -1,18 +1,25 @@
 <script lang="ts">
 	import { onDestroy } from 'svelte';
 	import { t } from 'svelte-i18n';
-	import { voiceSession } from '$lib/stores/voiceSession';
+	import {
+		voiceSession,
+		hasVoiceCloudConsent,
+		grantVoiceCloudConsent
+	} from '$lib/stores/voiceSession';
 	import { logger } from '$lib/monitoring';
 	import X from 'lucide-svelte/icons/x';
 	import Mic from 'lucide-svelte/icons/mic';
 	import MicOff from 'lucide-svelte/icons/mic-off';
 	import Square from 'lucide-svelte/icons/square';
+	import CloudUpload from 'lucide-svelte/icons/cloud-upload';
 
 	const log = logger.child({ component: 'VoiceModeOverlay' });
 
-	let { agentId, agentName, onclose }: {
+	let { agentId, agentName, chatId = '', onclose }: {
 		agentId: string;
 		agentName: string;
+		/** Chat thread the transcript persists into (voice is a modality of the chat). */
+		chatId?: string;
 		onclose: () => void;
 	} = $props();
 
@@ -25,11 +32,21 @@
 
 	let transcriptEl: HTMLDivElement | null = $state(null);
 
-	// Auto-start voice session on mount
+	// Cloud-mic consent: conversation streams raw microphone audio to xAI.
+	// First use shows an explicit consent panel naming xAI; the session only
+	// auto-starts once consent is recorded (the store hard-gates as backstop).
+	let consented = $state(hasVoiceCloudConsent());
+
+	function handleConsent() {
+		grantVoiceCloudConsent();
+		consented = true;
+	}
+
+	// Auto-start voice session on mount (once consented)
 	$effect(() => {
-		if (status === 'idle') {
+		if (consented && status === 'idle') {
 			log.info('VoiceModeOverlay mounted, starting session for agent: ' + agentId);
-			voiceSession.start(agentId);
+			voiceSession.start(agentId, chatId);
 		}
 	});
 
@@ -106,6 +123,13 @@
 					{statusText}
 				{/if}
 			</div>
+			{#if consented && status !== 'idle' && status !== 'error'}
+				<!-- Persistent cloud-egress indicator: audio is leaving the machine -->
+				<div class="flex items-center justify-center gap-1 text-[0.625rem] text-base-content/40 mt-0.5">
+					<CloudUpload class="w-3 h-3" />
+					{$t('voice.cloudIndicator')}
+				</div>
+			{/if}
 		</div>
 		<button
 			class="w-10 h-10 rounded-lg grid place-items-center text-base-content/60 hover:text-base-content hover:bg-base-200/50 cursor-pointer transition-colors border-none bg-transparent"
@@ -116,6 +140,26 @@
 		</button>
 	</div>
 
+	{#if !consented}
+		<!-- First-use consent: name the provider, say what leaves the machine -->
+		<div class="flex-1 flex flex-col items-center justify-center gap-4 px-6 min-h-0">
+			<div class="max-w-md w-full p-5 rounded-xl border border-base-300 bg-base-200/30 flex flex-col gap-3">
+				<div class="flex items-center gap-2">
+					<CloudUpload class="w-5 h-5 text-warning" />
+					<div class="text-base font-semibold">{$t('voice.consentTitle')}</div>
+				</div>
+				<p class="text-sm text-base-content/80">{$t('voice.consentBody')}</p>
+				<div class="flex justify-end gap-2 mt-1">
+					<button class="btn btn-ghost btn-sm" onclick={onclose}>
+						{$t('voice.consentDecline')}
+					</button>
+					<button class="btn btn-primary btn-sm" onclick={handleConsent}>
+						{$t('voice.consentAccept')}
+					</button>
+				</div>
+			</div>
+		</div>
+	{:else}
 	<!-- Center area: Audio visualization + status -->
 	<div class="flex-1 flex flex-col items-center justify-center gap-8 min-h-0">
 		<!-- Audio level visualization circle -->
@@ -234,4 +278,5 @@
 			<Square class="w-6 h-6 fill-current" />
 		</button>
 	</div>
+	{/if}
 </div>

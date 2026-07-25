@@ -149,9 +149,20 @@
     } catch { /* keep empty */ }
   });
 
+  // Voice turns persist server-side as normal chat messages and announce via
+  // `voice_message` — reload so the transcript appears in the thread live
+  // (and is already in place when the voice overlay closes).
+  let voiceMsgUnsub: (() => void) | null = null;
+  onMount(() => {
+    voiceMsgUnsub = getWebSocketClient().on<{ chatId?: string }>('voice_message', (d) => {
+      if (d?.chatId === threadId) loadMessages();
+    });
+  });
+
   onDestroy(() => {
     for (const off of activeRunUnsubs) off();
     activeRunUnsubs = [];
+    voiceMsgUnsub?.();
     chat.destroy();
   });
 

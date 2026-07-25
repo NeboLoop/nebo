@@ -1,7 +1,7 @@
-use axum::extract::State;
-use axum::extract::WebSocketUpgrade;
 use axum::extract::ws::{Message, WebSocket};
+use axum::extract::{Query, State, WebSocketUpgrade};
 use axum::response::Response;
+use serde::Deserialize;
 use tokio::sync::mpsc;
 use tracing::{error, info, warn};
 
@@ -11,12 +11,27 @@ use crate::state::AppState;
 /// (Janus metered relay or BYOK direct). Dictation was removed: the OS does
 /// it natively (macOS dictation, Win+H) straight into the composer, on
 /// device — a local whisper pathway was a worse competing implementation.
+///
+/// Voice is a MODALITY of the chat, not a separate surface: the session binds
+/// to `agent_id` + `chat_id`, every finished turn persists as a normal chat
+/// message (broadcast as `voice_message` so the open thread updates live),
+/// and recent chat history is fed into the session so the agent continues the
+/// conversation instead of greeting blind.
+#[derive(Debug, Deserialize)]
+pub struct ConversationQuery {
+    #[serde(default)]
+    pub agent_id: Option<String>,
+    #[serde(default)]
+    pub chat_id: Option<String>,
+}
+
 pub async fn conversation_ws_handler(
     State(state): State<AppState>,
+    Query(q): Query<ConversationQuery>,
     ws: WebSocketUpgrade,
 ) -> Response {
-    info!("conversation WebSocket upgrade requested");
-    ws.on_upgrade(move |socket| handle_conversation_ws(socket, state))
+    info!(agent = ?q.agent_id, chat = ?q.chat_id, "conversation WebSocket upgrade requested");
+    ws.on_upgrade(move |socket| handle_conversation_ws(socket, state, q))
 }
 
 /// Resolve the realtime upstream leg — the same direct-vs-Janus split as text
@@ -77,7 +92,39 @@ fn brand_voice_hints() -> (serde_json::Map<String, serde_json::Value>, Vec<Strin
     (replace, keyterms)
 }
 
-async fn handle_conversation_ws(mut socket: WebSocket, state: AppState) {
+/// Compact tail of the chat history, injected into the voice session's
+/// instructions so the agent picks the conversation up mid-thread.
+fn chat_history_context(state: &AppState, chat_id: &str) -> String {
+    let Ok(messages) = state.store.get_chat_messages(chat_id) else {
+        return String::new();
+    };
+    if messages.is_empty() {
+        return String::new();
+    }
+    let tail: Vec<String> = messages
+        .iter()
+        .rev()
+        .take(12)
+        .rev()
+        .filter(|m| !m.content.is_empty())
+        .map(|m| {
+            let who = if m.role == "user" { "User" } else { "You" };
+            let text: String = m.content.chars().take(300).collect();
+            format!("{who}: {text}")
+        })
+        .collect();
+    if tail.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\n\nThis voice call continues an ongoing chat. Recent messages:\n{}\n\
+             Continue naturally — do not greet from scratch.",
+            tail.join("\n")
+        )
+    }
+}
+
+async fn handle_conversation_ws(mut socket: WebSocket, state: AppState, q: ConversationQuery) {
     info!("conversation WebSocket connected");
 
     let Some((endpoint, bearer)) = resolve_realtime_leg(&state) else {
@@ -89,17 +136,23 @@ async fn handle_conversation_ws(mut socket: WebSocket, state: AppState) {
         return;
     };
 
-    let (replace, keyterms) = brand_voice_hints();
-    let cfg = voice::realtime::RealtimeConfig {
-        endpoint,
-        bearer,
-        tools: voice_tools(&state).await,
-        instructions: "You are the user's Nebo AI employee, speaking with them by voice. \
+    let mut instructions = "You are the user's Nebo AI employee, speaking with them by voice. \
                        Be concise and conversational — short sentences, no markdown, no lists. \
                        Use your tools to act on their behalf; if a tool reports that it needs \
                        approval or a permission, say so plainly and tell them to grant it in \
                        the Nebo desktop app."
-            .into(),
+        .to_string();
+    if let Some(chat_id) = q.chat_id.as_deref() {
+        instructions.push_str(&chat_history_context(&state, chat_id));
+    }
+
+    let (replace, keyterms) = brand_voice_hints();
+    let cfg = voice::realtime::RealtimeConfig {
+        endpoint,
+        bearer,
+        bot_id: q.agent_id.clone(),
+        tools: voice_tools(&state).await,
+        instructions,
         replace,
         keyterms,
         ..Default::default()
@@ -118,7 +171,83 @@ async fn handle_conversation_ws(mut socket: WebSocket, state: AppState) {
         }
     };
 
-    handle_conversation_session(socket, state, rt_tx, rt_rx).await;
+    handle_conversation_session(socket, state, q, rt_tx, rt_rx).await;
+}
+
+/// Persist one finished voice turn as a normal chat message and tell open
+/// views about it. Same table, same shape as text turns — the transcript IS
+/// chat history, so closing the call leaves the whole exchange in the thread
+/// and the next text turn has full context.
+fn persist_voice_turn(state: &AppState, chat_id: &str, role: &str, content: &str) {
+    let content = content.trim();
+    if content.is_empty() {
+        return;
+    }
+    let msg_id = uuid::Uuid::new_v4().to_string();
+    match state.store.create_chat_message_for_runner(
+        &msg_id,
+        chat_id,
+        role,
+        content,
+        None,
+        None,
+        None,
+        Some(r#"{"voice":true}"#),
+        None,
+    ) {
+        Ok(_) => {
+            state.hub.broadcast(
+                "voice_message",
+                serde_json::json!({
+                    "id": msg_id,
+                    "chatId": chat_id,
+                    "role": role,
+                    "content": content,
+                }),
+            );
+        }
+        Err(e) => error!(error = %e, chat = %chat_id, "failed to persist voice turn"),
+    }
+}
+
+/// Decode a realtime function-call `arguments` payload into a tool input
+/// object. Voice models sometimes DOUBLE-ENCODE: `arguments` contains a JSON
+/// string whose contents are the real JSON object (`"{\"action\":...}"`), so
+/// a plain parse yields `Value::String` — the tool then sees zero parameters
+/// and rejects ("command parameter missing") on every retry. Unwrap string
+/// layers until an object appears; anything else becomes `{}` so the tool's
+/// own correction message guides the model.
+fn decode_tool_arguments(arguments: &str) -> serde_json::Value {
+    let mut v: serde_json::Value =
+        serde_json::from_str(arguments).unwrap_or(serde_json::Value::Null);
+    for _ in 0..2 {
+        match v {
+            serde_json::Value::String(ref s) => match serde_json::from_str(s) {
+                Ok(inner) => v = inner,
+                Err(_) => break,
+            },
+            _ => break,
+        }
+    }
+    if v.is_object() { v } else { serde_json::json!({}) }
+}
+
+/// Join a transcript delta onto accumulated text, restoring the space xAI
+/// omits between sentence-level segments (mirror of the frontend join).
+fn join_transcript(acc: &mut String, delta: &str) {
+    let needs_space = acc
+        .chars()
+        .rev()
+        .find(|c| !matches!(c, '"' | '\'' | ')' | ']'))
+        .is_some_and(|c| matches!(c, '.' | '!' | '?' | '…'))
+        && delta
+            .chars()
+            .find(|c| !matches!(c, '"' | '\'' | '(' | '['))
+            .is_some_and(|c| c.is_uppercase());
+    if needs_space && !acc.is_empty() {
+        acc.push(' ');
+    }
+    acc.push_str(delta);
 }
 
 /// Bridge the browser WebSocket to the xAI realtime session, executing tool
@@ -130,6 +259,7 @@ async fn handle_conversation_ws(mut socket: WebSocket, state: AppState) {
 async fn handle_conversation_session(
     mut socket: WebSocket,
     state: AppState,
+    q: ConversationQuery,
     rt_tx: mpsc::Sender<voice::realtime::RealtimeCommand>,
     mut rt_rx: mpsc::Receiver<voice::conversation::ConversationEvent>,
 ) {
@@ -139,11 +269,24 @@ async fn handle_conversation_session(
     // Voice tool execution context: user-origin, empty approved_categories —
     // OFF capabilities fail closed with a clear error (no autonomy bypass; the
     // model relays "grant it on desktop"). Same enforcement as every
-    // non-interactive caller.
+    // non-interactive caller. The `agent:<id>:` session-key prefix is what
+    // resolves per-agent state (plugin account profiles, memory scope), so a
+    // voice call acts as the SAME employee the chat belongs to.
     let mut ctx = tools::ToolContext::new(tools::Origin::User);
-    ctx.session_key = format!("voice:conversation:{}", uuid::Uuid::new_v4());
+    ctx.session_key = match q.agent_id.as_deref() {
+        Some(id) if !id.is_empty() => format!("agent:{}:voice", id),
+        _ => format!("voice:conversation:{}", uuid::Uuid::new_v4()),
+    };
     ctx.session_id = ctx.session_key.clone();
     let ctx = std::sync::Arc::new(ctx);
+
+    // Turn accumulation for transcript persistence: the user transcript is
+    // cumulative (replace), the agent transcript arrives as deltas (join).
+    // The user turn is final once the model starts responding; the agent turn
+    // once playback ends. Anything left at session end is flushed.
+    let chat_id = q.chat_id.filter(|c| !c.is_empty());
+    let mut user_partial = String::new();
+    let mut agent_partial = String::new();
 
     // Completed tool executions flow back through this channel so the select
     // loop below owns all rt_tx sends (all outputs before one continuation).
@@ -164,16 +307,32 @@ async fn handle_conversation_session(
                     ConversationEvent::TranscriptionStart =>
                         Some(serde_json::json!({"type": "transcription_start"})),
                     // Cumulative transcript — the client replaces, never appends.
-                    ConversationEvent::TranscriptionText(text) =>
-                        Some(serde_json::json!({"type": "transcription_text", "text": text})),
+                    ConversationEvent::TranscriptionText(text) => {
+                        user_partial = text.clone();
+                        Some(serde_json::json!({"type": "transcription_text", "text": text}))
+                    }
                     ConversationEvent::TranscriptionEnd =>
                         Some(serde_json::json!({"type": "transcription_end"})),
-                    ConversationEvent::PlaybackStart =>
-                        Some(serde_json::json!({"type": "playback_start"})),
-                    ConversationEvent::PlaybackEnd =>
-                        Some(serde_json::json!({"type": "playback_end"})),
-                    ConversationEvent::ResponseText(text) =>
-                        Some(serde_json::json!({"type": "response_text", "text": text})),
+                    ConversationEvent::PlaybackStart => {
+                        // Model turn started ⇒ the user's utterance is final
+                        // (late transcript corrections have landed by now).
+                        if let Some(cid) = chat_id.as_deref() {
+                            persist_voice_turn(&state, cid, "user", &user_partial);
+                        }
+                        user_partial.clear();
+                        Some(serde_json::json!({"type": "playback_start"}))
+                    }
+                    ConversationEvent::PlaybackEnd => {
+                        if let Some(cid) = chat_id.as_deref() {
+                            persist_voice_turn(&state, cid, "assistant", &agent_partial);
+                        }
+                        agent_partial.clear();
+                        Some(serde_json::json!({"type": "playback_end"}))
+                    }
+                    ConversationEvent::ResponseText(text) => {
+                        join_transcript(&mut agent_partial, &text);
+                        Some(serde_json::json!({"type": "response_text", "text": text}))
+                    }
                     ConversationEvent::ConversationId(id) =>
                         Some(serde_json::json!({"type": "conversation_id", "id": id})),
                     ConversationEvent::Error(message) =>
@@ -185,14 +344,18 @@ async fn handle_conversation_session(
                         None
                     }
                     ConversationEvent::ToolCall { call_id, name, arguments } => {
-                        info!(tool = %name, call_id = %call_id, "voice tool call");
+                        info!(
+                            tool = %name,
+                            call_id = %call_id,
+                            args = %arguments.chars().take(300).collect::<String>(),
+                            "voice tool call"
+                        );
                         pending_tools += 1;
                         let registry = state.tools.clone();
                         let ctx = ctx.clone();
                         let done = tool_done_tx.clone();
                         tokio::spawn(async move {
-                            let input = serde_json::from_str::<serde_json::Value>(&arguments)
-                                .unwrap_or_else(|_| serde_json::json!({}));
+                            let input = decode_tool_arguments(&arguments);
                             let result = registry.execute(&ctx, &name, input).await;
                             // The model needs the outcome either way — errors
                             // included, so it can tell the user what blocked.
@@ -278,5 +441,12 @@ async fn handle_conversation_session(
                 }
             }
         }
+    }
+
+    // Session over (hangup / barge-out / error): flush any half-finished turn
+    // so the transcript in the chat never loses the last exchange.
+    if let Some(cid) = chat_id.as_deref() {
+        persist_voice_turn(&state, cid, "user", &user_partial);
+        persist_voice_turn(&state, cid, "assistant", &agent_partial);
     }
 }

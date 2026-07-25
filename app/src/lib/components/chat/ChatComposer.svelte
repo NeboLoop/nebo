@@ -26,12 +26,12 @@
   import { Plugin, PluginKey } from '@tiptap/pm/state';
   import { Decoration, DecorationSet } from '@tiptap/pm/view';
   import SlashCommandMenu from './SlashCommandMenu.svelte';
-  // [VOICE DISABLED] import VoiceModeOverlay from './VoiceModeOverlay.svelte';
+  import VoiceModeOverlay from './VoiceModeOverlay.svelte';
   import type { SlashCommand } from './slashCommands.js';
   import { AGENT_COLORS_MAP } from '$lib/tokens.js';
   import { getWebSocketClient } from '$lib/websocket/client';
   import Bot from 'lucide-svelte/icons/bot';
-  // [VOICE DISABLED] import AudioLines from 'lucide-svelte/icons/audio-lines';
+  import AudioLines from 'lucide-svelte/icons/audio-lines';
 
   interface AttachedFile {
     file: File;
@@ -82,8 +82,8 @@
   let mentionActiveIdx = $state(0);
   let mentionCommand: ((props: { id: string; label: string }) => void) | null = null;
 
-  // [VOICE DISABLED] Voice conversation overlay state
-  // let showVoiceOverlay = $state(false);
+  // Voice conversation overlay state
+  let showVoiceOverlay = $state(false);
 
   // IME composition state (Phase 10 — prevents Enter-to-send during CJK input)
   let isComposing = $state(false);
@@ -533,15 +533,33 @@
     editor?.commands.focus();
   }
 
-  /* [VOICE DISABLED]
-  function handleStartConversation() {
+  // Voice is a modality of the chat: the call binds to a real chat thread so
+  // every turn persists as messages. Starting voice from a fresh "New chat"
+  // creates the thread first (the canonical creation endpoint); closing the
+  // call from that state navigates into the thread with the transcript there.
+  let voiceChatId = $state('');
+
+  async function handleStartConversation() {
+    voiceChatId = threadId;
+    if (!voiceChatId && agentId) {
+      try {
+        const api = await import('$lib/api/nebo');
+        const resp = await api.createNewAgentChat(agentId, {});
+        voiceChatId = (resp as { chat?: { id?: string } }).chat?.id ?? '';
+      } catch (e) {
+        console.warn('voice: could not pre-create chat, transcript will not persist', e);
+      }
+    }
     showVoiceOverlay = true;
   }
 
   function handleCloseConversation() {
     showVoiceOverlay = false;
+    // Voice started from an empty "New chat": land in the thread it created.
+    if (!threadId && voiceChatId && agentId) {
+      import('$lib/nav').then(({ goto }) => goto(`/${agentId}/threads/${voiceChatId}`));
+    }
   }
-  [VOICE DISABLED] */
 
   // --- File management ---
   function browseFiles() {
@@ -738,15 +756,13 @@
             </svg>
           </button>
         {/if}
-        <!-- [VOICE DISABLED]
         <button
           class="w-8 h-8 rounded-lg grid place-items-center text-base-content/60 hover:text-base-content hover:bg-base-200 cursor-pointer transition-colors border-none bg-transparent"
-          title="Voice conversation"
+          title={$t('voice.startConversation')}
           onclick={handleStartConversation}
         >
           <AudioLines class="w-[1.125rem] h-[1.125rem]" />
         </button>
-        [VOICE DISABLED] -->
       </div>
 
       {#if isLoading}
@@ -774,12 +790,11 @@
   </p>
 </div>
 
-<!-- [VOICE DISABLED]
 {#if showVoiceOverlay}
   <VoiceModeOverlay
     {agentId}
     agentName={agentName}
+    chatId={voiceChatId}
     onclose={handleCloseConversation}
   />
 {/if}
-[VOICE DISABLED] -->
