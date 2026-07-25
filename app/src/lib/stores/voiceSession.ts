@@ -22,9 +22,24 @@ import { writable, derived } from 'svelte/store';
 import { backendWsBase } from '$lib/api/base';
 import { startPcmCapture, type AudioCaptureHandle } from '$lib/stores/audio';
 import { deviceManager } from '$lib/stores/devices';
+import { storage } from '$lib/storage';
 import { logger } from '$lib/monitoring';
 
 const log = logger.child({ component: 'VoiceSession' });
+
+/**
+ * Cloud-mic consent. Conversation mode streams raw microphone audio to xAI
+ * (directly or via Janus) — the single largest data egress in the product, so
+ * it never starts silently: the first start() requires an explicit, recorded
+ * consent naming xAI. Base-scoped storage, one grant per install.
+ */
+const CONSENT_KEY = 'nebo_voice_cloud_consent';
+export function hasVoiceCloudConsent(): boolean {
+	return storage.get(CONSENT_KEY) === 'granted';
+}
+export function grantVoiceCloudConsent(): void {
+	storage.set(CONSENT_KEY, 'granted');
+}
 
 // --- Types ---
 
@@ -79,6 +94,11 @@ function createVoiceSessionStore() {
 	let pendingAudioChunks: Float32Array[] = [];
 	let currentSource: AudioBufferSourceNode | null = null;
 	let isPlayingAudio = false;
+	// Whether the current trailing transcript entry is the agent's in-progress
+	// streamed response (deltas append to it; playback_end closes it).
+	let agentEntryOpen = false;
+	// Mic chunks captured before the WS finishes opening (parallel init).
+	let preOpenAudio: ArrayBuffer[] = [];
 
 	function readState(): VoiceSessionState {
 		let state = initialState;
@@ -237,10 +257,17 @@ function createVoiceSessionStore() {
 					break;
 
 				case 'transcription_text':
+					// Cumulative transcript (includes upstream corrections) —
+					// REPLACE, never append.
 					update((s) => ({
 						...s,
 						interimTranscript: msg.text ?? ''
 					}));
+					break;
+
+				case 'conversation_id':
+					// Resumption handle from the realtime engine (30 min expiry).
+					update((s) => ({ ...s, conversationId: msg.id ?? s.conversationId }));
 					break;
 
 				case 'transcription_end':
@@ -264,16 +291,26 @@ function createVoiceSessionStore() {
 					break;
 
 				case 'playback_end':
+					agentEntryOpen = false;
 					update((s) => ({ ...s, status: 'listening' }));
 					break;
 
 				case 'response_text':
-					// Agent's text response — add to transcript display
+					// Agent transcript arrives as DELTAS from the realtime engine —
+					// append to the current agent entry (opened by playback_start),
+					// creating it if the delta beats the playback frame.
 					if (msg.text) {
-						update((s) => ({
-							...s,
-							transcripts: [...s.transcripts, { speaker: 'agent', text: msg.text }]
-						}));
+						update((s) => {
+							const t = [...s.transcripts];
+							const last = t[t.length - 1];
+							if (last && last.speaker === 'agent' && agentEntryOpen) {
+								t[t.length - 1] = { speaker: 'agent', text: last.text + msg.text };
+							} else {
+								agentEntryOpen = true;
+								t.push({ speaker: 'agent', text: msg.text });
+							}
+							return { ...s, transcripts: t };
+						});
 					}
 					break;
 
@@ -303,6 +340,15 @@ function createVoiceSessionStore() {
 				return;
 			}
 
+			// Cloud-mic consent gate: conversation audio leaves the machine
+			// (xAI, directly or via Janus). No consent, no socket.
+			if (!hasVoiceCloudConsent()) {
+				transitionToError(
+					'Voice conversation sends your microphone audio to xAI for processing. Enable it in the voice panel to consent.'
+				);
+				return;
+			}
+
 			update((s) => ({
 				...s,
 				status: 'connecting',
@@ -314,30 +360,69 @@ function createVoiceSessionStore() {
 				isMuted: false,
 				conversationId: null
 			}));
+			agentEntryOpen = false;
+			preOpenAudio = [];
 
 			log.info('Voice session connecting for agent: ' + agentId);
 
 			try {
-				// 1. Initialize playback AudioContext (24kHz for TTS output)
+				// Playback AudioContext (24kHz — matches the realtime output rate)
 				playbackCtx = new AudioContext({ sampleRate: 24000 });
 
-				// 2. Open WebSocket (same base derivation as the chat WS — carries
-				// the tunnel prefix, and the Vite proxy still applies in dev)
+				// PARALLEL INIT: open the WebSocket and acquire the mic at the same
+				// time (serializing them wastes the slower of the two); mic chunks
+				// captured before the socket opens are buffered and flushed on open.
 				const wsUrl = `${backendWsBase()}/ws/voice/conversation`;
 				ws = new WebSocket(wsUrl);
 				ws.binaryType = 'arraybuffer';
 
-				await new Promise<void>((resolve, reject) => {
+				const wsOpen = new Promise<void>((resolve, reject) => {
 					if (!ws) return reject(new Error('WebSocket is null'));
 					ws.onopen = () => resolve();
 					ws.onerror = () => reject(new Error('WebSocket connection failed'));
 					setTimeout(() => reject(new Error('WebSocket connection timeout')), 5000);
 				});
 
-				// 3. Send Start message
-				ws.send(JSON.stringify({ type: 'Start', agentId }));
+				const sendOrBuffer = (buffer: ArrayBuffer) => {
+					const state = readState();
+					if (state.isMuted) return;
+					if (ws && ws.readyState === WebSocket.OPEN) {
+						ws.send(buffer);
+					} else if (preOpenAudio.length < 50) {
+						// ≤ ~5s of early audio; beyond that the connection is the problem
+						preOpenAudio.push(buffer);
+					}
+				};
 
-				// 4. Wire up message handler
+				const micReady = (async () => {
+					const stream = await deviceManager.acquireMicStream();
+					// Bail if session was stopped while awaiting mic permission
+					const s = readState().status;
+					if (s === 'idle' || s === 'error') {
+						stream.getTracks().forEach((t) => t.stop());
+						return;
+					}
+					// 24kHz capture — the realtime engine's native input rate, so
+					// nothing resamples anywhere in the chain.
+					captureHandle = await startPcmCapture(
+						stream,
+						{
+							onAudioChunk: sendOrBuffer,
+							onAudioLevel: (level) => {
+								update((st) => ({
+									...st,
+									audioLevel: Math.min(1, Math.max(0, level))
+								}));
+							}
+						},
+						24000
+					);
+				})();
+
+				await wsOpen;
+
+				// Wire up handlers and flush any early mic audio
+				ws.send(JSON.stringify({ type: 'Start', agentId }));
 				ws.onmessage = handleWsMessage;
 				ws.onclose = () => {
 					const state = readState();
@@ -346,34 +431,12 @@ function createVoiceSessionStore() {
 						transitionToError('Connection lost');
 					}
 				};
+				for (const chunk of preOpenAudio) ws.send(chunk);
+				preOpenAudio = [];
 
-				// 5. Acquire mic
-				const stream = await deviceManager.acquireMicStream();
+				await micReady;
 
-				// Bail if session was stopped while awaiting mic permission
-				const currentStatus = readState().status;
-				if (currentStatus === 'idle' || currentStatus === 'error') {
-					stream.getTracks().forEach((t) => t.stop());
-					return;
-				}
-
-				// 6. Start PCM capture → feed to WebSocket
-				captureHandle = startPcmCapture(stream, {
-					onAudioChunk: (buffer) => {
-						const state = readState();
-						if (ws && ws.readyState === WebSocket.OPEN && !state.isMuted) {
-							ws.send(buffer);
-						}
-					},
-					onAudioLevel: (level) => {
-						update((s) => ({
-							...s,
-							audioLevel: Math.min(1, Math.max(0, level))
-						}));
-					}
-				});
-
-				// 7. Start keepalive
+				// Keepalive
 				keepAliveInterval = setInterval(() => {
 					if (ws && ws.readyState === WebSocket.OPEN) {
 						ws.send(JSON.stringify({ type: 'KeepAlive' }));

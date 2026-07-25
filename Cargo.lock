@@ -6244,14 +6244,17 @@ dependencies = [
 name = "nebo-voice"
 version = "0.12.9"
 dependencies = [
+ "base64 0.22.1",
  "bytes",
  "dirs 6.0.0",
+ "futures",
  "kokorox",
  "nebo-types",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-tungstenite 0.26.2",
  "tracing",
  "whisper-rs",
 ]

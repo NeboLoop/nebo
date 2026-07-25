@@ -237,8 +237,8 @@ function createDictationStore() {
 					return;
 				}
 
-				// 5. Start PCM capture → feed to WebSocket
-				captureHandle = startPcmCapture(stream, {
+				// 5. Start PCM capture → feed to WebSocket (16kHz — whisper's rate)
+				captureHandle = await startPcmCapture(stream, {
 					onAudioChunk: (buffer) => {
 						if (ws && ws.readyState === WebSocket.OPEN) {
 							ws.send(buffer);
@@ -248,7 +248,7 @@ function createDictationStore() {
 						audioDetected = true;
 						update(s => ({ ...s, audioLevel: Math.min(1, Math.max(0, level)) }));
 					}
-				});
+				}, 16000);
 
 				// 6. Start keepalive
 				keepAliveInterval = setInterval(() => {

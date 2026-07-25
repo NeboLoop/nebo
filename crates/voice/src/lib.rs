@@ -1,10 +1,13 @@
-//! Voice pipeline — local TTS (Kokoro) and STT (whisper.cpp via whisper-rs).
+//! Voice pipeline — local STT for dictation, xAI realtime for conversation.
 //!
-//! TTS uses kokorox (Kokoro-82M via ONNX Runtime + espeak-ng phonemizer).
-//! STT uses whisper-rs (Rust bindings to whisper.cpp) directly — no subprocess.
-//! TTS models auto-download from HuggingFace on first use.
+//! Dictation (STT → composer text) runs locally via whisper-rs — offline,
+//! free, no cloud egress. Conversation (speech-to-speech) runs through the
+//! xAI Grok realtime API (`realtime` module) — the local STT→LLM→TTS cascade
+//! was structurally too slow for live conversation and was removed.
+//! Local TTS (kokorox) remains feature-gated for one-shot synthesize().
 
 pub mod conversation;
+pub mod realtime;
 pub mod streaming;
 
 use std::path::PathBuf;
@@ -40,6 +43,9 @@ pub enum VoiceError {
 
     #[error("text-to-speech is not available in this build")]
     TtsUnavailable,
+
+    #[error("realtime voice error: {0}")]
+    Realtime(String),
 }
 
 // ---------------------------------------------------------------------------
