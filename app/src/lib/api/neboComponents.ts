@@ -1603,16 +1603,8 @@ export interface ToggleWorkflowResponse {
 	workflow: Workflow
 }
 
-export interface TranscribeResponse {
-	text: string
-}
-
 export interface TriggerAgentSetupResponse {
 	ok: boolean
-}
-
-export interface TtsResponse {
-	error: string
 }
 
 export interface UninstallStoreProductResponse {

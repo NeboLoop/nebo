@@ -1777,20 +1777,6 @@ export function userUpdateProfile(req: Record<string, unknown> = {}) {
 }
 
 /**
- * @description "Transcribe"
- */
-export function transcribe(req: Record<string, unknown> = {}) {
-	return webapi.post<components.TranscribeResponse>(`/api/v1/voice/transcribe`, req)
-}
-
-/**
- * @description "Tts"
- */
-export function tts(req: Record<string, unknown> = {}) {
-	return webapi.post<components.TtsResponse>(`/api/v1/voice/tts`, req)
-}
-
-/**
  * @description "List workflows"
  */
 export function listWorkflows(limit?: number, offset?: number) {

@@ -1795,9 +1795,6 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         channel_bridges: tools::new_channel_bridge_registry(),
         a2ui: a2ui_manager,
         app_lifecycles: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
-        voice: Arc::new(voice::VoicePipeline::new(
-            voice::VoicePipelineConfig::default(),
-        )),
         channel_context: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         channel_engagement: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         store_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
@@ -2377,7 +2374,6 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         .route("/ws", axum::routing::get(handlers::ws::client_ws_handler))
         .route("/ws/app/{agent_id}", axum::routing::get(handlers::ws::app_ws_handler))
         .route("/ws/extension", axum::routing::get(handlers::ws::extension_ws_handler))
-        .route("/ws/voice/dictation", axum::routing::get(handlers::voice::dictation_ws_handler))
         .route("/ws/voice/conversation", axum::routing::get(handlers::voice::conversation_ws_handler))
         .route("/apps/{agent_id}/ui/{*path}", axum::routing::get(handlers::apps::serve_app_ui))
         .route("/sdk/nebo.global.js", axum::routing::get(handlers::apps::serve_sdk_iife))

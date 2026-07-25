@@ -1,10 +1,9 @@
 /**
- * Shared audio infrastructure for dictation and voice conversation.
+ * Audio capture for voice conversation.
  *
  * PCM capture: AudioWorklet (off the main thread — ScriptProcessorNode was
- * deprecated and glitched under load), Float32→Int16 conversion, configurable
- * sample rate: dictation captures 16kHz (whisper's native rate), conversation
- * captures 24kHz (xAI realtime's native rate) so nothing resamples anywhere.
+ * deprecated and glitched under load), Float32→Int16 conversion at 24kHz —
+ * xAI realtime's native rate, so nothing resamples anywhere in the chain.
  * Audio level analysis: AnalyserNode, RMS, 100ms interval.
  */
 
@@ -86,13 +85,13 @@ function getWorkletUrl(): string {
  *
  * @param stream - MediaStream from getUserMedia
  * @param callbacks - onAudioChunk and onAudioLevel handlers
- * @param sampleRate - capture rate; 16000 for whisper dictation, 24000 for realtime conversation
+ * @param sampleRate - capture rate (24000 = xAI realtime's native rate)
  * @returns Handle to stop capture
  */
 export async function startPcmCapture(
 	stream: MediaStream,
 	callbacks: AudioCaptureCallbacks,
-	sampleRate: number = 16000
+	sampleRate: number = 24000
 ): Promise<AudioCaptureHandle> {
 	const audioCtx = new AudioContext({ sampleRate });
 	const source = audioCtx.createMediaStreamSource(stream);

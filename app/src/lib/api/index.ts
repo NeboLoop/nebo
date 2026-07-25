@@ -27,48 +27,6 @@ export const API_CONFIG = {
 // Re-export types
 export type * from './neboComponents';
 
-// Custom API functions that return binary data (not auto-generated)
-export interface TTSRequest {
-	text: string;
-	voice?: string;
-	speed?: number;
-}
-
-export function speakTTS(req: TTSRequest): Promise<Blob> {
-	return webapi.postBlob('/api/v1/voice/tts', req);
-}
-
-// Voice transcription via backend (local whisper-cli or OpenAI fallback)
-export interface TranscribeResponse {
-	text: string;
-}
-
-export async function transcribeAudio(audioBlob: Blob): Promise<TranscribeResponse> {
-	const baseUrl = typeof window !== 'undefined' ? window.location.origin : '';
-	const token = storage.get('nebo_token');
-
-	const headers: Record<string, string> = {
-		'Content-Type': audioBlob.type || 'audio/webm'
-	};
-	if (token) {
-		headers['Authorization'] = `Bearer ${token}`;
-	}
-
-	const response = await fetch(`${baseUrl}/api/v1/voice/transcribe`, {
-		method: 'POST',
-		credentials: 'include',
-		headers,
-		body: audioBlob
-	});
-
-	if (!response.ok) {
-		const text = await response.text();
-		throw new Error(text || `HTTP ${response.status}`);
-	}
-
-	return response.json();
-}
-
 // Plugin Settings API
 export interface PluginItem {
 	id: string;

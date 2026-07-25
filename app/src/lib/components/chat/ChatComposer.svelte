@@ -26,11 +26,9 @@
   import { Plugin, PluginKey } from '@tiptap/pm/state';
   import { Decoration, DecorationSet } from '@tiptap/pm/view';
   import SlashCommandMenu from './SlashCommandMenu.svelte';
-  // [VOICE DISABLED] import VoiceButton from './VoiceButton.svelte';
   // [VOICE DISABLED] import VoiceModeOverlay from './VoiceModeOverlay.svelte';
   import type { SlashCommand } from './slashCommands.js';
   import { AGENT_COLORS_MAP } from '$lib/tokens.js';
-  // [VOICE DISABLED] import { dictationStore, combinedTranscript } from '$lib/stores/dictation';
   import { getWebSocketClient } from '$lib/websocket/client';
   import Bot from 'lucide-svelte/icons/bot';
   // [VOICE DISABLED] import AudioLines from 'lucide-svelte/icons/audio-lines';
@@ -83,14 +81,6 @@
   let mentionQuery = $state('');
   let mentionActiveIdx = $state(0);
   let mentionCommand: ((props: { id: string; label: string }) => void) | null = null;
-
-  // [VOICE DISABLED] Dictation — unique owner ID for this composer instance
-  // const composerOwnerId = crypto.randomUUID();
-  // let isDictating = $derived($dictationStore.status === 'recording' && $dictationStore.ownerId === composerOwnerId);
-
-  // [VOICE DISABLED] Dictation doc builder state — frozen cursor segments (Phase 7.6)
-  // let dictationBefore = $state('');
-  // let dictationAfter = $state('');
 
   // [VOICE DISABLED] Voice conversation overlay state
   // let showVoiceOverlay = $state(false);
@@ -175,90 +165,6 @@
   // Composer-level drag state
   let composerDragOver = $state(false);
   let composerDragDepth = 0;
-
-  /* [VOICE DISABLED] — Dictation mark, doc builder, hotkey
-  const DictationMark = Mark.create({
-    name: 'dictation',
-    parseHTML() {
-      return [{ tag: 'span[data-dictation]' }];
-    },
-    renderHTML() {
-      return ['span', { 'data-dictation': '', class: 'bg-primary/20 border-b-2 border-primary/60 rounded-sm' }, 0];
-    },
-  });
-
-  function buildDictationDoc(before: string, dictationText: string, after: string) {
-    const fullText = before + dictationText + after;
-    const dictStart = before.length;
-    const dictEnd = before.length + dictationText.length;
-    const lines = fullText.split('\n');
-    let offset = 0;
-
-    return {
-      type: 'doc' as const,
-      content: lines.map(line => {
-        const lineStart = offset;
-        const lineEnd = offset + line.length;
-        offset = lineEnd + 1;
-
-        if (line.length === 0) return { type: 'paragraph' as const };
-
-        const segments: Array<{ text: string; isDictation: boolean }> = [];
-
-        if (lineStart < dictStart && lineStart < lineEnd) {
-          const end = Math.min(dictStart, lineEnd);
-          const text = line.slice(0, end - lineStart);
-          if (text) segments.push({ text, isDictation: false });
-        }
-
-        if (lineEnd > dictStart && lineStart < dictEnd) {
-          const start = Math.max(dictStart, lineStart);
-          const end = Math.min(dictEnd, lineEnd);
-          const text = line.slice(start - lineStart, end - lineStart);
-          if (text) segments.push({ text, isDictation: true });
-        }
-
-        if (lineEnd > dictEnd) {
-          const start = Math.max(dictEnd, lineStart);
-          const text = line.slice(start - lineStart);
-          if (text) segments.push({ text, isDictation: false });
-        }
-
-        const content = segments.map(seg => {
-          const node: Record<string, unknown> = { type: 'text', text: seg.text };
-          if (seg.isDictation) {
-            node.marks = [{ type: 'dictation' }];
-          }
-          return node;
-        });
-
-        return {
-          type: 'paragraph' as const,
-          content: content.length > 0 ? content : undefined
-        };
-      })
-    };
-  }
-
-  function textOffsetToDocPos(fullText: string, textOffset: number, docContentSize: number): number {
-    let extra = 0;
-    for (let i = 0; i < textOffset && i < fullText.length; i++) {
-      if (fullText[i] === '\n') extra++;
-    }
-    return Math.min(textOffset + 1 + extra, docContentSize);
-  }
-
-  function handleDictationHotkey(e: KeyboardEvent) {
-    if ((e.metaKey || e.ctrlKey) && e.key === 'd') {
-      e.preventDefault();
-      if (isDictating) {
-        dictationStore.stop();
-      } else {
-        dictationStore.start(composerOwnerId, { type: 'editor' });
-      }
-    }
-  }
-  [VOICE DISABLED] */
 
   // --- Ghost Text Functions ---
 
@@ -360,61 +266,10 @@
     }
   });
 
-  /* [VOICE DISABLED] — Reactive dictation integration (Phase 7.6)
-
-  let wasDictatingRef = false;
-
-  $effect(() => {
-    const active = isDictating;
-
-    if (active && !wasDictatingRef) {
-      if (editor) {
-        const { from } = editor.state.selection;
-        const fullText = editor.state.doc.textBetween(0, editor.state.doc.content.size, '\n');
-        const beforeText = editor.state.doc.textBetween(0, from, '\n');
-        dictationBefore = beforeText;
-        dictationAfter = fullText.slice(beforeText.length);
-      }
-    }
-
-    if (!active && wasDictatingRef) {
-      if (editor) {
-        const pos = editor.state.selection.anchor;
-        editor.chain().selectAll().unsetMark('dictation').setTextSelection(pos).run();
-      }
-    }
-
-    wasDictatingRef = active;
-  });
-
-  $effect(() => {
-    const transcript = $combinedTranscript;
-    if (!isDictating || !editor || !transcript) return;
-
-    const needsLeading = dictationBefore.length > 0
-      && !dictationBefore.endsWith(' ') && !dictationBefore.endsWith('\n')
-      && !transcript.startsWith(' ');
-    const needsTrailing = dictationAfter.length > 0
-      && !dictationAfter.startsWith(' ') && !dictationAfter.startsWith('\n')
-      && !transcript.endsWith(' ');
-    const dictPart = (needsLeading ? ' ' : '') + transcript + (needsTrailing ? ' ' : '');
-
-    const doc = buildDictationDoc(dictationBefore, dictPart, dictationAfter);
-    editor.commands.setContent(doc);
-
-    const fullText = dictationBefore + dictPart + dictationAfter;
-    const cursorOffset = dictationBefore.length + dictPart.length;
-    const cursorPos = textOffsetToDocPos(fullText, cursorOffset, editor.state.doc.content.size);
-    editor.commands.setTextSelection(cursorPos);
-  });
-  [VOICE DISABLED] */
-
   // --- Initialize TipTap Editor ---
   onMount(() => {
     if (!editorElement) return;
 
-    // [VOICE DISABLED] document.addEventListener('visibilitychange', dictationStore.handleVisibilityChange);
-    // [VOICE DISABLED] document.addEventListener('keydown', handleDictationHotkey);
 
     // Ghost text: subscribe directly to the WS event (single pathway).
     function onGhostText(data: any) {
@@ -444,7 +299,6 @@
         // Bi-directional markdown: parses pasted markdown into rich content and
         // serializes the doc back to markdown via editor.storage.markdown.getMarkdown().
         Markdown.configure({ html: false, transformPastedText: true, breaks: true }),
-        // [VOICE DISABLED] DictationMark,
         SlashDetector,
         GhostTextExtension,
         MentionMarkdown.configure({
@@ -598,9 +452,6 @@
     if (draftSaveTimer) clearTimeout(draftSaveTimer);
     if (ghostDebounceTimer) clearTimeout(ghostDebounceTimer);
     ghostCleanup?.();
-    // [VOICE DISABLED] if (dictationStore.isOwner(composerOwnerId)) { dictationStore.stop(); }
-    // [VOICE DISABLED] document.removeEventListener('visibilitychange', dictationStore.handleVisibilityChange);
-    // [VOICE DISABLED] document.removeEventListener('keydown', handleDictationHotkey);
     editor?.destroy();
     editor = null;
   });
@@ -888,9 +739,6 @@
           </button>
         {/if}
         <!-- [VOICE DISABLED]
-        <VoiceButton
-          ownerId={composerOwnerId}
-        />
         <button
           class="w-8 h-8 rounded-lg grid place-items-center text-base-content/60 hover:text-base-content hover:bg-base-200 cursor-pointer transition-colors border-none bg-transparent"
           title="Voice conversation"
