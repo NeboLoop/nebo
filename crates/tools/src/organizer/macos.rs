@@ -9,6 +9,18 @@ use crate::registry::ToolResult;
 // Mail
 // ═══════════════════════════════════════════════════════════════════════
 
+/// AppleScript can only return strings, so the mail scripts prefix
+/// diagnostic (non-content) outcomes with "DIAG|" — count-vs-content
+/// mismatches must surface as tool errors, never as an empty-looking success.
+fn mail_diag(result: ToolResult) -> ToolResult {
+    if !result.is_error {
+        if let Some(msg) = result.content.strip_prefix("DIAG|") {
+            return ToolResult::error(msg.to_string());
+        }
+    }
+    result
+}
+
 pub async fn handle_mail(action: &str, input: &OrganizerInput) -> ToolResult {
     match action {
         "accounts" => {
@@ -52,44 +64,99 @@ end tell"#,
             // (e.g. iCloud onboarding mail) shadows the one that matters. An
             // optional `account` filter (name or address) narrows to one account;
             // `mailbox` names a non-INBOX mailbox within the account(s).
+            //
+            // Failure honesty: Mail's unread counters and its message enumeration
+            // are different data sources — enumeration returns 0 while unread > 0
+            // when Mail's automation session hasn't synced (Mail closed / mid-sync).
+            // Every "nothing came back" shape must say WHY (DIAG| → tool error),
+            // never masquerade as an empty inbox. One un-fetchable body must not
+            // zero the whole batch, so content is fetched per-message under its
+            // own try + 5s timeout.
             let script = format!(
                 r#"tell application "Mail"
     set wantedAcct to "{acct}"
     set wantedBox to "{mbox}"
     if wantedBox is "" then set wantedBox to "INBOX"
     set targets to {{}}
+    set skipped to ""
     repeat with a in accounts
         if wantedAcct is "" or (name of a is wantedAcct) or ((email addresses of a as string) contains wantedAcct) then
             try
                 set end of targets to mailbox wantedBox of a
+            on error errMsg
+                set skipped to skipped & (name of a) & ": " & errMsg & "; "
             end try
         end if
     end repeat
-    if (count of targets) is 0 then return "No matching account/mailbox. Use action 'accounts' to list accounts."
+    if (count of targets) is 0 then
+        if skipped is not "" then return "DIAG|Accounts matched but mailbox " & wantedBox & " could not be opened — " & skipped
+        return "DIAG|No matching account/mailbox. Use action 'accounts' to list accounts."
+    end if
     set lim to {limit}
     set output to ""
     set taken to 0
+    set unreadTotal to 0
+    set enumerated to 0
     repeat with box in targets
         set acctName to name of account of box
+        try
+            set unreadTotal to unreadTotal + (unread count of box)
+        end try
         set n to count of messages of box
+        set enumerated to enumerated + n
         set i to 1
         repeat while i <= n and taken < lim
             set m to message i of box
-            set c to content of m
-            if c is missing value then set c to ""
-            if length of c > 200 then set c to (characters 1 through 200 of c) as string
+            set c to ""
+            try
+                with timeout of 5 seconds
+                    set c to content of m
+                end timeout
+                if c is missing value then set c to ""
+                if length of c > 200 then set c to (characters 1 through 200 of c) as string
+            on error errMsg
+                set c to "[body unavailable: " & errMsg & "]"
+            end try
             set output to output & "Account: " & acctName & linefeed & "From: " & (sender of m) & linefeed & "Subject: " & (subject of m) & linefeed & "Date: " & (date received of m as text) & linefeed & c & linefeed & "---" & linefeed
             set taken to taken + 1
             set i to i + 1
         end repeat
     end repeat
+    if output is "" and unreadTotal > 0 then
+        set n to count of messages of inbox
+        set i to 1
+        repeat while i <= n and taken < lim
+            set m to message i of inbox
+            set acctName to "unknown"
+            try
+                set acctName to name of account of mailbox of m
+            end try
+            set c to ""
+            try
+                with timeout of 5 seconds
+                    set c to content of m
+                end timeout
+                if c is missing value then set c to ""
+                if length of c > 200 then set c to (characters 1 through 200 of c) as string
+            on error errMsg
+                set c to "[body unavailable: " & errMsg & "]"
+            end try
+            set output to output & "Account: " & acctName & linefeed & "From: " & (sender of m) & linefeed & "Subject: " & (subject of m) & linefeed & "Date: " & (date received of m as text) & linefeed & c & linefeed & "---" & linefeed
+            set taken to taken + 1
+            set i to i + 1
+        end repeat
+        if output is not "" then return output & "(via unified inbox fallback — per-account enumeration was empty)" & linefeed
+        return "DIAG|Mail reports " & unreadTotal & " unread but message enumeration returned none (per-account and unified) — Mail.app is likely not running or not finished syncing. Open Mail, let it sync, and retry."
+    end if
+    if output is "" and skipped is not "" then return "DIAG|No messages in readable mailboxes; some accounts were skipped — " & skipped
     if output is "" then return "No messages"
+    if skipped is not "" then set output to output & "(skipped accounts: " & skipped & ")" & linefeed
     return output
 end tell"#,
                 acct = escape_applescript(&input.account),
                 mbox = escape_applescript(&input.mailbox),
             );
-            run_osascript(&script).await
+            mail_diag(run_osascript(&script).await)
         }
         "send" => {
             if input.to.is_empty() {
@@ -137,31 +204,46 @@ end tell"#,
             // per-account (see `read` for why the unified inbox misleads);
             // optional `account` narrows to one.
             let limit = input.limit.unwrap_or(20).clamp(1, 50);
+            // Same failure honesty as `read`: when enumeration is dead (0 messages
+            // visible while unread counters say otherwise), "no matches" would be
+            // a lie — return a DIAG explaining the sync state instead.
             let script = format!(
                 r#"tell application "Mail"
     set wantedAcct to "{acct}"
     set output to ""
     set taken to 0
+    set unreadTotal to 0
+    set enumerated to 0
+    set skipped to ""
     repeat with a in accounts
         if wantedAcct is "" or (name of a is wantedAcct) or ((email addresses of a as string) contains wantedAcct) then
             try
                 set mb to mailbox "INBOX" of a
+                try
+                    set unreadTotal to unreadTotal + (unread count of mb)
+                end try
+                set enumerated to enumerated + (count of messages of mb)
                 set found to (messages of mb whose subject contains "{query}" or sender contains "{query}")
                 repeat with m in found
                     if taken >= {limit} then exit repeat
                     set output to output & (name of a) & " | From: " & (sender of m) & " | Subject: " & (subject of m) & " | " & (date received of m as text) & linefeed
                     set taken to taken + 1
                 end repeat
+            on error errMsg
+                set skipped to skipped & (name of a) & ": " & errMsg & "; "
             end try
         end if
     end repeat
+    if output is "" and enumerated is 0 and unreadTotal > 0 then return "DIAG|Mail reports " & unreadTotal & " unread but message enumeration returned none — Mail.app is likely not running or not finished syncing. Open Mail, let it sync, and retry."
+    if output is "" and skipped is not "" then return "DIAG|No matches, and some accounts could not be searched — " & skipped
     if output is "" then return "No messages found (search matches subject/sender substrings only — try a broker name, site name, or domain like stadium.partners; NOT operators like from:)"
+    if skipped is not "" then set output to output & "(skipped accounts: " & skipped & ")" & linefeed
     return output
 end tell"#,
                 acct = escape_applescript(&input.account),
                 query = escape_applescript(query),
             );
-            run_osascript(&script).await
+            mail_diag(run_osascript(&script).await)
         }
         _ => ToolResult::error(format!(
             "Unknown mail action '{}'. Use: accounts, unread, read, send, search",

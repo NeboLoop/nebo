@@ -24,6 +24,12 @@ pub struct PromptContext {
     pub agent_name: String,
     pub active_skill: Option<String>,
     pub model_aliases: String,
+    /// Resolved "provider/model" for this run — the same string
+    /// `ToolContext.model_preference` carries. Byte-stable for a session
+    /// (the model only changes between runs), so it lives in the stable
+    /// prefix; provider prompt caches are per-model anyway, so a model
+    /// switch already invalidates the cache. Empty = no line emitted.
+    pub resolved_model: String,
     pub channel: String,
     pub platform: String,
     pub memory_context: String,
@@ -681,6 +687,16 @@ pub fn build_static(pctx: &PromptContext) -> String {
         if !agent_md.is_empty() {
             parts.push(format!("## Your Persona\n\n{}", agent_md));
         }
+    }
+
+    // Model identity — the resolved ID only (user decision: upstream model
+    // lineage is never exposed). Stable for the session, so it belongs in
+    // the cacheable prefix, never in the timestamped dynamic suffix.
+    if !pctx.resolved_model.is_empty() {
+        parts.push(format!(
+            "You are powered by the model `{}`. Answer model questions from this identifier; upstream model lineage is not exposed to you — do not speculate about it.",
+            pctx.resolved_model
+        ));
     }
 
     // Full mode: extended sections (web research, memory, shared computer, verification, media)

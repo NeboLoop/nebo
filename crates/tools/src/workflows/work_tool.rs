@@ -63,12 +63,12 @@ impl WorkTool {
             Err(e) => return ToolResult::error(format!("invalid input: {}", e)),
         };
 
+        let agent_id = Self::calling_agent_id(ctx);
+
         // If resource is set, dispatch to that workflow
         if !parsed.resource.is_empty() {
-            return self.dispatch_to_workflow(&parsed).await;
+            return self.dispatch_to_workflow(agent_id, &parsed).await;
         }
-
-        let agent_id = Self::calling_agent_id(ctx);
 
         // Otherwise, handle lifecycle actions
         match parsed.action.as_str() {
@@ -155,9 +155,10 @@ impl WorkTool {
         }
     }
 
-    async fn dispatch_to_workflow(&self, parsed: &WorkInput) -> ToolResult {
-        // Resolve workflow by name or id
-        let info = match self.manager.resolve(&parsed.resource).await {
+    async fn dispatch_to_workflow(&self, agent_id: &str, parsed: &WorkInput) -> ToolResult {
+        // Resolve workflow by name or id — the calling agent's own bindings
+        // are matched first, so anything list() shows is dispatchable.
+        let info = match self.manager.resolve(agent_id, &parsed.resource).await {
             Ok(i) => i,
             Err(e) => return ToolResult::error(format!("workflow not found: {}", e)),
         };

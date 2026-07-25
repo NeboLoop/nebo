@@ -23,6 +23,19 @@ const VISITED_TTL: std::time::Duration = std::time::Duration::from_secs(300);
 /// silent cut.
 const MAX_INLINE_CHARS: usize = 15_000;
 
+/// Janus `/v1/extract` failure cooldown duration. The extract tier runs on
+/// every HTML GET with a 20s timeout, so when Janus is degraded EVERY fetch
+/// would pay that latency; one failure pauses the tier for this long and
+/// callers fall straight through to local `sanitize_html`.
+const JANUS_EXTRACT_COOLDOWN_SECS: u64 = 300;
+
+fn epoch_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
 /// Callback type for broadcasting events to connected WebSocket clients.
 pub type Broadcaster = Arc<dyn Fn(&str, serde_json::Value) + Send + Sync>;
 
@@ -68,6 +81,10 @@ pub struct WebTool {
     /// which is what gets the agent's IP bot-flagged. The browser/scrape chain
     /// becomes the fallback for when Janus is unreachable (offline/dev).
     janus_search: Option<JanusSearchConfig>,
+    /// Janus `/v1/extract` cooldown deadline (epoch seconds, 0 = no cooldown).
+    /// Set to now + `JANUS_EXTRACT_COOLDOWN_SECS` on an extract failure;
+    /// `extract_via_janus` skips the tier while the deadline is in the future.
+    extract_cooldown_until: std::sync::atomic::AtomicU64,
 }
 
 /// Connection details for the Janus `/v1/search` endpoint. Auth mirrors the
@@ -113,6 +130,7 @@ impl WebTool {
             visited_pages: Mutex::new(HashMap::new()),
             search_in_flight: Mutex::new(HashMap::new()),
             janus_search: None,
+            extract_cooldown_until: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -629,6 +647,14 @@ impl WebTool {
         group_key: &str,
         search_key: &str,
     ) -> ToolResult {
+        // Hard failures per tier (janus error, BYOK error, browser failure,
+        // scrape failure). A tier that is unconfigured/skipped or that ran
+        // clean with zero hits is NOT a failure. If the whole chain produces
+        // no results AND something here hard-failed, we return an error
+        // listing these instead of a silent "No results" — the model must be
+        // able to tell backend failure from a genuine zero-match.
+        let mut tier_failures: Vec<String> = Vec::new();
+
         // 0. Platform search via Janus (the canonical path): a real search API,
         //    server-owned multi-provider keys, metered per-user. Avoids the
         //    browser-scrape bot-flagging entirely. Falls through to the legacy
@@ -645,6 +671,7 @@ impl WebTool {
                 }
                 Err(e) => {
                     tracing::warn!(query, error = %e, "Janus search failed, trying fallback tiers");
+                    tier_failures.push(e);
                 }
             }
         }
@@ -675,6 +702,7 @@ impl WebTool {
                             }
                             Err(e) => {
                                 tracing::warn!(provider, error = %e, "BYOK search failed, trying next");
+                                tier_failures.push(format!("{provider}: {e}"));
                             }
                             _ => {} // empty results, try next
                         }
@@ -693,6 +721,10 @@ impl WebTool {
                 return browser_result;
             }
             tracing::warn!(query, "browser search failed — falling back to DDG scraping");
+            tier_failures.push(format!(
+                "browser: {}",
+                browser_result.content.lines().next().unwrap_or("failed")
+            ));
         }
 
         // 3. DuckDuckGo HTTP scraping → Brave scraping. Each request is individually
@@ -701,9 +733,29 @@ impl WebTool {
         tracing::info!(query, "trying direct scrape chain (DDG → Brave)");
         let result = self.search_duckduckgo_html(query).await;
         if !result.is_error {
-            self.record_visited(group_key, search_key, &result.content, false, session_id, result.payload.clone());
+            // Zero-hit success is only a genuine "no matches" when every
+            // earlier tier also ran clean; with a hard failure on record it is
+            // indistinguishable from backend breakage, so report the failures.
+            let empty = result
+                .payload
+                .as_ref()
+                .and_then(|p| p.pointer("/groups/0/results"))
+                .and_then(|r| r.as_array())
+                .is_some_and(|a| a.is_empty());
+            if !empty || tier_failures.is_empty() {
+                self.record_visited(group_key, search_key, &result.content, false, session_id, result.payload.clone());
+                return result;
+            }
+        } else {
+            tier_failures.push(format!(
+                "scrape: {}",
+                result.content.lines().next().unwrap_or("failed")
+            ));
         }
-        result
+        ToolResult::error(format!(
+            "Search failed — {}. This is a backend failure, NOT zero matches.",
+            tier_failures.join("; ")
+        ))
     }
 
     /// Bearer token for Janus calls. Parity with the LLM provider
@@ -711,15 +763,21 @@ impl WebTool {
     /// a `janus` provider row never exists, so looking one up sent a bare
     /// bot_id and Janus replied 401 on every search, silently degrading tier 0
     /// to the scrape tiers. Shared by search and extract so the auth
-    /// construction can never drift between the two.
-    fn janus_bearer(&self, cfg: &JanusSearchConfig) -> String {
-        self.store
+    /// construction can never drift between the two. The bool is whether the
+    /// token came from a real `neboai` profile — the bare bot_id fallback is
+    /// a known 401 cause, so callers surface it in their failure reasons.
+    fn janus_bearer(&self, cfg: &JanusSearchConfig) -> (String, bool) {
+        match self
+            .store
             .as_ref()
             .and_then(|s| s.list_active_auth_profiles_by_provider("neboai").ok())
             .and_then(|profiles| profiles.into_iter().find(|p| !p.api_key.is_empty()))
             .map(|p| p.api_key)
             .filter(|k| !k.is_empty())
-            .unwrap_or_else(|| cfg.bot_id.clone())
+        {
+            Some(key) => (key, true),
+            None => (cfg.bot_id.clone(), false),
+        }
     }
 
     /// Search via the Janus gateway's `/v1/search` endpoint. Janus owns the
@@ -733,7 +791,7 @@ impl WebTool {
             .as_ref()
             .ok_or_else(|| "janus search not configured".to_string())?;
 
-        let bearer = self.janus_bearer(cfg);
+        let (bearer, has_profile_key) = self.janus_bearer(cfg);
 
         let url = format!("{}/v1/search", cfg.base_url);
         let body = serde_json::json!({ "query": query, "max_results": 10 });
@@ -752,7 +810,13 @@ impl WebTool {
         let status = resp.status();
         if !status.is_success() {
             let snippet = resp.text().await.unwrap_or_default();
-            return Err(format!("janus status {status}: {}", snippet.chars().take(200).collect::<String>()));
+            let mut msg = format!("janus status {status}: {}", snippet.chars().take(200).collect::<String>());
+            if !has_profile_key {
+                msg.push_str(
+                    " (no NeboAI auth profile api_key configured — search auth cannot succeed)",
+                );
+            }
+            return Err(msg);
         }
 
         let parsed: serde_json::Value = resp
@@ -789,14 +853,21 @@ impl WebTool {
     /// summarization). Auth mirrors `search_via_janus`: `X-Bot-ID` for
     /// per-user billing plus the shared `janus_bearer` token. Callers treat
     /// ANY error as a silent fallthrough to the local extraction chain — the
-    /// endpoint may not be deployed yet.
+    /// endpoint may not be deployed yet. A failure trips the instance-wide
+    /// cooldown (see `extract_cooldown_until`) so a degraded Janus doesn't
+    /// tax every subsequent fetch with the 20s timeout.
     async fn extract_via_janus(&self, page_url: &str) -> Result<String, String> {
         let cfg = self
             .janus_search
             .as_ref()
             .ok_or_else(|| "janus search not configured".to_string())?;
 
-        let bearer = self.janus_bearer(cfg);
+        if epoch_secs() < self.extract_cooldown_until.load(std::sync::atomic::Ordering::Relaxed) {
+            tracing::debug!(url = page_url, "janus extract in failure cooldown — skipping");
+            return Err("janus extract in failure cooldown".to_string());
+        }
+
+        let (bearer, _) = self.janus_bearer(cfg);
 
         let url = format!("{}/v1/extract", cfg.base_url);
         let body = serde_json::json!({ "url": page_url });
@@ -812,18 +883,21 @@ impl WebTool {
             .timeout(std::time::Duration::from_secs(20))
             .send()
             .await
-            .map_err(|e| format!("janus request: {e}"))?;
+            .map_err(|e| self.trip_extract_cooldown(format!("janus request: {e}")))?;
 
         let status = resp.status();
         if !status.is_success() {
             let snippet = resp.text().await.unwrap_or_default();
-            return Err(format!("janus status {status}: {}", snippet.chars().take(200).collect::<String>()));
+            return Err(self.trip_extract_cooldown(format!(
+                "janus status {status}: {}",
+                snippet.chars().take(200).collect::<String>()
+            )));
         }
 
         let parsed: serde_json::Value = resp
             .json()
             .await
-            .map_err(|e| format!("janus decode: {e}"))?;
+            .map_err(|e| self.trip_extract_cooldown(format!("janus decode: {e}")))?;
 
         let content = parsed
             .get("content")
@@ -834,6 +908,22 @@ impl WebTool {
             return Ok(content.to_string());
         }
         Ok(format!("# {title}\n\n{content}"))
+    }
+
+    /// Record a Janus extract failure: start the cooldown, pass the error through.
+    /// Warns only here — entry into cooldown — because failures can't occur while
+    /// the cooldown is active (`extract_via_janus` skips the tier), so this fires
+    /// once per window.
+    fn trip_extract_cooldown(&self, err: String) -> String {
+        self.extract_cooldown_until.store(
+            epoch_secs() + JANUS_EXTRACT_COOLDOWN_SECS,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        tracing::warn!(
+            error = %err,
+            "janus extract failed — skipping extract tier for {JANUS_EXTRACT_COOLDOWN_SECS}s (local sanitize only)"
+        );
+        err
     }
 
     /// Per-request budget for direct search scraping (DDG, Brave). A blocked engine
@@ -938,7 +1028,7 @@ impl WebTool {
         let html_expr = serde_json::json!({ "expression": "document.documentElement.outerHTML" });
         if let Ok(v) = executor.execute("evaluate", &html_expr, Some(session_id)).await {
             let html = evaluate_result_text(&v);
-            let results = extract_search_links(html, "search.brave.com");
+            let results = extract_search_links(&html, "search.brave.com");
             // A real results page always yields several external links. 0–1 means a
             // block/consent/still-loading page (seen live: DDG's anomaly page carries
             // exactly one stray torproject link) — fall through, don't return junk.
@@ -1014,7 +1104,7 @@ impl WebTool {
             )
             .await
             .ok()?;
-        let links = extract_search_links(evaluate_result_text(&v), "search.brave.com");
+        let links = extract_search_links(&evaluate_result_text(&v), "search.brave.com");
         (links.len() >= 2).then(|| format_search_results(query, &links, "extension-human"))
     }
 
@@ -1061,7 +1151,7 @@ impl WebTool {
             )
             .await
             .ok()?;
-        let links = extract_search_links(evaluate_result_text(&v), "search.brave.com");
+        let links = extract_search_links(&evaluate_result_text(&v), "search.brave.com");
         (links.len() >= 2).then(|| format_search_results(query, &links, "cdp-human"))
     }
 
@@ -1784,6 +1874,11 @@ impl WebTool {
                                 None,
                             ),
                         }
+                    } else if action == "evaluate" {
+                        // Pre-fix extension builds return {result}/{value}/{pageContent}
+                        // or a bare string instead of {text} — extract tolerantly rather
+                        // than pretty-printing the whole result envelope.
+                        (evaluate_result_text(&result), extract_screenshot_b64(&result))
                     } else {
                         let s = serde_json::to_string_pretty(&result)
                             .unwrap_or_else(|_| format!("{}", result));
@@ -2215,16 +2310,23 @@ impl DynTool for WebTool {
 }
 
 /// Pull the text payload out of an `evaluate` result. The extension returns
-/// `{text}` (current builds) or a bare string (older builds); the CDP backend
-/// returns `{text}`.
-fn evaluate_result_text(v: &serde_json::Value) -> &str {
-    v.get("text")
+/// `{text}` (current builds); older builds return `{result}`/`{value}`/
+/// `{pageContent}` or a bare string; the CDP backend returns `{text}`. A
+/// non-string payload is stringified as the VALUE (mirroring cdp_bridge) —
+/// never the whole result envelope.
+fn evaluate_result_text(v: &serde_json::Value) -> String {
+    match v
+        .get("text")
         .or_else(|| v.get("result"))
         .or_else(|| v.get("value"))
         .or_else(|| v.get("pageContent"))
-        .and_then(|x| x.as_str())
-        .or_else(|| v.as_str())
-        .unwrap_or("")
+    {
+        Some(inner) => match inner.as_str() {
+            Some(s) => s.to_string(),
+            None => serde_json::to_string(inner).unwrap_or_default(),
+        },
+        None => v.as_str().unwrap_or("").to_string(),
+    }
 }
 
 /// Extract a data-URL screenshot from an extension result. Mutation actions nest it

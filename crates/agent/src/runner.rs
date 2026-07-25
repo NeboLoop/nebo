@@ -2166,6 +2166,16 @@ async fn run_loop(
     // Load workspace context file (.nebo.md or NEBO.md) — walk up from CWD to git root or home.
     let context_file = load_context_file();
 
+    // Resolved model identity for the stable prompt — the run's override when
+    // set (the same "provider/model" string ToolContext.model_preference
+    // carries), otherwise the selector's default so the line stays byte-stable
+    // for the session.
+    let resolved_model = if !model_override.is_empty() {
+        model_override.to_string()
+    } else {
+        selector.select(&[])
+    };
+
     let static_system = if system_prompt.is_empty() {
         let pctx = prompt::PromptContext {
             mode: prompt_mode,
@@ -2175,6 +2185,7 @@ async fn run_loop(
             agent_catalog,
             skill_catalog,
             model_aliases: model_aliases.to_string(),
+            resolved_model,
             channel: channel.to_string(),
             platform: std::env::consts::OS.to_string(),
             memory_context: String::new(),

@@ -54,13 +54,20 @@ pub trait WorkflowManager: Send + Sync {
         id: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>>;
 
-    /// Resolve a workflow name or ID to full info.
+    /// Resolve a workflow name or ID to full info. Matches the calling agent's
+    /// own `agent_workflows` bindings first (returned with a binding-scoped id
+    /// of the form `agent:{agent_id}:{binding_name}`), then standalone
+    /// workflows by ID or name.
     fn resolve<'a>(
         &'a self,
+        agent_id: &'a str,
         name_or_id: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<WorkflowInfo, String>> + Send + 'a>>;
 
     /// Run a workflow. Returns run_id immediately; execution happens in a spawned task.
+    /// Accepts a standalone workflow id, or a binding-scoped id
+    /// (`agent:{agent_id}:{binding_name}`) as returned by `resolve` for agent
+    /// bindings — those fire through `run_inline`.
     fn run<'a>(
         &'a self,
         id: &'a str,

@@ -59,9 +59,13 @@ pub struct StructuredTask {
 /// dispatch tool calls through the canonical `Registry::execute` — there is no separate
 /// web pathway.
 pub trait StructuredAgent: Send + Sync {
+    /// `activity`, when given, is bumped by the runner on every provider stream
+    /// event and completed tool call — the caller's progress signal for
+    /// detecting a stalled sub-agent without a wall-clock cap on legit work.
     fn run<'a>(
         &'a self,
         task: StructuredTask,
+        activity: Option<Arc<std::sync::atomic::AtomicU64>>,
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<serde_json::Value, String>> + Send + 'a>,
     >;
@@ -1567,6 +1571,11 @@ impl AgentTool {
         match action {
             "get" => {
                 let mut out = format!("Bot ID: {}\n", api.bot_id());
+                // Resolved "provider/model" of the invoking run (resolved ID
+                // only — upstream model lineage is never exposed).
+                if let Some(ref model) = ctx.model_preference {
+                    out.push_str(&format!("Model: {}\n", model));
+                }
                 match api.billing_subscription().await {
                     Ok(v) => {
                         if let Some(plan) = v.get("plan").and_then(|p| p.as_str()) {

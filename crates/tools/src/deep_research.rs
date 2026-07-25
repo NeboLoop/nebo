@@ -797,15 +797,17 @@ pub fn build_report(
 /// Max concurrent sub-agent calls in any one fan-out (local backpressure).
 const CONCURRENCY: usize = 8;
 
-/// Hard ceiling on a single sub-agent call. The harness is bounded in COUNT
+/// Inactivity guard on a single sub-agent call. The harness is bounded in COUNT
 /// (angles/fetch/verify caps) but, without this, a sub-agent whose LLM/provider
 /// request stalls (no timeout in the provider path) would hang its future
 /// forever — and since a disconnected client never fires the cancel token, the
-/// whole research wedges in "running" with no recovery. A search sub-agent can
-/// legitimately run ~160s (up to 8 human-paced ~20s searches), so this is set
-/// well above that; on expiry the call returns an error the phase already
-/// handles (empty results / unreliable source / skipped vote).
-const SUBAGENT_TIMEOUT: Duration = Duration::from_secs(240);
+/// whole research wedges in "running" with no recovery. Watching for progress
+/// (provider stream events + completed tool calls) instead of wall-clock time
+/// means a legitimately long run (e.g. many human-paced ~20s searches) is never
+/// killed while it is still working; only after a full window with ZERO activity
+/// does the call return an error the phase already handles (empty results /
+/// unreliable source / skipped vote).
+const SUBAGENT_INACTIVITY_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Prepended to every ingested web page + claim quote before it enters a sub-agent
 /// prompt. Treats external text as data, not instructions — a security boundary so a
@@ -1088,10 +1090,11 @@ async fn run_typed<T: for<'de> Deserialize<'de>>(
     cancel: &CancellationToken,
 ) -> Result<T, String> {
     // Close this sub-agent's tab/page as soon as it finishes (1:1 ownership) —
-    // on success, error, or cancellation. Safe no-op if it opened no tab.
+    // on success, error, cancellation, or stall. Safe no-op if it opened no tab.
     let tab_key = task.tab_key.clone();
+    let activity = Arc::new(std::sync::atomic::AtomicU64::new(0));
     let value = tokio::select! {
-        r = agent.run(task) => {
+        r = agent.run(task, Some(activity.clone())) => {
             agent.close_tab(tab_key).await;
             r?
         }
@@ -1099,11 +1102,25 @@ async fn run_typed<T: for<'de> Deserialize<'de>>(
             agent.close_tab(tab_key).await;
             return Err("cancelled".into());
         }
-        // Time bound: a stalled provider/tool call must not wedge the whole run.
-        // Close the tab and surface an error the phase handles (no infinite hang).
-        _ = tokio::time::sleep(SUBAGENT_TIMEOUT) => {
+        // Inactivity bound: a stalled provider/tool call must not wedge the whole
+        // run — but any activity resets the window, so legitimately long work is
+        // never cut. Fires only after a full window with zero activity bumps.
+        _ = async {
+            let mut seen = activity.load(std::sync::atomic::Ordering::Relaxed);
+            loop {
+                tokio::time::sleep(SUBAGENT_INACTIVITY_TIMEOUT).await;
+                let now = activity.load(std::sync::atomic::Ordering::Relaxed);
+                if now == seen {
+                    break;
+                }
+                seen = now;
+            }
+        } => {
             agent.close_tab(tab_key).await;
-            return Err(format!("sub-agent timed out after {}s", SUBAGENT_TIMEOUT.as_secs()));
+            return Err(format!(
+                "sub-agent stalled: no activity for {}s",
+                SUBAGENT_INACTIVITY_TIMEOUT.as_secs()
+            ));
         }
     };
     serde_json::from_value(value).map_err(|e| format!("output deserialize failed: {e}"))

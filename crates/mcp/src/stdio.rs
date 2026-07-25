@@ -126,26 +126,12 @@ impl StdioSession {
             .unwrap_or_default())
     }
 
-    /// Invoke a tool (`tools/call`), flattening the content blocks to text.
+    /// Invoke a tool (`tools/call`), flattening the result to model-visible text.
     pub async fn call_tool(&self, name: &str, input: Value) -> Result<McpToolResult, McpError> {
         let result = self
             .request("tools/call", json!({ "name": name, "arguments": input }))
             .await?;
-        let is_error = result
-            .get("isError")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-        let content = result
-            .get("content")
-            .and_then(|c| c.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|blk| blk.get("text").and_then(|t| t.as_str()))
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            })
-            .unwrap_or_default();
-        Ok(McpToolResult { content, is_error })
+        Ok(crate::client::parse_call_result(name, &result))
     }
 
     /// Terminate the child process. The reader task ends when stdout closes.

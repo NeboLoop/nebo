@@ -133,7 +133,7 @@ pub async fn run_osascript(script: &str) -> ToolResult {
         Err(_) => {
             // child is killed on drop via kill_on_drop(true)
             ToolResult::error(
-                "Timed out after 30s. Try specifying a calendar name to narrow the query.",
+                "Timed out after 30s. Narrow the query (specify an account, mailbox, or calendar name, or lower the limit).",
             )
         }
     }

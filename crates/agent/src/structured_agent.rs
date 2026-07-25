@@ -49,6 +49,7 @@ impl StructuredAgent for StructuredRunner {
     fn run<'a>(
         &'a self,
         task: StructuredTask,
+        activity: Option<Arc<std::sync::atomic::AtomicU64>>,
     ) -> Pin<Box<dyn Future<Output = Result<Value, String>> + Send + 'a>> {
         Box::pin(async move {
             let provider = self
@@ -71,6 +72,7 @@ impl StructuredAgent for StructuredRunner {
             if let Some(turns) = task.max_tool_turns {
                 req.max_tool_turns = turns;
             }
+            req.activity = activity;
 
             let registry = self.registry.clone();
             let ctx = Self::ctx_for(&task.tab_key);

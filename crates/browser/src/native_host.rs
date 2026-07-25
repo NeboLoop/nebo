@@ -230,8 +230,10 @@ async fn read_native_message(reader: &mut tokio::io::Stdin) -> Result<NativeMess
     reader.read_exact(&mut len_buf).await?;
     let len = u32::from_le_bytes(len_buf) as usize;
 
-    // Sanity check — Chrome limits to 1MB
-    if len > 1_048_576 {
+    // Sanity check — Chrome's 1 MB cap applies HOST→EXTENSION only; the
+    // extension legitimately sends larger payloads (screenshots, full-page
+    // outerHTML). Shared bound with extension_relay so the two paths never drift.
+    if len > crate::extension_relay::MAX_EXT_MSG_BYTES {
         return Err(BrowserError::Other(format!(
             "Native message too large: {} bytes",
             len

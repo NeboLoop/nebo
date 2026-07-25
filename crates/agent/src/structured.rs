@@ -9,6 +9,7 @@
 
 use std::future::Future;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use a2ui_validation::validate as validate_schema;
 use ai::{
@@ -58,6 +59,10 @@ pub struct StructuredRequest {
     pub max_validation_retries: u32,
     pub max_tool_turns: u32,
     pub max_tokens: i32,
+    /// Optional activity counter, bumped on every provider stream event and each
+    /// completed tool call. Lets the caller detect a stalled sub-agent (no
+    /// progress) without imposing a wall-clock cap on legitimate long work.
+    pub activity: Option<Arc<AtomicU64>>,
 }
 
 impl StructuredRequest {
@@ -77,6 +82,7 @@ impl StructuredRequest {
             max_validation_retries: DEFAULT_MAX_VALIDATION_RETRIES,
             max_tool_turns: DEFAULT_MAX_TOOL_TURNS,
             max_tokens: DEFAULT_MAX_TOKENS,
+            activity: None,
         }
     }
 
@@ -129,7 +135,7 @@ where
             temperature: 0.0,
             ..Default::default()
         };
-        let (text, tool_calls) = drive(&provider, &chat).await?;
+        let (text, tool_calls) = drive(&provider, &chat, req.activity.as_deref()).await?;
 
         if let Some(tc) = tool_calls.iter().find(|t| t.name == STRUCTURED_OUTPUT_TOOL) {
             captured = Some(tc.input.clone());
@@ -144,6 +150,9 @@ where
             let result = tool_exec(tc.clone())
                 .await
                 .unwrap_or_else(|e| format!("Tool error: {e}"));
+            if let Some(activity) = &req.activity {
+                activity.fetch_add(1, Ordering::Relaxed);
+            }
             messages.push(tool_result_turn(&tc.id, &result));
         }
     }
@@ -162,7 +171,7 @@ where
                 temperature: 0.0,
                 ..Default::default()
             };
-            let (_text, tool_calls) = drive(&provider, &chat).await?;
+            let (_text, tool_calls) = drive(&provider, &chat, req.activity.as_deref()).await?;
             captured = tool_calls
                 .into_iter()
                 .find(|t| t.name == STRUCTURED_OUTPUT_TOOL)
@@ -207,9 +216,11 @@ where
 }
 
 /// Drive one provider request to completion, collecting assistant text + tool calls.
+/// Bumps `activity` on every stream event so callers can watch for progress.
 async fn drive(
     provider: &Arc<dyn Provider>,
     chat: &ChatRequest,
+    activity: Option<&AtomicU64>,
 ) -> Result<(String, Vec<ToolCall>), StructuredError> {
     let mut rx = provider
         .stream(chat)
@@ -218,6 +229,9 @@ async fn drive(
     let mut text = String::new();
     let mut tool_calls = Vec::new();
     while let Some(ev) = rx.recv().await {
+        if let Some(activity) = activity {
+            activity.fetch_add(1, Ordering::Relaxed);
+        }
         match ev.event_type {
             StreamEventType::Text => text.push_str(&ev.text),
             StreamEventType::ToolCall => {

@@ -268,54 +268,7 @@ impl McpClient {
         // JSON-RPC response: { "result": { "content": [...], "isError": false } }
         let result_val = body.get("result").cloned().unwrap_or(body.clone());
 
-        #[derive(serde::Deserialize)]
-        struct CallResult {
-            #[serde(default)]
-            content: Vec<ContentBlock>,
-            #[serde(default, alias = "isError")]
-            is_error: bool,
-        }
-
-        #[derive(serde::Deserialize)]
-        struct ContentBlock {
-            #[serde(rename = "type", default)]
-            block_type: String,
-            #[serde(default)]
-            text: String,
-        }
-
-        let result: CallResult = serde_json::from_value(result_val).unwrap_or(CallResult {
-            content: vec![],
-            is_error: true,
-        });
-
-        let content = result
-            .content
-            .iter()
-            .filter(|c| !c.text.is_empty())
-            .map(|c| c.text.as_str())
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        if content.is_empty() && !result.content.is_empty() {
-            warn!(
-                tool = tool_name,
-                block_count = result.content.len(),
-                block_types = %result.content.iter().map(|c| c.block_type.as_str()).collect::<Vec<_>>().join(", "),
-                "MCP tool returned content blocks but all had empty text"
-            );
-        } else if content.is_empty() && result.content.is_empty() {
-            warn!(
-                tool = tool_name,
-                response_preview = %resp_text.chars().take(500).collect::<String>(),
-                "MCP tool returned no content blocks"
-            );
-        }
-
-        Ok(McpToolResult {
-            content,
-            is_error: result.is_error,
-        })
+        Ok(parse_call_result(tool_name, &result_val))
     }
 
     /// Close a session for an integration.
@@ -406,6 +359,59 @@ impl McpClient {
     }
 }
 
+/// Flatten an MCP `tools/call` result into the text the model sees.
+/// Shared by both transports (HTTP and stdio) — the ONE place a call result
+/// becomes model-visible text. Text blocks pass through verbatim; every other
+/// block shape (image, resource, resource_link, …) is preserved as compact
+/// JSON instead of being dropped; `structuredContent` is appended
+/// pretty-printed. Only a truly empty result yields the "(tool returned no
+/// content)" placeholder, so the model never sees silence.
+pub(crate) fn parse_call_result(tool_name: &str, result: &serde_json::Value) -> McpToolResult {
+    let is_error = result
+        .get("isError")
+        .or_else(|| result.get("is_error"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(blocks) = result.get("content").and_then(|c| c.as_array()) {
+        for block in blocks {
+            if block.get("type").and_then(|t| t.as_str()) == Some("text") {
+                if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
+                    if !text.is_empty() {
+                        parts.push(text.to_string());
+                    }
+                }
+            } else {
+                // Non-text block: keep the whole block as compact JSON
+                // rather than dropping it.
+                parts.push(block.to_string());
+            }
+        }
+    }
+
+    if let Some(structured) = result.get("structuredContent") {
+        if !structured.is_null() {
+            parts.push(
+                serde_json::to_string_pretty(structured).unwrap_or_else(|_| structured.to_string()),
+            );
+        }
+    }
+
+    let content = if parts.is_empty() {
+        warn!(
+            tool = tool_name,
+            result_preview = %result.to_string().chars().take(500).collect::<String>(),
+            "MCP tool returned no renderable content"
+        );
+        "(tool returned no content)".to_string()
+    } else {
+        parts.join("\n")
+    };
+
+    McpToolResult { content, is_error }
+}
+
 /// Parse a JSON-RPC response from an SSE (Server-Sent Events) body.
 /// SSE format: `event: message\ndata: {"jsonrpc":"2.0",...}\n\n`
 /// Extracts and returns the JSON from the last `data:` line.
@@ -448,5 +454,86 @@ fn parse_sse_json(text: &str) -> Result<serde_json::Value, McpError> {
             );
             Err(McpError::Other("No data found in SSE response".to_string()))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_call_result;
+    use serde_json::json;
+
+    #[test]
+    fn text_only_joins_blocks() {
+        let result = json!({
+            "content": [
+                { "type": "text", "text": "line one" },
+                { "type": "text", "text": "line two" }
+            ],
+            "isError": false
+        });
+        let r = parse_call_result("t", &result);
+        assert_eq!(r.content, "line one\nline two");
+        assert!(!r.is_error);
+    }
+
+    #[test]
+    fn structured_content_only() {
+        let structured = json!({ "record": { "name": "Acme", "balance": 42 } });
+        let result = json!({
+            "content": [],
+            "structuredContent": structured
+        });
+        let r = parse_call_result("t", &result);
+        assert_eq!(
+            r.content,
+            serde_json::to_string_pretty(&structured).unwrap()
+        );
+        assert!(!r.is_error);
+    }
+
+    #[test]
+    fn mixed_text_and_structured() {
+        let structured = json!({ "id": 7 });
+        let result = json!({
+            "content": [{ "type": "text", "text": "summary" }],
+            "structuredContent": structured
+        });
+        let r = parse_call_result("t", &result);
+        let expected = format!(
+            "summary\n{}",
+            serde_json::to_string_pretty(&structured).unwrap()
+        );
+        assert_eq!(r.content, expected);
+    }
+
+    #[test]
+    fn image_block_preserved_as_json() {
+        let result = json!({
+            "content": [
+                { "type": "image", "data": "aGVsbG8=", "mimeType": "image/png" }
+            ]
+        });
+        let r = parse_call_result("t", &result);
+        assert!(r.content.contains("\"type\":\"image\""));
+        assert!(r.content.contains("image/png"));
+        assert!(r.content.contains("aGVsbG8="));
+    }
+
+    #[test]
+    fn truly_empty_returns_placeholder() {
+        let r = parse_call_result("t", &json!({ "content": [] }));
+        assert_eq!(r.content, "(tool returned no content)");
+        assert!(!r.is_error);
+    }
+
+    #[test]
+    fn is_error_passes_through() {
+        let result = json!({
+            "content": [{ "type": "text", "text": "boom" }],
+            "isError": true
+        });
+        let r = parse_call_result("t", &result);
+        assert_eq!(r.content, "boom");
+        assert!(r.is_error);
     }
 }

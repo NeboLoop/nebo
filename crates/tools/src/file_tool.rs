@@ -195,13 +195,25 @@ impl FileTool {
         };
 
         // Check for binary content before attempting line-based reading
+        let mut utf16_text: Option<String> = None;
         {
             // Read a fixed window via a real syscall — never size this from
             // metadata.len(), which can be 0 for dataless/placeholder files (e.g.
             // iCloud "optimize storage") even when the file has content.
             let mut sample = [0u8; 8192];
             if let Ok(n) = file.read(&mut sample) {
-                if n > 0 && is_binary_content(&sample[..n], n) {
+                if n > 0 && let Some(big_endian) = detect_utf16(&sample[..n]) {
+                    // UTF-16 text looks binary to the NUL scan below (every other
+                    // byte is 0x00) — decode it instead of refusing to show it.
+                    match std::fs::read(&path) {
+                        Ok(bytes) => utf16_text = Some(decode_utf16_bytes(&bytes, big_endian)),
+                        Err(e) => {
+                            return ToolResult::error(format!("Error reading file: {}", e));
+                        }
+                    }
+                } else if n > 0
+                    && let Some(reason) = binary_reason(&sample[..n], n)
+                {
                     // Images: return them INLINE as a viewable image (data URL) so the model
                     // actually sees the pixels. The runner renders
                     // image_url inline for multimodal providers and routes it through the vision
@@ -235,7 +247,12 @@ impl FileTool {
                             }
                         };
                     }
-                    return ToolResult::ok("[Binary file detected — content not shown]");
+                    return ToolResult::ok(format!(
+                        "[Binary file detected — content not shown. {} bytes; {}. To inspect the raw bytes: os(resource: \"shell\", action: \"exec\", command: \"hexdump -C '{}' | head\")]",
+                        metadata.len(),
+                        reason,
+                        path
+                    ));
                 }
             }
             // Seek back to start for the line-based reader
@@ -244,7 +261,11 @@ impl FileTool {
             }
         }
 
-        let reader = BufReader::with_capacity(1024 * 1024, file);
+        // UTF-16 files read from the decoded text; everything else streams from disk.
+        let reader: Box<dyn BufRead> = match utf16_text {
+            Some(text) => Box::new(std::io::Cursor::new(text)),
+            None => Box::new(BufReader::with_capacity(1024 * 1024, file)),
+        };
         let mut result = String::new();
         let mut line_num = 0usize;
         let mut lines_read = 0usize;
@@ -862,16 +883,80 @@ fn sensitive_paths() -> Vec<String> {
 
 /// Check if content appears to be binary by scanning for null bytes
 /// and checking the ratio of non-printable characters.
-fn is_binary_content(data: &[u8], sample_size: usize) -> bool {
+/// Returns the trigger (for an honest placeholder message) when binary, `None` for text.
+fn binary_reason(data: &[u8], sample_size: usize) -> Option<String> {
     let check = &data[..data.len().min(sample_size)];
     if check.iter().any(|&b| b == 0) {
-        return true;
+        return Some("contains NUL bytes".to_string());
     }
     let non_printable = check
         .iter()
         .filter(|&&b| b < 0x20 && b != b'\n' && b != b'\r' && b != b'\t')
         .count();
-    non_printable as f64 / check.len() as f64 > 0.3
+    let frac = non_printable as f64 / check.len() as f64;
+    if frac > 0.3 {
+        return Some(format!("{:.0}% non-printable bytes", frac * 100.0));
+    }
+    None
+}
+
+/// Detect UTF-16 text before the binary check gets a chance to refuse it:
+/// a BOM (FE FF big-endian / FF FE little-endian), or a strong alternating-NUL
+/// pattern over ASCII-range bytes (how ASCII text looks when UTF-16 encoded).
+/// Returns `Some(big_endian)` when detected, `None` otherwise.
+fn detect_utf16(sample: &[u8]) -> Option<bool> {
+    if sample.len() >= 2 {
+        if sample[0] == 0xFE && sample[1] == 0xFF {
+            return Some(true);
+        }
+        if sample[0] == 0xFF && sample[1] == 0xFE {
+            return Some(false);
+        }
+    }
+    if sample.len() >= 32 {
+        let lane_nul = |start: usize| {
+            let lane: Vec<u8> = sample.iter().skip(start).step_by(2).copied().collect();
+            lane.iter().filter(|&&b| b == 0).count() as f64 / lane.len() as f64
+        };
+        let lane_ascii = |start: usize| {
+            let lane: Vec<u8> = sample.iter().skip(start).step_by(2).copied().collect();
+            lane.iter()
+                .filter(|&&b| b == b'\n' || b == b'\r' || b == b'\t' || (0x20..0x7F).contains(&b))
+                .count() as f64
+                / lane.len() as f64
+        };
+        // Little-endian: char bytes in the even lane, NULs in the odd lane.
+        if lane_nul(1) > 0.9 && lane_ascii(0) > 0.9 {
+            return Some(false);
+        }
+        // Big-endian: NULs in the even lane, char bytes in the odd lane.
+        if lane_nul(0) > 0.9 && lane_ascii(1) > 0.9 {
+            return Some(true);
+        }
+    }
+    None
+}
+
+/// Decode UTF-16 bytes (skipping any BOM) to text, lossily.
+fn decode_utf16_bytes(bytes: &[u8], big_endian: bool) -> String {
+    let body = if bytes.len() >= 2
+        && ((bytes[0] == 0xFE && bytes[1] == 0xFF) || (bytes[0] == 0xFF && bytes[1] == 0xFE))
+    {
+        &bytes[2..]
+    } else {
+        bytes
+    };
+    let units: Vec<u16> = body
+        .chunks_exact(2)
+        .map(|c| {
+            if big_endian {
+                u16::from_be_bytes([c[0], c[1]])
+            } else {
+                u16::from_le_bytes([c[0], c[1]])
+            }
+        })
+        .collect();
+    String::from_utf16_lossy(&units)
 }
 
 /// Validate that a file path is safe to access.

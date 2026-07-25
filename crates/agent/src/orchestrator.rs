@@ -8,8 +8,17 @@ use tokio::sync::{RwLock, mpsc};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
-/// Per-worker wall-clock timeout for parallel spawns.
-const WORKER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+/// Per-worker inactivity guard for parallel spawns: a worker is aborted only
+/// after this long with NO stream activity (no text, tool, or usage events) —
+/// any event resets the window. Deliberately not a wall-clock cap: a run is
+/// already bounded by its iteration budget, and a blanket timeout kills
+/// legitimate long-running work.
+const WORKER_INACTIVITY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// Prefix on the partial output returned when a worker is aborted for
+/// inactivity. Callers match on it to record the task as failed for telemetry
+/// while still handing the accumulated output to the parent.
+const WORKER_STALL_MARKER: &str = "[partial — worker stalled after 120s of no activity]";
 
 /// Max sub-agent nesting depth. Without this, a weak model told to "work
 /// together" delegates, and each spawned agent re-delegates — nesting
@@ -225,7 +234,8 @@ impl Orchestrator {
                 );
                 apply_spawn_context(&mut run_req, &spawn_req);
 
-                let result = run_and_collect(&runner, run_req, cancel, None, parent_stream_tx).await;
+                let result =
+                    run_and_collect(&runner, run_req, cancel, None, parent_stream_tx, None).await;
 
                 match result {
                     Ok(output) => {
@@ -280,7 +290,7 @@ impl Orchestrator {
             &spawn_req.agent_id,
         );
         apply_spawn_context(&mut req, spawn_req);
-        run_and_collect(&self.runner, req, cancel, None, parent_stream_tx).await
+        run_and_collect(&self.runner, req, cancel, None, parent_stream_tx, None).await
     }
 
     /// Execute a DAG of sub-tasks with reactive scheduling.
@@ -411,7 +421,7 @@ impl Orchestrator {
                         "",
                     );
 
-                    let result = run_and_collect(&runner, req, cancel, None, None).await;
+                    let result = run_and_collect(&runner, req, cancel, None, None, None).await;
 
                     match &result {
                         Ok(output) => {
@@ -647,24 +657,21 @@ impl Orchestrator {
             apply_spawn_context(&mut run_req, &req);
 
             running.push(Box::pin(async move {
-                let result = match tokio::time::timeout(
-                    WORKER_TIMEOUT,
-                    run_and_collect(
-                        &runner, run_req, cancel.clone(),
-                        Some((tid.clone(), prog_tx_clone)),
-                        None,
-                    ),
-                ).await {
-                    Ok(r) => r,
-                    Err(_) => {
-                        warn!(task_id = %tid, "worker timed out after {}s", WORKER_TIMEOUT.as_secs());
-                        cancel.cancel();
-                        Err(format!("Worker timed out after {}s", WORKER_TIMEOUT.as_secs()))
-                    }
-                };
+                let result = run_and_collect(
+                    &runner, run_req, cancel,
+                    Some((tid.clone(), prog_tx_clone)),
+                    None,
+                    Some(WORKER_INACTIVITY_TIMEOUT),
+                ).await;
 
                 let (tool_count, token_count) = (0usize, 0i32); // final counts come from progress events
                 match &result {
+                    // Stalled worker: the partial output still flows to the parent,
+                    // but the task is recorded as failed so telemetry sees the stall.
+                    Ok(output) if output.starts_with(WORKER_STALL_MARKER) => {
+                        warn!(task_id = %tid, "worker stalled: no activity for {}s; keeping partial output", WORKER_INACTIVITY_TIMEOUT.as_secs());
+                        let _ = store.update_task_failed(&tid, WORKER_STALL_MARKER);
+                    }
                     Ok(output) => {
                         let _ = store.update_task_completed(&tid, Some(output.as_str()));
                     }
@@ -852,7 +859,7 @@ impl Orchestrator {
                 };
 
                 let cancel = CancellationToken::new();
-                match run_and_collect(&runner, req, cancel, None, None).await {
+                match run_and_collect(&runner, req, cancel, None, None, None).await {
                     Ok(output) => {
                         let _ = store.update_task_completed(&task_id, Some(&output));
                     }
@@ -968,12 +975,16 @@ pub struct SubagentProgress {
 
 /// Run a RunRequest via the Runner and collect text output from the stream.
 /// Accepts an optional progress sender for tracking tool counts and current operations.
+/// When `inactivity_timeout` is set, the run is aborted (token cancelled) after that
+/// long with no stream activity, and the accumulated output is returned as `Ok`
+/// prefixed with [`WORKER_STALL_MARKER`] — any event resets the window.
 async fn run_and_collect(
     runner: &Arc<Runner>,
     req: RunRequest,
     cancel: CancellationToken,
     progress_tx: Option<(String, mpsc::Sender<SubagentProgress>)>,
     parent_stream_tx: Option<mpsc::Sender<ai::StreamEvent>>,
+    inactivity_timeout: Option<std::time::Duration>,
 ) -> Result<String, String> {
     let mut rx = runner
         .run(req)
@@ -984,6 +995,8 @@ async fn run_and_collect(
     let mut tool_count: usize = 0;
     let mut token_count: i32 = 0;
     let mut last_operation = String::new();
+    let mut last_activity = tokio::time::Instant::now();
+    let mut stalled = false;
 
     // Periodic progress timer: send a short status to the parent every 30s
     // so the user sees activity instead of silence during long sub-agent runs.
@@ -991,6 +1004,8 @@ async fn run_and_collect(
     progress_interval.tick().await; // skip first immediate tick
 
     loop {
+        // Recomputed each iteration so any stream event below resets the window.
+        let stall_deadline = inactivity_timeout.map(|window| last_activity + window);
         tokio::select! {
             _ = cancel.cancelled() => {
                 return Err("Cancelled".to_string());
@@ -1005,9 +1020,22 @@ async fn run_and_collect(
                     let _ = ptx.send(ai::StreamEvent::text(format!("\n_{}_\n", desc))).await;
                 }
             }
+            // Inactivity guard: fires only when enabled and no stream event has
+            // arrived for the whole window.
+            _ = async {
+                match stall_deadline {
+                    Some(deadline) => tokio::time::sleep_until(deadline).await,
+                    None => std::future::pending::<()>().await,
+                }
+            } => {
+                cancel.cancel();
+                stalled = true;
+                break;
+            }
             event = rx.recv() => {
                 match event {
                     Some(e) => {
+                        last_activity = tokio::time::Instant::now();
                         match e.event_type {
                             StreamEventType::Text => output.push_str(&e.text),
                             StreamEventType::ToolCall => {
@@ -1063,6 +1091,16 @@ async fn run_and_collect(
                 }
             }
         }
+    }
+
+    if stalled {
+        // Return what was accumulated instead of discarding it; the marker
+        // prefix lets the caller record the task as stalled for telemetry.
+        output = if output.is_empty() {
+            format!("{WORKER_STALL_MARKER} (no output produced)")
+        } else {
+            format!("{WORKER_STALL_MARKER}\n\n{output}")
+        };
     }
 
     if output.is_empty() {

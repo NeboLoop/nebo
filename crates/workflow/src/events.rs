@@ -106,14 +106,12 @@ impl EventDispatcher {
                 for sub in matches {
                     let mut inputs = sub.default_inputs.clone();
                     // Merge event payload into inputs
-                    if let serde_json::Value::Object(ref mut map) = inputs {
-                        map.insert("_event_source".to_string(), serde_json::json!(event.source));
-                        map.insert(
-                            "_event_payload".to_string(),
-                            summarize_event_payload(&event.payload),
-                        );
-                        map.insert("_event_origin".to_string(), serde_json::json!(event.origin));
-                    }
+                    insert_event_envelope(
+                        &mut inputs,
+                        &event.source,
+                        summarize_event_payload(&event.payload),
+                        &event.origin,
+                    );
 
                     // Use run_inline with the inline definition from agent.json
                     if let Some(ref def_json) = sub.definition_json {
@@ -159,6 +157,23 @@ impl EventDispatcher {
                 }
             }
         })
+    }
+}
+
+/// Insert the standard event envelope keys (`_event_source`, `_event_payload`,
+/// `_event_origin`) into workflow inputs. This is the canonical envelope shape
+/// for every binding fire — real event dispatch above, and manual binding runs
+/// (server's WorkflowManagerImpl) synthesize the same keys through this helper.
+pub fn insert_event_envelope(
+    inputs: &mut serde_json::Value,
+    source: &str,
+    payload: serde_json::Value,
+    origin: &str,
+) {
+    if let serde_json::Value::Object(map) = inputs {
+        map.insert("_event_source".to_string(), serde_json::json!(source));
+        map.insert("_event_payload".to_string(), payload);
+        map.insert("_event_origin".to_string(), serde_json::json!(origin));
     }
 }
 

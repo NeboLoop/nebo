@@ -219,6 +219,96 @@ impl WorkflowManagerImpl {
             completed_at: run.completed_at,
         }
     }
+
+    /// Fire an agent workflow binding on demand (work-tool dispatch through
+    /// `run()` with a binding-scoped id). Resolves the binding definition from
+    /// the agent's frontmatter — the same prep the cron scheduler
+    /// (`scheduler::execute_agent_workflow_task`) and the manual-run HTTP
+    /// endpoint (`handlers::agents::run_agent_workflow`) perform — then fires
+    /// it through `run_inline`, the one firing body every binding trigger uses.
+    async fn run_binding(
+        &self,
+        agent_id: &str,
+        binding_name: &str,
+        inputs: serde_json::Value,
+        trigger_type: &str,
+    ) -> Result<String, String> {
+        let agent_rec = self
+            .store
+            .get_agent(agent_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("agent not found: {}", agent_id))?;
+
+        // Enabled state lives on the agent_workflows row (the panel toggle).
+        let row = self
+            .store
+            .list_agent_workflows(agent_id)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .find(|b| b.binding_name == binding_name)
+            .ok_or_else(|| format!("workflow binding not found: {}", binding_name))?;
+        if row.is_active == 0 {
+            return Err(format!(
+                "workflow {:?} is disabled — toggle it on before running",
+                binding_name
+            ));
+        }
+
+        let config = napp::agent::parse_agent_config(&agent_rec.frontmatter)
+            .map_err(|e| format!("parse agent config: {}", e))?;
+        let binding = config
+            .workflows
+            .get(binding_name)
+            .ok_or_else(|| format!("workflow binding not found: {}", binding_name))?;
+        if !binding.has_activities() {
+            return Err(format!("workflow {:?} has no activities", binding_name));
+        }
+        let def_json = binding.to_workflow_json(binding_name);
+
+        // Binding default inputs, overlaid with caller-supplied inputs.
+        let mut merged = serde_json::to_value(&binding.inputs).unwrap_or_default();
+        if !merged.is_object() {
+            merged = serde_json::json!({});
+        }
+        if let (Some(base), Some(extra)) = (merged.as_object_mut(), inputs.as_object()) {
+            for (k, v) in extra {
+                base.insert(k.clone(), v.clone());
+            }
+        }
+
+        // Synthesized envelope — same shape the EventDispatcher builds for
+        // real events, via the same helper (workflow::events).
+        workflow::events::insert_event_envelope(
+            &mut merged,
+            "manual",
+            serde_json::json!({
+                "note": "manual invocation — there is no triggering event, so no event payload is available"
+            }),
+            &format!("agent:{}", agent_id),
+        );
+
+        let emit_source = binding.emit.as_ref().map(|emit_name| {
+            let slug = agent_rec.name.to_lowercase().replace(' ', "-");
+            format!("{}.{}", slug, emit_name)
+        });
+
+        self.run_inline(
+            def_json,
+            merged,
+            trigger_type,
+            Some(binding_name.to_string()),
+            agent_id,
+            emit_source,
+        )
+        .await
+    }
+}
+
+/// Split a binding-scoped workflow id (`agent:{agent_id}:{binding_name}`) —
+/// the id shape `resolve()` returns for agent bindings, matching the command
+/// format the cron scheduler already uses for them.
+fn split_binding_id(id: &str) -> Option<(&str, &str)> {
+    id.strip_prefix("agent:")?.split_once(':')
 }
 
 /// Map an agent-owned binding row to the tool-facing WorkflowInfo shape.
@@ -369,12 +459,35 @@ impl WorkflowManager for WorkflowManagerImpl {
 
     fn resolve<'a>(
         &'a self,
+        agent_id: &'a str,
         name_or_id: &'a str,
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<WorkflowInfo, String>> + Send + 'a>,
     > {
         Box::pin(async move {
-            // Try by ID first
+            // The calling agent's own bindings first — the same store list()
+            // reads, so anything list() shows resolves. On a name collision
+            // with a standalone workflow, the agent's own binding wins.
+            if !agent_id.is_empty() {
+                match self.store.list_agent_workflows(agent_id) {
+                    Ok(bindings) => {
+                        let key = slug(name_or_id);
+                        if let Some(b) = bindings
+                            .iter()
+                            .find(|b| b.binding_name == name_or_id || b.binding_name == key)
+                        {
+                            let mut info = agent_workflow_to_info(b);
+                            // Binding-scoped id so run()/list_runs()/toggle()
+                            // route to the binding, not the workflows table.
+                            info.id = format!("agent:{}:{}", agent_id, b.binding_name);
+                            return Ok(info);
+                        }
+                    }
+                    Err(e) => warn!(agent_id, error = %e, "failed to list agent workflows"),
+                }
+            }
+
+            // Try the standalone workflows table by ID
             if let Ok(Some(wf)) = self.store.get_workflow(name_or_id) {
                 return Ok(self.workflow_to_info(&wf));
             }
@@ -403,6 +516,15 @@ impl WorkflowManager for WorkflowManagerImpl {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + 'a>>
     {
         Box::pin(async move {
+            // Agent binding dispatch — resolve() returns bindings with a
+            // binding-scoped id; fire them through run_inline, never the
+            // standalone path below.
+            if let Some((agent_id, binding_name)) = split_binding_id(id) {
+                return self
+                    .run_binding(agent_id, binding_name, inputs, trigger_type)
+                    .await;
+            }
+
             let wf = self
                 .store
                 .get_workflow(id)
@@ -654,6 +776,31 @@ impl WorkflowManager for WorkflowManagerImpl {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<WorkflowRunInfo>> + Send + 'a>>
     {
         Box::pin(async move {
+            // Binding-scoped id: runs are recorded under "agent:{agent_id}"
+            // with the binding name (or "binding:event.source") in
+            // trigger_detail — fetch the agent's runs and filter down.
+            if let Some((agent_id, binding_name)) = split_binding_id(workflow_id) {
+                let parent = format!("agent:{}", agent_id);
+                return match self.store.list_workflow_runs(&parent, 200, 0) {
+                    Ok(runs) => runs
+                        .iter()
+                        .filter(|r| {
+                            r.trigger_detail.as_deref().is_some_and(|d| {
+                                d == binding_name
+                                    || d.strip_prefix(binding_name)
+                                        .is_some_and(|rest| rest.starts_with(':'))
+                            })
+                        })
+                        .take(limit.max(0) as usize)
+                        .map(Self::run_to_info)
+                        .collect(),
+                    Err(e) => {
+                        warn!(workflow_id = %workflow_id, error = %e, "failed to list binding runs");
+                        Vec::new()
+                    }
+                };
+            }
+
             match self.store.list_workflow_runs(workflow_id, limit, 0) {
                 Ok(runs) => runs.iter().map(Self::run_to_info).collect(),
                 Err(e) => {
@@ -670,6 +817,14 @@ impl WorkflowManager for WorkflowManagerImpl {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<bool, String>> + Send + 'a>>
     {
         Box::pin(async move {
+            // Binding-scoped id: enabled state lives on the agent_workflows row.
+            if let Some((agent_id, binding_name)) = split_binding_id(id) {
+                return self
+                    .store
+                    .toggle_agent_workflow(agent_id, binding_name)
+                    .map_err(|e| format!("toggle: {}", e));
+            }
+
             self.store
                 .toggle_workflow(id)
                 .map_err(|e| format!("toggle: {}", e))?;

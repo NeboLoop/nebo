@@ -14,6 +14,13 @@
 
 use std::sync::Arc;
 
+/// Maximum extension→host message size. Chrome's 1 MB native-messaging cap
+/// applies HOST→EXTENSION only; the extension legitimately sends larger
+/// payloads this way (screenshots ~1.4 MB, full-page outerHTML several MB).
+/// The ONE bound for every extension→host read path — native_host.rs uses it
+/// too, so the two implementations can never drift apart again.
+pub const MAX_EXT_MSG_BYTES: usize = 64 * 1024 * 1024;
+
 use futures::{SinkExt, StreamExt};
 use tokio::io::AsyncReadExt;
 use tokio_tungstenite::connect_async;
@@ -111,12 +118,9 @@ pub async fn run(relay_secret: Option<String>) -> anyhow::Result<()> {
                 break;
             }
             let len = u32::from_le_bytes(len_buf) as usize;
-            // Chrome's 1 MB native-messaging cap applies HOST→EXTENSION only; the
-            // extension legitimately sends larger payloads this way (screenshots
-            // ~1.4 MB, full-page outerHTML several MB). Anything past this bound
-            // means a corrupted length prefix — resync is impossible on a
-            // length-prefixed stream, so exit and let Chrome relaunch the relay.
-            const MAX_EXT_MSG_BYTES: usize = 64 * 1024 * 1024;
+            // Anything past MAX_EXT_MSG_BYTES means a corrupted length prefix —
+            // resync is impossible on a length-prefixed stream, so exit and let
+            // Chrome relaunch the relay.
             if len > MAX_EXT_MSG_BYTES {
                 eprintln!(
                     "[nebo-relay] implausible message length {} bytes — corrupted stream, exiting",
