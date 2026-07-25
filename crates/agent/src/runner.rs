@@ -207,6 +207,43 @@ fn action_key(call: &ai::ToolCall) -> String {
     format!("{}:{}", call.name, action)
 }
 
+/// Cap on unproductive repeats of the same (tool, action) before the spiral
+/// backstop ends the turn. See `counts_toward_action_spiral`.
+const SAME_ACTION_LIMIT: usize = 8;
+
+/// Whether an unproductive tool attempt should feed the coarse (tool, action)
+/// spiral counter (`SAME_ACTION_LIMIT`).
+///
+/// File-read errors are excluded: per-path `read_failures` already caps retries
+/// on the same target. Counting every failed read across different paths toward
+/// the action-wide limit false-trips legitimate exploration (8 wrong paths →
+/// turn ends with "os:read was called 8 times without progress" even when the
+/// model is about to read a file it just discovered). Redundant content still
+/// counts — re-fetching bytes the model already has is the wander the spiral
+/// is meant to catch for reads.
+fn counts_toward_action_spiral(call: &ai::ToolCall, is_error: bool, flagged_redundant: bool) -> bool {
+    if flagged_redundant {
+        return true;
+    }
+    if is_error && extract_file_read_path(call).is_none() {
+        return true;
+    }
+    false
+}
+
+/// Apply one spiral-counter update for a tool result. Mirrors the runner loop
+/// so unit tests can assert the turn-level budget without driving a full run.
+fn record_action_spiral(
+    counts: &mut std::collections::HashMap<String, usize>,
+    call: &ai::ToolCall,
+    is_error: bool,
+    flagged_redundant: bool,
+) {
+    if counts_toward_action_spiral(call, is_error, flagged_redundant) {
+        *counts.entry(action_key(call)).or_insert(0) += 1;
+    }
+}
+
 fn extract_file_read_path(call: &ai::ToolCall) -> Option<String> {
     if call.name != "os" {
         return None;
@@ -1351,14 +1388,14 @@ async fn run_loop(
     // hunting across dirs, browser page re-reads, shell retries). After
     // SAME_ACTION_LIMIT such attempts, return a terminal result so the run ends and
     // the agent reports instead of looping.
-    // ponytail: result-novelty keyed (see the counter's gate below) — only
+    // ponytail: result-novelty keyed (see counts_toward_action_spiral) — only
     // error/redundant attempts count, so legitimate bulk work (create N distinct
-    // todos, write N files) no longer false-trips, which the coarse name:action key
-    // used to do at 8. NOT a substitute for clear tool errors — a misleading error is
-    // what STARTS the spiral.
+    // todos, write N files) no longer false-trips. File-read errors are also
+    // excluded (per-path read_failures covers them) so exploring N paths does not
+    // trip os:read at 8. NOT a substitute for clear tool errors — a misleading
+    // error is what STARTS the spiral.
     let mut action_call_counts: std::collections::HashMap<String, usize> =
         std::collections::HashMap::new();
-    const SAME_ACTION_LIMIT: usize = 8;
     let mut provider_idx: usize = 0;
     // Janus provider metadata for tool stickiness — echoed back in subsequent requests
     let mut sticky_metadata: Option<std::collections::HashMap<String, String>> = None;
@@ -4255,10 +4292,16 @@ async fn run_loop(
                 // call that succeeded with a NOVEL result made progress. Counting
                 // successes cut legitimate bulk work off at 8 (e.g. creating N
                 // distinct todos, writing N files) — the false-trip this guard's own
-                // comment warned about. Novelty-key it instead.
-                if result.is_error || flagged_redundant {
-                    *action_call_counts.entry(action_key(&tc)).or_insert(0) += 1;
-                }
+                // comment warned about. File-read errors are excluded here — the
+                // per-path read_failures map already stops same-target retry spirals;
+                // counting cross-path failures toward os:read false-tripped codebase
+                // exploration after 8 misses.
+                record_action_spiral(
+                    &mut action_call_counts,
+                    &tc,
+                    result.is_error,
+                    flagged_redundant,
+                );
 
                 // Arg-identity dedup (complements the content check above, which only
                 // fires on byte-identical output): the model repeated a call it already
@@ -5813,6 +5856,124 @@ mod tests {
             token_estimate: None,
             html: None,
         }
+    }
+
+    fn os_read(path: &str) -> ai::ToolCall {
+        ai::ToolCall {
+            id: "c1".into(),
+            name: "os".into(),
+            input: serde_json::json!({"action": "read", "path": path}),
+        }
+    }
+
+    fn os_glob(dir: &str) -> ai::ToolCall {
+        ai::ToolCall {
+            id: "c1".into(),
+            name: "os".into(),
+            input: serde_json::json!({"action": "glob", "path": dir, "pattern": "*"}),
+        }
+    }
+
+    fn os_exec(command: &str) -> ai::ToolCall {
+        ai::ToolCall {
+            id: "c1".into(),
+            name: "os".into(),
+            input: serde_json::json!({"action": "exec", "command": command}),
+        }
+    }
+
+    fn web_search(query: &str) -> ai::ToolCall {
+        ai::ToolCall {
+            id: "c1".into(),
+            name: "web".into(),
+            input: serde_json::json!({"action": "search", "query": query}),
+        }
+    }
+
+    #[test]
+    fn spiral_exploration_read_errors_never_trip_limit() {
+        // Regression: 8+ failed os:reads across different paths used to end the
+        // turn with "os:read was called 8 times without progress" and block the
+        // next real read. Per-path read_failures owns that case; the coarse
+        // spiral must stay at 0 so exploration can continue.
+        let mut counts = std::collections::HashMap::new();
+        for i in 0..(SAME_ACTION_LIMIT + 4) {
+            record_action_spiral(&mut counts, &os_read(&format!("/tmp/miss-{i}.rs")), true, false);
+        }
+        assert_eq!(counts.get("os:read").copied().unwrap_or(0), 0);
+        assert!(
+            counts.get("os:read").copied().unwrap_or(0) < SAME_ACTION_LIMIT,
+            "exploration read errors must not trip the spiral backstop"
+        );
+    }
+
+    #[test]
+    fn spiral_redundant_reads_still_trip_limit() {
+        let mut counts = std::collections::HashMap::new();
+        let call = os_read("/tmp/same.rs");
+        for _ in 0..SAME_ACTION_LIMIT {
+            record_action_spiral(&mut counts, &call, false, true);
+        }
+        assert_eq!(counts["os:read"], SAME_ACTION_LIMIT);
+    }
+
+    #[test]
+    fn spiral_skips_file_read_errors_across_paths() {
+        // Exploring many missing paths must not feed the coarse os:read counter —
+        // read_failures owns per-path caps.
+        let a = os_read("/tmp/a.rs");
+        let b = os_read("/tmp/b.rs");
+        assert!(!counts_toward_action_spiral(&a, true, false));
+        assert!(!counts_toward_action_spiral(&b, true, false));
+        // Redundant content still counts (true wander).
+        assert!(counts_toward_action_spiral(&a, false, true));
+        // Successful novel read never counts.
+        assert!(!counts_toward_action_spiral(&a, false, false));
+        // Error + redundant: redundant still counts (wander via re-fetch).
+        assert!(counts_toward_action_spiral(&a, true, true));
+    }
+
+    #[test]
+    fn spiral_skips_shell_dump_read_errors() {
+        // cat/head/tail dump failures are file-reads for dedup / read_failures;
+        // they must not feed the coarse os:exec spiral either.
+        let cat = os_exec("cat /tmp/missing.rs");
+        assert!(extract_file_read_path(&cat).is_some());
+        assert!(!counts_toward_action_spiral(&cat, true, false));
+    }
+
+    #[test]
+    fn spiral_still_counts_non_read_errors() {
+        let g = os_glob("/tmp");
+        assert!(counts_toward_action_spiral(&g, true, false));
+        assert!(!counts_toward_action_spiral(&g, false, false));
+
+        let mut counts = std::collections::HashMap::new();
+        for i in 0..SAME_ACTION_LIMIT {
+            record_action_spiral(&mut counts, &os_glob(&format!("/tmp/dir-{i}")), true, false);
+        }
+        assert_eq!(counts["os:glob"], SAME_ACTION_LIMIT);
+
+        // Non-dump shell failures still count (true exec retry spiral).
+        let ls = os_exec("ls /nope");
+        assert!(extract_file_read_path(&ls).is_none());
+        assert!(counts_toward_action_spiral(&ls, true, false));
+
+        // Other tools' errors still count.
+        assert!(counts_toward_action_spiral(&web_search("nebo"), true, false));
+    }
+
+    #[test]
+    fn spiral_os_read_without_path_still_counts_as_error() {
+        // Malformed read (no path) is not a tracked file-read target — keep it
+        // on the coarse spiral so a broken call shape cannot loop forever.
+        let bare = ai::ToolCall {
+            id: "c1".into(),
+            name: "os".into(),
+            input: serde_json::json!({"action": "read"}),
+        };
+        assert!(extract_file_read_path(&bare).is_none());
+        assert!(counts_toward_action_spiral(&bare, true, false));
     }
 
     #[test]
