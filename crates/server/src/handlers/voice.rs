@@ -54,26 +54,63 @@ fn resolve_realtime_leg(state: &AppState) -> Option<(String, String)> {
     Some((format!("{}/v1/realtime", url.trim_end_matches('/')), token))
 }
 
-/// Voice tool surface: every registry tool the permission layer lists, as
-/// xAI `type: "function"` entries. Execution still passes through the full
-/// policy engine — an OFF capability fails closed with a clear error the
-/// model can relay ("that needs approval on the desktop"), so exposing the
-/// schema never bypasses a gate.
-async fn voice_tools(state: &AppState) -> Vec<serde_json::Value> {
-    state
-        .tools
-        .list()
-        .await
-        .into_iter()
-        .map(|d| {
-            serde_json::json!({
-                "type": "function",
-                "name": d.name,
-                "description": d.description,
-                "parameters": d.input_schema,
-            })
-        })
-        .collect()
+/// Voice tool surface: exactly ONE function — `nebo(task)` — which delegates
+/// to the agent Runner. The voice model (grok) is a weaker tool-caller and
+/// gets none of the text harness (steering, corrections, first-call-success
+/// tuning), so handing it raw STRAP schemas produced retry loops. Instead the
+/// Runner stays the ONE brain: full harness, full tool loop, same policy
+/// engine — and the voice model just narrates the result. Never re-expose the
+/// raw registry here; that recreates a second, untuned tool pathway.
+fn voice_tools() -> Vec<serde_json::Value> {
+    vec![serde_json::json!({
+        "type": "function",
+        "name": "nebo",
+        "description": "Hand a task to your Nebo employee brain — use this for ANYTHING that \
+                        needs real data or action: files, printers, email, calendar, web, apps, \
+                        documents, system info. Pass the user's request restated with all spoken \
+                        context needed to complete it. It runs the full toolchain and returns the \
+                        completed result for you to relay aloud.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "task": {
+                    "type": "string",
+                    "description": "The user's request, self-contained (include names, files, choices already made in this conversation)."
+                }
+            },
+            "required": ["task"]
+        }
+    })]
+}
+
+/// Execute a delegated voice task through the agent Runner and collect the
+/// final text. This is the SAME pathway text chat uses — harness, steering,
+/// corrections, policy — so voice inherits its first-call reliability.
+async fn run_delegated_task(state: &AppState, session_key: &str, task: &str) -> String {
+    let req = agent::RunRequest {
+        session_key: session_key.to_string(),
+        prompt: task.to_string(),
+        origin: tools::Origin::User,
+        channel: "voice".into(),
+        cancel_token: tokio_util::sync::CancellationToken::new(),
+        ..Default::default()
+    };
+    match state.runner.run(req).await {
+        Ok(mut rx) => {
+            let mut out = String::new();
+            while let Some(event) = rx.recv().await {
+                if event.event_type == ai::StreamEventType::Text {
+                    out.push_str(&event.text);
+                }
+            }
+            if out.trim().is_empty() {
+                "The task completed but produced no text summary.".into()
+            } else {
+                out
+            }
+        }
+        Err(e) => format!("The task failed: {e}"),
+    }
 }
 
 /// Brand-term pronunciation map + ASR bias so the model says product names
@@ -138,9 +175,12 @@ async fn handle_conversation_ws(mut socket: WebSocket, state: AppState, q: Conve
 
     let mut instructions = "You are the user's Nebo AI employee, speaking with them by voice. \
                        Be concise and conversational — short sentences, no markdown, no lists. \
-                       Use your tools to act on their behalf; if a tool reports that it needs \
-                       approval or a permission, say so plainly and tell them to grant it in \
-                       the Nebo desktop app."
+                       For ANYTHING that needs real data or action (files, printers, email, \
+                       calendar, web, documents, system info), call the `nebo` tool with the \
+                       task and relay its result aloud — never guess and never claim you can't \
+                       act. While it works, tell the user you're on it. If the result says \
+                       something needs approval or a permission, say so plainly and point them \
+                       to the Nebo desktop app."
         .to_string();
     if let Some(chat_id) = q.chat_id.as_deref() {
         instructions.push_str(&chat_history_context(&state, chat_id));
@@ -151,7 +191,7 @@ async fn handle_conversation_ws(mut socket: WebSocket, state: AppState, q: Conve
         endpoint,
         bearer,
         bot_id: q.agent_id.clone(),
-        tools: voice_tools(&state).await,
+        tools: voice_tools(),
         instructions,
         replace,
         keyterms,
@@ -266,15 +306,19 @@ async fn handle_conversation_session(
     use voice::conversation::ConversationEvent;
     use voice::realtime::RealtimeCommand;
 
+    let chat_id = q.chat_id.filter(|c| !c.is_empty());
+
     // Voice tool execution context: user-origin, empty approved_categories —
     // OFF capabilities fail closed with a clear error (no autonomy bypass; the
     // model relays "grant it on desktop"). Same enforcement as every
-    // non-interactive caller. The `agent:<id>:` session-key prefix is what
-    // resolves per-agent state (plugin account profiles, memory scope), so a
-    // voice call acts as the SAME employee the chat belongs to.
+    // non-interactive caller. Voice is a modality of the chat, so it uses the
+    // SAME `agent:<id>:thread:<chat>` session key text chat uses — delegated
+    // runs, tool activity, and history all land in the open thread instead of
+    // a separate voice-owned conversation.
     let mut ctx = tools::ToolContext::new(tools::Origin::User);
-    ctx.session_key = match q.agent_id.as_deref() {
-        Some(id) if !id.is_empty() => format!("agent:{}:voice", id),
+    ctx.session_key = match (q.agent_id.as_deref(), chat_id.as_deref()) {
+        (Some(id), Some(cid)) if !id.is_empty() => format!("agent:{}:thread:{}", id, cid),
+        (Some(id), None) if !id.is_empty() => format!("agent:{}:voice", id),
         _ => format!("voice:conversation:{}", uuid::Uuid::new_v4()),
     };
     ctx.session_id = ctx.session_key.clone();
@@ -284,7 +328,6 @@ async fn handle_conversation_session(
     // cumulative (replace), the agent transcript arrives as deltas (join).
     // The user turn is final once the model starts responding; the agent turn
     // once playback ends. Anything left at session end is flushed.
-    let chat_id = q.chat_id.filter(|c| !c.is_empty());
     let mut user_partial = String::new();
     let mut agent_partial = String::new();
 
@@ -351,18 +394,34 @@ async fn handle_conversation_session(
                             "voice tool call"
                         );
                         pending_tools += 1;
-                        let registry = state.tools.clone();
+                        let state = state.clone();
                         let ctx = ctx.clone();
                         let done = tool_done_tx.clone();
                         tokio::spawn(async move {
                             let input = decode_tool_arguments(&arguments);
-                            let result = registry.execute(&ctx, &name, input).await;
-                            // The model needs the outcome either way — errors
-                            // included, so it can tell the user what blocked.
-                            let output = serde_json::json!({
-                                "ok": !result.is_error,
-                                "content": result.content,
-                            });
+                            // `nebo` delegates to the Runner (the ONE tuned
+                            // tool brain); anything else the model improvises
+                            // still runs through the policy-gated registry.
+                            let output = if name == "nebo" {
+                                let task = input
+                                    .get("task")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or_default();
+                                let content = if task.is_empty() {
+                                    "The nebo tool needs a `task` string describing what to do.".to_string()
+                                } else {
+                                    run_delegated_task(&state, &ctx.session_key, task).await
+                                };
+                                serde_json::json!({ "ok": true, "content": content })
+                            } else {
+                                let result = state.tools.execute(&ctx, &name, input).await;
+                                // The model needs the outcome either way —
+                                // errors included, so it can say what blocked.
+                                serde_json::json!({
+                                    "ok": !result.is_error,
+                                    "content": result.content,
+                                })
+                            };
                             let _ = done.send((call_id, output.to_string())).await;
                         });
                         None
