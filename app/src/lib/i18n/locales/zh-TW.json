@@ -1817,7 +1817,11 @@
 		"authFailedRetry": "驗證失敗。請檢查你的憑證後再試一次。",
 		"saveCredentialsFailed": "儲存憑證失敗。",
 		"signInFailedRetry": "登入失敗。請再試一次。",
-		"startSignInFailed": "無法為此帳戶啟動登入。"
+		"startSignInFailed": "無法為此帳戶啟動登入。",
+		"voice": "語音",
+		"voiceDesc": "此員工說話時使用的聲音。",
+		"voiceSample": "播放範例",
+		"identityBlurb": "名稱、語音、顏色和狀態 — 此員工在應用程式中的顯示方式。"
 	},
 	"agentConfigure": {
 		"inputs": "輸入",

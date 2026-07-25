@@ -547,9 +547,12 @@
         const resp = await api.createNewAgentChat(agentId, {});
         voiceChatId = (resp as { chat?: { id?: string } }).chat?.id ?? '';
       } catch (e) {
-        console.warn('voice: could not pre-create chat, transcript will not persist', e);
+        console.error('voice: could not create chat thread', e);
       }
     }
+    // No thread, no call — voice without a chat to persist into would
+    // orphan the whole conversation (backend refuses it too).
+    if (!voiceChatId) return;
     showVoiceOverlay = true;
   }
 
@@ -756,6 +759,9 @@
             </svg>
           </button>
         {/if}
+      </div>
+
+      <div class="flex items-center gap-1">
         <button
           class="w-8 h-8 rounded-lg grid place-items-center text-base-content/60 hover:text-base-content hover:bg-base-200 cursor-pointer transition-colors border-none bg-transparent"
           title={$t('voice.startConversation')}
@@ -763,23 +769,23 @@
         >
           <AudioLines class="w-[1.125rem] h-[1.125rem]" />
         </button>
-      </div>
 
-      {#if isLoading}
-        <button
-          class="btn btn-error btn-circle size-9 text-sm"
-          title={$t('chatInput.stopEsc')}
-          onclick={onstop}
-        >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>
-        </button>
-      {:else}
-        <button
-          class="btn btn-neutral btn-circle size-9 text-sm"
-          disabled={!hasContent}
-          onclick={send}
-        >&#8593;</button>
-      {/if}
+        {#if isLoading}
+          <button
+            class="btn btn-error btn-circle size-9 text-sm"
+            title={$t('chatInput.stopEsc')}
+            onclick={onstop}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>
+          </button>
+        {:else}
+          <button
+            class="btn btn-neutral btn-circle size-9 text-sm"
+            disabled={!hasContent}
+            onclick={send}
+          >&#8593;</button>
+        {/if}
+      </div>
     </div>
   </div>
 

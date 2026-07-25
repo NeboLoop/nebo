@@ -1664,6 +1664,7 @@ impl AgentTool {
                             None,
                             None,
                             None,
+                            None,
                         ) {
                             return ToolResult::error(format!(
                                 "Failed to update agent record: {}. Do not retry — this is a database error.",

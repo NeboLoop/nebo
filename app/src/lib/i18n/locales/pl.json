@@ -1817,7 +1817,11 @@
 		"authFailedRetry": "Uwierzytelnianie nie powiodło się. Sprawdź dane logowania i spróbuj ponownie.",
 		"saveCredentialsFailed": "Nie udało się zapisać danych logowania.",
 		"signInFailedRetry": "Logowanie nie powiodło się. Spróbuj ponownie.",
-		"startSignInFailed": "Nie udało się rozpocząć logowania dla tego konta."
+		"startSignInFailed": "Nie udało się rozpocząć logowania dla tego konta.",
+		"voice": "Głos",
+		"voiceDesc": "Słyszalny głos, którym mówi ten pracownik.",
+		"voiceSample": "Odtwórz próbkę",
+		"identityBlurb": "Imię, głos, kolor i status — jak ten pracownik wygląda w aplikacji."
 	},
 	"agentConfigure": {
 		"inputs": "Dane wejściowe",

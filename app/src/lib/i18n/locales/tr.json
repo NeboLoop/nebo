@@ -1817,7 +1817,11 @@
 		"startSetupWizard": "Kurulum sihirbazını başlat",
 		"startSignInFailed": "Bu hesap için oturum açma başlatılamadı.",
 		"unknownSection": "Bilinmeyen ayarlar bölümü.",
-		"updateCredentials": "Kimlik bilgilerini güncelle"
+		"updateCredentials": "Kimlik bilgilerini güncelle",
+		"voice": "Ses",
+		"voiceDesc": "Bu çalışanın konuşurken kullandığı ses.",
+		"voiceSample": "Örneği dinle",
+		"identityBlurb": "Ad, ses, renk ve durum — bu çalışanın uygulamada nasıl göründüğü."
 	},
 	"agentConfigure": {
 		"inputs": "Girdiler",

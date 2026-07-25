@@ -1817,7 +1817,11 @@
 		"authFailedRetry": "認証に失敗しました。認証情報を確認して再試行してください。",
 		"saveCredentialsFailed": "認証情報の保存に失敗しました。",
 		"signInFailedRetry": "サインインに失敗しました。もう一度お試しください。",
-		"startSignInFailed": "このアカウントのサインインを開始できませんでした。"
+		"startSignInFailed": "このアカウントのサインインを開始できませんでした。",
+		"voice": "音声",
+		"voiceDesc": "この従業員が話すときの声です。",
+		"voiceSample": "サンプルを再生",
+		"identityBlurb": "名前、音声、カラー、ステータス — アプリ全体でのこの従業員の表示方法です。"
 	},
 	"agentConfigure": {
 		"inputs": "入力",

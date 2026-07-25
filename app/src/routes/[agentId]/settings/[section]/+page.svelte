@@ -12,6 +12,7 @@
   import SetupWizard from '$lib/components/SetupWizard.svelte';
   import Check from 'lucide-svelte/icons/check';
   import AlertTriangle from 'lucide-svelte/icons/alert-triangle';
+  import Volume2 from 'lucide-svelte/icons/volume-2';
   import MemoryManager from '$lib/components/settings/MemoryManager.svelte';
   import ApprovalControls from '$lib/components/settings/ApprovalControls.svelte';
   import LearningControls from '$lib/components/settings/LearningControls.svelte';
@@ -151,7 +152,18 @@
   let editName = $state('');
   let editRole = $state('');
   let editColor = $state('');
+  let editVoice = $state('');
   let editLoopExposed = $state(false);
+
+  // Nebo voice roster: our names over the underlying xAI voice ids. The id is
+  // what's stored and sent upstream; the label is the brand name shown in UI.
+  const AGENT_VOICES = [
+    { id: 'eve', label: 'Aspen' },
+    { id: 'ara', label: 'Wren' },
+    { id: 'rex', label: 'Ridge' },
+    { id: 'sal', label: 'River' },
+    { id: 'leo', label: 'Summit' },
+  ];
 
   // Initialize edit fields only when switching to a different agent — NOT on every
   // re-emit of `agent` (saving broadcasts agent_updated → agent re-emits, which would
@@ -163,6 +175,7 @@
       editName = agent.name;
       editRole = agent.role;
       editColor = agent.color;
+      editVoice = agent.voice ?? '';
       editLoopExposed = agent.loopExposed ?? false;
     }
   });
@@ -188,6 +201,28 @@
     debounceIdentitySave();
   }
 
+  function selectVoice(voiceId: string) {
+    if (!agent?.editable) return;
+    editVoice = voiceId;
+    debounceIdentitySave();
+  }
+
+  // Voice sample preview: the backend generates each sample once (through the
+  // same realtime leg calls use) and caches it, so replays are instant.
+  let samplePlaying = $state('');
+  let sampleAudio: HTMLAudioElement | null = null;
+  async function playVoiceSample(voiceId: string, e: MouseEvent) {
+    e.stopPropagation();
+    sampleAudio?.pause();
+    if (samplePlaying === voiceId) { samplePlaying = ''; return; }
+    const { backendBase } = await import('$lib/api/base');
+    samplePlaying = voiceId;
+    sampleAudio = new Audio(`${backendBase()}/api/v1/agent/voice-sample/${voiceId}`);
+    sampleAudio.onended = () => { if (samplePlaying === voiceId) samplePlaying = ''; };
+    sampleAudio.onerror = () => { if (samplePlaying === voiceId) samplePlaying = ''; };
+    sampleAudio.play().catch(() => { if (samplePlaying === voiceId) samplePlaying = ''; });
+  }
+
   async function saveIdentity() {
     if (!agentId || !agent?.editable) return;
     try {
@@ -196,6 +231,7 @@
         name: editName,
         description: editRole,
         color: editColor,
+        voice: editVoice,
       });
       identitySaved = true;
       setTimeout(() => identitySaved = false, 2000);
@@ -714,13 +750,11 @@
       {/if}
 
     {:else if section === 'identity'}
-      <div class="flex items-center justify-between mb-1">
-        <div>
-          <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('settings.navItems.identity')}</div>
-          <div class="text-xs text-base-content/70 mt-1">{$t('agentSettings.identityBlurb')}</div>
-        </div>
+      <div class="relative mb-1">
+        <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('settings.navItems.identity')}</div>
+        <div class="text-xs text-base-content/70 mt-1">{$t('agentSettings.identityBlurb')}</div>
         {#if identitySaved}
-          <span class="text-xs text-success flex items-center gap-1"><Check class="w-3 h-3" /> {$t('common.saved')}</span>
+          <span class="absolute right-0 top-0 text-xs text-success flex items-center gap-1"><Check class="w-3 h-3" /> {$t('common.saved')}</span>
         {/if}
       </div>
       {#if !agent?.editable}
@@ -730,6 +764,34 @@
         <span class="block text-xs font-semibold uppercase tracking-wider mb-1.5">{$t('agentSettings.agentName')}</span>
         <input type="text" bind:value={editName} oninput={debounceIdentitySave} disabled={!agent?.editable} class="w-full py-[7px] px-2.5 rounded-md border border-base-300 text-sm bg-base-100 outline-none font-body disabled:opacity-60 disabled:cursor-not-allowed" />
       </label>
+      <div>
+        <div class="text-xs font-semibold uppercase tracking-wider mb-1.5">{$t('agentSettings.voice')}</div>
+        <div class="text-xs text-base-content/70 mb-2">{$t('agentSettings.voiceDesc')}</div>
+        <div class="flex gap-2 items-center flex-wrap">
+          {#each AGENT_VOICES as v (v.id)}
+            <div
+              class="flex items-center rounded-md border transition-colors {(editVoice || 'eve') === v.id ? 'border-base-content bg-base-200' : 'border-base-300 bg-base-100 hover:bg-base-200/50'}"
+            >
+              <button
+                class="pl-3 pr-1.5 py-1.5 text-sm font-medium bg-transparent border-none {agent?.editable ? 'cursor-pointer' : 'opacity-60 cursor-not-allowed'}"
+                disabled={!agent?.editable}
+                onclick={() => selectVoice(v.id)}
+              >{v.label}</button>
+              <button
+                class="pr-2.5 pl-1 py-1.5 grid place-items-center bg-transparent border-none cursor-pointer text-base-content/50 hover:text-base-content transition-colors"
+                title={$t('agentSettings.voiceSample')}
+                onclick={(e) => playVoiceSample(v.id, e)}
+              >
+                {#if samplePlaying === v.id}
+                  <span class="loading loading-bars loading-xs"></span>
+                {:else}
+                  <Volume2 class="w-3.5 h-3.5" />
+                {/if}
+              </button>
+            </div>
+          {/each}
+        </div>
+      </div>
       <label class="block">
         <span class="block text-xs font-semibold uppercase tracking-wider mb-1.5">{$t('agentSettings.role')}</span>
         <textarea bind:value={editRole} oninput={debounceIdentitySave} disabled={!agent?.editable} rows="3" class="w-full py-[7px] px-2.5 rounded-md border border-base-300 text-sm bg-base-100 outline-none font-body disabled:opacity-60 disabled:cursor-not-allowed resize-none"></textarea>

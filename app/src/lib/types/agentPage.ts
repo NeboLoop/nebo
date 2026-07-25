@@ -108,6 +108,8 @@ export interface AgentDisplay {
 	isApp?: boolean
 	/** Whether this agent is exposed on the user's personal loop. */
 	loopExposed?: boolean
+	/** Realtime voice id (xAI voice id; empty = default). */
+	voice?: string
 }
 
 /** The agentPage context shape provided by [agentId]/+layout.svelte. */

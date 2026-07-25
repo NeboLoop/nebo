@@ -931,6 +931,7 @@ impl WorkflowManager for WorkflowManagerImpl {
                     None,
                     None,
                     None,
+                    None,
                 )
                 .map_err(|e| format!("update_agent: {}", e))?;
 

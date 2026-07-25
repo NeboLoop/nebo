@@ -1817,7 +1817,11 @@
 		"authFailedRetry": "Autenticazione non riuscita. Controlla le credenziali e riprova.",
 		"saveCredentialsFailed": "Salvataggio delle credenziali non riuscito.",
 		"signInFailedRetry": "Accesso non riuscito. Riprova.",
-		"startSignInFailed": "Impossibile avviare l'accesso per questo account."
+		"startSignInFailed": "Impossibile avviare l'accesso per questo account.",
+		"voice": "Voce",
+		"voiceDesc": "La voce udibile che usa questo dipendente.",
+		"voiceSample": "Riproduci esempio",
+		"identityBlurb": "Nome, voce, colore e stato — come appare questo dipendente nell'app."
 	},
 	"agentConfigure": {
 		"inputs": "Input",

@@ -1817,7 +1817,11 @@
 		"authFailedRetry": "Authentifizierung fehlgeschlagen. Prüfe deine Zugangsdaten und versuche es erneut.",
 		"saveCredentialsFailed": "Zugangsdaten konnten nicht gespeichert werden.",
 		"signInFailedRetry": "Anmeldung fehlgeschlagen. Bitte versuche es erneut.",
-		"startSignInFailed": "Anmeldung für dieses Konto konnte nicht gestartet werden."
+		"startSignInFailed": "Anmeldung für dieses Konto konnte nicht gestartet werden.",
+		"voice": "Stimme",
+		"voiceDesc": "Die hörbare Stimme, mit der dieser Mitarbeiter spricht.",
+		"voiceSample": "Hörprobe abspielen",
+		"identityBlurb": "Name, Stimme, Farbe und Status — wie dieser Mitarbeiter in der App erscheint."
 	},
 	"agentConfigure": {
 		"inputs": "Eingaben",

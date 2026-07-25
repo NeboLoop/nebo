@@ -1,10 +1,11 @@
 use axum::extract::ws::{Message, WebSocket};
-use axum::extract::{Query, State, WebSocketUpgrade};
+use axum::extract::{Path, Query, State, WebSocketUpgrade};
 use axum::response::Response;
 use serde::Deserialize;
 use tokio::sync::mpsc;
 use tracing::{error, info, warn};
 
+use super::to_error_response;
 use crate::state::AppState;
 
 /// Voice conversation — speech-to-speech via the xAI Grok realtime API
@@ -52,6 +53,125 @@ fn resolve_realtime_leg(state: &AppState) -> Option<(String, String)> {
         .replacen("https://", "wss://", 1)
         .replacen("http://", "ws://", 1);
     Some((format!("{}/v1/realtime", url.trim_end_matches('/')), token))
+}
+
+/// The xAI voices offered in the Identity tab (brand display names live in
+/// the frontend; the raw id is what's stored and sent upstream).
+const SAMPLE_VOICES: [&str; 5] = ["eve", "ara", "rex", "sal", "leo"];
+
+/// GET /api/v1/agent/voice-sample/{voice_id}
+///
+/// Short spoken sample so the Identity tab can preview each voice. Generated
+/// once through the same realtime leg calls use (Janus-metered or BYOK),
+/// then cached as WAV under data/voice-samples/ — every later play is free
+/// and instant.
+pub async fn voice_sample(
+    State(state): State<AppState>,
+    Path(voice_id): Path<String>,
+) -> Result<Response, (axum::http::StatusCode, axum::Json<types::api::ErrorResponse>)> {
+    if !SAMPLE_VOICES.contains(&voice_id.as_str()) {
+        return Err(to_error_response(types::NeboError::Validation(
+            "unknown voice id".into(),
+        )));
+    }
+
+    let dir = config::data_dir()
+        .map_err(to_error_response)?
+        .join("voice-samples");
+    let cache_path = dir.join(format!("{voice_id}.wav"));
+    if let Ok(bytes) = tokio::fs::read(&cache_path).await {
+        return Ok(wav_response(bytes));
+    }
+
+    let Some((endpoint, bearer)) = resolve_realtime_leg(&state) else {
+        return Err(to_error_response(types::NeboError::Validation(
+            "Voice needs a NeboAI account or an xAI API key (Settings → Providers).".into(),
+        )));
+    };
+
+    let cfg = voice::realtime::RealtimeConfig {
+        endpoint,
+        bearer,
+        voice: voice_id.clone(),
+        tools: vec![],
+        instructions: "You are demonstrating this voice for a short preview. \
+                       Say exactly what you are asked to say, nothing else."
+            .into(),
+        ..Default::default()
+    };
+    let (tx, mut rx) = voice::realtime::connect(cfg).await.map_err(|e| {
+        error!(error = %e, voice = %voice_id, "voice sample connect failed");
+        to_error_response(types::NeboError::Internal(format!(
+            "voice sample failed: {e}"
+        )))
+    })?;
+    let _ = tx
+        .send(voice::realtime::RealtimeCommand::Text(
+            "Say exactly: \"Hi! This is how I sound. Ready when you are.\"".into(),
+        ))
+        .await;
+
+    let mut pcm: Vec<u8> = Vec::new();
+    let collect = async {
+        while let Some(event) = rx.recv().await {
+            match event {
+                voice::conversation::ConversationEvent::AudioChunk(data) => {
+                    pcm.extend_from_slice(&data);
+                }
+                voice::conversation::ConversationEvent::PlaybackEnd => break,
+                voice::conversation::ConversationEvent::Error(msg) => {
+                    warn!(error = %msg, "voice sample upstream error");
+                    break;
+                }
+                _ => {}
+            }
+        }
+    };
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(20), collect).await;
+    let _ = tx.send(voice::realtime::RealtimeCommand::Close).await;
+
+    if pcm.is_empty() {
+        return Err(to_error_response(types::NeboError::Internal(
+            "voice sample produced no audio".into(),
+        )));
+    }
+
+    let wav = wav_from_pcm16_mono_24k(&pcm);
+    if tokio::fs::create_dir_all(&dir).await.is_ok()
+        && let Err(e) = tokio::fs::write(&cache_path, &wav).await
+    {
+        warn!(error = %e, "failed to cache voice sample");
+    }
+    Ok(wav_response(wav))
+}
+
+fn wav_response(bytes: Vec<u8>) -> Response {
+    axum::response::Response::builder()
+        .header("Content-Type", "audio/wav")
+        .header("Cache-Control", "private, max-age=86400")
+        .body(axum::body::Body::from(bytes))
+        .unwrap_or_default()
+}
+
+/// Wrap raw PCM16 LE mono @ 24kHz (the realtime wire format) in a WAV header.
+fn wav_from_pcm16_mono_24k(pcm: &[u8]) -> Vec<u8> {
+    let data_len = pcm.len() as u32;
+    let sample_rate = 24000u32;
+    let mut w = Vec::with_capacity(44 + pcm.len());
+    w.extend_from_slice(b"RIFF");
+    w.extend_from_slice(&(36 + data_len).to_le_bytes());
+    w.extend_from_slice(b"WAVEfmt ");
+    w.extend_from_slice(&16u32.to_le_bytes()); // fmt chunk size
+    w.extend_from_slice(&1u16.to_le_bytes()); // PCM
+    w.extend_from_slice(&1u16.to_le_bytes()); // mono
+    w.extend_from_slice(&sample_rate.to_le_bytes());
+    w.extend_from_slice(&(sample_rate * 2).to_le_bytes()); // byte rate
+    w.extend_from_slice(&2u16.to_le_bytes()); // block align
+    w.extend_from_slice(&16u16.to_le_bytes()); // bits per sample
+    w.extend_from_slice(b"data");
+    w.extend_from_slice(&data_len.to_le_bytes());
+    w.extend_from_slice(pcm);
+    w
 }
 
 /// Voice tool surface: exactly ONE function — `nebo(task)` — which delegates
@@ -164,6 +284,20 @@ fn chat_history_context(state: &AppState, chat_id: &str) -> String {
 async fn handle_conversation_ws(mut socket: WebSocket, state: AppState, q: ConversationQuery) {
     info!("conversation WebSocket connected");
 
+    // Voice is a modality of a chat — without a real thread to persist into,
+    // every turn and delegated run would land in an orphan conversation.
+    // Refuse instead of falling back.
+    if q.agent_id.as_deref().unwrap_or_default().is_empty()
+        || q.chat_id.as_deref().unwrap_or_default().is_empty()
+    {
+        let msg = serde_json::json!({
+            "type": "Error",
+            "message": "Voice needs a chat thread to bind to — start it from a chat.",
+        });
+        let _ = socket.send(Message::Text(msg.to_string().into())).await;
+        return;
+    }
+
     let Some((endpoint, bearer)) = resolve_realtime_leg(&state) else {
         let msg = serde_json::json!({
             "type": "Error",
@@ -187,7 +321,7 @@ async fn handle_conversation_ws(mut socket: WebSocket, state: AppState, q: Conve
     }
 
     let (replace, keyterms) = brand_voice_hints();
-    let cfg = voice::realtime::RealtimeConfig {
+    let mut cfg = voice::realtime::RealtimeConfig {
         endpoint,
         bearer,
         bot_id: q.agent_id.clone(),
@@ -197,6 +331,13 @@ async fn handle_conversation_ws(mut socket: WebSocket, state: AppState, q: Conve
         keyterms,
         ..Default::default()
     };
+    // Per-agent voice: each employee sounds like themselves (Identity tab).
+    if let Some(id) = q.agent_id.as_deref()
+        && let Ok(Some(agent)) = state.store.get_agent(id)
+        && !agent.voice.is_empty()
+    {
+        cfg.voice = agent.voice;
+    }
 
     let (rt_tx, rt_rx) = match voice::realtime::connect(cfg).await {
         Ok(pair) => pair,
@@ -313,14 +454,14 @@ async fn handle_conversation_session(
     // model relays "grant it on desktop"). Same enforcement as every
     // non-interactive caller. Voice is a modality of the chat, so it uses the
     // SAME `agent:<id>:thread:<chat>` session key text chat uses — delegated
-    // runs, tool activity, and history all land in the open thread instead of
-    // a separate voice-owned conversation.
+    // runs, tool activity, and history all land in the open thread. Both ids
+    // are guaranteed non-empty by the guard at connection time.
     let mut ctx = tools::ToolContext::new(tools::Origin::User);
-    ctx.session_key = match (q.agent_id.as_deref(), chat_id.as_deref()) {
-        (Some(id), Some(cid)) if !id.is_empty() => format!("agent:{}:thread:{}", id, cid),
-        (Some(id), None) if !id.is_empty() => format!("agent:{}:voice", id),
-        _ => format!("voice:conversation:{}", uuid::Uuid::new_v4()),
-    };
+    ctx.session_key = format!(
+        "agent:{}:thread:{}",
+        q.agent_id.as_deref().unwrap_or_default(),
+        chat_id.as_deref().unwrap_or_default()
+    );
     ctx.session_id = ctx.session_key.clone();
     let ctx = std::sync::Arc::new(ctx);
 

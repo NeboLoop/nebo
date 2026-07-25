@@ -1817,7 +1817,11 @@
 		"authFailedRetry": "Échec de l'authentification. Vérifiez vos identifiants et réessayez.",
 		"saveCredentialsFailed": "Échec de l'enregistrement des identifiants.",
 		"signInFailedRetry": "Échec de la connexion. Veuillez réessayer.",
-		"startSignInFailed": "Impossible de démarrer la connexion pour ce compte."
+		"startSignInFailed": "Impossible de démarrer la connexion pour ce compte.",
+		"voice": "Voix",
+		"voiceDesc": "La voix audible qu'utilise cet employé.",
+		"voiceSample": "Écouter un extrait",
+		"identityBlurb": "Nom, voix, couleur et statut — la façon dont cet employé apparaît dans l'application."
 	},
 	"agentConfigure": {
 		"inputs": "Entrées",

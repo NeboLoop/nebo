@@ -1884,7 +1884,11 @@
 		"authFailedRetry": "Pengesahan gagal. Semak kelayakan anda dan cuba lagi.",
 		"saveCredentialsFailed": "Gagal menyimpan kelayakan.",
 		"signInFailedRetry": "Log masuk gagal. Sila cuba lagi.",
-		"startSignInFailed": "Tidak dapat memulakan log masuk untuk akaun ini."
+		"startSignInFailed": "Tidak dapat memulakan log masuk untuk akaun ini.",
+		"voice": "Suara",
+		"voiceDesc": "Suara yang digunakan oleh pekerja ini.",
+		"voiceSample": "Main sampel",
+		"identityBlurb": "Nama, suara, warna dan status — cara pekerja ini dipaparkan dalam aplikasi."
 	},
 	"agentConfigure": {
 		"inputs": "Input",

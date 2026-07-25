@@ -7,6 +7,10 @@ use crate::state::AppState;
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route(
+            "/agent/voice-sample/{voice_id}",
+            axum::routing::get(handlers::voice::voice_sample),
+        )
+        .route(
             "/agent/sessions",
             axum::routing::get(handlers::agent::list_sessions),
         )

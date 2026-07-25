@@ -69,6 +69,7 @@
           editable: !a.nappPath,
           isApp: a.isApp ?? false,
           loopExposed: a.loopExposed ?? false,
+          voice: a.voice || '',
         }));
         agentStatuses = Object.fromEntries(allAgents.map(a => [a.id, a.status]));
       }

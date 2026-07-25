@@ -1884,7 +1884,11 @@
 		"authFailedRetry": "Autentikasi gagal. Periksa kredensial Anda dan coba lagi.",
 		"saveCredentialsFailed": "Gagal menyimpan kredensial.",
 		"signInFailedRetry": "Gagal masuk. Silakan coba lagi.",
-		"startSignInFailed": "Tidak dapat memulai proses masuk untuk akun ini."
+		"startSignInFailed": "Tidak dapat memulai proses masuk untuk akun ini.",
+		"voice": "Suara",
+		"voiceDesc": "Suara terdengar yang digunakan karyawan ini.",
+		"voiceSample": "Putar contoh",
+		"identityBlurb": "Nama, suara, warna, dan status — bagaimana karyawan ini tampil di seluruh aplikasi."
 	},
 	"agentConfigure": {
 		"inputs": "Input",

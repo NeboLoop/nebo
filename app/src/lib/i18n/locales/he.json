@@ -1884,7 +1884,11 @@
 		"authFailedRetry": "האימות נכשל. בדוק את פרטי ההתחברות ונסה שוב.",
 		"saveCredentialsFailed": "שמירת פרטי ההתחברות נכשלה.",
 		"signInFailedRetry": "ההתחברות נכשלה. אנא נסה שוב.",
-		"startSignInFailed": "לא ניתן היה להתחיל התחברות לחשבון זה."
+		"startSignInFailed": "לא ניתן היה להתחיל התחברות לחשבון זה.",
+		"voice": "קול",
+		"voiceDesc": "הקול הנשמע שבו משתמש העובד הזה.",
+		"voiceSample": "השמע דוגמה",
+		"identityBlurb": "שם, קול, צבע וסטטוס — איך העובד הזה מופיע באפליקציה."
 	},
 	"agentConfigure": {
 		"inputs": "קלטים",

@@ -687,6 +687,10 @@ pub struct Agent {
     /// Marketplace department slug (e.g. "sales") for hired agents; None for
     /// user-authored agents or pre-taxonomy installs.
     pub department: Option<String>,
+    /// Realtime voice id (xAI: eve, ara, rex, sal, leo, or custom).
+    /// Empty = server default.
+    #[serde(default)]
+    pub voice: String,
 }
 
 fn default_input_values() -> String {

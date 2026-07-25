@@ -1817,7 +1817,11 @@
 		"authFailedRetry": "인증에 실패했습니다. 자격 증명을 확인하고 다시 시도하세요.",
 		"saveCredentialsFailed": "자격 증명 저장에 실패했습니다.",
 		"signInFailedRetry": "로그인에 실패했습니다. 다시 시도해 주세요.",
-		"startSignInFailed": "이 계정의 로그인을 시작할 수 없습니다."
+		"startSignInFailed": "이 계정의 로그인을 시작할 수 없습니다.",
+		"voice": "음성",
+		"voiceDesc": "이 직원이 사용하는 음성입니다.",
+		"voiceSample": "샘플 재생",
+		"identityBlurb": "이름, 음성, 색상, 상태 — 이 직원이 앱 전체에서 표시되는 방식입니다."
 	},
 	"agentConfigure": {
 		"inputs": "입력",

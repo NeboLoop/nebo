@@ -2520,6 +2520,7 @@ async fn handle_agent_fs_events(
                         None,
                         None,
                         None,
+                        None,
                     );
                     existing.id.clone()
                 } else {

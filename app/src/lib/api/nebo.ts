@@ -153,6 +153,13 @@ export function getSystemInfo() {
 }
 
 /**
+ * @description "Voice sample"
+ */
+export function voiceSample(voiceId: string) {
+	return webapi.get<unknown>(`/api/v1/agent/voice-sample/${voiceId}`)
+}
+
+/**
  * @description "Agent ws handler"
  */
 export function agentWsHandler() {

@@ -1884,7 +1884,11 @@
 		"authFailedRetry": "Autentiseringen misslyckades. Kontrollera dina uppgifter och försök igen.",
 		"saveCredentialsFailed": "Kunde inte spara autentiseringsuppgifterna.",
 		"signInFailedRetry": "Inloggningen misslyckades. Försök igen.",
-		"startSignInFailed": "Kunde inte starta inloggning för detta konto."
+		"startSignInFailed": "Kunde inte starta inloggning för detta konto.",
+		"voice": "Röst",
+		"voiceDesc": "Den hörbara röst som den här medarbetaren använder.",
+		"voiceSample": "Spela upp exempel",
+		"identityBlurb": "Namn, röst, färg och status — hur den här medarbetaren visas i appen."
 	},
 	"agentConfigure": {
 		"inputs": "Indata",

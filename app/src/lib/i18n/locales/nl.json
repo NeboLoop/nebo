@@ -1817,7 +1817,11 @@
 		"authFailedRetry": "Authenticatie mislukt. Controleer je inloggegevens en probeer het opnieuw.",
 		"saveCredentialsFailed": "Inloggegevens opslaan mislukt.",
 		"signInFailedRetry": "Inloggen mislukt. Probeer het opnieuw.",
-		"startSignInFailed": "Kon het inloggen voor dit account niet starten."
+		"startSignInFailed": "Kon het inloggen voor dit account niet starten.",
+		"voice": "Stem",
+		"voiceDesc": "De hoorbare stem die deze medewerker gebruikt.",
+		"voiceSample": "Voorbeeld afspelen",
+		"identityBlurb": "Naam, stem, kleur en status — hoe deze medewerker in de app verschijnt."
 	},
 	"agentConfigure": {
 		"inputs": "Invoer",

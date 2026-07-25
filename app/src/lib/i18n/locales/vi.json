@@ -1817,7 +1817,11 @@
 		"startSetupWizard": "Bắt đầu trình thiết lập",
 		"startSignInFailed": "Không thể bắt đầu đăng nhập cho tài khoản này.",
 		"unknownSection": "Mục cài đặt không xác định.",
-		"updateCredentials": "Cập nhật thông tin đăng nhập"
+		"updateCredentials": "Cập nhật thông tin đăng nhập",
+		"voice": "Giọng nói",
+		"voiceDesc": "Giọng nói mà nhân viên này sử dụng.",
+		"voiceSample": "Phát mẫu",
+		"identityBlurb": "Tên, giọng nói, màu sắc và trạng thái — cách nhân viên này hiển thị trong ứng dụng."
 	},
 	"agentConfigure": {
 		"inputs": "Đầu vào",

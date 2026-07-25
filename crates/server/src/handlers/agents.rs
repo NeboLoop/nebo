@@ -219,6 +219,7 @@ pub async fn list_agents(
             "inputValues": db_row.map(|r| r.input_values.as_str()).unwrap_or("{}"),
             "installedAt": db_row.map(|r| r.installed_at),
             "loopExposed": db_row.map(|r| r.loop_exposed != 0).unwrap_or(false),
+            "voice": db_row.map(|r| r.voice.as_str()).unwrap_or(""),
         });
         // Derive needsSetup from config inputs vs stored input_values
         let needs_setup = if let Some(ref cfg) = loaded.config {
@@ -750,6 +751,7 @@ pub async fn update_agent(
     let handle = body["handle"].as_str();
     let color = body["color"].as_str();
     let loop_exposed = body["loopExposed"].as_bool();
+    let voice = body["voice"].as_str();
     let exposure_changed =
         loop_exposed.is_some_and(|exposed| exposed != (existing.loop_exposed != 0));
 
@@ -768,6 +770,7 @@ pub async fn update_agent(
             handle,
             color,
             loop_exposed,
+            voice,
         )
         .map_err(to_error_response)?;
 
@@ -2157,6 +2160,7 @@ pub async fn duplicate_agent(
         None,
         color.or(source.color.as_deref()),
         None,
+        None,
     );
 
     // Persist to user/agents/<name>/ (+ napp_path) so it loads and survives restart.
@@ -2579,6 +2583,7 @@ pub async fn create_agent_workflow(
             None,
             None,
             None,
+            None,
         )
         .map_err(to_error_response)?;
 
@@ -2705,6 +2710,7 @@ pub async fn update_agent_workflow(
             &fm.to_string(),
             agent.pricing_model.as_deref(),
             agent.pricing_cost,
+            None,
             None,
             None,
             None,
@@ -2845,6 +2851,7 @@ pub async fn delete_agent_workflow(
             &fm.to_string(),
             agent.pricing_model.as_deref(),
             agent.pricing_cost,
+            None,
             None,
             None,
             None,

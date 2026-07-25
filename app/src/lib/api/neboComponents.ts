@@ -63,6 +63,7 @@ export interface Agent {
 	loopExposed: boolean
 	loopAgentId?: string
 	department?: string
+	voice?: string
 }
 
 export interface AgentProfile {

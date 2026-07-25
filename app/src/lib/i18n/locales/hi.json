@@ -1817,7 +1817,11 @@
 		"startSetupWizard": "सेटअप विज़ार्ड शुरू करें",
 		"startSignInFailed": "इस अकाउंट के लिए साइन-इन शुरू नहीं किया जा सका।",
 		"unknownSection": "अज्ञात सेटिंग्स अनुभाग।",
-		"updateCredentials": "क्रेडेंशियल अपडेट करें"
+		"updateCredentials": "क्रेडेंशियल अपडेट करें",
+		"voice": "आवाज़",
+		"voiceDesc": "यह कर्मचारी जो श्रव्य आवाज़ इस्तेमाल करता है।",
+		"voiceSample": "नमूना सुनें",
+		"identityBlurb": "नाम, आवाज़, रंग और स्थिति — यह कर्मचारी ऐप में कैसे दिखाई देता है।"
 	},
 	"agentConfigure": {
 		"inputs": "इनपुट",

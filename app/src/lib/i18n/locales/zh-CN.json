@@ -1817,7 +1817,11 @@
 		"authFailedRetry": "认证失败。请检查你的凭据并重试。",
 		"saveCredentialsFailed": "保存凭据失败。",
 		"signInFailedRetry": "登录失败。请重试。",
-		"startSignInFailed": "无法为此账户启动登录。"
+		"startSignInFailed": "无法为此账户启动登录。",
+		"voice": "语音",
+		"voiceDesc": "此员工说话时使用的声音。",
+		"voiceSample": "播放示例",
+		"identityBlurb": "名称、语音、颜色和状态 — 此员工在应用中的显示方式。"
 	},
 	"agentConfigure": {
 		"inputs": "输入",

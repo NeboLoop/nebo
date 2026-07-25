@@ -1817,7 +1817,11 @@
 		"authFailedRetry": "Error de autenticación. Revisa tus credenciales e inténtalo de nuevo.",
 		"saveCredentialsFailed": "No se pudieron guardar las credenciales.",
 		"signInFailedRetry": "Error al iniciar sesión. Inténtalo de nuevo.",
-		"startSignInFailed": "No se pudo iniciar sesión con esta cuenta."
+		"startSignInFailed": "No se pudo iniciar sesión con esta cuenta.",
+		"voice": "Voz",
+		"voiceDesc": "La voz audible que usa este empleado.",
+		"voiceSample": "Reproducir muestra",
+		"identityBlurb": "Nombre, voz, color y estado: cómo aparece este empleado en la aplicación."
 	},
 	"agentConfigure": {
 		"inputs": "Entradas",
