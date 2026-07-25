@@ -69,6 +69,37 @@ git clone https://github.com/NeboLoop/nebo.git
 cd nebo && cargo build --release
 ```
 
+Both amd64 and arm64 builds ship with every release.
+
+### Raspberry Pi (and other ARM64 boards)
+
+Works on 64-bit Raspberry Pi OS (trixie or newer) and any ARM64 distro with
+glibc 2.39+ (Ubuntu 24.04+, Debian 13+). Install the arm64 `.deb` as above, or
+run the standalone headless binary:
+
+```bash
+sudo apt install -y libwayland-client0 libopenblas0
+curl -fL -o nebo https://cdn.neboai.com/releases/v0.12.9/nebo-linux-arm64-headless
+chmod +x nebo && ./nebo --headless
+# → http://localhost:27895 (needs glibc 2.39+, e.g. Ubuntu 24.04 / Pi OS trixie)
+```
+
+### Android (Termux)
+
+Runs in [Termux](https://termux.dev) via a proot Ubuntu userland — no root
+required. In Termux:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/NeboLoop/nebo/main/scripts/install-android.sh | bash
+nebo   # then open http://localhost:27895 in Chrome on the phone
+```
+
+### Chromebook
+
+Enable ChromeOS Linux mode (Crostini) and install the `.deb` (amd64 or arm64 to
+match your Chromebook) — or skip installing entirely and manage a cloud Nebo
+from the browser at [neboai.com](https://neboai.com).
+
 ## Quick Start
 
 ```bash

@@ -934,8 +934,10 @@ jobs:
           mkdir -p dists/stable/main/binary-amd64
           mkdir -p dists/stable/main/binary-arm64
 
-          dpkg-scanpackages pool/main /dev/null > dists/stable/main/binary-amd64/Packages
-          dpkg-scanpackages pool/main /dev/null > dists/stable/main/binary-arm64/Packages
+          # Filter per arch — an unfiltered scan lists BOTH debs in each index,
+          # so an arm64 device (Raspberry Pi) could be offered the amd64 package.
+          dpkg-scanpackages --arch amd64 pool/main /dev/null > dists/stable/main/binary-amd64/Packages
+          dpkg-scanpackages --arch arm64 pool/main /dev/null > dists/stable/main/binary-arm64/Packages
           gzip -kf dists/stable/main/binary-amd64/Packages
           gzip -kf dists/stable/main/binary-arm64/Packages
 
