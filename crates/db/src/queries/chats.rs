@@ -450,6 +450,20 @@ impl Store {
     /// loads, so the "N messages" badge is honest and the client's
     /// `hasMore = loadedRawCount < totalMessages` paging math is correct (counting
     /// tool rows here inflated the total and broke scroll-up).
+    /// Count USER turns across the whole chat — the title generator's gate.
+    /// Counting within a recent-messages window instead made long chats
+    /// re-title forever: the sliding window kept containing exactly 1 or 3
+    /// user messages, so the title chased whatever was said most recently.
+    pub fn count_chat_user_messages(&self, chat_id: &str) -> Result<i64, NeboError> {
+        let conn = self.conn()?;
+        conn.query_row(
+            "SELECT COUNT(*) FROM chat_messages WHERE chat_id = ?1 AND role = 'user'",
+            params![chat_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
     pub fn count_chat_messages(&self, chat_id: &str) -> Result<i64, NeboError> {
         let conn = self.conn()?;
         conn.query_row(

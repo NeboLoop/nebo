@@ -1131,16 +1131,23 @@ impl Runner {
                     if chat.title_custom {
                         return;
                     }
+                    // Gate on user turns across the WHOLE chat, not the recent
+                    // window: a windowed count kept re-hitting 1 or 3 as the
+                    // conversation grew, re-titling the chat from whatever the
+                    // user said most recently.
+                    let user_turns = match store_title.count_chat_user_messages(&chat_id) {
+                        Ok(n) => n as usize,
+                        _ => return,
+                    };
+                    if user_turns != 1 && user_turns != 3 {
+                        return; // name once, refine once — at most twice
+                    }
                     let messages = match store_title.get_recent_chat_messages(&chat_id, 8) {
                         Ok(m) => m,
                         _ => return,
                     };
                     if messages.len() < 2 {
                         return; // need a user+assistant exchange to name from
-                    }
-                    let user_turns = messages.iter().filter(|m| m.role == "user").count();
-                    if user_turns != 1 && user_turns != 3 {
-                        return; // name once, refine once — at most twice
                     }
                     // Use more of the conversation on the count-3 refinement.
                     let take_n = if user_turns >= 3 { 8 } else { 4 };
