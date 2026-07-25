@@ -96,9 +96,21 @@ nebo   # then open http://localhost:27895 in Chrome on the phone
 
 ### Chromebook
 
-Enable ChromeOS Linux mode (Crostini) and install the `.deb` (amd64 or arm64 to
-match your Chromebook) — or skip installing entirely and manage a cloud Nebo
-from the browser at [neboai.com](https://neboai.com).
+ChromeOS Linux mode (Crostini) ships **Debian 12**, whose glibc (2.36) is older
+than these builds require — Nebo will not start there without an upgrade. Two
+options that do work:
+
+```bash
+# 1. Upgrade the Linux container to Debian 13 (trixie), then install as above
+sudo sed -i 's/bookworm/trixie/g' /etc/apt/sources.list /etc/apt/sources.list.d/*.list
+sudo apt update && sudo apt full-upgrade -y && sudo reboot
+
+# 2. Or replace the container with Ubuntu 24.04 from ChromeOS settings
+```
+
+Both amd64 and arm64 Chromebooks are supported once the container is current.
+Simplest of all: skip installing and manage a cloud Nebo from the browser at
+[neboai.com](https://neboai.com) — no Linux container needed.
 
 ## Quick Start
 
