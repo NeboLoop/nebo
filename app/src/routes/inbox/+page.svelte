@@ -18,7 +18,7 @@
   } from '$lib/stores/notifications';
 
   import Hand from 'lucide-svelte/icons/hand';
-  import { getLearning, getWorkflowApprovalStatus, resolveLearning, resolveWorkflowApproval } from '$lib/api/nebo';
+  import { applyUpdate, getLearning, getWorkflowApprovalStatus, listUpdates, resolveLearning, resolveWorkflowApproval } from '$lib/api/nebo';
 
   let copied = $state(false);
   let filter = $state<'all' | 'agent' | 'system' | 'warning' | 'error'>('all');
@@ -64,15 +64,27 @@
   // ── Approvals: a pending decision is a task, not mail. Pending approvals
   // live in a pinned band above the chronological stream with inline
   // Approve/Deny; once resolved they fall back into the stream with a status
-  // chip. Two kinds share the ONE band: `wf-approval:<run_id>` (workflow
-  // suspensions) and `learn:<pending_id>` (staged self-improvement writes).
-  type ApprovalRef = { kind: 'workflow' | 'learning'; id: string };
+  // chip. Three kinds share the ONE band: `wf-approval:<run_id>` (workflow
+  // suspensions), `learn:<pending_id>` (staged self-improvement writes), and
+  // `artifact-update:<type>:<artifact_id>:<version>` (pending updates —
+  // Update-now calls the same applyUpdate endpoint Settings → Updates uses).
+  type ApprovalRef = { kind: 'workflow' | 'learning' | 'update'; id: string };
   const approvalRef = (n: Notification): ApprovalRef | null =>
     n.id.startsWith('wf-approval:')
       ? { kind: 'workflow', id: n.id.slice('wf-approval:'.length) }
       : n.id.startsWith('learn:')
         ? { kind: 'learning', id: n.id.slice('learn:'.length) }
-        : null;
+        : n.id.startsWith('artifact-update:')
+          ? { kind: 'update', id: n.id.split(':')[2] ?? '' }
+          : null;
+
+  /** Pending-update status for the approval band: still listed with an
+   *  available update → pending; otherwise it was applied (or superseded). */
+  async function updateStatus(artifactId: string): Promise<{ status: string }> {
+    const r = await listUpdates();
+    const u = (r.updates ?? []).find(x => x.artifactId === artifactId);
+    return { status: u?.updateAvailable ? 'pending' : 'applied' };
+  }
   // Status/deciding maps are keyed by the full notification id (unique across kinds).
   const approvalRunId = (n: Notification): string | null => (approvalRef(n) ? n.id : null);
 
@@ -85,7 +97,10 @@
       const ref = approvalRef(n);
       if (!ref || statusFetched.has(n.id)) continue;
       statusFetched.add(n.id);
-      const fetch = ref.kind === 'workflow' ? getWorkflowApprovalStatus(ref.id) : getLearning(ref.id);
+      const fetch =
+        ref.kind === 'workflow' ? getWorkflowApprovalStatus(ref.id)
+        : ref.kind === 'learning' ? getLearning(ref.id)
+        : updateStatus(ref.id);
       fetch
         .then((r) => {
           approvalStatuses = { ...approvalStatuses, [n.id]: (r as { status?: string }).status ?? 'unknown' };
@@ -108,6 +123,7 @@
     if (s === 'approved') return 'inbox.approved';
     if (s === 'denied' || s === 'rejected') return 'inbox.denied';
     if (s === 'conflict') return 'inbox.conflict';
+    if (s === 'applied') return 'inbox.updated';
     return null;
   }
 
@@ -119,10 +135,17 @@
       let status = approved ? 'approved' : ref.kind === 'workflow' ? 'denied' : 'rejected';
       if (ref.kind === 'workflow') {
         await resolveWorkflowApproval(ref.id, { approved });
-      } else {
+      } else if (ref.kind === 'learning') {
         // Approve may come back 'conflict' (skill changed since staging).
         const r = await resolveLearning(ref.id, { approved });
         status = (r as { status?: string }).status ?? status;
+      } else if (approved) {
+        // Same apply pathway Settings → Updates uses.
+        await applyUpdate(ref.id);
+        status = 'applied';
+      } else {
+        // "Later" — drop out of the band; the update stays in Settings → Updates.
+        status = 'dismissed';
       }
       approvalStatuses = { ...approvalStatuses, [n.id]: status };
       markAsRead(n.id);
@@ -282,12 +305,12 @@
                   class="btn btn-xs btn-success"
                   disabled={!!(runId && deciding[runId])}
                   onclick={(e) => { e.stopPropagation(); decide(n, true); }}
-                >{$t('inbox.approve')}</button>
+                >{$t(approvalRef(n)?.kind === 'update' ? 'inbox.updateNow' : 'inbox.approve')}</button>
                 <button
                   class="btn btn-xs btn-ghost border border-base-content/15"
                   disabled={!!(runId && deciding[runId])}
                   onclick={(e) => { e.stopPropagation(); decide(n, false); }}
-                >{$t('inbox.deny')}</button>
+                >{$t(approvalRef(n)?.kind === 'update' ? 'inbox.later' : 'inbox.deny')}</button>
               </div>
             </div>
           {/each}

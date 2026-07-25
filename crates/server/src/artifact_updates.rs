@@ -346,9 +346,12 @@ fn notify_updates_available(state: &AppState) {
             a.artifact_type, a.artifact_id, a.remote_version
         );
         let title = "Update available".to_string();
+        // Lead with the display name — "plugin 0.2.2 → 0.2.3" is ambiguous the
+        // moment more than one plugin is installed. Type only when no name.
+        let display = a.name.as_deref().unwrap_or(&a.artifact_type);
         let body = format!(
             "{} {} → {} is available. Review it in Settings → Updates.",
-            a.artifact_type, a.local_version, a.remote_version
+            display, a.local_version, a.remote_version
         );
         let action_url = "/settings/updates".to_string();
         if state
