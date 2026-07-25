@@ -847,8 +847,10 @@ impl NeboAIApi {
         Ok(resp.chats)
     }
 
-    /// List agents registered by this bot in a loop.
-    pub async fn list_agents(&self, loop_id: &str) -> Result<Vec<AgentInfo>, CommError> {
+    /// List agents registered in a loop. `mine_only` filters to this bot's own
+    /// agents (the common case for identity management); pass `false` to get
+    /// the whole roster — every bot's agents — for @mention resolution.
+    pub async fn list_agents(&self, loop_id: &str, mine_only: bool) -> Result<Vec<AgentInfo>, CommError> {
         #[derive(serde::Deserialize)]
         struct Resp {
             agents: Vec<AgentInfo>,
@@ -860,7 +862,9 @@ impl NeboAIApi {
                 None::<&()>,
             )
             .await?;
-        // Filter to only this bot's agents
+        if !mine_only {
+            return Ok(resp.agents);
+        }
         let mine: Vec<AgentInfo> = resp
             .agents
             .into_iter()

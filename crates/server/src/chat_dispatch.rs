@@ -268,6 +268,14 @@ pub struct CommReplyConfig {
     pub provider: String, // "neboai", or future: "slack", "discord"
     pub topic: String,
     pub conversation_id: String,
+    /// Agent-handoff depth this run's replies carry (`handoffDepth` metadata).
+    /// 1 for a human-triggered channel run, N+1 for an agent-triggered one;
+    /// receiving bots stop dispatching at the cap. 0 = not a channel reply.
+    pub handoff_depth: u8,
+    /// Whether gated-tool approvals may be relayed INTO this conversation as
+    /// chip messages (personal-loop contexts only — approvals must reach the
+    /// owner, never third-party loop members).
+    pub approval_relay: bool,
 }
 
 /// Single entry point for all chat dispatch.
@@ -371,6 +379,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
     let cleanup_tools = state.tools.clone();
     let plugin_store = state.plugin_store.clone();
     let pending_comm_asks = state.pending_comm_asks.clone();
+    let pending_comm_approvals = state.pending_comm_approvals.clone();
     let comm_manager = if config.comm_reply.is_some() {
         Some(state.comm_manager.clone())
     } else {
@@ -508,6 +517,8 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
             tool_scope,
             plan_mode,
             full_access,
+            approval_relay: comm_reply.as_ref().map(|c| c.approval_relay).unwrap_or(false),
+            handoff_depth: comm_reply.as_ref().map(|c| c.handoff_depth).unwrap_or(0),
             ..Default::default()
         };
 
@@ -925,6 +936,52 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                         "input": tc.input,
                                     }),
                                 );
+                                // Relay the approval into the loop conversation
+                                // (personal contexts only) — otherwise the run
+                                // parks on a prompt the remote owner never sees.
+                                // The next inbound message resolves it (see
+                                // try_handle_comm_control).
+                                if let Some(cfg) = comm_reply
+                                    .as_ref()
+                                    .filter(|c| c.approval_relay)
+                                {
+                                    pending_comm_approvals
+                                        .lock()
+                                        .await
+                                        .insert(sid.to_string(), tc.id.clone());
+                                    let mut meta = HashMap::new();
+                                    meta.insert("kind".to_string(), "approval".to_string());
+                                    meta.insert("request_id".to_string(), tc.id.clone());
+                                    meta.insert(
+                                        "widgets".to_string(),
+                                        serde_json::json!([{
+                                            "type": "options",
+                                            "multiSelect": false,
+                                            "options": ["Approve", "Approve always", "Deny"],
+                                        }])
+                                        .to_string(),
+                                    );
+                                    let prompt = format!(
+                                        "Approval needed: I want to run `{}`. Reply Approve, Approve always, or Deny.",
+                                        tc.name
+                                    );
+                                    send_comm_msg(
+                                        cfg,
+                                        &comm_manager,
+                                        &channel_providers,
+                                        comm::CommMessageType::Message,
+                                        uuid::Uuid::new_v4().to_string(),
+                                        prompt,
+                                        meta,
+                                        &agent_display_name,
+                                    )
+                                    .await;
+                                    if let Some(ref cm) = comm_manager {
+                                        let _ = cm
+                                            .send_typing(&cfg.conversation_id, false, None)
+                                            .await;
+                                    }
+                                }
                             }
                         }
                         StreamEventType::AskRequest => {
@@ -1130,6 +1187,16 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                         if !agent_display_name.is_empty() {
                             reply_meta.insert("senderName".to_string(), agent_display_name.clone());
                         }
+                        // Agent-authored: tag like send_comm_msg does, so receiving
+                        // bots apply the handoff guardrails (never treat an agent
+                        // reply as a human sender) and the depth cap can't reset.
+                        reply_meta.insert("senderKind".to_string(), "agent".to_string());
+                        if reply_config.handoff_depth > 0 {
+                            reply_meta.insert(
+                                "handoffDepth".to_string(),
+                                reply_config.handoff_depth.to_string(),
+                            );
+                        }
                         tracing::info!(
                             target: "neboai_identity",
                             agent_id = %agent_id,
@@ -1256,6 +1323,13 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                             if !agent_display_name.is_empty() {
                                 reply_meta
                                     .insert("senderName".to_string(), agent_display_name.clone());
+                            }
+                            reply_meta.insert("senderKind".to_string(), "agent".to_string());
+                            if reply_config.handoff_depth > 0 {
+                                reply_meta.insert(
+                                    "handoffDepth".to_string(),
+                                    reply_config.handoff_depth.to_string(),
+                                );
                             }
                             info!(
                                 topic = %reply_config.topic,
@@ -2059,6 +2133,16 @@ async fn send_comm_msg(
 ) {
     if !sender_name.is_empty() {
         metadata.insert("senderName".to_string(), sender_name.to_string());
+    }
+    // Every comm reply is agent-authored: tag it so receiving bots apply the
+    // handoff guardrails, and carry the handoff depth for channel replies.
+    metadata
+        .entry("senderKind".to_string())
+        .or_insert_with(|| "agent".to_string());
+    if cfg.handoff_depth > 0 {
+        metadata
+            .entry("handoffDepth".to_string())
+            .or_insert_with(|| cfg.handoff_depth.to_string());
     }
     let msg = comm::CommMessage {
         id,

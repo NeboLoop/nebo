@@ -122,7 +122,80 @@ impl LoopTool {
             .map_err(|e| e.to_string())
     }
 
-    async fn handle_dm(&self, input: &serde_json::Value) -> ToolResult {
+    /// Resolve employee names/slugs to mention tokens for a channel.
+    /// Agents (AI employees — including other bots' agents) resolve to
+    /// `<@loop_agent_id>`; bare bot names fall back to `<@bot_id>` (routes to
+    /// that bot's primary employee). Returns (tokens, unresolved_names).
+    async fn resolve_mentions(
+        &self,
+        channel_id: &str,
+        names: &[String],
+    ) -> (Vec<String>, Vec<String>) {
+        // Channel → loop mapping comes from the bot's channel list.
+        let loop_id = match self.comm.list_channels().await {
+            Ok(channels) => channels
+                .into_iter()
+                .find(|c| c.channel_id == channel_id)
+                .map(|c| c.loop_id),
+            Err(_) => None,
+        };
+        let agents = match &loop_id {
+            Some(lid) => self.comm.list_loop_agents(lid).await.unwrap_or_default(),
+            None => Vec::new(),
+        };
+        let members = self
+            .comm
+            .list_channel_members(channel_id)
+            .await
+            .unwrap_or_default();
+
+        let mut tokens = Vec::new();
+        let mut unresolved = Vec::new();
+        for name in names {
+            let needle = name.to_lowercase();
+            // Employees first (agents within bots), then bot-level fallback.
+            // A bare bot name ("Alpha") resolves to that bot's agent too —
+            // agent rows carry the hosting bot's name/slug.
+            let agent = agents.iter().find(|a| {
+                a.name.to_lowercase() == needle
+                    || a.slug.to_lowercase() == needle
+                    || a.bot_name.to_lowercase() == needle
+                    || a.bot_slug.to_lowercase() == needle
+            });
+            if let Some(a) = agent {
+                // The gateway manages each bot's PRIMARY agent under the BOT id
+                // (its row has the bare `bot_<id8>` slug and no loop_agent_id on
+                // the receiving side) — mention it as <@bot_id>, matching what
+                // the web picker emits. Named secondaries use <@loop_agent_id>.
+                let bot_id_hex = a.bot_id.replace('-', "");
+                let is_primary = bot_id_hex.len() >= 8
+                    && a.slug == format!("bot_{}", &bot_id_hex[..8]);
+                let token = if is_primary {
+                    format!("<@{}>", a.bot_id)
+                } else {
+                    format!("<@{}>", a.id)
+                };
+                if !tokens.contains(&token) {
+                    tokens.push(token);
+                }
+                continue;
+            }
+            let member = members.iter().find(|m| {
+                m.bot_name.to_lowercase() == needle
+            });
+            if let Some(m) = member {
+                let token = format!("<@{}>", m.bot_id);
+                if !tokens.contains(&token) {
+                    tokens.push(token);
+                }
+                continue;
+            }
+            unresolved.push(name.clone());
+        }
+        (tokens, unresolved)
+    }
+
+    async fn handle_dm(&self, input: &serde_json::Value, handoff_depth: u8) -> ToolResult {
         let action = input["action"].as_str().unwrap_or("");
 
         match action {
@@ -157,6 +230,12 @@ impl LoopTool {
                 }
                 let had_file = !attachments.is_empty();
 
+                // Tag agent-authored DMs so receiving bots apply handoff guardrails.
+                let mut metadata = HashMap::new();
+                metadata.insert("senderKind".to_string(), "agent".to_string());
+                if handoff_depth > 0 {
+                    metadata.insert("handoffDepth".to_string(), handoff_depth.to_string());
+                }
                 let msg = comm::CommMessage {
                     id: uuid::Uuid::new_v4().to_string(),
                     from: String::new(),
@@ -165,7 +244,7 @@ impl LoopTool {
                     conversation_id: String::new(),
                     msg_type: comm::CommMessageType::Message,
                     content: text.to_string(),
-                    metadata: HashMap::new(),
+                    metadata,
                     timestamp: 0,
                     human_injected: false,
                     human_id: None,
@@ -194,7 +273,7 @@ impl LoopTool {
         }
     }
 
-    async fn handle_channel(&self, input: &serde_json::Value) -> ToolResult {
+    async fn handle_channel(&self, input: &serde_json::Value, handoff_depth: u8) -> ToolResult {
         let action = input["action"].as_str().unwrap_or("");
 
         match action {
@@ -239,6 +318,42 @@ impl LoopTool {
                     ));
                 }
 
+                // Optional `mention`: employee names/slugs (string or array) to
+                // hand this message to. Resolved to `<@id>` tokens the loop's
+                // mention routing understands, prepended to the text — the
+                // mentioned employees' bots pick the message up and run.
+                let mention_names: Vec<String> = match &input["mention"] {
+                    serde_json::Value::String(s) => s
+                        .split(',')
+                        .map(|p| p.trim().trim_start_matches('@').to_string())
+                        .filter(|p| !p.is_empty())
+                        .collect(),
+                    serde_json::Value::Array(items) => items
+                        .iter()
+                        .filter_map(|v| v.as_str())
+                        .map(|p| p.trim().trim_start_matches('@').to_string())
+                        .filter(|p| !p.is_empty())
+                        .collect(),
+                    _ => Vec::new(),
+                };
+                let mut mention_tokens: Vec<String> = Vec::new();
+                let mut unresolved: Vec<String> = Vec::new();
+                if !mention_names.is_empty() {
+                    let (tokens, missing) =
+                        self.resolve_mentions(channel_id, &mention_names).await;
+                    mention_tokens = tokens;
+                    unresolved = missing;
+                    if mention_tokens.is_empty() {
+                        return ToolResult::error(format!(
+                            "None of the mentioned employees resolved in this channel: {}. \
+                             Check names with loop(resource: \"channel\", action: \"members\", \
+                             channel_id: \"{}\"). The message was NOT sent.",
+                            unresolved.join(", "),
+                            channel_id
+                        ));
+                    }
+                }
+
                 // Optional file: upload it and attach. Real delivery — we only report
                 // success after the upload AND the send both succeed.
                 let mut attachments = Vec::new();
@@ -252,6 +367,19 @@ impl LoopTool {
                 }
                 let had_file = !attachments.is_empty();
 
+                let content = if mention_tokens.is_empty() {
+                    text.to_string()
+                } else {
+                    format!("{} {}", mention_tokens.join(" "), text)
+                };
+                // Agent-sent channel messages carry senderKind so receiving bots
+                // apply handoff guardrails (depth cap, no engagement window).
+                let mut metadata = HashMap::new();
+                metadata.insert("senderKind".to_string(), "agent".to_string());
+                if handoff_depth > 0 {
+                    metadata.insert("handoffDepth".to_string(), handoff_depth.to_string());
+                }
+
                 let msg = comm::CommMessage {
                     id: uuid::Uuid::new_v4().to_string(),
                     from: String::new(),
@@ -259,8 +387,8 @@ impl LoopTool {
                     topic: channel_id.to_string(),
                     conversation_id: channel_id.to_string(),
                     msg_type: comm::CommMessageType::LoopChannel,
-                    content: text.to_string(),
-                    metadata: HashMap::new(),
+                    content,
+                    metadata,
                     timestamp: 0,
                     human_injected: false,
                     human_id: None,
@@ -273,8 +401,26 @@ impl LoopTool {
                 };
 
                 match self.comm.send(msg).await {
-                    Ok(()) if had_file => ToolResult::ok(format!("Sent to channel {} with the attached file.", channel_id)),
-                    Ok(()) => ToolResult::ok(format!("Message sent to channel {}", channel_id)),
+                    Ok(()) => {
+                        let mut note = if had_file {
+                            format!("Sent to channel {} with the attached file.", channel_id)
+                        } else {
+                            format!("Message sent to channel {}", channel_id)
+                        };
+                        if !mention_tokens.is_empty() {
+                            note.push_str(&format!(
+                                " Handed off to {} mentioned employee(s).",
+                                mention_tokens.len()
+                            ));
+                        }
+                        if !unresolved.is_empty() {
+                            note.push_str(&format!(
+                                " Could not resolve: {} — sent without mentioning them.",
+                                unresolved.join(", ")
+                            ));
+                        }
+                        ToolResult::ok(note)
+                    }
                     Err(e) => ToolResult::error(format!("Failed to send to channel: {}. The message was NOT delivered.", e)),
                 }
             }
@@ -441,6 +587,7 @@ impl DynTool for LoopTool {
          - loop(resource: \"loop\", action: \"get\", loop_id: \"...\") / members — Loop details / members\n\
          - loop(resource: \"dm\", action: \"send\", to: \"agent-uuid\", text: \"Hello\") — Send a DM to another bot\n\
          - loop(resource: \"channel\", action: \"send\", channel_id: \"...\", text: \"Hello\") — Send to a loop channel\n\
+         - loop(resource: \"channel\", action: \"send\", channel_id: \"...\", text: \"...\", mention: [\"Executive Assistant\"]) — Hand off to other AI employees: mentioned employees pick the message up and run\n\
          - loop(resource: \"channel\", action: \"share\", path: \"/abs/path/file.pdf\") — Share a local file into the channel reply\n\
          - loop(resource: \"dm\", action: \"share\", path: \"/abs/path/file.pdf\") — Share a local file in a direct message\n\
          - loop(resource: \"channel\", action: \"ensure\", name: \"daily-briefing\", description: \"...\") — Create (or get) a channel\n\
@@ -470,6 +617,11 @@ impl DynTool for LoopTool {
                 "path": { "type": "string", "description": "Absolute path of a local file to share (for channel/dm share)" },
                 "to": { "type": "string", "description": "Recipient agent ID (for dm)" },
                 "channel_id": { "type": "string", "description": "Channel ID" },
+                "mention": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Employee names or @slugs to hand this channel message to. They are resolved to mention tokens and the mentioned employees respond (channel send only)."
+                },
                 "topic": { "type": "string", "description": "Topic name for pub/sub" },
                 "loop_id": { "type": "string", "description": "Loop ID" },
                 "limit": { "type": "integer", "description": "Max results to return" }
@@ -484,7 +636,7 @@ impl DynTool for LoopTool {
 
     fn execute_dyn<'a>(
         &'a self,
-        _ctx: &'a ToolContext,
+        ctx: &'a ToolContext,
         input: serde_json::Value,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send + 'a>> {
         Box::pin(async move {
@@ -525,8 +677,8 @@ impl DynTool for LoopTool {
             }
 
             match resource.as_str() {
-                "dm" => self.handle_dm(&input).await,
-                "channel" => self.handle_channel(&input).await,
+                "dm" => self.handle_dm(&input, ctx.handoff_depth).await,
+                "channel" => self.handle_channel(&input, ctx.handoff_depth).await,
                 "loop" => self.handle_loop(&input).await,
                 // Old name — return a correction, same pattern as the other
                 // tool renames (the concept is user-facing "loop" everywhere).

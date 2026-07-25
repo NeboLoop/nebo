@@ -402,6 +402,10 @@ pub struct AgentInfo {
     pub description: String,
     #[serde(default)]
     pub status: String,
+    #[serde(default)]
+    pub bot_name: String,
+    #[serde(default)]
+    pub bot_slug: String,
 }
 
 /// Paginated list response for agents.

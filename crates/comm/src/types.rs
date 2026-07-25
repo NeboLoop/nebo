@@ -155,6 +155,20 @@ pub struct LoopChannelInfo {
     pub loop_name: String,
 }
 
+/// One agent (AI employee) registered in a loop — including OTHER bots'
+/// agents. Used to resolve outbound @mentions to loop_agent_id tokens.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LoopAgentInfo {
+    pub id: String,
+    pub bot_id: String,
+    pub name: String,
+    pub slug: String,
+    /// Display name of the bot hosting this agent (e.g. "Alpha") — lets a
+    /// mention like "Alpha" resolve to the bot's primary agent.
+    pub bot_name: String,
+    pub bot_slug: String,
+}
+
 /// Loop info.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoopInfo {

@@ -99,6 +99,16 @@ pub struct AppState {
     /// resolves the pending ask (conversational answer) instead of starting
     /// a new run — without this, an agent question over comm blocks forever.
     pub pending_comm_asks: Arc<Mutex<HashMap<String, String>>>,
+    /// Approvals relayed to a loop conversation, keyed by session key →
+    /// request_id (tool_call id). The owner's NEXT inbound message in that
+    /// conversation resolves the pending approval ("approve"/"approve always"/
+    /// "deny") into `approval_channels` — the same oneshot the desktop
+    /// ApprovalModal uses. Without this a gated tool parks the run invisibly.
+    pub pending_comm_approvals: Arc<Mutex<HashMap<String, String>>>,
+    /// Agent-triggered dispatch timestamps per loop channel (conversation_id →
+    /// recent instants). Backstop rate limit so agent→agent mention chains
+    /// can't melt a channel even if depth metadata is stripped.
+    pub channel_agent_triggers: Arc<Mutex<HashMap<String, std::collections::VecDeque<std::time::Instant>>>>,
     /// Staged update binary ready for apply (path + version)
     pub update_pending: Arc<Mutex<Option<(std::path::PathBuf, String)>>>,
     /// Hook dispatcher for napp hook subscriptions

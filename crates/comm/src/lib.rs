@@ -83,6 +83,12 @@ pub trait CommPlugin: Send + Sync {
     }
 
     /// List members of a channel.
+    /// List every agent (AI employee) in a loop — ALL bots' agents, not just
+    /// this bot's. Used to resolve outbound @mentions by name/slug.
+    async fn list_loop_agents(&self, _loop_id: &str) -> Result<Vec<LoopAgentInfo>, CommError> {
+        Err(CommError::Other("list_loop_agents not supported by this provider".into()))
+    }
+
     async fn list_channel_members(
         &self,
         _channel_id: &str,

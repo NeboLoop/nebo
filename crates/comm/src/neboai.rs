@@ -964,6 +964,32 @@ impl CommPlugin for NeboAIPlugin {
             .collect())
     }
 
+    async fn list_loop_agents(
+        &self,
+        loop_id: &str,
+    ) -> Result<Vec<crate::types::LoopAgentInfo>, CommError> {
+        let api = self
+            .inner
+            .read()
+            .await
+            .api
+            .clone()
+            .ok_or(CommError::NotConnected)?;
+
+        let agents = api.list_agents(loop_id, false).await?;
+        Ok(agents
+            .into_iter()
+            .map(|a| crate::types::LoopAgentInfo {
+                id: a.id,
+                bot_id: a.bot_id,
+                name: a.name,
+                slug: a.slug,
+                bot_name: a.bot_name,
+                bot_slug: a.bot_slug,
+            })
+            .collect())
+    }
+
     async fn take_rotated_token(&self) -> Option<String> {
         self.rotated_token.write().await.take()
     }

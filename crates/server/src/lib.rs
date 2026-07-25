@@ -1773,6 +1773,8 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         approval_channels: approval_channels.clone(),
         ask_channels: ask_channels.clone(),
         pending_comm_asks: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
+        pending_comm_approvals: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
+        channel_agent_triggers: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         update_pending: Arc::new(tokio::sync::Mutex::new(None)),
         hooks,
         mcp_context,
@@ -2921,6 +2923,63 @@ async fn try_handle_comm_control(
         }
         // Asker already gone (timeout/cancel) — treat as a normal message.
     }
+    // A pending relayed APPROVAL for this session: the message is the decision.
+    // Same decision strings the desktop ApprovalModal produces ("once"/
+    // "always"/"deny"); anything unrecognized denies — approvals fail closed.
+    let pending_approval = {
+        let approvals = state.pending_comm_approvals.lock().await;
+        approvals.get(session_key).cloned()
+    };
+    if let Some(request_id) = pending_approval {
+        let normalized = answer.trim().to_lowercase();
+        let decision = if normalized == "approve always" || normalized == "always" {
+            "always"
+        } else if normalized == "approve" || normalized == "yes" || normalized == "approve once" {
+            "once"
+        } else {
+            "deny"
+        };
+        state.pending_comm_approvals.lock().await.remove(session_key);
+        if let Some(tx) = state.approval_channels.lock().await.remove(&request_id) {
+            let _ = tx.send(decision.to_string());
+            tracing::info!(
+                session = %session_key,
+                decision,
+                "inbound comm message resolved pending approval"
+            );
+            return true;
+        }
+    }
+    false
+}
+
+/// Channel variant of the control check: channel session keys are per-agent
+/// (`neboai:channel:<conv[:agent]>`), and the human's answer arrives without
+/// knowing which agent asked — so match any pending ask/approval whose session
+/// key belongs to this conversation.
+async fn try_handle_channel_control(
+    state: &AppState,
+    conversation_id: &str,
+    answer: &str,
+    metadata: &std::collections::HashMap<String, String>,
+) -> bool {
+    let needle = format!("channel:{}", conversation_id);
+    let ask_key = {
+        let asks = state.pending_comm_asks.lock().await;
+        asks.keys().find(|k| k.contains(&needle)).cloned()
+    };
+    let approval_key = {
+        let approvals = state.pending_comm_approvals.lock().await;
+        approvals.keys().find(|k| k.contains(&needle)).cloned()
+    };
+    if let Some(key) = ask_key.or(approval_key) {
+        return try_handle_comm_control(state, &key, answer, metadata).await;
+    }
+    // No pending controls — still honor an explicit stop.
+    if metadata.get("kind").map(String::as_str) == Some("stop") {
+        let key = agent::keyparser::build_session_key("neboai", "channel", conversation_id);
+        return try_handle_comm_control(state, &key, answer, metadata).await;
+    }
     false
 }
 
@@ -3186,6 +3245,8 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
                 provider: "neboai".to_string(),
                 topic: "agent_space".to_string(),
                 conversation_id: msg.conversation_id.clone(),
+                handoff_depth: 0,
+                approval_relay: is_personal && !is_webhook,
             }),
             entity_config,
             images,
@@ -3317,6 +3378,8 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
                 provider: "neboai".to_string(),
                 topic: "embed".to_string(),
                 conversation_id: msg.conversation_id.clone(),
+                handoff_depth: 0,
+                approval_relay: false,
             }),
             entity_config,
             images,
@@ -3574,6 +3637,8 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
                     provider: "neboai".to_string(),
                     topic: msg.topic.clone(),
                     conversation_id: msg.conversation_id.clone(),
+                    handoff_depth: 0,
+                    approval_relay: is_personal,
                 }),
                 entity_config,
                 images,
@@ -3670,6 +3735,8 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
                 provider: "neboai".to_string(),
                 topic: msg.topic.clone(),
                 conversation_id: msg.conversation_id.clone(),
+                handoff_depth: 0,
+                approval_relay: false,
             }),
             entity_config,
             images,
@@ -3806,6 +3873,54 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
 
         let mentioned = !mentioned_targets.is_empty();
 
+        // Agent-to-agent handoff guardrails. Agent-authored messages carry
+        // senderKind:"agent" (+ optional handoffDepth). They may trigger
+        // mentioned agents like any message — but they never open or extend a
+        // follow-up window, their depth is capped so mention chains terminate,
+        // and a per-channel rate limit backstops everything.
+        let sender_is_agent =
+            msg.metadata.get("senderKind").map(String::as_str) == Some("agent");
+        let handoff_depth_in: u8 = msg
+            .metadata
+            .get("handoffDepth")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(if sender_is_agent { 1 } else { 0 });
+        const MAX_HANDOFF_DEPTH: u8 = 3;
+        if sender_is_agent && mentioned && handoff_depth_in >= MAX_HANDOFF_DEPTH {
+            tracing::info!(
+                conv_id = %msg.conversation_id,
+                depth = handoff_depth_in,
+                "agent handoff depth cap reached — buffering without dispatch (a human mention resets the chain)"
+            );
+            return;
+        }
+        if sender_is_agent && mentioned {
+            // Rate limit: at most 6 agent-triggered dispatches per channel per
+            // 5 minutes, even if depth metadata was stripped somewhere.
+            let mut triggers = state.channel_agent_triggers.lock().await;
+            let entry = triggers.entry(msg.conversation_id.clone()).or_default();
+            let cutoff = std::time::Instant::now() - std::time::Duration::from_secs(300);
+            while entry.front().map(|t| *t < cutoff).unwrap_or(false) {
+                entry.pop_front();
+            }
+            if entry.len() >= 6 {
+                tracing::warn!(
+                    conv_id = %msg.conversation_id,
+                    "agent-trigger rate limit hit for channel — skipping dispatch"
+                );
+                return;
+            }
+            entry.push_back(std::time::Instant::now());
+        }
+        // Human replies may be answering a relayed ask/approval — consume them
+        // before any dispatch decision (fixes: channel asks were unanswerable).
+        if !sender_is_agent
+            && try_handle_channel_control(&state, &msg.conversation_id, text.trim(), &msg.metadata)
+                .await
+        {
+            return;
+        }
+
         // Coordination mode: when the user EXPLICITLY asks several addressed
         // agents to produce one joint result, route to a single lead (the
         // first mentioned) that consults the others via `delegate` and writes
@@ -3830,17 +3945,22 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
         // is bound to (so a user can keep talking to the same group without
         // re-mentioning). A single mention is just a one-element set.
         let targets: Vec<String> = if mentioned {
-            let mut eng = state.channel_engagement.lock().await;
-            eng.insert(
-                msg.conversation_id.clone(),
-                state::Engagement {
-                    user: msg.from.clone(),
-                    expires: now
-                        + std::time::Duration::from_secs(CHANNEL_FOLLOWUP_WINDOW_SECS),
-                    agent_ids: responders.clone(),
-                },
-            );
+            if !sender_is_agent {
+                let mut eng = state.channel_engagement.lock().await;
+                eng.insert(
+                    msg.conversation_id.clone(),
+                    state::Engagement {
+                        user: msg.from.clone(),
+                        expires: now
+                            + std::time::Duration::from_secs(CHANNEL_FOLLOWUP_WINDOW_SECS),
+                        agent_ids: responders.clone(),
+                    },
+                );
+            }
             responders.clone()
+        } else if sender_is_agent {
+            // Agent messages only ever trigger via explicit mention.
+            Vec::new()
         } else {
             let mut eng = state.channel_engagement.lock().await;
             match eng.get(&msg.conversation_id) {
@@ -4144,6 +4264,8 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
                     provider: "neboai".to_string(),
                     topic: "channel".to_string(),
                     conversation_id: msg.conversation_id.clone(),
+                    handoff_depth: handoff_depth_in.saturating_add(1),
+                    approval_relay: false,
                 }),
                 entity_config,
                 images: images.clone(),

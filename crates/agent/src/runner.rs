@@ -335,6 +335,16 @@ pub struct RunRequest {
     pub user_id: String,
     pub skip_memory_extract: bool,
     pub origin: Origin,
+    /// Allow an autonomous (comm-origin) run to REQUEST tool approval instead
+    /// of refusing gated tools — set only when the dispatching context can
+    /// relay the approval to the owner (personal-loop conversations). The
+    /// desktop's Interactive runs don't need this; it exists so a run whose
+    /// approvals reach the owner over comm isn't treated as unattended.
+    pub approval_relay: bool,
+    /// Agent-to-agent handoff depth for this run's outbound messages (0 = not
+    /// a handoff). Stamped on loop-tool sends so receiving bots enforce the
+    /// depth cap even on tool-authored messages, not just runner replies.
+    pub handoff_depth: u8,
     pub channel: String,
     pub force_skill: String,
     /// Maximum agentic loop iterations (0 = default 100).
@@ -1002,6 +1012,8 @@ impl Runner {
                         ask_channels.as_ref(),
                         approval_channels.as_ref(),
                         full_access,
+                        req.approval_relay,
+                        req.handoff_depth,
                         embedding_provider.as_ref(),
                         hybrid_searcher.as_ref(),
                         tool_scope.as_deref(),
@@ -1087,6 +1099,8 @@ impl Runner {
                 ask_channels.as_ref(),
                 approval_channels.as_ref(),
                 full_access,
+                req.approval_relay,
+                req.handoff_depth,
                 embedding_provider.as_ref(),
                 hybrid_searcher.as_ref(),
                 tool_scope.as_deref(),
@@ -1316,6 +1330,8 @@ impl Runner {
                             None,
                             None,
                             false, // no full_access — the whitelist blocks shell anyway
+                            false, // review forks never relay approvals
+                            0,     // review forks never hand off
                             embedding_provider_rf.as_ref(),
                             hybrid_searcher_rf.as_ref(),
                             tool_scope_rf.as_deref(),
@@ -1470,6 +1486,8 @@ async fn run_loop(
     ask_channels: Option<&tools::AskChannels>,
     approval_channels: Option<&tools::ApprovalChannels>,
     full_access: bool,
+    approval_relay: bool,
+    handoff_depth: u8,
     embedding_provider: Option<&Arc<dyn ai::EmbeddingProvider>>,
     hybrid_searcher: Option<&Arc<dyn tools::HybridSearcher>>,
     tool_scope: Option<&str>,
@@ -3584,6 +3602,7 @@ async fn run_loop(
                 session_key: resolved_key,
                 session_id: session_id.to_string(),
                 user_id: memory_user_id.clone(),
+                handoff_depth,
                 entity_permissions: entity_permissions.cloned(),
                 operation_policy: operation_policy.cloned(),
                 resource_grants: entity_resource_grants.cloned(),
@@ -3829,7 +3848,8 @@ async fn run_loop(
                                 match approval_channels {
                                     Some(chs)
                                         if tools::ExecutionMode::from(origin)
-                                            == tools::ExecutionMode::Interactive =>
+                                            == tools::ExecutionMode::Interactive
+                                            || approval_relay =>
                                     {
                                         let decision = ask_tool_approval(
                                             chs,
@@ -3949,6 +3969,7 @@ async fn run_loop(
                                     ));
                                 } else if tools::ExecutionMode::from(origin)
                                     == tools::ExecutionMode::Interactive
+                                    || approval_relay
                                 {
                                     match approval_channels {
                                         Some(chs) => {
@@ -4064,7 +4085,9 @@ async fn run_loop(
                 // when a human is present. Unattended runs (cron/heartbeat/workflow/
                 // comm/subagent) have no one to answer, so it's denied (left ungranted
                 // → Phase 1c blocks) rather than hanging on a prompt nobody sees.
-                if tools::ExecutionMode::from(origin) != tools::ExecutionMode::Interactive {
+                if tools::ExecutionMode::from(origin) != tools::ExecutionMode::Interactive
+                    && !approval_relay
+                {
                     continue;
                 }
                 let chs = match approval_channels {

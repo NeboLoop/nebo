@@ -1780,6 +1780,9 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value) {
                 provider: "neboai".to_string(),
                 topic: "agent_space".to_string(),
                 conversation_id: cid,
+                handoff_depth: 0,
+                // Desktop-forked runs keep approvals on the desktop ApprovalModal.
+                approval_relay: false,
             }
         })
     } else {

@@ -102,6 +102,10 @@ pub struct ToolContext {
     pub session_key: String,
     pub session_id: String,
     pub user_id: String,
+    /// Agent-to-agent handoff depth of the run this tool executes in (0 = not
+    /// a handoff). The loop tool stamps it on outbound sends so receiving bots
+    /// enforce the depth cap on tool-authored messages too.
+    pub handoff_depth: u8,
     /// Per-entity permission overrides (tool category → allowed).
     pub entity_permissions: Option<std::collections::HashMap<String, bool>>,
     /// Per-employee three-state approval policy over gated interface operations

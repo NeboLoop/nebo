@@ -1955,7 +1955,7 @@ async fn reconcile_agents(state: &AppState) -> Result<(), NeboError> {
     }
 
     let remote_agents = api
-        .list_agents(&personal.loop_id)
+        .list_agents(&personal.loop_id, true)
         .await
         .map_err(|e| NeboError::Internal(format!("list agents: {e}")))?;
 
@@ -2063,7 +2063,7 @@ async fn reconcile_agents(state: &AppState) -> Result<(), NeboError> {
         .map(|(a, _, slug)| (slug.clone(), a.id.clone()))
         .collect();
     let mut chat_sync_targets: Vec<(String, String)> = Vec::new();
-    match api.list_agents(&personal.loop_id).await {
+    match api.list_agents(&personal.loop_id, true).await {
         Ok(final_agents) => {
             info!(target: "neboai_identity", count = final_agents.len(), local_slugs = ?slug_to_local.keys().collect::<Vec<_>>(), "reconcile: stabilize pass — loop agents to map");
             for remote in &final_agents {
@@ -2393,7 +2393,7 @@ pub(crate) async fn deregister_agent_from_loop(
     // NeboAI DELETE requires the agent UUID, not the slug.
     // Look up the remote agent by its canonical slug to get its UUID.
     let agents = api
-        .list_agents(&personal.loop_id)
+        .list_agents(&personal.loop_id, true)
         .await
         .map_err(|e| NeboError::Internal(format!("list agents: {e}")))?;
     let remote = agents
