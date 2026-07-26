@@ -326,20 +326,22 @@ if ($output -eq "") { Write-Output "No contact folders" } else { Write-Output $o
 /// PowerShell prelude for calendar queries: renders one Outlook
 /// AppointmentItem as a readable block.
 ///
-/// Format (empty fields are omitted entirely):
+/// Format — identical to the macOS renderer in `pim_helper.swift`
+/// (empty fields are omitted entirely):
 ///
 /// ```text
-/// Calendar | Quarterly review | 2026-07-28 14:00 - 15:30
-///   Location: Room 4
-///   Link: https://teams.microsoft.com/l/meetup-join/...
-///   Organizer: Dana Reed
-///   Attendees:
-///     Sam Patel <sam@example.com> [accepted]
-///   Availability: Busy
-///   Recurrence: weekly, every 2
-///   ID: 040000008200E00074C5B7101A82E008...
-///   Notes:
-///     full body, every line, no truncation
+/// - [Calendar] Quarterly review — Jul 28, 2026 at 2:00 PM – 3:30 PM
+///     Location: Room 4
+///     URL: https://teams.microsoft.com/l/meetup-join/...
+///     Organizer: Dana Reed
+///     Attendees: Sam Patel <sam@example.com> [accepted]
+///     Availability: busy
+///     Repeats: every 2 weeks until Aug 31, 2026
+///     Categories: Client work
+///     Reminder: 15 min before
+///     ID: 040000008200E00074C5B7101A82E008...
+///     Notes:
+///       > full body, every line, no truncation
 /// ```
 ///
 /// Every property read is individually guarded — a missing or failing
@@ -348,15 +350,23 @@ const PS_EVENT_FORMAT: &str = r##"
 # Best-effort UTF-8 stdout so non-ASCII notes and attendee names survive the pipe.
 try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } catch { }
 
+# Dates are rendered culture-independently so the block reads the same on every
+# machine: "Jul 28, 2026 at 2:00 PM", matching the macOS renderer.
+$NeboInv = [System.Globalization.CultureInfo]::InvariantCulture
+
 function Format-NeboInline($s) {
     if ($null -eq $s) { return "" }
     return ([string]$s -replace "\s*[\r\n]+\s*", " ").Trim()
 }
 
+function Format-NeboDay($d) { return $d.ToString("MMM d, yyyy", $NeboInv) }
+function Format-NeboClock($d) { return $d.ToString("h:mm tt", $NeboInv) }
+function Format-NeboStamp($d) { return (Format-NeboDay $d) + " at " + (Format-NeboClock $d) }
+
 function Format-NeboEvent($e, $calName) {
     $out = ""
 
-    $title = "(no title)"
+    $title = "Untitled"
     try { if ($e.Subject) { $title = Format-NeboInline $e.Subject } } catch { }
 
     # All-day events are marked as such, never shown as midnight-to-midnight.
@@ -368,28 +378,28 @@ function Format-NeboEvent($e, $calName) {
         $en = $null
         try { $en = $e.End } catch { }
         if ($allDay) {
-            $when = $s.ToString("yyyy-MM-dd")
+            $when = Format-NeboDay $s
             if ($null -ne $en) {
                 $last = $en.AddDays(-1)
-                if ($last.Date -gt $s.Date) { $when += " - " + $last.ToString("yyyy-MM-dd") }
+                if ($last.Date -gt $s.Date) { $when += " – " + (Format-NeboDay $last) }
             }
             $when += " (all day)"
         } else {
-            $when = $s.ToString("yyyy-MM-dd HH:mm")
+            $when = Format-NeboStamp $s
             if ($null -ne $en) {
-                if ($en.Date -eq $s.Date) { $when += " - " + $en.ToString("HH:mm") }
-                else { $when += " - " + $en.ToString("yyyy-MM-dd HH:mm") }
+                if ($en.Date -eq $s.Date) { $when += " – " + (Format-NeboClock $en) }
+                else { $when += " – " + (Format-NeboStamp $en) }
             }
         }
     } catch { $when = "" }
 
-    $head = ""
-    if ($calName) { $head = $calName + " | " }
+    $head = "- "
+    if ($calName) { $head += "[" + $calName + "] " }
     $head += $title
-    if ($when) { $head += " | " + $when }
+    if ($when) { $head += " — " + $when }
     $out += $head + "`n"
 
-    try { if ($e.Location) { $out += "  Location: " + (Format-NeboInline $e.Location) + "`n" } } catch { }
+    try { if ($e.Location) { $out += "    Location: " + (Format-NeboInline $e.Location) + "`n" } } catch { }
 
     # Outlook has no URL property on appointments — Teams/Zoom/Meet links live
     # in the location or the body, so surface the first http(s) link found.
@@ -399,13 +409,13 @@ function Format-NeboEvent($e, $calName) {
         try { if ($e.Body) { $src = $src + " " + [string]$e.Body } } catch { }
         if ($src) {
             $m = [regex]::Match($src, 'https?://[^\s<>"''\)\]]+')
-            if ($m.Success) { $out += "  Link: " + $m.Value + "`n" }
+            if ($m.Success) { $out += "    URL: " + $m.Value + "`n" }
         }
     } catch { }
 
-    try { if ($e.Organizer) { $out += "  Organizer: " + (Format-NeboInline $e.Organizer) + "`n" } } catch { }
+    try { if ($e.Organizer) { $out += "    Organizer: " + (Format-NeboInline $e.Organizer) + "`n" } } catch { }
 
-    $att = ""
+    $att = @()
     try {
         $recips = $e.Recipients
         if ($null -ne $recips) {
@@ -430,25 +440,40 @@ function Format-NeboEvent($e, $calName) {
                     $resp = switch ([int]$r.MeetingResponseStatus) { 1 { "organizer" } 2 { "tentative" } 3 { "accepted" } 4 { "declined" } 5 { "no response" } default { "" } }
                     if ($resp) { $line += " [" + $resp + "]" }
                 } catch { }
-                $att += "    " + $line + "`n"
+                $att += $line
             }
         }
     } catch { }
-    if ($att) {
-        $out += "  Attendees:`n" + $att
-    } else {
-        try { if ($e.RequiredAttendees) { $out += "  Attendees: " + (Format-NeboInline $e.RequiredAttendees) + "`n" } } catch { }
-        try { if ($e.OptionalAttendees) { $out += "  Attendees (optional): " + (Format-NeboInline $e.OptionalAttendees) + "`n" } } catch { }
+    if ($att.Count -eq 0) {
+        # No Recipients collection — fall back to the flat semicolon lists, still
+        # under the single "Attendees" label.
+        try {
+            if ($e.RequiredAttendees) {
+                foreach ($n in ([string]$e.RequiredAttendees).Split(";")) {
+                    $n = Format-NeboInline $n
+                    if ($n) { $att += $n }
+                }
+            }
+        } catch { }
+        try {
+            if ($e.OptionalAttendees) {
+                foreach ($n in ([string]$e.OptionalAttendees).Split(";")) {
+                    $n = Format-NeboInline $n
+                    if ($n) { $att += ($n + " (optional)") }
+                }
+            }
+        } catch { }
     }
+    if ($att.Count -gt 0) { $out += "    Attendees: " + ($att -join "; ") + "`n" }
 
     try {
-        $avail = switch ([int]$e.BusyStatus) { 0 { "Free" } 1 { "Tentative" } 2 { "Busy" } 3 { "Out of Office" } 4 { "Working Elsewhere" } default { "" } }
-        if ($avail) { $out += "  Availability: " + $avail + "`n" }
+        $avail = switch ([int]$e.BusyStatus) { 0 { "free" } 1 { "tentative" } 2 { "busy" } 3 { "out of office" } 4 { "working elsewhere" } default { "" } }
+        if ($avail) { $out += "    Availability: " + $avail + "`n" }
     } catch { }
 
     try {
         $ms = [int]$e.MeetingStatus
-        if ($ms -eq 5 -or $ms -eq 7) { $out += "  Status: CANCELED`n" }
+        if ($ms -eq 5 -or $ms -eq 7) { $out += "    Status: canceled`n" }
     } catch { }
 
     try {
@@ -456,41 +481,45 @@ function Format-NeboEvent($e, $calName) {
             $desc = "yes"
             try {
                 $rp = $e.GetRecurrencePattern()
-                $desc = switch ([int]$rp.RecurrenceType) { 0 { "daily" } 1 { "weekly" } 2 { "monthly" } 3 { "monthly (nth weekday)" } 5 { "yearly" } 6 { "yearly (nth weekday)" } default { "recurring" } }
-                try { if ([int]$rp.Interval -gt 1) { $desc += ", every " + $rp.Interval } } catch { }
-                try { if (-not $rp.NoEndDate) { $desc += ", until " + $rp.PatternEndDate.ToString("yyyy-MM-dd") } } catch { }
+                $n = 1
+                try { $n = [int]$rp.Interval } catch { }
+                if ($n -lt 1) { $n = 1 }
+                $rt = [int]$rp.RecurrenceType
+                $unit = switch ($rt) { 0 { "day" } 1 { "week" } 2 { "month" } 3 { "month" } 5 { "year" } 6 { "year" } default { "period" } }
+                if ($n -eq 1) { $desc = "every " + $unit } else { $desc = "every " + $n + " " + $unit + "s" }
+                if ($rt -eq 3 -or $rt -eq 6) { $desc += " (nth weekday)" }
+                try { if (-not $rp.NoEndDate) { $desc += " until " + (Format-NeboDay $rp.PatternEndDate) } } catch { }
             } catch { }
-            $out += "  Recurrence: " + $desc + "`n"
+            $out += "    Repeats: " + $desc + "`n"
         }
     } catch { }
 
-    try { if ($e.Categories) { $out += "  Categories: " + (Format-NeboInline $e.Categories) + "`n" } } catch { }
+    try { if ($e.Categories) { $out += "    Categories: " + (Format-NeboInline $e.Categories) + "`n" } } catch { }
 
-    try { if ($e.ReminderSet) { $out += "  Reminder: " + $e.ReminderMinutesBeforeStart + " min before`n" } } catch { }
+    try { if ($e.ReminderSet) { $out += "    Reminder: " + $e.ReminderMinutesBeforeStart + " min before`n" } } catch { }
 
     $id = ""
     try { if ($e.GlobalAppointmentID) { $id = [string]$e.GlobalAppointmentID } } catch { }
     if (-not $id) { try { if ($e.EntryID) { $id = [string]$e.EntryID } } catch { } }
-    if ($id) { $out += "  ID: " + $id + "`n" }
+    if ($id) { $out += "    ID: " + $id + "`n" }
 
-    # Notes last and in full — no truncation. Newlines and "|" in the body are
-    # safe here because every line is indented under its own label.
+    # Notes last and in full — no truncation. Every line carries a "> " prefix so
+    # newlines and "|" in the body can never be read as structure.
     try {
         $body = $e.Body
         if ($body) {
             $body = ([string]$body -replace "`r`n", "`n") -replace "`r", "`n"
-            $body = $body.TrimEnd()
-            if ($body.Trim()) {
-                $out += "  Notes:`n"
+            $body = $body.Trim()
+            if ($body) {
+                $out += "    Notes:`n"
                 foreach ($ln in $body.Split("`n")) {
-                    $ln = $ln.TrimEnd()
-                    if ($ln) { $out += "    " + $ln + "`n" } else { $out += "`n" }
+                    $out += "      > " + $ln + "`n"
                 }
             }
         }
     } catch { }
 
-    return $out + "`n"
+    return $out
 }
 "##;
 

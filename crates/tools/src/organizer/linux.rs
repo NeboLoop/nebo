@@ -381,16 +381,17 @@ pub async fn handle_contacts(action: &str, input: &OrganizerInput) -> ToolResult
 // never occur in calendar text, so notes containing newlines or "|" cannot
 // break the parse — unlike the one-line-per-event formats these replace.
 //
-// Rendered shape (empty fields are omitted entirely):
+// Rendered shape — identical to the macOS renderer in `pim_helper.swift`
+// (empty fields are omitted entirely):
 //
 // ```text
-// Work | Quarterly review | 2026-07-28 14:00 - 15:30
-//   Location: Room 4
-//   Link: https://meet.example.com/abc
-//   Organizer: dana@example.com
-//   Attendees: sam@example.com, lee@example.com
-//   Notes:
-//     full description, every line, no truncation
+// - [Work] Quarterly review — Jul 28, 2026 at 2:00 PM – 3:30 PM
+//     Location: Room 4
+//     URL: https://meet.example.com/abc
+//     Organizer: dana@example.com
+//     Attendees: sam@example.com, lee@example.com
+//     Notes:
+//       > full description, every line, no truncation
 // ```
 
 const REC_SEP: char = '\u{1e}';
@@ -431,10 +432,11 @@ fn one_line(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+/// `    Label: value` — 4-space indent, skipped when the value is empty.
 fn push_field(out: &mut String, label: &str, value: &str) {
     let value = one_line(value);
     if !value.is_empty() {
-        out.push_str("  ");
+        out.push_str("    ");
         out.push_str(label);
         out.push_str(": ");
         out.push_str(&value);
@@ -442,46 +444,48 @@ fn push_field(out: &mut String, label: &str, value: &str) {
     }
 }
 
-/// Notes/description in full — no truncation. Each line is indented under the
-/// label so embedded newlines stay readable.
+/// Notes/description in full — no truncation. Every line carries a `> ` prefix
+/// so embedded newlines and `|` characters can never be read as structure.
 fn push_notes(out: &mut String, value: &str) {
-    if value.trim().is_empty() {
+    let normalized = value.replace("\r\n", "\n").replace('\r', "\n");
+    let trimmed = normalized.trim();
+    if trimmed.is_empty() {
         return;
     }
-    let normalized = value.replace("\r\n", "\n").replace('\r', "\n");
-    out.push_str("  Notes:\n");
-    for line in normalized.trim_end().lines() {
-        let line = line.trim_end();
-        if !line.is_empty() {
-            out.push_str("    ");
-            out.push_str(line);
-        }
+    out.push_str("    Notes:\n");
+    for line in trimmed.split('\n') {
+        out.push_str("      > ");
+        out.push_str(line);
         out.push('\n');
     }
 }
 
-/// `Calendar | Title | start - end` leading line.
+/// `- [Calendar] Title — when` leading line.
 fn push_header(out: &mut String, calendar: &str, title: &str, when: &str) {
-    let mut parts: Vec<&str> = Vec::new();
+    out.push_str("- ");
+    let calendar = one_line(calendar);
     if !calendar.is_empty() {
-        parts.push(calendar);
+        out.push('[');
+        out.push_str(&calendar);
+        out.push_str("] ");
     }
-    parts.push(if title.is_empty() { "(no title)" } else { title });
+    let title = one_line(title);
+    out.push_str(if title.is_empty() { "Untitled" } else { &title });
     if !when.is_empty() {
-        parts.push(when);
+        out.push_str(" — ");
+        out.push_str(when);
     }
-    out.push_str(&parts.join(" | "));
     out.push('\n');
 }
 
-/// Render `start - end`, marking all-day events instead of showing midnight.
+/// Render `start – end`, marking all-day events instead of showing midnight.
 fn event_when(start: &str, end: &str, all_day: bool) -> String {
     let mut when = start.to_string();
     if !end.is_empty() && end != start {
         if when.is_empty() {
             when.push_str(end);
         } else {
-            when.push_str(" - ");
+            when.push_str(" – ");
             when.push_str(end);
         }
     }
@@ -489,6 +493,26 @@ fn event_when(start: &str, end: &str, all_day: bool) -> String {
         when.push_str(" (all day)");
     }
     when
+}
+
+/// iCalendar STATUS → the macOS wording. `CONFIRMED` is the default and is
+/// omitted there, so it is omitted here too.
+fn event_status(raw: &str) -> String {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "" | "confirmed" => String::new(),
+        "cancelled" => "canceled".to_string(),
+        other => other.to_string(),
+    }
+}
+
+/// `Jul 28, 2026 at 2:00 PM` — the macOS medium-date/short-time pairing.
+fn human_datetime(dt: &chrono::NaiveDateTime) -> String {
+    dt.format("%b %-d, %Y at %-I:%M %p").to_string()
+}
+
+/// `3:30 PM` — used for the end of a same-day event.
+fn human_time(dt: &chrono::NaiveDateTime) -> String {
+    dt.format("%-I:%M %p").to_string()
 }
 
 /// Reformat khal's sentinel output. `None` when the output holds no records
@@ -509,15 +533,14 @@ fn format_khal_events(raw: &str) -> Option<String> {
         );
         push_header(&mut out, field(0), field(1), &when);
         push_field(&mut out, "Location", field(5));
-        push_field(&mut out, "Link", field(6));
+        push_field(&mut out, "URL", field(6));
         push_field(&mut out, "Organizer", field(7));
         push_field(&mut out, "Attendees", field(8));
-        push_field(&mut out, "Status", field(9));
-        push_field(&mut out, "Recurrence", field(11));
+        push_field(&mut out, "Status", &event_status(field(9)));
+        push_field(&mut out, "Repeats", field(11));
         push_field(&mut out, "Categories", field(10));
         push_field(&mut out, "ID", field(12));
         push_notes(&mut out, rec.get(13).copied().unwrap_or(""));
-        out.push('\n');
     }
 
     let out = out.trim_end().to_string();
@@ -536,15 +559,27 @@ fn format_calcurse_events(raw: &str) -> Option<String> {
     for rec in records {
         let field = |i: usize| rec.get(i).map(|s| s.trim()).unwrap_or("");
         let (start, end) = (field(0), field(1));
-        // Same-day end: drop the repeated date, keep just the time.
-        let end_short = match (start.get(..10), end.get(11..)) {
-            (Some(day), Some(time)) if end.starts_with(day) => time,
-            _ => end,
+        // calcurse stamps are the `%Y-%m-%d %H:%M` this file asked for, so they
+        // can be re-rendered in the canonical human form. Unparseable stamps
+        // fall back to the backend's own text.
+        let stamp = |s: &str| chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M").ok();
+        let when = match (stamp(start), stamp(end)) {
+            (Some(s), Some(e)) if s.date() == e.date() => {
+                format!("{} – {}", human_datetime(&s), human_time(&e))
+            }
+            (Some(s), Some(e)) => format!("{} – {}", human_datetime(&s), human_datetime(&e)),
+            (Some(s), None) => human_datetime(&s),
+            _ => {
+                // Same-day end: drop the repeated date, keep just the time.
+                let end_short = match (start.get(..10), end.get(11..)) {
+                    (Some(day), Some(time)) if end.starts_with(day) => time,
+                    _ => end,
+                };
+                event_when(start, end_short, false)
+            }
         };
-        let when = event_when(start, end_short, false);
         push_header(&mut out, "calcurse", field(2), &when);
         push_notes(&mut out, rec.get(3).copied().unwrap_or(""));
-        out.push('\n');
     }
 
     let out = out.trim_end().to_string();
