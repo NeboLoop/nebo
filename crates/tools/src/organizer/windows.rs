@@ -323,6 +323,201 @@ if ($output -eq "") { Write-Output "No contact folders" } else { Write-Output $o
 // Calendar
 // ═══════════════════════════════════════════════════════════════════════
 
+/// PowerShell prelude for calendar queries: renders one Outlook
+/// AppointmentItem as a readable block.
+///
+/// Format (empty fields are omitted entirely):
+///
+/// ```text
+/// Calendar | Quarterly review | 2026-07-28 14:00 - 15:30
+///   Location: Room 4
+///   Link: https://teams.microsoft.com/l/meetup-join/...
+///   Organizer: Dana Reed
+///   Attendees:
+///     Sam Patel <sam@example.com> [accepted]
+///   Availability: Busy
+///   Recurrence: weekly, every 2
+///   ID: 040000008200E00074C5B7101A82E008...
+///   Notes:
+///     full body, every line, no truncation
+/// ```
+///
+/// Every property read is individually guarded — a missing or failing
+/// property on one appointment must never abort the whole query.
+const PS_EVENT_FORMAT: &str = r##"
+# Best-effort UTF-8 stdout so non-ASCII notes and attendee names survive the pipe.
+try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } catch { }
+
+function Format-NeboInline($s) {
+    if ($null -eq $s) { return "" }
+    return ([string]$s -replace "\s*[\r\n]+\s*", " ").Trim()
+}
+
+function Format-NeboEvent($e, $calName) {
+    $out = ""
+
+    $title = "(no title)"
+    try { if ($e.Subject) { $title = Format-NeboInline $e.Subject } } catch { }
+
+    # All-day events are marked as such, never shown as midnight-to-midnight.
+    $when = ""
+    try {
+        $allDay = $false
+        try { $allDay = [bool]$e.AllDayEvent } catch { }
+        $s = $e.Start
+        $en = $null
+        try { $en = $e.End } catch { }
+        if ($allDay) {
+            $when = $s.ToString("yyyy-MM-dd")
+            if ($null -ne $en) {
+                $last = $en.AddDays(-1)
+                if ($last.Date -gt $s.Date) { $when += " - " + $last.ToString("yyyy-MM-dd") }
+            }
+            $when += " (all day)"
+        } else {
+            $when = $s.ToString("yyyy-MM-dd HH:mm")
+            if ($null -ne $en) {
+                if ($en.Date -eq $s.Date) { $when += " - " + $en.ToString("HH:mm") }
+                else { $when += " - " + $en.ToString("yyyy-MM-dd HH:mm") }
+            }
+        }
+    } catch { $when = "" }
+
+    $head = ""
+    if ($calName) { $head = $calName + " | " }
+    $head += $title
+    if ($when) { $head += " | " + $when }
+    $out += $head + "`n"
+
+    try { if ($e.Location) { $out += "  Location: " + (Format-NeboInline $e.Location) + "`n" } } catch { }
+
+    # Outlook has no URL property on appointments — Teams/Zoom/Meet links live
+    # in the location or the body, so surface the first http(s) link found.
+    try {
+        $src = ""
+        try { if ($e.Location) { $src = [string]$e.Location } } catch { }
+        try { if ($e.Body) { $src = $src + " " + [string]$e.Body } } catch { }
+        if ($src) {
+            $m = [regex]::Match($src, 'https?://[^\s<>"''\)\]]+')
+            if ($m.Success) { $out += "  Link: " + $m.Value + "`n" }
+        }
+    } catch { }
+
+    try { if ($e.Organizer) { $out += "  Organizer: " + (Format-NeboInline $e.Organizer) + "`n" } } catch { }
+
+    $att = ""
+    try {
+        $recips = $e.Recipients
+        if ($null -ne $recips) {
+            for ($i = 1; $i -le $recips.Count; $i++) {
+                $r = $null
+                try { $r = $recips.Item($i) } catch { }
+                if ($null -eq $r) { continue }
+                $line = ""
+                try { if ($r.Name) { $line = Format-NeboInline $r.Name } } catch { }
+                try {
+                    if ($r.Address) {
+                        if ($line) { $line += " <" + (Format-NeboInline $r.Address) + ">" }
+                        else { $line = Format-NeboInline $r.Address }
+                    }
+                } catch { }
+                if (-not $line) { continue }
+                try {
+                    $kind = switch ([int]$r.Type) { 2 { "optional" } 3 { "resource" } default { "" } }
+                    if ($kind) { $line += " (" + $kind + ")" }
+                } catch { }
+                try {
+                    $resp = switch ([int]$r.MeetingResponseStatus) { 1 { "organizer" } 2 { "tentative" } 3 { "accepted" } 4 { "declined" } 5 { "no response" } default { "" } }
+                    if ($resp) { $line += " [" + $resp + "]" }
+                } catch { }
+                $att += "    " + $line + "`n"
+            }
+        }
+    } catch { }
+    if ($att) {
+        $out += "  Attendees:`n" + $att
+    } else {
+        try { if ($e.RequiredAttendees) { $out += "  Attendees: " + (Format-NeboInline $e.RequiredAttendees) + "`n" } } catch { }
+        try { if ($e.OptionalAttendees) { $out += "  Attendees (optional): " + (Format-NeboInline $e.OptionalAttendees) + "`n" } } catch { }
+    }
+
+    try {
+        $avail = switch ([int]$e.BusyStatus) { 0 { "Free" } 1 { "Tentative" } 2 { "Busy" } 3 { "Out of Office" } 4 { "Working Elsewhere" } default { "" } }
+        if ($avail) { $out += "  Availability: " + $avail + "`n" }
+    } catch { }
+
+    try {
+        $ms = [int]$e.MeetingStatus
+        if ($ms -eq 5 -or $ms -eq 7) { $out += "  Status: CANCELED`n" }
+    } catch { }
+
+    try {
+        if ($e.IsRecurring) {
+            $desc = "yes"
+            try {
+                $rp = $e.GetRecurrencePattern()
+                $desc = switch ([int]$rp.RecurrenceType) { 0 { "daily" } 1 { "weekly" } 2 { "monthly" } 3 { "monthly (nth weekday)" } 5 { "yearly" } 6 { "yearly (nth weekday)" } default { "recurring" } }
+                try { if ([int]$rp.Interval -gt 1) { $desc += ", every " + $rp.Interval } } catch { }
+                try { if (-not $rp.NoEndDate) { $desc += ", until " + $rp.PatternEndDate.ToString("yyyy-MM-dd") } } catch { }
+            } catch { }
+            $out += "  Recurrence: " + $desc + "`n"
+        }
+    } catch { }
+
+    try { if ($e.Categories) { $out += "  Categories: " + (Format-NeboInline $e.Categories) + "`n" } } catch { }
+
+    try { if ($e.ReminderSet) { $out += "  Reminder: " + $e.ReminderMinutesBeforeStart + " min before`n" } } catch { }
+
+    $id = ""
+    try { if ($e.GlobalAppointmentID) { $id = [string]$e.GlobalAppointmentID } } catch { }
+    if (-not $id) { try { if ($e.EntryID) { $id = [string]$e.EntryID } } catch { } }
+    if ($id) { $out += "  ID: " + $id + "`n" }
+
+    # Notes last and in full — no truncation. Newlines and "|" in the body are
+    # safe here because every line is indented under its own label.
+    try {
+        $body = $e.Body
+        if ($body) {
+            $body = ([string]$body -replace "`r`n", "`n") -replace "`r", "`n"
+            $body = $body.TrimEnd()
+            if ($body.Trim()) {
+                $out += "  Notes:`n"
+                foreach ($ln in $body.Split("`n")) {
+                    $ln = $ln.TrimEnd()
+                    if ($ln) { $out += "    " + $ln + "`n" } else { $out += "`n" }
+                }
+            }
+        }
+    } catch { }
+
+    return $out + "`n"
+}
+"##;
+
+/// Build the Outlook calendar query script for a `[start, end)` date window.
+/// `start`/`end` are Outlook Restrict filter dates (MM/DD/YYYY).
+fn calendar_query_script(start: &str, end: &str, empty_msg: &str) -> String {
+    format!(
+        r#"{prelude}
+$ol = New-Object -ComObject Outlook.Application
+$ns = $ol.GetNamespace("MAPI")
+$cal = $ns.GetDefaultFolder(9)
+$calName = "Calendar"
+try {{ if ($cal.Name) {{ $calName = $cal.Name }} }} catch {{ }}
+$items = $cal.Items
+$items.IncludeRecurrences = $true
+$items.Sort("[Start]")
+$filter = "[Start] >= '{start}' AND [Start] < '{end}'"
+$filtered = $items.Restrict($filter)
+$output = ""
+foreach ($e in $filtered) {{
+    $output += ((Format-NeboEvent $e $calName) -join "")
+}}
+if ($output -eq "") {{ Write-Output "{empty_msg}" }} else {{ Write-Output $output }}"#,
+        prelude = PS_EVENT_FORMAT,
+    )
+}
+
 pub async fn handle_calendar(
     action: &str,
     input: &OrganizerInput,
@@ -356,24 +551,7 @@ if ($output -eq "") { Write-Output "No calendars found" } else { Write-Output $o
                 .format("%m/%d/%Y")
                 .to_string();
 
-            let script = format!(
-                r#"
-$ol = New-Object -ComObject Outlook.Application
-$ns = $ol.GetNamespace("MAPI")
-$cal = $ns.GetDefaultFolder(9)
-$items = $cal.Items
-$items.IncludeRecurrences = $true
-$items.Sort("[Start]")
-$filter = "[Start] >= '{today}' AND [Start] < '{tomorrow}'"
-$filtered = $items.Restrict($filter)
-$output = ""
-foreach ($e in $filtered) {{
-    $output += $e.Subject + " | " + $e.Start.ToString("yyyy-MM-dd HH:mm") + " - " + $e.End.ToString("HH:mm")
-    if ($e.Location) {{ $output += " @ " + $e.Location }}
-    $output += "`n"
-}}
-if ($output -eq "") {{ Write-Output "No events today" }} else {{ Write-Output $output }}"#,
-            );
+            let script = calendar_query_script(&today, &tomorrow, "No events today");
             run_powershell(&script).await
         }
         "upcoming" => {
@@ -383,23 +561,10 @@ if ($output -eq "") {{ Write-Output "No events today" }} else {{ Write-Output $o
                 .format("%m/%d/%Y")
                 .to_string();
 
-            let script = format!(
-                r#"
-$ol = New-Object -ComObject Outlook.Application
-$ns = $ol.GetNamespace("MAPI")
-$cal = $ns.GetDefaultFolder(9)
-$items = $cal.Items
-$items.IncludeRecurrences = $true
-$items.Sort("[Start]")
-$filter = "[Start] >= '{start}' AND [Start] < '{end}'"
-$filtered = $items.Restrict($filter)
-$output = ""
-foreach ($e in $filtered) {{
-    $output += $e.Subject + " | " + $e.Start.ToString("yyyy-MM-dd HH:mm") + " - " + $e.End.ToString("HH:mm")
-    if ($e.Location) {{ $output += " @ " + $e.Location }}
-    $output += "`n"
-}}
-if ($output -eq "") {{ Write-Output "No upcoming events in the next {days} days" }} else {{ Write-Output $output }}"#,
+            let script = calendar_query_script(
+                &start,
+                &end,
+                &format!("No upcoming events in the next {days} days"),
             );
             run_powershell(&script).await
         }
@@ -410,23 +575,10 @@ if ($output -eq "") {{ Write-Output "No upcoming events in the next {days} days"
                 .format("%m/%d/%Y")
                 .to_string();
 
-            let script = format!(
-                r#"
-$ol = New-Object -ComObject Outlook.Application
-$ns = $ol.GetNamespace("MAPI")
-$cal = $ns.GetDefaultFolder(9)
-$items = $cal.Items
-$items.IncludeRecurrences = $true
-$items.Sort("[Start]")
-$filter = "[Start] >= '{start}' AND [Start] < '{end}'"
-$filtered = $items.Restrict($filter)
-$output = ""
-foreach ($e in $filtered) {{
-    $output += $e.Subject + " | " + $e.Start.ToString("yyyy-MM-dd HH:mm") + " - " + $e.End.ToString("HH:mm")
-    if ($e.Location) {{ $output += " @ " + $e.Location }}
-    $output += "`n"
-}}
-if ($output -eq "") {{ Write-Output "No events in the next {days} days" }} else {{ Write-Output $output }}"#,
+            let script = calendar_query_script(
+                &start,
+                &end,
+                &format!("No events in the next {days} days"),
             );
             run_powershell(&script).await
         }

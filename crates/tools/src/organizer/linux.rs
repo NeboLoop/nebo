@@ -374,6 +374,237 @@ pub async fn handle_contacts(action: &str, input: &OrganizerInput) -> ToolResult
 // Calendar
 // ═══════════════════════════════════════════════════════════════════════
 
+// ── Event blocks ────────────────────────────────────────────────────────
+//
+// khal and calcurse are asked for records delimited by ASCII RS (0x1e) with
+// fields separated by US (0x1f), then reformatted here. Control characters
+// never occur in calendar text, so notes containing newlines or "|" cannot
+// break the parse — unlike the one-line-per-event formats these replace.
+//
+// Rendered shape (empty fields are omitted entirely):
+//
+// ```text
+// Work | Quarterly review | 2026-07-28 14:00 - 15:30
+//   Location: Room 4
+//   Link: https://meet.example.com/abc
+//   Organizer: dana@example.com
+//   Attendees: sam@example.com, lee@example.com
+//   Notes:
+//     full description, every line, no truncation
+// ```
+
+const REC_SEP: char = '\u{1e}';
+const FIELD_SEP: char = '\u{1f}';
+
+/// khal template with every event attribute khal exposes.
+const KHAL_RICH_FORMAT: &str = concat!(
+    "\u{1e}",
+    "{calendar}\u{1f}{title}\u{1f}{all-day}\u{1f}{start-long}\u{1f}{end-long}\u{1f}",
+    "{location}\u{1f}{url}\u{1f}{organizer}\u{1f}{attendees}\u{1f}{status}\u{1f}",
+    "{categories}\u{1f}{repeat-pattern}\u{1f}{uid}\u{1f}{description}",
+    "\u{1e}",
+);
+
+/// Pre-existing one-line template, kept as the fallback for khal builds that
+/// do not know every key above (khal exits non-zero on an unknown key).
+const KHAL_BASIC_FORMAT: &str = "{calendar}: {title} | {start-time} - {end-time} | {location}";
+
+/// calcurse extended format specifiers (calcurse 4.x). Falls back to the
+/// default output on older builds.
+const CALCURSE_FORMAT: &str = concat!(
+    "\u{1e}%(start:%Y-%m-%d %H:%M)\u{1f}%(end:%Y-%m-%d %H:%M)\u{1f}%(message)\u{1f}%(note)\u{1e}",
+    "\n",
+);
+
+/// Split sentinel-delimited records out of a backend's stdout. Anything
+/// outside a record pair (day headings, colour resets) is discarded.
+fn sentinel_records(raw: &str) -> Vec<Vec<&str>> {
+    raw.split(REC_SEP)
+        .skip(1)
+        .step_by(2)
+        .map(|rec| rec.split(FIELD_SEP).collect())
+        .collect()
+}
+
+/// Collapse a value that has to sit on a single label line.
+fn one_line(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn push_field(out: &mut String, label: &str, value: &str) {
+    let value = one_line(value);
+    if !value.is_empty() {
+        out.push_str("  ");
+        out.push_str(label);
+        out.push_str(": ");
+        out.push_str(&value);
+        out.push('\n');
+    }
+}
+
+/// Notes/description in full — no truncation. Each line is indented under the
+/// label so embedded newlines stay readable.
+fn push_notes(out: &mut String, value: &str) {
+    if value.trim().is_empty() {
+        return;
+    }
+    let normalized = value.replace("\r\n", "\n").replace('\r', "\n");
+    out.push_str("  Notes:\n");
+    for line in normalized.trim_end().lines() {
+        let line = line.trim_end();
+        if !line.is_empty() {
+            out.push_str("    ");
+            out.push_str(line);
+        }
+        out.push('\n');
+    }
+}
+
+/// `Calendar | Title | start - end` leading line.
+fn push_header(out: &mut String, calendar: &str, title: &str, when: &str) {
+    let mut parts: Vec<&str> = Vec::new();
+    if !calendar.is_empty() {
+        parts.push(calendar);
+    }
+    parts.push(if title.is_empty() { "(no title)" } else { title });
+    if !when.is_empty() {
+        parts.push(when);
+    }
+    out.push_str(&parts.join(" | "));
+    out.push('\n');
+}
+
+/// Render `start - end`, marking all-day events instead of showing midnight.
+fn event_when(start: &str, end: &str, all_day: bool) -> String {
+    let mut when = start.to_string();
+    if !end.is_empty() && end != start {
+        if when.is_empty() {
+            when.push_str(end);
+        } else {
+            when.push_str(" - ");
+            when.push_str(end);
+        }
+    }
+    if all_day && !when.is_empty() {
+        when.push_str(" (all day)");
+    }
+    when
+}
+
+/// Reformat khal's sentinel output. `None` when the output holds no records
+/// (khal printed nothing, or an older build ignored the template).
+fn format_khal_events(raw: &str) -> Option<String> {
+    let records = sentinel_records(raw);
+    if records.is_empty() {
+        return None;
+    }
+
+    let mut out = String::new();
+    for rec in records {
+        let field = |i: usize| rec.get(i).map(|s| s.trim()).unwrap_or("");
+        let when = event_when(
+            field(3),
+            field(4),
+            field(2).eq_ignore_ascii_case("true"),
+        );
+        push_header(&mut out, field(0), field(1), &when);
+        push_field(&mut out, "Location", field(5));
+        push_field(&mut out, "Link", field(6));
+        push_field(&mut out, "Organizer", field(7));
+        push_field(&mut out, "Attendees", field(8));
+        push_field(&mut out, "Status", field(9));
+        push_field(&mut out, "Recurrence", field(11));
+        push_field(&mut out, "Categories", field(10));
+        push_field(&mut out, "ID", field(12));
+        push_notes(&mut out, rec.get(13).copied().unwrap_or(""));
+        out.push('\n');
+    }
+
+    let out = out.trim_end().to_string();
+    if out.is_empty() { None } else { Some(out) }
+}
+
+/// Reformat calcurse's sentinel output. calcurse only stores start, end,
+/// description and an attached note.
+fn format_calcurse_events(raw: &str) -> Option<String> {
+    let records = sentinel_records(raw);
+    if records.is_empty() {
+        return None;
+    }
+
+    let mut out = String::new();
+    for rec in records {
+        let field = |i: usize| rec.get(i).map(|s| s.trim()).unwrap_or("");
+        let (start, end) = (field(0), field(1));
+        // Same-day end: drop the repeated date, keep just the time.
+        let end_short = match (start.get(..10), end.get(11..)) {
+            (Some(day), Some(time)) if end.starts_with(day) => time,
+            _ => end,
+        };
+        let when = event_when(start, end_short, false);
+        push_header(&mut out, "calcurse", field(2), &when);
+        push_notes(&mut out, rec.get(3).copied().unwrap_or(""));
+        out.push('\n');
+    }
+
+    let out = out.trim_end().to_string();
+    if out.is_empty() { None } else { Some(out) }
+}
+
+/// khal event listing for a `khal list <start> <end>` range.
+async fn khal_list_events(start: &str, end: &str) -> ToolResult {
+    let rich = run_command("khal", &["list", start, end, "--format", KHAL_RICH_FORMAT]).await;
+    if !rich.is_error {
+        return match format_khal_events(&rich.content) {
+            Some(text) => ToolResult::ok(text),
+            None => rich,
+        };
+    }
+    // Older khal without one of the newer template keys — previous behaviour.
+    run_command("khal", &["list", start, end, "--format", KHAL_BASIC_FORMAT]).await
+}
+
+/// gcalcli agenda with every detail it can print.
+async fn gcalcli_agenda(start: &str, end: &str) -> ToolResult {
+    let detailed = run_command(
+        "gcalcli",
+        &["agenda", "--nocolor", "--details", "all", start, end],
+    )
+    .await;
+    if !detailed.is_error {
+        return detailed;
+    }
+    // Older gcalcli without --details — previous behaviour.
+    run_command("gcalcli", &["agenda", "--nocolor", start, end]).await
+}
+
+/// calcurse appointment listing for the next `days` days.
+async fn calcurse_list_events(days: &str) -> ToolResult {
+    let detailed = run_command(
+        "calcurse",
+        &[
+            "-Q",
+            "--filter-type",
+            "apt",
+            "-d",
+            days,
+            "--format-apt",
+            CALCURSE_FORMAT,
+            "--format-recur-apt",
+            CALCURSE_FORMAT,
+        ],
+    )
+    .await;
+    if !detailed.is_error {
+        return match format_calcurse_events(&detailed.content) {
+            Some(text) => ToolResult::ok(text),
+            None => detailed,
+        };
+    }
+    // Older calcurse without extended format specifiers — previous behaviour.
+    run_command("calcurse", &["-Q", "--filter-type", "apt", "-d", days]).await
+}
+
 pub async fn handle_calendar(
     action: &str,
     input: &OrganizerInput,
@@ -395,46 +626,14 @@ pub async fn handle_calendar(
     match (backend, action) {
         // ── khal ──
         ("khal", "calendars") => run_command("khal", &["printcalendars"]).await,
-        ("khal", "today") => {
-            run_command(
-                "khal",
-                &[
-                    "list",
-                    "today",
-                    "today",
-                    "--format",
-                    "{calendar}: {title} | {start-time} - {end-time} | {location}",
-                ],
-            )
-            .await
-        }
+        ("khal", "today") => khal_list_events("today", "today").await,
         ("khal", "upcoming") => {
             let days = input.days.unwrap_or(7).clamp(1, 365);
-            run_command(
-                "khal",
-                &[
-                    "list",
-                    "today",
-                    &format!("{}d", days),
-                    "--format",
-                    "{calendar}: {title} | {start-time} - {end-time} | {location}",
-                ],
-            )
-            .await
+            khal_list_events("today", &format!("{}d", days)).await
         }
         ("khal", "list") => {
             let days = input.days.unwrap_or(365).clamp(1, 365);
-            run_command(
-                "khal",
-                &[
-                    "list",
-                    "today",
-                    &format!("{}d", days),
-                    "--format",
-                    "{calendar}: {title} | {start-time} - {end-time} | {location}",
-                ],
-            )
-            .await
+            khal_list_events("today", &format!("{}d", days)).await
         }
         ("khal", "create") => {
             let name = input.event_name();
@@ -493,7 +692,7 @@ pub async fn handle_calendar(
             let tomorrow = (chrono::Local::now() + chrono::Duration::days(1))
                 .format("%Y-%m-%d")
                 .to_string();
-            run_command("gcalcli", &["agenda", "--nocolor", &today, &tomorrow]).await
+            gcalcli_agenda(&today, &tomorrow).await
         }
         ("gcalcli", "upcoming") => {
             let days = input.days.unwrap_or(7).clamp(1, 365);
@@ -501,7 +700,7 @@ pub async fn handle_calendar(
             let end = (chrono::Local::now() + chrono::Duration::days(days))
                 .format("%Y-%m-%d")
                 .to_string();
-            run_command("gcalcli", &["agenda", "--nocolor", &start, &end]).await
+            gcalcli_agenda(&start, &end).await
         }
         ("gcalcli", "list") => {
             let days = input.days.unwrap_or(30).clamp(1, 365);
@@ -509,7 +708,7 @@ pub async fn handle_calendar(
             let end = (chrono::Local::now() + chrono::Duration::days(days))
                 .format("%Y-%m-%d")
                 .to_string();
-            run_command("gcalcli", &["agenda", "--nocolor", &start, &end]).await
+            gcalcli_agenda(&start, &end).await
         }
         ("gcalcli", "create") => {
             let name = input.event_name();
@@ -570,18 +769,14 @@ pub async fn handle_calendar(
         ("calcurse", "calendars") => ToolResult::ok(
             "calcurse uses a single local calendar stored in ~/.local/share/calcurse/".to_string(),
         ),
-        ("calcurse", "today") => {
-            run_command("calcurse", &["-Q", "--filter-type", "apt", "-d", "1"]).await
-        }
+        ("calcurse", "today") => calcurse_list_events("1").await,
         ("calcurse", "upcoming") => {
             let days = input.days.unwrap_or(7).clamp(1, 365);
-            let days_str = days.to_string();
-            run_command("calcurse", &["-Q", "--filter-type", "apt", "-d", &days_str]).await
+            calcurse_list_events(&days.to_string()).await
         }
         ("calcurse", "list") => {
             let days = input.days.unwrap_or(365).clamp(1, 365);
-            let days_str = days.to_string();
-            run_command("calcurse", &["-Q", "--filter-type", "apt", "-d", &days_str]).await
+            calcurse_list_events(&days.to_string()).await
         }
         ("calcurse", "create") => {
             let name = input.event_name();
