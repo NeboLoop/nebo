@@ -12,9 +12,11 @@ use crate::ProviderError;
 /// find that out.
 pub const MAX_AUDIO_BYTES: usize = 25 * 1024 * 1024;
 
-/// File extensions the transcription endpoints accept.
+/// Formats the endpoint accepts. Kept in step with Janus's `audio.stt.extensions`
+/// allowlist, which is matched verbatim — a format listed here but not there is
+/// rejected at the gateway before the audio is ever read.
 pub const SUPPORTED_AUDIO_EXTENSIONS: &[&str] = &[
-    "flac", "m4a", "mp3", "mp4", "mpeg", "mpga", "oga", "ogg", "wav", "webm",
+    "flac", "m4a", "mp3", "mp4", "mpeg", "mpga", "ogg", "wav", "webm",
 ];
 
 /// Whether this filename/MIME pair looks like audio we can transcribe.
