@@ -33,3 +33,6 @@ src-tauri/bundled-napps/plugins/*/
 # Obscura (and other) Tauri externalBin sidecars: staged from the localrivet fork
 # build (make stage-obscura) or fetched from fork release assets at CI. Never committed.
 src-tauri/binaries/
+
+# Session screenshots — scratch, never commit these (see f7873583)
+/*.png
