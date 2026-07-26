@@ -18,6 +18,18 @@
     mobileChatsOpen.set(false);
   });
   const sidebarCollapsed = sidebarCollapsedFor('agents');
+
+  // The panel button means different things by breakpoint. On md+ the pane is a
+  // fixed column, so it collapses to the rail. Below md the pane IS the drawer —
+  // collapsing it to a rail leaves the overlay covering the screen, so the only
+  // sensible action is to close it. 768px is Tailwind's `md`.
+  function toggleAgentsPane() {
+    if (window.matchMedia('(min-width: 768px)').matches) {
+      $sidebarCollapsed = !$sidebarCollapsed;
+    } else {
+      mobileAgentsOpen.set(false);
+    }
+  }
   import { devMode } from '$lib/stores/devmode.js';
   import type { AgentDisplay, EnrichedChat, AgentRun, WorkflowStatsLocal, WorkflowConfig } from '$lib/types/agentPage';
   import { mapWorkflows, saveWorkflows } from '$lib/utils/workflowApi';
@@ -688,7 +700,7 @@
     {#if !$sidebarCollapsed}
       <span class="text-sm font-semibold flex-1">{$t('sidebar.agents')}</span>
     {/if}
-    <button class="w-7 h-7 rounded-md flex items-center justify-center hover:bg-base-200 cursor-pointer bg-transparent border-none shrink-0" onclick={() => $sidebarCollapsed = !$sidebarCollapsed} title={$sidebarCollapsed ? $t('nav.expandSidebar') : $t('nav.collapseSidebar')}>
+    <button class="w-7 h-7 rounded-md flex items-center justify-center hover:bg-base-200 cursor-pointer bg-transparent border-none shrink-0" onclick={toggleAgentsPane} title={$sidebarCollapsed ? $t('nav.expandSidebar') : $t('nav.collapseSidebar')}>
       <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5" stroke="currentColor" stroke-width="1.2"/><line x1="5.5" y1="3" x2="5.5" y2="13" stroke="currentColor" stroke-width="1.2"/></svg>
     </button>
   </div>
