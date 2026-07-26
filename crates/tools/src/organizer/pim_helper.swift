@@ -81,6 +81,22 @@ let displayFormatter: DateFormatter = {
     return f
 }()
 
+/// Date only — used for all-day events and recurrence end dates.
+let dayFormatter: DateFormatter = {
+    let f = DateFormatter()
+    f.dateStyle = .medium
+    f.timeStyle = .none
+    return f
+}()
+
+/// Time only — used for the end of a same-day event.
+let timeFormatter: DateFormatter = {
+    let f = DateFormatter()
+    f.dateStyle = .none
+    f.timeStyle = .short
+    return f
+}()
+
 func parseDate(_ s: String) -> Date? {
     // ISO 8601
     if let d = isoFormatter.date(from: s) { return d }
@@ -136,6 +152,178 @@ func calendarList() {
     print(names.joined(separator: ", "))
 }
 
+// MARK: - Event Rendering
+//
+// Events are rendered as a block per event: a scannable header line
+// ("- [Calendar] Title — when") followed by 4-space-indented "Label: value"
+// lines for every field that is actually set. Notes are last and each of
+// their lines is prefixed with "> " so embedded newlines and "|" characters
+// can never be mistaken for structure. Nothing parses this output — it is
+// read by the model — so completeness beats compactness.
+
+/// Collapse newlines/tabs so a value stays on its own labelled line.
+func singleLine(_ s: String) -> String {
+    s.replacingOccurrences(of: "\r\n", with: " ")
+        .replacingOccurrences(of: "\r", with: " ")
+        .replacingOccurrences(of: "\n", with: ", ")
+        .replacingOccurrences(of: "\t", with: " ")
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+}
+
+/// Human date range: marks all-day events instead of printing midnight.
+func eventWhen(_ e: EKEvent) -> String {
+    let cal = Calendar.current
+    // EventKit exposes these as implicitly-unwrapped optionals; treat them as
+    // genuinely optional so a malformed event degrades instead of crashing.
+    let maybeStart: Date? = e.startDate
+    let end: Date? = e.endDate
+    guard let start = maybeStart else { return "(no date)" }
+
+    if e.isAllDay {
+        guard let end = end else { return "\(dayFormatter.string(from: start)) (all day)" }
+        // EventKit's all-day end date is exclusive-ish (midnight or 23:59:59
+        // of the last day) — step back a second to get the real last day.
+        let lastDay = end.addingTimeInterval(-1)
+        if cal.isDate(lastDay, inSameDayAs: start) {
+            return "\(dayFormatter.string(from: start)) (all day)"
+        }
+        return "\(dayFormatter.string(from: start)) – \(dayFormatter.string(from: lastDay)) (all day)"
+    }
+
+    guard let end = end else { return displayFormatter.string(from: start) }
+    if cal.isDate(end, inSameDayAs: start) {
+        return "\(displayFormatter.string(from: start)) – \(timeFormatter.string(from: end))"
+    }
+    return "\(displayFormatter.string(from: start)) – \(displayFormatter.string(from: end))"
+}
+
+/// "Name <email>" for an attendee/organizer, falling back to whichever half exists.
+func participantLabel(_ p: EKParticipant) -> String {
+    let raw = p.url.absoluteString
+    let email = raw.hasPrefix("mailto:") ? String(raw.dropFirst("mailto:".count)) : raw
+    let name = (p.name ?? "").trimmingCharacters(in: .whitespaces)
+    if name.isEmpty { return email }
+    if email.isEmpty || name.compare(email, options: .caseInsensitive) == .orderedSame { return name }
+    return "\(name) <\(email)>"
+}
+
+func participantStatusName(_ s: EKParticipantStatus) -> String? {
+    switch s {
+    case .accepted: return "accepted"
+    case .declined: return "declined"
+    case .tentative: return "tentative"
+    case .pending: return "pending"
+    case .delegated: return "delegated"
+    case .completed: return "completed"
+    case .inProcess: return "in process"
+    case .unknown: return nil
+    @unknown default: return nil
+    }
+}
+
+func availabilityName(_ a: EKEventAvailability) -> String? {
+    switch a {
+    case .busy: return "busy"
+    case .free: return "free"
+    case .tentative: return "tentative"
+    case .unavailable: return "unavailable"
+    case .notSupported: return nil
+    @unknown default: return nil
+    }
+}
+
+func weekdayName(_ d: EKWeekday) -> String {
+    switch d {
+    case .sunday: return "Sun"
+    case .monday: return "Mon"
+    case .tuesday: return "Tue"
+    case .wednesday: return "Wed"
+    case .thursday: return "Thu"
+    case .friday: return "Fri"
+    case .saturday: return "Sat"
+    @unknown default: return "?"
+    }
+}
+
+func recurrenceDescription(_ r: EKRecurrenceRule) -> String {
+    let n = max(r.interval, 1)
+    let unit: String
+    switch r.frequency {
+    case .daily: unit = n == 1 ? "day" : "days"
+    case .weekly: unit = n == 1 ? "week" : "weeks"
+    case .monthly: unit = n == 1 ? "month" : "months"
+    case .yearly: unit = n == 1 ? "year" : "years"
+    @unknown default: unit = n == 1 ? "period" : "periods"
+    }
+    var parts = [n == 1 ? "every \(unit)" : "every \(n) \(unit)"]
+    if let days = r.daysOfTheWeek, !days.isEmpty {
+        parts.append("on " + days.map { weekdayName($0.dayOfTheWeek) }.joined(separator: ", "))
+    }
+    if let days = r.daysOfTheMonth, !days.isEmpty {
+        parts.append("on day " + days.map { "\($0)" }.joined(separator: ", "))
+    }
+    if let end = r.recurrenceEnd {
+        if let d = end.endDate {
+            parts.append("until \(dayFormatter.string(from: d))")
+        } else if end.occurrenceCount > 0 {
+            parts.append("for \(end.occurrenceCount) occurrences")
+        }
+    }
+    return parts.joined(separator: " ")
+}
+
+/// Render one event as a header line plus indented fields (empty fields omitted).
+func renderEvent(_ e: EKEvent) -> String {
+    var out = "- [\(e.calendar.title)] \(singleLine(e.title ?? "Untitled")) — \(eventWhen(e))"
+
+    if let loc = e.location.map(singleLine), !loc.isEmpty {
+        out += "\n    Location: \(loc)"
+    }
+    if let url = e.url?.absoluteString, !url.isEmpty {
+        out += "\n    URL: \(url)"
+    }
+    if let organizer = e.organizer {
+        let label = participantLabel(organizer)
+        if !label.isEmpty { out += "\n    Organizer: \(label)" }
+    }
+    if let attendees = e.attendees, !attendees.isEmpty {
+        let list = attendees.compactMap { a -> String? in
+            var label = participantLabel(a)
+            if label.isEmpty { return nil }
+            if a.isCurrentUser { label += " (you)" }
+            if let status = participantStatusName(a.participantStatus) { label += " [\(status)]" }
+            return label
+        }
+        if !list.isEmpty { out += "\n    Attendees: \(list.joined(separator: "; "))" }
+    }
+    if let avail = availabilityName(e.availability) {
+        out += "\n    Availability: \(avail)"
+    }
+    switch e.status {
+    case .tentative: out += "\n    Status: tentative"
+    case .canceled: out += "\n    Status: canceled"
+    default: break
+    }
+    if let rules = e.recurrenceRules, let first = rules.first {
+        out += "\n    Repeats: \(recurrenceDescription(first))"
+    }
+    if let id = e.eventIdentifier, !id.isEmpty {
+        out += "\n    ID: \(id)"
+    }
+    // Notes last: multi-line, every line prefixed so the block is unambiguous.
+    let notes = (e.notes ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    if !notes.isEmpty {
+        out += "\n    Notes:"
+        for line in notes.replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+            .components(separatedBy: "\n")
+        {
+            out += "\n      > \(line)"
+        }
+    }
+    return out
+}
+
 func calendarEvents() {
     ensureCalendarAccess()
     let days = Int(params["days"] ?? "1") ?? 1
@@ -166,7 +354,7 @@ func calendarEvents() {
     }
 
     for e in events {
-        print("\(e.calendar.title) | \(e.title ?? "Untitled") | \(displayFormatter.string(from: e.startDate))")
+        print(renderEvent(e))
     }
 }
 

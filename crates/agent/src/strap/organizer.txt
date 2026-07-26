@@ -30,6 +30,8 @@ USE THIS when: user mentions email, calendar, contacts, reminders, appointments,
 - os(resource: "calendar", action: "calendars") — List all calendars
 - os(resource: "calendar", action: "configure") — Choose which calendars to track
 
+Calendar reads (today/upcoming/list) return the FULL event: start and end times (all-day events are marked), location, notes/description in full, URL, organizer, attendees with their reply status, availability, recurrence, and event ID. Meeting links and agendas are already in that result — read them there instead of asking the user.
+
 Recurrence params (for create): repeat: "daily"/"weekly"/"monthly"/"yearly", repeat_days: "mon,tue,wed" (for weekly), interval: 2 (every 2 weeks), end_repeat: "2025-12-31"
 
 **Reminders:**

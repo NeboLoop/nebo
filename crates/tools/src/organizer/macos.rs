@@ -408,6 +408,146 @@ end tell"#,
 // Calendar
 // ═══════════════════════════════════════════════════════════════════════
 
+/// AppleScript handlers used by the calendar queries.
+///
+/// Defined outside the `tell` block (handlers must be top-level) and called
+/// with `my …` from inside it. They only ever touch plain text, never app
+/// objects, so no Apple event round trip is involved.
+const CALENDAR_TEXT_HANDLERS: &str = r#"on flattenText(t)
+    set flatOut to ""
+    repeat with p in paragraphs of (t as text)
+        set pt to p as text
+        if flatOut is "" then
+            set flatOut to pt
+        else if pt is not "" then
+            set flatOut to flatOut & ", " & pt
+        end if
+    end repeat
+    return flatOut
+end flattenText
+
+on quoteLines(t)
+    set quoteOut to ""
+    repeat with p in paragraphs of (t as text)
+        set quoteOut to quoteOut & "      > " & (p as text) & linefeed
+    end repeat
+    return quoteOut
+end quoteLines
+"#;
+
+/// AppleScript that renders the event `e` of calendar `cal` into `output`.
+///
+/// Shared verbatim by both calendar queries so the single-calendar and
+/// all-calendar paths can never drift. Every property is read into a local
+/// first (`date string` etc. only work on values, not app references) and
+/// guarded by its own `try` — Calendar.app raises on properties an account
+/// doesn't expose, and one bad property must never kill the whole query.
+/// Unset properties come back as `missing value`, which coerces to the
+/// literal text "missing value", so each one is checked explicitly.
+///
+/// Parity with the native EventKit path (see pim_helper.swift), minus
+/// organizer and free/busy availability — Calendar.app's scripting
+/// dictionary exposes neither.
+const CALENDAR_EVENT_RENDER: &str = r#"set evSummary to "Untitled"
+                    try
+                        set evTmp to summary of e
+                        if evTmp is not missing value then set evSummary to my flattenText(evTmp)
+                    end try
+                    set evOut to "- [" & (name of cal) & "] " & evSummary
+                    set evAllDay to false
+                    try
+                        set evAllDay to (allday event of e) is true
+                    end try
+                    set evStart to missing value
+                    set evEnd to missing value
+                    try
+                        set evStart to start date of e
+                    end try
+                    try
+                        set evEnd to end date of e
+                    end try
+                    if evStart is not missing value then
+                        if evAllDay then
+                            set evWhen to (date string of evStart)
+                            if evEnd is not missing value then
+                                set evLast to evEnd - 1
+                                if (date string of evLast) is not (date string of evStart) then set evWhen to evWhen & " – " & (date string of evLast)
+                            end if
+                            set evWhen to evWhen & " (all day)"
+                        else
+                            set evWhen to (date string of evStart) & " " & (time string of evStart)
+                            if evEnd is not missing value then
+                                if (date string of evEnd) is (date string of evStart) then
+                                    set evWhen to evWhen & " – " & (time string of evEnd)
+                                else
+                                    set evWhen to evWhen & " – " & (date string of evEnd) & " " & (time string of evEnd)
+                                end if
+                            end if
+                        end if
+                        set evOut to evOut & " — " & evWhen
+                    end if
+                    set evOut to evOut & linefeed
+                    try
+                        set evLoc to location of e
+                        if evLoc is not missing value then
+                            set evLoc to my flattenText(evLoc)
+                            if evLoc is not "" then set evOut to evOut & "    Location: " & evLoc & linefeed
+                        end if
+                    end try
+                    try
+                        set evUrl to url of e
+                        if evUrl is not missing value and (evUrl as text) is not "" then set evOut to evOut & "    URL: " & (evUrl as text) & linefeed
+                    end try
+                    try
+                        set evAtt to ""
+                        repeat with a in attendees of e
+                            set attLine to ""
+                            try
+                                set attName to display name of a
+                                if attName is not missing value then set attLine to attName as text
+                            end try
+                            set attMail to ""
+                            try
+                                set attTmp to email of a
+                                if attTmp is not missing value then set attMail to attTmp as text
+                            end try
+                            if attLine is "" then
+                                set attLine to attMail
+                            else if attMail is not "" and attMail is not attLine then
+                                set attLine to attLine & " <" & attMail & ">"
+                            end if
+                            if attLine is not "" then
+                                try
+                                    set attStat to (participation status of a) as text
+                                    if attStat is not "unknown" then set attLine to attLine & " [" & attStat & "]"
+                                end try
+                                if evAtt is "" then
+                                    set evAtt to attLine
+                                else
+                                    set evAtt to evAtt & "; " & attLine
+                                end if
+                            end if
+                        end repeat
+                        if evAtt is not "" then set evOut to evOut & "    Attendees: " & evAtt & linefeed
+                    end try
+                    try
+                        set evStat to (status of e) as text
+                        if evStat is not "confirmed" and evStat is not "none" then set evOut to evOut & "    Status: " & evStat & linefeed
+                    end try
+                    try
+                        set evRec to recurrence of e
+                        if evRec is not missing value and (evRec as text) is not "" then set evOut to evOut & "    Repeats: " & (evRec as text) & linefeed
+                    end try
+                    try
+                        set evUid to uid of e
+                        if evUid is not missing value and (evUid as text) is not "" then set evOut to evOut & "    ID: " & (evUid as text) & linefeed
+                    end try
+                    try
+                        set evNotes to description of e
+                        if evNotes is not missing value and (evNotes as text) is not "" then set evOut to evOut & "    Notes:" & linefeed & my quoteLines(evNotes as text)
+                    end try
+                    set output to output & evOut"#;
+
 /// Query events from specific calendars over a date range.
 ///
 /// Uses a single osascript process with AppleScript's `with timeout`
@@ -431,7 +571,8 @@ async fn query_calendar_events(
     if !calendar.is_empty() {
         let escaped = escape_applescript(calendar);
         let script = format!(
-            r#"tell application "Calendar"
+            r#"{CALENDAR_TEXT_HANDLERS}
+tell application "Calendar"
     set today to current date
     set time of today to 0
     set endDate to today + ({days} * days)
@@ -439,7 +580,7 @@ async fn query_calendar_events(
     repeat with cal in (every calendar whose name is "{escaped}")
         set evts to (every event of cal whose start date >= today and start date < endDate)
         repeat with e in evts
-            set output to output & (name of cal) & " | " & (summary of e) & " | " & (start date of e as text) & linefeed
+                    {CALENDAR_EVENT_RENDER}
         end repeat
     end repeat
     if output is "" then return "{no_events_msg}"
@@ -471,7 +612,8 @@ end tell"#,
     // `with timeout of 15` gives each calendar's `whose` clause 15s
     // to respond (Apple Event timeout, not wall-clock).
     let script = format!(
-        r#"tell application "Calendar"
+        r#"{CALENDAR_TEXT_HANDLERS}
+tell application "Calendar"
     set today to current date
     set time of today to 0
     set endDate to today + ({days} * days)
@@ -483,7 +625,7 @@ end tell"#,
             with timeout of 15 seconds
                 set evts to (every event of cal whose start date >= today and start date < endDate)
                 repeat with e in evts
-                    set output to output & (name of cal) & " | " & (summary of e) & " | " & (start date of e as text) & linefeed
+                    {CALENDAR_EVENT_RENDER}
                 end repeat
             end timeout
         on error
