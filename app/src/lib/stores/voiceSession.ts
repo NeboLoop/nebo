@@ -99,6 +99,43 @@ function createVoiceSessionStore() {
 	let agentEntryOpen = false;
 	// Mic chunks captured before the WS finishes opening (parallel init).
 	let preOpenAudio: ArrayBuffer[] = [];
+	// Screen wake lock held for the duration of a call. Without it, mobile
+	// browsers auto-lock the screen mid-conversation and SUSPEND the page —
+	// freezing JS, killing the mic, and closing the WebSocket (close 1001
+	// "closed due to suspension"). Re-acquired on visibility return because
+	// the OS silently releases it whenever the page is hidden.
+	let wakeLock: { release(): Promise<void> } | null = null;
+	let wakeLockVisibilityHandler: (() => void) | null = null;
+
+	async function acquireWakeLock() {
+		try {
+			const nav = navigator as Navigator & {
+				wakeLock?: { request(type: 'screen'): Promise<{ release(): Promise<void> }> };
+			};
+			if (!nav.wakeLock) return; // unsupported: old browsers keep old behavior
+			wakeLock = await nav.wakeLock.request('screen');
+			if (!wakeLockVisibilityHandler) {
+				wakeLockVisibilityHandler = () => {
+					if (document.visibilityState === 'visible' && readState().status !== 'idle') {
+						acquireWakeLock();
+					}
+				};
+				document.addEventListener('visibilitychange', wakeLockVisibilityHandler);
+			}
+		} catch {
+			// Denied (low battery mode etc.) — the call still works, the screen
+			// just isn't protected from auto-lock.
+		}
+	}
+
+	function releaseWakeLock() {
+		if (wakeLockVisibilityHandler) {
+			document.removeEventListener('visibilitychange', wakeLockVisibilityHandler);
+			wakeLockVisibilityHandler = null;
+		}
+		wakeLock?.release().catch(() => {});
+		wakeLock = null;
+	}
 
 	function readState(): VoiceSessionState {
 		let state = initialState;
@@ -185,6 +222,7 @@ function createVoiceSessionStore() {
 	function cleanup() {
 		clearTimers();
 		stopPlayback();
+		releaseWakeLock();
 
 		if (captureHandle) {
 			captureHandle.stop();
@@ -246,9 +284,13 @@ function createVoiceSessionStore() {
 					break;
 
 				case 'transcription_start':
-					// User started speaking — if we're currently playing TTS, interrupt it
+					// Barge-in: the user's voice always wins. Kill local playback
+					// immediately — including tail audio still buffered after the
+					// server finished generating (status already 'listening') —
+					// and cancel upstream only mid-response (the server drops the
+					// cancel when nothing is in flight, so the race is harmless).
+					stopPlayback();
 					if (readState().status === 'speaking') {
-						stopPlayback();
 						if (ws && ws.readyState === WebSocket.OPEN) {
 							ws.send(JSON.stringify({ type: 'interrupt' }));
 						}
@@ -377,6 +419,10 @@ function createVoiceSessionStore() {
 			}));
 			agentEntryOpen = false;
 			preOpenAudio = [];
+
+			// Keep the screen awake for the whole call — auto-lock suspends the
+			// page and kills the session (fire-and-forget; failure is benign).
+			acquireWakeLock();
 
 			log.info('Voice session connecting for agent: ' + agentId);
 

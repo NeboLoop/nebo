@@ -196,6 +196,11 @@ async fn run_session(
     }
 
     let mut initialized = false;
+    // Whether a model response is in flight (response.created seen, no
+    // response.done yet). Barge-in near the end of a response otherwise races
+    // the cancel: the client still hears buffered audio, sends Interrupt, and
+    // upstream rejects the cancel with "no active response found".
+    let mut response_active = false;
 
     loop {
         tokio::select! {
@@ -228,13 +233,17 @@ async fn run_session(
                     RealtimeCommand::Interrupt => {
                         let clear = json!({ "type": "input_audio_buffer.clear" });
                         match sink.send(Message::Text(clear.to_string().into())).await {
-                            Ok(()) => {
+                            // Only cancel when a response is actually in
+                            // flight — a barge-in against tail-buffered audio
+                            // has nothing upstream to cancel.
+                            Ok(()) if response_active => {
+                                response_active = false;
                                 sink.send(Message::Text(
                                     json!({ "type": "response.cancel" }).to_string().into(),
                                 ))
                                 .await
                             }
-                            Err(e) => Err(e),
+                            other => other,
                         }
                     }
                     RealtimeCommand::ToolOutput { call_id, output } => {
@@ -280,7 +289,10 @@ async fn run_session(
                         }
                     }
                     Some(Ok(Message::Text(text))) => {
-                        if handle_server_event(&text, &event_tx, &mut initialized).await.is_err() {
+                        if handle_server_event(&text, &event_tx, &mut initialized, &mut response_active)
+                            .await
+                            .is_err()
+                        {
                             break;
                         }
                     }
@@ -310,6 +322,7 @@ async fn handle_server_event(
     text: &str,
     event_tx: &mpsc::Sender<ConversationEvent>,
     initialized: &mut bool,
+    response_active: &mut bool,
 ) -> Result<(), ()> {
     let Ok(ev) = serde_json::from_str::<Value>(text) else {
         warn!(frame = %text, "unparseable realtime event");
@@ -354,6 +367,7 @@ async fn handle_server_event(
             send(ConversationEvent::TranscriptionEnd).await?;
         }
         "response.created" => {
+            *response_active = true;
             send(ConversationEvent::PlaybackStart).await?;
         }
         // JSON-transport fallback (binary transport makes these unnecessary,
@@ -387,6 +401,7 @@ async fn handle_server_event(
             }
         }
         "response.done" => {
+            *response_active = false;
             send(ConversationEvent::PlaybackEnd).await?;
         }
         "error" => {
@@ -394,8 +409,15 @@ async fn handle_server_event(
                 .pointer("/error/message")
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown realtime error");
-            warn!(frame = %text, "realtime upstream error");
-            send(ConversationEvent::Error(msg.to_string())).await?;
+            // A cancel that lost the race to response.done is normal duplex
+            // turn-taking, not a session failure — surfacing it as Error made
+            // the client tear the whole call down on every tail barge-in.
+            if msg.contains("Cancellation failed") {
+                warn!(frame = %text, "benign realtime cancel race (ignored)");
+            } else {
+                warn!(frame = %text, "realtime upstream error");
+                send(ConversationEvent::Error(msg.to_string())).await?;
+            }
         }
         // Deliberately ignored: item bookkeeping, argument streaming deltas
         // (we act on .done), buffer commits.
@@ -443,11 +465,13 @@ mod tests {
     async fn server_events_translate() {
         let (tx, mut rx) = mpsc::channel(8);
         let mut init = false;
+        let mut active = false;
 
         handle_server_event(
             r#"{"type":"session.created","conversation":{"id":"conv_1"}}"#,
             &tx,
             &mut init,
+            &mut active,
         )
         .await
         .unwrap();
@@ -460,6 +484,7 @@ mod tests {
             r#"{"type":"conversation.item.input_audio_transcription.updated","transcript":"hello world"}"#,
             &tx,
             &mut init,
+            &mut active,
         )
         .await
         .unwrap();
@@ -471,6 +496,7 @@ mod tests {
             r#"{"type":"response.function_call_arguments.done","call_id":"c1","name":"os","arguments":"{\"action\":\"read\"}"}"#,
             &tx,
             &mut init,
+            &mut active,
         )
         .await
         .unwrap();
@@ -481,6 +507,51 @@ mod tests {
                 assert!(arguments.contains("read"));
             }
             other => panic!("expected ToolCall, got {other:?}"),
+        }
+    }
+
+    /// Barge-in duplex contract: response lifecycle events track the in-flight
+    /// flag, and the benign cancel-race error is swallowed while real errors
+    /// still surface as fatal.
+    #[tokio::test]
+    async fn barge_in_cancel_race_is_benign() {
+        let (tx, mut rx) = mpsc::channel(8);
+        let mut init = true;
+        let mut active = false;
+
+        handle_server_event(r#"{"type":"response.created"}"#, &tx, &mut init, &mut active)
+            .await
+            .unwrap();
+        assert!(active);
+        assert!(matches!(rx.recv().await, Some(ConversationEvent::PlaybackStart)));
+
+        handle_server_event(r#"{"type":"response.done"}"#, &tx, &mut init, &mut active)
+            .await
+            .unwrap();
+        assert!(!active);
+        assert!(matches!(rx.recv().await, Some(ConversationEvent::PlaybackEnd)));
+
+        // The cancel race must NOT surface as a client-facing Error.
+        handle_server_event(
+            r#"{"type":"error","error":{"message":"Cancellation failed: no active response found","type":"invalid_request_error"}}"#,
+            &tx,
+            &mut init,
+            &mut active,
+        )
+        .await
+        .unwrap();
+        // A real error still must.
+        handle_server_event(
+            r#"{"type":"error","error":{"message":"insufficient balance","type":"payment_error"}}"#,
+            &tx,
+            &mut init,
+            &mut active,
+        )
+        .await
+        .unwrap();
+        match rx.recv().await {
+            Some(ConversationEvent::Error(m)) => assert!(m.contains("insufficient balance")),
+            other => panic!("expected only the real error, got {other:?}"),
         }
     }
 }

@@ -24,6 +24,14 @@ pub struct ConversationQuery {
     pub agent_id: Option<String>,
     #[serde(default)]
     pub chat_id: Option<String>,
+    /// When the call is opened from a loop chat (through the tunnel), the
+    /// loop conversation to relay finished turns into — the loop UI can't see
+    /// desktop chat rows, so the transcript must arrive as loop messages.
+    #[serde(default)]
+    pub loop_conversation_id: Option<String>,
+    /// Loop stream for the relay ("agent_space" for agent chats, "dm").
+    #[serde(default)]
+    pub loop_stream: Option<String>,
 }
 
 pub async fn conversation_ws_handler(
@@ -281,8 +289,51 @@ fn chat_history_context(state: &AppState, chat_id: &str) -> String {
     }
 }
 
-async fn handle_conversation_ws(mut socket: WebSocket, state: AppState, q: ConversationQuery) {
+/// Resolve a caller-supplied agent identifier to the local agent row id.
+/// Loop-originated calls only know the loop-side identity: the loop agent
+/// UUID or the bot-scoped handle (`bot_<id8>` primary / `bot_<id8>_<slug>`
+/// secondary) — never the local row id.
+fn resolve_local_agent_id(state: &AppState, given: &str) -> String {
+    if given == "assistant" || matches!(state.store.get_agent(given), Ok(Some(_))) {
+        return given.to_string();
+    }
+    if let Ok(agents) = state.store.list_agents(1000, 0) {
+        for a in &agents {
+            if a.loop_agent_id.as_deref() == Some(given) || a.handle.as_deref() == Some(given) {
+                return a.id.clone();
+            }
+        }
+        // Secondary bot-scoped handle: bot_<id8>_<slug> — match the slug tail
+        // against each agent's handle tail or slugified name.
+        if let Some(rest) = given.strip_prefix("bot_")
+            && let Some((_, slug)) = rest.split_once('_')
+        {
+            for a in &agents {
+                let name_slug = a.name.to_lowercase().replace([' ', '_'], "-");
+                if a.handle.as_deref().is_some_and(|h| h.ends_with(slug)) || name_slug == slug {
+                    return a.id.clone();
+                }
+            }
+        }
+    }
+    // Primary bot handle (bot_<id8>, no agent suffix) → the default agent.
+    if let Some(rest) = given.strip_prefix("bot_")
+        && !rest.contains('_')
+    {
+        return "assistant".to_string();
+    }
+    given.to_string()
+}
+
+async fn handle_conversation_ws(mut socket: WebSocket, state: AppState, mut q: ConversationQuery) {
     info!("conversation WebSocket connected");
+    if let Some(given) = q.agent_id.as_deref().filter(|s| !s.is_empty()) {
+        let resolved = resolve_local_agent_id(&state, given);
+        if resolved != given {
+            info!(given = %given, resolved = %resolved, "voice agent id resolved from loop identity");
+        }
+        q.agent_id = Some(resolved);
+    }
 
     // Voice is a modality of a chat — without a real thread to persist into,
     // every turn and delegated run would land in an orphan conversation.
@@ -353,6 +404,48 @@ async fn handle_conversation_ws(mut socket: WebSocket, state: AppState, q: Conve
     };
 
     handle_conversation_session(socket, state, q, rt_tx, rt_rx).await;
+}
+
+/// Relay one finished voice turn into a loop conversation so the loop UI
+/// shows the transcript live. User turns carry the owner-relay metadata the
+/// loop renders as the owner speaking through another channel; agent turns go
+/// out as normal agent messages (the loop attributes them to the bot).
+fn relay_loop_turn(state: &AppState, conv_id: &str, stream: &str, role: &str, content: &str) {
+    let manager = state.comm_manager.clone();
+    let mut metadata = std::collections::HashMap::new();
+    if role == "user" {
+        metadata.insert("relay".to_string(), "true".to_string());
+        metadata.insert("role".to_string(), "user".to_string());
+        metadata.insert("senderName".to_string(), "You".to_string());
+    } else {
+        metadata.insert("senderKind".to_string(), "agent".to_string());
+    }
+    metadata.insert("via".to_string(), "voice".to_string());
+    let msg = comm::CommMessage {
+        id: uuid::Uuid::new_v4().to_string(),
+        from: String::new(),
+        to: String::new(),
+        // topic doubles as the explicit stream name on the outbound send.
+        topic: stream.to_string(),
+        conversation_id: conv_id.to_string(),
+        msg_type: comm::CommMessageType::Message,
+        content: content.to_string(),
+        metadata,
+        timestamp: 0,
+        human_injected: role == "user",
+        human_id: None,
+        task_id: None,
+        correlation_id: None,
+        task_status: None,
+        artifacts: vec![],
+        error: None,
+        attachments: vec![],
+    };
+    tokio::spawn(async move {
+        if let Err(e) = manager.send(msg).await {
+            warn!(error = %e, "failed to relay voice turn to loop");
+        }
+    });
 }
 
 /// Persist one finished voice turn as a normal chat message and tell open
@@ -448,6 +541,15 @@ async fn handle_conversation_session(
     use voice::realtime::RealtimeCommand;
 
     let chat_id = q.chat_id.filter(|c| !c.is_empty());
+    // Loop-originated call: relay every finished turn into this conversation.
+    let loop_relay = q.loop_conversation_id.clone().filter(|c| !c.is_empty()).map(|conv| {
+        let stream = q
+            .loop_stream
+            .clone()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "agent_space".to_string());
+        (conv, stream)
+    });
 
     // Voice tool execution context: user-origin, empty approved_categories —
     // OFF capabilities fail closed with a clear error (no autonomy bypass; the
@@ -503,12 +605,22 @@ async fn handle_conversation_session(
                         if let Some(cid) = chat_id.as_deref() {
                             persist_voice_turn(&state, cid, "user", &user_partial);
                         }
+                        if let Some((conv, stream)) = loop_relay.as_ref()
+                            && !user_partial.trim().is_empty()
+                        {
+                            relay_loop_turn(&state, conv, stream, "user", user_partial.trim());
+                        }
                         user_partial.clear();
                         Some(serde_json::json!({"type": "playback_start"}))
                     }
                     ConversationEvent::PlaybackEnd => {
                         if let Some(cid) = chat_id.as_deref() {
                             persist_voice_turn(&state, cid, "assistant", &agent_partial);
+                        }
+                        if let Some((conv, stream)) = loop_relay.as_ref()
+                            && !agent_partial.trim().is_empty()
+                        {
+                            relay_loop_turn(&state, conv, stream, "assistant", agent_partial.trim());
                         }
                         agent_partial.clear();
                         Some(serde_json::json!({"type": "playback_end"}))
@@ -648,5 +760,13 @@ async fn handle_conversation_session(
     if let Some(cid) = chat_id.as_deref() {
         persist_voice_turn(&state, cid, "user", &user_partial);
         persist_voice_turn(&state, cid, "assistant", &agent_partial);
+    }
+    if let Some((conv, stream)) = loop_relay.as_ref() {
+        if !user_partial.trim().is_empty() {
+            relay_loop_turn(&state, conv, stream, "user", user_partial.trim());
+        }
+        if !agent_partial.trim().is_empty() {
+            relay_loop_turn(&state, conv, stream, "assistant", agent_partial.trim());
+        }
     }
 }
