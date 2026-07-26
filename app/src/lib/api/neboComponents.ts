@@ -1691,6 +1691,14 @@ export interface UpdateWorkflowResponse {
 	workflow: Workflow
 }
 
+export interface UploadFileResponse {
+	fileId: string
+	filename: string
+	mimeType: unknown
+	size: number
+	url: string
+}
+
 export interface UserAcceptTermsResponse {
 	success: boolean
 }
@@ -1890,7 +1898,6 @@ export type WSServerEventType =
 	| "session_reset"
 	| "session_compact"
 	| "chat_complete"
-	| "ghost_text"
 	| "chat_ack"
 	| "chat_stream"
 	| "chat_error"
@@ -1928,11 +1935,6 @@ export interface SessionCompactEvent {
 export interface ChatCompleteEvent {
 	session_id: string
 	skipped: boolean
-}
-
-export interface GhostTextEvent {
-	request_id: string
-	suggestion: string
 }
 
 export interface ChatAckEvent {

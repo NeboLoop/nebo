@@ -23,8 +23,6 @@
       };
     },
   });
-  import { Plugin, PluginKey } from '@tiptap/pm/state';
-  import { Decoration, DecorationSet } from '@tiptap/pm/view';
   import SlashCommandMenu from './SlashCommandMenu.svelte';
   import VoiceModeOverlay from './VoiceModeOverlay.svelte';
   import type { SlashCommand } from './slashCommands.js';
@@ -87,13 +85,6 @@
 
   // IME composition state (Phase 10 — prevents Enter-to-send during CJK input)
   let isComposing = $state(false);
-
-  // Ghost text (inline completion)
-  let ghostText = $state('');
-  let ghostRequestId = '';
-  let ghostDebounceTimer: ReturnType<typeof setTimeout> | null = null;
-  let ghostCleanup: (() => void) | null = null;
-  const ghostPluginKey = new PluginKey('ghostText');
 
   // Draft persistence (Phase 6)
   let draftSaveTimer: ReturnType<typeof setTimeout> | null = null;
@@ -166,54 +157,6 @@
   let composerDragOver = $state(false);
   let composerDragDepth = 0;
 
-  // --- Ghost Text Functions ---
-
-  function requestGhostText(partialText: string) {
-    // Don't request during streaming or for short input
-    if (isLoading || partialText.length < 10) {
-      clearGhostText();
-      return;
-    }
-
-    if (ghostDebounceTimer) clearTimeout(ghostDebounceTimer);
-    ghostDebounceTimer = setTimeout(() => {
-      ghostRequestId = crypto.randomUUID();
-      const ws = getWebSocketClient();
-      ws.send('ghost_text', {
-        partial_text: partialText,
-        session_id: sessionId,
-        agent_id: agentId,
-        request_id: ghostRequestId,
-      });
-    }, 500);
-  }
-
-  function clearGhostText() {
-    ghostText = '';
-    if (ghostDebounceTimer) {
-      clearTimeout(ghostDebounceTimer);
-      ghostDebounceTimer = null;
-    }
-    // Clear the decoration in the editor
-    if (editor) {
-      const tr = editor.state.tr.setMeta(ghostPluginKey, '');
-      editor.view.dispatch(tr);
-    }
-  }
-
-  function acceptGhostText() {
-    if (!ghostText || !editor) return;
-    const text = ghostText;
-    clearGhostText();
-    editor.commands.insertContent(text);
-  }
-
-  function updateGhostDecoration(text: string) {
-    if (!editor) return;
-    const tr = editor.state.tr.setMeta(ghostPluginKey, text);
-    editor.view.dispatch(tr);
-  }
-
   // --- Slash Command Detection Extension ---
   const SlashDetector = Extension.create({
     name: 'slashDetector',
@@ -229,58 +172,9 @@
     },
   });
 
-  // --- Ghost Text TipTap Extension ---
-  const GhostTextExtension = Extension.create({
-    name: 'ghostText',
-    addProseMirrorPlugins() {
-      const key = ghostPluginKey;
-      return [
-        new Plugin({
-          key,
-          state: {
-            init() { return DecorationSet.empty; },
-            apply(tr, old) {
-              const meta = tr.getMeta(key);
-              // Explicit set via meta
-              if (meta !== undefined) {
-                if (!meta) return DecorationSet.empty;
-                const pos = tr.selection.$to.pos;
-                const widget = Decoration.widget(pos, () => {
-                  const span = document.createElement('span');
-                  span.textContent = meta;
-                  span.className = 'ghost-text-hint';
-                  return span;
-                }, { side: 1 });
-                return DecorationSet.create(tr.doc, [widget]);
-              }
-              // On any other transaction (typing), clear ghost text
-              if (tr.docChanged) return DecorationSet.empty;
-              return old.map(tr.mapping, tr.doc);
-            }
-          },
-          props: {
-            decorations(state) { return key.getState(state); }
-          }
-        })
-      ];
-    }
-  });
-
   // --- Initialize TipTap Editor ---
   onMount(() => {
     if (!editorElement) return;
-
-
-    // Ghost text: subscribe directly to the WS event (single pathway).
-    function onGhostText(data: any) {
-      if (data?.request_id !== ghostRequestId) return; // stale response
-      const suggestion = data?.suggestion || '';
-      ghostText = suggestion;
-      if (suggestion) {
-        updateGhostDecoration(suggestion);
-      }
-    }
-    ghostCleanup = getWebSocketClient().on('ghost_text', onGhostText);
 
     editor = new Editor({
       element: editorElement,
@@ -300,7 +194,6 @@
         // serializes the doc back to markdown via editor.storage.markdown.getMarkdown().
         Markdown.configure({ html: false, transformPastedText: true, breaks: true }),
         SlashDetector,
-        GhostTextExtension,
         MentionMarkdown.configure({
           HTMLAttributes: { class: 'mention-chip' },
           suggestion: {
@@ -383,19 +276,6 @@
             return true;
           }
 
-          // Ghost text: Tab accepts, any other key dismisses
-          if (ghostText) {
-            if (event.key === 'Tab') {
-              event.preventDefault();
-              acceptGhostText();
-              return true;
-            }
-            // Don't clear on modifier keys alone
-            if (!['Shift', 'Control', 'Alt', 'Meta'].includes(event.key)) {
-              clearGhostText();
-            }
-          }
-
           // Phase 10: Suppress Enter during IME composition (CJK input)
           if (event.key === 'Enter' && !event.shiftKey && !mentionMenuVisible && !isComposing) {
             event.preventDefault();
@@ -432,13 +312,6 @@
       onUpdate({ editor: ed }) {
         editorIsEmpty = ed.isEmpty;
         debouncedSaveDraft();
-        // Request ghost text on content change
-        const text = ed.getText();
-        if (text.length >= 10 && !isLoading) {
-          requestGhostText(text);
-        } else {
-          clearGhostText();
-        }
       },
       onCreate({ editor: ed }) {
         editorIsEmpty = ed.isEmpty;
@@ -450,8 +323,6 @@
   onDestroy(() => {
     saveDraft(); // Flush any pending draft before teardown
     if (draftSaveTimer) clearTimeout(draftSaveTimer);
-    if (ghostDebounceTimer) clearTimeout(ghostDebounceTimer);
-    ghostCleanup?.();
     editor?.destroy();
     editor = null;
   });
@@ -732,7 +603,7 @@
     <!-- TipTap Editor with placeholder overlay -->
     <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
     <div class="relative cursor-text" onclick={() => editor?.commands.focus()}>
-      {#if editorIsEmpty && hasHydrated && !ghostText}
+      {#if editorIsEmpty && hasHydrated}
         <div class="absolute inset-0 pointer-events-none text-base text-base-content/40 leading-snug">
           {placeholder || $t('chatInput.messageAgent', { values: { name: agentName } })}
         </div>

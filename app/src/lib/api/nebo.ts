@@ -779,7 +779,7 @@ export function pickFolder(req: Record<string, unknown> = {}) {
  * @description "Upload file"
  */
 export function uploadFile(req: Record<string, unknown> = {}) {
-	return webapi.post<unknown>(`/api/v1/files/upload`, req)
+	return webapi.post<components.UploadFileResponse>(`/api/v1/files/upload`, req)
 }
 
 /**

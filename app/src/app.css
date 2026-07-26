@@ -321,14 +321,6 @@
   animation: voice-pulse 1.5s ease-in-out infinite;
 }
 
-/* Ghost text inline suggestion (TipTap decoration) */
-.ghost-text-hint {
-  opacity: 0.3;
-  pointer-events: none;
-  user-select: none;
-}
-
-
 /* docx-preview (WorkViewer): blend the Word page chrome into the theme.
    The library injects its own stylesheet after ours, so !important is needed. */
 .docx-wrapper {

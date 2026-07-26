@@ -685,7 +685,6 @@ export function createChatController(config: ChatControllerConfig) {
   unsubs.push(ws.on('ask_request', handleAskRequest));
   unsubs.push(ws.on('subagent_progress', handleSubagentProgress));
   unsubs.push(ws.on('session_reset', handleSessionReset));
-  // ghost_text is consumed directly by ChatComposer via ws.on — no window re-dispatch.
 
   // --- Actions ---
 
