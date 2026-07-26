@@ -19,6 +19,9 @@ permissions:
 jobs:
   build-rootfs:
     strategy:
+      # One arch failing must not cancel the other — otherwise the surviving
+      # leg reports "cancelled" and hides whether it was close to failing too.
+      fail-fast: false
       matrix:
         include:
           - runner: ubuntu-latest
@@ -48,8 +51,17 @@ jobs:
           docker export rootfs-tmp > vm/build/rootfs.tar
           docker rm rootfs-tmp
 
-          # Create ext4 image from tarball
-          truncate -s 512M vm/build/rootfs.img
+          # Size the image from the actual content. A hardcoded size silently
+          # runs out mid-extraction the moment the rootfs outgrows it — which
+          # is exactly what arm64 did, surfacing as confusing per-file tar
+          # errors rather than an obvious "image too small". Headroom is free
+          # in the published artifact: empty ext4 blocks are zeros, and zstd
+          # compresses them to almost nothing.
+          CONTENT_MB=$(du -m vm/build/rootfs.tar | cut -f1)
+          IMG_MB=$(( CONTENT_MB * 3 / 2 + 256 ))
+          if [ "$IMG_MB" -lt 512 ]; then IMG_MB=512; fi
+          echo "rootfs content ${CONTENT_MB}M -> ext4 image ${IMG_MB}M"
+          truncate -s "${IMG_MB}M" vm/build/rootfs.img
           mkfs.ext4 -F vm/build/rootfs.img
           mkdir -p /tmp/nebo-rootfs-mnt
           sudo mount -o loop vm/build/rootfs.img /tmp/nebo-rootfs-mnt
