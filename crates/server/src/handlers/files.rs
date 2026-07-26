@@ -96,13 +96,17 @@ pub async fn pick_folder() -> HandlerResult<serde_json::Value> {
     Ok(Json(serde_json::json!({ "path": path })))
 }
 
-/// POST /api/v1/files/upload — Proxy file upload to NeboAI API
+/// POST /api/v1/files/upload — store an attachment.
+///
+/// The bytes are written to this machine first and only then offered to the
+/// loop. Attaching a file is a local act: it has to keep working while signed
+/// out, and a file the user can see in the composer must not be lost because
+/// an upload failed. The loop copy is what makes an attachment shareable with
+/// other bots, so it is still attempted — just never as the only copy.
 pub async fn upload_file(
     State(state): State<AppState>,
     mut multipart: Multipart,
 ) -> HandlerResult<serde_json::Value> {
-    let api = crate::codes::build_api_client(&state).map_err(to_error_response)?;
-
     let mut filename = String::new();
     let mut mime_type = String::new();
     let mut data: Vec<u8> = Vec::new();
@@ -135,12 +139,45 @@ pub async fn upload_file(
         )));
     }
 
-    let attachment = api
-        .upload_file(&filename, &mime_type, data)
-        .await
+    let size = data.len() as u64;
+    let file_id = uuid::Uuid::new_v4().to_string();
+
+    let dir = crate::uploads_dir().ok_or_else(|| {
+        to_error_response(types::NeboError::Internal(
+            "cannot open the uploads directory".into(),
+        ))
+    })?;
+    let path = dir.join(crate::upload_file_name(&file_id, &filename));
+    std::fs::write(&path, &data)
         .map_err(|e| to_error_response(types::NeboError::Internal(e.to_string())))?;
 
-    Ok(Json(serde_json::to_value(attachment).unwrap_or_default()))
+    // Best-effort loop copy. Failing here costs sharing with other bots, not the
+    // attachment itself, so it is logged rather than returned as an error.
+    match crate::codes::build_api_client(&state) {
+        Ok(api) => match api.upload_file(&filename, &mime_type, data).await {
+            Ok(attachment) => {
+                // Re-key the local copy to the loop's id so lookups by that id
+                // find it here instead of downloading what we already hold.
+                let renamed = dir.join(crate::upload_file_name(&attachment.file_id, &filename));
+                if let Err(e) = std::fs::rename(&path, &renamed) {
+                    tracing::warn!(error = %e, "could not re-key local attachment copy");
+                }
+                return Ok(Json(serde_json::to_value(attachment).unwrap_or_default()));
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "loop upload failed; attachment is local-only")
+            }
+        },
+        Err(e) => tracing::debug!(error = %e, "not signed in; attachment is local-only"),
+    }
+
+    Ok(Json(serde_json::json!({
+        "fileId": file_id,
+        "filename": filename,
+        "mimeType": mime_type,
+        "size": size,
+        "url": format!("/api/v1/comm-files/{}", file_id),
+    })))
 }
 
 /// GET /api/v1/comm-files/{id} — stream a loop attachment through the bot's
@@ -166,11 +203,18 @@ pub async fn serve_comm_file(
             "invalid file id".into(),
         )));
     }
-    let api = crate::codes::build_api_client(&state).map_err(to_error_response)?;
-    let bytes = api
-        .download_file(&file_id)
-        .await
-        .map_err(|e| to_error_response(types::NeboError::Internal(e.to_string())))?;
+    // Local copy first — an attachment uploaded on this machine renders while
+    // signed out, and never costs a round trip to fetch what is already here.
+    let bytes = match crate::local_upload_by_id(&file_id) {
+        Some(path) => std::fs::read(&path)
+            .map_err(|e| to_error_response(types::NeboError::Internal(e.to_string())))?,
+        None => {
+            let api = crate::codes::build_api_client(&state).map_err(to_error_response)?;
+            api.download_file(&file_id)
+                .await
+                .map_err(|e| to_error_response(types::NeboError::Internal(e.to_string())))?
+        }
+    };
 
     let mime = params
         .get("mime")

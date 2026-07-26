@@ -382,6 +382,10 @@ impl Provider for AnthropicProvider {
         true
     }
 
+    fn supports_vision(&self) -> bool {
+        true
+    }
+
     async fn stream(&self, req: &ChatRequest) -> Result<EventReceiver, ProviderError> {
         let (mut messages, system_prompt) = self.build_messages(req);
 

@@ -2985,6 +2985,13 @@ async fn run_loop(
             chat_req.model = String::new();
         }
 
+        // Providers that never put images on the wire get them as text instead.
+        // Decided here, after the fallback above, because a run that started on a
+        // vision provider can land on a blind one mid-retry.
+        if !provider.supports_vision() && chat_req.messages.iter().any(|m| m.images.is_some()) {
+            crate::sidecar::describe_attached_images(provider.as_ref(), &mut chat_req).await;
+        }
+
         let t_stream_start = std::time::Instant::now();
         let stream_result = tokio::select! {
             _ = cancel_token.cancelled() => {

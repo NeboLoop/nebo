@@ -51,6 +51,7 @@ impl OllamaProvider {
                 role: "system".to_string(),
                 content: req.system.clone(),
                 tool_calls: None,
+                images: None,
             });
         }
 
@@ -75,6 +76,10 @@ impl OllamaProvider {
                         role: "user".to_string(),
                         content: msg.content.clone(),
                         tool_calls: None,
+                        images: msg
+                            .images
+                            .as_ref()
+                            .map(|imgs| imgs.iter().map(|i| i.data.clone()).collect()),
                     });
                 }
                 "assistant" => {
@@ -108,6 +113,7 @@ impl OllamaProvider {
                             } else {
                                 Some(ollama_tool_calls)
                             },
+                            images: None,
                         });
                     }
                 }
@@ -116,6 +122,7 @@ impl OllamaProvider {
                         role: "system".to_string(),
                         content: msg.content.clone(),
                         tool_calls: None,
+                        images: None,
                     });
                 }
                 "tool" => {
@@ -128,6 +135,7 @@ impl OllamaProvider {
                                 role: "tool".to_string(),
                                 content: r.content,
                                 tool_calls: None,
+                                images: None,
                             });
                         }
                     }
@@ -221,6 +229,10 @@ impl OllamaProvider {
 impl Provider for OllamaProvider {
     fn id(&self) -> &str {
         "ollama"
+    }
+
+    fn supports_vision(&self) -> bool {
+        true
     }
 
     async fn stream(&self, req: &ChatRequest) -> Result<EventReceiver, ProviderError> {
@@ -454,6 +466,10 @@ struct OllamaMessage {
     content: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_calls: Option<Vec<OllamaToolCallOut>>,
+    /// Raw base64 (no `data:` prefix) — Ollama's native vision field. Only
+    /// meaningful on user messages, and only for multimodal models.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    images: Option<Vec<String>>,
 }
 
 #[derive(Debug, Serialize)]

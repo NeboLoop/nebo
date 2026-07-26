@@ -49,6 +49,7 @@ vm = { workspace = true }
 shlex = "1"
 rayon = "1"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
+pdf-extract = "0.12"
 
 [dev-dependencies]
 flate2 = "1"

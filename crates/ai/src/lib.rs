@@ -3,6 +3,7 @@ pub mod http;
 pub mod local_models;
 pub mod providers;
 pub mod sse;
+pub mod transcribe;
 pub mod types;
 
 pub use embedding::{

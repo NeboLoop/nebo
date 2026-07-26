@@ -4638,6 +4638,72 @@ fn extract_message_text(content: &str) -> String {
 
 /// Convert image attachments to AI vision content and append text descriptions
 /// for non-image attachments to the prompt.
+/// Directory holding attachments this machine has bytes for — ones uploaded
+/// here, and ones downloaded from the loop.
+pub(crate) fn uploads_dir() -> Option<std::path::PathBuf> {
+    let dir = config::data_dir().ok()?.join("files").join("uploads");
+    std::fs::create_dir_all(&dir).ok()?;
+    Some(dir)
+}
+
+/// Stored name for an attachment. The id prefix keeps it unique across
+/// re-sends while leaving the original filename readable on disk.
+pub(crate) fn upload_file_name(file_id: &str, filename: &str) -> String {
+    let short_id: String = file_id.chars().take(8).collect();
+    format!("{}-{}", short_id, filename)
+}
+
+/// Find a locally-held attachment by id alone (the filename isn't always known
+/// at the call site — a rendering `<img>` has only the id).
+///
+/// ponytail: linear scan of the uploads dir. Index it if that directory ever
+/// grows past a few thousand files.
+pub(crate) fn local_upload_by_id(file_id: &str) -> Option<std::path::PathBuf> {
+    let short_id: String = file_id.chars().take(8).collect();
+    if short_id.is_empty() {
+        return None;
+    }
+    let prefix = format!("{}-", short_id);
+    std::fs::read_dir(uploads_dir()?)
+        .ok()?
+        .filter_map(|e| e.ok())
+        .find(|e| e.file_name().to_string_lossy().starts_with(&prefix))
+        .map(|e| e.path())
+}
+
+/// Where to send audio for transcription: `(api_key, base_url, model)`.
+///
+/// An explicit OpenAI-compatible key wins; otherwise the Janus gateway the user
+/// already bills through, which speaks the same `/audio/transcriptions` shape.
+fn transcription_endpoint(state: &state::AppState) -> Option<(String, String, String)> {
+    const DEFAULT_STT_MODEL: &str = "whisper-1";
+
+    let profiles = state.store.list_auth_profiles().ok()?;
+    let active = || profiles.iter().filter(|p| p.is_active.unwrap_or(0) == 1);
+
+    if let Some(p) = active().find(|p| p.provider == "openai" && !p.api_key.is_empty()) {
+        return Some((
+            p.api_key.clone(),
+            p.base_url
+                .clone()
+                .unwrap_or_else(|| "https://api.openai.com/v1".into()),
+            DEFAULT_STT_MODEL.to_string(),
+        ));
+    }
+
+    let janus = active().find(|p| p.provider == "neboai")?;
+    let api_key = if janus.api_key.is_empty() {
+        config::read_bot_id().unwrap_or_default()
+    } else {
+        janus.api_key.clone()
+    };
+    Some((
+        api_key,
+        format!("{}/v1", state.config.neboai.janus_url),
+        DEFAULT_STT_MODEL.to_string(),
+    ))
+}
+
 async fn process_comm_attachments(
     state: &state::AppState,
     attachments: &[comm::wire::Attachment],
@@ -4649,67 +4715,166 @@ async fn process_comm_attachments(
         return vec![];
     }
 
-    let api = match codes::build_api_client(state) {
-        Ok(a) => a,
-        Err(e) => {
-            tracing::warn!(error = %e, "cannot download attachments: no API client");
-            return vec![];
-        }
-    };
+    // Anthropic's per-image ceiling, and the strictest of the providers we ship.
+    // Past it the request is rejected outright, so the image goes to disk and the
+    // agent gets a path instead of a doomed payload.
+    const MAX_IMAGE_BASE64: usize = 5 * 1024 * 1024;
+
+    // Absent when signed out. Attachments uploaded on this machine still work —
+    // only ones that live solely in the loop need the client.
+    let api = codes::build_api_client(state).ok();
 
     let mut images = Vec::new();
 
     for att in attachments {
-        if att.mime_type.starts_with("image/") {
-            match api.download_file(&att.file_id).await {
-                Ok(bytes) => {
-                    let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
-                    images.push(ai::ImageContent {
-                        media_type: att.mime_type.clone(),
-                        data,
-                    });
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        file_id = %att.file_id,
-                        error = %e,
-                        "failed to download image attachment"
-                    );
-                }
-            }
+        let size_kb = att.size / 1024;
+        let size_label = if size_kb >= 1024 {
+            format!("{:.1} MB", size_kb as f64 / 1024.0)
         } else {
-            // Non-image attachments (video, audio, documents): download to
-            // <data_dir>/files/uploads/ and hand the agent the LOCAL PATH — a
-            // bare "[Attached: name]" gives it nothing to operate on, and the
-            // loop URL needs auth its tools don't have.
-            let size_kb = att.size / 1024;
-            let size_label = if size_kb >= 1024 {
-                format!("{:.1} MB", size_kb as f64 / 1024.0)
-            } else {
-                format!("{} KB", size_kb)
-            };
-            let saved = match api.download_file(&att.file_id).await {
-                Ok(bytes) => config::data_dir().ok().and_then(|d| {
-                    let dir = d.join("files").join("uploads");
-                    std::fs::create_dir_all(&dir).ok()?;
-                    // file_id-prefixed name: unique, stable across re-sends.
-                    let short_id: String = att.file_id.chars().take(8).collect();
-                    let path = dir.join(format!("{}-{}", short_id, att.filename));
-                    std::fs::write(&path, &bytes).ok()?;
-                    Some(path.to_string_lossy().to_string())
-                }),
+            format!("{} KB", size_kb)
+        };
+
+        // Local disk first — this machine uploaded it. Only reach for the loop
+        // when the bytes genuinely live somewhere else.
+        let local = local_upload_by_id(&att.file_id);
+        let bytes = match &local {
+            Some(path) => match std::fs::read(path) {
+                Ok(b) => b,
                 Err(e) => {
-                    tracing::warn!(file_id = %att.file_id, error = %e, "failed to download attachment");
-                    None
+                    tracing::warn!(path = %path.display(), error = %e, "local attachment unreadable");
+                    prompt.push_str(&format!(
+                        "\n[Attached: {} ({}) — the saved copy could not be read: {}. Tell the \
+                         user the attachment is unavailable.]",
+                        att.filename, size_label, e
+                    ));
+                    continue;
                 }
-            };
-            match saved {
-                Some(path) => prompt.push_str(&format!(
-                    "\n[Attached: {} ({}) — saved at {}]",
-                    att.filename, size_label, path
-                )),
-                None => prompt.push_str(&format!("\n[Attached: {} ({})]", att.filename, size_label)),
+            },
+            None => {
+                let Some(api) = api.as_ref() else {
+                    // Say so in the prompt, not just the log. A silent skip here is
+                    // how "I attached a photo and it did nothing" happens.
+                    tracing::warn!(file_id = %att.file_id, "no local copy and no API client");
+                    prompt.push_str(&format!(
+                        "\n[Attached: {} ({}) — could not be retrieved (not signed in to NeboAI, \
+                         and no local copy). Tell the user the attachment did not arrive.]",
+                        att.filename, size_label
+                    ));
+                    continue;
+                };
+                match api.download_file(&att.file_id).await {
+                    Ok(b) => b,
+                    Err(e) => {
+                        tracing::warn!(file_id = %att.file_id, error = %e, "failed to download attachment");
+                        prompt.push_str(&format!(
+                            "\n[Attached: {} ({}) — download failed: {}. Tell the user the \
+                             attachment did not arrive; do NOT answer as if nothing was attached.]",
+                            att.filename, size_label, e
+                        ));
+                        continue;
+                    }
+                }
             }
+        };
+
+        // Trust the bytes, never the declared type — a mislabelled attachment
+        // sent as image/png gets rejected by the provider with a useless error.
+        let sniffed = ai::sniff_image_mime(&bytes);
+        if let Some(media_type) = sniffed {
+            let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
+            if data.len() <= MAX_IMAGE_BASE64 {
+                images.push(ai::ImageContent {
+                    media_type: media_type.to_string(),
+                    data,
+                });
+                continue;
+            }
+            tracing::warn!(
+                file_id = %att.file_id,
+                size = att.size,
+                "image too large to inline; saving to disk instead"
+            );
+        }
+
+        // Everything else — documents, audio, video, oversized or mislabelled
+        // images — lands on disk and the agent gets the LOCAL PATH. A bare
+        // "[Attached: name]" gives it nothing to operate on, and the loop URL
+        // needs auth its tools don't have.
+        let saved = match local {
+            Some(path) => Some(path.to_string_lossy().to_string()),
+            None => uploads_dir().and_then(|dir| {
+                let path = dir.join(upload_file_name(&att.file_id, &att.filename));
+                std::fs::write(&path, &bytes).ok()?;
+                Some(path.to_string_lossy().to_string())
+            }),
+        };
+
+        // Audio is inert to every provider we ship, so it becomes text here or
+        // it never reaches the model at all.
+        if ai::transcribe::is_transcribable(&att.filename, &att.mime_type) {
+            let note = match transcription_endpoint(state) {
+                Some((key, base_url, model)) => {
+                    match ai::transcribe::transcribe(
+                        &key,
+                        &base_url,
+                        &model,
+                        &att.filename,
+                        bytes.clone(),
+                    )
+                    .await
+                    {
+                        Ok(text) if text.is_empty() => format!(
+                            "\n[Audio: {} ({}) — transcribed, but no speech was found in it. \
+                             Say so rather than guessing at its contents.]",
+                            att.filename, size_label
+                        ),
+                        Ok(text) => format!(
+                            "\n[Audio: {} ({}) — transcript follows]\n{}",
+                            att.filename, size_label, text
+                        ),
+                        Err(e) => {
+                            tracing::warn!(file = %att.filename, error = %e, "transcription failed");
+                            format!(
+                                "\n[Audio: {} ({}) — transcription failed: {}. Tell the user you \
+                                 could not listen to it; do NOT guess at what it says.]",
+                                att.filename, size_label, e
+                            )
+                        }
+                    }
+                }
+                None => format!(
+                    "\n[Audio: {} ({}) — no transcription provider is configured, so its contents \
+                     are unknown. Tell the user to add an OpenAI key or sign in to NeboAI.]",
+                    att.filename, size_label
+                ),
+            };
+            prompt.push_str(&note);
+            // The audio file itself stays reachable — a transcript is not always
+            // what the user is asking about.
+            if let Some(path) = &saved {
+                prompt.push_str(&format!("\n[The audio file is saved at {}.]", path));
+            }
+            continue;
+        }
+
+        match saved {
+            Some(path) => {
+                let hint = if sniffed.is_some() {
+                    " (too large to view inline — read the file to inspect it)"
+                } else {
+                    ""
+                };
+                prompt.push_str(&format!(
+                    "\n[Attached: {} ({}) — saved at {}{}. Its contents are not included above; \
+                     open the file if the user's request depends on what is inside it.]",
+                    att.filename, size_label, path, hint
+                ));
+            }
+            None => prompt.push_str(&format!(
+                "\n[Attached: {} ({}) — could not be saved to disk. Tell the user it is \
+                 unavailable rather than guessing at its contents.]",
+                att.filename, size_label
+            )),
         }
     }
 

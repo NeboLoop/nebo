@@ -247,6 +247,13 @@ impl FileTool {
                             }
                         };
                     }
+
+                    // PDFs are the one binary container people actually expect a read
+                    // to work on. Extract the text rather than refusing the file.
+                    if sample.starts_with(b"%PDF-") {
+                        return read_pdf_text(&path);
+                    }
+
                     return ToolResult::ok(format!(
                         "[Binary file detected — content not shown. {} bytes; {}. To inspect the raw bytes: os(resource: \"shell\", action: \"exec\", command: \"hexdump -C '{}' | head\")]",
                         metadata.len(),
@@ -881,6 +888,63 @@ fn sensitive_paths() -> Vec<String> {
     ]
 }
 
+/// Extract the text layer of a PDF.
+///
+/// Two honest failure modes worth distinguishing: a PDF we cannot parse, and a
+/// PDF that parses fine but holds no text at all (a scan — pixels, no text
+/// layer). Returning an empty string for the second would read to the model as
+/// "this document is blank".
+fn read_pdf_text(path: &str) -> ToolResult {
+    // pdf-extract panics on some malformed files; a panic here would take the
+    // whole run down, so it is caught and reported as a normal tool error.
+    let extracted = std::panic::catch_unwind(|| pdf_extract::extract_text(path));
+
+    let text = match extracted {
+        Ok(Ok(text)) => text,
+        Ok(Err(e)) => {
+            return ToolResult::error(format!(
+                "Could not extract text from PDF {}: {}. It may be encrypted or malformed.",
+                path, e
+            ));
+        }
+        Err(_) => {
+            return ToolResult::error(format!(
+                "Could not extract text from PDF {}: the parser failed on this file. \
+                 It may be corrupt or use an unsupported encoding.",
+                path
+            ));
+        }
+    };
+
+    if text.trim().is_empty() {
+        return ToolResult::ok(format!(
+            "[PDF: {} — parsed successfully but contains no text layer. It is almost certainly \
+             a scan or an image-only export. The text cannot be read from the file itself; say \
+             so rather than guessing at its contents.]",
+            path
+        ));
+    }
+
+    // Long PDFs would otherwise swallow the context window whole.
+    const MAX_PDF_CHARS: usize = 100_000;
+    if text.len() > MAX_PDF_CHARS {
+        let cut = text
+            .char_indices()
+            .take_while(|(i, _)| *i < MAX_PDF_CHARS)
+            .last()
+            .map_or(0, |(i, c)| i + c.len_utf8());
+        return ToolResult::ok(format!(
+            "{}\n\n[Truncated: showing the first {} of {} characters of {}.]",
+            &text[..cut],
+            cut,
+            text.len(),
+            path
+        ));
+    }
+
+    ToolResult::ok(text)
+}
+
 /// Check if content appears to be binary by scanning for null bytes
 /// and checking the ratio of non-printable characters.
 /// Returns the trigger (for an honest placeholder message) when binary, `None` for text.
@@ -1021,6 +1085,33 @@ mod tests {
 
     fn ctx() -> ToolContext {
         ToolContext::new(Origin::User)
+    }
+
+    #[test]
+    fn pdf_read_reports_a_pdf_failure_not_a_binary_refusal() {
+        // A file claiming to be a PDF but holding garbage must route to the PDF
+        // reader and come back with a PDF-specific message. The regression this
+        // guards is the branch falling through to the generic binary refusal,
+        // which is how PDFs became a dead end in the first place.
+        let dir = std::env::temp_dir().join("nebo_pdf_route_test");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("broken.pdf");
+        let mut bytes = b"%PDF-1.4\n".to_vec();
+        bytes.extend_from_slice(&[0u8; 512]); // NULs — reads as binary
+        fs::write(&path, &bytes).unwrap();
+
+        let result = read_pdf_text(path.to_str().unwrap());
+        let text = format!("{} {}", result.content, result.is_error);
+        assert!(
+            text.contains("PDF"),
+            "expected a PDF-specific result, got: {text}"
+        );
+        assert!(
+            !text.contains("Binary file detected"),
+            "PDF fell through to the generic binary refusal: {text}"
+        );
+
+        fs::remove_file(&path).ok();
     }
 
     #[test]

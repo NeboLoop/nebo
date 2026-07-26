@@ -20,27 +20,35 @@ fn sidecar_model() -> String {
         .unwrap_or_default()
 }
 
-/// Verify a post-action screenshot using a cheap vision model.
-/// Returns a short text description, or None if verification fails.
-pub async fn verify_screenshot(
-    provider: &dyn Provider,
-    screenshot_b64: &str,
-    action_context: &str,
-) -> Option<String> {
-    let (media_type, data) = ai::image_source_to_base64(screenshot_b64)?;
+const ATTACHMENT_SYSTEM: &str = "You are the eyes of an AI agent whose own model cannot see \
+images. The user attached this image to their message. Describe it so the agent can answer them \
+as if it had seen it itself.\n\n\
+Cover what the image IS (photo, screenshot, diagram, document scan, chart), what it shows, and \
+transcribe any text that is legible — verbatim for short text, faithfully summarised for long \
+passages. If it is a document or receipt, give the figures and fields, not an impression. Be \
+concrete; omit nothing the user is likely asking about.\n\n\
+Report only what you can actually see. Do not invent content. No preamble.";
 
+/// Run one image through the sidecar vision model and return its description.
+async fn describe(
+    provider: &dyn Provider,
+    image: ImageContent,
+    system: &str,
+    context: String,
+    max_tokens: i32,
+) -> Option<String> {
     let req = ChatRequest {
         tool_choice: Default::default(),
         messages: vec![Message {
             role: "user".to_string(),
-            content: format!("Action performed: {}", action_context),
-            images: Some(vec![ImageContent { media_type, data }]),
+            content: context,
+            images: Some(vec![image]),
             ..Default::default()
         }],
         tools: vec![],
-        max_tokens: 200,
+        max_tokens,
         temperature: 0.0,
-        system: SIDECAR_SYSTEM.to_string(),
+        system: system.to_string(),
         static_system: String::new(),
         model: sidecar_model(),
         enable_thinking: false,
@@ -53,7 +61,7 @@ pub async fn verify_screenshot(
     let mut rx = match provider.stream(&req).await {
         Ok(rx) => rx,
         Err(e) => {
-            debug!("sidecar verification failed: {e}");
+            debug!("sidecar description failed: {e}");
             return None;
         }
     };
@@ -68,4 +76,64 @@ pub async fn verify_screenshot(
     }
 
     if text.is_empty() { None } else { Some(text) }
+}
+
+/// Verify a post-action screenshot using a cheap vision model.
+/// Returns a short text description, or None if verification fails.
+pub async fn verify_screenshot(
+    provider: &dyn Provider,
+    screenshot_b64: &str,
+    action_context: &str,
+) -> Option<String> {
+    let (media_type, data) = ai::image_source_to_base64(screenshot_b64)?;
+    describe(
+        provider,
+        ImageContent { media_type, data },
+        SIDECAR_SYSTEM,
+        format!("Action performed: {}", action_context),
+        200,
+    )
+    .await
+}
+
+/// Convert images attached to a request into text, for providers that never put
+/// `Message::images` on the wire (CLI wrappers, local GGUF). Without this the
+/// user attaches a photo, the field is dropped on the floor, and the model
+/// answers as though the message arrived empty-handed.
+///
+/// Every image leaves a mark in the text — a description when the sidecar can
+/// produce one, an honest admission when it cannot. The model must never be
+/// left able to claim nothing was attached.
+pub async fn describe_attached_images(provider: &dyn Provider, req: &mut ChatRequest) {
+    for idx in 0..req.messages.len() {
+        let Some(images) = req.messages[idx].images.take() else {
+            continue;
+        };
+        let total = images.len();
+        for (n, image) in images.into_iter().enumerate() {
+            let label = if total > 1 {
+                format!("Attached image {} of {}", n + 1, total)
+            } else {
+                "Attached image".to_string()
+            };
+            let note = match describe(
+                provider,
+                image,
+                ATTACHMENT_SYSTEM,
+                "Describe this attached image.".to_string(),
+                600,
+            )
+            .await
+            {
+                Some(text) => format!("\n\n[{}]\n{}", label, text),
+                None => format!(
+                    "\n\n[{}] The user attached an image, but this model cannot view images and \
+                     automatic description was unavailable. Say so plainly and ask the user to \
+                     describe it — do NOT claim no image was attached.",
+                    label
+                ),
+            };
+            req.messages[idx].content.push_str(&note);
+        }
+    }
 }

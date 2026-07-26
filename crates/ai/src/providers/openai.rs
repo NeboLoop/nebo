@@ -594,6 +594,10 @@ impl Provider for OpenAIProvider {
         &self.provider_id
     }
 
+    fn supports_vision(&self) -> bool {
+        true
+    }
+
     async fn stream(&self, req: &ChatRequest) -> Result<EventReceiver, ProviderError> {
         let messages = self.build_messages(req);
 

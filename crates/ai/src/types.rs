@@ -495,6 +495,14 @@ pub trait Provider: Send + Sync {
         false
     }
 
+    /// Whether this provider puts `Message::images` on the wire. When false the
+    /// runner describes attached images through the sidecar first — a provider
+    /// that ignores the field would otherwise drop the user's image in silence
+    /// and answer as if nothing had been attached.
+    fn supports_vision(&self) -> bool {
+        false
+    }
+
     /// Send a request and return a channel of streaming events.
     async fn stream(&self, req: &ChatRequest) -> Result<EventReceiver, ProviderError>;
 }
@@ -593,7 +601,9 @@ pub fn image_source_to_base64(raw: &str) -> Option<(String, String)> {
     Some((media_type.to_string(), data))
 }
 
-fn sniff_image_mime(bytes: &[u8]) -> Option<&'static str> {
+/// Identify an image from its magic bytes. Returns None for anything that is
+/// not an image a provider will accept — never trust a declared MIME type.
+pub fn sniff_image_mime(bytes: &[u8]) -> Option<&'static str> {
     if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
         return Some("image/png");
     }

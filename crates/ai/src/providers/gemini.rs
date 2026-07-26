@@ -193,6 +193,10 @@ impl Provider for GeminiProvider {
         true
     }
 
+    fn supports_vision(&self) -> bool {
+        true
+    }
+
     async fn stream(&self, req: &ChatRequest) -> Result<EventReceiver, ProviderError> {
         let model = if req.model.is_empty() {
             &self.model
