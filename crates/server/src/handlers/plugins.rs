@@ -7,6 +7,12 @@
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
+/// Bound on a plugin's `setup.command` run from the install flow. Generous —
+/// setup can download models or seed data — but finite: this executes inside
+/// an HTTP handler, and an unbounded child both hangs the request and leaks
+/// the process when the client gives up.
+const SETUP_COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
 use axum::extract::{Path, Query, State};
 use axum::response::Json;
 use tokio::io::AsyncReadExt;
@@ -1155,6 +1161,10 @@ pub async fn proxy_plugin_route(
     cmd.stdin(std::process::Stdio::piped());
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
+    // Kill the handler process if the timeout below drops the wait — without
+    // this a timed-out route leaks the child forever (the orphan class from
+    // PluginRuntime::run_capture's doc comment).
+    cmd.kill_on_drop(true);
 
     let mut child = cmd
         .spawn()
@@ -1444,19 +1454,17 @@ pub async fn plugin_setup_run(
     // synchronous render operations — no need for the URL-extraction
     // dance auth_login does.
     let runtime = napp::PluginRuntime::new(&slug, binary_path, state.plugin_store.clone());
-    let mut cmd = runtime.command(&command);
-    for a in &substituted_args {
-        cmd.arg(a);
-    }
-    cmd.stdin(std::process::Stdio::null());
-    cmd.stdout(std::process::Stdio::piped());
-    cmd.stderr(std::process::Stdio::piped());
-
-    let output = cmd.output().await.map_err(|e| {
-        to_error_response(NeboError::Internal(format!(
-            "failed to spawn setup command: {e}"
-        )))
-    })?;
+    // Bounded via run_capture — this was an UNBOUNDED cmd.output() in an HTTP
+    // handler: a setup command that hung held the request forever and, once
+    // the client gave up, the process leaked.
+    let mut args = napp::plugin_runtime::split_command(&command);
+    args.extend(substituted_args.iter().cloned());
+    let output = runtime
+        .run_capture_args(&args, SETUP_COMMAND_TIMEOUT)
+        .await
+        .map_err(|e| {
+            to_error_response(NeboError::Internal(format!("setup command failed: {e}")))
+        })?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();

@@ -128,3 +128,36 @@ fn http_client_construction_does_not_spread() {
          Sites: {hits:#?}"
     );
 }
+
+/// A `tokio::time::timeout` around `cmd.output()` without `kill_on_drop` leaks
+/// the child process FOREVER when the timeout fires — the dropped future
+/// abandons the child, it reparents to launchd/init, and never exits.
+///
+/// This exact pattern accumulated 330 orphaned plugin processes on a customer
+/// box (plugin_tool), leaked a `dns-sd -B` on every voice printer query
+/// (shell_tool), and was found a THIRD time in execute_tool during release
+/// review. Three independent authors wrote the same leak; a fourth will too.
+#[test]
+fn timed_process_waits_always_kill_on_drop() {
+    let offenders: Vec<(PathBuf, usize)> = source_files()
+        .into_iter()
+        .filter_map(|file| {
+            let text = std::fs::read_to_string(&file).ok()?;
+            let has_timeout = text.contains("tokio::time::timeout");
+            let output_waits = text
+                .lines()
+                .filter(|l| !l.trim_start().starts_with("//"))
+                .filter(|l| l.contains(".output()).await") || l.contains("cmd.output()"))
+                .count();
+            let has_kill = text.contains("kill_on_drop");
+            (has_timeout && output_waits > 0 && !has_kill).then_some((file, output_waits))
+        })
+        .collect();
+
+    assert!(
+        offenders.is_empty(),
+        "timeout(_, cmd.output()) without kill_on_drop — the dropped future \
+         abandons the child and it runs forever. Set cmd.kill_on_drop(true) \
+         before the wait.\nOffending files: {offenders:#?}"
+    );
+}

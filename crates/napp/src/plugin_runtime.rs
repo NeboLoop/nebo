@@ -58,6 +58,14 @@ impl std::fmt::Display for LaunchError {
 
 impl std::error::Error for LaunchError {}
 
+/// Shlex-split a plugin command string into argv, with a whitespace fallback
+/// for strings shlex rejects. The ONE splitting rule for plugin commands —
+/// callers that need "command string plus extra args" split here and append.
+pub fn split_command(args_str: &str) -> Vec<String> {
+    shlex::split(args_str)
+        .unwrap_or_else(|| args_str.split_whitespace().map(String::from).collect())
+}
+
 /// Return a sanitized copy of the current process environment,
 /// stripping dangerous loader/shell injection vars.
 pub fn sanitized_env() -> Vec<(String, String)> {
@@ -230,9 +238,7 @@ impl PluginRuntime {
     /// `kill_on_drop` is set so plugin sidecars die with their parent rather
     /// than orphaning during nebo restart/crash.
     pub fn command(&self, args_str: &str) -> tokio::process::Command {
-        let args = shlex::split(args_str)
-            .unwrap_or_else(|| args_str.split_whitespace().map(String::from).collect());
-        self.command_args(&args)
+        self.command_args(&split_command(args_str))
     }
 
     /// Same as [`command`], for callers that already hold split arguments.
@@ -290,9 +296,7 @@ impl PluginRuntime {
         args_str: &str,
         requested_timeout: Duration,
     ) -> Result<std::process::Output, LaunchError> {
-        let args = shlex::split(args_str)
-            .unwrap_or_else(|| args_str.split_whitespace().map(String::from).collect());
-        self.run_capture_args(&args, requested_timeout).await
+        self.run_capture_args(&split_command(args_str), requested_timeout).await
     }
 
     /// Same as [`run_capture`], for callers that already hold split arguments.

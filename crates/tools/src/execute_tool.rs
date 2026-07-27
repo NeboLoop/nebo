@@ -354,6 +354,13 @@ impl ExecuteTool {
 
         debug!(language, cmd = %final_cmd, "executing script locally");
 
+        // Kill the child if the timeout drops the output() future. Without this
+        // the process outlives the call FOREVER — it reparents to launchd/init
+        // and never exits. Same defect class that accumulated 330 orphaned
+        // plugin processes on a customer box (see PluginRuntime::run_capture);
+        // a never-exiting command like `dns-sd -B` under the default timeout
+        // leaked its process on every single invocation.
+        cmd.kill_on_drop(true);
         let result =
             tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), cmd.output()).await;
 
