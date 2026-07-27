@@ -335,18 +335,24 @@ async fn handle_conversation_ws(mut socket: WebSocket, state: AppState, mut q: C
         q.agent_id = Some(resolved);
     }
 
-    // Voice is a modality of a chat — without a real thread to persist into,
-    // every turn and delegated run would land in an orphan conversation.
-    // Refuse instead of falling back.
-    if q.agent_id.as_deref().unwrap_or_default().is_empty()
-        || q.chat_id.as_deref().unwrap_or_default().is_empty()
-    {
+    // Voice is a modality of a chat: every turn persists into a real thread.
+    // But the ROW is created lazily, on the first persisted turn — never at
+    // call start. Eager creation left an empty "New Chat" husk for every call
+    // that failed before producing a turn (one afternoon of reconnects minted
+    // three chats from a single conversation, two of them unopenable shells).
+    // No turns → no chat → nothing to clean up.
+    if q.agent_id.as_deref().unwrap_or_default().is_empty() {
         let msg = serde_json::json!({
             "type": "Error",
-            "message": "Voice needs a chat thread to bind to — start it from a chat.",
+            "message": "Voice needs an agent to bind to.",
         });
         let _ = socket.send(Message::Text(msg.to_string().into())).await;
         return;
+    }
+    if q.chat_id.as_deref().unwrap_or_default().is_empty() {
+        // Fresh call from the composer's empty state: mint the id now (the
+        // session key and tool scope need it) — the row waits for a turn.
+        q.chat_id = Some(uuid::Uuid::new_v4().to_string());
     }
 
     let Some((endpoint, bearer)) = resolve_realtime_leg(&state) else {
@@ -446,6 +452,34 @@ fn relay_loop_turn(state: &AppState, conv_id: &str, stream: &str, role: &str, co
             warn!(error = %e, "failed to relay voice turn to loop");
         }
     });
+}
+
+/// Create the voice call's chat row if it does not exist yet — the LAZY half
+/// of "voice is a modality of a chat". Called from every path that is about to
+/// put real activity into the thread (a finished turn, a delegated run), and
+/// from nowhere else, so a call that dies before producing anything leaves no
+/// row behind. Returns true once the chat exists.
+fn ensure_voice_chat(state: &AppState, chat_id: &str, session_key: &str) -> bool {
+    match state.store.get_chat(chat_id) {
+        Ok(Some(_)) => true,
+        Ok(None) => match state
+            .store
+            .create_chat_for_session(chat_id, session_key, "New Chat", None)
+        {
+            Ok(_) => {
+                info!(chat = %chat_id, "voice chat created on first activity");
+                true
+            }
+            Err(e) => {
+                error!(error = %e, chat = %chat_id, "failed to create voice chat");
+                false
+            }
+        },
+        Err(e) => {
+            error!(error = %e, chat = %chat_id, "failed to look up voice chat");
+            false
+        }
+    }
 }
 
 /// Persist one finished voice turn as a normal chat message and tell open
@@ -573,6 +607,9 @@ async fn handle_conversation_session(
     // once playback ends. Anything left at session end is flushed.
     let mut user_partial = String::new();
     let mut agent_partial = String::new();
+    // `chat_bound` announced to the client exactly once, when the lazily
+    // created chat first actually exists (see ensure_voice_chat).
+    let mut chat_bound_announced = false;
 
     // Completed tool executions flow back through this channel so the select
     // loop below owns all rt_tx sends (all outputs before one continuation).
@@ -602,7 +639,15 @@ async fn handle_conversation_session(
                     ConversationEvent::PlaybackStart => {
                         // Model turn started ⇒ the user's utterance is final
                         // (late transcript corrections have landed by now).
-                        if let Some(cid) = chat_id.as_deref() {
+                        if let Some(cid) = chat_id.as_deref()
+                            && !user_partial.trim().is_empty()
+                            && ensure_voice_chat(&state, cid, &ctx.session_key)
+                        {
+                            if !chat_bound_announced {
+                                chat_bound_announced = true;
+                                let bound = serde_json::json!({"type": "chat_bound", "chatId": cid});
+                                let _ = socket.send(Message::Text(bound.to_string().into())).await;
+                            }
                             persist_voice_turn(&state, cid, "user", &user_partial);
                         }
                         if let Some((conv, stream)) = loop_relay.as_ref()
@@ -614,7 +659,15 @@ async fn handle_conversation_session(
                         Some(serde_json::json!({"type": "playback_start"}))
                     }
                     ConversationEvent::PlaybackEnd => {
-                        if let Some(cid) = chat_id.as_deref() {
+                        if let Some(cid) = chat_id.as_deref()
+                            && !agent_partial.trim().is_empty()
+                            && ensure_voice_chat(&state, cid, &ctx.session_key)
+                        {
+                            if !chat_bound_announced {
+                                chat_bound_announced = true;
+                                let bound = serde_json::json!({"type": "chat_bound", "chatId": cid});
+                                let _ = socket.send(Message::Text(bound.to_string().into())).await;
+                            }
                             persist_voice_turn(&state, cid, "assistant", &agent_partial);
                         }
                         if let Some((conv, stream)) = loop_relay.as_ref()
@@ -650,6 +703,7 @@ async fn handle_conversation_session(
                         let state = state.clone();
                         let ctx = ctx.clone();
                         let done = tool_done_tx.clone();
+                        let delegate_chat_id = chat_id.clone();
                         tokio::spawn(async move {
                             let input = decode_tool_arguments(&arguments);
                             // `nebo` delegates to the Runner (the ONE tuned
@@ -663,6 +717,11 @@ async fn handle_conversation_session(
                                 let content = if task.is_empty() {
                                     "The nebo tool needs a `task` string describing what to do.".to_string()
                                 } else {
+                                    // A delegated run appends to the thread —
+                                    // real activity, so the chat must exist.
+                                    if let Some(cid) = delegate_chat_id.as_deref() {
+                                        ensure_voice_chat(&state, cid, &ctx.session_key);
+                                    }
                                     run_delegated_task(&state, &ctx.session_key, task).await
                                 };
                                 serde_json::json!({ "ok": true, "content": content })

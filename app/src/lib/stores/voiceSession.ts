@@ -59,6 +59,9 @@ export interface VoiceSessionState {
 	interimTranscript: string;
 	agentId: string | null;
 	conversationId: string | null;
+	/** Chat the server bound this call to — announced via `chat_bound` only
+	 *  once a turn actually persisted, so no frame means no chat was created. */
+	boundChatId: string | null;
 	errorMessage: string | null;
 }
 
@@ -70,6 +73,7 @@ const initialState: VoiceSessionState = {
 	interimTranscript: '',
 	agentId: null,
 	conversationId: null,
+	boundChatId: null,
 	errorMessage: null
 };
 
@@ -307,6 +311,10 @@ function createVoiceSessionStore() {
 					}));
 					break;
 
+				case 'chat_bound':
+					update((s) => ({ ...s, boundChatId: msg.chatId ?? s.boundChatId }));
+					break;
+
 				case 'conversation_id':
 					// Resumption handle from the realtime engine (30 min expiry).
 					update((s) => ({ ...s, conversationId: msg.id ?? s.conversationId }));
@@ -415,7 +423,8 @@ function createVoiceSessionStore() {
 				audioLevel: 0,
 				errorMessage: null,
 				isMuted: false,
-				conversationId: null
+				conversationId: null,
+				boundChatId: null
 			}));
 			agentEntryOpen = false;
 			preOpenAudio = [];

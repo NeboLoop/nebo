@@ -25,6 +25,8 @@
   });
   import SlashCommandMenu from './SlashCommandMenu.svelte';
   import VoiceModeOverlay from './VoiceModeOverlay.svelte';
+  import { voiceSession } from '$lib/stores/voiceSession';
+  import { get } from 'svelte/store';
   import type { SlashCommand } from './slashCommands.js';
   import { AGENT_COLORS_MAP } from '$lib/tokens.js';
   import { getWebSocketClient } from '$lib/websocket/client';
@@ -276,8 +278,14 @@
             return true;
           }
 
-          // Phase 10: Suppress Enter during IME composition (CJK input)
+          // Phase 10: Suppress Enter during IME composition (CJK input).
+          // Enter-to-send is a DESKTOP convention: on mobile the return key
+          // must insert a newline (the send button submits) — same md
+          // breakpoint the layout uses for the pane/drawer split.
           if (event.key === 'Enter' && !event.shiftKey && !mentionMenuVisible && !isComposing) {
+            if (!window.matchMedia('(min-width: 768px)').matches) {
+              return false; // mobile: let the editor insert a newline
+            }
             event.preventDefault();
             send();
             return true;
@@ -404,34 +412,26 @@
     editor?.commands.focus();
   }
 
-  // Voice is a modality of the chat: the call binds to a real chat thread so
-  // every turn persists as messages. Starting voice from a fresh "New chat"
-  // creates the thread first (the canonical creation endpoint); closing the
-  // call from that state navigates into the thread with the transcript there.
+  // Voice is a modality of the chat. On an open thread the call binds to THAT
+  // thread — same chat, same context, no new row. From the empty "New chat"
+  // state the server mints the chat LAZILY, on the first persisted turn, and
+  // announces it via a `chat_bound` frame. Eager creation here used to leave
+  // an empty "New Chat" husk for every call that failed before producing a
+  // turn (one afternoon of reconnects minted three chats from one session).
   let voiceChatId = $state('');
 
-  async function handleStartConversation() {
-    voiceChatId = threadId;
-    if (!voiceChatId && agentId) {
-      try {
-        const api = await import('$lib/api/nebo');
-        const resp = await api.createNewAgentChat(agentId, {});
-        voiceChatId = (resp as { chat?: { id?: string } }).chat?.id ?? '';
-      } catch (e) {
-        console.error('voice: could not create chat thread', e);
-      }
-    }
-    // No thread, no call — voice without a chat to persist into would
-    // orphan the whole conversation (backend refuses it too).
-    if (!voiceChatId) return;
+  function handleStartConversation() {
+    voiceChatId = threadId; // may be '' — the server mints an id lazily
     showVoiceOverlay = true;
   }
 
   function handleCloseConversation() {
     showVoiceOverlay = false;
-    // Voice started from an empty "New chat": land in the thread it created.
-    if (!threadId && voiceChatId && agentId) {
-      import('$lib/nav').then(({ goto }) => goto(`/${agentId}/threads/${voiceChatId}`));
+    // Voice started from an empty "New chat": land in the thread it created —
+    // but only if the call actually produced one (chat_bound observed).
+    const bound = get(voiceSession).boundChatId;
+    if (!threadId && bound && agentId) {
+      import('$lib/nav').then(({ goto }) => goto(`/${agentId}/threads/${bound}`));
     }
   }
 
