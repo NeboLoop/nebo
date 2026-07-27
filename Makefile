@@ -4,6 +4,11 @@
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 SIGN_IDENTITY ?= Developer ID Application: Alma Tuck (7Y2D3KQ2UM)
 NOTARIZE_PROFILE ?= nebo-notarize
+NOTARIZE_APPLE_ID ?= alma.tuck@gmail.com
+NOTARIZE_TEAM_ID ?= 7Y2D3KQ2UM
+# Legacy-keychain item holding the app-specific password. Readable from any
+# shell, unlike a notarytool profile — see the `notarize` target.
+NOTARIZE_KEYCHAIN_SERVICE ?= apple-notarization
 
 # Tauri output directories (workspace shares a root target dir, not src-tauri/target)
 TAURI_TARGET = target
@@ -376,11 +381,29 @@ dmg: app-bundle
 	fi
 	@echo "Built: dist/Nebo-$(VERSION)-$(DMG_ARCH).dmg"
 
-# Notarize the .dmg with Apple
+# Notarize the .dmg with Apple.
+#
+# Credentials come from the app-specific password in the legacy keychain and
+# are passed to notarytool directly. `--keychain-profile` is NOT the default
+# path: notarytool stores those profiles in the data-protection keychain,
+# which is invisible to any process without a GUI security session. A release
+# driven from a headless or agent shell therefore fails with "No Keychain
+# password item found for profile" — and `store-credentials` there reports
+# success while writing nothing that survives. Reading the password item
+# works from any shell, so this makes notarization session-independent.
+# The profile remains as a fallback for machines that only have one.
 notarize: dmg
 	@echo "Submitting to Apple for notarization..."
-	xcrun notarytool submit "dist/Nebo-$(VERSION)-$(DMG_ARCH).dmg" \
-		--keychain-profile "$(NOTARIZE_PROFILE)" --wait
+	@PW=$$(security find-generic-password -w -s "$(NOTARIZE_KEYCHAIN_SERVICE)" -a "$(NOTARIZE_APPLE_ID)" 2>/dev/null); \
+	if [ -n "$$PW" ]; then \
+		xcrun notarytool submit "dist/Nebo-$(VERSION)-$(DMG_ARCH).dmg" \
+			--apple-id "$(NOTARIZE_APPLE_ID)" --team-id "$(NOTARIZE_TEAM_ID)" \
+			--password "$$PW" --wait; \
+	else \
+		echo "no '$(NOTARIZE_KEYCHAIN_SERVICE)' keychain item — falling back to profile '$(NOTARIZE_PROFILE)'"; \
+		xcrun notarytool submit "dist/Nebo-$(VERSION)-$(DMG_ARCH).dmg" \
+			--keychain-profile "$(NOTARIZE_PROFILE)" --wait; \
+	fi
 	@echo "Stapling notarization ticket..."
 	xcrun stapler staple "dist/Nebo-$(VERSION)-$(DMG_ARCH).dmg"
 	@echo "Done! DMG is signed and notarized."
