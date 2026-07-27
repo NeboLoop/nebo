@@ -17,6 +17,12 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+/// How long an `auth status` probe may run before we call it inconclusive.
+///
+/// Generous enough for a real network round trip, short enough that a hung
+/// plugin cannot outlive the 30-minute refresh cycle that spawns the next one.
+const AUTH_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(45);
+
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tracing::{debug, info, warn};
@@ -2519,6 +2525,10 @@ async fn run_auth_status_check_inner(
     // the pid makes the reaper skip it.
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
+    // Kill the probe if we stop waiting on it. Without this the timeout below
+    // would abandon a live process rather than reap it — the exact leak that
+    // accumulated 330 orphans on a customer box.
+    cmd.kill_on_drop(true);
     let child = match cmd.spawn() {
         Ok(c) => c,
         Err(_) => return None, // couldn't spawn → inconclusive
@@ -2527,7 +2537,32 @@ async fn run_auth_status_check_inner(
     if let Some(p) = pid {
         crate::child_guard::register_child(p);
     }
-    let result = child.wait_with_output().await;
+    // BOUNDED. A plugin that hangs on a network call (the `gws auth status`
+    // probes that piled up on Stadium) must not wait forever: the refresher
+    // spawns a fresh probe every 30 minutes, so an unbounded wait leaks one
+    // process per cycle indefinitely. A hung probe is inconclusive, not a
+    // verdict — never let it decide "not authenticated".
+    //
+    // NOTE: this path deliberately still builds its own env (PATH + resolved
+    // auth env + profile dir) rather than PluginRuntime::build_env(). Unifying
+    // it changes what the auth check sees, and this is the code that decides
+    // authenticated-vs-not for every plugin — that migration needs an env diff
+    // per plugin, not a late-night swap. See
+    // docs/plans/plugin-launch-consolidation.md, site 2.
+    let result = match tokio::time::timeout(AUTH_PROBE_TIMEOUT, child.wait_with_output()).await {
+        Ok(r) => r,
+        Err(_) => {
+            if let Some(p) = pid {
+                crate::child_guard::unregister_child(p);
+            }
+            tracing::warn!(
+                plugin = %slug,
+                timeout_secs = AUTH_PROBE_TIMEOUT.as_secs(),
+                "auth status probe timed out — treating as inconclusive"
+            );
+            return None;
+        }
+    };
     if let Some(p) = pid {
         crate::child_guard::unregister_child(p);
     }

@@ -31,6 +31,33 @@ const DANGEROUS_ENV_VARS: &[&str] = &[
     "NODE_OPTIONS",
 ];
 
+/// Why a plugin launch failed. Distinguishes "never started" from "ran too long"
+/// from "we lost the child", so callers can report the real cause instead of
+/// flattening every failure into one string.
+#[derive(Debug)]
+pub enum LaunchError {
+    /// The process could not be started at all.
+    Spawn(std::io::Error),
+    /// Exceeded its timeout; the child has been killed.
+    TimedOut { after: Duration },
+    /// Started, but waiting on it failed.
+    Wait(std::io::Error),
+}
+
+impl std::fmt::Display for LaunchError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LaunchError::Spawn(e) => write!(f, "failed to start: {e}"),
+            LaunchError::TimedOut { after } => {
+                write!(f, "timed out after {}s", after.as_secs())
+            }
+            LaunchError::Wait(e) => write!(f, "failed while running: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for LaunchError {}
+
 /// Return a sanitized copy of the current process environment,
 /// stripping dangerous loader/shell injection vars.
 pub fn sanitized_env() -> Vec<(String, String)> {
@@ -66,6 +93,10 @@ pub struct PluginRuntime {
     include_home: bool,
     agent_config: Option<HashMap<String, String>>,
     enforce_permissions: bool,
+    /// Caller-supplied env applied LAST, so it wins over everything else.
+    /// Carries per-invocation context (channel ids, per-agent account dirs)
+    /// that callers used to set by hand-rolling their own Command.
+    extra_env: Vec<(String, String)>,
 }
 
 impl PluginRuntime {
@@ -78,7 +109,16 @@ impl PluginRuntime {
             include_home: false,
             agent_config: None,
             enforce_permissions: false,
+            extra_env: Vec::new(),
         }
+    }
+
+    /// Add one env var to this invocation. Applied after all other sources, so
+    /// it overrides them — that ordering is what per-agent account isolation
+    /// depends on.
+    pub fn with_env(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.extra_env.push((key.into(), value.into()));
+        self
     }
 
     pub fn with_deps(mut self) -> Self {
@@ -177,6 +217,12 @@ impl PluginRuntime {
             }
         }
 
+        // Caller-supplied env LAST so it wins — per-agent account directories
+        // must override any global value of the same key.
+        for (k, v) in &self.extra_env {
+            env.push((k.clone(), v.clone()));
+        }
+
         env
     }
 
@@ -186,9 +232,17 @@ impl PluginRuntime {
     pub fn command(&self, args_str: &str) -> tokio::process::Command {
         let args = shlex::split(args_str)
             .unwrap_or_else(|| args_str.split_whitespace().map(String::from).collect());
+        self.command_args(&args)
+    }
 
+    /// Same as [`command`], for callers that already hold split arguments.
+    ///
+    /// Prefer this whenever the args were built programmatically: round-tripping
+    /// them through a string and re-splitting mangles anything containing spaces
+    /// or quotes.
+    pub fn command_args(&self, args: &[String]) -> tokio::process::Command {
         let mut cmd = tokio::process::Command::new(&self.binary_path);
-        cmd.args(&args);
+        cmd.args(args);
         cmd.env_clear();
         for (k, v) in self.build_env() {
             cmd.env(k, v);
@@ -202,6 +256,84 @@ impl PluginRuntime {
         cmd.current_dir(&data_dir);
         cmd.kill_on_drop(true);
         cmd
+    }
+
+    /// Run a plugin command to completion and capture its output.
+    ///
+    /// THE canonical one-shot launch. Every caller that needs a plugin's stdout
+    /// must use this rather than building its own `Command`, because the three
+    /// guarantees below have to hold together and had drifted apart across
+    /// eight separate spawn sites:
+    ///
+    /// 1. **The timeout is mandatory.** There is deliberately no unbounded
+    ///    variant — a plugin that hangs on a network call must not hang Nebo.
+    /// 2. **The child is killed when the timeout fires.** `command()` sets
+    ///    `kill_on_drop`, so dropping the wait future reaps the process. Without
+    ///    it, tokio leaves the child running: it survives Nebo, reparents to
+    ///    launchd/init, and never exits. One customer box accumulated 330 such
+    ///    orphans in 30 hours until it ran out of file descriptors and every
+    ///    outbound request began failing.
+    /// 3. **The pid is tracked for its whole life**, including the timeout path,
+    ///    so the reaper never SIGKILLs a live probe and shutdown never leaves
+    ///    strays behind.
+    pub async fn run_capture(
+        &self,
+        args_str: &str,
+        requested_timeout: Duration,
+    ) -> Result<std::process::Output, LaunchError> {
+        let args = shlex::split(args_str)
+            .unwrap_or_else(|| args_str.split_whitespace().map(String::from).collect());
+        self.run_capture_args(&args, requested_timeout).await
+    }
+
+    /// Same as [`run_capture`], for callers that already hold split arguments.
+    pub async fn run_capture_args(
+        &self,
+        args: &[String],
+        requested_timeout: Duration,
+    ) -> Result<std::process::Output, LaunchError> {
+        let timeout = self.effective_timeout(requested_timeout);
+        let mut cmd = self.command_args(args);
+        cmd.stdin(std::process::Stdio::null());
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::piped());
+
+        let child = cmd.spawn().map_err(LaunchError::Spawn)?;
+        let pid = child.id();
+        if let Some(p) = pid {
+            crate::child_guard::register_child(p);
+        }
+        let result = tokio::time::timeout(timeout, child.wait_with_output()).await;
+        if let Some(p) = pid {
+            crate::child_guard::unregister_child(p);
+        }
+
+        match result {
+            Ok(Ok(output)) => Ok(output),
+            Ok(Err(e)) => Err(LaunchError::Wait(e)),
+            // The wait future is dropped here, which triggers kill_on_drop.
+            Err(_) => Err(LaunchError::TimedOut { after: timeout }),
+        }
+    }
+
+    /// Spawn a long-lived plugin process (channel bridge, sidecar) with stdin,
+    /// stdout and stderr piped, and register it with the child guard.
+    ///
+    /// The caller owns the returned `Child` for the process's lifetime — dropping
+    /// it kills the process (`kill_on_drop`), which is what makes bridges die with
+    /// Nebo instead of orphaning. Callers MUST `unregister_child` when the process
+    /// exits so the guard's pid set does not grow without bound.
+    pub fn spawn_streaming(&self, args_str: &str) -> Result<tokio::process::Child, LaunchError> {
+        let mut cmd = self.command(args_str);
+        cmd.stdin(std::process::Stdio::piped());
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::piped());
+
+        let child = cmd.spawn().map_err(LaunchError::Spawn)?;
+        if let Some(p) = child.id() {
+            crate::child_guard::register_child(p);
+        }
+        Ok(child)
     }
 
     /// Resolve effective timeout: min(caller_timeout, manifest max_timeout_seconds).

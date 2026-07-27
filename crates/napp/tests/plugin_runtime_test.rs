@@ -315,3 +315,67 @@ async fn auth_env_injection() {
     assert_eq!(env.get("GWS_CLIENT_ID").map(|s| s.as_str()), Some("test-client-id"));
     assert_eq!(env.get("GWS_CLIENT_SECRET").map(|s| s.as_str()), Some("test-secret"));
 }
+
+/// A timed-out plugin must be KILLED, not merely abandoned.
+///
+/// This is the 330-orphan bug in miniature. `tokio::time::timeout` drops the
+/// wait future when it fires; without `kill_on_drop` the child keeps running,
+/// outlives Nebo, reparents to launchd/init and never exits. The old
+/// `plugin_tool.rs` path built its own Command without that flag and leaked a
+/// process on every single timeout.
+#[tokio::test]
+async fn timed_out_plugin_is_killed_not_orphaned() {
+    let binary = fake_plugin_binary();
+    let (_tmp, store) = setup_plugin_store("sleeper", &binary);
+    let resolved = store.resolve("sleeper", "*").unwrap();
+    let runtime = PluginRuntime::new("sleeper", resolved.clone(), store);
+
+    let err = runtime
+        .run_capture("sleep 30", Duration::from_secs(1))
+        .await
+        .expect_err("a 30s command under a 1s timeout must not succeed");
+
+    assert!(
+        matches!(err, nebo_napp::plugin_runtime::LaunchError::TimedOut { .. }),
+        "expected TimedOut, got {err:?}"
+    );
+
+    // Let the kill land, then prove nothing survived it. `reap_existing_for`
+    // returns how many live processes it had to SIGKILL for this binary — if the
+    // child had been abandoned rather than killed, this would be 1.
+    tokio::time::sleep(Duration::from_millis(750)).await;
+    let survivors = nebo_napp::child_guard::reap_existing_for(&resolved);
+    assert_eq!(
+        survivors, 0,
+        "a timed-out plugin process survived — this is the orphan leak"
+    );
+}
+
+/// The pid must be unregistered on BOTH the success and timeout paths, or the
+/// guard's tracked set grows forever and the reaper starts skipping real strays.
+#[tokio::test]
+async fn run_capture_leaves_no_tracked_pids() {
+    let binary = fake_plugin_binary();
+    let (_tmp, store) = setup_plugin_store("tracker", &binary);
+    let resolved = store.resolve("tracker", "*").unwrap();
+    let runtime = PluginRuntime::new("tracker", resolved, store);
+
+    let before = nebo_napp::child_guard::tracked_pids().len();
+
+    let out = runtime
+        .run_capture("echo-args hello", Duration::from_secs(10))
+        .await
+        .expect("fast command should succeed");
+    assert!(out.status.success());
+
+    let _ = runtime
+        .run_capture("sleep 30", Duration::from_secs(1))
+        .await
+        .expect_err("must time out");
+
+    assert_eq!(
+        nebo_napp::child_guard::tracked_pids().len(),
+        before,
+        "pids left registered after run_capture (success and/or timeout path)"
+    );
+}

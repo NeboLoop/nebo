@@ -1118,7 +1118,12 @@ impl PluginTool {
             None => None,
         };
 
-        let runtime = napp::PluginRuntime::new(
+        // ONE canonical launch path (CODE_AUDITOR 8.1). This used to construct
+        // its own Command right after building the runtime, which meant it also
+        // owned — and drifted on — kill_on_drop, env assembly and pid tracking.
+        // Per-invocation context goes through `with_env` so the runtime stays the
+        // single place that knows how to assemble a plugin's environment.
+        let mut runtime = napp::PluginRuntime::new(
             &pi.resource,
             binary_path.clone(),
             self.plugin_store.clone(),
@@ -1126,49 +1131,35 @@ impl PluginTool {
         .with_deps()
         .with_permissions();
 
-        let mut cmd = tokio::process::Command::new(&binary_path);
-        cmd.args(&args);
-        cmd.env_clear();
-        for (k, v) in runtime.build_env() {
-            cmd.env(k, v);
-        }
-
-        // Inject channel context as env vars so channel-plugin CLI subcommands
-        // (e.g. `slack upload`) can target the current channel/thread without
-        // the agent having to look up IDs. See
-        // `docs/publishers-guide/channel-plugins.md` for the convention.
+        // Channel context so channel-plugin subcommands (e.g. `slack upload`)
+        // can target the current channel/thread without the agent looking up ids.
+        // See `docs/publishers-guide/channel-plugins.md`.
         if let Some(ch) = &ctx.channel {
-            cmd.env("NEBO_CHANNEL_KIND", &ch.kind);
-            cmd.env("NEBO_CHANNEL_ID", &ch.channel_id);
+            runtime = runtime
+                .with_env("NEBO_CHANNEL_KIND", &ch.kind)
+                .with_env("NEBO_CHANNEL_ID", &ch.channel_id);
             if let Some(ts) = &ch.thread_ts {
-                cmd.env("NEBO_THREAD_TS", ts);
+                runtime = runtime.with_env("NEBO_THREAD_TS", ts);
             }
         }
 
-        // Per-account credential isolation: point the plugin at this agent's
-        // chosen account directory (set last so it wins over any global value).
+        // Per-account credential isolation: this agent's chosen account dir.
         if let Some((env_name, config_dir)) = &profile_dir_injection {
-            cmd.env(env_name, config_dir);
+            runtime = runtime.with_env(env_name.clone(), config_dir.clone());
         }
 
-        process::hide_window(&mut cmd);
-        cmd.stdout(Stdio::piped());
-        cmd.stderr(Stdio::piped());
-
-        let effective_timeout = runtime
-            .effective_timeout(Duration::from_secs(timeout_secs));
         let started = std::time::SystemTime::now();
-        let result = tokio::time::timeout(effective_timeout, cmd.output()).await;
+        let result = runtime
+            .run_capture_args(&args, Duration::from_secs(timeout_secs))
+            .await;
 
         match result {
-            Err(_) => ToolResult::error(format!(
+            Err(napp::plugin_runtime::LaunchError::TimedOut { .. }) => ToolResult::error(format!(
                 "Plugin '{}' command timed out after {}s",
                 pi.resource, timeout_secs
             )),
-            Ok(Err(e)) => {
-                ToolResult::error(format!("Plugin '{}' command failed: {}", pi.resource, e))
-            }
-            Ok(Ok(output)) => {
+            Err(e) => ToolResult::error(format!("Plugin '{}' command failed: {}", pi.resource, e)),
+            Ok(output) => {
                 let mut text = String::new();
 
                 let stdout = String::from_utf8_lossy(&output.stdout);
