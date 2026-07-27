@@ -40,3 +40,9 @@ local-inference = ["dep:llama-cpp-2"]
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[dev-dependencies]
+rcgen = "0.13"
+tokio-rustls = "0.26"
+tokio-tungstenite = { workspace = true }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
