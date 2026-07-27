@@ -43,7 +43,18 @@ axum = { version = "0.8", features = ["ws", "macros", "multipart"] }
 axum-extra = { version = "0.10", features = ["typed-header"] }
 tower = { version = "0.5" }
 tower-http = { version = "0.6", features = ["cors", "compression-gzip", "fs", "set-header", "trace"] }
-reqwest = { version = "0.12", features = ["json", "stream", "multipart"] }
+# rustls, not native-tls. native-tls drags in openssl-sys (a C library) on
+# Linux/Android and security-framework on macOS. The C dependency blocks static
+# musl and native Android builds; the macOS path made every HTTPS call depend on
+# securityd, and when securityd wedged on a customer box the OS returned an EMPTY
+# trust store — every certificate rejected, no error, two-day outage.
+# `native-roots` keeps today's trust behaviour (system store, so enterprise CAs
+# still work) while dropping the C dependency entirely.
+reqwest = { version = "0.12", default-features = false, features = [
+    "json", "stream", "multipart",
+    "charset", "http2", "macos-system-configuration",
+    "rustls-tls-native-roots",
+] }
 
 # Browser automation (Chrome DevTools Protocol) — tier-2 built-in browser backend.
 # No features: drops the optional Chromium fetcher (we launch Chrome ourselves via
@@ -88,7 +99,12 @@ rust-embed = { version = "8", features = ["compression", "include-exclude"] }
 futures = "0.3"
 async-openai = { version = "0.33", features = ["chat-completion"] }
 tokio-util = "0.7"
-tokio-tungstenite = { version = "0.26", features = ["connect", "native-tls"] }
+# MUST match reqwest's TLS backend. Leaving websockets on native-tls would pull
+# openssl-sys back into the build — the binary would compile and the platform
+# goal would silently be lost.
+tokio-tungstenite = { version = "0.26", default-features = false, features = [
+    "connect", "handshake", "rustls-tls-native-roots",
+] }
 yamux = "0.13"
 
 # Cron
