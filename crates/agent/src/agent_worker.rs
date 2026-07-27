@@ -7,7 +7,6 @@
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
-use std::process::Stdio;
 use std::sync::Arc;
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -1118,7 +1117,7 @@ async fn watch_loop(
             }
         };
 
-        let runtime = napp::PluginRuntime::new(
+        let mut runtime = napp::PluginRuntime::new(
             &cfg.plugin,
             binary_path.clone(),
             plugin_store.clone(),
@@ -1126,31 +1125,16 @@ async fn watch_loop(
         .with_home()
         .with_permissions();
 
-        let mut cmd = tokio::process::Command::new(&binary_path);
-        cmd.args(&args);
-        cmd.stdout(Stdio::piped());
-        cmd.stderr(Stdio::piped());
-        // Watchers self-exit on stdin EOF (orphan prevention) — spawned from
-        // the GUI app without a pipe, stdin is /dev/null → instant EOF → the
-        // watcher dies ~5s in, forever. Pipe stdin and hold the write end open
-        // for the child's lifetime, like channel_loop does.
-        cmd.stdin(Stdio::piped());
-        cmd.kill_on_drop(true);
-        cmd.env_clear();
-        for (k, v) in runtime.build_env() {
-            cmd.env(k, v);
-        }
         // Per-account credential isolation: point the watcher at this agent's
-        // chosen account directory (set last so it wins over any global value).
+        // chosen account directory (applied last so it wins over any global).
         if let Some((env_name, config_dir)) = &profile_dir {
-            cmd.env(env_name, config_dir);
+            runtime = runtime.with_env(env_name.clone(), config_dir.clone());
         }
 
-        #[cfg(target_os = "windows")]
-        {
-            const CREATE_NO_WINDOW: u32 = 0x08000000;
-            cmd.creation_flags(CREATE_NO_WINDOW);
-        }
+        // `spawn_streaming` owns stdio, env_clear + build_env, kill_on_drop, the
+        // Windows no-window flag and child-guard registration. Watchers self-exit
+        // on stdin EOF (orphan prevention), which is why stdin must be a pipe
+        // held open for the child's lifetime — that is part of the contract.
 
         info!(
             agent = %agent_id,
@@ -1169,7 +1153,7 @@ async fn watch_loop(
         // prior crashed Nebo will hold its events/sockets otherwise.
         napp::child_guard::reap_existing_for(&binary_path);
 
-        let mut child = match cmd.spawn() {
+        let mut child = match runtime.spawn_streaming(&args) {
             Ok(c) => c,
             Err(e) => {
                 error!(
@@ -1804,22 +1788,6 @@ async fn channel_loop(
         .with_agent_config(agent_config.clone())
         .with_permissions();
 
-        let mut cmd = tokio::process::Command::new(&binary_path);
-        cmd.args(&args);
-        cmd.stdout(Stdio::piped());
-        cmd.stderr(Stdio::piped());
-        cmd.stdin(Stdio::piped());
-        cmd.kill_on_drop(true);
-        cmd.env_clear();
-        for (k, v) in runtime.build_env() {
-            cmd.env(k, v);
-        }
-
-        #[cfg(target_os = "windows")]
-        {
-            const CREATE_NO_WINDOW: u32 = 0x08000000;
-            cmd.creation_flags(CREATE_NO_WINDOW);
-        }
 
         let has_own_creds = !agent_config.is_empty();
         info!(
@@ -1838,7 +1806,7 @@ async fn channel_loop(
         // each posting placeholders for the same inbound message.
         napp::child_guard::reap_existing_for(&binary_path);
 
-        let mut child = match cmd.spawn() {
+        let mut child = match runtime.spawn_streaming(&args) {
             Ok(c) => c,
             Err(e) => {
                 error!(
@@ -2531,22 +2499,6 @@ async fn shared_channel_loop(
         .with_home()
         .with_permissions();
 
-        let mut cmd = tokio::process::Command::new(&binary_path);
-        cmd.args(&args);
-        cmd.stdout(Stdio::piped());
-        cmd.stderr(Stdio::piped());
-        cmd.stdin(Stdio::piped());
-        cmd.kill_on_drop(true);
-        cmd.env_clear();
-        for (k, v) in runtime.build_env() {
-            cmd.env(k, v);
-        }
-
-        #[cfg(target_os = "windows")]
-        {
-            const CREATE_NO_WINDOW: u32 = 0x08000000;
-            cmd.creation_flags(CREATE_NO_WINDOW);
-        }
 
         info!(
             plugin = %plugin_slug,
@@ -2559,7 +2511,7 @@ async fn shared_channel_loop(
         // Reap any pre-existing instance of this shared channel bridge.
         napp::child_guard::reap_existing_for(&binary_path);
 
-        let mut child = match cmd.spawn() {
+        let mut child = match runtime.spawn_streaming(&args) {
             Ok(c) => c,
             Err(e) => {
                 error!(

@@ -255,6 +255,15 @@ impl PluginRuntime {
         let _ = std::fs::create_dir_all(&data_dir);
         cmd.current_dir(&data_dir);
         cmd.kill_on_drop(true);
+        // No console window on Windows. Lived at every call site before this;
+        // a caller that forgot it flashed a black box at the user on every
+        // plugin invocation.
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x08000000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
         cmd
     }
 
@@ -323,8 +332,8 @@ impl PluginRuntime {
     /// it kills the process (`kill_on_drop`), which is what makes bridges die with
     /// Nebo instead of orphaning. Callers MUST `unregister_child` when the process
     /// exits so the guard's pid set does not grow without bound.
-    pub fn spawn_streaming(&self, args_str: &str) -> Result<tokio::process::Child, LaunchError> {
-        let mut cmd = self.command(args_str);
+    pub fn spawn_streaming(&self, args: &[String]) -> Result<tokio::process::Child, LaunchError> {
+        let mut cmd = self.command_args(args);
         cmd.stdin(std::process::Stdio::piped());
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());

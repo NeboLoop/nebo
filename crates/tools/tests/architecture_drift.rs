@@ -82,7 +82,12 @@ fn count_matches(needle: &str, filter: impl Fn(&Path) -> bool) -> Vec<(PathBuf, 
 fn plugin_launches_go_through_plugin_runtime() {
     // Files whose job is launching PLUGIN binaries. Launching other programs
     // (osascript, powershell, git) is not what this gate is about.
-    const PLUGIN_LAUNCH_FILES: &[&str] = &["tools/src/plugin_tool.rs"];
+    const PLUGIN_LAUNCH_FILES: &[&str] = &[
+        "tools/src/plugin_tool.rs",
+        // Channel/watch bridges — migrated to spawn_streaming; a raw Command
+        // here would silently drop the shared env assembly and guard wiring.
+        "agent/src/agent_worker.rs",
+    ];
 
     let offenders = count_matches("Command::new", |p| {
         let s = p.to_string_lossy().replace('\\', "/");
