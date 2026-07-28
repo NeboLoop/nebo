@@ -380,6 +380,55 @@ async fn handle_shuffle(_input: &serde_json::Value) -> ToolResult {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+// Fallback for unsupported platforms (Android, etc.)
+// ═══════════════════════════════════════════════════════════════════════
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+async fn handle_play() -> ToolResult {
+    ToolResult::error("Media playback control is not available on Android")
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+async fn handle_pause() -> ToolResult {
+    ToolResult::error("Media playback control is not available on Android")
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+async fn handle_next() -> ToolResult {
+    ToolResult::error("Media playback control is not available on Android")
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+async fn handle_previous() -> ToolResult {
+    ToolResult::error("Media playback control is not available on Android")
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+async fn handle_status() -> ToolResult {
+    ToolResult::error("Media playback status is not available on Android")
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+async fn handle_search(_query: &str) -> ToolResult {
+    ToolResult::error("Music library search is not available on Android")
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+async fn handle_volume(_input: &serde_json::Value) -> ToolResult {
+    ToolResult::error("Media volume control is not available on Android")
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+async fn handle_playlists() -> ToolResult {
+    ToolResult::error("Playlist listing is not available on Android")
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+async fn handle_shuffle(_input: &serde_json::Value) -> ToolResult {
+    ToolResult::error("Shuffle control is not available on Android")
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 // Shell helpers
 // ═══════════════════════════════════════════════════════════════════════
 

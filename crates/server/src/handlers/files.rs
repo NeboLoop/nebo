@@ -62,6 +62,7 @@ pub async fn browse(
 }
 
 /// POST /api/v1/files/pick — Open native file dialog and return selected paths
+#[cfg(not(target_os = "android"))]
 pub async fn pick_files() -> HandlerResult<serde_json::Value> {
     let result = tokio::task::spawn_blocking(|| {
         rfd::FileDialog::new()
@@ -81,7 +82,15 @@ pub async fn pick_files() -> HandlerResult<serde_json::Value> {
     Ok(Json(serde_json::json!({ "paths": paths })))
 }
 
+/// Android has no native desktop file dialog (and no rfd backend). The web UI
+/// falls back to its own <input type="file"> upload path when picking fails.
+#[cfg(target_os = "android")]
+pub async fn pick_files() -> HandlerResult<serde_json::Value> {
+    Ok(Json(serde_json::json!({ "paths": [] })))
+}
+
 /// POST /api/v1/files/pick-folder — Open native folder dialog and return selected path
+#[cfg(not(target_os = "android"))]
 pub async fn pick_folder() -> HandlerResult<serde_json::Value> {
     let result = tokio::task::spawn_blocking(|| {
         rfd::FileDialog::new()
@@ -94,6 +103,12 @@ pub async fn pick_folder() -> HandlerResult<serde_json::Value> {
     let path = result.and_then(|p| p.to_str().map(|s| s.to_string()));
 
     Ok(Json(serde_json::json!({ "path": path })))
+}
+
+/// See pick_files — no dialog backend on Android.
+#[cfg(target_os = "android")]
+pub async fn pick_folder() -> HandlerResult<serde_json::Value> {
+    Ok(Json(serde_json::json!({ "path": null })))
 }
 
 /// POST /api/v1/files/upload — store an attachment.

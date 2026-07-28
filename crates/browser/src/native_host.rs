@@ -455,6 +455,9 @@ pub fn needs_manifest_update(nebo_binary_path: &str, local_extension_id: &str) -
 
 /// Returns NativeMessagingHosts directories for all supported Chromium browsers.
 fn all_native_messaging_dirs() -> Vec<String> {
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    let dirs = Vec::new();
+    #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
     let mut dirs = Vec::new();
 
     #[cfg(target_os = "macos")]

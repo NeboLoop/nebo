@@ -63,11 +63,13 @@ fn copy_file(src: &Path, dst: &Path) -> Result<(), UpdateError> {
 }
 
 /// Path to the rollback marker the deferred helper writes on failure.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn marker_path(data_dir: &Path) -> std::path::PathBuf {
     data_dir.join("UPDATE_FAILED.json")
 }
 
 /// Path to the update log the deferred helper appends to.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn log_path(data_dir: &Path) -> std::path::PathBuf {
     data_dir.join("logs").join("update.log")
 }
@@ -136,6 +138,17 @@ pub fn apply(new_path: &Path, data_dir: &Path) -> Result<(), UpdateError> {
         "app_bundle" => apply_app_bundle(new_path, data_dir),
         _ => apply_direct(new_path, data_dir),
     }
+}
+
+/// Platforms with no app-bundle install method (Android: the binary runs from
+/// Termux/adb, install method is always `direct`). Reaching this arm means
+/// detect_install_method returned something impossible for the platform —
+/// fail loudly rather than pretend an update happened.
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+fn apply_app_bundle(_new_path: &Path, _data_dir: &Path) -> Result<(), UpdateError> {
+    Err(UpdateError::Other(
+        "app_bundle updates are not supported on this platform; use the direct binary".into(),
+    ))
 }
 
 // ── App Bundle Update (deferred-helper swap) ────────────────────────

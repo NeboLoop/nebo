@@ -933,6 +933,60 @@ mod macos_native {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+// Fallback for unsupported platforms (Android, etc.)
+// ═══════════════════════════════════════════════════════════════════════
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+async fn handle_volume(_action: &str, _input: &serde_json::Value) -> ToolResult {
+    ToolResult::error("System volume control is not available on Android")
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+async fn handle_brightness(_action: &str, _input: &serde_json::Value) -> ToolResult {
+    ToolResult::error("Screen brightness control is not available on Android")
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+async fn handle_wifi(_action: &str) -> ToolResult {
+    ToolResult::error("Wi-Fi control is not available on Android")
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+async fn handle_bluetooth(_action: &str) -> ToolResult {
+    ToolResult::error("Bluetooth control is not available on Android")
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+async fn handle_battery() -> ToolResult {
+    ToolResult::error("Battery status is not available on Android")
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+async fn handle_darkmode(_action: &str) -> ToolResult {
+    ToolResult::error("Dark mode control is not available on Android")
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+async fn handle_sleep() -> ToolResult {
+    ToolResult::error("System sleep is not available on Android")
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+async fn handle_lock() -> ToolResult {
+    ToolResult::error("Screen lock is not available on Android")
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+async fn handle_info() -> ToolResult {
+    ToolResult::error("System info is not available on Android")
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+async fn handle_mute(_mute: bool) -> ToolResult {
+    ToolResult::error("System mute control is not available on Android")
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 // Shell helpers
 // ═══════════════════════════════════════════════════════════════════════
 
@@ -960,6 +1014,7 @@ async fn run_osascript(script: &str) -> ToolResult {
     }
 }
 
+#[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
 async fn run_command(cmd: &str, args: &[&str]) -> ToolResult {
     match tokio::process::Command::new(cmd).args(args).output().await {
         Ok(output) if output.status.success() => {

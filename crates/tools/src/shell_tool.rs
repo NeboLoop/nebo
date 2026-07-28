@@ -503,7 +503,9 @@ impl ShellTool {
             "pid,ppid,user,%cpu,%mem,state,start,time,command".to_string(),
         ];
 
-        #[cfg(target_os = "linux")]
+        // Android has `ps` too (toybox, or procps on Termux) — use the Linux
+        // field list; an unsupported field surfaces as "process not found".
+        #[cfg(any(target_os = "linux", target_os = "android"))]
         let args = vec![
             "-p".to_string(),
             pid.to_string(),

@@ -164,8 +164,26 @@ enum ProviderCommands {
     Test { id: String },
 }
 
+fn main() -> anyhow::Result<()> {
+    // rustls-native-certs probes Linux CA paths that don't exist on Android;
+    // point it at the platform trust store before any thread can read env.
+    #[cfg(target_os = "android")]
+    if std::env::var_os("SSL_CERT_DIR").is_none() {
+        for dir in [
+            "/apex/com.android.conscrypt/cacerts",
+            "/system/etc/security/cacerts",
+        ] {
+            if std::path::Path::new(dir).is_dir() {
+                unsafe { std::env::set_var("SSL_CERT_DIR", dir) };
+                break;
+            }
+        }
+    }
+    run()
+}
+
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn run() -> anyhow::Result<()> {
     // Detect Chrome native messaging relay BEFORE parsing CLI args.
     // Chrome passes `chrome-extension://EXTENSION_ID/` as the sole argument.
     // When detected, run as a lightweight stdin/stdout relay — no GUI, no server.

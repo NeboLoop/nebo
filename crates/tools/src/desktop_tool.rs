@@ -1559,6 +1559,7 @@ end tell"#,
 }
 
 async fn capture_screenshot(input: &serde_json::Value) -> ToolResult {
+    #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
     let quality = input["quality"].as_str().unwrap_or("medium");
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     let app = input["app"].as_str().unwrap_or("");
@@ -1568,11 +1569,12 @@ async fn capture_screenshot(input: &serde_json::Value) -> ToolResult {
     // Use JPEG capture on macOS for low/medium to skip PNG decode overhead
     #[cfg(target_os = "macos")]
     let use_jpeg = quality != "high";
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     let use_jpeg = false;
 
+    #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
     let ext = if use_jpeg { "jpg" } else { "png" };
-    #[cfg(not(windows))]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     let tmp_path = format!("/tmp/nebo-capture-{}.{}", std::process::id(), ext);
     // Windows has no /tmp — write to the real temp dir or the PowerShell
     // capture saves to a nonexistent C:\tmp and the readback fails.
@@ -1711,7 +1713,10 @@ $bmp.Dispose()"#,
     };
 
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-    return ToolResult::error("Screenshot is not supported on this platform");
+    {
+        let _ = input;
+        return ToolResult::error("Screenshot is not supported on this platform");
+    }
 
     #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
     match result {
@@ -1733,6 +1738,7 @@ $bmp.Dispose()"#,
 /// Persist captured image bytes to `<data_dir>/files/<uuid>.<ext>` so the agent can
 /// reference the file (e.g. share it to a channel) and the app can render it via the
 /// `GET /api/v1/files/<name>` route. Returns (filename, absolute_path) on success.
+#[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
 fn persist_capture(bytes: &[u8], ext: &str) -> Option<(String, String)> {
     let dir = config::data_dir().ok()?.join("files");
     std::fs::create_dir_all(&dir).ok()?;
@@ -1746,6 +1752,7 @@ fn persist_capture(bytes: &[u8], ext: &str) -> Option<(String, String)> {
 /// surface the saved path + `/api/v1/files/<name>` URL in the content (so the agent
 /// can share/display it), and keep the `data:` URI in `image_url` so the vision
 /// sidecar still works for vision-incapable providers.
+#[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
 fn finalize_capture(bytes: &[u8], mime: &str, summary: &str) -> ToolResult {
     use base64::Engine;
     let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
@@ -1779,6 +1786,7 @@ fn finalize_capture(bytes: &[u8], mime: &str, summary: &str) -> ToolResult {
 /// - "low":    800px max width, 50% JPEG
 /// - "medium": 1280px max width, 65% JPEG (default)
 /// - "high":   original format, no compression
+#[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
 fn compress_and_encode(img_bytes: &[u8], quality: &str) -> ToolResult {
     use image::ImageReader;
     use std::io::Cursor;
@@ -3160,6 +3168,7 @@ fn key_name_to_code(key: &str) -> &str {
 
 // --- Cross-platform helpers ---
 
+#[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
 async fn run_command(cmd: &str, args: &[&str]) -> ToolResult {
     match tokio::process::Command::new(cmd).args(args).output().await {
         Ok(output) if output.status.success() => {

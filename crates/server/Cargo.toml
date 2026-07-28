@@ -50,7 +50,6 @@ tonic = "0.12"
 hyper-util = "0.1"
 proto = { workspace = true }
 sandbox-runtime = { workspace = true }
-rfd = { workspace = true }
 a2ui-types = { workspace = true }
 a2ui-core = { workspace = true }
 pulldown-cmark = { workspace = true }
@@ -74,3 +73,6 @@ cron = { workspace = true }
 uuid = { workspace = true }
 tokio-tungstenite = { workspace = true }
 futures-util = "0.3"
+
+[target.'cfg(not(target_os = "android"))'.dependencies]
+rfd = { workspace = true }

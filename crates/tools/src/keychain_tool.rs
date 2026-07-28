@@ -1,3 +1,4 @@
+#[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
 use crate::errors;
 use crate::origin::ToolContext;
 use crate::registry::{DynTool, ToolResult};
@@ -401,6 +402,30 @@ async fn handle_delete(input: &serde_json::Value) -> ToolResult {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+// Fallback for unsupported platforms (Android, etc.)
+// ═══════════════════════════════════════════════════════════════════════
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+async fn handle_get(_input: &serde_json::Value) -> ToolResult {
+    ToolResult::error("No system keychain is available on Android")
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+async fn handle_find(_input: &serde_json::Value) -> ToolResult {
+    ToolResult::error("No system keychain is available on Android")
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+async fn handle_add(_input: &serde_json::Value) -> ToolResult {
+    ToolResult::error("No system keychain is available on Android")
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+async fn handle_delete(_input: &serde_json::Value) -> ToolResult {
+    ToolResult::error("No system keychain is available on Android")
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 // Shell helpers
 // ═══════════════════════════════════════════════════════════════════════
 
@@ -429,6 +454,7 @@ async fn run_osascript(script: &str) -> ToolResult {
     }
 }
 
+#[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
 async fn run_command(cmd: &str, args: &[&str]) -> ToolResult {
     match tokio::process::Command::new(cmd).args(args).output().await {
         Ok(output) if output.status.success() => {

@@ -2206,7 +2206,9 @@ fn scope_is_ancestor(own: &str, found: &str) -> bool {
 fn open_url(url: &str) {
     #[cfg(target_os = "macos")]
     let cmd = ("open", vec![url]);
-    #[cfg(target_os = "linux")]
+    // Android (Termux) ships an `xdg-open` wrapper via termux-tools, so the
+    // Linux command works there too; spawn stays best-effort either way.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     let cmd = ("xdg-open", vec![url]);
     #[cfg(target_os = "windows")]
     let cmd = ("cmd", vec!["/C", "start", url]);

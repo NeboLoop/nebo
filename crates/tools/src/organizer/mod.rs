@@ -28,6 +28,9 @@ pub use windows::{handle_calendar, handle_contacts, handle_mail, handle_reminder
 
 // Fallback for unsupported platforms
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+use crate::registry::ToolResult;
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
 pub async fn handle_mail(_action: &str, _input: &OrganizerInput) -> ToolResult {
     ToolResult::error("Mail is not supported on this platform")
 }
@@ -58,6 +61,10 @@ pub async fn handle_reminders(_action: &str, _input: &OrganizerInput) -> ToolRes
 /// All fields are optional and action-specific. The `to` field accepts
 /// both a single string and an array for backward compatibility.
 #[derive(Debug, Clone, serde::Deserialize)]
+#[cfg_attr(
+    not(any(target_os = "macos", target_os = "linux", target_os = "windows")),
+    allow(dead_code) // serde input contract is identical on all targets; only desktop reads the fields
+)]
 pub struct OrganizerInput {
     #[serde(default)]
     pub action: String,
@@ -137,6 +144,7 @@ pub struct OrganizerInput {
 
 impl OrganizerInput {
     /// Get the event/reminder name — prefers `title`, falls back to `name`.
+    #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
     pub fn event_name(&self) -> &str {
         if !self.title.is_empty() {
             &self.title

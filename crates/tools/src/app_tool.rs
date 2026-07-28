@@ -554,6 +554,50 @@ $sb.ToString()
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+// Fallback for unsupported platforms (Android, etc.)
+// ═══════════════════════════════════════════════════════════════════════
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+async fn handle_list() -> ToolResult {
+    ToolResult::error("Listing desktop applications is not available on Android")
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+async fn handle_launch(_app: &str) -> ToolResult {
+    ToolResult::error("Launching desktop applications is not available on Android")
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+async fn handle_quit(_app: &str) -> ToolResult {
+    ToolResult::error("Quitting desktop applications is not available on Android")
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+async fn handle_quit_all() -> ToolResult {
+    ToolResult::error("Quitting desktop applications is not available on Android")
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+async fn handle_activate(_app: &str) -> ToolResult {
+    ToolResult::error("Activating desktop applications is not available on Android")
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+async fn handle_hide(_app: &str) -> ToolResult {
+    ToolResult::error("Hiding desktop applications is not available on Android")
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+async fn handle_info(_app: &str) -> ToolResult {
+    ToolResult::error("Desktop application info is not available on Android")
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+async fn handle_frontmost() -> ToolResult {
+    ToolResult::error("No frontmost desktop application on Android")
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 // Shell helpers
 // ═══════════════════════════════════════════════════════════════════════
 

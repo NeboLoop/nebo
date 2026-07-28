@@ -3,6 +3,7 @@
 //! Date parsing, string escaping, and subprocess execution shared across
 //! macOS, Linux, and Windows platform modules.
 
+#[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
 use crate::registry::ToolResult;
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -15,6 +16,7 @@ use crate::registry::ToolResult;
 /// - ISO format: "2024-01-15 14:00", "2024-01-15"
 /// - US format:  "01/15/2024 14:00", "01/15/2024"
 /// - Natural language: "today", "tomorrow", "in 2 hours", "in 3 days", "in 1 week"
+#[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
 pub fn parse_date(s: &str) -> Result<chrono::NaiveDateTime, String> {
     use chrono::{Duration, Local, NaiveDate};
 
@@ -99,6 +101,7 @@ pub fn escape_powershell(s: &str) -> String {
 // ═══════════════════════════════════════════════════════════════════════
 
 /// Maximum time to wait for a subprocess before killing it.
+#[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
 const SUBPROCESS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Run an AppleScript via `osascript -e` and return a ToolResult.

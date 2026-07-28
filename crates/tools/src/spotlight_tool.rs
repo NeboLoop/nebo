@@ -79,7 +79,9 @@ async fn handle_search(input: &serde_json::Value) -> ToolResult {
             "os(resource: \"search\", action: \"search\", query: \"budget report 2024\")",
         ));
     }
+    #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
     let limit = input["limit"].as_i64().unwrap_or(50) as usize;
+    #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
     let dir = input["dir"].as_str().unwrap_or("");
 
     #[cfg(target_os = "macos")]
