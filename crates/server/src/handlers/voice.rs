@@ -669,6 +669,10 @@ async fn handle_conversation_session(
                                 let _ = socket.send(Message::Text(bound.to_string().into())).await;
                             }
                             persist_voice_turn(&state, cid, "assistant", &agent_partial);
+                            // Voice turns never pass through Runner::run, so
+                            // trigger the ONE title generator here — same 1st/3rd
+                            // user-turn gates apply inside it.
+                            state.runner.spawn_title_generation(&ctx.session_key, cid);
                         }
                         if let Some((conv, stream)) = loop_relay.as_ref()
                             && !agent_partial.trim().is_empty()
@@ -819,6 +823,10 @@ async fn handle_conversation_session(
     if let Some(cid) = chat_id.as_deref() {
         persist_voice_turn(&state, cid, "user", &user_partial);
         persist_voice_turn(&state, cid, "assistant", &agent_partial);
+        // A short call can end before any PlaybackEnd fired — last chance to
+        // name the chat (the generator's own gates make this a no-op when the
+        // chat is already titled or mid-window).
+        state.runner.spawn_title_generation(&ctx.session_key, cid);
     }
     if let Some((conv, stream)) = loop_relay.as_ref() {
         if !user_partial.trim().is_empty() {

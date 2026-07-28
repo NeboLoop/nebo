@@ -4,6 +4,18 @@ use crate::Store;
 use crate::models::{Chat, ChatMessage};
 use types::NeboError;
 
+/// One full-text search hit across all chats — enough context to cite the
+/// conversation (chat + title + when) without loading it.
+#[derive(Debug, Clone)]
+pub struct ChatSearchHit {
+    pub chat_id: String,
+    pub chat_title: String,
+    pub message_id: String,
+    pub role: String,
+    pub snippet: String,
+    pub created_at: i64,
+}
+
 impl Store {
     pub fn create_chat(&self, id: &str, title: &str) -> Result<Chat, NeboError> {
         let conn = self.conn()?;
@@ -794,5 +806,121 @@ impl<T> OptionalExt<T> for rusqlite::Result<T> {
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(e) => Err(e),
         }
+    }
+}
+
+impl Store {
+    /// Full-text search across every chat's messages (FTS5, ranked). Distinct
+    /// from search_chat_messages, which is the in-chat find (one chat, LIKE,
+    /// full rows). Tool/system rows are excluded — this searches the
+    /// conversation, not tool output. Terms are quoted so user text can't
+    /// break FTS syntax.
+    pub fn search_chats(&self, query: &str, limit: i64) -> Result<Vec<ChatSearchHit>, NeboError> {
+        let fts_query = query
+            .split_whitespace()
+            .map(|t| format!("\"{}\"", t.replace('"', "")))
+            .collect::<Vec<_>>()
+            .join(" ");
+        if fts_query.is_empty() {
+            return Ok(Vec::new());
+        }
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT m.id, m.chat_id, COALESCE(c.title, '') AS chat_title, m.role, m.created_at,
+                        snippet(chat_messages_fts, 0, '\u{ab}', '\u{bb}', '\u{2026}', 16) AS snip
+                 FROM chat_messages_fts
+                 JOIN chat_messages m ON m.rowid = chat_messages_fts.rowid
+                 LEFT JOIN chats c ON c.id = m.chat_id
+                 WHERE chat_messages_fts MATCH ?1
+                   AND m.role IN ('user', 'assistant')
+                 ORDER BY rank
+                 LIMIT ?2",
+            )
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map(params![fts_query, limit], |row| {
+                Ok(ChatSearchHit {
+                    message_id: row.get(0)?,
+                    chat_id: row.get(1)?,
+                    chat_title: row.get(2)?,
+                    role: row.get(3)?,
+                    created_at: row.get(4)?,
+                    snippet: row.get(5)?,
+                })
+            })
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
+    /// Check the chat-message FTS index and (re)build if missing or corrupt.
+    /// Same self-healing contract as the memories FTS — called from the one
+    /// startup hook, ensure_fts_healthy().
+    pub(crate) fn ensure_chat_fts_healthy(&self) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        let fts_exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='chat_messages_fts')",
+                [],
+                |row: &rusqlite::Row| row.get(0),
+            )
+            .unwrap_or(false);
+        if !fts_exists {
+            tracing::warn!("chat_messages_fts table missing — rebuilding");
+            self.rebuild_chat_fts()?;
+            return Ok(());
+        }
+        let fts_ok = conn
+            .execute(
+                "INSERT INTO chat_messages_fts(chat_messages_fts) VALUES('integrity-check')",
+                [],
+            )
+            .is_ok();
+        if !fts_ok {
+            tracing::warn!("chat_messages_fts integrity check failed — rebuilding");
+            self.rebuild_chat_fts()?;
+        }
+        Ok(())
+    }
+
+    /// Rebuild the chat FTS5 table and sync triggers from scratch.
+    fn rebuild_chat_fts(&self) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute_batch(
+            "DROP TRIGGER IF EXISTS chat_messages_fts_ai;
+             DROP TRIGGER IF EXISTS chat_messages_fts_au;
+             DROP TRIGGER IF EXISTS chat_messages_fts_ad;
+             DROP TABLE IF EXISTS chat_messages_fts;
+
+             CREATE VIRTUAL TABLE chat_messages_fts USING fts5(
+                 content,
+                 content='chat_messages',
+                 content_rowid='rowid'
+             );
+
+             INSERT INTO chat_messages_fts(rowid, content)
+                 SELECT rowid, content FROM chat_messages;
+
+             CREATE TRIGGER chat_messages_fts_ai AFTER INSERT ON chat_messages BEGIN
+                 INSERT INTO chat_messages_fts(rowid, content)
+                 VALUES (new.rowid, new.content);
+             END;
+
+             CREATE TRIGGER chat_messages_fts_au AFTER UPDATE OF content ON chat_messages BEGIN
+                 INSERT INTO chat_messages_fts(chat_messages_fts, rowid, content)
+                 VALUES ('delete', old.rowid, old.content);
+                 INSERT INTO chat_messages_fts(rowid, content)
+                 VALUES (new.rowid, new.content);
+             END;
+
+             CREATE TRIGGER chat_messages_fts_ad AFTER DELETE ON chat_messages BEGIN
+                 INSERT INTO chat_messages_fts(chat_messages_fts, rowid, content)
+                 VALUES ('delete', old.rowid, old.content);
+             END;",
+        )
+        .map_err(|e| NeboError::Database(format!("rebuild_chat_fts failed: {}", e)))?;
+        tracing::info!("chat_messages_fts rebuilt successfully");
+        Ok(())
     }
 }

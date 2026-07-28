@@ -522,6 +522,69 @@ pub trait ChatTitleSink: Send + Sync {
     fn on_title(&self, session_key: String, chat_id: String, title: String);
 }
 
+/// The ONE chat-title generator body (CODE_AUDITOR Rule 8). Names the chat on
+/// its first user turn and refines once at the third — language-independent
+/// (message count, not a default-title string) — and never clobbers a title
+/// the user set. Entered from the run loop after each turn and from
+/// Runner::spawn_title_generation for chats whose turns are persisted outside
+/// a run (voice).
+fn spawn_chat_title_generation(
+    providers: Arc<RwLock<Vec<Arc<dyn Provider>>>>,
+    store: Arc<Store>,
+    chat_id: String,
+    session_id: String,
+    cheap_model: String,
+    title_sink: Option<Arc<dyn ChatTitleSink>>,
+) {
+    tokio::spawn(async move {
+        let chat = match store.get_chat(&chat_id) {
+            Ok(Some(c)) => c,
+            _ => return,
+        };
+        // Never clobber a title the user explicitly set.
+        if chat.title_custom {
+            return;
+        }
+        // Gate on user turns across the WHOLE chat, not the recent window: a
+        // windowed count kept re-hitting 1 or 3 as the conversation grew,
+        // re-titling the chat from whatever the user said most recently.
+        let user_turns = match store.count_chat_user_messages(&chat_id) {
+            Ok(n) => n as usize,
+            _ => return,
+        };
+        if user_turns != 1 && user_turns != 3 {
+            return; // name once, refine once — at most twice
+        }
+        let messages = match store.get_recent_chat_messages(&chat_id, 8) {
+            Ok(m) => m,
+            _ => return,
+        };
+        if messages.len() < 2 {
+            return; // need a user+assistant exchange to name from
+        }
+        // Use more of the conversation on the count-3 refinement.
+        let take_n = if user_turns >= 3 { 8 } else { 4 };
+        let transcript: String = messages
+            .iter()
+            .take(take_n)
+            .map(|m| {
+                let snippet: String = m.content.chars().take(200).collect();
+                format!("{}: {}", m.role, snippet)
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        if let Some(title) =
+            crate::summarizer::generate_session_title(&providers, &transcript, &cheap_model).await
+        {
+            let _ = store.update_chat_title(&chat_id, &title, false);
+            info!(chat_id = %chat_id, title = %title, "auto-generated chat title");
+            if let Some(sink) = title_sink {
+                sink.on_title(session_id, chat_id, title);
+            }
+        }
+    });
+}
+
 pub struct Runner {
     sessions: SessionManager,
     providers: Arc<RwLock<Vec<Arc<dyn Provider>>>>,
@@ -582,6 +645,20 @@ impl Runner {
     /// startup after AppState exists; no-op if already set.
     pub fn set_title_sink(&self, sink: Arc<dyn ChatTitleSink>) {
         let _ = self.title_sink.set(sink);
+    }
+
+    /// Run the ONE chat-title generator for a chat that gained turns outside a
+    /// Runner run (the voice loop persists turns directly). Same gates, same
+    /// summarizer, same sink as the run-path call.
+    pub fn spawn_title_generation(&self, session_id: &str, chat_id: &str) {
+        spawn_chat_title_generation(
+            self.providers.clone(),
+            self.store.clone(),
+            chat_id.to_string(),
+            session_id.to_string(),
+            self.selector.get_cheapest_model(),
+            self.title_sink.get().cloned(),
+        );
     }
 
     /// Get the shared providers Arc (for workflow execution).
@@ -1160,71 +1237,18 @@ impl Runner {
             if !skip_memory {
                 // The ONE chat-title generator for every run path (CODE_AUDITOR Rule 8;
                 // replaces the old dispatch-side copy + the RunRequest.skip_title_gen
-                // flag that coordinated the two). Name on the first user turn, refine
-                // once at the third — language-independent (by message count, not a
-                // default-title string). The store write happens here; the optional
-                // title_sink (set by the server) broadcasts the change + propagates it
-                // to the loop. Background paths (scheduler/voice/mcp) simply have no
-                // sink, so they title without broadcasting — same as before.
-                let providers_title = providers.clone();
-                let store_title = store.clone();
-                let session_mgr_title = session_mgr.clone();
-                let session_id_title = session_id.clone();
-                let cheap_model_title = selector.get_cheapest_model();
-                let title_sink = title_sink.clone();
-                tokio::spawn(async move {
-                    let chat_id = session_mgr_title.active_chat_id(&session_id_title);
-                    let chat = match store_title.get_chat(&chat_id) {
-                        Ok(Some(c)) => c,
-                        _ => return,
-                    };
-                    // Never clobber a title the user explicitly set.
-                    if chat.title_custom {
-                        return;
-                    }
-                    // Gate on user turns across the WHOLE chat, not the recent
-                    // window: a windowed count kept re-hitting 1 or 3 as the
-                    // conversation grew, re-titling the chat from whatever the
-                    // user said most recently.
-                    let user_turns = match store_title.count_chat_user_messages(&chat_id) {
-                        Ok(n) => n as usize,
-                        _ => return,
-                    };
-                    if user_turns != 1 && user_turns != 3 {
-                        return; // name once, refine once — at most twice
-                    }
-                    let messages = match store_title.get_recent_chat_messages(&chat_id, 8) {
-                        Ok(m) => m,
-                        _ => return,
-                    };
-                    if messages.len() < 2 {
-                        return; // need a user+assistant exchange to name from
-                    }
-                    // Use more of the conversation on the count-3 refinement.
-                    let take_n = if user_turns >= 3 { 8 } else { 4 };
-                    let transcript: String = messages
-                        .iter()
-                        .take(take_n)
-                        .map(|m| {
-                            let snippet: String = m.content.chars().take(200).collect();
-                            format!("{}: {}", m.role, snippet)
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n");
-                    if let Some(title) = crate::summarizer::generate_session_title(
-                        &providers_title,
-                        &transcript,
-                        &cheap_model_title,
-                    )
-                    .await
-                    {
-                        let _ = store_title.update_chat_title(&chat_id, &title, false);
-                        info!(chat_id = %chat_id, title = %title, "auto-generated chat title");
-                        if let Some(sink) = title_sink {
-                            sink.on_title(session_id_title.clone(), chat_id.clone(), title);
-                        }
-                    }
-                });
+                // flag that coordinated the two). Background paths (scheduler/mcp)
+                // simply have no sink, so they title without broadcasting. The voice
+                // turn loop persists turns without a Runner run and calls the same
+                // generator through Runner::spawn_title_generation.
+                spawn_chat_title_generation(
+                    providers.clone(),
+                    store.clone(),
+                    session_mgr.active_chat_id(&session_id),
+                    session_id.clone(),
+                    selector.get_cheapest_model(),
+                    title_sink.clone(),
+                );
             }
 
             // ── Self-improvement review fork (docs/design/SELF_IMPROVEMENT.md WS2) ──

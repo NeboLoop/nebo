@@ -603,7 +603,7 @@ impl Store {
         if !fts_exists {
             tracing::warn!("memories_fts table missing — rebuilding");
             self.rebuild_fts()?;
-            return Ok(());
+            return self.ensure_chat_fts_healthy();
         }
 
         // Integrity check: try a simple FTS query
@@ -618,6 +618,9 @@ impl Store {
             tracing::warn!("memories_fts integrity check failed — rebuilding");
             self.rebuild_fts()?;
         }
+
+        // Chat-message FTS rides the same startup hook.
+        self.ensure_chat_fts_healthy()?;
 
         Ok(())
     }

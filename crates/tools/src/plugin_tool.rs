@@ -280,10 +280,15 @@ impl PluginTool {
         };
         match api.list_products(Some("plugin"), q, None, None, Some(20)).await {
             Ok(v) => {
-                let items = v
-                    .get("results")
-                    .and_then(|x| x.as_array())
-                    .or_else(|| v.get("plugins").and_then(|x| x.as_array()));
+                // Canonical envelope is ListProductsResponse: { "products": [...] }.
+                // A missing array is a contract break, NOT zero results — say so.
+                let items = v.get("products").and_then(|x| x.as_array());
+                if items.is_none() {
+                    return ToolResult::error(format!(
+                        "marketplace search returned an unexpected shape (no `products` array): {}",
+                        crate::truncate_str(&v.to_string(), 200)
+                    ));
+                }
                 match items {
                     Some(arr) if !arr.is_empty() => {
                         let mut lines = Vec::new();

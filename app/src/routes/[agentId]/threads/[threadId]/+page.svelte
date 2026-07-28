@@ -428,7 +428,17 @@
       sessionStorage.removeItem(pendingSendKey(threadId));
       sessionStorage.removeItem(pendingErrorKey(threadId));
     }
-    const attachments = files?.length ? await uploadFiles(files.map(f => f.file)) : undefined;
+    // A failed upload must SAY so — swallowing it here used to eat both the
+    // files and the message text with no feedback.
+    let attachments;
+    if (files?.length) {
+      try {
+        attachments = await uploadFiles(files.map(f => f.file));
+      } catch (e) {
+        chat.setError(`File upload failed — message not sent. ${e instanceof Error ? e.message : ''}`.trim());
+        return;
+      }
+    }
     chat.send(text, { attachments });
   }}
   onstop={() => chat.stop()}

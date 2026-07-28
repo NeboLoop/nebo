@@ -260,9 +260,22 @@
     const ext = (activeArtifact.title.split('.').pop() || '').toLowerCase();
     try {
       if (COPYABLE_EXTS.includes(ext)) {
-        const res = await fetch(src);
-        if (!res.ok) throw new Error(`${res.status}`);
-        await navigator.clipboard.writeText(await res.text());
+        // iOS Safari revokes clipboard access once the user gesture crosses an
+        // await — hand the clipboard a promise synchronously (ClipboardItem)
+        // so the write stays inside the gesture; writeText fallback elsewhere.
+        const textPromise = fetch(src).then(async (res) => {
+          if (!res.ok) throw new Error(`${res.status}`);
+          return res.text();
+        });
+        if (typeof ClipboardItem !== 'undefined' && navigator.clipboard.write) {
+          await navigator.clipboard.write([
+            new ClipboardItem({
+              'text/plain': textPromise.then((t) => new Blob([t], { type: 'text/plain' }))
+            })
+          ]);
+        } else {
+          await navigator.clipboard.writeText(await textPromise);
+        }
       } else {
         await navigator.clipboard.writeText(new URL(src, window.location.origin).href);
       }
@@ -1526,7 +1539,7 @@
           <ul class="dropdown-content menu menu-sm z-30 mt-1 w-44 rounded-lg bg-base-100 border border-base-300 shadow-lg p-1">
             <li>
               <a
-                href={activeArtifact.url}
+                href={backendUrl(activeArtifact.url)}
                 download={activeArtifact.title}
                 onclick={(e) => { downloadArtifact(e, activeArtifact?.url ?? '', activeArtifact?.title); (document.activeElement as HTMLElement | null)?.blur(); }}
                 class="text-xs"

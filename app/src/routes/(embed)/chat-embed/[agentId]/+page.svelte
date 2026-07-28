@@ -177,7 +177,16 @@
     {placeholder}
     allAgents={chat.allAgents}
     onsend={async (text, files) => {
-      const attachments = files?.length ? await uploadFiles(files.map(f => f.file)) : undefined;
+      // A failed upload must SAY so, not eat the message (same as threads).
+      let attachments;
+      if (files?.length) {
+        try {
+          attachments = await uploadFiles(files.map(f => f.file));
+        } catch (e) {
+          chat.setError(`File upload failed — message not sent. ${e instanceof Error ? e.message : ''}`.trim());
+          return;
+        }
+      }
       handleSend(text, attachments);
     }}
     onstop={() => chat.stop()}

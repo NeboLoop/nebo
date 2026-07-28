@@ -1190,50 +1190,37 @@ impl AgentTool {
                         "agent(resource: \"session\", action: \"query\", query: \"meeting notes\")",
                     ));
                 }
-                let limit = input["limit"].as_i64().unwrap_or(20) as usize;
+                let limit = input["limit"].as_i64().unwrap_or(20);
 
-                // Fallback: list sessions, then search each
-                match self.store.list_sessions(100, 0) {
-                    Ok(sessions) => {
-                        let mut found = Vec::new();
-                        for session in &sessions {
-                            if let Ok(msgs) = self.store.get_chat_messages(&session.id) {
-                                for msg in msgs {
-                                    if msg
-                                        .content
-                                        .to_lowercase()
-                                        .contains(&query_text.to_lowercase())
-                                    {
-                                        let preview = if msg.content.len() > 150 {
-                                            format!("{}...", crate::truncate_str(&msg.content, 150))
-                                        } else {
-                                            msg.content.clone()
-                                        };
-                                        found.push(format!(
-                                            "- [{}] {}: {}",
-                                            session.id, msg.role, preview
-                                        ));
-                                        if found.len() >= limit {
-                                            break;
-                                        }
-                                    }
-                                }
-                            }
-                            if found.len() >= limit {
-                                break;
-                            }
-                        }
-                        if found.is_empty() {
-                            ToolResult::ok(format!("No messages found matching: {}", query_text))
-                        } else {
-                            ToolResult::ok(format!(
-                                "Found {} messages:\n{}",
-                                found.len(),
-                                found.join("\n")
-                            ))
-                        }
+                match self.store.search_chats(query_text, limit) {
+                    Ok(hits) if hits.is_empty() => {
+                        ToolResult::ok(format!("No messages found matching: {}", query_text))
                     }
-                    Err(e) => ToolResult::error(format!("Cross-session search failed: {}", e)),
+                    Ok(hits) => {
+                        let lines: Vec<String> = hits
+                            .iter()
+                            .map(|h| {
+                                let when = chrono::DateTime::from_timestamp(h.created_at, 0)
+                                    .map(|t| t.format("%Y-%m-%d").to_string())
+                                    .unwrap_or_default();
+                                let title = if h.chat_title.is_empty() {
+                                    h.chat_id.clone()
+                                } else {
+                                    h.chat_title.clone()
+                                };
+                                format!(
+                                    "- [{} · {} · {}] {}: {}",
+                                    title, h.chat_id, when, h.role, h.snippet
+                                )
+                            })
+                            .collect();
+                        ToolResult::ok(format!(
+                            "Found {} messages (best match first):\n{}",
+                            lines.len(),
+                            lines.join("\n")
+                        ))
+                    }
+                    Err(e) => ToolResult::error(format!("Chat search failed: {}", e)),
                 }
             }
             _ => ToolResult::error(format!(
