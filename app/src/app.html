@@ -5,7 +5,10 @@
 		<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 		<meta name="theme-color" content="#2F60C9" />
 		<link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-		<link rel="manifest" href="/manifest.webmanifest" />
+		<!-- use-credentials: manifests fetch with credentials OMITTED by spec, so
+		     without this the tunnel's auth gate 401s the request and
+		     Add-to-Home-Screen dies (issues/tunnel-manifest-401-breaks-pwa-install.md). -->
+		<link rel="manifest" href="/manifest.webmanifest" crossorigin="use-credentials" />
 		<link rel="apple-touch-icon" href="/apple-touch-icon.png" />
 		%sveltekit.head%
 	</head>
