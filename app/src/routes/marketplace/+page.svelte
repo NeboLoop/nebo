@@ -10,7 +10,8 @@
 	import MarketplaceGrid from '$lib/components/MarketplaceGrid.svelte';
 	import ListCard from '$lib/components/marketplace/ListCard.svelte';
 	import { loadStoreCatalog } from '$lib/data/storeCatalog';
-	import { type AppItem } from '$lib/types/marketplace';
+	import * as api from '$lib/api/nebo';
+	import { type AppItem, toAppItem } from '$lib/types/marketplace';
 	import ResumeCard from '$lib/components/marketplace/ResumeCard.svelte';
 	import { loadMarketplaceMap, deptFromSlug, toolCatFromSlug, type MarketplaceMap } from '$lib/data/marketplaceMap';
 	import { slugify, categoryMeta } from '$lib/data/categories';
@@ -43,15 +44,69 @@
 	let featured: AppItem[] = $state([]);
 	let categoryOrder: string[] = $state([]);
 
+	// Employees/Tools are server-paginated via /store/browse (one ranked page,
+	// like the website) — the full-catalog crawl only backs the legacy
+	// category/publisher/kind storefronts reached by deep link.
+	const BROWSE_PAGE = 48;
+	let browseItems: AppItem[] = $state([]);
+	let browseTotal = $state(0);
+	let browseLoadingMore = $state(false);
+
+	const isBrowseView = $derived(kind === 'employees' || kind === 'tools');
+
+	async function fetchBrowse(offset: number): Promise<{ items: AppItem[]; total: number }> {
+		const res = (await api
+			.browseStore(
+				kind,
+				kind === 'employees' ? deptFilter || undefined : tcFilter || undefined,
+				price === 'all' ? undefined : price,
+				undefined,
+				BROWSE_PAGE,
+				offset
+			)
+			.catch(() => ({ products: [], total: 0 }))) as { products?: unknown[]; total?: number };
+		const rows = (res.products as Record<string, unknown>[]) || [];
+		return { items: rows.map((r, i) => toAppItem(r, offset + i)), total: Number(res.total ?? 0) };
+	}
+
+	async function loadMoreBrowse() {
+		browseLoadingMore = true;
+		const page = await fetchBrowse(browseItems.length);
+		browseItems = [...browseItems, ...page.items];
+		browseTotal = page.total;
+		browseLoadingMore = false;
+	}
+
 	onMount(async () => {
 		try {
-			const [catalog, mapRes] = await Promise.all([loadStoreCatalog(), loadMarketplaceMap()]);
-			mktMap = mapRes;
-			items = catalog.items;
-			featured = catalog.featured;
-			categoryOrder = catalog.categoryOrder;
+			mktMap = await loadMarketplaceMap();
 		} catch { /* ignore */ }
-		loading = false;
+	});
+
+	// Refetch the browse page whenever the view/filter/price changes; lazily
+	// pull the legacy catalog only for the views that still render from it.
+	$effect(() => {
+		const key = `${kind}|${deptFilter}|${tcFilter}|${price}`;
+		void key;
+		if (isBrowseView) {
+			loading = true;
+			browseItems = [];
+			fetchBrowse(0).then((page) => {
+				browseItems = page.items;
+				browseTotal = page.total;
+				loading = false;
+			});
+		} else {
+			loading = true;
+			loadStoreCatalog()
+				.then((catalog) => {
+					items = catalog.items;
+					featured = catalog.featured;
+					categoryOrder = catalog.categoryOrder;
+				})
+				.catch(() => {})
+				.finally(() => (loading = false));
+		}
 	});
 
 	const filteredItems = $derived.by(() => {
@@ -75,8 +130,9 @@
 	const mapOf = (it: AppItem) => mktMap?.entries[it.code];
 	const respOf = (it: AppItem) => mktMap?.responsibilities[mapOf(it)?.role ?? ''] ?? [];
 	// The map-driven views respect the price filter, same as the website.
-	const priceOk = (it: AppItem) => price === 'all' || (price === 'free' ? it.free : !it.free);
-	const employees = $derived(mktMap ? items.filter((it) => mapOf(it)?.d === 'E' && priceOk(it)) : []);
+	// Browse views render the server-ranked page; the map only decorates
+	// (dept grouping, role titles, responsibilities) — it no longer filters.
+	const employees = $derived(kind === 'employees' ? browseItems : []);
 	const filterSlug = $derived($page.url.searchParams.get('filter') || '');
 	const deptFilter = $derived(mktMap && filterSlug ? deptFromSlug(mktMap, filterSlug) : '');
 	const tcFilter = $derived(mktMap && filterSlug ? toolCatFromSlug(mktMap, filterSlug) : '');
@@ -87,7 +143,7 @@
 			.map((d) => ({ name: d, roles: employees.filter((e) => mapOf(e)?.dept === d) }))
 			.filter((g) => g.roles.length > 0);
 	});
-	const toolItems = $derived(mktMap ? items.filter((it) => mapOf(it)?.d === 'T' && priceOk(it)) : []);
+	const toolItems = $derived(kind === 'tools' ? browseItems : []);
 	const toolsByCategory = $derived.by(() => {
 		if (!mktMap) return [] as { name: string; items: AppItem[] }[];
 		const cats = tcFilter ? [tcFilter] : mktMap.toolCategories;
@@ -182,6 +238,14 @@
 					</div>
 				</section>
 			{/each}
+			{#if browseItems.length < browseTotal}
+				<div class="flex justify-center mt-10">
+					<button class="btn btn-outline btn-sm rounded-full px-6" disabled={browseLoadingMore} onclick={loadMoreBrowse}>
+						{#if browseLoadingMore}<span class="loading loading-spinner loading-xs"></span>{/if}
+						{$t('marketplace.loadMore')}
+					</button>
+				</div>
+			{/if}
 		{/if}
 	</div>
 {:else if kind === 'tools'}
@@ -208,6 +272,14 @@
 					</MarketplaceGrid>
 				</section>
 			{/each}
+			{#if browseItems.length < browseTotal}
+				<div class="flex justify-center mt-10">
+					<button class="btn btn-outline btn-sm rounded-full px-6" disabled={browseLoadingMore} onclick={loadMoreBrowse}>
+						{#if browseLoadingMore}<span class="loading loading-spinner loading-xs"></span>{/if}
+						{$t('marketplace.loadMore')}
+					</button>
+				</div>
+			{/if}
 		{/if}
 	</div>
 {:else if isFiltering}

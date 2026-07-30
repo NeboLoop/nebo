@@ -93,6 +93,73 @@ pub async fn list_store_products(
     Ok(Json(out))
 }
 
+/// GET /store/browse — one ranked, server-paginated page of a marketplace
+/// view (employees/tools/collections + optional department/tool-category
+/// filter). Proxies NeboAI `/api/v1/marketplace/browse` with the same TTL
+/// cache as products; install state is enriched per page. Neither the DB nor
+/// the client ever loads the whole catalog.
+pub async fn browse_store(
+    State(state): State<AppState>,
+    Query(params): Query<BrowseQuery>,
+) -> HandlerResult<serde_json::Value> {
+    let cache_key = format!(
+        "browse|{}|{}|{}|{}|{}|{}",
+        params.view.as_deref().unwrap_or(""),
+        params.filter.as_deref().unwrap_or(""),
+        params.price.as_deref().unwrap_or(""),
+        params.q.as_deref().unwrap_or(""),
+        params.limit.unwrap_or(0),
+        params.offset.unwrap_or(0),
+    );
+
+    let cached = {
+        let map = state.store_cache.lock().unwrap();
+        map.get(&cache_key)
+            .filter(|(at, _)| at.elapsed() < CATALOG_TTL)
+            .map(|(_, v)| v.clone())
+    };
+
+    let mut out = match cached {
+        Some(v) => v,
+        None => {
+            let api = build_api_client(&state).map_err(to_error_response)?;
+            let resp = api
+                .browse_marketplace(
+                    params.view.as_deref(),
+                    params.filter.as_deref(),
+                    params.price.as_deref(),
+                    params.q.as_deref(),
+                    params.limit,
+                    params.offset,
+                )
+                .await
+                .map_err(|e| {
+                    to_error_response(NeboError::Internal(format!("browse_marketplace: {e}")))
+                })?;
+            state
+                .store_cache
+                .lock()
+                .unwrap()
+                .insert(cache_key, (Instant::now(), resp.clone()));
+            resp
+        }
+    };
+
+    enrich_installed_state(&mut out, &state.store);
+
+    Ok(Json(out))
+}
+
+#[derive(Deserialize)]
+pub struct BrowseQuery {
+    pub view: Option<String>,
+    pub filter: Option<String>,
+    pub price: Option<String>,
+    pub q: Option<String>,
+    pub limit: Option<i64>,
+    pub offset: Option<i64>,
+}
+
 /// GET /store/products/top — top/popular products.
 pub async fn list_store_products_top(
     State(state): State<AppState>,

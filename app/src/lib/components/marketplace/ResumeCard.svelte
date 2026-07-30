@@ -96,9 +96,8 @@
 						<span class="text-base-content/50">· {item.ratingCount} reviews</span>
 					</span>
 				{/if}
-				{#if item.installs > 0}
-					<span><b class="font-semibold tabular-nums">{fmt(item.installs)}</b> hires</span>
-				{/if}
+				<!-- Install counts are hidden marketplace-wide (brand rule) — never
+				     render hires/installs numbers on any surface. -->
 			</div>
 		{:else}
 			<span

@@ -1469,6 +1469,13 @@ export function toggleSkill(name: string, req: Record<string, unknown> = {}) {
 }
 
 /**
+ * @description "Browse store"
+ */
+export function browseStore(view?: string, filter?: string, price?: string, q?: string, limit?: number, offset?: number) {
+	return webapi.get<unknown>(`/api/v1/store/browse`, { view, filter, price, q, limit, offset })
+}
+
+/**
  * @description "List store categories"
  */
 export function listStoreCategories() {

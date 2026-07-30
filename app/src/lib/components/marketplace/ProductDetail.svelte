@@ -137,7 +137,7 @@
 				rows.push({ label: $t('marketplace.detail.lastUpdated'), value: new Date(skill.updatedAt).toLocaleDateString() });
 			} catch { /* skip */ }
 		}
-		rows.push({ label: $t('marketplace.detail.installs'), value: formatNumber(Number(skill?.installCount ?? 0)) });
+		// Install counts are hidden marketplace-wide (brand rule) — no installs row.
 		if (skill?.code) rows.push({ label: $t('marketplace.detail.installCode'), value: skill.code, mono: true });
 		return rows;
 	});
@@ -328,7 +328,7 @@
 									<span class="text-base-content/50">({ratingCount})</span>
 								</span>
 							{/if}
-							<span>{$t('marketplace.detail.installCount', { values: { count: formatNumber(Number(skill.installCount ?? 0)) } })}</span>
+							<!-- Install counts hidden marketplace-wide (brand rule). -->
 						</div>
 					</div>
 				</div>

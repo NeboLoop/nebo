@@ -386,7 +386,8 @@
 		"signInWith": "Sign in with",
 		"signUpWith": "Sign up with",
 		"connect": "Connect",
-		"continueWithEmail": "or continue with email"
+		"continueWithEmail": "or continue with email",
+		"continueInBrowser": "Tap here to open the sign-in page"
 	},
 	"notifications": {
 		"title": "Notifications",
@@ -1720,6 +1721,7 @@
 		"resultCount": "{count} results",
 		"resultCountSingular": "{count} result",
 		"nothingHereYet": "Nothing here yet",
+		"loadMore": "Load more",
 		"tryAdjustingFilters": "Try adjusting your filters.",
 		"noItemsYet": "No items in the marketplace yet",
 		"searchPage": {
@@ -1963,7 +1965,7 @@
 	"agentPersona": {
 		"title": "Persona",
 		"assistantPlaceholder": "Define the employee's personality, role, and behavioral guidelines. e.g. You are an AI employee who helps manage daily tasks... Type / to mention an MCP, skill, or employee.",
-		"personaPlaceholder": "Define this employee's personality, role, and behavioral guidelines. e.g. You are a chief of staff who manages the executive's daily rhythm... Type / to mention an MCP, skill, or employee.",
+		"personaPlaceholder": "Define this employee's personality, role, and behavioral guidelines. e.g. You are an executive assistant who runs the owner's inbox and calendar... Type / to mention an MCP, skill, or employee.",
 		"undo": "Undo",
 		"redo": "Redo",
 		"properties": "Properties",
@@ -2316,7 +2318,7 @@
 			"agents": {
 				"title": "Your employees live here",
 				"bodyPersonal": "I'm Nebo. You can add specialists anytime — each is great at a different job.",
-				"bodyBusiness": "I'm Nebo. Add specialists anytime — a Chief of Staff, a researcher, and more."
+				"bodyBusiness": "I'm Nebo. Add specialists anytime — an Executive Assistant, a researcher, and more."
 			},
 			"work": {
 				"title": "Your work shows up here",
@@ -2331,7 +2333,7 @@
 			"marketplace": {
 				"title": "Add new abilities",
 				"bodyPersonal": "Browse skills and tools — document editing, design, and more.",
-				"bodyBusiness": "Browse skills and tools — document editing, design, a Chief of Staff, and more."
+				"bodyBusiness": "Browse skills and tools — document editing, design, an Executive Assistant, and more."
 			},
 			"search": {
 				"title": "Jump anywhere fast",

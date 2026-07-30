@@ -158,6 +158,46 @@ impl NeboAIApi {
         self.do_json(reqwest::Method::GET, &path, None::<&()>).await
     }
 
+    /// Browse one ranked, server-paginated page of a marketplace view
+    /// (employees/tools/collections + optional department/tool-category
+    /// filter). Mirrors NeboAI `/api/v1/marketplace/browse` — neither the DB
+    /// nor the client ever loads the whole catalog.
+    pub async fn browse_marketplace(
+        &self,
+        view: Option<&str>,
+        filter: Option<&str>,
+        price: Option<&str>,
+        query: Option<&str>,
+        limit: Option<i64>,
+        offset: Option<i64>,
+    ) -> Result<serde_json::Value, CommError> {
+        let mut qs = String::new();
+        let mut push = |k: &str, v: &str| {
+            qs.push(if qs.is_empty() { '?' } else { '&' });
+            qs.push_str(&format!("{}={}", k, urlencoding::encode(v)));
+        };
+        if let Some(v) = view.filter(|v| !v.is_empty()) {
+            push("view", v);
+        }
+        if let Some(f) = filter.filter(|f| !f.is_empty()) {
+            push("filter", f);
+        }
+        if let Some(p) = price.filter(|p| !p.is_empty()) {
+            push("price", p);
+        }
+        if let Some(q) = query.filter(|q| !q.is_empty()) {
+            push("q", q);
+        }
+        if let Some(l) = limit {
+            push("limit", &l.to_string());
+        }
+        if let Some(o) = offset {
+            push("offset", &o.to_string());
+        }
+        let path = format!("/api/v1/marketplace/browse{}", qs);
+        self.do_json(reqwest::Method::GET, &path, None::<&()>).await
+    }
+
     /// List marketplace collections (curated bundles). Returns NeboAI's
     /// `{ "collections": [...] }` envelope verbatim.
     pub async fn list_collections(&self) -> Result<serde_json::Value, CommError> {
@@ -1005,6 +1045,13 @@ impl NeboAIApi {
             None::<&()>,
         )
         .await
+    }
+
+    /// The connected account's own profile (id/email/displayName) —
+    /// GET /api/v1/owners/me. Answers "WHOSE account is this bot on?".
+    pub async fn owner_me(&self) -> Result<serde_json::Value, CommError> {
+        self.do_json(reqwest::Method::GET, "/api/v1/owners/me", None::<&()>)
+            .await
     }
 
     // ── Billing ────────────────────────────────────────────────────

@@ -11,6 +11,10 @@ pub fn routes() -> Router<AppState> {
             axum::routing::get(handlers::store::list_store_products),
         )
         .route(
+            "/store/browse",
+            axum::routing::get(handlers::store::browse_store),
+        )
+        .route(
             "/store/products/top",
             axum::routing::get(handlers::store::list_store_products_top),
         )
