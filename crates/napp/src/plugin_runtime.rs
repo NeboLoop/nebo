@@ -150,26 +150,38 @@ impl PluginRuntime {
     }
 
     /// Build the full set of env vars for this plugin invocation.
+    ///
+    /// Duplicate keys resolve last-wins when applied to the Command, so vec
+    /// order IS the precedence order: manifest auth defaults < inherited
+    /// (sanitized) process env < stored user auth values < caller extra_env.
     pub fn build_env(&self) -> Vec<(String, String)> {
-        let mut env: Vec<(String, String)> = sanitized_env();
+        let (manifest_auth, stored_auth) = self.plugin_store.auth_env_layers(&self.slug);
+        let mut inherited = sanitized_env();
 
-        // Permission filtering on the sanitized base
+        // Permission filtering on the sanitized base only — the plugin's own
+        // declared auth env is never stripped by its own allow/deny lists.
         if self.enforce_permissions {
             if let Some(manifest) = self.plugin_store.get_manifest(&self.slug) {
                 if let Some(ref perms) = manifest.permissions {
                     if !perms.env_allow.is_empty() {
                         let allow: std::collections::HashSet<&str> =
                             perms.env_allow.iter().map(|s| s.as_str()).collect();
-                        env.retain(|(k, _)| allow.contains(k.as_str()));
+                        inherited.retain(|(k, _)| allow.contains(k.as_str()));
                     }
                     if !perms.env_deny.is_empty() {
                         let deny: std::collections::HashSet<&str> =
                             perms.env_deny.iter().map(|s| s.as_str()).collect();
-                        env.retain(|(k, _)| !deny.contains(k.as_str()));
+                        inherited.retain(|(k, _)| !deny.contains(k.as_str()));
                     }
                 }
             }
         }
+
+        // Manifest auth DEFAULTS go first so anything inherited from the host
+        // process overrides them (e.g. a cloud pod's Web-type OAuth client);
+        // user-stored auth values are pushed later and win over both.
+        let mut env: Vec<(String, String)> = manifest_auth.into_iter().collect();
+        env.append(&mut inherited);
 
         // Plugin binary env var (e.g., GWS_BIN=/path/to/gws)
         env.push((
@@ -206,9 +218,11 @@ impl PluginRuntime {
         // Augmented PATH
         env.push(("PATH".into(), self.plugin_store.path_with_plugins()));
 
-        // Auth env vars
-        for (k, v) in self.plugin_store.resolved_auth_env(&self.slug) {
-            env.push((k, v));
+        // User-stored auth values (plugin settings) — the top auth layer.
+        for (k, v) in stored_auth {
+            if !v.is_empty() {
+                env.push((k, v));
+            }
         }
 
         // HOME preservation for credential lookups

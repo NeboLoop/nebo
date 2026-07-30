@@ -1017,7 +1017,15 @@ impl PluginStore {
     }
 
     /// Get resolved auth env vars for a plugin: stored values override manifest defaults.
-    pub fn resolved_auth_env(&self, slug: &str) -> HashMap<String, String> {
+    /// The two auth-env layers separately: manifest defaults (lowest
+    /// precedence) and user-stored values (highest). plugin_runtime layers
+    /// the inherited process env BETWEEN them, so an operator-set host env
+    /// var (e.g. a cloud pod's Web-type OAuth client override) beats a
+    /// manifest DEFAULT while explicit user config still beats both.
+    pub fn auth_env_layers(
+        &self,
+        slug: &str,
+    ) -> (HashMap<String, String>, HashMap<String, String>) {
         let manifest_env = self
             .get_manifest(slug)
             .and_then(|m| m.auth)
@@ -1031,7 +1039,11 @@ impl PluginStore {
             .and_then(|c| c.get(slug).cloned())
             .unwrap_or_default();
 
-        let mut resolved = manifest_env;
+        (manifest_env, stored)
+    }
+
+    pub fn resolved_auth_env(&self, slug: &str) -> HashMap<String, String> {
+        let (mut resolved, stored) = self.auth_env_layers(slug);
         for (k, v) in stored {
             if !v.is_empty() {
                 resolved.insert(k, v);
