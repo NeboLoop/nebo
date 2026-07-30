@@ -990,6 +990,19 @@ impl Loader {
             let mut last_reload = std::time::Instant::now();
             let debounce = std::time::Duration::from_secs(1);
 
+            // Storm breaker: a writer inside a watched tree turns the debounce
+            // into a permanent ~1 reload/sec loop that pegs a 1-vCPU cloud pod
+            // until the liveness probe kills it (2026-07-30 incident: >1h of
+            // continuous reloads, bot SIGTERMed mid-install). If reloads keep
+            // saturating the window, stop reloading for a cooldown and NAME the
+            // paths that keep firing so the writer can be identified and fixed.
+            let mut window_start = std::time::Instant::now();
+            let mut window_reloads: u32 = 0;
+            let mut storm_until: Option<std::time::Instant> = None;
+            const STORM_WINDOW: std::time::Duration = std::time::Duration::from_secs(60);
+            const STORM_THRESHOLD: u32 = 20;
+            const STORM_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(300);
+
             while let Some(result) = rx.recv().await {
                 match result {
                     Ok(event) => {
@@ -1033,6 +1046,39 @@ impl Loader {
                         }
 
                         if last_reload.elapsed() < debounce {
+                            continue;
+                        }
+
+                        // Storm breaker: inside a cooldown, drop events outright.
+                        if let Some(until) = storm_until {
+                            if std::time::Instant::now() < until {
+                                continue;
+                            }
+                            storm_until = None;
+                            window_start = std::time::Instant::now();
+                            window_reloads = 0;
+                            info!("skills watcher: storm cooldown over, resuming reloads");
+                        }
+                        if window_start.elapsed() > STORM_WINDOW {
+                            window_start = std::time::Instant::now();
+                            window_reloads = 0;
+                        }
+                        window_reloads += 1;
+                        if window_reloads >= STORM_THRESHOLD {
+                            let culprits: Vec<String> = event
+                                .paths
+                                .iter()
+                                .map(|p| p.display().to_string())
+                                .collect();
+                            warn!(
+                                reloads = window_reloads,
+                                window_secs = STORM_WINDOW.as_secs(),
+                                cooldown_secs = STORM_COOLDOWN.as_secs(),
+                                last_event_paths = ?culprits,
+                                "skills watcher: reload storm — something keeps writing inside a \
+                                 watched tree; pausing reloads (fix the writer, not the watcher)"
+                            );
+                            storm_until = Some(std::time::Instant::now() + STORM_COOLDOWN);
                             continue;
                         }
                         last_reload = std::time::Instant::now();

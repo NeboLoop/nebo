@@ -93,6 +93,10 @@ pub struct OAuthStartParams {
 pub struct OAuthStartResponse {
     pub authorize_url: String,
     pub state: String,
+    /// Whether the server opened the system browser itself. False on headless
+    /// platforms (Android) or when spawning the opener failed — the client must
+    /// open `authorize_url` in that case.
+    pub opened: bool,
 }
 
 pub async fn oauth_start(
@@ -158,13 +162,18 @@ pub async fn oauth_start(
 
     // Open browser (server-side, same pattern as Go implementation)
     info!("Opening NeboAI OAuth URL in system browser");
-    if let Err(e) = open::that(&authorize_url) {
-        warn!("Failed to open browser: {e}");
-    }
+    let opened = match open::that(&authorize_url) {
+        Ok(()) => true,
+        Err(e) => {
+            warn!("Failed to open browser: {e}");
+            false
+        }
+    };
 
     Ok(Json(OAuthStartResponse {
         authorize_url,
         state: flow_state,
+        opened,
     }))
 }
 
@@ -383,6 +392,44 @@ pub async fn account_status(State(state): State<AppState>) -> HandlerResult<Acco
             email = meta.get("email").cloned();
             display_name = meta.get("display_name").cloned();
             janus_provider = meta.get("janus_provider").map_or(false, |v| v == "true");
+        }
+    }
+
+    // Cloud bots: the provisioner seeds this profile with credentials only, so
+    // the card would say "Connected" without saying WHOSE account. Ask NeboAI
+    // who the credentials belong to and persist it into the profile metadata —
+    // one fetch, then it's served locally forever.
+    if email.is_none() {
+        if let Ok(api) = crate::codes::build_api_client(&state) {
+            if let Ok(me) = api.owner_me().await {
+                email = me.get("email").and_then(|v| v.as_str()).map(String::from);
+                display_name = me
+                    .get("displayName")
+                    .and_then(|v| v.as_str())
+                    .map(String::from);
+                if owner_id.is_none() {
+                    owner_id = me.get("id").and_then(|v| v.as_str()).map(String::from);
+                }
+                if email.is_some() {
+                    let mut meta: HashMap<String, String> = profile
+                        .metadata
+                        .as_deref()
+                        .and_then(|s| serde_json::from_str(s).ok())
+                        .unwrap_or_default();
+                    if let Some(ref v) = email {
+                        meta.insert("email".into(), v.clone());
+                    }
+                    if let Some(ref v) = display_name {
+                        meta.insert("display_name".into(), v.clone());
+                    }
+                    if let Some(ref v) = owner_id {
+                        meta.insert("owner_id".into(), v.clone());
+                    }
+                    if let Ok(s) = serde_json::to_string(&meta) {
+                        let _ = state.store.update_auth_profile_metadata(&profile.id, &s);
+                    }
+                }
+            }
         }
     }
 

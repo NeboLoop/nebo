@@ -23,18 +23,28 @@ pub struct NeboAIApi {
 /// Default production API server.
 pub const DEFAULT_API_SERVER: &str = "https://api.neboai.com";
 
+/// ONE process-wide HTTP client (connection pool). `NeboAIApi` values are
+/// constructed per call site (73 of them) — giving each its own `Client` gave
+/// each an EMPTY pool, so every NeboAI request paid a fresh TCP+TLS handshake
+/// (~300ms) before doing any work. `reqwest::Client` is an `Arc` around its
+/// pool: cloning here shares warm connections across every call site.
+static HTTP_CLIENT: std::sync::LazyLock<Client> = std::sync::LazyLock::new(|| {
+    Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(5))
+        .timeout(std::time::Duration::from_secs(15))
+        .pool_idle_timeout(std::time::Duration::from_secs(90))
+        .build()
+        .unwrap_or_else(|_| Client::new())
+});
+
 impl NeboAIApi {
-    /// Create a new API client.
+    /// Create a new API client (shares the process-wide connection pool).
     pub fn new(api_server: String, bot_id: String, token: String) -> Self {
         Self {
             api_server,
             bot_id,
             token: RwLock::new(token),
-            client: Client::builder()
-                .connect_timeout(std::time::Duration::from_secs(5))
-                .timeout(std::time::Duration::from_secs(15))
-                .build()
-                .unwrap_or_else(|_| Client::new()),
+            client: HTTP_CLIENT.clone(),
         }
     }
 

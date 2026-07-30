@@ -20,10 +20,16 @@ pub fn data_dir() -> Result<PathBuf, NeboError> {
         return Ok(PathBuf::from(dir));
     }
     if let Ok(dir) = std::env::var("NEBO_DATA_DIR") {
-        tracing::warn!(
-            "NEBO_DATA_DIR is deprecated as the Nebo root override and will be removed; \
-             use NEBO_HOME instead (NEBO_DATA_DIR now means a per-artifact data directory)"
-        );
+        // Once per process: this is called on every config read, and on cloud
+        // pods (which set the env) the per-call warn flooded the logs badly
+        // enough to bury real errors during incident debugging.
+        static WARNED: std::sync::Once = std::sync::Once::new();
+        WARNED.call_once(|| {
+            tracing::warn!(
+                "NEBO_DATA_DIR is deprecated as the Nebo root override and will be removed; \
+                 use NEBO_HOME instead (NEBO_DATA_DIR now means a per-artifact data directory)"
+            );
+        });
         return Ok(PathBuf::from(dir));
     }
 
