@@ -238,14 +238,25 @@ impl ModelsConfig {
         })
     }
 
-    /// Get the cheapest/fallback model ID (for sidecar tasks).
-    /// Returns the first default fallback model ID.
-    pub fn sidecar_model(&self) -> Option<String> {
-        self.defaults.as_ref().and_then(|d| {
-            d.fallbacks
-                .first()
-                .map(|spec| spec.split('/').last().unwrap_or(spec).to_string())
-        })
+    /// Resolve the model a sidecar task should run on for the provider that is
+    /// about to be called.
+    ///
+    /// The model ID must belong to `provider` — a bare ID lifted from another
+    /// provider's spec (handing Anthropic's `claude-sonnet-4-6` to the Janus
+    /// gateway, say) names a model that provider has never heard of, and the
+    /// request fails in a way that reads like the sidecar simply had nothing
+    /// to say. `None` means "let the provider pick its own default", which is
+    /// always a model that provider can actually serve.
+    pub fn sidecar_model(&self, provider: &str) -> Option<String> {
+        // Prefer the explicit vision route when it targets this provider.
+        if let Some(ref tr) = self.task_routing {
+            if let Some(model) = Self::extract_model_for_provider(&tr.vision, provider) {
+                return Some(model);
+            }
+        }
+        // Otherwise the provider's own default, which is provider-correct by
+        // construction.
+        self.default_model_for_provider(provider)
     }
 
     /// Extract model ID from "provider/model" format if it matches the given provider.
@@ -313,5 +324,57 @@ impl ModelsConfig {
             providers: HashMap::new(),
             cli_providers: Vec::new(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config() -> ModelsConfig {
+        serde_yaml::from_str(EMBEDDED_MODELS_YAML).expect("embedded models.yaml must parse")
+    }
+
+    // The sidecar used to take defaults.fallbacks[0] ("anthropic/claude-sonnet-4-6"),
+    // strip the provider, and hand the bare ID to whichever provider was first —
+    // usually the Janus gateway, which has never heard of it. The request failed
+    // in a way that looked like the sidecar just had nothing to say.
+    #[test]
+    fn sidecar_model_never_leaks_across_providers() {
+        let cfg = config();
+        for provider in ["janus", "anthropic", "openai", "google"] {
+            if let Some(model) = cfg.sidecar_model(provider) {
+                assert!(
+                    !model.contains('/'),
+                    "{provider}: model ID must not keep a provider prefix, got {model}"
+                );
+                let owned_by_provider = cfg
+                    .providers
+                    .get(provider)
+                    .map(|models| models.iter().any(|m| m.id == model))
+                    .unwrap_or(false);
+                let from_vision_route = cfg
+                    .task_routing
+                    .as_ref()
+                    .and_then(|tr| ModelsConfig::extract_model_for_provider(&tr.vision, provider))
+                    .is_some_and(|m| m == model);
+                assert!(
+                    owned_by_provider || from_vision_route,
+                    "{provider}: resolved {model}, which that provider does not serve"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn sidecar_model_prefers_the_vision_route() {
+        let cfg = config();
+        // models.yaml routes vision at janus/nebo-1.
+        assert_eq!(cfg.sidecar_model("janus").as_deref(), Some("nebo-1"));
+    }
+
+    #[test]
+    fn sidecar_model_is_none_for_unknown_provider() {
+        assert!(config().sidecar_model("not-a-provider").is_none());
     }
 }

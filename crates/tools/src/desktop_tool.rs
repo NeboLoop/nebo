@@ -27,13 +27,17 @@ fn ps_daemon() -> &'static Arc<DesktopDaemon> {
     PS_DAEMON.get_or_init(|| Arc::new(DesktopDaemon::new()))
 }
 
+/// Cached accessibility walk per app key: what the walk observed, its
+/// elements, and when it ran.
+type AxCache = std::sync::Mutex<HashMap<String, (AxCapture, Vec<UIElement>, Instant)>>;
+
 pub struct DesktopTool {
     /// Serializes mouse + keyboard operations (one physical input device).
     input_lock: tokio::sync::Mutex<()>,
     /// Serializes clipboard read/write (single system clipboard).
     clipboard_lock: tokio::sync::Mutex<()>,
     snapshot_store: tokio::sync::Mutex<SnapshotStore>,
-    ax_cache: std::sync::Mutex<HashMap<String, (Vec<UIElement>, Instant)>>,
+    ax_cache: AxCache,
 }
 
 impl DesktopTool {
@@ -1406,7 +1410,7 @@ async fn handle_capture(
     action: &str,
     input: &serde_json::Value,
     snapshot_store: &tokio::sync::Mutex<SnapshotStore>,
-    ax_cache: &std::sync::Mutex<HashMap<String, (Vec<UIElement>, Instant)>>,
+    ax_cache: &AxCache,
 ) -> ToolResult {
     match action {
         "screenshot" => capture_screenshot(input).await,
@@ -1423,7 +1427,7 @@ async fn handle_capture(
 async fn capture_see(
     input: &serde_json::Value,
     snapshot_store: &tokio::sync::Mutex<SnapshotStore>,
-    ax_cache: &std::sync::Mutex<HashMap<String, (Vec<UIElement>, Instant)>>,
+    ax_cache: &AxCache,
 ) -> ToolResult {
     // Step 1: Take screenshot
     let screenshot = capture_screenshot(input).await;
@@ -1440,19 +1444,19 @@ async fn capture_see(
     let cached = ax_cache.lock().ok().and_then(|guard| {
         guard
             .get(&cache_key)
-            .filter(|(_, ts)| ts.elapsed() < Duration::from_secs(2))
-            .map(|(elems, _)| elems.clone())
+            .filter(|(_, _, ts)| ts.elapsed() < Duration::from_secs(2))
+            .map(|(name, elems, _)| (name.clone(), elems.clone()))
     });
 
-    let mut elements = if let Some(elems) = cached {
-        elems
+    let (observed, mut elements) = if let Some(hit) = cached {
+        hit
     } else {
         // Cache miss — subprocess runs with NO lock held
-        let elems = capture_ax_elements(app).await;
+        let (capture, elems) = capture_ax_elements(app).await;
         if let Ok(mut guard) = ax_cache.lock() {
-            guard.insert(cache_key, (elems.clone(), Instant::now()));
+            guard.insert(cache_key, (capture.clone(), elems.clone(), Instant::now()));
         }
-        elems
+        (capture, elems)
     };
 
     // Limit and assign IDs
@@ -1463,10 +1467,10 @@ async fn capture_see(
     let snapshot_id = generate_snapshot_id();
     let snapshot = Snapshot {
         id: snapshot_id.clone(),
-        app: if app.is_empty() {
+        app: if observed.app.is_empty() {
             None
         } else {
-            Some(app.to_string())
+            Some(observed.app.clone())
         },
         created_at: std::time::Instant::now(),
         elements: elements.clone(),
@@ -1493,12 +1497,26 @@ async fn capture_see(
         })
         .collect();
 
-    let response = serde_json::json!({
+    // Report the app that was actually inspected. Echoing the `app` argument
+    // meant a no-argument call always answered "" — the caller could not tell
+    // what it had just looked at.
+    let mut response = serde_json::json!({
         "snapshot_id": snapshot_id,
-        "app": app,
+        "app": observed.app,
         "element_count": elements.len(),
         "elements": elements_json,
     });
+
+    // An app can be running with no window open, in which case there is nothing
+    // to walk. Saying so is the difference between "this app has no visible
+    // window" and an empty element list the caller has to guess at.
+    if observed.windows == Some(0) {
+        response["window_count"] = serde_json::json!(0);
+        response["note"] = serde_json::json!(
+            "This application is running but has no open window, so no elements \
+             could be read. The screenshot shows the screen as a whole."
+        );
+    }
 
     ToolResult { payload: None,
         content: serde_json::to_string_pretty(&response).unwrap_or_default(),
@@ -1509,9 +1527,30 @@ async fn capture_see(
     }
 }
 
+/// Hard ceiling on elements the AX script will walk. The cost is one Apple
+/// Event round-trip per property, so this bounds wall-clock, not just payload —
+/// truncating in Rust afterwards would pay for every element anyway.
+#[cfg(target_os = "macos")]
+const AX_SCRIPT_MAX_ELEMENTS: usize = 500;
+
+/// A full accessibility walk is far slower than a flat one. Past this the
+/// snapshot is not worth the wait, and returning partial beats hanging `see`.
+#[cfg(target_os = "macos")]
+const AX_CAPTURE_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// What the accessibility walk observed, beyond the elements themselves.
+#[derive(Clone, Default)]
+struct AxCapture {
+    /// The application actually inspected. With no `app` argument the target is
+    /// whatever is frontmost, which the caller cannot otherwise identify.
+    app: String,
+    /// Windows the process has open, when known.
+    windows: Option<usize>,
+}
+
 /// Capture AX elements with position information from the accessibility tree.
 #[allow(unused_variables)]
-async fn capture_ax_elements(app: &str) -> Vec<desktop_snapshot::UIElement> {
+async fn capture_ax_elements(app: &str) -> (AxCapture, Vec<desktop_snapshot::UIElement>) {
     #[cfg(target_os = "macos")]
     {
         let target = if app.is_empty() {
@@ -1519,43 +1558,127 @@ async fn capture_ax_elements(app: &str) -> Vec<desktop_snapshot::UIElement> {
         } else {
             format!("process \"{}\"", escape_applescript(app))
         };
-        // Recursive AppleScript that returns role||label||x,y,w,h per element
+        // `every UI element of window 1` alone returns only the window's direct
+        // children — for most apps the title bar buttons plus one opaque content
+        // group, which is what made `see` report a close button and nothing else.
+        // Descending one level reaches the toolbar and tab-bar controls that are
+        // actually clickable (measured on Finder: 7 elements -> 20, ~0.3s).
+        //
+        // Two levels, walked explicitly, rather than anything cleverer:
+        // `entire contents` returns nothing at all through System Events, and a
+        // nested `every UI element of every UI element of ...` specifier returns
+        // lists grouped by parent that flatten into corrupt rows.
         let script = format!(
             r#"tell application "System Events"
-    tell {}
-        set output to ""
+    set theProc to {target}
+    set output to "APP||" & (name of theProc) & linefeed
+    set winCount to 0
+    try
+        set winCount to count of (windows of theProc)
+    end try
+    set output to output & "WINDOWS||" & (winCount as text) & linefeed
+    set elemCount to 0
+    tell theProc
         try
             repeat with elem in (every UI element of window 1)
+                if elemCount > {max} then exit repeat
                 try
                     set eRole to role of elem
                     set eName to name of elem
                     if eName is missing value then set eName to description of elem
+                    if eName is missing value then set eName to value of elem
                     if eName is missing value then set eName to ""
                     set ePos to position of elem
                     set eSize to size of elem
-                    set output to output & eRole & "||" & eName & "||" & (item 1 of ePos as text) & "," & (item 2 of ePos as text) & "," & (item 1 of eSize as text) & "," & (item 2 of eSize as text) & linefeed
+                    set output to output & eRole & "||" & (eName as text) & "||" & (item 1 of ePos as text) & "," & (item 2 of ePos as text) & "," & (item 1 of eSize as text) & "," & (item 2 of eSize as text) & linefeed
+                    set elemCount to elemCount + 1
+                end try
+                try
+                    repeat with child in (every UI element of elem)
+                        if elemCount > {max} then exit repeat
+                        try
+                            set cRole to role of child
+                            set cName to name of child
+                            if cName is missing value then set cName to description of child
+                            if cName is missing value then set cName to value of child
+                            if cName is missing value then set cName to ""
+                            set cPos to position of child
+                            set cSize to size of child
+                            set output to output & cRole & "||" & (cName as text) & "||" & (item 1 of cPos as text) & "," & (item 2 of cPos as text) & "," & (item 1 of cSize as text) & "," & (item 2 of cSize as text) & linefeed
+                            set elemCount to elemCount + 1
+                        end try
+                    end repeat
                 end try
             end repeat
         end try
-        return output
     end tell
+    return output
 end tell"#,
-            target
+            target = target,
+            max = AX_SCRIPT_MAX_ELEMENTS
         );
-        match run_osascript_raw(&script).await {
+        match run_osascript_raw(&script, Some(AX_CAPTURE_TIMEOUT)).await {
             Ok(output) => {
-                let mut elements = parse_ax_output(&output);
+                let (header, body) = split_ax_app_header(&output);
+                let mut elements = parse_ax_output(body);
                 assign_element_ids(&mut elements);
-                elements
+                // Fall back to the requested app when the script produced no
+                // header — never silently report an empty app name.
+                let name = if header.app.is_empty() {
+                    app.to_string()
+                } else {
+                    header.app
+                };
+                (AxCapture { app: name, windows: header.windows }, elements)
             }
-            Err(_) => Vec::new(),
+            Err(_) => (
+                AxCapture { app: app.to_string(), windows: None },
+                Vec::new(),
+            ),
         }
     }
     #[cfg(not(target_os = "macos"))]
     {
         // Linux/Windows: return empty for now — element detection requires platform-specific work
-        Vec::new()
+        (
+            AxCapture {
+                app: app.to_string(),
+                windows: None,
+            },
+            Vec::new(),
+        )
     }
+}
+
+/// The header the AX script emits ahead of its element lines.
+#[cfg(target_os = "macos")]
+#[derive(Default)]
+struct AxHeader {
+    app: String,
+    /// Number of windows the process has open. `None` when the script did not
+    /// report it. Zero windows is why an app that is genuinely running can
+    /// still yield no elements — worth telling the caller apart from a failed
+    /// walk.
+    windows: Option<usize>,
+}
+
+/// Split the `APP||<name>` / `WINDOWS||<n>` header from the element lines.
+#[cfg(target_os = "macos")]
+fn split_ax_app_header(output: &str) -> (AxHeader, &str) {
+    let mut header = AxHeader::default();
+    let mut rest = output;
+
+    if let Some(after) = rest.strip_prefix("APP||") {
+        let (value, tail) = after.split_once('\n').unwrap_or((after, ""));
+        header.app = value.trim().to_string();
+        rest = tail;
+    }
+    if let Some(after) = rest.strip_prefix("WINDOWS||") {
+        let (value, tail) = after.split_once('\n').unwrap_or((after, ""));
+        header.windows = value.trim().parse().ok();
+        rest = tail;
+    }
+    (header, rest)
 }
 
 async fn capture_screenshot(input: &serde_json::Value) -> ToolResult {
@@ -1596,7 +1719,7 @@ async fn capture_screenshot(input: &serde_json::Value) -> ToolResult {
                 "tell application \"System Events\" to return id of first window of process \"{}\"",
                 escape_applescript(app)
             );
-            match run_osascript_raw(&wid_script).await {
+            match run_osascript_raw(&wid_script, Some(AX_CAPTURE_TIMEOUT)).await {
                 Ok(wid) => {
                     let wid = wid.trim().to_string();
                     let mut args = vec!["-l".to_string(), wid];
@@ -3113,7 +3236,9 @@ end tell"#,
 
 #[cfg(target_os = "macos")]
 async fn run_osascript(script: &str) -> ToolResult {
-    match run_osascript_raw(script).await {
+    // No deadline: this path includes `display alert`, which is meant to block
+    // until the user dismisses it.
+    match run_osascript_raw(script, None).await {
         Ok(output) => ToolResult::ok(if output.is_empty() {
             "OK".to_string()
         } else {
@@ -3123,14 +3248,27 @@ async fn run_osascript(script: &str) -> ToolResult {
     }
 }
 
+/// Run an AppleScript and return its stdout.
+///
+/// `deadline` bounds scripts that walk the accessibility tree — those cost one
+/// Apple Event round-trip per property and can stall indefinitely on a busy or
+/// unresponsive app. `None` means wait forever, which is only correct for
+/// scripts that are deliberately blocking on the user.
 #[cfg(target_os = "macos")]
-async fn run_osascript_raw(script: &str) -> Result<String, String> {
-    let output = tokio::process::Command::new("osascript")
-        .arg("-e")
-        .arg(script)
-        .output()
-        .await
-        .map_err(|e| format!("Failed to run osascript: {}", e))?;
+async fn run_osascript_raw(script: &str, deadline: Option<Duration>) -> Result<String, String> {
+    let mut cmd = tokio::process::Command::new("osascript");
+    cmd.arg("-e").arg(script);
+    // Without this a timed-out osascript keeps running, holding its Apple Event
+    // session open and slowing every later capture.
+    cmd.kill_on_drop(true);
+
+    let output = match deadline {
+        Some(d) => tokio::time::timeout(d, cmd.output())
+            .await
+            .map_err(|_| format!("AppleScript timed out after {}s", d.as_secs()))?,
+        None => cmd.output().await,
+    }
+    .map_err(|e| format!("Failed to run osascript: {}", e))?;
 
     if output.status.success() {
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
@@ -3305,6 +3443,43 @@ fn key_name_to_sendkeys(key: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // `see` reported an empty app on every no-argument call because it echoed
+    // the input instead of the app it inspected. The header the AX script now
+    // emits is what carries that back.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn ax_app_header_is_split_from_elements() {
+        let output = "APP||Brave Browser\nWINDOWS||2\nAXButton||close button||0,0,10,10\n";
+        let (header, body) = split_ax_app_header(output);
+        assert_eq!(header.app, "Brave Browser");
+        assert_eq!(header.windows, Some(2));
+        assert_eq!(body, "AXButton||close button||0,0,10,10\n");
+
+        let elements = parse_ax_output(body);
+        assert_eq!(elements.len(), 1, "header must not be parsed as an element");
+        assert_eq!(elements[0].label, "close button");
+    }
+
+    // An app running with zero windows yields no elements for a reason the
+    // caller can act on — it must not look like a failed walk.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn ax_header_reports_zero_windows() {
+        let (header, body) = split_ax_app_header("APP||Brave Browser\nWINDOWS||0\n");
+        assert_eq!(header.app, "Brave Browser");
+        assert_eq!(header.windows, Some(0));
+        assert!(parse_ax_output(body).is_empty());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn ax_output_without_header_still_parses() {
+        let (header, body) = split_ax_app_header("AXButton||ok||1,2,3,4\n");
+        assert!(header.app.is_empty());
+        assert_eq!(header.windows, None);
+        assert_eq!(parse_ax_output(body).len(), 1);
+    }
 
     #[test]
     fn test_tool_metadata() {

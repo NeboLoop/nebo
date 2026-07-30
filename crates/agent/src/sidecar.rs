@@ -13,10 +13,11 @@ ELEMENTS: up to 5 things the agent might act on, each as '<description> @ (<x>,<
 center points). Omit this section entirely if nothing is interactive.\n\n\
 Report only what you can actually see. Do not invent content. No preamble.";
 
-/// Resolve the sidecar model — empty string lets Janus pick the model.
-fn sidecar_model() -> String {
+/// Resolve the sidecar model for the provider that will serve the request.
+/// Empty string lets the provider pick.
+fn sidecar_model(provider: &str) -> String {
     config::ModelsConfig::load()
-        .sidecar_model()
+        .sidecar_model(provider)
         .unwrap_or_default()
 }
 
@@ -50,7 +51,7 @@ async fn describe(
         temperature: 0.0,
         system: system.to_string(),
         static_system: String::new(),
-        model: sidecar_model(),
+        model: sidecar_model(provider.id()),
         enable_thinking: false,
         metadata: None,
         cache_breakpoints: vec![],
