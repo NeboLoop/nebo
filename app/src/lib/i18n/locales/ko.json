@@ -2208,7 +2208,7 @@
 			"agents": {
 				"title": "직원들이 여기에 있습니다",
 				"bodyPersonal": "저는 Nebo입니다. 언제든 전문가를 추가할 수 있어요 — 각자 잘하는 일이 다릅니다.",
-				"bodyBusiness": "저는 Nebo입니다. 언제든 전문가를 추가하세요 — Chief of Staff, 리서처 등."
+				"bodyBusiness": "저는 Nebo입니다. 언제든 전문가를 추가하세요 — Executive Assistant, 리서처 등."
 			},
 			"work": {
 				"title": "작업 결과가 여기에 표시됩니다",
@@ -2223,7 +2223,7 @@
 			"marketplace": {
 				"title": "새로운 능력 추가",
 				"bodyPersonal": "스킬과 도구를 둘러보세요 — 문서 편집, 디자인 등.",
-				"bodyBusiness": "스킬과 도구를 둘러보세요 — 문서 편집, 디자인, Chief of Staff 등."
+				"bodyBusiness": "스킬과 도구를 둘러보세요 — 문서 편집, 디자인, Executive Assistant 등."
 			},
 			"search": {
 				"title": "어디로든 빠르게 이동",

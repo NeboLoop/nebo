@@ -8,6 +8,9 @@
   let connected = $state(true);
   let reconnecting = $state(false);
   let reconnectError = $state('');
+  // Set when the server couldn't open a browser (headless/Android) AND the
+  // client-side popup was blocked — renders a tappable sign-in link instead.
+  let authUrl = $state('');
   let oauthPollInterval: ReturnType<typeof setInterval> | null = null;
   let oauthTimeout: ReturnType<typeof setTimeout> | null = null;
 
@@ -50,9 +53,16 @@
   async function reconnect() {
     reconnecting = true;
     reconnectError = '';
+    authUrl = '';
     try {
       const result = await neboAIOAuthStartWithJanus(false);
       const pendingState = result.state;
+
+      // Headless server (Android/remote) can't open a browser — open it here.
+      if (!result.opened) {
+        const popup = window.open(result.authorizeUrl, '_blank', 'noopener');
+        if (!popup) authUrl = result.authorizeUrl;
+      }
 
       oauthTimeout = setTimeout(() => {
         if (oauthPollInterval) { clearInterval(oauthPollInterval); oauthPollInterval = null; }
@@ -135,6 +145,9 @@
   </div>
   {#if reconnectError}
     <div class="text-xs text-error mt-2">{reconnectError}</div>
+  {/if}
+  {#if authUrl && reconnecting}
+    <a href={authUrl} target="_blank" rel="noopener" class="text-sm font-medium text-primary hover:underline mt-2 inline-block">{$t('oauth.continueInBrowser')} →</a>
   {/if}
 </div>
 

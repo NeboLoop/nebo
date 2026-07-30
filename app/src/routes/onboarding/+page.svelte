@@ -62,6 +62,9 @@
   let neboAIEmail = $state('');
   let neboAIError = $state('');
   let neboAIPendingState = $state('');
+  // Set when the server couldn't open a browser (headless/Android) AND the
+  // client-side popup was blocked — renders a tappable sign-in link instead.
+  let neboAIAuthUrl = $state('');
   let neboAIPollInterval: ReturnType<typeof setInterval> | null = null;
   let neboAITimeout: ReturnType<typeof setTimeout> | null = null;
 
@@ -151,11 +154,18 @@
   async function connectNeboAI() {
     neboAILoading = true;
     neboAIError = '';
+    neboAIAuthUrl = '';
 
     try {
       // Start OAuth — backend opens browser with OAuth URL
       const result = await neboAIOAuthStartWithJanus(true);
       neboAIPendingState = result.state;
+
+      // Headless server (Android/remote) can't open a browser — open it here.
+      if (!result.opened) {
+        const popup = window.open(result.authorizeUrl, '_blank', 'noopener');
+        if (!popup) neboAIAuthUrl = result.authorizeUrl;
+      }
 
       // Set 3-minute timeout
       neboAITimeout = setTimeout(() => {
@@ -366,7 +376,11 @@
           >
             <span class="loading loading-spinner loading-sm"></span> {$t('onboardingPage.waitingForAuthorization')}
           </button>
-          <p class="text-xs text-base-content/50">{$t('onboardingPage.browserOpened')}</p>
+          {#if neboAIAuthUrl}
+            <p class="text-xs"><a href={neboAIAuthUrl} target="_blank" rel="noopener" class="text-sm font-medium text-primary hover:underline">{$t('oauth.continueInBrowser')} →</a></p>
+          {:else}
+            <p class="text-xs text-base-content/50">{$t('onboardingPage.browserOpened')}</p>
+          {/if}
         </div>
       {:else}
         <div class="max-w-sm mx-auto">

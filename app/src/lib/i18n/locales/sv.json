@@ -2438,7 +2438,7 @@
 			"agents": {
 				"title": "Här bor dina medarbetare",
 				"bodyPersonal": "Jag är Nebo. Du kan lägga till specialister när som helst — var och en är bra på ett eget jobb.",
-				"bodyBusiness": "Jag är Nebo. Lägg till specialister när som helst — en Chief of Staff, en researcher och fler."
+				"bodyBusiness": "Jag är Nebo. Lägg till specialister när som helst — en Executive Assistant, en researcher och fler."
 			},
 			"work": {
 				"title": "Ditt arbete dyker upp här",
@@ -2453,7 +2453,7 @@
 			"marketplace": {
 				"title": "Lägg till nya förmågor",
 				"bodyPersonal": "Bläddra bland färdigheter och verktyg — dokumentredigering, design och mer.",
-				"bodyBusiness": "Bläddra bland färdigheter och verktyg — dokumentredigering, design, en Chief of Staff och mer."
+				"bodyBusiness": "Bläddra bland färdigheter och verktyg — dokumentredigering, design, en Executive Assistant och mer."
 			},
 			"search": {
 				"title": "Hoppa vart som helst, snabbt",

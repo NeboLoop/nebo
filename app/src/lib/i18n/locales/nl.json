@@ -1839,7 +1839,7 @@
 	"agentPersona": {
 		"title": "Persona",
 		"assistantPlaceholder": "Definieer de persoonlijkheid, rol en gedragsrichtlijnen van de medewerker. Bijv. Je bent een AI-medewerker die helpt bij het beheren van dagelijkse taken... Typ / om een MCP, skill of medewerker te vermelden.",
-		"personaPlaceholder": "Definieer de persoonlijkheid, rol en gedragsrichtlijnen van deze medewerker. Bijv. Je bent een chief of staff die het dagelijkse ritme van de directie beheert... Typ / om een MCP, skill of medewerker te vermelden.",
+		"personaPlaceholder": "Definieer de persoonlijkheid, rol en gedragsrichtlijnen van deze medewerker. Bijv. Je bent een executive assistant die het dagelijkse ritme van de directie beheert... Typ / om een MCP, skill of medewerker te vermelden.",
 		"undo": "Ongedaan maken",
 		"redo": "Opnieuw",
 		"properties": "Eigenschappen",
@@ -2208,7 +2208,7 @@
 			"agents": {
 				"title": "Hier wonen je medewerkers",
 				"bodyPersonal": "Ik ben Nebo. Je kunt altijd specialisten toevoegen — elk goed in een andere taak.",
-				"bodyBusiness": "Ik ben Nebo. Voeg wanneer je wilt specialisten toe — een Chief of Staff, een onderzoeker en meer."
+				"bodyBusiness": "Ik ben Nebo. Voeg wanneer je wilt specialisten toe — een Executive Assistant, een onderzoeker en meer."
 			},
 			"work": {
 				"title": "Je werk verschijnt hier",
@@ -2223,7 +2223,7 @@
 			"marketplace": {
 				"title": "Voeg nieuwe vaardigheden toe",
 				"bodyPersonal": "Blader door skills en tools — documentbewerking, design en meer.",
-				"bodyBusiness": "Blader door skills en tools — documentbewerking, design, een Chief of Staff en meer."
+				"bodyBusiness": "Blader door skills en tools — documentbewerking, design, een Executive Assistant en meer."
 			},
 			"search": {
 				"title": "Spring razendsnel overal heen",

@@ -2255,7 +2255,7 @@
 			"agents": {
 				"title": "Os seus funcionários vivem aqui",
 				"bodyPersonal": "Eu sou o Nebo. Pode adicionar especialistas a qualquer momento — cada um é ótimo num trabalho diferente.",
-				"bodyBusiness": "Eu sou o Nebo. Adicione especialistas a qualquer momento — um Chief of Staff, um investigador e muito mais."
+				"bodyBusiness": "Eu sou o Nebo. Adicione especialistas a qualquer momento — um Executive Assistant, um investigador e muito mais."
 			},
 			"work": {
 				"title": "O seu trabalho aparece aqui",
@@ -2270,7 +2270,7 @@
 			"marketplace": {
 				"title": "Adicione novas capacidades",
 				"bodyPersonal": "Explore skills e ferramentas — edição de documentos, design e muito mais.",
-				"bodyBusiness": "Explore skills e ferramentas — edição de documentos, design, um Chief of Staff e muito mais."
+				"bodyBusiness": "Explore skills e ferramentas — edição de documentos, design, um Executive Assistant e muito mais."
 			},
 			"search": {
 				"title": "Salte para qualquer lugar rapidamente",
