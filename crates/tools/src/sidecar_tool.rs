@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use crate::origin::ToolContext;
 use crate::registry::{DynTool, ToolResult};
 
-/// A tool definition discovered from a sidecar's `GET /_tools` endpoint.
+/// A tool definition declared in the agent's `agent.json` `"tools"` array.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SidecarToolDef {
     /// Action name the LLM will use (e.g. "list_projects", "create_document").

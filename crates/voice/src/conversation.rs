@@ -5,9 +5,9 @@
 //! the serialized three-hop architecture was structurally too slow for live
 //! speech and was removed. Speech-to-speech now runs through the xAI realtime
 //! client (`crate::realtime`), which emits these same events — the downstream
-//! wire protocol never changed. Local whisper survives for dictation
-//! (`crate::streaming`), where its latency is fine because dictation isn't a
-//! live back-and-forth.
+//! wire protocol never changed. Dictation is handled natively by the OS
+//! (macOS dictation, Win+H) typing straight into the composer; no local
+//! whisper pathway remains.
 
 use bytes::Bytes;
 

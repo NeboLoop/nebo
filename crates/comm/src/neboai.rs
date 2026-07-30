@@ -1549,7 +1549,7 @@ async fn write_loop(
                 }
             }
             _ = ping_interval.tick() => {
-                // Detect wall-clock drift — if elapsed > 2x the 15s interval,
+                // Detect wall-clock drift — if elapsed > 2x the 30s interval,
                 // the system was likely asleep and the TCP connection is dead.
                 let now_wall = std::time::SystemTime::now();
                 let elapsed = now_wall.duration_since(last_ping_wall).unwrap_or_default();

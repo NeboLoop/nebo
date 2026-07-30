@@ -1,7 +1,7 @@
 ### event — Scheduling & Reminders
 USE THIS when: user mentions "every", "remind me", "daily", "weekly", "in X minutes", or any time-based trigger.
 
-For anything recurring or time-based. Prefer task_type: "agent" — this means YOU execute the task when it fires, with full access to all your tools and memory.
+For your own reminders and standalone recurring tasks. If the duty belongs to a named/created agent, use agent(resource: registry, automations/add_automations) instead — that makes it the agent's own workflow. Prefer task_type: "agent" — this means YOU execute the task when it fires, with full access to all your tools and memory.
 
 One-time reminders — use "at" (relative time, computed automatically):
 - event(action: create, name: "call-kristi", at: "in 10 minutes", task_type: "agent", prompt: "Remind user to call Kristi")

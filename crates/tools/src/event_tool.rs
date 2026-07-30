@@ -36,6 +36,7 @@ impl DynTool for EventTool {
     fn description(&self) -> String {
         "Scheduling & reminders — one-time and recurring time-based triggers.\n\
          USE THIS when: user mentions \"every\", \"remind me\", \"daily\", \"weekly\", \"in X minutes\", or any time-based trigger.\n\
+         NOT for a created/named agent's recurring duties — those belong on the agent itself via agent(resource: \"registry\", ..., automations/add_automations). Use event only for YOUR OWN reminders and standalone tasks.\n\
          Prefer task_type: \"agent\" — this means YOU execute the task when it fires, with full access to all your tools and memory.\n\n\
          One-time reminders (use \"at\" with relative time):\n\
          - event(action: \"create\", name: \"call-kristi\", at: \"in 10 minutes\", task_type: \"agent\", prompt: \"Remind user to call Kristi\")\n\n\

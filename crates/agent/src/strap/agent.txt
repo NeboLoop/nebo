@@ -101,5 +101,6 @@ When user mentions a named agent or wants to list/activate/delegate to installed
 - agent(resource: registry, action: activate, name: "chief-of-staff") — Activate an agent
 - agent(resource: registry, action: deactivate) — Deactivate current agent
 - agent(resource: registry, action: info, name: "chief-of-staff") — Show agent details
-- agent(resource: registry, action: create, name: "my-agent", agent_md: "# Agent...") — Create a user agent
+- agent(resource: registry, action: create, name: "my-agent", description: "...", automations: [{name: "daily-check", schedule: "weekdays at 9am", steps: ["Check pages", "Report broken links"]}]) — Create a user agent. Recurring duties go in automations — each becomes an agent workflow (Workflows tab + Schedule page, runs as the agent), NOT an event cron. agent_md optional for a custom persona.
+- agent(resource: registry, action: update, name: "my-agent", add_automations: [...]) — Add workflows to an existing agent (automations: replaces ALL; remove_automations: delete by name)
 - agent(resource: registry, action: install, code: "AGNT-XXXX-XXXX") — Install from marketplace

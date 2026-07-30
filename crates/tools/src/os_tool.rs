@@ -17,7 +17,7 @@ use crate::spotlight_tool::SpotlightTool;
 
 /// Unified OS tool — all local machine operations under one namespace.
 ///
-/// 25 resources spanning file system, shell, desktop automation, apps, settings,
+/// 23 resources spanning file system, shell, desktop automation, apps, settings,
 /// media, credentials, search, and personal information management.
 /// Per-resource approval: safe resources auto-approve, sensitive ones require confirmation.
 pub struct OsTool {

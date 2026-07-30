@@ -1013,9 +1013,14 @@ impl PersonaTool {
             let cron_prefix = format!("agent-{}-", agent_id);
             let _ = self.store.delete_cron_jobs_by_prefix(&cron_prefix);
 
+            // Replace only the workflows key — preserve other frontmatter (inputs, skills, etc.)
+            let mut existing: serde_json::Value =
+                serde_json::from_str(&current_frontmatter).unwrap_or(serde_json::json!({}));
+
             if !autos.is_empty() {
                 let agent_json = Self::build_agent_json_from_automations(autos);
-                current_frontmatter = agent_json.to_string();
+                existing["workflows"] = agent_json["workflows"].clone();
+                current_frontmatter = existing.to_string();
 
                 // Write to filesystem
                 let agent_dir = self.agent_loader.user_dir().join(&current_name);
@@ -1031,7 +1036,16 @@ impl PersonaTool {
                     ));
                 }
             } else {
-                current_frontmatter = "{}".to_string();
+                if let Some(obj) = existing.as_object_mut() {
+                    obj.remove("workflows");
+                }
+                current_frontmatter = existing.to_string();
+
+                // Write to filesystem so agent.json matches the DB
+                let agent_dir = self.agent_loader.user_dir().join(&current_name);
+                if agent_dir.exists() {
+                    let _ = std::fs::write(agent_dir.join("agent.json"), &current_frontmatter);
+                }
                 changes.push("removed all automations".to_string());
             }
             automations_changed = true;

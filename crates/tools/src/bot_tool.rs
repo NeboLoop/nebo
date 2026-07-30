@@ -2064,7 +2064,8 @@ impl DynTool for AgentTool {
          - agent(resource: \"registry\", action: \"activate\", name: \"...\") — Activate an agent\n\
          - agent(resource: \"registry\", action: \"info\", name: \"...\") — Show agent details\n\
          - agent(resource: \"registry\", action: \"install\", code: \"AGNT-XXXX-XXXX\") — Install from marketplace\n\
-         - agent(resource: \"registry\", action: \"create\", name: \"...\", description: \"...\") — Create a user agent"
+         - agent(resource: \"registry\", action: \"create\", name: \"...\", description: \"...\", automations: [{\"name\": \"...\", \"schedule\": \"weekdays at 9am\", \"steps\": [\"...\"]}]) — Create a user agent. Any recurring duty MUST go in automations (each becomes the agent's own scheduled workflow — shown in its Workflows tab and the Schedule page, runs as the agent) — never a bare create plus event crons.\n\
+         - agent(resource: \"registry\", action: \"update\", name: \"...\", add_automations: [...]) — Add workflows to an existing agent (automations: replaces ALL existing ones; remove_automations: delete by name)"
             .to_string()
     }
 
@@ -2090,7 +2091,7 @@ impl DynTool for AgentTool {
                 "status": { "type": "string", "description": "Task status: pending, in_progress, completed" },
                 "task_id": { "type": "string", "description": "Task ID for updates" },
                 "prompt": { "type": "string", "description": "Sub-agent prompt or orchestration task description" },
-                "description": { "type": "string", "description": "Short description of the sub-agent task" },
+                "description": { "type": "string", "description": "Short description (sub-agent task, or the agent's description for registry create/update)" },
                 "agent_type": { "type": "string", "description": "Sub-agent type: general, explore, plan" },
                 "model_override": { "type": "string", "description": "Model override for sub-agent" },
                 "skills": { "type": "array", "items": { "type": "string" }, "description": "Skill names to pre-load in the sub-agent's context. The full SKILL.md is injected so the sub-agent has instructions without needing to discover them." },
@@ -2107,7 +2108,28 @@ impl DynTool for AgentTool {
                 "max_iterations": { "type": "integer", "description": "Max iterations for sub-agent (default: 100)" },
                 "tasks": { "type": "array", "items": { "type": "object", "properties": { "prompt": { "type": "string" }, "description": { "type": "string" }, "tools": { "type": "array", "items": { "type": "string" } }, "plugins": { "type": "array", "items": { "type": "string" } }, "skills": { "type": "array", "items": { "type": "string" } } }, "required": ["prompt"] }, "description": "Array of tasks for spawn_parallel — each runs as a concurrent sub-agent" },
                 "name": { "type": "string", "description": "Name (registry agent name, or profile update bot name)" },
-                "role": { "type": "string", "description": "For profile update: the bot's role/description" }
+                "role": { "type": "string", "description": "For profile update: the bot's role/description" },
+                "automations": {
+                    "type": "array",
+                    "description": "Registry create/update: the agent's recurring or triggered duties. Each item becomes an agent workflow (Workflows tab + Schedule page, runs as the agent). Trigger is inferred from fields: schedule→cron, interval→heartbeat, sources→event. On update this REPLACES ALL existing automations — use add_automations to append.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": { "type": "string", "description": "Workflow name, e.g. weekday-page-check" },
+                            "schedule": { "type": "string", "description": "Cron (\"0 9 * * 1-5\") or human phrase (\"weekdays at 9am\", \"daily at 7am\") — auto-normalized" },
+                            "interval": { "type": "string", "description": "Heartbeat interval (\"15m\", \"1h\")" },
+                            "window": { "type": "string", "description": "Active window for interval, e.g. \"08:00-18:00\"" },
+                            "sources": { "type": "array", "items": { "type": "string" }, "description": "Event sources that trigger it, e.g. \"email.received\"" },
+                            "steps": { "type": "array", "items": { "type": "string" }, "description": "Plain-language steps executed in order" },
+                            "emit": { "type": "string", "description": "Event source name to emit on completion" },
+                            "description": { "type": "string" }
+                        },
+                        "required": ["name", "steps"]
+                    }
+                },
+                "add_automations": { "type": "array", "items": { "type": "object" }, "description": "Registry update: ADD workflows to an existing agent without touching the others (same item shape as automations)" },
+                "remove_automations": { "type": "array", "items": { "type": "string" }, "description": "Registry update: remove workflows by name (also removes their schedules)" },
+                "agent_md": { "type": "string", "description": "AGENT.md persona markdown (registry create/update; optional — name+description alone auto-generate it)" }
             },
             "required": ["resource", "action"]
         })
