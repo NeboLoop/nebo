@@ -614,6 +614,11 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         Err(e) => warn!(error = %e, "failed to clean up orphaned workflow runs"),
     }
 
+    // Self-heal pre-v0.12.13 chat-created agents: convert assistant-owned
+    // generic crons carrying a named agent's duty into that agent's own
+    // workflow bindings. Must run before the scheduler spawns.
+    migration::migrate_orphaned_agent_crons(&store);
+
     // Cloud/container deploys are provisioned as a specific bot up front, so
     // there is no interactive pairing flow to run. NEBO_BOT_ID seeds the same
     // file the pairing flow writes, so the chain below is unchanged.

@@ -392,6 +392,148 @@ fn rename_role_files_recursive(dir: &Path) -> usize {
 /// migration is needed. This is kept as a no-op so the call site compiles.
 pub fn migrate_data_dir() {}
 
+// ── Phase 5b: Orphaned agent crons → agent workflows ─────────────────
+
+/// One-time self-heal: convert generic assistant-owned cron jobs that carry a
+/// named agent's recurring duty into that agent's own workflow bindings.
+///
+/// Pre-v0.12.13 the agent tool schema hid `automations`, so chat-created
+/// agents ended up as bare personas while their schedules leaked into
+/// `task_type = "agent"` cron jobs owned by the assistant (wrong identity,
+/// invisible to the Workflows tab and Schedule page). This walks every agent
+/// with zero workflow bindings, claims the crons whose name matches the
+/// agent's slug, converts each into a schedule binding (prompt → single-step
+/// activity), and deletes the orphaned cron.
+///
+/// Idempotent by construction: converted crons are deleted and only agents
+/// with zero bindings are considered — no marker file needed.
+pub fn migrate_orphaned_agent_crons(store: &db::Store) {
+    let agents = match store.list_agents(1000, 0) {
+        Ok(a) => a,
+        Err(_) => return,
+    };
+    let crons = match store.list_cron_jobs(1000, 0) {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+
+    // "Price Watch" → "price-watch"; "content_creator_daily" → "content-creator-daily"
+    let norm = |s: &str| -> String {
+        let mut out = String::new();
+        let mut dash = false;
+        for c in s.chars() {
+            if c.is_ascii_alphanumeric() {
+                out.push(c.to_ascii_lowercase());
+                dash = false;
+            } else if !dash && !out.is_empty() {
+                out.push('-');
+                dash = true;
+            }
+        }
+        out.trim_end_matches('-').to_string()
+    };
+
+    for agent in agents.iter().filter(|a| a.id != "assistant") {
+        // Only bare agents — never touch agents that already own bindings.
+        match store.list_agent_workflows(&agent.id) {
+            Ok(w) if w.is_empty() => {}
+            _ => continue,
+        }
+        let slug = norm(&agent.name);
+        let slug_short = slug.strip_suffix("-agent").unwrap_or(&slug).to_string();
+        if slug_short.len() < 4 {
+            continue; // refuse to fuzzy-match very short names
+        }
+
+        let mut fm: serde_json::Value =
+            serde_json::from_str(&agent.frontmatter).unwrap_or_else(|_| serde_json::json!({}));
+        let mut converted = 0usize;
+
+        for job in crons.iter().filter(|j| {
+            j.task_type == "agent"
+                && matches!(j.agent_id.as_deref(), None | Some("") | Some("assistant"))
+        }) {
+            let jn = norm(&job.name);
+            if !(jn.starts_with(&slug) || jn.starts_with(&slug_short)) {
+                continue;
+            }
+            let prompt = job.message.clone().unwrap_or_default();
+            if prompt.is_empty() {
+                continue;
+            }
+
+            let binding_name = jn
+                .strip_prefix(slug.as_str())
+                .or_else(|| jn.strip_prefix(slug_short.as_str()))
+                .unwrap_or(jn.as_str())
+                .trim_matches('-')
+                .to_string();
+            let binding_name = if binding_name.is_empty() {
+                jn.clone()
+            } else {
+                binding_name
+            };
+
+            let cron = tools::PersonaTool::normalize_cron(&job.schedule);
+            let desc = format!("Migrated from cron job '{}'", job.name);
+            let activities =
+                serde_json::json!([{ "id": "run", "intent": job.name, "steps": [prompt] }]);
+
+            if store
+                .upsert_agent_workflow(
+                    &agent.id,
+                    &binding_name,
+                    "schedule",
+                    &cron,
+                    Some(&desc),
+                    None,
+                    None,
+                    Some(&activities.to_string()),
+                    None,
+                )
+                .is_err()
+            {
+                continue;
+            }
+
+            fm["workflows"][&binding_name] = serde_json::json!({
+                "trigger": { "type": "schedule", "cron": cron },
+                "description": desc,
+                "activities": activities,
+            });
+
+            let _ = store.delete_cron_job_by_name(&job.name);
+            converted += 1;
+        }
+
+        if converted > 0 {
+            let _ = store.update_agent(
+                &agent.id,
+                &agent.name,
+                &agent.description,
+                &agent.agent_md,
+                &fm.to_string(),
+                agent.pricing_model.as_deref(),
+                agent.pricing_cost,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            );
+            if let Ok(bindings) = store.list_agent_workflows(&agent.id) {
+                workflow::triggers::register_agent_triggers(&agent.id, &bindings, store);
+            }
+            info!(
+                agent = %agent.name,
+                converted,
+                "migrated orphaned crons into agent workflows"
+            );
+        }
+    }
+}
+
 // ── Phase 6: Seed bundled .napp files from app resources ──────────
 
 /// Seed `.napp` files from app bundle resources into the data directory.
