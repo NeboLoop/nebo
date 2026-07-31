@@ -145,8 +145,20 @@ impl WorkTool {
                     Err(e) => ToolResult::error(format!("create failed: {}", e)),
                 }
             }
+            "delete" => {
+                if parsed.name.is_empty() {
+                    return ToolResult::error("name is required (the workflow's name)");
+                }
+                if agent_id.is_empty() {
+                    return ToolResult::error("no agent in this session");
+                }
+                match self.manager.delete(agent_id, &parsed.name).await {
+                    Ok(()) => ToolResult::ok(format!("Workflow '{}' deleted", parsed.name)),
+                    Err(e) => ToolResult::error(format!("delete failed: {}", e)),
+                }
+            }
             "" => ToolResult::error(
-                "action is required. Use: list, create, install, uninstall, cancel. Or set resource to dispatch to a workflow.",
+                "action is required. Use: list, create, delete, install, uninstall, cancel. Or set resource to dispatch to a workflow.",
             ),
             other => ToolResult::error(format!(
                 "unknown action: {:?}. Use: list, create, install, uninstall, cancel. Or set resource to dispatch to a workflow.",
@@ -227,13 +239,15 @@ impl DynTool for WorkTool {
     }
 
     fn description(&self) -> String {
-        "Workflow management & execution.\n\
-         USE THIS when: user wants to manage or run automated workflows.\n\n\
+        "Workflow management & execution for YOUR OWN workflows (the calling agent's).\n\
+         USE THIS when: user wants to manage or run automated workflows.\n\
+         NOT for another agent's workflows — to give a named/created agent workflows, use agent(resource: \"registry\", automations/add_automations/remove_automations).\n\n\
          Lifecycle actions (no resource):\n\
          - work(action: \"list\") — List this agent's workflows and their status\n\
-         - work(action: \"create\", name: \"My Workflow\", definition: \"{...}\") — Create a workflow this agent owns (appears in its Workflows panel and fires on its trigger). The definition JSON may carry a `trigger` ({type, cron/interval/sources/...}) or top-level `schedule`; omit for a manual workflow.\n\
+         - work(action: \"create\", name: \"My Workflow\", definition: \"{\\\"trigger\\\": {\\\"type\\\": \\\"schedule\\\", \\\"cron\\\": \\\"0 9 * * MON-FRI\\\"}, \\\"activities\\\": [{\\\"id\\\": \\\"run\\\", \\\"intent\\\": \\\"...\\\", \\\"steps\\\": [\\\"concrete step\\\", ...]}]}\") — Create a workflow this agent owns (appears in its Workflows panel and fires on its trigger). Activities are the ONLY executable unit: each runs as its own scoped execution of its intent + steps. A top-level `steps` array is accepted as shorthand for one activity. Omit trigger for a manual workflow.\n\
+         - work(action: \"delete\", name: \"my-workflow\") — Delete one of this agent's workflows by name\n\
          - work(action: \"install\", code: \"WORK-XXXX-XXXX\") — Install from marketplace\n\
-         - work(action: \"uninstall\", id: \"workflow-id\") — Uninstall a workflow\n\n\
+         - work(action: \"uninstall\", id: \"workflow-id\") — Uninstall a marketplace-installed workflow (by its install id, not name)\n\n\
          Dispatch to workflow (set resource = workflow name):\n\
          - work(resource: \"weekly-report\", action: \"run\") — Run the workflow (returns immediately with run_id)\n\
          - work(resource: \"weekly-report\", action: \"run\", inputs: {\"week\": \"2024-03\"}) — Run with inputs\n\
@@ -255,7 +269,7 @@ impl DynTool for WorkTool {
                 },
                 "action": {
                     "type": "string",
-                    "description": "Lifecycle: list, create, install, uninstall. Dispatch: run, status, runs, toggle."
+                    "description": "Lifecycle: list, create, delete, install, uninstall. Dispatch: run, status, runs, toggle."
                 },
                 "code": {
                     "type": "string",
@@ -271,7 +285,7 @@ impl DynTool for WorkTool {
                 },
                 "name": {
                     "type": "string",
-                    "description": "Workflow name (for create)"
+                    "description": "Workflow name (for create/delete)"
                 },
                 "definition": {
                     "type": "string",

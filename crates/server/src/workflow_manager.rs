@@ -857,8 +857,48 @@ impl WorkflowManager for WorkflowManagerImpl {
             // The definition is agent-authored JSON; accept it loosely and pull
             // out the binding fields. (parse_workflow is too strict — it drops
             // unknown fields silently, which is how orphans were born.)
-            let def: serde_json::Value = serde_json::from_str(definition)
+            let mut def: serde_json::Value = serde_json::from_str(definition)
                 .map_err(|e| format!("invalid workflow definition (not JSON): {}", e))?;
+
+            // Convenience: a top-level `steps` array becomes ONE activity that
+            // executes them in order — same simple-form semantics as agent
+            // registry automations.
+            if def.get("activities").is_none()
+                && let Some(steps) = def.get("steps").cloned()
+                && steps.is_array()
+            {
+                let intent = def
+                    .get("description")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or(name)
+                    .to_string();
+                def["activities"] =
+                    serde_json::json!([{ "id": "run", "intent": intent, "steps": steps }]);
+            }
+
+            // Reject hollow definitions loudly — a workflow with no activities
+            // can never execute, and silently storing one reads as success.
+            let has_runnable_activity = def
+                .get("activities")
+                .and_then(|v| v.as_array())
+                .is_some_and(|acts| {
+                    !acts.is_empty()
+                        && acts.iter().any(|a| {
+                            a.get("steps").and_then(|s| s.as_array()).is_some_and(|s| !s.is_empty())
+                                || a.get("intent").and_then(|i| i.as_str()).is_some_and(|i| !i.is_empty())
+                        })
+                });
+            if !has_runnable_activity {
+                return Err(
+                    "workflow definition has no runnable activities — it would never execute. \
+                     Shape: {\"trigger\": {\"type\": \"schedule\", \"cron\": \"0 9 * * MON-FRI\"}, \
+                     \"activities\": [{\"id\": \"run\", \"intent\": \"what this accomplishes\", \
+                     \"steps\": [\"concrete step 1\", \"concrete step 2\"]}]} — or pass a top-level \
+                     \"steps\" array for the simple form."
+                        .to_string(),
+                );
+            }
 
             // Resolve the trigger. Accept either a `trigger` object ({type, ...})
             // or a top-level `schedule` cron string; default to manual.
@@ -994,6 +1034,80 @@ impl WorkflowManager for WorkflowManagerImpl {
                 trigger_count: if trigger_type == "manual" { 0 } else { 1 },
                 activity_count,
             })
+        })
+    }
+
+    fn delete<'a>(
+        &'a self,
+        agent_id: &'a str,
+        binding_name: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+        Box::pin(async move {
+            use crate::handlers::agents::write_agent_json_to_fs;
+
+            let agent = self
+                .store
+                .get_agent(agent_id)
+                .map_err(|e| format!("get_agent: {}", e))?
+                .ok_or_else(|| format!("agent '{}' not found", agent_id))?;
+
+            // Verify the binding exists in the tracking store so a typo'd name
+            // errors instead of reporting a successful no-op delete.
+            let known = self
+                .store
+                .list_agent_workflows(agent_id)
+                .map_err(|e| format!("list_agent_workflows: {}", e))?;
+            if !known.iter().any(|w| w.binding_name == binding_name) {
+                let names: Vec<&str> = known.iter().map(|w| w.binding_name.as_str()).collect();
+                return Err(format!(
+                    "no workflow named '{}' — this agent owns: {}",
+                    binding_name,
+                    if names.is_empty() { "(none)".to_string() } else { names.join(", ") }
+                ));
+            }
+
+            // Remove from frontmatter (source of truth) and persist to disk.
+            let mut fm: serde_json::Value =
+                serde_json::from_str(&agent.frontmatter).unwrap_or_else(|_| serde_json::json!({}));
+            if let Some(workflows) = fm.get_mut("workflows").and_then(|w| w.as_object_mut()) {
+                workflows.remove(binding_name);
+            }
+            self.store
+                .update_agent(
+                    agent_id,
+                    &agent.name,
+                    &agent.description,
+                    &agent.agent_md,
+                    &fm.to_string(),
+                    agent.pricing_model.as_deref(),
+                    agent.pricing_cost,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .map_err(|e| format!("update_agent: {}", e))?;
+
+            self.store
+                .delete_single_agent_workflow(agent_id, binding_name)
+                .map_err(|e| format!("delete_single_agent_workflow: {}", e))?;
+            workflow::triggers::unregister_single_agent_trigger(agent_id, binding_name, &self.store);
+            write_agent_json_to_fs(&agent.napp_path, &fm);
+
+            // Restart the worker so live (event/heartbeat/watch) triggers for
+            // the deleted binding tear down immediately.
+            if let Some(workers) = self.agent_workers.get() {
+                workers.start_agent(agent_id, &agent.name, None).await;
+            }
+
+            self.hub.broadcast(
+                "agent_workflow_deleted",
+                serde_json::json!({ "agentId": agent_id, "binding": binding_name }),
+            );
+            info!(agent_id, binding = %binding_name, "agent workflow deleted via tool");
+            Ok(())
         })
     }
 

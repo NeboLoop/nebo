@@ -106,6 +106,15 @@ pub trait WorkflowManager: Send + Sync {
         definition: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<WorkflowInfo, String>> + Send + 'a>>;
 
+    /// Delete a workflow binding the calling agent owns: frontmatter,
+    /// tracking row, cron trigger, and on-disk agent.json. Mirrors the REST
+    /// delete so the tool pathway has parity with the UI panel.
+    fn delete<'a>(
+        &'a self,
+        agent_id: &'a str,
+        binding_name: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>>;
+
     /// Run an inline workflow from a JSON definition (no DB/filesystem lookup).
     /// Used by agent workers for inline workflow bindings defined in agent.json.
     /// `emit_source` — if set, the last activity will be instructed to emit its output.
