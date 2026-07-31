@@ -2124,7 +2124,7 @@ impl DynTool for AgentTool {
                 "role": { "type": "string", "description": "For profile update: the bot's role/description" },
                 "automations": {
                     "type": "array",
-                    "description": "Registry create/update: the agent's recurring or triggered duties. Each item becomes an agent workflow (Workflows tab + Schedule page, runs as the agent). Trigger is inferred from fields: schedule→cron, interval→heartbeat, sources→event. On update this REPLACES ALL existing automations — use add_automations to append.",
+                    "description": "Registry create/update: the agent's recurring or triggered duties. Each item becomes an agent workflow (Workflows tab + Schedule page, runs as the agent). Trigger is inferred from fields: schedule→cron, interval→heartbeat, sources→event. Steps must be CONCRETE and actionable — name the tools/files/destinations, what to check, what to produce, and how to report — the workflow runs unattended with only these words as its instructions. Simple duty: use steps (they run in order as one execution). Multi-stage duty (e.g. research at 2am feeding a publish at 10am, or triage→execute): use activities — each activity is its own scoped execution with its own intent + steps. On update this REPLACES ALL existing automations — use add_automations to append.",
                     "items": {
                         "type": "object",
                         "properties": {
@@ -2133,11 +2133,12 @@ impl DynTool for AgentTool {
                             "interval": { "type": "string", "description": "Heartbeat interval (\"15m\", \"1h\")" },
                             "window": { "type": "string", "description": "Active window for interval, e.g. \"08:00-18:00\"" },
                             "sources": { "type": "array", "items": { "type": "string" }, "description": "Event sources that trigger it, e.g. \"email.received\"" },
-                            "steps": { "type": "array", "items": { "type": "string" }, "description": "Plain-language steps executed in order" },
+                            "steps": { "type": "array", "items": { "type": "string" }, "description": "Concrete ordered steps for a single-stage duty. Executed in order in ONE run with shared context. Each step: what to do, with what tool/data, producing what output." },
+                            "activities": { "type": "array", "items": { "type": "object", "properties": { "id": { "type": "string" }, "intent": { "type": "string", "description": "One line: what this stage accomplishes" }, "steps": { "type": "array", "items": { "type": "string" } }, "skills": { "type": "array", "items": { "type": "string" }, "description": "Skill names this stage may use" } }, "required": ["id", "intent", "steps"] }, "description": "Multi-stage form (overrides steps): sequential stages, each a separate scoped execution — later stages see earlier stages' outputs" },
                             "emit": { "type": "string", "description": "Event source name to emit on completion" },
                             "description": { "type": "string" }
                         },
-                        "required": ["name", "steps"]
+                        "required": ["name"]
                     }
                 },
                 "add_automations": { "type": "array", "items": { "type": "object" }, "description": "Registry update: ADD workflows to an existing agent without touching the others (same item shape as automations)" },

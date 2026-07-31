@@ -2049,19 +2049,25 @@ impl PersonaTool {
                 _ => serde_json::json!({ "type": "manual" }),
             };
 
-            // Build activities from steps array
-            let activities: Vec<serde_json::Value> = if let Some(steps) = auto["steps"].as_array() {
-                steps
-                    .iter()
-                    .enumerate()
-                    .map(|(i, step)| {
-                        let intent = step.as_str().unwrap_or("Execute step");
-                        serde_json::json!({
-                            "id": format!("step-{}", i + 1),
-                            "intent": intent
-                        })
-                    })
-                    .collect()
+            // Activities. Advanced form: a full `activities` array (multi-stage,
+            // EA-manifest shape — each {id, intent, steps, skills…}) passes
+            // through as-is. Simple form: `steps` become ONE activity that
+            // executes them in order — the engine runs each activity as its own
+            // scoped LLM execution, so splitting steps across activities would
+            // produce disconnected one-line runs with no shared context.
+            let activities: Vec<serde_json::Value> = if let Some(acts) = auto["activities"].as_array()
+            {
+                acts.clone()
+            } else if let Some(steps) = auto["steps"].as_array() {
+                let intent = auto["description"]
+                    .as_str()
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or(binding_name);
+                vec![serde_json::json!({
+                    "id": "run",
+                    "intent": intent,
+                    "steps": steps
+                })]
             } else {
                 vec![]
             };

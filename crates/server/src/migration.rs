@@ -522,6 +522,11 @@ pub fn migrate_orphaned_agent_crons(store: &db::Store) {
                 None,
                 None,
             );
+            // Persist agent.json to the agent's directory too — the filesystem
+            // is authoritative: the agent FS watcher re-syncs DB rows from disk
+            // on scan, and a dir with only AGENT.md would clobber the DB
+            // frontmatter written above with an empty one.
+            crate::handlers::agents::write_agent_json_to_fs(&agent.napp_path, &fm);
             if let Ok(bindings) = store.list_agent_workflows(&agent.id) {
                 workflow::triggers::register_agent_triggers(&agent.id, &bindings, store);
             }
