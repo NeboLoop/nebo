@@ -106,6 +106,13 @@ pub trait WorkflowManager: Send + Sync {
         definition: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<WorkflowInfo, String>> + Send + 'a>>;
 
+    /// Periodic workflow tuning sweep (self-optimization). Default no-op so
+    /// lightweight implementations aren't forced to care; the server's
+    /// manager overrides it with the real evidence-gated pass.
+    fn tuning_sweep<'a>(&'a self) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+        Box::pin(async {})
+    }
+
     /// Delete a workflow binding the calling agent owns: frontmatter,
     /// tracking row, cron trigger, and on-disk agent.json. Mirrors the REST
     /// delete so the tool pathway has parity with the UI panel.

@@ -49,6 +49,28 @@ impl Store {
         Ok(())
     }
 
+    /// Whether the agent has any pending_writes row of `kind` created in the
+    /// last `within_secs`, regardless of status. Anti-spam gate for periodic
+    /// producers like the workflow tuning pass: one proposal per window, even
+    /// if the previous one was rejected.
+    pub fn has_recent_pending_write(
+        &self,
+        agent_id: &str,
+        kind: &str,
+        within_secs: i64,
+    ) -> Result<bool, NeboError> {
+        let conn = self.conn()?;
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pending_writes
+                 WHERE agent_id = ?1 AND kind = ?2 AND created_at > unixepoch() - ?3",
+                params![agent_id, kind, within_secs],
+                |row| row.get(0),
+            )
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(count > 0)
+    }
+
     pub fn get_pending_write(&self, id: &str) -> Result<Option<PendingWrite>, NeboError> {
         let conn = self.conn()?;
         match conn.query_row(

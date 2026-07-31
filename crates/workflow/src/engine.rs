@@ -624,10 +624,14 @@ pub async fn execute_activity(
         step_id,
     };
 
+    // Identity + memory continuity for agent-bound runs. Computed per
+    // activity so mid-run memory writes surface in later activities.
+    let agent_ctx = build_agent_context(store, agent_id);
+
     // If activity has steps, execute per-step. Otherwise, single-turn legacy path.
     if activity.steps.is_empty() {
         // No steps — legacy single-turn execution
-        let system = build_activity_prompt(
+        let system = build_activity_prompt_with_context(
             activity,
             prior_context,
             inputs,
@@ -635,6 +639,7 @@ pub async fn execute_activity(
             emit_source,
             has_browser,
             &tool_names,
+            agent_ctx.as_deref(),
         );
         let messages = vec![ai::Message {
             role: "user".into(),
@@ -672,6 +677,7 @@ pub async fn execute_activity(
         emit_source,
         has_browser,
         &tool_names,
+        agent_ctx.as_deref(),
     );
 
     // Shared conversation — messages accumulate across steps
@@ -1359,6 +1365,7 @@ fn synthesize_from_tool_results(messages: &[ai::Message]) -> String {
 }
 
 /// Build the system prompt for a per-step activity (no steps section — steps come as user messages).
+#[allow(clippy::too_many_arguments)]
 fn build_activity_prompt_no_steps(
     activity: &Activity,
     prior_context: &str,
@@ -1367,11 +1374,12 @@ fn build_activity_prompt_no_steps(
     emit_source: Option<&str>,
     has_browser: bool,
     tool_names: &[String],
+    agent_context: Option<&str>,
 ) -> String {
     // Reuse the full builder but with an activity clone that has empty steps
     let mut stepless = activity.clone();
     stepless.steps = vec![];
-    let mut prompt = build_activity_prompt(
+    let mut prompt = build_activity_prompt_with_context(
         &stepless,
         prior_context,
         inputs,
@@ -1379,6 +1387,7 @@ fn build_activity_prompt_no_steps(
         emit_source,
         has_browser,
         tool_names,
+        agent_context,
     );
 
     prompt.push_str("\n## Step Execution Mode\n\
@@ -1430,9 +1439,60 @@ fn typed_node_preamble(activity_type: &str) -> Option<&'static str> {
     }
 }
 
-/// Build the system prompt for an activity.
-///
-/// Spec order: Execution Rules → Skills → Tools → Type/Params → Task → Steps → Inputs → Prior Results → Browser Guide
+/// Per-agent identity + memory context injected into every activity prompt.
+/// Soul is who the agent IS (voice, values, boundaries); the memory slice
+/// gives scheduled runs continuity — most-used facts plus what happened most
+/// recently, including post-run outcome history. Recall is not learning, so
+/// this is NOT gated by learning_mode.
+fn build_agent_context(store: &Store, agent_id: &str) -> Option<String> {
+    if agent_id.is_empty() {
+        return None;
+    }
+    let soul = store
+        .get_agent(agent_id)
+        .ok()
+        .flatten()
+        .and_then(|a| a.soul)
+        .filter(|s| !s.trim().is_empty());
+
+    // Base agent scope ONLY — never `:ctx:`-suffixed scopes. Context-isolated
+    // agents (law-firm matters, per-client engagements) keep each context's
+    // memories sealed from every other; a scheduled run has no case context,
+    // so it must see none of them. It gets the agent-wide slice only.
+    let mut memories = store.recent_memories_for_agent(agent_id, 8).unwrap_or_default();
+    for m in store.list_memories_for_agent(agent_id, 8, 0).unwrap_or_default() {
+        if !memories.iter().any(|e| e.id == m.id) {
+            memories.push(m);
+        }
+    }
+    memories.retain(|m| !m.user_id.contains(":ctx:"));
+    memories.truncate(8);
+
+    if soul.is_none() && memories.is_empty() {
+        return None;
+    }
+
+    let mut out = String::new();
+    if let Some(soul) = soul {
+        out.push_str("## Who You Are\n\nEmbody this personality and tone. This is who you ARE — your voice, values, and boundaries.\n\n");
+        out.push_str(&soul);
+        out.push_str("\n\n");
+    }
+    if !memories.is_empty() {
+        out.push_str("## Your Memory (recent and most-used)\n\n");
+        for m in &memories {
+            let mut value = m.value.replace('\n', " ");
+            if value.len() > 300 {
+                value.truncate(300);
+                value.push('…');
+            }
+            out.push_str(&format!("- [{}/{}] {}\n", m.namespace, m.key, value));
+        }
+        out.push('\n');
+    }
+    Some(out)
+}
+
 fn build_activity_prompt(
     activity: &Activity,
     prior_context: &str,
@@ -1441,6 +1501,29 @@ fn build_activity_prompt(
     emit_source: Option<&str>,
     has_browser: bool,
     tool_names: &[String],
+) -> String {
+    build_activity_prompt_with_context(
+        activity,
+        prior_context,
+        inputs,
+        skill_content,
+        emit_source,
+        has_browser,
+        tool_names,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_activity_prompt_with_context(
+    activity: &Activity,
+    prior_context: &str,
+    inputs: &serde_json::Value,
+    skill_content: Option<&HashMap<String, String>>,
+    emit_source: Option<&str>,
+    has_browser: bool,
+    tool_names: &[String],
+    agent_context: Option<&str>,
 ) -> String {
     let mut prompt = String::new();
 
@@ -1463,6 +1546,11 @@ fn build_activity_prompt(
         - After completing all tool calls for a step, always end with a brief text summary of what \
           you found or did. Never end a step with zero text output — downstream activities depend \
           on your summary.\n\n");
+
+    // Identity + memory continuity for agent-bound runs (soul, recent history).
+    if let Some(ctx) = agent_context {
+        prompt.push_str(ctx);
+    }
 
     // Skills — injected from SKILL.md content
     if let Some(skills) = skill_content {

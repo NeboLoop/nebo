@@ -16,6 +16,7 @@
   import MemoryManager from '$lib/components/settings/MemoryManager.svelte';
   import ApprovalControls from '$lib/components/settings/ApprovalControls.svelte';
   import LearningControls from '$lib/components/settings/LearningControls.svelte';
+  import IsolationControls from '$lib/components/settings/IsolationControls.svelte';
   import type { AgentInputField } from '$lib/types/agentPage';
   import { installFlow } from '$lib/stores/installFlow';
   import type { PluginAccount } from '$lib/api/pluginAccounts';
@@ -680,6 +681,8 @@
       {/if}
 
       <LearningControls {agentId} />
+
+      <IsolationControls {agentId} />
 
       {#if devMode}
         <div>

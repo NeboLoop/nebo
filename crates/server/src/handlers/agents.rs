@@ -735,7 +735,19 @@ pub async fn update_agent(
         .cloned()
         .unwrap_or(serde_json::json!({}));
 
-    let frontmatter_json = serde_json::json!({
+    // Memory config (context isolation, topics) survives every save — dropping
+    // it here silently un-isolated agents whose whole point is that one
+    // client's context never bleeds into another's. `contextIsolated` in the
+    // body toggles isolation from the General tab.
+    let mut memory_cfg = existing_fm
+        .get("memory")
+        .cloned()
+        .unwrap_or(serde_json::json!({}));
+    if let Some(iso) = body["contextIsolated"].as_bool() {
+        memory_cfg["context_isolated"] = serde_json::json!(iso);
+    }
+
+    let mut frontmatter_json = serde_json::json!({
         "workflows": workflows,
         "skills": fm.skills,
         "pricing": fm.pricing.as_ref().map(|p| serde_json::json!({
@@ -743,6 +755,13 @@ pub async fn update_agent(
             "cost": p.cost,
         })),
     });
+    if memory_cfg.as_object().is_some_and(|o| !o.is_empty()) {
+        frontmatter_json["memory"] = memory_cfg;
+    }
+    // Inputs schema/values config likewise ride along untouched.
+    if let Some(inputs) = existing_fm.get("inputs") {
+        frontmatter_json["inputs"] = inputs.clone();
+    }
 
     let pricing_model = fm.pricing.as_ref().map(|p| p.model.as_str());
     let pricing_cost = fm.pricing.as_ref().map(|p| p.cost);
@@ -790,6 +809,11 @@ pub async fn update_agent(
             active.rules = updated.rules.clone();
         }
     }
+
+    // Persist agent.json to the agent's directory: the filesystem is
+    // authoritative on the next watcher scan, and a DB-only frontmatter write
+    // would be clobbered by a dir that only carries AGENT.md.
+    write_agent_json_to_fs(&updated.napp_path, &frontmatter_json);
 
     state.hub.broadcast(
         "agent_updated",
@@ -3799,6 +3823,44 @@ pub async fn resolve_learning(
             serde_json::json!({ "id": id, "status": "rejected", "agentId": row.agent_id }),
         );
         return Ok(Json(serde_json::json!({ "status": "rejected" })));
+    }
+
+    // Workflow tuning proposals: the conflict token is the binding's full
+    // JSON at stage time; apply goes through the shared binding writer.
+    if row.kind == "workflow" {
+        let current = crate::workflow_manager::current_binding_json(&state.store, &row.agent_id, &row.target);
+        if current != row.target_hash {
+            state
+                .store
+                .resolve_pending_write(&id, "conflict")
+                .map_err(to_error_response)?;
+            state.hub.broadcast(
+                "learning_resolved",
+                serde_json::json!({ "id": id, "status": "conflict", "agentId": row.agent_id }),
+            );
+            return Ok(Json(serde_json::json!({
+                "status": "conflict",
+                "message": "The workflow changed after this was proposed; the proposal was discarded rather than overwriting it."
+            })));
+        }
+        let binding_val: serde_json::Value = row
+            .content
+            .as_deref()
+            .and_then(|c| serde_json::from_str(c).ok())
+            .ok_or_else(|| to_error_response(types::NeboError::Internal("proposal content unparseable".into())))?;
+        crate::workflow_manager::apply_workflow_binding(&state.store, &row.agent_id, &row.target, &binding_val)
+            .map_err(|e| to_error_response(types::NeboError::Internal(format!("apply failed: {}", e))))?;
+        restart_agent_worker_if_active(&state, &row.agent_id).await;
+        state
+            .store
+            .resolve_pending_write(&id, "approved")
+            .map_err(to_error_response)?;
+        state.hub.broadcast(
+            "learning_resolved",
+            serde_json::json!({ "id": id, "status": "approved", "agentId": row.agent_id }),
+        );
+        info!(id, agent_id = %row.agent_id, binding = %row.target, "workflow tuning proposal approved and applied");
+        return Ok(Json(serde_json::json!({ "status": "approved" })));
     }
 
     // Conflict check: the on-disk target must match its stage-time hash.

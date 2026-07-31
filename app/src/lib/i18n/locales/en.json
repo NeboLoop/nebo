@@ -1814,6 +1814,13 @@
 		"off": "Off",
 		"offHint": "This employee does not learn from conversations"
 	},
+	"agentIsolation": {
+		"title": "Memory isolation",
+		"shared": "Shared memory",
+		"sharedHint": "One memory across every conversation — what this employee learns anywhere, it knows everywhere",
+		"isolated": "Isolated per conversation",
+		"isolatedHint": "Each conversation keeps its own sealed memory — one case, client, or matter never bleeds into another"
+	},
 	"agentApprovals": {
 		"title": "Approvals",
 		"intro": "Choose what this employee can do on its own. \"Always allow\" runs without asking, \"Needs approval\" pauses and asks you first, \"Blocked\" turns the action off entirely.",

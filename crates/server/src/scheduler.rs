@@ -73,6 +73,26 @@ async fn tick(
         warn!("failed to cleanup old tasks: {}", e);
     }
 
+    // Weekly workflow tuning pass, checked once a day per process. The sweep
+    // itself gates per agent: learning mode, 2+ recent failures, and at most
+    // one proposal per agent per 7 days.
+    {
+        use std::sync::atomic::{AtomicI64, Ordering};
+        static LAST_TUNING_CHECK: AtomicI64 = AtomicI64::new(0);
+        let now = chrono::Utc::now().timestamp();
+        let last = LAST_TUNING_CHECK.load(Ordering::Relaxed);
+        if now - last > 24 * 3600
+            && LAST_TUNING_CHECK
+                .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
+                .is_ok()
+        {
+            let manager = workflow_manager.clone();
+            tokio::spawn(async move {
+                manager.tuning_sweep().await;
+            });
+        }
+    }
+
     // Expire staged self-improvement writes past their 30-day TTL and clear
     // their Inbox cards (the audited Hermes gap: pending forever).
     match store.expire_pending_writes() {

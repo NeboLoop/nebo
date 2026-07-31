@@ -1037,6 +1037,14 @@ impl WorkflowManager for WorkflowManagerImpl {
         })
     }
 
+    fn tuning_sweep<'a>(
+        &'a self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+        Box::pin(async move {
+            workflow_tuning_sweep(&self.store, &self.providers, (&self.tools, &self.hub)).await;
+        })
+    }
+
     fn delete<'a>(
         &'a self,
         agent_id: &'a str,
@@ -1523,6 +1531,7 @@ impl WorkflowManager for WorkflowManagerImpl {
                                 "bindingName": binding_name,
                             }),
                         );
+                        record_run_outcome(&store, &agent_id_owned, &binding_name, "completed", &output);
                         info!(role = %agent_id_owned, run_id = %run_id_clone, "inline workflow completed");
                     }
                     Err(workflow::WorkflowError::AwaitingApproval { operation, display }) => {
@@ -1608,6 +1617,33 @@ impl WorkflowManager for WorkflowManagerImpl {
                                 "error": err_msg,
                             }),
                         );
+                        // Outcome history: exits are informative ("nothing to
+                        // do today"), cancellations are owner actions, not
+                        // outcomes worth remembering.
+                        match &e {
+                            workflow::WorkflowError::Cancelled => {}
+                            workflow::WorkflowError::Exited(reason) => {
+                                record_run_outcome(&store, &agent_id_owned, &binding_name, "exited", reason);
+                            }
+                            _ => {
+                                record_run_outcome(&store, &agent_id_owned, &binding_name, "failed", &err_msg);
+                                // Workflow review fork (fork-lite): genuine
+                                // failures may carry a durable lesson. Same
+                                // learning-mode gate as the chat fork.
+                                let mode = learning_mode_for(&store, &agent_id_owned);
+                                if mode == "auto" || mode == "staged" {
+                                    tokio::spawn(review_failed_workflow_run(
+                                        providers.clone(),
+                                        tools_registry.clone(),
+                                        agent_id_owned.clone(),
+                                        binding_name.clone(),
+                                        definition_json.clone(),
+                                        err_msg.clone(),
+                                        mode == "staged",
+                                    ));
+                                }
+                            }
+                        }
                         warn!(role = %agent_id_owned, run_id = %run_id_clone, error = %err_msg, "inline workflow failed");
                     }
                 }
@@ -1801,6 +1837,513 @@ fn notify_workflow_failure(
 }
 
 /// Post an automation lifecycle message to an agent's chat session.
+/// The agent's learning mode, lowercased: "auto" (Learn freely), "staged"
+/// (Ask me first), or "" / "off" (does not learn). Single read shared by the
+/// outcome recorder and the workflow review fork so the gates can't drift.
+fn learning_mode_for(store: &db::Store, agent_id: &str) -> String {
+    store
+        .get_entity_config("agent", agent_id)
+        .ok()
+        .flatten()
+        .and_then(|c| c.learning_mode)
+        .map(|m| m.to_ascii_lowercase())
+        .unwrap_or_default()
+}
+
+/// Record a one-line outcome memory in the agent's scope after a workflow run:
+/// one row per binding (upsert), value = latest date + status + gist. This is
+/// history, not a lesson — the next run sees it via the engine's recent-memory
+/// slice, which is what makes dedup ("already published today") and error
+/// avoidance possible. Honors learning modes: written for auto and staged,
+/// skipped for off — an agent set to Off does not accumulate anything.
+fn record_run_outcome(store: &db::Store, agent_id: &str, binding: &str, status: &str, detail: &str) {
+    let learning_mode = learning_mode_for(store, agent_id);
+    if learning_mode != "auto" && learning_mode != "staged" {
+        return;
+    }
+
+    let owner = store.ensure_local_user_id().unwrap_or_default();
+    if owner.is_empty() {
+        return;
+    }
+    let scope = agent::memory::agent_memory_scope(&owner, agent_id);
+
+    // Context-isolated agents keep case/matter data sealed per context. The
+    // outcome row lives in the SHARED agent scope, so for isolated agents it
+    // carries status only — run output could name a client or matter.
+    let context_isolated = store
+        .get_agent(agent_id)
+        .ok()
+        .flatten()
+        .and_then(|a| napp::agent::parse_agent_config(&a.frontmatter).ok())
+        .map(|c| c.memory.context_isolated)
+        .unwrap_or(false);
+    let detail: &str = if context_isolated { "" } else { detail };
+
+    let date = chrono::Utc::now().format("%Y-%m-%d %H:%M UTC");
+    let mut gist = detail.replace('\n', " ");
+    if gist.len() > 240 {
+        let mut end = 240;
+        while !gist.is_char_boundary(end) {
+            end -= 1;
+        }
+        gist.truncate(end);
+        gist.push('…');
+    }
+    let value = format!("{} run {}: {}", date, status, gist);
+    if let Err(e) = store.upsert_memory("project/workflow-history", binding, &value, None, None, &scope)
+    {
+        warn!(agent = agent_id, binding, error = %e, "failed to record run outcome memory");
+    }
+}
+
+/// Workflow-side entry to the SAME lesson store the chat review fork writes.
+///
+/// On a genuinely failed run, one aux LLM call reads the run report and either
+/// stays silent or produces ONE durable lesson, committed through the skill
+/// tool's learned pathway — so the learning modes gate identically to chat:
+/// auto commits to the agent's learned tree, staged becomes a pending write in
+/// the owner's Inbox, off never reaches here. Duplicate lesson names are
+/// rejected by the tool (natural dedup for recurring failures); refining an
+/// existing lesson is the chat fork's / curator's job, not this one's.
+async fn review_failed_workflow_run(
+    providers: Arc<RwLock<Vec<Arc<dyn Provider>>>>,
+    registry: Arc<tools::Registry>,
+    agent_id: String,
+    binding: String,
+    def_json: String,
+    err_msg: String,
+    staged: bool,
+) {
+    let provider = {
+        let guard = providers.read().await;
+        match guard.first() {
+            Some(p) => p.clone(),
+            None => return,
+        }
+    };
+
+    const REVIEW_SYSTEM: &str = "You review a FAILED scheduled workflow run and decide whether there is \
+        ONE durable lesson worth saving for this agent. Most failures teach nothing durable — transient \
+        network errors, provider hiccups, rate limits, one-off bad data: answer null for those. A lesson \
+        is durable only if it would change how the NEXT run should behave: a tool quirk, a required \
+        format, a wrong assumption baked into the steps. Never store secrets, credentials, tokens, or \
+        personal data. Lessons are shared across every context this agent serves, so they must contain \
+        ZERO client-, case-, matter-, or engagement-specific information — general procedure only; if \
+        the failure cannot be expressed without naming a client or case, answer null. \
+        Respond with STRICT JSON only, no prose, no code fences: \
+        {\"lesson\": null} or {\"lesson\": {\"name\": \"kebab-case-name\", \"content\": \"---\\nname: <name>\\ndescription: <one line>\\n---\\n<what to do differently next run, concrete and specific>\"}}";
+
+    let mut def_excerpt = def_json.clone();
+    if def_excerpt.len() > 4000 {
+        let mut end = 4000;
+        while !def_excerpt.is_char_boundary(end) {
+            end -= 1;
+        }
+        def_excerpt.truncate(end);
+    }
+    let report = format!(
+        "Workflow binding: {}\n\nDefinition:\n{}\n\nFailure:\n{}",
+        binding, def_excerpt, err_msg
+    );
+
+    let req = ai::ChatRequest {
+        tool_choice: Default::default(),
+        messages: vec![ai::Message {
+            role: "user".into(),
+            content: report,
+            ..Default::default()
+        }],
+        tools: vec![],
+        max_tokens: 700,
+        temperature: 0.0,
+        system: REVIEW_SYSTEM.to_string(),
+        static_system: String::new(),
+        model: String::new(),
+        enable_thinking: false,
+        metadata: None,
+        cache_breakpoints: vec![],
+        cancel_token: None,
+        trace: None,
+    };
+    let mut rx = match provider.stream(&req).await {
+        Ok(rx) => rx,
+        Err(e) => {
+            warn!(agent = %agent_id, binding = %binding, error = %e, "workflow review call failed");
+            return;
+        }
+    };
+    let mut text = String::new();
+    while let Some(event) = rx.recv().await {
+        match event.event_type {
+            ai::StreamEventType::Text => text.push_str(&event.text),
+            ai::StreamEventType::Error => {
+                warn!(agent = %agent_id, binding = %binding, "workflow review stream error");
+                return;
+            }
+            ai::StreamEventType::Done => break,
+            _ => {}
+        }
+    }
+
+    let trimmed = text.trim().trim_start_matches("```json").trim_start_matches("```").trim_end_matches("```").trim();
+    let parsed: serde_json::Value = match serde_json::from_str(trimmed) {
+        Ok(v) => v,
+        Err(_) => {
+            info!(agent = %agent_id, binding = %binding, "workflow review produced no parseable verdict");
+            return;
+        }
+    };
+    let Some(lesson) = parsed.get("lesson").filter(|l| !l.is_null()) else {
+        info!(agent = %agent_id, binding = %binding, "workflow review: no durable lesson");
+        return;
+    };
+    let (Some(name), Some(content)) = (
+        lesson.get("name").and_then(|v| v.as_str()),
+        lesson.get("content").and_then(|v| v.as_str()),
+    ) else {
+        return;
+    };
+
+    // Commit through the one learned-skill pathway; the tool enforces owner
+    // scoping, staging, frontmatter validation, and duplicate rejection.
+    let mut ctx = ToolContext::new(tools::Origin::System)
+        .with_session(format!("agent:{}:workflow-review", agent_id), format!("wfreview-{}", uuid::Uuid::new_v4()));
+    ctx.learned_write_agent = Some(agent_id.clone());
+    ctx.learned_write_staged = staged;
+    ctx.tool_whitelist = Some(std::collections::HashSet::from(["skill".to_string()]));
+
+    let input = serde_json::json!({
+        "action": "create",
+        "name": name,
+        "content": content,
+    });
+    let result = registry.execute(&ctx, "skill", input).await;
+    if result.is_error {
+        info!(agent = %agent_id, binding = %binding, result = %result.content.chars().take(160).collect::<String>(), "workflow lesson not saved");
+    } else {
+        info!(agent = %agent_id, binding = %binding, lesson = %name, staged, "workflow review saved lesson");
+    }
+}
+
+/// Apply a full workflow binding definition to an agent: frontmatter merge,
+/// tracking row, trigger registration, and on-disk agent.json — the same
+/// primitives the REST create/update handlers use. Shared by the tuning pass
+/// (auto mode) and the Inbox approval handler (staged mode).
+pub(crate) fn apply_workflow_binding(
+    store: &db::Store,
+    agent_id: &str,
+    binding_name: &str,
+    binding_val: &serde_json::Value,
+) -> Result<(), String> {
+    use crate::handlers::agents::{flatten_trigger_config, write_agent_json_to_fs};
+
+    let agent = store
+        .get_agent(agent_id)
+        .map_err(|e| format!("get_agent: {}", e))?
+        .ok_or_else(|| format!("agent '{}' not found", agent_id))?;
+
+    let mut fm: serde_json::Value =
+        serde_json::from_str(&agent.frontmatter).unwrap_or_else(|_| serde_json::json!({}));
+    if fm.get("workflows").is_none() {
+        fm["workflows"] = serde_json::json!({});
+    }
+    fm["workflows"][binding_name] = binding_val.clone();
+
+    store
+        .update_agent(
+            agent_id,
+            &agent.name,
+            &agent.description,
+            &agent.agent_md,
+            &fm.to_string(),
+            agent.pricing_model.as_deref(),
+            agent.pricing_cost,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .map_err(|e| format!("update_agent: {}", e))?;
+
+    let trigger = binding_val.get("trigger").cloned().unwrap_or(serde_json::json!({"type": "manual"}));
+    let trigger_type = trigger
+        .get("type")
+        .and_then(|v| v.as_str())
+        .unwrap_or("manual")
+        .to_string();
+    let desc = binding_val.get("description").and_then(|v| v.as_str());
+    let inputs_json = binding_val.get("inputs").and_then(|v| serde_json::to_string(v).ok());
+    let emit = binding_val.get("emit").and_then(|v| v.as_str());
+    let activities_json = binding_val
+        .get("activities")
+        .and_then(|v| serde_json::to_string(v).ok());
+    let connections_json = binding_val
+        .get("connections")
+        .and_then(|v| serde_json::to_string(v).ok());
+    store
+        .upsert_agent_workflow(
+            agent_id,
+            binding_name,
+            &trigger_type,
+            &flatten_trigger_config(&trigger_type, &trigger),
+            desc,
+            inputs_json.as_deref(),
+            emit,
+            activities_json.as_deref(),
+            connections_json.as_deref(),
+        )
+        .map_err(|e| format!("upsert_agent_workflow: {}", e))?;
+
+    if let Ok(bindings) = store.list_agent_workflows(agent_id) {
+        workflow::triggers::register_agent_triggers(agent_id, &bindings, store);
+    }
+    write_agent_json_to_fs(&agent.napp_path, &fm);
+    Ok(())
+}
+
+/// The current binding definition JSON from the agent's frontmatter, used as
+/// the conflict token for staged tuning proposals: if the binding changed
+/// between staging and approval, the proposal is discarded, not blind-applied.
+pub(crate) fn current_binding_json(store: &db::Store, agent_id: &str, binding: &str) -> String {
+    store
+        .get_agent(agent_id)
+        .ok()
+        .flatten()
+        .and_then(|a| serde_json::from_str::<serde_json::Value>(&a.frontmatter).ok())
+        .and_then(|fm| fm.get("workflows").and_then(|w| w.get(binding)).cloned())
+        .map(|b| b.to_string())
+        .unwrap_or_default()
+}
+
+/// Weekly workflow tuning pass. For each agent with learning enabled and
+/// clear evidence of trouble (2+ failed runs in the last 7 days), an aux
+/// model reads the stats, recent errors, definitions, and outcome history,
+/// and proposes AT MOST ONE minimal edit to ONE binding — the owner's own
+/// single-variable SHIP/REVERT doctrine. Honors learning modes:
+///   auto   → the edit is applied, with an audit row + owner notification
+///   staged → the edit becomes a pending write in the owner's Inbox
+///   off    → the agent is skipped entirely
+/// Anti-spam: at most one proposal per agent per 7 days, counting rejected
+/// ones — a rejection is an answer, not an invitation to re-ask.
+async fn workflow_tuning_sweep(
+    store: &Arc<db::Store>,
+    providers: &Arc<RwLock<Vec<Arc<dyn Provider>>>>,
+    registry_hub: (&Arc<tools::Registry>, &Arc<ClientHub>),
+) {
+    let (_registry, hub) = registry_hub;
+    const WEEK_SECS: i64 = 7 * 24 * 3600;
+
+    let agents = match store.list_agents(500, 0) {
+        Ok(a) => a,
+        Err(_) => return,
+    };
+
+    for agent in agents.iter().filter(|a| a.id != "assistant") {
+        let mode = learning_mode_for(store, &agent.id);
+        if mode != "auto" && mode != "staged" {
+            continue;
+        }
+        if store
+            .has_recent_pending_write(&agent.id, "workflow", WEEK_SECS)
+            .unwrap_or(true)
+        {
+            continue;
+        }
+        // Evidence gate: 2+ failed runs in the last 7 days.
+        let errors = store.agent_recent_errors(&agent.id, 10).unwrap_or_default();
+        let week_ago = chrono::Utc::now().timestamp() - WEEK_SECS;
+        let recent_failures = errors
+            .iter()
+            .filter(|e| e.started_at >= week_ago)
+            .count();
+        if recent_failures < 2 {
+            continue;
+        }
+
+        let stats = match store.agent_workflow_stats(&agent.id) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        let workflows_json = serde_json::from_str::<serde_json::Value>(&agent.frontmatter)
+            .ok()
+            .and_then(|fm| fm.get("workflows").cloned())
+            .unwrap_or(serde_json::json!({}));
+        let error_lines: Vec<String> = errors
+            .iter()
+            .take(5)
+            .map(|e| {
+                format!(
+                    "- [{}] {}",
+                    e.activity_id.as_deref().unwrap_or("?"),
+                    e.error
+                )
+            })
+            .collect();
+        let history: Vec<String> = store
+            .recent_memories_for_agent(&agent.id, 6)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|m| m.namespace == "project/workflow-history")
+            .map(|m| format!("- {}: {}", m.key, m.value))
+            .collect();
+
+        const TUNER_SYSTEM: &str = "You tune an AI employee's scheduled workflows based on run evidence. \
+            Propose AT MOST ONE minimal edit to ONE workflow binding — the smallest change most likely to \
+            fix the observed failures. Prefer clarifying or fixing step text; change triggers only when the \
+            schedule itself is the failure; never invent new duties. If the evidence is unclear or the \
+            failures look transient (network, rate limits, provider errors), propose nothing. \
+            Workflow definitions are shared across every context this agent serves: the proposed steps \
+            must contain ZERO client-, case-, or matter-specific information — procedure only. \
+            Respond with STRICT JSON only, no prose, no code fences: {\"proposal\": null} or \
+            {\"proposal\": {\"binding\": \"<name>\", \"reason\": \"<one line>\", \"workflow\": {\"trigger\": {...}, \"description\": \"...\", \"activities\": [{\"id\": \"...\", \"intent\": \"...\", \"steps\": [\"...\"]}]}}} \
+            — `workflow` is the complete corrected binding, not a diff.";
+
+        let report = format!(
+            "Agent: {}\n\nRun stats: {} total, {} completed, {} failed\n\nRecent errors:\n{}\n\nOutcome history:\n{}\n\nCurrent workflow bindings:\n{}",
+            agent.name,
+            stats.total_runs,
+            stats.completed,
+            stats.failed,
+            error_lines.join("\n"),
+            if history.is_empty() { "- none".to_string() } else { history.join("\n") },
+            serde_json::to_string_pretty(&workflows_json).unwrap_or_default()
+        );
+
+        let provider = {
+            let guard = providers.read().await;
+            match guard.first() {
+                Some(p) => p.clone(),
+                None => return,
+            }
+        };
+        let req = ai::ChatRequest {
+            tool_choice: Default::default(),
+            messages: vec![ai::Message {
+                role: "user".into(),
+                content: report,
+                ..Default::default()
+            }],
+            tools: vec![],
+            max_tokens: 1500,
+            temperature: 0.0,
+            system: TUNER_SYSTEM.to_string(),
+            static_system: String::new(),
+            model: String::new(),
+            enable_thinking: false,
+            metadata: None,
+            cache_breakpoints: vec![],
+            cancel_token: None,
+            trace: None,
+        };
+        let mut rx = match provider.stream(&req).await {
+            Ok(rx) => rx,
+            Err(e) => {
+                warn!(agent = %agent.name, error = %e, "tuning pass call failed");
+                continue;
+            }
+        };
+        let mut text = String::new();
+        while let Some(event) = rx.recv().await {
+            match event.event_type {
+                ai::StreamEventType::Text => text.push_str(&event.text),
+                ai::StreamEventType::Error | ai::StreamEventType::Done => break,
+                _ => {}
+            }
+        }
+        let trimmed = text
+            .trim()
+            .trim_start_matches("```json")
+            .trim_start_matches("```")
+            .trim_end_matches("```")
+            .trim();
+        let parsed: serde_json::Value = match serde_json::from_str(trimmed) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let Some(proposal) = parsed.get("proposal").filter(|p| !p.is_null()) else {
+            info!(agent = %agent.name, "tuning pass: no proposal");
+            continue;
+        };
+        let (Some(binding), Some(reason), Some(workflow_val)) = (
+            proposal.get("binding").and_then(|v| v.as_str()),
+            proposal.get("reason").and_then(|v| v.as_str()),
+            proposal.get("workflow").filter(|w| w.is_object()),
+        ) else {
+            continue;
+        };
+        // The proposal must target an existing binding — tuning edits, it
+        // never creates new duties.
+        if workflows_json.get(binding).is_none() {
+            info!(agent = %agent.name, binding, "tuning pass proposed unknown binding; discarded");
+            continue;
+        }
+
+        let pending_id = uuid::Uuid::new_v4().to_string();
+        let gist = format!("Tune workflow '{}': {}", binding, reason);
+        let conflict_token = current_binding_json(store, &agent.id, binding);
+        if let Err(e) = store.create_pending_write(
+            &pending_id,
+            &agent.id,
+            "workflow",
+            "update",
+            binding,
+            Some(&workflow_val.to_string()),
+            &gist,
+            &conflict_token,
+        ) {
+            warn!(agent = %agent.name, error = %e, "tuning pass: failed to record proposal");
+            continue;
+        }
+
+        let user_id = store.ensure_local_user_id().unwrap_or_default();
+        if mode == "auto" {
+            match apply_workflow_binding(store, &agent.id, binding, workflow_val) {
+                Ok(()) => {
+                    let _ = store.resolve_pending_write(&pending_id, "approved");
+                    let _ = store.create_notification_if_not_exists(
+                        &format!("learn:{}", pending_id),
+                        &user_id,
+                        "info",
+                        &format!("{} tuned its own workflow", agent.name),
+                        Some(&gist),
+                        None,
+                        None,
+                        Some(&agent.id),
+                    );
+                    hub.broadcast(
+                        "notification_created",
+                        serde_json::json!({ "id": format!("learn:{}", pending_id) }),
+                    );
+                    info!(agent = %agent.name, binding, "tuning pass applied edit (auto)");
+                }
+                Err(e) => {
+                    let _ = store.resolve_pending_write(&pending_id, "conflict");
+                    warn!(agent = %agent.name, binding, error = %e, "tuning pass apply failed");
+                }
+            }
+        } else {
+            let _ = store.create_notification_if_not_exists(
+                &format!("learn:{}", pending_id),
+                &user_id,
+                "approval",
+                &format!("{} proposes a workflow change", agent.name),
+                Some(&gist),
+                None,
+                None,
+                Some(&agent.id),
+            );
+            hub.broadcast(
+                "notification_created",
+                serde_json::json!({ "id": format!("learn:{}", pending_id) }),
+            );
+            info!(agent = %agent.name, binding, "tuning pass staged proposal to Inbox");
+        }
+    }
+}
+
 fn post_automation_message(store: &db::Store, hub: &ClientHub, session_key: &str, content: &str) {
     let msg_id = uuid::Uuid::new_v4().to_string();
     match store.create_chat_message_for_runner(

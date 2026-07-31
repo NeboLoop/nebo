@@ -346,6 +346,33 @@ impl Store {
         .map_err(|e| NeboError::Database(e.to_string()))
     }
 
+    /// Most recently updated memories in an agent's scope (any owner), newest
+    /// first. Complements `list_memories_for_agent` (most-accessed): together
+    /// they give workflow runs both what the agent uses most and what just
+    /// happened — including post-run outcome history.
+    pub fn recent_memories_for_agent(
+        &self,
+        agent_id: &str,
+        limit: i64,
+    ) -> Result<Vec<Memory>, NeboError> {
+        let conn = self.conn()?;
+        let exact = format!("%:agent:{}", agent_id);
+        let ctx = format!("%:agent:{}:ctx:%", agent_id);
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, namespace, key, value, tags, metadata, created_at, updated_at,
+                        accessed_at, access_count, user_id
+                 FROM memories WHERE user_id LIKE ?1 OR user_id LIKE ?2
+                 ORDER BY updated_at DESC LIMIT ?3",
+            )
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map(params![exact, ctx, limit], row_to_memory)
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
     pub fn search_memories(
         &self,
         query: &str,
