@@ -259,7 +259,20 @@ impl AgentTool {
         self
     }
 
-    fn infer_resource(&self, action: &str) -> &str {
+    fn infer_resource(&self, action: &str, input: &serde_json::Value) -> &str {
+        // create/update are ambiguous between task and registry. Registry-shaped
+        // params (automations, agent_md, agent_json) settle it, as does a create
+        // with `name` but no `subject` — task create never uses `name`.
+        if matches!(action, "create" | "update") {
+            let has_registry_params = ["automations", "add_automations", "remove_automations", "agent_md", "agent_json"]
+                .iter()
+                .any(|k| !input[*k].is_null());
+            if has_registry_params
+                || (action == "create" && !input["name"].is_null() && input["subject"].is_null())
+            {
+                return "registry";
+            }
+        }
         match action {
             "store" | "save" | "recall" | "search" => "memory",
             "spawn" | "spawn_parallel" | "orchestrate" | "status" | "cancel" | "create"
@@ -2143,7 +2156,7 @@ impl DynTool for AgentTool {
         let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
         let resource = input.get("resource").and_then(|v| v.as_str()).unwrap_or("");
         let resource = if resource.is_empty() {
-            self.infer_resource(action)
+            self.infer_resource(action, input)
         } else {
             resource
         };
@@ -2177,7 +2190,7 @@ impl DynTool for AgentTool {
                     &["memory", "task", "session", "context", "advisors", "ask", "research", "registry", "runs", "profile"],
                 );
                 if corrected.is_empty() {
-                    self.infer_resource(&domain_input.action).to_string()
+                    self.infer_resource(&domain_input.action, &input).to_string()
                 } else {
                     corrected
                 }

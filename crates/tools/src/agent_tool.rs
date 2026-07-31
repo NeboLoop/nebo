@@ -1724,15 +1724,21 @@ impl PersonaTool {
     pub fn normalize_cron(expr: &str) -> String {
         let trimmed = expr.trim();
 
-        // Handle human-readable expressions like "every 30 seconds", "every 2 minutes", etc.
+        // Handle human-readable expressions like "every 30 seconds", "weekdays at 9am", etc.
+        // " at " catches phrases like "weekdays at 9am" / "mornings at 8" — no real cron
+        // expression contains it. Route through fix_dow_field: human_to_cron emits Unix
+        // dow numbers (1-5, 0) that the Quartz-convention cron crate would misread.
         let lower = trimmed.to_lowercase();
         if lower.starts_with("every ")
             || lower.starts_with("at ")
+            || lower.contains(" at ")
             || lower.contains("daily")
             || lower.contains("weekly")
             || lower.contains("hourly")
+            || lower.contains("weekday")
+            || lower.contains("weekend")
         {
-            return Self::human_to_cron(&lower);
+            return Self::fix_dow_field(&Self::human_to_cron(&lower));
         }
 
         // Pre-process: fix H:MM or HH:MM notation in fields (e.g. "0 9:30 * * 1-5")
@@ -1875,6 +1881,12 @@ impl PersonaTool {
         if lower.contains("weekday") {
             let (hour, minute) = Self::extract_time(&lower);
             return format!("0 {} {} * * 1-5 *", minute, hour);
+        }
+
+        // "weekend" / "weekends" → Sat-Sun
+        if lower.contains("weekend") {
+            let (hour, minute) = Self::extract_time(&lower);
+            return format!("0 {} {} * * 0,6 *", minute, hour);
         }
 
         // Fallback: daily at 9am
