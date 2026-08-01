@@ -32,6 +32,7 @@ const PROVIDER_ENV_KEYS: &[(&str, &str)] = &[
 
 /// What an apply actually did — the receipt shown after the confirm.
 #[derive(Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ImportOutcome {
     pub agents: usize,
     pub skills: usize,

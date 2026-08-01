@@ -54,6 +54,7 @@ pub enum TrustTier {
 
 /// One thing found in a foreign install, and what it becomes in Nebo.
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ImportItem {
     pub kind: ItemKind,
     pub tier: TrustTier,

@@ -614,6 +614,7 @@
 			"developer": "Developer",
 			"about": "About",
 			"mcp": "MCP",
+			"import": "Import",
 			"browser": "Browser",
 			"updates": "Updates",
 			"systemEvents": "System Events"
@@ -1350,6 +1351,31 @@
 		"aliasNamePlaceholder": "Alias name",
 		"addShortcutLabel": "Add Shortcut",
 		"laneRoutingHint": "Assign models to background operation lanes."
+	},
+	"settingsImport": {
+		"title": "Import",
+		"description": "Bring your setup over from another AI agent — skills, MCP servers, and your employee's persona",
+		"detectedTitle": "Detected installs",
+		"comingSoon": "Coming soon",
+		"pathTitle": "Install location",
+		"pathPlaceholder": "/path/to/.hermes",
+		"scan": "Scan",
+		"scanning": "Scanning…",
+		"manifestTitle": "Found in your {source} install",
+		"runsCode": "runs code",
+		"importAll": "Import everything",
+		"importing": "Importing…",
+		"doneSummary": "Imported {agents} employee(s), {skills} skill(s), {mcp} MCP server(s), and {keys} provider key(s).",
+		"skippedTitle": "Not imported",
+		"kinds": {
+			"agent": "Employees",
+			"skill": "Skills",
+			"mcp_server": "MCP servers",
+			"memory": "Memory",
+			"session": "Conversations",
+			"cron": "Schedules",
+			"credential": "Credentials"
+		}
 	},
 	"settingsRules": {
 		"title": "Rules",

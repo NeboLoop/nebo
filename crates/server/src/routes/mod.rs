@@ -13,6 +13,7 @@ mod chat;
 mod commander;
 mod entity_config;
 mod files;
+mod import;
 mod integrations;
 mod memory;
 mod neboai;
@@ -51,6 +52,7 @@ pub fn api_routes(jwt_secret: JwtSecret) -> Router<AppState> {
         .merge(provider::routes())
         .merge(skills::routes())
         .merge(tasks::routes())
+        .merge(import::routes())
         .merge(integrations::routes())
         .merge(browser::routes())
         .merge(update::routes())
