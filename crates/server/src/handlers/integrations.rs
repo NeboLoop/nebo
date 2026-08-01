@@ -263,7 +263,7 @@ fn fix_server_type(state: &AppState) {
 /// Re-sync the MCP bridge after integration changes.
 /// Per-integration connect with proper token resolution (resolve_mcp_token) —
 /// the same one token pathway startup reconnect and the connect/test handlers use.
-async fn sync_bridge(state: &AppState) {
+pub(crate) async fn sync_bridge(state: &AppState) {
     let integrations = match state.store.list_mcp_integrations() {
         Ok(i) => i,
         Err(e) => {

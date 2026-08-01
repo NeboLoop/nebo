@@ -1,16 +1,19 @@
 //! Migration importer — adopt an existing Hermes / OpenClaw install into Nebo.
 //!
-//! This slice is the **dry-run**: [`detect`] identifies which system an install
-//! directory belongs to, and [`scan`] walks it read-only into an
+//! Two halves: the **dry-run** — [`detect`] identifies which system an install
+//! directory belongs to and [`scan`] walks it read-only into an
 //! [`ImportManifest`] describing what was found and what each piece becomes in
-//! Nebo. Nothing here writes to Nebo or modifies the source directory — applying
-//! a manifest (creating employees, skills, memory, MCP integrations, and copying
-//! credentials) is the next slice.
+//! Nebo — and the **apply** — [`apply`] turns that install into real Nebo
+//! artifacts (MCP integrations, skills, the employee persona, provider keys),
+//! idempotently and without ever writing to the source directory. Memory,
+//! history, cron, and channel tokens are later slices, reported as skipped.
 
+mod apply;
 mod detect;
 mod hermes;
 mod manifest;
 
+pub use apply::{apply, apply_hermes, ApplyTargets, ImportOutcome};
 pub use detect::detect;
 pub use manifest::{ImportItem, ImportManifest, ItemKind, SourceKind, TrustTier};
 

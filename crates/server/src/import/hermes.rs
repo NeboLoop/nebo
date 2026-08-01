@@ -34,21 +34,14 @@ pub fn scan(root: &Path) -> ImportManifest {
 /// config block and handed to the one shared MCP parser, so the importer and
 /// paste-import can never drift.
 fn scan_mcp(root: &Path, m: &mut ImportManifest) {
-    let path = root.join("config.yaml");
-    let Ok(text) = fs::read_to_string(&path) else {
-        return;
-    };
-    let cfg: serde_json::Value = match serde_yaml::from_str(&text) {
-        Ok(v) => v,
+    let block = match mcp_block(root) {
+        Ok(Some(b)) => b,
+        Ok(None) => return,
         Err(e) => {
             m.note(format!("config.yaml could not be parsed: {e}"));
             return;
         }
     };
-    let Some(servers) = cfg.get("mcp_servers").and_then(|v| v.as_object()) else {
-        return;
-    };
-    let block = normalize_mcp_block(servers);
 
     for s in parse_mcp_servers_block(&block) {
         let is_stdio = s.server_type == "stdio";
@@ -88,6 +81,21 @@ fn scan_mcp(root: &Path, m: &mut ImportManifest) {
             source_path: "config.yaml".into(),
         });
     }
+}
+
+/// Read `config.yaml` and return its `mcp_servers:` map as a canonical
+/// `mcpServers` block, ready for `parse_mcp_servers_block`. `Ok(None)` when the
+/// file or key is absent, `Err` when the YAML doesn't parse. Shared by the
+/// dry-run scan and the apply step so both see identical servers.
+pub(super) fn mcp_block(root: &Path) -> Result<Option<serde_json::Value>, String> {
+    let Ok(text) = fs::read_to_string(root.join("config.yaml")) else {
+        return Ok(None);
+    };
+    let cfg: serde_json::Value = serde_yaml::from_str(&text).map_err(|e| e.to_string())?;
+    Ok(cfg
+        .get("mcp_servers")
+        .and_then(|v| v.as_object())
+        .map(normalize_mcp_block))
 }
 
 /// Normalize Hermes's `mcp_servers:` map into the canonical `mcpServers` block
@@ -305,7 +313,8 @@ fn scan_history(root: &Path, m: &mut ImportManifest) {
 }
 
 /// Recursively collect every `SKILL.md` under `dir`, skipping hidden folders.
-fn collect_skill_md(dir: &Path, out: &mut Vec<PathBuf>) {
+/// Shared by the dry-run scan and the apply step.
+pub(super) fn collect_skill_md(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
@@ -360,19 +369,16 @@ fn human_size(bytes: u64) -> String {
     }
 }
 
+/// Build a realistic Hermes install in a temp dir. Shared by the scan tests
+/// here and the apply tests in `apply.rs` so both halves exercise one fixture.
 #[cfg(test)]
-mod tests {
-    use super::super::{detect, scan as scan_root};
-    use super::*;
-    use tempfile::tempdir;
-
+pub(super) fn hermes_fixture() -> tempfile::TempDir {
     fn write(path: PathBuf, content: &str) {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, content).unwrap();
     }
-
-    fn hermes_fixture() -> tempfile::TempDir {
-        let dir = tempdir().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    {
         let r = dir.path();
         write(
             r.join("config.yaml"),
@@ -408,8 +414,15 @@ mod tests {
         );
         write(r.join(".env"), "# secrets\nANTHROPIC_API_KEY=sk-secretxxx\nTELEGRAM_TOKEN=123:abc\n\n");
         write(r.join("state.db"), "sqlite-bytes");
-        dir
     }
+    dir
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::{detect, scan as scan_root};
+    use super::*;
+    use tempfile::tempdir;
 
     #[test]
     fn detects_hermes() {
