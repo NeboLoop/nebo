@@ -2,6 +2,7 @@
 	import BuilderCanvas from './BuilderCanvas.svelte';
 	import NodeConfigPanel from './NodeConfigPanel.svelte';
 	import NodeCatalog from './NodeCatalog.svelte';
+	import { storage } from '$lib/storage';
 	import BuilderChat from './BuilderChat.svelte';
 	import {
 		addActivityToWorkflow,
@@ -225,7 +226,13 @@
 	const mode: 'view' | 'edit' = 'edit';
 
 	// ── Panels
-	let chatOpen = $state(true);
+	// Architect is useful but wide — hidden by default, and the choice
+	// sticks per install (base-scoped storage; tunnel bots share an origin).
+	let chatOpen = $state(storage.get('wf_architect_open') === '1');
+	function toggleChat() {
+		chatOpen = !chatOpen;
+		storage.set('wf_architect_open', chatOpen ? '1' : '0');
+	}
 	let configOpen = $state(true);
 	let catalogOpen = $state(false);
 	let catalogInsertAfter = $state<string | null>(null);
@@ -588,10 +595,17 @@
 
 <svelte:window onkeydown={handleKeyboard} />
 
-<div class="flex h-full w-full overflow-hidden max-md:flex-col">
-	<!-- Left panel: AI Architect Chat -->
+<div class="relative flex h-full w-full overflow-hidden">
+	<!-- Left panel: AI Architect Chat. On small screens it overlays the
+	     canvas as a full drawer instead of squeezing it into a sliver. -->
 	{#if mode === 'edit' && chatOpen}
-		<div class="w-[320px] shrink-0 border-r border-base-content/10 flex flex-col overflow-hidden max-md:w-full max-md:h-[40%] max-md:border-r-0 max-md:border-b">
+		<div class="w-[320px] shrink-0 border-r border-base-content/10 flex flex-col overflow-hidden max-md:absolute max-md:inset-0 max-md:z-20 max-md:w-full max-md:border-r-0 max-md:bg-base-100">
+			<div class="md:hidden flex items-center justify-between px-3 py-2 border-b border-base-content/10 shrink-0">
+				<span class="text-sm font-medium">Architect</span>
+				<button class="btn btn-sm btn-ghost btn-square" aria-label="Close Architect" onclick={toggleChat}>
+					<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+				</button>
+			</div>
 			<BuilderChat
 				{agentId}
 				workflows={builderWorkflows}
@@ -611,7 +625,7 @@
 				<button
 					class="btn btn-sm btn-ghost gap-1.5 {chatOpen ? 'btn-active' : ''}"
 					title="{chatOpen ? 'Hide' : 'Show'} Architect chat"
-					onclick={() => chatOpen = !chatOpen}
+					onclick={toggleChat}
 				>
 					<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m3 21 1.9-5.7a8.5 8.5 0 1 1 3.8 3.8z"/></svg>
 					<span class="text-xs">Architect</span>

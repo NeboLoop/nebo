@@ -106,6 +106,17 @@ pub trait WorkflowManager: Send + Sync {
         definition: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<WorkflowInfo, String>> + Send + 'a>>;
 
+    /// Full-replacement edit of an existing binding the calling agent owns.
+    /// Same definition shape as create; errors when the binding doesn't exist
+    /// (typo-safe, mirrors delete). Run history is keyed by binding name and
+    /// stays attached across updates — no uninstall/recreate cycle.
+    fn update<'a>(
+        &'a self,
+        agent_id: &'a str,
+        name: &'a str,
+        definition: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<WorkflowInfo, String>> + Send + 'a>>;
+
     /// Periodic workflow tuning sweep (self-optimization). Default no-op so
     /// lightweight implementations aren't forced to care; the server's
     /// manager overrides it with the real evidence-gated pass.

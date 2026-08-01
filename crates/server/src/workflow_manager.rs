@@ -845,196 +845,18 @@ impl WorkflowManager for WorkflowManagerImpl {
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<WorkflowInfo, String>> + Send + 'a>,
     > {
-        Box::pin(async move {
-            use crate::handlers::agents::{
-                build_trigger_json, flatten_trigger_config, write_agent_json_to_fs,
-            };
+        Box::pin(save_binding(self, agent_id, name, definition, false))
+    }
 
-            if agent_id.is_empty() {
-                return Err("workflow creation must be scoped to an agent".to_string());
-            }
-
-            // The definition is agent-authored JSON; accept it loosely and pull
-            // out the binding fields. (parse_workflow is too strict — it drops
-            // unknown fields silently, which is how orphans were born.)
-            let mut def: serde_json::Value = serde_json::from_str(definition)
-                .map_err(|e| format!("invalid workflow definition (not JSON): {}", e))?;
-
-            // Convenience: a top-level `steps` array becomes ONE activity that
-            // executes them in order — same simple-form semantics as agent
-            // registry automations.
-            if def.get("activities").is_none()
-                && let Some(steps) = def.get("steps").cloned()
-                && steps.is_array()
-            {
-                let intent = def
-                    .get("description")
-                    .and_then(|v| v.as_str())
-                    .filter(|s| !s.is_empty())
-                    .unwrap_or(name)
-                    .to_string();
-                def["activities"] =
-                    serde_json::json!([{ "id": "run", "intent": intent, "steps": steps }]);
-            }
-
-            // Reject hollow definitions loudly — a workflow with no activities
-            // can never execute, and silently storing one reads as success.
-            let has_runnable_activity = def
-                .get("activities")
-                .and_then(|v| v.as_array())
-                .is_some_and(|acts| {
-                    !acts.is_empty()
-                        && acts.iter().any(|a| {
-                            a.get("steps").and_then(|s| s.as_array()).is_some_and(|s| !s.is_empty())
-                                || a.get("intent").and_then(|i| i.as_str()).is_some_and(|i| !i.is_empty())
-                        })
-                });
-            if !has_runnable_activity {
-                return Err(
-                    "workflow definition has no runnable activities — it would never execute. \
-                     Shape: {\"trigger\": {\"type\": \"schedule\", \"cron\": \"0 9 * * MON-FRI\"}, \
-                     \"activities\": [{\"id\": \"run\", \"intent\": \"what this accomplishes\", \
-                     \"steps\": [\"concrete step 1\", \"concrete step 2\"]}]} — or pass a top-level \
-                     \"steps\" array for the simple form."
-                        .to_string(),
-                );
-            }
-
-            // Resolve the trigger. Accept either a `trigger` object ({type, ...})
-            // or a top-level `schedule` cron string; default to manual.
-            let (trigger_type, trigger_config): (String, serde_json::Value) =
-                if let Some(t) = def.get("trigger").filter(|t| t.is_object()) {
-                    let ty = t
-                        .get("type")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("manual")
-                        .to_string();
-                    (ty, t.clone())
-                } else if let Some(cron) = def.get("schedule").and_then(|v| v.as_str()) {
-                    if cron.is_empty() {
-                        ("manual".to_string(), serde_json::json!({}))
-                    } else {
-                        ("schedule".to_string(), serde_json::json!({ "cron": cron }))
-                    }
-                } else {
-                    ("manual".to_string(), serde_json::json!({}))
-                };
-
-            let binding_name = slug(name);
-            if binding_name.is_empty() {
-                return Err("name must contain at least one alphanumeric character".to_string());
-            }
-
-            let agent = self
-                .store
-                .get_agent(agent_id)
-                .map_err(|e| format!("get_agent: {}", e))?
-                .ok_or_else(|| format!("agent '{}' not found", agent_id))?;
-
-            // Merge the binding into the agent's frontmatter (source of truth).
-            let mut fm: serde_json::Value =
-                serde_json::from_str(&agent.frontmatter).unwrap_or_else(|_| serde_json::json!({}));
-            if fm.get("workflows").is_none() {
-                fm["workflows"] = serde_json::json!({});
-            }
-            let mut binding_val = serde_json::json!({
-                "trigger": build_trigger_json(&trigger_type, &trigger_config),
-            });
-            if let Some(d) = def.get("description") {
-                binding_val["description"] = d.clone();
-            }
-            if let Some(i) = def.get("inputs") {
-                binding_val["inputs"] = i.clone();
-            }
-            if let Some(a) = def.get("activities") {
-                binding_val["activities"] = a.clone();
-            }
-            if let Some(c) = def.get("connections") {
-                binding_val["connections"] = c.clone();
-            }
-            if let Some(e) = def.get("emit") {
-                binding_val["emit"] = e.clone();
-            }
-            fm["workflows"][binding_name.as_str()] = binding_val;
-
-            self.store
-                .update_agent(
-                    agent_id,
-                    &agent.name,
-                    &agent.description,
-                    &agent.agent_md,
-                    &fm.to_string(),
-                    agent.pricing_model.as_deref(),
-                    agent.pricing_cost,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                )
-                .map_err(|e| format!("update_agent: {}", e))?;
-
-            // Tracking row — the canonical store the UI panel reads.
-            let desc = def.get("description").and_then(|v| v.as_str());
-            let inputs_json = def.get("inputs").and_then(|v| serde_json::to_string(v).ok());
-            let emit = def.get("emit").and_then(|v| v.as_str());
-            let activities_json = def
-                .get("activities")
-                .and_then(|v| serde_json::to_string(v).ok());
-            let connections_json = def
-                .get("connections")
-                .and_then(|v| serde_json::to_string(v).ok());
-            self.store
-                .upsert_agent_workflow(
-                    agent_id,
-                    &binding_name,
-                    &trigger_type,
-                    &flatten_trigger_config(&trigger_type, &trigger_config),
-                    desc,
-                    inputs_json.as_deref(),
-                    emit,
-                    activities_json.as_deref(),
-                    connections_json.as_deref(),
-                )
-                .map_err(|e| format!("upsert_agent_workflow: {}", e))?;
-
-            // Register schedule cron rows now so the scheduler fires them within
-            // a minute, even if the worker isn't restarted below.
-            if let Ok(bindings) = self.store.list_agent_workflows(agent_id) {
-                workflow::triggers::register_agent_triggers(agent_id, &bindings, &self.store);
-            }
-
-            write_agent_json_to_fs(&agent.napp_path, &fm);
-
-            // Restart the owning agent's worker so live triggers (event/heartbeat/
-            // watch/folder) register immediately. Schedule triggers already went
-            // live via register_agent_triggers above.
-            if let Some(workers) = self.agent_workers.get() {
-                workers.start_agent(agent_id, &agent.name, None).await;
-            }
-
-            self.hub.broadcast(
-                "agent_workflow_created",
-                serde_json::json!({ "agentId": agent_id, "binding": binding_name }),
-            );
-            info!(agent_id, binding = %binding_name, trigger = %trigger_type, "agent workflow created via tool");
-
-            let activity_count = def
-                .get("activities")
-                .and_then(|v| v.as_array())
-                .map(|a| a.len())
-                .unwrap_or(0);
-            Ok(WorkflowInfo {
-                id: binding_name.clone(),
-                name: name.to_string(),
-                version: "1.0".to_string(),
-                description: desc.unwrap_or("").to_string(),
-                is_enabled: true,
-                trigger_count: if trigger_type == "manual" { 0 } else { 1 },
-                activity_count,
-            })
-        })
+    fn update<'a>(
+        &'a self,
+        agent_id: &'a str,
+        name: &'a str,
+        definition: &'a str,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<WorkflowInfo, String>> + Send + 'a>,
+    > {
+        Box::pin(save_binding(self, agent_id, name, definition, true))
     }
 
     fn tuning_sweep<'a>(
@@ -2023,6 +1845,230 @@ async fn review_failed_workflow_run(
         info!(agent = %agent_id, binding = %binding, result = %result.content.chars().take(160).collect::<String>(), "workflow lesson not saved");
     } else {
         info!(agent = %agent_id, binding = %binding, lesson = %name, staged, "workflow review saved lesson");
+    }
+}
+
+/// Shared create/update body for caller-owned workflow bindings: parse the
+/// agent-authored definition, build the binding, persist it everywhere
+/// (frontmatter, tracking row, triggers, agent.json), and go live. The
+/// `must_exist` flag splits the verbs: create is new-only (no silent clobber
+/// of a live automation), update is full-replacement and requires the binding
+/// to exist (typo-safe, mirrors delete). Run history is keyed by binding name,
+/// so updates keep it attached.
+async fn save_binding(
+    mgr: &WorkflowManagerImpl,
+    agent_id: &str,
+    name: &str,
+    definition: &str,
+    must_exist: bool,
+) -> Result<WorkflowInfo, String> {
+    use crate::handlers::agents::{build_trigger_json, flatten_trigger_config, write_agent_json_to_fs};
+
+    if agent_id.is_empty() {
+        return Err("workflow creation must be scoped to an agent".to_string());
+    }
+    {
+            // The definition is agent-authored JSON; accept it loosely and pull
+            // out the binding fields. (parse_workflow is too strict — it drops
+            // unknown fields silently, which is how orphans were born.)
+            let mut def: serde_json::Value = serde_json::from_str(definition)
+                .map_err(|e| format!("invalid workflow definition (not JSON): {}", e))?;
+
+            // Convenience: a top-level `steps` array becomes ONE activity that
+            // executes them in order — same simple-form semantics as agent
+            // registry automations.
+            if def.get("activities").is_none()
+                && let Some(steps) = def.get("steps").cloned()
+                && steps.is_array()
+            {
+                let intent = def
+                    .get("description")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or(name)
+                    .to_string();
+                def["activities"] =
+                    serde_json::json!([{ "id": "run", "intent": intent, "steps": steps }]);
+            }
+
+            // Reject hollow definitions loudly — a workflow with no activities
+            // can never execute, and silently storing one reads as success.
+            let has_runnable_activity = def
+                .get("activities")
+                .and_then(|v| v.as_array())
+                .is_some_and(|acts| {
+                    !acts.is_empty()
+                        && acts.iter().any(|a| {
+                            a.get("steps").and_then(|s| s.as_array()).is_some_and(|s| !s.is_empty())
+                                || a.get("intent").and_then(|i| i.as_str()).is_some_and(|i| !i.is_empty())
+                        })
+                });
+            if !has_runnable_activity {
+                return Err(
+                    "workflow definition has no runnable activities — it would never execute. \
+                     Shape: {\"trigger\": {\"type\": \"schedule\", \"cron\": \"0 9 * * MON-FRI\"}, \
+                     \"activities\": [{\"id\": \"run\", \"intent\": \"what this accomplishes\", \
+                     \"steps\": [\"concrete step 1\", \"concrete step 2\"]}]} — or pass a top-level \
+                     \"steps\" array for the simple form."
+                        .to_string(),
+                );
+            }
+
+            // Resolve the trigger. Accept either a `trigger` object ({type, ...})
+            // or a top-level `schedule` cron string; default to manual.
+            let (trigger_type, trigger_config): (String, serde_json::Value) =
+                if let Some(t) = def.get("trigger").filter(|t| t.is_object()) {
+                    let ty = t
+                        .get("type")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("manual")
+                        .to_string();
+                    (ty, t.clone())
+                } else if let Some(cron) = def.get("schedule").and_then(|v| v.as_str()) {
+                    if cron.is_empty() {
+                        ("manual".to_string(), serde_json::json!({}))
+                    } else {
+                        ("schedule".to_string(), serde_json::json!({ "cron": cron }))
+                    }
+                } else {
+                    ("manual".to_string(), serde_json::json!({}))
+                };
+
+            let binding_name = slug(name);
+            if binding_name.is_empty() {
+                return Err("name must contain at least one alphanumeric character".to_string());
+            }
+
+            let existing = mgr
+                .store
+                .list_agent_workflows(agent_id)
+                .map_err(|e| format!("list_agent_workflows: {}", e))?;
+            let exists = existing.iter().any(|w| w.binding_name == binding_name);
+            if must_exist && !exists {
+                let names: Vec<&str> = existing.iter().map(|w| w.binding_name.as_str()).collect();
+                return Err(format!(
+                    "no workflow named '{}' — this agent owns: {}. Use create for a new workflow.",
+                    binding_name,
+                    if names.is_empty() { "(none)".to_string() } else { names.join(", ") }
+                ));
+            }
+            if !must_exist && exists {
+                return Err(format!(
+                    "workflow '{}' already exists. Use update to modify it (full replacement), or pick a new name.",
+                    binding_name
+                ));
+            }
+
+
+            let agent = mgr
+                .store
+                .get_agent(agent_id)
+                .map_err(|e| format!("get_agent: {}", e))?
+                .ok_or_else(|| format!("agent '{}' not found", agent_id))?;
+
+            // Merge the binding into the agent's frontmatter (source of truth).
+            let mut fm: serde_json::Value =
+                serde_json::from_str(&agent.frontmatter).unwrap_or_else(|_| serde_json::json!({}));
+            if fm.get("workflows").is_none() {
+                fm["workflows"] = serde_json::json!({});
+            }
+            let mut binding_val = serde_json::json!({
+                "trigger": build_trigger_json(&trigger_type, &trigger_config),
+            });
+            if let Some(d) = def.get("description") {
+                binding_val["description"] = d.clone();
+            }
+            if let Some(i) = def.get("inputs") {
+                binding_val["inputs"] = i.clone();
+            }
+            if let Some(a) = def.get("activities") {
+                binding_val["activities"] = a.clone();
+            }
+            if let Some(c) = def.get("connections") {
+                binding_val["connections"] = c.clone();
+            }
+            if let Some(e) = def.get("emit") {
+                binding_val["emit"] = e.clone();
+            }
+            fm["workflows"][binding_name.as_str()] = binding_val;
+
+            mgr.store
+                .update_agent(
+                    agent_id,
+                    &agent.name,
+                    &agent.description,
+                    &agent.agent_md,
+                    &fm.to_string(),
+                    agent.pricing_model.as_deref(),
+                    agent.pricing_cost,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .map_err(|e| format!("update_agent: {}", e))?;
+
+            // Tracking row — the canonical store the UI panel reads.
+            let desc = def.get("description").and_then(|v| v.as_str());
+            let inputs_json = def.get("inputs").and_then(|v| serde_json::to_string(v).ok());
+            let emit = def.get("emit").and_then(|v| v.as_str());
+            let activities_json = def
+                .get("activities")
+                .and_then(|v| serde_json::to_string(v).ok());
+            let connections_json = def
+                .get("connections")
+                .and_then(|v| serde_json::to_string(v).ok());
+            mgr.store
+                .upsert_agent_workflow(
+                    agent_id,
+                    &binding_name,
+                    &trigger_type,
+                    &flatten_trigger_config(&trigger_type, &trigger_config),
+                    desc,
+                    inputs_json.as_deref(),
+                    emit,
+                    activities_json.as_deref(),
+                    connections_json.as_deref(),
+                )
+                .map_err(|e| format!("upsert_agent_workflow: {}", e))?;
+
+            // Register schedule cron rows now so the scheduler fires them within
+            // a minute, even if the worker isn't restarted below.
+            if let Ok(bindings) = mgr.store.list_agent_workflows(agent_id) {
+                workflow::triggers::register_agent_triggers(agent_id, &bindings, &mgr.store);
+            }
+
+            write_agent_json_to_fs(&agent.napp_path, &fm);
+
+            // Restart the owning agent's worker so live triggers (event/heartbeat/
+            // watch/folder) register immediately. Schedule triggers already went
+            // live via register_agent_triggers above.
+            if let Some(workers) = mgr.agent_workers.get() {
+                workers.start_agent(agent_id, &agent.name, None).await;
+            }
+
+            mgr.hub.broadcast(
+                "agent_workflow_created",
+                serde_json::json!({ "agentId": agent_id, "binding": binding_name }),
+            );
+            info!(agent_id, binding = %binding_name, trigger = %trigger_type, "agent workflow created via tool");
+
+            let activity_count = def
+                .get("activities")
+                .and_then(|v| v.as_array())
+                .map(|a| a.len())
+                .unwrap_or(0);
+            Ok(WorkflowInfo {
+                id: binding_name.clone(),
+                name: name.to_string(),
+                version: "1.0".to_string(),
+                description: desc.unwrap_or("").to_string(),
+                is_enabled: true,
+                trigger_count: if trigger_type == "manual" { 0 } else { 1 },
+                activity_count,
+            })
     }
 }
 

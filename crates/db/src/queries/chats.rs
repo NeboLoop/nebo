@@ -560,6 +560,10 @@ impl Store {
                      GROUP BY m.chat_id
                  ) s ON s.chat_id = c.id
                  WHERE c.session_name LIKE ?1
+                   -- Internal tooling surfaces (Architect/help sessions) are
+                   -- not conversations; they bled raw session keys into the
+                   -- Chats tab.
+                   AND c.session_name NOT LIKE '%:help:%'
                  ORDER BY c.updated_at DESC",
             )
             .map_err(|e| NeboError::Database(e.to_string()))?;

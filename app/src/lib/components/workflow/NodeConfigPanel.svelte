@@ -197,7 +197,10 @@
 	}
 </script>
 
-<div class="w-[340px] shrink-0 border-l border-base-content/10 bg-base-100 flex flex-col overflow-hidden max-md:w-full max-md:h-[40%] max-md:border-l-0 max-md:border-t">
+<!-- On small screens the config panel is a bottom sheet over the canvas
+     (70% height) rather than a fixed stacked band — the canvas keeps its
+     full area when the sheet is closed. -->
+<div class="w-[340px] shrink-0 border-l border-base-content/10 bg-base-100 flex flex-col overflow-hidden max-md:absolute max-md:inset-x-0 max-md:bottom-0 max-md:z-20 max-md:w-full max-md:h-[70%] max-md:border-l-0 max-md:border-t max-md:rounded-t-xl max-md:shadow-2xl">
 	<!-- Panel header -->
 	<div class="flex items-center justify-between px-4 py-3 border-b border-base-content/10 shrink-0">
 		<div class="flex-1 min-w-0">

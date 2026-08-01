@@ -145,6 +145,31 @@ impl WorkTool {
                     Err(e) => ToolResult::error(format!("create failed: {}", e)),
                 }
             }
+            "update" | "edit" => {
+                if parsed.definition.is_empty() {
+                    return ToolResult::error("definition is required (the full replacement workflow JSON — update is not a partial patch)");
+                }
+                if parsed.name.is_empty() {
+                    return ToolResult::error("name is required (the workflow's name)");
+                }
+                if agent_id.is_empty() {
+                    return ToolResult::error("no agent in this session");
+                }
+                match self
+                    .manager
+                    .update(agent_id, &parsed.name, &parsed.definition)
+                    .await
+                {
+                    Ok(info) => {
+                        let json = serde_json::json!({
+                            "updated": true,
+                            "workflow": info,
+                        });
+                        ToolResult::ok(serde_json::to_string_pretty(&json).unwrap_or_default())
+                    }
+                    Err(e) => ToolResult::error(format!("update failed: {}", e)),
+                }
+            }
             "delete" => {
                 if parsed.name.is_empty() {
                     return ToolResult::error("name is required (the workflow's name)");
@@ -158,7 +183,7 @@ impl WorkTool {
                 }
             }
             "" => ToolResult::error(
-                "action is required. Use: list, create, delete, install, uninstall, cancel. Or set resource to dispatch to a workflow.",
+                "action is required. Use: list, create, update, delete, install, uninstall, cancel. Or set resource to dispatch to a workflow.",
             ),
             other => ToolResult::error(format!(
                 "unknown action: {:?}. Use: list, create, install, uninstall, cancel. Or set resource to dispatch to a workflow.",
@@ -245,6 +270,7 @@ impl DynTool for WorkTool {
          Lifecycle actions (no resource):\n\
          - work(action: \"list\") — List this agent's workflows and their status\n\
          - work(action: \"create\", name: \"My Workflow\", definition: \"{\\\"trigger\\\": {\\\"type\\\": \\\"schedule\\\", \\\"cron\\\": \\\"0 9 * * MON-FRI\\\"}, \\\"activities\\\": [{\\\"id\\\": \\\"run\\\", \\\"intent\\\": \\\"...\\\", \\\"steps\\\": [\\\"concrete step\\\", ...]}]}\") — Create a workflow this agent owns (appears in its Workflows panel and fires on its trigger). Activities are the ONLY executable unit: each runs as its own scoped execution of its intent + steps. A top-level `steps` array is accepted as shorthand for one activity. Omit trigger for a manual workflow.\n\
+         - work(action: \"update\", name: \"my-workflow\", definition: \"{...}\") — Full-replacement edit of an existing workflow (same definition shape as create; run history stays attached; errors if the name doesn't exist)\n\
          - work(action: \"delete\", name: \"my-workflow\") — Delete one of this agent's workflows by name\n\
          - work(action: \"install\", code: \"WORK-XXXX-XXXX\") — Install from marketplace\n\
          - work(action: \"uninstall\", id: \"workflow-id\") — Uninstall a marketplace-installed workflow (by its install id, not name)\n\n\
@@ -269,7 +295,7 @@ impl DynTool for WorkTool {
                 },
                 "action": {
                     "type": "string",
-                    "description": "Lifecycle: list, create, delete, install, uninstall. Dispatch: run, status, runs, toggle."
+                    "description": "Lifecycle: list, create, update, delete, install, uninstall. Dispatch: run, status, runs, toggle."
                 },
                 "code": {
                     "type": "string",
@@ -285,7 +311,7 @@ impl DynTool for WorkTool {
                 },
                 "name": {
                     "type": "string",
-                    "description": "Workflow name (for create/delete)"
+                    "description": "Workflow name (for create/update/delete)"
                 },
                 "definition": {
                     "type": "string",
