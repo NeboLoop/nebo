@@ -48,20 +48,7 @@ fn scan_mcp(root: &Path, m: &mut ImportManifest) {
     let Some(servers) = cfg.get("mcp_servers").and_then(|v| v.as_object()) else {
         return;
     };
-
-    let mut normalized = serde_json::Map::new();
-    for (name, entry) in servers {
-        let mut e = entry.clone();
-        if let Some(obj) = e.as_object_mut() {
-            if !obj.contains_key("authType") {
-                if let Some(auth) = obj.get("auth").cloned() {
-                    obj.insert("authType".into(), auth);
-                }
-            }
-        }
-        normalized.insert(name.clone(), e);
-    }
-    let block = serde_json::json!({ "mcpServers": normalized });
+    let block = normalize_mcp_block(servers);
 
     for s in parse_mcp_servers_block(&block) {
         let is_stdio = s.server_type == "stdio";
@@ -101,6 +88,27 @@ fn scan_mcp(root: &Path, m: &mut ImportManifest) {
             source_path: "config.yaml".into(),
         });
     }
+}
+
+/// Normalize Hermes's `mcp_servers:` map into the canonical `mcpServers` block
+/// consumed by `parse_mcp_servers_block`. Hermes spells the auth field `auth:`
+/// with values `oauth` | `header`; Nebo's auth_type vocabulary is
+/// `none` | `oauth` | `api_key`, so `header` maps to `api_key`.
+fn normalize_mcp_block(servers: &serde_json::Map<String, serde_json::Value>) -> serde_json::Value {
+    let mut normalized = serde_json::Map::new();
+    for (name, entry) in servers {
+        let mut e = entry.clone();
+        if let Some(obj) = e.as_object_mut() {
+            if !obj.contains_key("authType") {
+                if let Some(auth) = obj.get("auth").and_then(|a| a.as_str()) {
+                    let mapped = if auth == "header" { "api_key" } else { auth };
+                    obj.insert("authType".into(), serde_json::json!(mapped));
+                }
+            }
+        }
+        normalized.insert(name.clone(), e);
+    }
+    serde_json::json!({ "mcpServers": normalized })
 }
 
 /// `SOUL.md` → the employee's persona.
@@ -375,7 +383,12 @@ mod tests {
              \x20   args: [\"-y\", \"@modelcontextprotocol/server-filesystem\", \"/tmp\"]\n\
              \x20 linear:\n\
              \x20   url: https://mcp.linear.app/mcp\n\
-             \x20   auth: oauth\n",
+             \x20   auth: oauth\n\
+             \x20 company_api:\n\
+             \x20   url: https://mcp.internal.example.com\n\
+             \x20   auth: header\n\
+             \x20   headers:\n\
+             \x20     Authorization: \"Bearer tok-secretyyy\"\n",
         );
         write(r.join("SOUL.md"), "# Persona\nYou are Atlas.\n");
         write(r.join("memories/MEMORY.md"), "§ prefers dark mode\n§ works in PST\n");
@@ -416,7 +429,7 @@ mod tests {
         let f = hermes_fixture();
         let m = scan_root(f.path()).unwrap();
         assert_eq!(m.source, SourceKind::Hermes);
-        assert_eq!(m.count(ItemKind::McpServer), 2);
+        assert_eq!(m.count(ItemKind::McpServer), 3);
         assert_eq!(m.count(ItemKind::Agent), 1);
         assert_eq!(m.count(ItemKind::Memory), 2);
         assert_eq!(m.count(ItemKind::Skill), 2);
@@ -444,12 +457,32 @@ mod tests {
     fn credentials_expose_key_names_never_values() {
         let f = hermes_fixture();
         let m = scan_root(f.path()).unwrap();
-        for item in m.items.iter().filter(|i| i.kind == ItemKind::Credential) {
+        for item in &m.items {
             assert!(!item.detail.contains("sk-secretxxx"));
             assert!(!item.detail.contains("123:abc"));
+            assert!(!item.detail.contains("tok-secretyyy"));
             assert!(!item.name.contains("sk-secretxxx"));
         }
         assert!(m.items.iter().any(|i| i.name == "ANTHROPIC_API_KEY"));
         assert!(m.items.iter().any(|i| i.name == "TELEGRAM_TOKEN"));
+    }
+
+    #[test]
+    fn hermes_auth_header_maps_to_api_key() {
+        let servers = serde_json::json!({
+            "linear": { "url": "https://mcp.linear.app/mcp", "auth": "oauth" },
+            "company_api": { "url": "https://mcp.internal.example.com", "auth": "header" },
+        });
+        let block = normalize_mcp_block(servers.as_object().unwrap());
+        let parsed = parse_mcp_servers_block(&block);
+        let auth_of = |name: &str| {
+            parsed
+                .iter()
+                .find(|s| s.name == name)
+                .map(|s| s.auth_type.clone())
+                .unwrap()
+        };
+        assert_eq!(auth_of("linear"), "oauth");
+        assert_eq!(auth_of("company_api"), "api_key");
     }
 }
