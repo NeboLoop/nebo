@@ -129,6 +129,28 @@ fn check_file_safeguard(input: &serde_json::Value) -> Option<String> {
     let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
     let path = input.get("path").and_then(|v| v.as_str()).unwrap_or("");
 
+    // The database directory is off-limits for EVERY action, reads included:
+    // sessions and auth material live there, and out-of-band access bypasses
+    // every tool gate (2026-08-01: a cloud agent "fixed" its schedules with raw
+    // sqlite3 INSERTs into its own DB). Legitimate state access goes through
+    // the memory/workflow/settings tools.
+    if !path.is_empty() {
+        if let Ok(abs) = std::path::absolute(Path::new(path)) {
+            let abs_str = abs.to_string_lossy();
+            if nebo_db_paths().iter().any(|p| {
+                abs_str.as_ref() == p || abs_str.starts_with(&format!("{}/", p))
+            }) {
+                return Some(format!(
+                    "BLOCKED: cannot {} {:?} — this is the Nebo database directory. \
+                     The agent must never access its own database; use the memory, \
+                     workflow, and settings tools instead. \
+                     This is a hard safety limit that cannot be overridden",
+                    action, path
+                ));
+            }
+        }
+    }
+
     // Only guard destructive actions
     if action != "write" && action != "edit" {
         return None;
@@ -208,6 +230,19 @@ fn check_shell_safeguard(input: &serde_json::Value) -> Option<String> {
 /// (the command itself, or a script's contents). Returns a BLOCK reason if any
 /// hard-safety pattern is present.
 fn scan_command_text(text: &str) -> Option<String> {
+    // Shell is the easy way around the file tool's database guard (sqlite3,
+    // cp, strings, …) — block any command that references the DB directory.
+    for p in nebo_db_paths() {
+        if text.contains(&p) {
+            return Some(format!(
+                "BLOCKED: this command references {:?} — the Nebo database directory. \
+                 The agent must never access its own database; use the memory, \
+                 workflow, and settings tools instead. \
+                 This is a hard safety limit that cannot be overridden",
+                p
+            ));
+        }
+    }
     let lower = text.to_lowercase();
     if has_sudo(&lower) {
         return Some(
@@ -517,6 +552,23 @@ fn is_protected_user_path(abs_path: &str) -> Option<String> {
     None
 }
 
+/// The database directory in every spelling a command might use: absolute
+/// (honors `NEBO_DATA_DIR`) and `~`-relative. Used for the total access ban —
+/// unlike `nebo_data_dirs`, which only guards writes/deletes.
+fn nebo_db_paths() -> Vec<String> {
+    let Ok(base) = config::data_dir() else {
+        return vec![];
+    };
+    let abs = base.join("data").to_string_lossy().into_owned();
+    let mut paths = vec![abs.clone()];
+    if let Some(home) = dirs::home_dir() {
+        if let Some(rest) = abs.strip_prefix(home.to_string_lossy().as_ref()) {
+            paths.push(format!("~{}", rest));
+        }
+    }
+    paths
+}
+
 /// Returns the Nebo data directory paths that must be protected from writes/deletes.
 ///
 /// Derived from `config::data_dir()` so this stays consistent with the actual
@@ -583,6 +635,38 @@ mod tests {
             result.unwrap().contains("Nebo database directory"),
             "should mention Nebo database"
         );
+    }
+
+    #[test]
+    fn test_db_dir_blocked_for_all_access() {
+        let db = config::data_dir()
+            .unwrap()
+            .join("data")
+            .join("nebo.db")
+            .to_string_lossy()
+            .into_owned();
+
+        // File reads of the DB are blocked, not just writes
+        let input = serde_json::json!({"action": "read", "path": db});
+        assert!(check_file_safeguard(&input).is_some());
+
+        // Shell commands referencing the DB path are blocked (the sqlite3 hole)
+        let cmd = format!("sqlite3 {} \"INSERT INTO workflows VALUES ('x')\"", db);
+        let input = serde_json::json!({"action": "exec", "command": cmd});
+        assert!(check_shell_safeguard(&input).is_some());
+
+        // Sibling dirs stay usable: files/ is the agent's workspace
+        let files = config::data_dir()
+            .unwrap()
+            .join("files")
+            .join("draft.md")
+            .to_string_lossy()
+            .into_owned();
+        let input = serde_json::json!({"action": "read", "path": files});
+        assert!(check_file_safeguard(&input).is_none());
+        let input =
+            serde_json::json!({"action": "exec", "command": format!("cat {}", files)});
+        assert!(check_shell_safeguard(&input).is_none());
     }
 
     #[test]
