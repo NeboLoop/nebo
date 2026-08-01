@@ -200,6 +200,22 @@ impl OsTool {
             return resource;
         }
         let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
+        // "read" without a `path` but with mail params is a mail read — the
+        // bare action name would misroute it to file, which then demands `path`.
+        // `account` alone is safe here: keychain uses get/find, never "read".
+        if action == "read" && input.get("path").is_none() {
+            let ctx = Self::infer_resource_from_context(input);
+            if !ctx.is_empty() {
+                return ctx;
+            }
+            if input
+                .get("account")
+                .and_then(|v| v.as_str())
+                .is_some_and(|s| !s.is_empty())
+            {
+                return "mail";
+            }
+        }
         let inferred = Self::infer_resource(action);
         if inferred.is_empty() {
             Self::infer_resource_from_context(input)
@@ -698,12 +714,7 @@ impl DynTool for OsTool {
                     RESOURCE_NAMES,
                 );
                 if corrected.is_empty() {
-                    let inferred = Self::infer_resource(&domain_input.action);
-                    if inferred.is_empty() {
-                        Self::infer_resource_from_context(&input).to_string()
-                    } else {
-                        inferred.to_string()
-                    }
+                    Self::resolved_resource(&input).to_string()
                 } else {
                     corrected
                 }
@@ -1036,6 +1047,24 @@ mod tests {
             OsTool::infer_resource_from_context(&serde_json::json!({"action": "create"})),
             ""
         );
+    }
+
+    #[test]
+    fn test_resolved_resource_mail_read() {
+        // "read" with mail params and no path routes to mail, not file
+        let input = serde_json::json!({"action": "read", "mailbox": "INBOX", "limit": 5});
+        assert_eq!(OsTool::resolved_resource(&input), "mail");
+        let input = serde_json::json!({"action": "read", "account": "sites@stadium.partners"});
+        assert_eq!(OsTool::resolved_resource(&input), "mail");
+        // "read" with a path is still a file read
+        let input = serde_json::json!({"action": "read", "path": "/tmp/x"});
+        assert_eq!(OsTool::resolved_resource(&input), "file");
+        // Bare "read" stays file (missing-path error is the right correction)
+        let input = serde_json::json!({"action": "read"});
+        assert_eq!(OsTool::resolved_resource(&input), "file");
+        // Explicit resource always wins
+        let input = serde_json::json!({"resource": "mail", "action": "read"});
+        assert_eq!(OsTool::resolved_resource(&input), "mail");
     }
 
     #[test]
