@@ -323,10 +323,10 @@ fn scan_history(root: &Path, m: &mut ImportManifest) {
     if !db.is_file() {
         return;
     }
-    let detail = match read_history(root) {
-        Ok(sessions) => {
-            let messages: usize = sessions.iter().map(|s| s.messages.len()).sum();
-            format!("{} conversations · {messages} messages", sessions.len())
+    // COUNT queries, not a full read — the scan must stay fast on big installs.
+    let detail = match history_counts(root) {
+        Ok((sessions, messages)) => {
+            format!("{sessions} conversations · {messages} messages")
         }
         Err(e) => {
             let size = fs::metadata(&db).map(|md| md.len()).unwrap_or(0);
@@ -377,6 +377,22 @@ pub(super) fn source_agent(root: &Path, out: &mut ImportOutcome) -> Option<Sourc
         memory_files: memory_entries(root),
         conversations,
     })
+}
+
+/// Conversation/message counts via SQL COUNT — the scan-side companion to
+/// [`read_history`], so the dry-run never pays a full table read.
+pub(super) fn history_counts(root: &Path) -> Result<(i64, i64), String> {
+    let conn = rusqlite::Connection::open_with_flags(
+        root.join("state.db"),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .map_err(|e| e.to_string())?;
+    conn.query_row(
+        "SELECT COUNT(DISTINCT session_id), COUNT(*) FROM messages",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )
+    .map_err(|e| e.to_string())
 }
 
 /// Read every conversation out of `state.db`, read-only. Sessions are derived

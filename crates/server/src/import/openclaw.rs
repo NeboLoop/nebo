@@ -68,41 +68,46 @@ pub fn scan(root: &Path) -> ImportManifest {
         m.note(note);
     }
 
-    // Employees, their memory, and their history.
-    let mut discard = ImportOutcome::default();
-    for agent in source_agents(root, &cfg, &mut discard) {
+    // Employees, their memory, and their history. Scan-side stays cheap:
+    // personas and memory are small markdown reads; session logs are counted
+    // by file and line, never JSON-parsed (that's the apply's job).
+    for (id, name, workspace) in agent_rows(root, &cfg) {
+        if !workspace.is_dir() {
+            m.note(format!("agent {name}: workspace {} missing", workspace.display()));
+            continue;
+        }
+        let persona_lines = fs::read_to_string(workspace.join("SOUL.md"))
+            .map(|s| s.lines().count())
+            .unwrap_or(0);
         m.push(ImportItem {
             kind: ItemKind::Agent,
             tier: TrustTier::Content,
-            name: agent.name.clone(),
-            detail: format!("persona · {} lines", agent.persona.lines().count()),
+            name: name.clone(),
+            detail: format!("persona · {persona_lines} lines"),
             target: "Employee persona",
             source_path: "workspace".into(),
         });
-        for (file, entries) in &agent.memory_files {
+        for (file, entries) in workspace_memory_files(&workspace) {
             m.push(ImportItem {
                 kind: ItemKind::Memory,
                 tier: TrustTier::Content,
-                name: format!("{} · {file}", agent.name),
+                name: format!("{name} · {file}"),
                 detail: format!("{} entries → parsed + re-embedded", entries.len()),
                 target: "Nebo memory",
-                source_path: file.clone(),
+                source_path: file,
             });
         }
-        if !agent.conversations.is_empty() {
-            let messages: usize = agent.conversations.iter().map(|c| c.messages.len()).sum();
+        let (files, lines) = session_counts(&root.join("agents").join(&id).join("sessions"));
+        if files > 0 {
             m.push(ImportItem {
                 kind: ItemKind::Session,
                 tier: TrustTier::Content,
-                name: format!("{} · conversation history", agent.name),
-                detail: format!("{} conversations · {messages} messages", agent.conversations.len()),
+                name: format!("{name} · conversation history"),
+                detail: format!("{files} conversations · ~{lines} log entries"),
                 target: "Chats + messages",
                 source_path: "agents/*/sessions".into(),
             });
         }
-    }
-    for note in discard.skipped {
-        m.note(note);
     }
 
     // Skills across both tiers.
@@ -307,48 +312,73 @@ pub(super) fn source_agents(
         let persona = fs::read_to_string(workspace.join("SOUL.md")).unwrap_or_default();
         let rules = fs::read_to_string(workspace.join("AGENTS.md")).ok();
 
-        let mut memory_files: Vec<(String, Vec<String>)> = Vec::new();
-        for file in ["MEMORY.md", "USER.md"] {
-            if let Ok(text) = fs::read_to_string(workspace.join(file)) {
-                let entries = parse::memory_text_entries(&text);
-                if !entries.is_empty() {
-                    memory_files.push((file.to_string(), entries));
-                }
-            }
-        }
-        // Daily notes: memory/YYYY-MM-DD*.md
-        if let Ok(dir) = fs::read_dir(workspace.join("memory")) {
-            let mut daily: Vec<PathBuf> = dir
-                .flatten()
-                .map(|e| e.path())
-                .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("md"))
-                .collect();
-            daily.sort();
-            for p in daily {
-                if let Ok(text) = fs::read_to_string(&p) {
-                    let entries = parse::memory_text_entries(&text);
-                    if !entries.is_empty() {
-                        let fname = p
-                            .file_name()
-                            .and_then(|n| n.to_str())
-                            .unwrap_or("daily")
-                            .to_string();
-                        memory_files.push((format!("memory/{fname}"), entries));
-                    }
-                }
-            }
-        }
-
         agents.push(SourceAgent {
             name,
             description: "Imported from an OpenClaw install".to_string(),
             persona,
             rules,
-            memory_files,
+            memory_files: workspace_memory_files(&workspace),
             conversations: read_sessions(&root.join("agents").join(&id).join("sessions"), out),
         });
     }
     agents
+}
+
+/// Memory files in an agent workspace: `MEMORY.md`, `USER.md`, and daily
+/// notes under `memory/*.md`, parsed into discrete entries. Shared by scan
+/// (counts) and apply (writes).
+fn workspace_memory_files(workspace: &Path) -> Vec<(String, Vec<String>)> {
+    let mut memory_files: Vec<(String, Vec<String>)> = Vec::new();
+    for file in ["MEMORY.md", "USER.md"] {
+        if let Ok(text) = fs::read_to_string(workspace.join(file)) {
+            let entries = parse::memory_text_entries(&text);
+            if !entries.is_empty() {
+                memory_files.push((file.to_string(), entries));
+            }
+        }
+    }
+    if let Ok(dir) = fs::read_dir(workspace.join("memory")) {
+        let mut daily: Vec<PathBuf> = dir
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("md"))
+            .collect();
+        daily.sort();
+        for p in daily {
+            if let Ok(text) = fs::read_to_string(&p) {
+                let entries = parse::memory_text_entries(&text);
+                if !entries.is_empty() {
+                    let fname = p
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("daily")
+                        .to_string();
+                    memory_files.push((format!("memory/{fname}"), entries));
+                }
+            }
+        }
+    }
+    memory_files
+}
+
+/// File + line counts for a sessions directory — the scan-side stand-in for
+/// [`read_sessions`], cheap enough for big installs.
+fn session_counts(dir: &Path) -> (usize, usize) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return (0, 0);
+    };
+    let mut files = 0usize;
+    let mut lines = 0usize;
+    for e in entries.flatten() {
+        let p = e.path();
+        if p.extension().and_then(|x| x.to_str()) == Some("jsonl") {
+            files += 1;
+            if let Ok(text) = fs::read_to_string(&p) {
+                lines += text.lines().filter(|l| !l.trim().is_empty()).count();
+            }
+        }
+    }
+    (files, lines)
 }
 
 /// Read `sessions/*.jsonl` transcripts into conversations. Lines are parsed

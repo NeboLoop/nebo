@@ -1352,6 +1352,22 @@
 		"addShortcutLabel": "Add Shortcut",
 		"laneRoutingHint": "Assign models to background operation lanes."
 	},
+	"onboardingImport": {
+		"foundTitle": "We found your {source} setup",
+		"pitch": "Bring your employees, skills, MCP servers, memory, and conversation history over — your old install stays untouched.",
+		"bringOver": "Bring it over",
+		"scanning": "Scanning…",
+		"importAll": "Import everything",
+		"importing": "Importing…",
+		"notNow": "Not now",
+		"done": "Imported. Your workforce came with you.",
+		"failed": "Import didn't complete — you can run it any time from Settings → Import.",
+		"employees": "employees",
+		"skills": "skills",
+		"mcpServers": "MCP servers",
+		"memoryFiles": "memory files",
+		"runLocally": "run locally"
+	},
 	"settingsImport": {
 		"title": "Import",
 		"description": "Bring your setup over from another AI agent — skills, MCP servers, and your employee's persona",

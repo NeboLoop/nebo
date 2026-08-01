@@ -16,6 +16,8 @@
   import Eye from 'lucide-svelte/icons/eye';
   import AlertTriangle from 'lucide-svelte/icons/alert-triangle';
   import X from 'lucide-svelte/icons/x';
+  import FolderOpen from 'lucide-svelte/icons/folder-open';
+  import Download from 'lucide-svelte/icons/download';
   import ApprovalModal from '$lib/components/ApprovalModal.svelte';
 
   let step = $state(0);
@@ -89,7 +91,73 @@
   let permissions = $state<{ key: string; label: string; desc: string; enabled: boolean; locked: boolean }[]>([]);
   let capStates = $state<boolean[]>([]);
 
+  // Migration import: probe for a Hermes/OpenClaw install at mount. The
+  // backend detect is stat-calls only, and the 800ms race guarantees
+  // onboarding never waits on it — no result in time simply means no card
+  // (the same import lives in Settings → Import).
+  let detectedImport = $state<api.DetectedInstall | null>(null);
+  let importScanning = $state(false);
+  let importRunning = $state(false);
+  let importSummary = $state('');
+  let importManifest = $state<api.ImportManifest | null>(null);
+  let importDone = $state(false);
+  let importError = $state(false);
+  let importDismissed = $state(false);
+
+  async function probeInstalls() {
+    try {
+      const timeout = new Promise<null>((resolve) => setTimeout(() => resolve(null), 800));
+      const resp = await Promise.race([api.detectInstalls(), timeout]);
+      if (resp && resp.installs) {
+        detectedImport = resp.installs.find((d) => d.importable) ?? null;
+      }
+    } catch {
+      /* silent — the card just doesn't show */
+    }
+  }
+
+  async function scanDetected() {
+    if (!detectedImport) return;
+    importScanning = true;
+    importError = false;
+    try {
+      const resp = await api.scanInstall({ path: detectedImport.path });
+      importManifest = resp.manifest;
+      const items = resp.manifest.items;
+      const count = (kind: api.ImportItem['kind']) => items.filter((i) => i.kind === kind).length;
+      const codeCount = items.filter((i) => i.tier === 'code').length;
+      const parts = [
+        `${count('agent')} ${$t('onboardingImport.employees')}`,
+        `${count('skill')} ${$t('onboardingImport.skills')}`,
+        `${count('mcp_server')} ${$t('onboardingImport.mcpServers')}`,
+        `${count('memory')} ${$t('onboardingImport.memoryFiles')}`,
+      ];
+      importSummary =
+        parts.join(' · ') +
+        (codeCount > 0 ? ` · ${codeCount} ${$t('onboardingImport.runLocally')}` : '');
+    } catch {
+      importError = true;
+    } finally {
+      importScanning = false;
+    }
+  }
+
+  async function runDetectedImport() {
+    if (!importManifest) return;
+    importRunning = true;
+    importError = false;
+    try {
+      await api.applyInstall({ path: importManifest.root });
+      importDone = true;
+    } catch {
+      importError = true;
+    } finally {
+      importRunning = false;
+    }
+  }
+
   onMount(async () => {
+    probeInstalls();
     try {
       const res = await api.userGetPermissions();
       let permObj: Record<string, boolean> = {};
@@ -591,6 +659,62 @@
     </div>
     <h2 class="text-2xl font-bold mb-2">{$t('onboarding.complete.title')}</h2>
     <p class="text-xs text-base-content/50 mb-6">{$t('onboardingPage.doneDesc')}</p>
+
+    {#if detectedImport && !importDismissed}
+      <div class="max-w-md mx-auto mb-6 p-4 rounded-xl border border-base-300 bg-base-200/50 text-left">
+        <div class="flex items-center gap-2.5 mb-1">
+          <FolderOpen class="w-4 h-4 text-base-content/70" />
+          <span class="text-sm font-medium">
+            {$t('onboardingImport.foundTitle', { values: { source: detectedImport.source } })}
+          </span>
+        </div>
+        <p class="text-xs text-base-content/70 mb-3 font-mono truncate">{detectedImport.path}</p>
+
+        {#if importDone}
+          <div class="flex items-center gap-2 text-sm text-success">
+            <Check class="w-4 h-4" />
+            {$t('onboardingImport.done')}
+          </div>
+        {:else if importError}
+          <p class="text-xs text-base-content/70">{$t('onboardingImport.failed')}</p>
+        {:else if importManifest}
+          <p class="text-xs text-base-content/70 mb-3">{importSummary}</p>
+          <div class="flex items-center gap-2">
+            <button
+              onclick={runDetectedImport}
+              disabled={importRunning}
+              class="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-primary text-primary-content text-sm font-bold cursor-pointer hover:brightness-110 transition-all border-none disabled:opacity-50"
+            >
+              <Download class="w-3.5 h-3.5" />
+              {importRunning ? $t('onboardingImport.importing') : $t('onboardingImport.importAll')}
+            </button>
+            <button
+              onclick={() => (importDismissed = true)}
+              class="px-3 py-2 rounded-lg text-xs font-medium text-base-content/60 cursor-pointer hover:text-base-content transition-colors border-none bg-transparent"
+            >
+              {$t('onboardingImport.notNow')}
+            </button>
+          </div>
+        {:else}
+          <p class="text-xs text-base-content/70 mb-3">{$t('onboardingImport.pitch')}</p>
+          <div class="flex items-center gap-2">
+            <button
+              onclick={scanDetected}
+              disabled={importScanning}
+              class="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-primary text-primary-content text-sm font-bold cursor-pointer hover:brightness-110 transition-all border-none disabled:opacity-50"
+            >
+              {importScanning ? $t('onboardingImport.scanning') : $t('onboardingImport.bringOver')}
+            </button>
+            <button
+              onclick={() => (importDismissed = true)}
+              class="px-3 py-2 rounded-lg text-xs font-medium text-base-content/60 cursor-pointer hover:text-base-content transition-colors border-none bg-transparent"
+            >
+              {$t('onboardingImport.notNow')}
+            </button>
+          </div>
+        {/if}
+      </div>
+    {/if}
 
     <div class="flex items-center justify-center gap-3">
       <button
