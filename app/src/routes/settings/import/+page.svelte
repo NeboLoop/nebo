@@ -15,7 +15,7 @@
     type ImportManifest,
     type ImportItem,
     type ImportOutcome,
-  } from '$lib/api/import';
+  } from '$lib/api/nebo';
 
   let detected = $state<DetectedInstall[]>([]);
   let path = $state('');
@@ -62,7 +62,7 @@
     outcome = null;
     manifest = null;
     try {
-      const resp = await scanInstall(path.trim());
+      const resp = await scanInstall({ path: path.trim() });
       manifest = resp.manifest;
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
@@ -76,7 +76,7 @@
     importing = true;
     error = '';
     try {
-      const resp = await applyInstall(manifest.root);
+      const resp = await applyInstall({ path: manifest.root });
       outcome = resp.outcome;
       manifest = null;
     } catch (e) {

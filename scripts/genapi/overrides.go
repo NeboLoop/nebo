@@ -152,6 +152,32 @@ var extraInterfaces = map[string]string{
 	inputs?: unknown
 }`,
 
+	"ImportItem": `export interface ImportItem {
+	kind: 'mcp_server' | 'skill' | 'agent' | 'memory' | 'session' | 'cron' | 'credential'
+	tier: 'content' | 'code' | 'reference'
+	name: string
+	detail: string
+	target: string
+	sourcePath: string
+}`,
+
+	"ImportManifest": `export interface ImportManifest {
+	source: 'hermes' | 'openclaw'
+	root: string
+	items: ImportItem[]
+	notes: string[]
+}`,
+
+	"ImportOutcome": `export interface ImportOutcome {
+	agents: number
+	skills: number
+	mcpServers: number
+	authProfiles: number
+	agentId: string | null
+	agentName: string | null
+	skipped: string[]
+}`,
+
 	"UserProfileFull": `export interface UserProfileFull {
 	userId: string
 	displayName?: string

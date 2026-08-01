@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use axum::Json;
 use axum::extract::State;
 
+use crate::import::{ImportManifest, ImportOutcome};
 use crate::state::AppState;
 
 use super::{HandlerResult, to_error_response};
@@ -15,12 +16,30 @@ use super::{HandlerResult, to_error_response};
 /// One probed install location.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-struct DetectedInstall {
-    source: &'static str,
-    path: String,
+pub struct DetectedInstall {
+    /// "hermes" | "openclaw"
+    pub source: String,
+    pub path: String,
     /// False while a system's apply path hasn't shipped (OpenClaw), so the UI
     /// can show it as "coming soon" instead of offering a broken import.
-    importable: bool,
+    pub importable: bool,
+}
+
+#[derive(serde::Serialize)]
+pub struct DetectInstallsResponse {
+    pub installs: Vec<DetectedInstall>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScanInstallResponse {
+    pub manifest: ImportManifest,
+    pub needs_confirmation: bool,
+}
+
+#[derive(serde::Serialize)]
+pub struct ApplyInstallResponse {
+    pub outcome: ImportOutcome,
 }
 
 /// Default install locations per system, honoring each tool's env overrides.
@@ -45,21 +64,23 @@ fn candidate_roots() -> Vec<(crate::import::SourceKind, PathBuf)> {
 
 /// GET /api/v1/import/detect — probe the default install locations and report
 /// what's actually there (fingerprinted, not just "directory exists").
-pub async fn detect_installs(State(_state): State<AppState>) -> HandlerResult<serde_json::Value> {
-    let mut found = Vec::new();
+pub async fn detect_installs(
+    State(_state): State<AppState>,
+) -> HandlerResult<DetectInstallsResponse> {
+    let mut installs = Vec::new();
     for (expected, path) in candidate_roots() {
         if crate::import::detect(&path) == Some(expected) {
-            found.push(DetectedInstall {
+            installs.push(DetectedInstall {
                 source: match expected {
-                    crate::import::SourceKind::Hermes => "hermes",
-                    crate::import::SourceKind::OpenClaw => "openclaw",
+                    crate::import::SourceKind::Hermes => "hermes".to_string(),
+                    crate::import::SourceKind::OpenClaw => "openclaw".to_string(),
                 },
                 path: path.display().to_string(),
                 importable: matches!(expected, crate::import::SourceKind::Hermes),
             });
         }
     }
-    Ok(Json(serde_json::json!({ "installs": found })))
+    Ok(Json(DetectInstallsResponse { installs }))
 }
 
 /// Pull and validate the `path` field shared by scan and apply.
@@ -82,14 +103,14 @@ fn body_path(body: &serde_json::Value) -> Result<PathBuf, types::NeboError> {
 pub async fn scan_install(
     State(_state): State<AppState>,
     Json(body): Json<serde_json::Value>,
-) -> HandlerResult<serde_json::Value> {
+) -> HandlerResult<ScanInstallResponse> {
     let path = body_path(&body).map_err(to_error_response)?;
     let manifest = crate::import::scan(&path).map_err(to_error_response)?;
     let needs_confirmation = manifest.needs_confirmation();
-    Ok(Json(serde_json::json!({
-        "manifest": manifest,
-        "needsConfirmation": needs_confirmation,
-    })))
+    Ok(Json(ScanInstallResponse {
+        manifest,
+        needs_confirmation,
+    }))
 }
 
 /// POST /api/v1/import/apply — perform the import. The frontend calls this
@@ -97,10 +118,10 @@ pub async fn scan_install(
 pub async fn apply_install(
     State(state): State<AppState>,
     Json(body): Json<serde_json::Value>,
-) -> HandlerResult<serde_json::Value> {
+) -> HandlerResult<ApplyInstallResponse> {
     let path = body_path(&body).map_err(to_error_response)?;
     let outcome = crate::import::apply(&state, &path)
         .await
         .map_err(to_error_response)?;
-    Ok(Json(serde_json::json!({ "outcome": outcome })))
+    Ok(Json(ApplyInstallResponse { outcome }))
 }

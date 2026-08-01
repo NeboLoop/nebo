@@ -117,6 +117,10 @@ export interface AgentWorkflowStats {
 	lastError?: string
 }
 
+export interface ApplyInstallResponse {
+	outcome: ImportOutcome
+}
+
 export interface ArtifactUpdateHistoryEntry {
 	id: number
 	artifactId: string
@@ -287,6 +291,16 @@ export interface CronJob {
 	instructions?: string
 	agentId?: string
 	channelCtxJson?: string
+}
+
+export interface DetectInstallsResponse {
+	installs: DetectedInstall[]
+}
+
+export interface DetectedInstall {
+	source: string
+	path: string
+	importable: boolean
 }
 
 export interface DisconnectResponse {
@@ -603,6 +617,11 @@ export interface RefreshToken {
 	tokenHash: string
 	expiresAt: number
 	createdAt: number
+}
+
+export interface ScanInstallResponse {
+	manifest: ImportManifest
+	needsConfirmation: boolean
 }
 
 export interface Session {
@@ -1860,6 +1879,32 @@ export interface EventSourceOption {
 	agentName: string
 	bindingName: string
 	description?: string
+}
+
+export interface ImportItem {
+	kind: 'mcp_server' | 'skill' | 'agent' | 'memory' | 'session' | 'cron' | 'credential'
+	tier: 'content' | 'code' | 'reference'
+	name: string
+	detail: string
+	target: string
+	sourcePath: string
+}
+
+export interface ImportManifest {
+	source: 'hermes' | 'openclaw'
+	root: string
+	items: ImportItem[]
+	notes: string[]
+}
+
+export interface ImportOutcome {
+	agents: number
+	skills: number
+	mcpServers: number
+	authProfiles: number
+	agentId: string | null
+	agentName: string | null
+	skipped: string[]
 }
 
 export interface ToolPermission {
