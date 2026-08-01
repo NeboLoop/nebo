@@ -1,6 +1,6 @@
 # Turn your computer into an AI workforce.
 
-**Nebo is the operating system for AI employees — open source, MIT licensed.**
+**Nebo is the operating system for AI employees — open source, Apache 2.0 licensed.**
 
 Hire pre-built employees from the marketplace — bookkeeper, researcher, scheduler — one click each. They show up already knowing the job: workflows, tools, and skills wired together, no setup.
 
@@ -278,8 +278,8 @@ cd app && pnpm dev                   # SvelteKit dev server (port 5173)
 
 ## License
 
-Nebo is licensed under the [MIT License](LICENSE). Use it, modify it, build on it — freely.
+Nebo is licensed under the [Apache License 2.0](LICENSE). Use it, modify it, build on it — freely, with an explicit patent grant from every contributor.
 
 Bundled and vendored third-party components retain their own licenses; see [THIRD-PARTY.md](THIRD-PARTY.md).
 
-**Trademarks.** The MIT license covers the source code only. The *Nebo* and *NeboAI* names, logos, and brand assets (including those under `src-tauri/icons/`) are trademarks and are **not** licensed for use. You may build on the code, but not ship it under the Nebo name or brand.
+**Trademarks.** The Apache license covers the source code only. The *Nebo* and *NeboAI* names, logos, and brand assets (including those under `src-tauri/icons/`) are trademarks and are **not** licensed for use. You may build on the code, but not ship it under the Nebo name or brand.

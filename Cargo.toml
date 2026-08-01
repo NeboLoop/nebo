@@ -31,7 +31,7 @@ members = [
 [workspace.package]
 version = "0.12.14"
 edition = "2024"
-license = "MIT"
+license = "Apache-2.0"
 repository = "https://github.com/NeboLoop/nebo"
 
 [workspace.dependencies]
