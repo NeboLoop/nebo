@@ -14,7 +14,9 @@ use std::path::{Path, PathBuf};
 
 use crate::handlers::integrations::parse_mcp_servers_block;
 
+use super::apply::{ImportOutcome, SourceAgent, SourceConversation, SourceMessage};
 use super::manifest::{ImportItem, ImportManifest, ItemKind, SourceKind, TrustTier};
+use super::parse;
 
 /// Walk a Hermes install root and build its dry-run manifest.
 pub fn scan(root: &Path) -> ImportManifest {
@@ -174,25 +176,7 @@ pub(super) fn memory_entries(root: &Path) -> Vec<(String, Vec<String>)> {
         let Ok(text) = fs::read_to_string(&path) else {
             continue;
         };
-        let raw: Vec<&str> = if text.contains('§') {
-            text.split('§').collect()
-        } else {
-            text.split("\n\n").collect()
-        };
-        let entries: Vec<String> = raw
-            .into_iter()
-            .map(|chunk| {
-                // Drop heading lines; keep the prose.
-                chunk
-                    .lines()
-                    .filter(|l| !l.trim_start().starts_with('#'))
-                    .collect::<Vec<_>>()
-                    .join("\n")
-                    .trim()
-                    .to_string()
-            })
-            .filter(|e| !e.is_empty())
-            .collect();
+        let entries = parse::memory_text_entries(&text);
         if entries.is_empty() {
             continue;
         }
@@ -360,28 +344,46 @@ fn scan_history(root: &Path, m: &mut ImportManifest) {
     });
 }
 
-/// One Hermes conversation read from `state.db`.
-pub(super) struct HermesSession {
-    pub id: String,
-    /// First user message, truncated — the imported chat's title.
-    pub title: String,
-    pub started_at: Option<i64>,
-    pub ended_at: Option<i64>,
-    pub messages: Vec<HermesMessage>,
-}
-
-pub(super) struct HermesMessage {
-    pub role: String,
-    pub content: String,
-    pub tool_calls: Option<String>,
-    pub timestamp: Option<i64>,
+/// The Hermes install normalized to one [`SourceAgent`]: SOUL.md persona,
+/// memories, and conversation history. `None` (with a note) when there is no
+/// SOUL.md — Hermes is single-agent, so without a persona there is no
+/// employee to attach anything to.
+pub(super) fn source_agent(root: &Path, out: &mut ImportOutcome) -> Option<SourceAgent> {
+    let persona = match fs::read_to_string(root.join("SOUL.md")) {
+        Ok(s) => s,
+        Err(_) => {
+            out.skipped
+                .push("agent: no SOUL.md found, no employee created".into());
+            return None;
+        }
+    };
+    let conversations = if root.join("state.db").is_file() {
+        match read_history(root) {
+            Ok(c) => c,
+            Err(e) => {
+                out.skipped
+                    .push(format!("conversation history: state.db unreadable ({e})"));
+                Vec::new()
+            }
+        }
+    } else {
+        Vec::new()
+    };
+    Some(SourceAgent {
+        name: "Hermes".to_string(),
+        description: "Imported from a Hermes install".to_string(),
+        persona,
+        rules: None,
+        memory_files: memory_entries(root),
+        conversations,
+    })
 }
 
 /// Read every conversation out of `state.db`, read-only. Sessions are derived
 /// from the `messages` table itself (grouped by `session_id`, ordered by
 /// insertion) rather than Hermes's `sessions` table, whose columns vary across
 /// versions. Shared by scan (counts) and apply (writes).
-pub(super) fn read_history(root: &Path) -> Result<Vec<HermesSession>, String> {
+pub(super) fn read_history(root: &Path) -> Result<Vec<SourceConversation>, String> {
     let conn = rusqlite::Connection::open_with_flags(
         root.join("state.db"),
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
@@ -410,11 +412,11 @@ pub(super) fn read_history(root: &Path) -> Result<Vec<HermesSession>, String> {
         })
         .map_err(|e| e.to_string())?;
 
-    let mut sessions: Vec<HermesSession> = Vec::new();
+    let mut sessions: Vec<SourceConversation> = Vec::new();
     for row in rows.flatten() {
         let (session_id, role, content, tool_calls, timestamp) = row;
         if sessions.last().map(|s| s.id.as_str()) != Some(session_id.as_str()) {
-            sessions.push(HermesSession {
+            sessions.push(SourceConversation {
                 id: session_id,
                 title: String::new(),
                 started_at: None,
@@ -424,7 +426,7 @@ pub(super) fn read_history(root: &Path) -> Result<Vec<HermesSession>, String> {
         }
         let s = sessions.last_mut().expect("session pushed above");
         if s.title.is_empty() && role == "user" && !content.trim().is_empty() {
-            s.title = truncate_title(&content);
+            s.title = parse::truncate_title(&content);
         }
         if let Some(ts) = timestamp {
             if s.started_at.is_none() {
@@ -432,17 +434,12 @@ pub(super) fn read_history(root: &Path) -> Result<Vec<HermesSession>, String> {
             }
             s.ended_at = Some(ts);
         }
-        s.messages.push(HermesMessage {
+        s.messages.push(SourceMessage {
             role,
             content,
             tool_calls,
             timestamp,
         });
-    }
-    for s in &mut sessions {
-        if s.title.is_empty() {
-            s.title = "Imported conversation".to_string();
-        }
     }
     Ok(sessions)
 }
@@ -462,15 +459,6 @@ fn read_epoch(row: &rusqlite::Row<'_>, idx: usize) -> Option<i64> {
         }
     }
     None
-}
-
-fn truncate_title(content: &str) -> String {
-    let line = content.lines().next().unwrap_or("").trim();
-    let mut title: String = line.chars().take(60).collect();
-    if line.chars().count() > 60 {
-        title.push('…');
-    }
-    title
 }
 
 /// Recursively collect every `SKILL.md` under `dir`, skipping hidden folders.

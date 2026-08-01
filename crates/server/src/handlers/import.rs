@@ -20,8 +20,9 @@ pub struct DetectedInstall {
     /// "hermes" | "openclaw"
     pub source: String,
     pub path: String,
-    /// False while a system's apply path hasn't shipped (OpenClaw), so the UI
-    /// can show it as "coming soon" instead of offering a broken import.
+    /// False while a system's apply path hasn't shipped, so the UI can show
+    /// it as "coming soon" instead of offering a broken import. Both Hermes
+    /// and OpenClaw import today.
     pub importable: bool,
 }
 
@@ -76,7 +77,7 @@ pub async fn detect_installs(
                     crate::import::SourceKind::OpenClaw => "openclaw".to_string(),
                 },
                 path: path.display().to_string(),
-                importable: matches!(expected, crate::import::SourceKind::Hermes),
+                importable: true,
             });
         }
     }

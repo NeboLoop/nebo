@@ -12,8 +12,10 @@ mod apply;
 mod detect;
 mod hermes;
 mod manifest;
+mod openclaw;
+mod parse;
 
-pub use apply::{apply, apply_hermes, ApplyTargets, ImportOutcome};
+pub use apply::{apply, apply_hermes, apply_openclaw, ApplyTargets, ImportOutcome};
 pub use detect::detect;
 pub use manifest::{ImportItem, ImportManifest, ItemKind, SourceKind, TrustTier};
 
@@ -28,11 +30,7 @@ use types::NeboError;
 pub fn scan(root: &Path) -> Result<ImportManifest, NeboError> {
     match detect(root) {
         Some(SourceKind::Hermes) => Ok(hermes::scan(root)),
-        Some(SourceKind::OpenClaw) => Err(NeboError::Validation(
-            "OpenClaw install detected — the OpenClaw walker lands in the next slice; \
-             Hermes import is available now"
-                .into(),
-        )),
+        Some(SourceKind::OpenClaw) => Ok(openclaw::scan(root)),
         None => Err(NeboError::Validation(format!(
             "{} is not a recognized Hermes or OpenClaw install directory",
             root.display()

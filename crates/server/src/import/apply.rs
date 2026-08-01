@@ -1,15 +1,18 @@
 //! Apply an import: turn a scanned foreign install into real Nebo artifacts.
 //!
-//! The core ([`apply_hermes`]) is synchronous and takes only a [`db::Store`]
-//! plus target directories, so it is directly testable. The [`apply`] wrapper
-//! resolves Nebo's real directories and runs the canonical post-install steps
-//! (loader reloads, agent finalization, MCP bridge connect).
+//! The per-source entry points ([`apply_hermes`], [`apply_openclaw`]) are
+//! synchronous and take only a [`db::Store`] plus target directories, so they
+//! are directly testable. Both feed the same shared importers below — one
+//! funnel, per-source walkers — and the [`apply`] wrapper resolves Nebo's real
+//! directories and runs the canonical post-install steps (loader reloads,
+//! agent finalization, MCP bridge connect, embedding backfill).
 //!
 //! Idempotent by skip: anything that already exists (same integration name,
-//! skill directory, agent directory, provider profile) is left untouched and
-//! recorded in `skipped`, so re-running an import never clobbers or duplicates.
-//! The source directory is never written to.
+//! skill directory, agent directory, provider profile, memory key, chat id) is
+//! left untouched and recorded in `skipped`, so re-running an import never
+//! clobbers or duplicates. The source directory is never written to.
 
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -18,10 +21,11 @@ use types::NeboError;
 
 use super::hermes;
 use super::manifest::SourceKind;
+use super::openclaw;
 
-/// Hermes `.env` keys that map onto Nebo LLM provider profiles. Everything
-/// else in `.env` (channel tokens, service secrets) belongs to later slices
-/// and is reported as skipped rather than guessed at.
+/// `.env` keys that map onto Nebo LLM provider profiles. Everything else
+/// (channel tokens, service secrets) belongs to later slices and is reported
+/// as skipped rather than guessed at.
 const PROVIDER_ENV_KEYS: &[(&str, &str)] = &[
     ("ANTHROPIC_API_KEY", "anthropic"),
     ("OPENAI_API_KEY", "openai"),
@@ -41,14 +45,17 @@ pub struct ImportOutcome {
     pub memories: usize,
     pub chats: usize,
     pub chat_messages: usize,
-    /// Id + name of the created employee, when one was created.
+    /// Id + name of the first created employee, when one was created.
     pub agent_id: Option<String>,
     pub agent_name: Option<String>,
     /// Everything found but not imported, with the reason — honesty over silence.
     pub skipped: Vec<String>,
+    /// All employees created this run, for post-install finalization.
+    #[serde(skip)]
+    pub created_agents: Vec<(String, String)>,
 }
 
-/// Where the import writes. Split from `AppState` so the core is testable
+/// Where the import writes. Split from `AppState` so the cores are testable
 /// against a temp store and temp dirs.
 pub struct ApplyTargets<'a> {
     pub store: &'a db::Store,
@@ -58,9 +65,42 @@ pub struct ApplyTargets<'a> {
     pub user_skills_dir: PathBuf,
 }
 
-/// Apply a Hermes install to Nebo: MCP integrations, skills, the employee
-/// persona, and LLM provider keys. Memory, history, cron, and channel tokens
-/// are later slices and are reported in `skipped`.
+/// One conversation normalized out of a foreign install, ready to become a
+/// Nebo chat. Both walkers produce this shape.
+pub(super) struct SourceConversation {
+    /// Stable per-source id — becomes part of the deterministic chat id.
+    pub id: String,
+    /// First user message, truncated. Empty = "Imported conversation".
+    pub title: String,
+    pub started_at: Option<i64>,
+    pub ended_at: Option<i64>,
+    pub messages: Vec<SourceMessage>,
+}
+
+pub(super) struct SourceMessage {
+    pub role: String,
+    pub content: String,
+    pub tool_calls: Option<String>,
+    pub timestamp: Option<i64>,
+}
+
+/// One employee normalized out of a foreign install.
+pub(super) struct SourceAgent {
+    pub name: String,
+    pub description: String,
+    /// Persona prose (SOUL.md) — becomes the AGENT.md body and `soul`.
+    pub persona: String,
+    /// Behavior rules (AGENTS.md), when the source splits them out.
+    pub rules: Option<String>,
+    /// Memory files as `(file_name, entries)`.
+    pub memory_files: Vec<(String, Vec<String>)>,
+    pub conversations: Vec<SourceConversation>,
+}
+
+// ─── Per-source entry points ────────────────────────────────────────────────
+
+/// Apply a Hermes install: MCP integrations, skills, the employee persona,
+/// memory, conversation history, and LLM provider keys.
 pub fn apply_hermes(t: &ApplyTargets, root: &Path) -> Result<ImportOutcome, NeboError> {
     if super::detect(root) != Some(SourceKind::Hermes) {
         return Err(NeboError::Validation(format!(
@@ -69,34 +109,98 @@ pub fn apply_hermes(t: &ApplyTargets, root: &Path) -> Result<ImportOutcome, Nebo
         )));
     }
     let mut out = ImportOutcome::default();
-    apply_mcp(t, root, &mut out)?;
-    apply_skills(t, root, &mut out);
-    apply_agent(t, root, &mut out)?;
-    apply_memory(t, root, &mut out)?;
-    apply_history(t, root, &mut out)?;
-    apply_provider_keys(t, root, &mut out)?;
-    note_deferred(root, &mut out);
+
+    match hermes::mcp_block(root) {
+        Ok(Some(block)) => import_mcp_block(t, &block, &mut out)?,
+        Ok(None) => {}
+        Err(e) => out
+            .skipped
+            .push(format!("MCP servers: config.yaml unparseable ({e})")),
+    }
+
+    let mut skill_dirs = Vec::new();
+    hermes::collect_skill_md(&root.join("skills"), &mut skill_dirs);
+    import_skill_dirs(t, &skill_dirs, &mut out);
+
+    let agent = hermes::source_agent(root, &mut out);
+    if let Some(agent) = agent {
+        import_agent(t, &agent, "hermes", &mut out)?;
+    }
+
+    if let Ok(text) = fs::read_to_string(root.join(".env")) {
+        import_provider_env(t, &text, "Hermes", &mut out)?;
+    }
+
+    if root.join("cron").join("jobs.json").is_file() {
+        out.skipped
+            .push("cron jobs: imported by the scheduling slice".into());
+    }
     Ok(out)
 }
 
-/// `config.yaml` `mcp_servers:` → `mcp_integrations` rows. Existing names are
-/// skipped so a re-import can't duplicate or clobber configured servers.
-fn apply_mcp(t: &ApplyTargets, root: &Path, out: &mut ImportOutcome) -> Result<(), NeboError> {
-    let block = match hermes::mcp_block(root) {
-        Ok(Some(b)) => b,
-        Ok(None) => return Ok(()),
+/// Apply an OpenClaw install. OpenClaw is genuinely multi-agent: every entry
+/// in `agents.entries[]` (plus the default workspace agent) becomes its own
+/// Nebo employee with its own persona, memory, and conversation history.
+pub fn apply_openclaw(t: &ApplyTargets, root: &Path) -> Result<ImportOutcome, NeboError> {
+    if super::detect(root) != Some(SourceKind::OpenClaw) {
+        return Err(NeboError::Validation(format!(
+            "{} is not an OpenClaw install directory",
+            root.display()
+        )));
+    }
+    let mut out = ImportOutcome::default();
+
+    let cfg = match openclaw::config(root) {
+        Ok(c) => c,
         Err(e) => {
-            out.skipped.push(format!("MCP servers: config.yaml unparseable ({e})"));
-            return Ok(());
+            return Err(NeboError::Validation(format!(
+                "openclaw.json unparseable: {e}"
+            )));
         }
     };
-    let existing: std::collections::HashSet<String> = t
+
+    if let Some(block) = openclaw::mcp_block(&cfg, &mut out) {
+        import_mcp_block(t, &block, &mut out)?;
+    }
+
+    import_skill_dirs(t, &openclaw::skill_dirs(root, &cfg), &mut out);
+
+    for agent in openclaw::source_agents(root, &cfg, &mut out) {
+        import_agent(t, &agent, "openclaw", &mut out)?;
+    }
+
+    if let Ok(text) = fs::read_to_string(root.join(".env")) {
+        import_provider_env(t, &text, "OpenClaw", &mut out)?;
+    }
+    // openclaw.json can also carry env inline.
+    if let Some(env) = cfg.get("env").and_then(|e| e.as_object()) {
+        let text: String = env
+            .iter()
+            .filter_map(|(k, v)| v.as_str().map(|s| format!("{k}={s}\n")))
+            .collect();
+        import_provider_env(t, &text, "OpenClaw", &mut out)?;
+    }
+
+    openclaw::note_deferred(root, &cfg, &mut out);
+    Ok(out)
+}
+
+// ─── Shared importers (the one funnel) ──────────────────────────────────────
+
+/// Canonical `mcpServers` block → `mcp_integrations` rows. Existing names are
+/// skipped so a re-import can't duplicate or clobber configured servers.
+fn import_mcp_block(
+    t: &ApplyTargets,
+    block: &serde_json::Value,
+    out: &mut ImportOutcome,
+) -> Result<(), NeboError> {
+    let existing: HashSet<String> = t
         .store
         .list_mcp_integrations()?
         .into_iter()
         .map(|i| i.name)
         .collect();
-    for s in crate::handlers::integrations::parse_mcp_servers_block(&block) {
+    for s in crate::handlers::integrations::parse_mcp_servers_block(block) {
         if existing.contains(&s.name) {
             out.skipped
                 .push(format!("MCP server {}: already configured", s.name));
@@ -117,26 +221,24 @@ fn apply_mcp(t: &ApplyTargets, root: &Path, out: &mut ImportOutcome) -> Result<(
     Ok(())
 }
 
-/// `skills/**/SKILL.md` → `<user>/skills/<name>/`, copied wholesale so bundled
-/// resources (scripts/, references/, …) survive. Hermes nests skills under
-/// category directories; Nebo's user tier is flat, so the skill directory name
-/// is the key and a name collision skips rather than merges.
-fn apply_skills(t: &ApplyTargets, root: &Path, out: &mut ImportOutcome) {
-    let src = root.join("skills");
-    if !src.is_dir() {
-        return;
-    }
-    let mut found = Vec::new();
-    hermes::collect_skill_md(&src, &mut found);
-    for skill_md in found {
+/// Skill directories (each containing SKILL.md) → `<user>/skills/<name>/`,
+/// copied wholesale so bundled resources survive. Source nesting flattens to
+/// Nebo's flat user tier; a name collision skips rather than merges.
+fn import_skill_dirs(t: &ApplyTargets, skill_mds: &[PathBuf], out: &mut ImportOutcome) {
+    let mut seen: HashSet<String> = HashSet::new();
+    for skill_md in skill_mds {
         let Some(skill_dir) = skill_md.parent() else {
             continue;
         };
         let name = skill_dir
             .file_name()
             .and_then(|n| n.to_str())
-            .unwrap_or("skill");
-        let dest = t.user_skills_dir.join(name);
+            .unwrap_or("skill")
+            .to_string();
+        if !seen.insert(name.clone()) {
+            continue;
+        }
+        let dest = t.user_skills_dir.join(&name);
         if dest.exists() {
             out.skipped.push(format!("skill {name}: already installed"));
             continue;
@@ -148,78 +250,132 @@ fn apply_skills(t: &ApplyTargets, root: &Path, out: &mut ImportOutcome) {
     }
 }
 
-/// `SOUL.md` → one Nebo employee. The persona becomes the AGENT.md body; the
-/// on-disk layout mirrors the user-created agent pathway (AGENT.md +
-/// agent.json + manifest.json under `<user>/agents/<name>/`, napp_path set)
-/// so the agent FS watcher treats it exactly like a hand-made employee.
-fn apply_agent(t: &ApplyTargets, root: &Path, out: &mut ImportOutcome) -> Result<(), NeboError> {
-    let soul = match fs::read_to_string(root.join("SOUL.md")) {
-        Ok(s) => s,
-        Err(_) => {
-            out.skipped
-                .push("agent: no SOUL.md found, no employee created".into());
-            return Ok(());
+/// One normalized [`SourceAgent`] → employee + memory + history. The on-disk
+/// layout mirrors the user-created agent pathway (AGENT.md + agent.json +
+/// manifest.json under `<user>/agents/<name>/`, napp_path set) so the agent FS
+/// watcher treats it exactly like a hand-made employee.
+fn import_agent(
+    t: &ApplyTargets,
+    agent: &SourceAgent,
+    source_tag: &str,
+    out: &mut ImportOutcome,
+) -> Result<(), NeboError> {
+    let agent_dir = t.user_agents_dir.join(&agent.name);
+    let agent_id = if agent_dir.exists() {
+        out.skipped.push(format!(
+            "agent {}: already exists, persona untouched",
+            agent.name
+        ));
+        match existing_agent_id(t, &agent.name)? {
+            Some(id) => id,
+            None => {
+                out.skipped.push(format!(
+                    "agent {}: directory exists but no DB row — memory and history not attached",
+                    agent.name
+                ));
+                return Ok(());
+            }
         }
+    } else {
+        let agent_md = format!(
+            "---\nname: {}\ndescription: {}\n---\n\n{}",
+            agent.name, agent.description, agent.persona
+        );
+        let frontmatter = serde_json::json!({ "workflows": {}, "skills": [] }).to_string();
+        let id = uuid::Uuid::new_v4().to_string();
+        t.store.create_agent(
+            &id,
+            None,
+            &agent.name,
+            &agent.description,
+            &agent_md,
+            &frontmatter,
+            None,
+            None,
+        )?;
+        // Persona layers: SOUL.md is the soul verbatim; a separate rules file
+        // (OpenClaw AGENTS.md) lands in the rules column.
+        if agent.rules.is_some() || !agent.persona.is_empty() {
+            t.store.update_agent(
+                &id,
+                &agent.name,
+                &agent.description,
+                &agent_md,
+                &frontmatter,
+                None,
+                None,
+                Some(&agent.persona),
+                agent.rules.as_deref(),
+                None,
+                None,
+                None,
+                None,
+            )?;
+        }
+
+        fs::create_dir_all(&agent_dir)?;
+        fs::write(agent_dir.join("AGENT.md"), &agent_md)?;
+        fs::write(agent_dir.join("agent.json"), &frontmatter)?;
+        let manifest = serde_json::json!({
+            "id": id,
+            "name": agent.name,
+            "version": "1.0.0",
+            "type": "agent",
+            "description": agent.description,
+        });
+        fs::write(
+            agent_dir.join("manifest.json"),
+            serde_json::to_string_pretty(&manifest).unwrap_or_default(),
+        )?;
+        t.store
+            .set_agent_napp_path(&id, &agent_dir.to_string_lossy())?;
+
+        out.agents += 1;
+        if out.agent_id.is_none() {
+            out.agent_id = Some(id.clone());
+            out.agent_name = Some(agent.name.clone());
+        }
+        out.created_agents.push((id.clone(), agent.name.clone()));
+        id
     };
-    let name = "Hermes";
-    let agent_dir = t.user_agents_dir.join(name);
-    if agent_dir.exists() {
-        out.skipped
-            .push(format!("agent {name}: already exists, persona untouched"));
-        return Ok(());
-    }
 
-    let description = "Imported from a Hermes install";
-    let agent_md = format!("---\nname: {name}\ndescription: {description}\n---\n\n{soul}");
-    let frontmatter = serde_json::json!({ "workflows": {}, "skills": [] }).to_string();
-
-    let id = uuid::Uuid::new_v4().to_string();
-    t.store
-        .create_agent(&id, None, name, description, &agent_md, &frontmatter, None, None)?;
-
-    fs::create_dir_all(&agent_dir)?;
-    fs::write(agent_dir.join("AGENT.md"), &agent_md)?;
-    fs::write(agent_dir.join("agent.json"), &frontmatter)?;
-    let manifest = serde_json::json!({
-        "id": id,
-        "name": name,
-        "version": "1.0.0",
-        "type": "agent",
-        "description": description,
-    });
-    fs::write(
-        agent_dir.join("manifest.json"),
-        serde_json::to_string_pretty(&manifest).unwrap_or_default(),
-    )?;
-    t.store
-        .set_agent_napp_path(&id, &agent_dir.to_string_lossy())?;
-
-    out.agents += 1;
-    out.agent_id = Some(id);
-    out.agent_name = Some(name.to_string());
+    import_memory_files(t, &agent_id, &agent.memory_files, source_tag, out)?;
+    import_conversations(t, &agent_id, source_tag, &agent.conversations, out)?;
     Ok(())
 }
 
-/// `memories/*.md` → discrete Nebo memories, scoped to the imported employee —
-/// the high-fidelity path: each parsed entry becomes its own searchable row
+/// Look up a previously imported employee by name (re-import runs).
+fn existing_agent_id(t: &ApplyTargets, name: &str) -> Result<Option<String>, NeboError> {
+    Ok(t.store
+        .list_agents(i64::MAX, 0)?
+        .into_iter()
+        .find(|a| a.name == name)
+        .map(|a| a.id))
+}
+
+/// Memory files → discrete Nebo memories scoped to the employee — the
+/// high-fidelity path: each parsed entry becomes its own searchable row
 /// through the same `upsert_memory` pathway native extraction uses, and the
-/// boot/apply embedding backfill vectors them like any other memory. `USER.md`
-/// (the user profile) lands in `tacit/preferences`; everything else (the
-/// agent's own notes, `MEMORY.md`) in `tacit/general`.
-fn apply_memory(t: &ApplyTargets, root: &Path, out: &mut ImportOutcome) -> Result<(), NeboError> {
-    let files = hermes::memory_entries(root);
+/// embedding backfill vectors them like any other memory. `USER.md` (user
+/// profile) lands in `tacit/preferences`; everything else in `tacit/general`.
+fn import_memory_files(
+    t: &ApplyTargets,
+    agent_id: &str,
+    files: &[(String, Vec<String>)],
+    source_tag: &str,
+    out: &mut ImportOutcome,
+) -> Result<(), NeboError> {
     if files.is_empty() {
         return Ok(());
     }
-    // Memories attach to the imported employee's scope. With no employee at
-    // all there is no scope to attach to — report, don't guess.
-    let Some(agent_id) = imported_agent_id(t, out)? else {
-        out.skipped
-            .push("memory: no imported employee to attach to".into());
-        return Ok(());
-    };
     let owner = t.store.ensure_local_user_id()?;
-    let scope = agent::memory::agent_memory_scope(&owner, &agent_id);
+    let scope = agent::memory::agent_memory_scope(&owner, agent_id);
+    let tags = format!(r#"["imported","{source_tag}"]"#);
+    let metadata = serde_json::json!({
+        "confidence": 0.7,
+        "source": format!("{source_tag}-import"),
+    })
+    .to_string();
 
     let mut already = 0usize;
     for (file, entries) in files {
@@ -229,7 +385,7 @@ fn apply_memory(t: &ApplyTargets, root: &Path, out: &mut ImportOutcome) -> Resul
             "tacit/general"
         };
         for entry in entries {
-            let value = agent::sanitize::sanitize_memory_value(&entry);
+            let value = agent::sanitize::sanitize_memory_value(entry);
             let key = agent::sanitize::sanitize_memory_key(&memory_key(&value));
             if t.store
                 .get_memory_by_key_and_user(namespace, &key, &scope)?
@@ -238,19 +394,8 @@ fn apply_memory(t: &ApplyTargets, root: &Path, out: &mut ImportOutcome) -> Resul
                 already += 1;
                 continue;
             }
-            let metadata = serde_json::json!({
-                "confidence": 0.7,
-                "source": "hermes-import",
-            })
-            .to_string();
-            t.store.upsert_memory(
-                namespace,
-                &key,
-                &value,
-                Some(r#"["imported","hermes"]"#),
-                Some(&metadata),
-                &scope,
-            )?;
+            t.store
+                .upsert_memory(namespace, &key, &value, Some(&tags), Some(&metadata), &scope)?;
             out.memories += 1;
         }
     }
@@ -261,68 +406,49 @@ fn apply_memory(t: &ApplyTargets, root: &Path, out: &mut ImportOutcome) -> Resul
     Ok(())
 }
 
-/// The imported employee's id: the one created this run, else the previously
-/// imported "Hermes" agent (re-import / partial-import runs).
-fn imported_agent_id(t: &ApplyTargets, out: &ImportOutcome) -> Result<Option<String>, NeboError> {
-    if let Some(id) = &out.agent_id {
-        return Ok(Some(id.clone()));
-    }
-    Ok(t.store
-        .list_agents(i64::MAX, 0)?
-        .into_iter()
-        .find(|a| a.name == "Hermes")
-        .map(|a| a.id))
-}
-
-/// `state.db` → one Nebo chat per Hermes conversation, threaded under the
-/// imported employee (`agent:{id}:thread:{chat_id}` — the same session-name
-/// shape native threads use, so they list like any other conversation).
-/// Original timestamps are preserved via the imported-insert variants.
-fn apply_history(t: &ApplyTargets, root: &Path, out: &mut ImportOutcome) -> Result<(), NeboError> {
-    if !root.join("state.db").is_file() {
+/// Conversations → one Nebo chat each, threaded under the employee
+/// (`agent:{id}:thread:{chat_id}` — the same session-name shape native threads
+/// use, so they list like any other conversation). Original timestamps are
+/// preserved via the imported-insert variants.
+fn import_conversations(
+    t: &ApplyTargets,
+    agent_id: &str,
+    source_tag: &str,
+    conversations: &[SourceConversation],
+    out: &mut ImportOutcome,
+) -> Result<(), NeboError> {
+    if conversations.is_empty() {
         return Ok(());
     }
-    let sessions = match hermes::read_history(root) {
-        Ok(s) => s,
-        Err(e) => {
-            out.skipped
-                .push(format!("conversation history: state.db unreadable ({e})"));
-            return Ok(());
-        }
-    };
-    if sessions.is_empty() {
-        return Ok(());
-    }
-    let Some(agent_id) = imported_agent_id(t, out)? else {
-        out.skipped
-            .push("conversation history: no imported employee to attach to".into());
-        return Ok(());
-    };
-
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
     let mut already = 0usize;
     let mut skipped_roles = 0usize;
-    for s in sessions {
+    for c in conversations {
         let chat_id = format!(
-            "hermes-{}",
-            s.id.chars()
-                .map(|c| if c.is_alphanumeric() || c == '-' { c } else { '-' })
+            "{source_tag}-{}",
+            c.id.chars()
+                .map(|ch| if ch.is_alphanumeric() || ch == '-' { ch } else { '-' })
                 .collect::<String>()
         );
         if t.store.get_chat(&chat_id)?.is_some() {
             already += 1;
             continue;
         }
-        let created = s.started_at.unwrap_or(now);
-        let updated = s.ended_at.unwrap_or(created);
+        let created = c.started_at.unwrap_or(now);
+        let updated = c.ended_at.unwrap_or(created);
+        let title = if c.title.is_empty() {
+            "Imported conversation"
+        } else {
+            &c.title
+        };
         let session_name = format!("agent:{agent_id}:thread:{chat_id}");
         t.store
-            .create_chat_imported(&chat_id, &session_name, &s.title, created, updated)?;
-        for (i, msg) in s.messages.iter().enumerate() {
-            // chat_messages constrains role; anything else is Hermes-internal
+            .create_chat_imported(&chat_id, &session_name, title, created, updated)?;
+        for (i, msg) in c.messages.iter().enumerate() {
+            // chat_messages constrains role; anything else is source-internal
             // (compression markers etc.) and doesn't belong in the transcript.
             if !matches!(msg.role.as_str(), "user" | "assistant" | "system" | "tool") {
                 skipped_roles += 1;
@@ -343,13 +469,74 @@ fn apply_history(t: &ApplyTargets, root: &Path, out: &mut ImportOutcome) -> Resu
         out.chats += 1;
     }
     if already > 0 {
-        out.skipped
-            .push(format!("conversation history: {already} conversations already imported"));
+        out.skipped.push(format!(
+            "conversation history: {already} conversations already imported"
+        ));
     }
     if skipped_roles > 0 {
         out.skipped.push(format!(
             "conversation history: {skipped_roles} internal (non-transcript) messages skipped"
         ));
+    }
+    Ok(())
+}
+
+/// Known LLM provider keys from dotenv-style text → `auth_profiles`, matching
+/// the existing provider-settings pathway (which stores `api_key` as given —
+/// readers pass it straight to providers, so an encrypted value would break
+/// auth). Providers that already have a profile are skipped. Unknown keys are
+/// reported, not guessed at.
+fn import_provider_env(
+    t: &ApplyTargets,
+    text: &str,
+    source_label: &str,
+    out: &mut ImportOutcome,
+) -> Result<(), NeboError> {
+    let existing: HashSet<String> = t
+        .store
+        .list_auth_profiles()?
+        .into_iter()
+        .map(|p| p.provider)
+        .collect();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let key = key.trim().trim_start_matches("export ").trim();
+        let value = value.trim().trim_matches('"').trim_matches('\'');
+        if value.is_empty() {
+            continue;
+        }
+        match PROVIDER_ENV_KEYS.iter().find(|(k, _)| *k == key) {
+            Some((_, provider)) => {
+                if existing.contains(*provider) {
+                    out.skipped
+                        .push(format!("{key}: {provider} profile already exists"));
+                    continue;
+                }
+                let id = uuid::Uuid::new_v4().to_string();
+                t.store.create_auth_profile(
+                    &id,
+                    &format!("Imported from {source_label} ({provider})"),
+                    provider,
+                    value,
+                    None,
+                    None,
+                    50,
+                    1,
+                    None,
+                    None,
+                )?;
+                out.auth_profiles += 1;
+            }
+            None => out
+                .skipped
+                .push(format!("{key}: not imported (channel/service tokens come later)")),
+        }
     }
     Ok(())
 }
@@ -380,77 +567,6 @@ fn memory_key(value: &str) -> String {
     format!("{}-{hash:08x}", slug.trim_matches('-'))
 }
 
-/// Known LLM provider keys from `.env` → `auth_profiles`, matching the
-/// existing provider-settings pathway (which stores `api_key` as given —
-/// readers pass it straight to providers, so an encrypted value would break
-/// auth). Providers that already have a profile are skipped. Unknown keys are
-/// reported, not guessed at.
-fn apply_provider_keys(
-    t: &ApplyTargets,
-    root: &Path,
-    out: &mut ImportOutcome,
-) -> Result<(), NeboError> {
-    let Ok(text) = fs::read_to_string(root.join(".env")) else {
-        return Ok(());
-    };
-    let existing: std::collections::HashSet<String> = t
-        .store
-        .list_auth_profiles()?
-        .into_iter()
-        .map(|p| p.provider)
-        .collect();
-    for line in text.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let Some((key, value)) = line.split_once('=') else {
-            continue;
-        };
-        let key = key.trim().trim_start_matches("export ").trim();
-        let value = value.trim().trim_matches('"').trim_matches('\'');
-        if value.is_empty() {
-            continue;
-        }
-        match PROVIDER_ENV_KEYS.iter().find(|(k, _)| *k == key) {
-            Some((_, provider)) => {
-                if existing.contains(*provider) {
-                    out.skipped
-                        .push(format!("{key}: {provider} profile already exists"));
-                    continue;
-                }
-                let id = uuid::Uuid::new_v4().to_string();
-                t.store.create_auth_profile(
-                    &id,
-                    &format!("Imported from Hermes ({provider})"),
-                    provider,
-                    value,
-                    None,
-                    None,
-                    50,
-                    1,
-                    None,
-                    None,
-                )?;
-                out.auth_profiles += 1;
-            }
-            None => out
-                .skipped
-                .push(format!("{key}: not imported (channel/service tokens come later)")),
-        }
-    }
-    Ok(())
-}
-
-/// Record what this slice deliberately defers, so the receipt never implies a
-/// clean copy of things that didn't move.
-fn note_deferred(root: &Path, out: &mut ImportOutcome) {
-    if root.join("cron").join("jobs.json").is_file() {
-        out.skipped
-            .push("cron jobs: imported by the scheduling slice".into());
-    }
-}
-
 /// Recursive copy, used to adopt skill directories with their resources.
 fn copy_dir(src: &Path, dest: &Path) -> std::io::Result<()> {
     fs::create_dir_all(dest)?;
@@ -467,9 +583,10 @@ fn copy_dir(src: &Path, dest: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Full apply against the live server: run the core, then the canonical
-/// post-install steps — skill loader reload, agent finalization (same routine
-/// as a marketplace hire), and the MCP bridge connect pass.
+/// Full apply against the live server: detect the source, run its core, then
+/// the canonical post-install steps — skill loader reload, agent finalization
+/// (same routine as a marketplace hire) for every created employee, the MCP
+/// bridge connect pass, and the embedding backfill.
 pub async fn apply(state: &crate::state::AppState, root: &Path) -> Result<ImportOutcome, NeboError> {
     let user = config::user_dir()?;
     let targets = ApplyTargets {
@@ -477,12 +594,21 @@ pub async fn apply(state: &crate::state::AppState, root: &Path) -> Result<Import
         user_agents_dir: user.join("agents"),
         user_skills_dir: user.join("skills"),
     };
-    let outcome = apply_hermes(&targets, root)?;
+    let outcome = match super::detect(root) {
+        Some(SourceKind::Hermes) => apply_hermes(&targets, root)?,
+        Some(SourceKind::OpenClaw) => apply_openclaw(&targets, root)?,
+        None => {
+            return Err(NeboError::Validation(format!(
+                "{} is not a recognized Hermes or OpenClaw install directory",
+                root.display()
+            )));
+        }
+    };
 
     if outcome.skills > 0 {
         state.skill_loader.reload_from_disk().await;
     }
-    if let (Some(id), Some(name)) = (&outcome.agent_id, &outcome.agent_name) {
+    for (id, name) in &outcome.created_agents {
         crate::codes::finalize_agent_install(state, id, name).await;
     }
     if outcome.mcp_servers > 0 {
@@ -517,8 +643,7 @@ mod tests {
         skills_dir: PathBuf,
     }
 
-    fn setup() -> Fixture {
-        let source = hermes::hermes_fixture();
+    fn setup_with(source: tempfile::TempDir) -> Fixture {
         let nebo = tempdir().unwrap();
         let store = db::Store::new(nebo.path().join("nebo.db").to_str().unwrap()).unwrap();
         let agents_dir = nebo.path().join("user/agents");
@@ -532,6 +657,10 @@ mod tests {
             agents_dir,
             skills_dir,
         }
+    }
+
+    fn setup() -> Fixture {
+        setup_with(hermes::hermes_fixture())
     }
 
     fn targets(f: &Fixture) -> ApplyTargets<'_> {
@@ -572,11 +701,12 @@ mod tests {
         assert!(f.skills_dir.join("deploy/scripts/run.sh").is_file());
         assert!(f.skills_dir.join("quick/SKILL.md").is_file());
 
-        // Employee created: DB row + on-disk trio + napp_path.
+        // Employee created: DB row + on-disk trio + napp_path + soul.
         let id = out.agent_id.as_deref().unwrap();
         let agent = f.store.get_agent(id).unwrap().unwrap();
         assert_eq!(agent.name, "Hermes");
         assert!(agent.agent_md.contains("You are Atlas."));
+        assert!(agent.soul.as_deref().unwrap().contains("You are Atlas."));
         let dir = f.agents_dir.join("Hermes");
         assert!(dir.join("AGENT.md").is_file());
         assert!(dir.join("agent.json").is_file());
@@ -603,12 +733,6 @@ mod tests {
         assert!(prefs[0].value.contains("name is Sam"));
         assert!(prefs[0].metadata.as_deref().unwrap().contains("hermes-import"));
 
-        // Provider key imported to the matching profile; channel token deferred.
-        let profiles = f.store.list_auth_profiles().unwrap();
-        let anthropic = profiles.iter().find(|p| p.provider == "anthropic").unwrap();
-        assert_eq!(anthropic.api_key, "sk-secretxxx");
-        assert!(out.skipped.iter().any(|s| s.starts_with("TELEGRAM_TOKEN")));
-
         // History became real chats threaded under the employee, with original
         // timestamps and titles; Hermes-internal roles were filtered.
         let chat = f.store.get_chat("hermes-sess-1").unwrap().unwrap();
@@ -628,6 +752,12 @@ mod tests {
             .skipped
             .iter()
             .any(|s| s.contains("internal (non-transcript)")));
+
+        // Provider key imported to the matching profile; channel token deferred.
+        let profiles = f.store.list_auth_profiles().unwrap();
+        let anthropic = profiles.iter().find(|p| p.provider == "anthropic").unwrap();
+        assert_eq!(anthropic.api_key, "sk-secretxxx");
+        assert!(out.skipped.iter().any(|s| s.starts_with("TELEGRAM_TOKEN")));
 
         // Deferred slices are named, not silently dropped.
         assert!(out.skipped.iter().any(|s| s.starts_with("cron jobs:")));
@@ -673,6 +803,98 @@ mod tests {
         let f = setup();
         let before = snapshot(&f.root);
         apply_hermes(&targets(&f), &f.root).unwrap();
+        assert_eq!(before, snapshot(&f.root));
+    }
+
+    #[test]
+    fn openclaw_imports_multiple_employees() {
+        let f = setup_with(openclaw::openclaw_fixture());
+        let out = apply_openclaw(&targets(&f), &f.root).unwrap();
+
+        // Two employees: the default workspace agent and the "scout" entry.
+        assert_eq!(out.agents, 2);
+        assert_eq!(out.created_agents.len(), 2);
+        let agents = f.store.list_agents(100, 0).unwrap();
+        let oc = agents.iter().find(|a| a.name == "OpenClaw").unwrap();
+        assert!(oc.soul.as_deref().unwrap().contains("You are Claw."));
+        assert!(oc.rules.as_deref().unwrap().contains("Always cite sources"));
+        let scout = agents.iter().find(|a| a.name == "Scout").unwrap();
+        assert!(scout.agent_md.contains("You are Scout."));
+
+        // MCP: stdio + oauth + header servers imported, disabled one skipped.
+        assert_eq!(out.mcp_servers, 3);
+        let integrations = f.store.list_mcp_integrations().unwrap();
+        let by_name = |n: &str| integrations.iter().find(|i| i.name == n).unwrap();
+        assert_eq!(by_name("context7").server_type, "stdio");
+        assert_eq!(by_name("docs").server_type, "http");
+        assert_eq!(by_name("docs").auth_type, "oauth");
+        assert_eq!(by_name("old").server_type, "sse");
+        assert_eq!(by_name("old").auth_type, "api_key");
+        assert!(out.skipped.iter().any(|s| s.contains("off") && s.contains("disabled")));
+
+        // Skills from both tiers, deduped and flattened.
+        assert_eq!(out.skills, 2);
+        assert!(f.skills_dir.join("notes/SKILL.md").is_file());
+        assert!(f.skills_dir.join("websearch/SKILL.md").is_file());
+
+        // Memory scoped per employee: default agent got workspace files,
+        // including a daily note; scout has none.
+        assert_eq!(out.memories, 4);
+        let owner = f.store.ensure_local_user_id().unwrap();
+        let scope = agent::memory::agent_memory_scope(&owner, &oc.id);
+        let general: Vec<_> = f
+            .store
+            .list_memories_by_namespace("tacit/general", 100, 0)
+            .unwrap()
+            .into_iter()
+            .filter(|m| m.user_id == scope)
+            .collect();
+        assert_eq!(general.len(), 3);
+        assert!(general.iter().any(|m| m.value.contains("standup is at 9")));
+
+        // History: one conversation per agent from sessions/*.jsonl, with
+        // Anthropic-style content blocks flattened and junk lines skipped.
+        assert_eq!(out.chats, 2);
+        assert_eq!(out.chat_messages, 4);
+        let chat = f.store.get_chat("openclaw-m1").unwrap().unwrap();
+        assert_eq!(chat.title, "Find the report");
+        assert_eq!(
+            chat.session_name.as_deref(),
+            Some(format!("agent:{}:thread:openclaw-m1", oc.id).as_str())
+        );
+        let msgs = f.store.get_chat_messages("openclaw-m1").unwrap();
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[1].content, "Found it.");
+        assert_eq!(msgs[0].created_at, 1700200000);
+
+        // Provider keys from BOTH .env and the config env block.
+        let profiles = f.store.list_auth_profiles().unwrap();
+        assert!(profiles.iter().any(|p| p.provider == "deepseek"));
+        assert!(profiles.iter().any(|p| p.provider == "openai"));
+
+        // Channel credentials and cron honestly deferred.
+        assert!(out.skipped.iter().any(|s| s.contains("channel credentials")));
+        assert!(out.skipped.iter().any(|s| s.starts_with("cron jobs:")));
+    }
+
+    #[test]
+    fn openclaw_reapply_duplicates_nothing() {
+        let f = setup_with(openclaw::openclaw_fixture());
+        apply_openclaw(&targets(&f), &f.root).unwrap();
+        let second = apply_openclaw(&targets(&f), &f.root).unwrap();
+        assert_eq!(second.agents, 0);
+        assert_eq!(second.skills, 0);
+        assert_eq!(second.mcp_servers, 0);
+        assert_eq!(second.memories, 0);
+        assert_eq!(second.chats, 0);
+        assert_eq!(f.store.count_agents().unwrap(), 2);
+    }
+
+    #[test]
+    fn openclaw_source_never_modified() {
+        let f = setup_with(openclaw::openclaw_fixture());
+        let before = snapshot(&f.root);
+        apply_openclaw(&targets(&f), &f.root).unwrap();
         assert_eq!(before, snapshot(&f.root));
     }
 
