@@ -1,8 +1,8 @@
-# Apps (`@org/agents/name` with `artifact_type: "app"`)
+# Apps (`@org/agents/name` with `type: "app"`)
 
 An App is an agent with its own UI. It bundles a persona, an HTML frontend, and an optional native sidecar binary into a standalone application that opens in its own window. Apps are the right choice when chat output isn't enough — dashboards, contact managers, journals, deal trackers.
 
-For packaging format and `manifest.json`, see [Packaging](packaging.md). For deep technical details, see `docs/sme/APPS.md`.
+For packaging format and `manifest.json`, see [Packaging](packaging.md).
 
 ---
 
@@ -41,7 +41,7 @@ my-app/
 │   ├── src/main.rs
 │   └── target/release/
 │       └── my-app-sidecar
-└── ~/.nebo/appdata/agents/{id}/  # Auto-created at runtime — persistent data (separate from code)
+└── $NEBO_DATA_DIR/       # Auto-created at runtime under Nebo's appdata — persistent data, separate from code
 ```
 
 ### What Each File Does
@@ -65,11 +65,10 @@ my-app/
   "name": "@acme/agents/deal-tracker",
   "version": "1.0.0",
   "description": "Track real estate deals with AI-powered analysis.",
-  "artifact_type": "app",
+  "type": "app",
   "permissions": [
-    "storage:readwrite",
-    "subagent:invoke",
-    "network:outbound"
+    "network:api.example.com",
+    "subagent:market-analyst"
   ],
   "window": {
     "title": "Deal Tracker",
@@ -92,24 +91,23 @@ my-app/
 
 | Field | Description |
 |-------|-------------|
-| `artifact_type` | Should be set to `"app"` for categorization, but it is not validated as required (defaults to empty when omitted). |
+| `type` | Set to `"app"` — this is how Nebo detects an app agent. The legacy spelling `artifact_type` is also accepted for app detection, but the sidecar runtime's manifest parser reads only `type`, so always use `type`. Defaults to empty when omitted. |
 | `description` | One-line description shown in the marketplace and apps page. |
 | `permissions` | Array of permission strings (see below). |
 | `window` | Default window dimensions and title. |
 
 ### Permissions
 
-Permissions use `prefix:scope` format. Declare only what your app needs.
+Permissions use `prefix:scope` format. Declare only what your app needs. Each entry must start with a known prefix (`network:`, `subagent:`, `storage:`, `filesystem:`, `shell:`, `memory:`, `oauth:`, etc.) — an unknown prefix fails manifest validation at launch.
+
+The permissions that are actively enforced at the app API layer:
 
 | Permission | What It Grants |
 |------------|---------------|
-| `storage:readwrite` | Read and write to the app's scoped KV store |
-| `subagent:invoke` | Invoke other agents via the SDK |
-| `network:outbound` | Make HTTP requests through the proxy |
-| `filesystem:read` | Read files from the user's system |
-| `shell:execute` | Run shell commands |
-| `memory:read` | Read agent memories |
-| `oauth:google` | OAuth flow for Google services |
+| `network:{domain}` | Make HTTP requests to that domain through the CORS-free proxy (e.g. `network:api.zillow.com`). Use `network:*` to allow any domain. Checked per-request against the target URL's host. |
+| `subagent:{agentId}` | Invoke that specific agent via `nebo.agents.invoke({ agent })`. Declared per target agent. Invoking the app's own agent needs no permission. |
+
+Other prefixes (`storage:`, `memory:`, `filesystem:`, `shell:`, `oauth:`, …) are accepted by manifest validation but not yet enforced at the app API layer. The storage, agent-invoke, and janus endpoints are instead gated by the app's per-launch auth token (see Environment Variables).
 
 ### Window Config
 
@@ -271,7 +269,7 @@ const unsub = nebo.chat.onMessage((msg) => {
 nebo.chat.unmount();
 ```
 
-The embedded chat uses session key `agent:{agentId}:app` — separate from `nebo.agents.invoke()` which uses `agent:{agentId}:api`. Conversations persist across page reloads.
+The embedded chat uses session key `agent:{agentId}:app` — separate from `nebo.agents.invoke()` which uses `app:{agentId}:api`. Conversations persist across page reloads.
 
 ##### Document-Scoped Sessions (`contextId`)
 
@@ -742,10 +740,10 @@ Your sidecar runs in a sandboxed environment. The injected variables are:
 | `NEBO_APP_ID` | `deal-tracker` | Agent identifier |
 | `NEBO_APP_NAME` | `Deal Tracker` | Display name |
 | `NEBO_APP_VERSION` | `1.0.0` | Manifest version |
-| `NEBO_APP_DIR` | `/Users/me/.nebo/user/agents/deal-tracker` | App root directory |
+| `NEBO_APP_DIR` | `<Nebo data dir>/user/agents/deal-tracker` | App root directory (versioned code dir — read-only in spirit; write to `NEBO_DATA_DIR`) |
 | `NEBO_APP_SOCK` | `...deal-tracker/deal-tracker.sock` | Unix socket path |
-| `NEBO_DATA_DIR` | `~/.nebo/appdata/agents/deal-tracker` | Writable data directory (separate from code — survives upgrades) |
-| `NEBO_API_URL` | `http://127.0.0.1:8420` | Local Nebo API base URL |
+| `NEBO_DATA_DIR` | `<Nebo appdata>/plugins/deal-tracker` | Writable data directory under Nebo's appdata (separate from code — survives upgrades). Always use the env var; never hardcode a path. |
+| `NEBO_API_URL` | `http://127.0.0.1:27895` | Local Nebo API base URL (the port is the running server's port, injected at launch) |
 | `NEBO_APP_TOKEN` | (per-launch token) | Per-launch auth token for calling the Nebo API |
 | `PATH` | system path | Allowlisted system var |
 | `HOME` | user home | Allowlisted system var |
@@ -764,7 +762,7 @@ The sidecar owns its own data in `$NEBO_DATA_DIR`. Common approaches:
 - **SQLite** — use for structured data, queries, or anything beyond trivial CRUD.
 - **File store** — store blobs (uploaded documents, images) as files in the data directory.
 
-The data directory is physically separated from the code directory — it lives at `~/.nebo/appdata/agents/{id}/`, not inside the app's code tree. This means you can safely upgrade or reinstall the app binary without touching your data. The data directory survives sidecar restarts, app updates, reinstalls, and Nebo upgrades. It follows the iOS model: the update system physically cannot reach the data container.
+The data directory is physically separated from the code directory — it lives under Nebo's appdata area (e.g. `~/Library/Application Support/Nebo/appdata/...` on macOS), not inside the app's code tree. Always resolve it via `$NEBO_DATA_DIR` rather than constructing the path yourself. The sidecar's working directory is set to the data directory at launch, so relative paths (`./app.db`) also land in persistent storage. This means you can safely upgrade or reinstall the app binary without touching your data. The data directory survives sidecar restarts, app updates, reinstalls, and Nebo upgrades. It follows the iOS model: the update system physically cannot reach the data container.
 
 ### Binary Location
 
@@ -786,8 +784,8 @@ The sidecar must create the Unix socket within the `startup_timeout` (default 10
 
 Nebo checks your sidecar every 15 seconds:
 
-- **Crash recovery** — if the process dies, Nebo broadcasts `app_crashed` and auto-restarts with exponential backoff (10s, 20s, 40s, 80s, 160s, max 5min). Maximum 5 crash restarts per hour.
-- **Binary hot-reload** — if the binary on disk changes (e.g. you rebuild), Nebo gracefully stops the running process, unregisters old tools, restarts the process, and re-discovers tools from the new binary. This is not a crash — no backoff, no limit, immediate restart. The hot-reload change watcher resolves through symlinks, so a dev setup like `bin/my-app → sidecar/target/release/my-app` is detected when the underlying target is rebuilt. Note that the binary that actually launches must be a **regular file** — validation rejects a symlinked binary at launch. Dev workflow: rebuild your binary and the server auto-detects the change for a seamless tool update.
+- **Crash recovery** — if the process dies, Nebo broadcasts `app_crashed` and auto-restarts. The first restart is immediate; subsequent restarts wait with exponential backoff (20s, 40s, 80s, 160s, capped at 5min). Maximum 5 crash restarts per hour.
+- **Binary hot-reload** — if the binary on disk changes (e.g. you rebuild), Nebo gracefully stops the running process, unregisters old tools, restarts the process, and re-registers tools from `agent.json`. This is not a crash — no backoff, no limit, immediate restart. The hot-reload change watcher resolves through symlinks, so a dev setup like `bin/my-app → sidecar/target/release/my-app` is detected when the underlying target is rebuilt. Note that the binary that actually launches must be a **regular file** — validation rejects a symlinked binary at launch. Dev workflow: rebuild your binary and the server auto-detects the change for a seamless tool update.
 - Broadcasts `app_restarted` after recovery (includes `reason: "binary_changed"` for hot-reloads).
 
 ### Lifecycle
@@ -802,60 +800,60 @@ You do not need to manage sidecar lifetime yourself. Nebo handles:
 - **Hot-reload** — restart on binary change (no backoff)
 - **Shutdown** — SIGTERM on Nebo exit
 
-### Tool Discovery (`GET /_tools`)
+### Sidecar Tools (declared in `agent.json`)
 
-When a sidecar starts, Nebo queries `GET /_tools` to discover what API endpoints the sidecar exposes. If the sidecar responds with tool definitions, Nebo registers them as LLM-callable tools — the agent can then call your sidecar's API directly during conversations.
+Tool definitions live in `agent.json`, following the same filesystem-based pattern as skills and plugins — there is no HTTP discovery step. When the sidecar launches, Nebo reads the `tools` array from `agent.json` and registers each entry as an LLM-callable tool — the agent can then call your sidecar's API directly during conversations.
 
-This is optional. If your sidecar doesn't implement `/_tools`, the agent can still be used via the chat embed and SDK, but it won't be able to call your API endpoints as tools during LLM reasoning.
+This is optional. If your `agent.json` declares no tools, the agent can still be used via the chat embed and SDK, but it won't be able to call your API endpoints as tools during LLM reasoning.
 
-#### Implementing `/_tools`
+#### Declaring Tools
 
-Add a `/_tools` route to your `HandleRequest` handler that returns a JSON array of tool definitions:
+Add a `tools` array to your `agent.json`:
 
-```rust
-// In your handle_http match block:
-("GET", &["_tools"]) => {
-    let tools = serde_json::json!([
-        {
-            "name": "list_projects",
-            "description": "List all projects for the current user",
-            "method": "GET",
-            "path": "/projects"
+```json
+{
+  "tools": [
+    {
+      "name": "list_projects",
+      "description": "List all projects for the current user",
+      "method": "GET",
+      "path": "/projects"
+    },
+    {
+      "name": "create_project",
+      "description": "Create a new project with a name and optional description",
+      "method": "POST",
+      "path": "/projects",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string", "description": "Project name" },
+          "description": { "type": "string", "description": "Optional description" }
         },
-        {
-            "name": "create_project",
-            "description": "Create a new project with a name and optional description",
-            "method": "POST",
-            "path": "/projects",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "name": { "type": "string", "description": "Project name" },
-                    "description": { "type": "string", "description": "Optional description" }
-                },
-                "required": ["name"]
-            }
-        },
-        {
-            "name": "get_project",
-            "description": "Get a single project by ID",
-            "method": "GET",
-            "path": "/projects/{id}"
-        },
-        {
-            "name": "delete_project",
-            "description": "Delete a project by ID",
-            "method": "DELETE",
-            "path": "/projects/{id}"
-        }
-    ]);
-    json_response(200, &tools)
+        "required": ["name"]
+      }
+    },
+    {
+      "name": "get_project",
+      "description": "Get a single project by ID",
+      "method": "GET",
+      "path": "/projects/{id}"
+    },
+    {
+      "name": "delete_project",
+      "description": "Delete a project by ID",
+      "method": "DELETE",
+      "path": "/projects/{id}"
+    }
+  ]
 }
 ```
 
+Your sidecar just implements the corresponding routes in `HandleRequest` — no `/_tools` endpoint is needed. (Sidecar paths starting with `_` are reserved for Nebo's internal use and are blocked from external HTTP clients.)
+
 #### Tool Definition Schema
 
-Each tool in the array has these fields:
+Each entry in the `tools` array has these fields:
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
@@ -882,13 +880,12 @@ The LLM calls: `get_document(id: "doc-123")` → Nebo sends `GET /documents/doc-
 
 #### How It Works
 
-1. Sidecar starts → Nebo calls `GET /_tools` via gRPC `HandleRequest`
-2. Sidecar returns `200` with JSON array of tool definitions
-3. Nebo registers each tool **per-agent** in the global tool registry via `register_for_agent(agent_id, tool)` — the LLM sees `list_projects(...)`, `get_document(id: "...")`, etc. directly
-4. For `GET` requests, non-path input parameters are sent as query strings
-5. For `POST`/`PUT` requests, input parameters (minus path params) are sent as the JSON body
-6. Tool discovery runs again automatically when the sidecar restarts (crash recovery or binary hot-reload)
-7. On sidecar shutdown, all registered tools are cleaned up via `unregister_agent_tools(agent_id)`
+1. Sidecar starts → Nebo reads the `tools` array from `agent.json`
+2. Nebo registers each tool **per-agent** in the global tool registry — the LLM sees `list_projects(...)`, `get_document(id: "...")`, etc. directly
+3. For `GET` requests, non-path input parameters are sent as query strings
+4. For `POST`/`PUT` requests, input parameters (minus path params) are sent as the JSON body
+5. Tools are re-registered automatically when the sidecar restarts (crash recovery or binary hot-reload)
+6. On sidecar shutdown, all registered tools are unregistered
 
 Sidecar tools bypass the contextual tool filter — they are always included for their owning agent regardless of conversation context. Tool calls are routed to the sidecar through `GrpcSidecarCaller`, which translates tool invocations into gRPC `HandleRequest` calls on the Unix socket.
 
@@ -899,8 +896,8 @@ Sidecar tools bypass the contextual tool filter — they are always included for
 - Keep descriptions clear and concise — the LLM uses them to decide which tool to call
 - Include `input_schema` for POST/PUT actions so the LLM knows what parameters to provide
 - Path parameter names in `input_schema.properties` should match the `{placeholder}` in the path
-- Return `404` or an empty array `[]` from `/_tools` if your sidecar has no tools — Nebo handles both gracefully
-- Avoid tool names that collide with Nebo's core tools (`agent`, `skill`, `event`, `message`, `web`, `os`)
+- Omit the `tools` array entirely if your sidecar has no tools
+- Avoid tool names that collide with Nebo's core domain tools (`agent`, `os`, `web`, `loop`, `message`, `event`, `skill`, `work`)
 
 ### Skills
 
@@ -1012,7 +1009,7 @@ By default, all sidecar tools and skills are available in every embed chat conte
 ```
 
 Each scope declares:
-- **tools** — which sidecar tool names are active (subset of what `/_tools` returns)
+- **tools** — which sidecar tool names are active (subset of the `tools` declared in agent.json)
 - **skills** — which skill refs to load into the prompt (subset of top-level `skills` array)
 - **plugins** — additional plugins to pre-activate (merged with global `requires.plugins`)
 
@@ -1060,7 +1057,7 @@ When a scope is active, the runner limits available tools, skills, and plugins t
 
 ### Logging
 
-Sidecar stdout and stderr are captured to the app's data directory in `appdata` — `<appdata>/agents/{id}/sidecar.log` (e.g. `~/Library/Application Support/Nebo/appdata/agents/{id}/sidecar.log`), in append mode. `{app_dir}/data/sidecar.log` is only used as a fallback when the appdata directory can't be resolved. Check this file when debugging startup issues.
+Sidecar stdout and stderr are captured to the app's data directory — `$NEBO_DATA_DIR/sidecar.log` (e.g. `~/Library/Application Support/Nebo/appdata/plugins/{slug}/sidecar.log`), in append mode. `{app_dir}/data/sidecar.log` is only used as a fallback when the appdata directory can't be resolved. Check this file when debugging startup issues.
 
 ### App Agent Redaction
 
@@ -1116,8 +1113,8 @@ No special configuration needed. Build your app normally and place the output in
   "name": "@nebo/agents/journal",
   "version": "1.0.0",
   "description": "AI-powered journal with reflection prompts.",
-  "artifact_type": "app",
-  "permissions": ["storage:readwrite", "subagent:invoke"],
+  "type": "app",
+  "permissions": [],
   "window": {
     "title": "Journal",
     "width": 700,
@@ -1188,8 +1185,10 @@ This is a complete app — no sidecar needed. The agent provides AI reflection, 
 
 ### 1. Create the directory
 
+App directories live in the platform-native `user/agents/` directory (macOS: `~/Library/Application Support/Nebo/user/agents/`, Linux: `~/.local/share/nebo/user/agents/`, Windows: `%APPDATA%\Nebo\user\agents\`; `NEBO_HOME` overrides the root):
+
 ```bash
-mkdir -p ~/.nebo/user/agents/my-app/ui
+mkdir -p "$HOME/Library/Application Support/Nebo/user/agents/my-app/ui"
 ```
 
 ### 2. Write manifest.json, AGENT.md, and ui/index.html
@@ -1200,10 +1199,10 @@ See examples above.
 
 ```bash
 # Work from a source repo, symlink into Nebo
-ln -s /path/to/my-app ~/.nebo/user/agents/my-app
+ln -s /path/to/my-app "$HOME/Library/Application Support/Nebo/user/agents/my-app"
 ```
 
-The filesystem watcher detects new symlinks automatically — the app appears in the Apps tab within seconds. Changes to your source directory take effect immediately — no copy step, no restart.
+The filesystem watcher detects new symlinks automatically — the app appears in the Apps tab within seconds, with no copy step. Note that the watcher does not follow symlinks *into* the target directory, so edits made in your source repo often won't fire a reload on their own. Touch the symlink, call `POST /agents/{id}/reload`, or restart Nebo to pick them up. (UI files under `ui/` are read per request, so frontend edits always show on refresh — this affects `AGENT.md` and `agent.json` changes.)
 
 ### 4. Build the sidecar (if needed)
 
