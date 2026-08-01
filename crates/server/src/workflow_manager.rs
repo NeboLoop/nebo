@@ -1848,6 +1848,97 @@ async fn review_failed_workflow_run(
     }
 }
 
+/// Resolve a tool-authored workflow definition's trigger. Accepts a `trigger`
+/// object ({type, ...}) or a top-level `schedule` (cron string, or a
+/// {cron: "..."} map). A trigger that is PRESENT but malformed is a hard
+/// error, never a silent downgrade to manual — that downgrade is how an agent
+/// shipped seven never-firing workflows while reporting "active with proper
+/// schedules" (2026-08-01). Manual stays the default only when no trigger was
+/// asked for at all. Schedule crons must parse once normalized; human phrases
+/// ("weekdays at 9am") are fine — that's what normalize_cron is for.
+fn resolve_tool_trigger(
+    def: &serde_json::Value,
+) -> Result<(String, serde_json::Value), String> {
+    const TRIGGER_TYPES: &[&str] =
+        &["schedule", "heartbeat", "event", "watch", "folder", "manual"];
+    let (trigger_type, mut trigger_config): (String, serde_json::Value) =
+        if let Some(t) = def.get("trigger") {
+            let ty = t
+                .as_object()
+                .and_then(|o| o.get("type"))
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| {
+                    format!(
+                        "trigger must be an object with a \"type\" of: {} — got: {}",
+                        TRIGGER_TYPES.join(", "),
+                        t
+                    )
+                })?;
+            if !TRIGGER_TYPES.contains(&ty) {
+                return Err(format!(
+                    "unknown trigger type '{}' — valid: {}",
+                    ty,
+                    TRIGGER_TYPES.join(", ")
+                ));
+            }
+            (ty.to_string(), t.clone())
+        } else if let Some(s) = def.get("schedule") {
+            let cron = s
+                .as_str()
+                .or_else(|| s.get("cron").and_then(|v| v.as_str()))
+                .ok_or_else(|| {
+                    format!(
+                        "schedule must be a cron string like \"0 9 * * MON-FRI\" \
+                         (or {{\"cron\": \"...\"}}) — got: {}",
+                        s
+                    )
+                })?;
+            if cron.is_empty() {
+                ("manual".to_string(), serde_json::json!({}))
+            } else {
+                ("schedule".to_string(), serde_json::json!({ "cron": cron }))
+            }
+        } else {
+            ("manual".to_string(), serde_json::json!({}))
+        };
+
+    if trigger_type == "schedule" {
+        if trigger_config.get("cron").and_then(|v| v.as_str()).is_none() {
+            // Trigger-object form may carry the expression in the human
+            // `schedule` field — promote it so storage normalizes it.
+            if let Some(s) = trigger_config
+                .get("schedule")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+            {
+                trigger_config["cron"] = serde_json::json!(s);
+            }
+        }
+        let raw = trigger_config
+            .get("cron")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if raw.is_empty() {
+            return Err(
+                "schedule trigger requires a cron expression, e.g. \
+                 {\"type\": \"schedule\", \"cron\": \"0 9 * * MON-FRI\"}"
+                    .to_string(),
+            );
+        }
+        let normalized = tools::PersonaTool::normalize_cron(raw);
+        if normalized.parse::<cron::Schedule>().is_err() {
+            return Err(format!(
+                "invalid cron expression {:?} (normalized to {:?}) — use standard \
+                 5-field cron like \"0 9 * * MON-FRI\" or a phrase like \
+                 \"weekdays at 9am\"",
+                raw, normalized
+            ));
+        }
+    }
+    Ok((trigger_type, trigger_config))
+}
+
 /// Shared create/update body for caller-owned workflow bindings: parse the
 /// agent-authored definition, build the binding, persist it everywhere
 /// (frontmatter, tracking row, triggers, agent.json), and go live. The
@@ -1914,25 +2005,7 @@ async fn save_binding(
                 );
             }
 
-            // Resolve the trigger. Accept either a `trigger` object ({type, ...})
-            // or a top-level `schedule` cron string; default to manual.
-            let (trigger_type, trigger_config): (String, serde_json::Value) =
-                if let Some(t) = def.get("trigger").filter(|t| t.is_object()) {
-                    let ty = t
-                        .get("type")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("manual")
-                        .to_string();
-                    (ty, t.clone())
-                } else if let Some(cron) = def.get("schedule").and_then(|v| v.as_str()) {
-                    if cron.is_empty() {
-                        ("manual".to_string(), serde_json::json!({}))
-                    } else {
-                        ("schedule".to_string(), serde_json::json!({ "cron": cron }))
-                    }
-                } else {
-                    ("manual".to_string(), serde_json::json!({}))
-                };
+            let (trigger_type, trigger_config) = resolve_tool_trigger(&def)?;
 
             let binding_name = slug(name);
             if binding_name.is_empty() {
@@ -2417,5 +2490,60 @@ fn post_automation_message(store: &db::Store, hub: &ClientHub, session_key: &str
         Err(e) => {
             warn!(session = %session_key, error = %e, "failed to post automation message to chat");
         }
+    }
+}
+
+#[cfg(test)]
+mod trigger_tests {
+    use super::resolve_tool_trigger;
+
+    #[test]
+    fn schedule_map_form_is_accepted_not_degraded() {
+        // The Dexter incident shape: schedule passed as a map
+        let def = serde_json::json!({"schedule": {"cron": "0 14,16,18 * * 6"}});
+        let (ty, cfg) = resolve_tool_trigger(&def).unwrap();
+        assert_eq!(ty, "schedule");
+        assert_eq!(cfg["cron"], "0 14,16,18 * * 6");
+    }
+
+    #[test]
+    fn malformed_schedule_is_a_hard_error() {
+        let def = serde_json::json!({"schedule": {"at": "8am"}});
+        assert!(resolve_tool_trigger(&def).is_err());
+        let def = serde_json::json!({"schedule": 7});
+        assert!(resolve_tool_trigger(&def).is_err());
+    }
+
+    #[test]
+    fn trigger_without_type_is_a_hard_error() {
+        let def = serde_json::json!({"trigger": {"cron": "0 9 * * *"}});
+        assert!(resolve_tool_trigger(&def).is_err());
+        let def = serde_json::json!({"trigger": {"type": "chron"}});
+        assert!(resolve_tool_trigger(&def).is_err());
+    }
+
+    #[test]
+    fn schedule_trigger_requires_parseable_cron() {
+        let def = serde_json::json!({"trigger": {"type": "schedule"}});
+        assert!(resolve_tool_trigger(&def).is_err());
+        let def = serde_json::json!({"trigger": {"type": "schedule", "cron": "not a cron"}});
+        assert!(resolve_tool_trigger(&def).is_err());
+        // Human phrase normalizes and passes
+        let def = serde_json::json!({"trigger": {"type": "schedule", "schedule": "weekdays at 9am"}});
+        let (ty, cfg) = resolve_tool_trigger(&def).unwrap();
+        assert_eq!(ty, "schedule");
+        assert!(cfg["cron"].as_str().is_some());
+    }
+
+    #[test]
+    fn no_trigger_stays_manual_and_valid_forms_pass() {
+        let (ty, _) = resolve_tool_trigger(&serde_json::json!({})).unwrap();
+        assert_eq!(ty, "manual");
+        let def = serde_json::json!({"schedule": "0 9 * * MON-FRI"});
+        let (ty, _) = resolve_tool_trigger(&def).unwrap();
+        assert_eq!(ty, "schedule");
+        let def = serde_json::json!({"trigger": {"type": "heartbeat", "interval": "30m"}});
+        let (ty, _) = resolve_tool_trigger(&def).unwrap();
+        assert_eq!(ty, "heartbeat");
     }
 }
