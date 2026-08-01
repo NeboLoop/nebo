@@ -9,6 +9,7 @@ pub mod deps;
 pub mod entity_config;
 pub mod handlers;
 mod heartbeat;
+pub mod import;
 pub mod middleware;
 mod migration;
 mod plugin_commands;
