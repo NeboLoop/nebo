@@ -1432,7 +1432,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     agent::memory_consolidation::spawn_sweep(
         store.clone(),
         runner.providers(),
-        embedding_provider,
+        embedding_provider.clone(),
     );
 
     // Create event bus and dispatcher for workflow-to-workflow events
@@ -1762,6 +1762,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     let state = AppState {
         config: cfg.clone(),
         store,
+        embedding_provider: embedding_provider.clone(),
         auth: auth_service,
         hub,
         runner,

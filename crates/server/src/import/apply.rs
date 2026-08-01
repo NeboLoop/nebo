@@ -38,6 +38,7 @@ pub struct ImportOutcome {
     pub skills: usize,
     pub mcp_servers: usize,
     pub auth_profiles: usize,
+    pub memories: usize,
     /// Id + name of the created employee, when one was created.
     pub agent_id: Option<String>,
     pub agent_name: Option<String>,
@@ -69,6 +70,7 @@ pub fn apply_hermes(t: &ApplyTargets, root: &Path) -> Result<ImportOutcome, Nebo
     apply_mcp(t, root, &mut out)?;
     apply_skills(t, root, &mut out);
     apply_agent(t, root, &mut out)?;
+    apply_memory(t, root, &mut out)?;
     apply_provider_keys(t, root, &mut out)?;
     note_deferred(root, &mut out);
     Ok(out)
@@ -195,6 +197,105 @@ fn apply_agent(t: &ApplyTargets, root: &Path, out: &mut ImportOutcome) -> Result
     Ok(())
 }
 
+/// `memories/*.md` → discrete Nebo memories, scoped to the imported employee —
+/// the high-fidelity path: each parsed entry becomes its own searchable row
+/// through the same `upsert_memory` pathway native extraction uses, and the
+/// boot/apply embedding backfill vectors them like any other memory. `USER.md`
+/// (the user profile) lands in `tacit/preferences`; everything else (the
+/// agent's own notes, `MEMORY.md`) in `tacit/general`.
+fn apply_memory(t: &ApplyTargets, root: &Path, out: &mut ImportOutcome) -> Result<(), NeboError> {
+    let files = hermes::memory_entries(root);
+    if files.is_empty() {
+        return Ok(());
+    }
+    // Memories attach to the imported employee's scope. If the employee wasn't
+    // created this run (already existed), find it; with no employee at all
+    // there is no scope to attach to — report, don't guess.
+    let agent_id = match &out.agent_id {
+        Some(id) => id.clone(),
+        None => match t
+            .store
+            .list_agents(i64::MAX, 0)?
+            .into_iter()
+            .find(|a| a.name == "Hermes")
+        {
+            Some(a) => a.id,
+            None => {
+                out.skipped
+                    .push("memory: no imported employee to attach to".into());
+                return Ok(());
+            }
+        },
+    };
+    let owner = t.store.ensure_local_user_id()?;
+    let scope = agent::memory::agent_memory_scope(&owner, &agent_id);
+
+    let mut already = 0usize;
+    for (file, entries) in files {
+        let namespace = if file == "USER.md" {
+            "tacit/preferences"
+        } else {
+            "tacit/general"
+        };
+        for entry in entries {
+            let value = agent::sanitize::sanitize_memory_value(&entry);
+            let key = agent::sanitize::sanitize_memory_key(&memory_key(&value));
+            if t.store
+                .get_memory_by_key_and_user(namespace, &key, &scope)?
+                .is_some()
+            {
+                already += 1;
+                continue;
+            }
+            let metadata = serde_json::json!({
+                "confidence": 0.7,
+                "source": "hermes-import",
+            })
+            .to_string();
+            t.store.upsert_memory(
+                namespace,
+                &key,
+                &value,
+                Some(r#"["imported","hermes"]"#),
+                Some(&metadata),
+                &scope,
+            )?;
+            out.memories += 1;
+        }
+    }
+    if already > 0 {
+        out.skipped
+            .push(format!("memory: {already} entries already imported"));
+    }
+    Ok(())
+}
+
+/// Deterministic memory key from an entry's content: a short slug plus a
+/// content hash, so re-importing the same entry hits the same row (idempotent)
+/// while distinct entries can never collide.
+fn memory_key(value: &str) -> String {
+    let slug: String = value
+        .split_whitespace()
+        .take(5)
+        .collect::<Vec<_>>()
+        .join("-")
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for b in value.as_bytes() {
+        hash ^= u64::from(*b);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{}-{hash:08x}", slug.trim_matches('-'))
+}
+
 /// Known LLM provider keys from `.env` → `auth_profiles`, matching the
 /// existing provider-settings pathway (which stores `api_key` as given —
 /// readers pass it straight to providers, so an encrypted value would break
@@ -260,10 +361,6 @@ fn apply_provider_keys(
 /// Record what this slice deliberately defers, so the receipt never implies a
 /// clean copy of things that didn't move.
 fn note_deferred(root: &Path, out: &mut ImportOutcome) {
-    if root.join("memories").is_dir() {
-        out.skipped
-            .push("memory: imported by the memory slice (parse + re-embed)".into());
-    }
     if root.join("state.db").is_file() {
         out.skipped
             .push("conversation history: imported by the history slice".into());
@@ -310,6 +407,18 @@ pub async fn apply(state: &crate::state::AppState, root: &Path) -> Result<Import
     }
     if outcome.mcp_servers > 0 {
         crate::handlers::integrations::sync_bridge(state).await;
+    }
+    // Vector the imported memories through the SAME backfill boot runs —
+    // batched and rate-limited inside. Without a configured embedding
+    // provider FTS recall still works immediately; vectors arrive when a
+    // provider is configured and the next boot backfill runs.
+    if outcome.memories > 0 {
+        if let Some(ep) = state.embedding_provider.clone() {
+            let store = state.store.clone();
+            tokio::spawn(async move {
+                agent::memory::backfill_missing_embeddings(store, ep).await;
+            });
+        }
     }
     Ok(outcome)
 }
@@ -362,6 +471,7 @@ mod tests {
         assert_eq!(out.skills, 2);
         assert_eq!(out.agents, 1);
         assert_eq!(out.auth_profiles, 1);
+        assert_eq!(out.memories, 3);
 
         // MCP rows landed with the right transport + normalized auth.
         let integrations = f.store.list_mcp_integrations().unwrap();
@@ -391,6 +501,26 @@ mod tests {
         assert!(dir.join("manifest.json").is_file());
         assert_eq!(agent.napp_path.as_deref(), Some(&*dir.to_string_lossy()));
 
+        // Memories parsed into discrete rows scoped to the imported employee,
+        // in the right namespaces, carrying provenance.
+        let owner = f.store.ensure_local_user_id().unwrap();
+        let scope = agent::memory::agent_memory_scope(&owner, id);
+        let in_scope = |ns: &str| {
+            f.store
+                .list_memories_by_namespace(ns, 100, 0)
+                .unwrap()
+                .into_iter()
+                .filter(|m| m.user_id == scope)
+                .collect::<Vec<_>>()
+        };
+        let general = in_scope("tacit/general");
+        assert_eq!(general.len(), 2);
+        assert!(general.iter().any(|m| m.value.contains("prefers dark mode")));
+        let prefs = in_scope("tacit/preferences");
+        assert_eq!(prefs.len(), 1);
+        assert!(prefs[0].value.contains("name is Sam"));
+        assert!(prefs[0].metadata.as_deref().unwrap().contains("hermes-import"));
+
         // Provider key imported to the matching profile; channel token deferred.
         let profiles = f.store.list_auth_profiles().unwrap();
         let anthropic = profiles.iter().find(|p| p.provider == "anthropic").unwrap();
@@ -398,7 +528,6 @@ mod tests {
         assert!(out.skipped.iter().any(|s| s.starts_with("TELEGRAM_TOKEN")));
 
         // Deferred slices are named, not silently dropped.
-        assert!(out.skipped.iter().any(|s| s.starts_with("memory:")));
         assert!(out.skipped.iter().any(|s| s.starts_with("conversation history:")));
         assert!(out.skipped.iter().any(|s| s.starts_with("cron jobs:")));
     }
@@ -414,6 +543,7 @@ mod tests {
         assert_eq!(second.skills, 0);
         assert_eq!(second.agents, 0);
         assert_eq!(second.auth_profiles, 0);
+        assert_eq!(second.memories, 0);
 
         assert_eq!(f.store.list_mcp_integrations().unwrap().len(), 3);
         assert_eq!(f.store.count_agents().unwrap(), 1);

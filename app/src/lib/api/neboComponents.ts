@@ -1902,6 +1902,7 @@ export interface ImportOutcome {
 	skills: number
 	mcpServers: number
 	authProfiles: number
+	memories: number
 	agentId: string | null
 	agentName: string | null
 	skipped: string[]

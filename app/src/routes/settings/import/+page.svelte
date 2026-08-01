@@ -194,6 +194,7 @@
           agents: outcome.agents,
           skills: outcome.skills,
           mcp: outcome.mcpServers,
+          memories: outcome.memories,
           keys: outcome.authProfiles,
         },
       })}

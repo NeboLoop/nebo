@@ -138,35 +138,72 @@ fn scan_persona(root: &Path, m: &mut ImportManifest) {
     });
 }
 
-/// `memories/*.md` → Nebo memory. Hermes delimits internal entries with the
-/// section sign (`§`); we estimate the entry count so the high-fidelity import
-/// (parse into discrete, re-embedded memories) has a target to show.
+/// `memories/*.md` → Nebo memory, one manifest row per file with the real
+/// parsed entry count (the same parse the apply step uses).
 fn scan_memory(root: &Path, m: &mut ImportManifest) {
+    for (file, entries) in memory_entries(root) {
+        m.push(ImportItem {
+            kind: ItemKind::Memory,
+            tier: TrustTier::Content,
+            name: file.clone(),
+            detail: format!("{} entries → parsed + re-embedded", entries.len()),
+            target: "Nebo memory",
+            source_path: format!("memories/{file}"),
+        });
+    }
+}
+
+/// Parse every `memories/*.md` into discrete entries: `(file_name, entries)`.
+/// Hermes delimits entries with the section sign (`§`); files without `§`
+/// fall back to blank-line paragraphs. Markdown headings are structure, not
+/// memories, and are dropped. Shared by scan (counts) and apply (writes) so
+/// the dry-run can never promise a different import than the apply performs.
+pub(super) fn memory_entries(root: &Path) -> Vec<(String, Vec<String>)> {
     let dir = root.join("memories");
-    let Ok(entries) = fs::read_dir(&dir) else {
-        return;
+    let Ok(dir_entries) = fs::read_dir(&dir) else {
+        return Vec::new();
     };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("md") {
+    let mut out = Vec::new();
+    let mut paths: Vec<PathBuf> = dir_entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("md"))
+        .collect();
+    paths.sort();
+    for path in paths {
+        let Ok(text) = fs::read_to_string(&path) else {
+            continue;
+        };
+        let raw: Vec<&str> = if text.contains('§') {
+            text.split('§').collect()
+        } else {
+            text.split("\n\n").collect()
+        };
+        let entries: Vec<String> = raw
+            .into_iter()
+            .map(|chunk| {
+                // Drop heading lines; keep the prose.
+                chunk
+                    .lines()
+                    .filter(|l| !l.trim_start().starts_with('#'))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+                    .trim()
+                    .to_string()
+            })
+            .filter(|e| !e.is_empty())
+            .collect();
+        if entries.is_empty() {
             continue;
         }
-        let text = fs::read_to_string(&path).unwrap_or_default();
-        let count = text.matches('§').count().max(1);
         let name = path
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("memory")
             .to_string();
-        m.push(ImportItem {
-            kind: ItemKind::Memory,
-            tier: TrustTier::Content,
-            name: name.clone(),
-            detail: format!("~{count} entries → parsed + re-embedded"),
-            target: "Nebo memory",
-            source_path: format!("memories/{name}"),
-        });
+        out.push((name, entries));
     }
+    out
 }
 
 /// `skills/**/SKILL.md` → Nebo skills. A skill that bundles a `scripts/` dir is
