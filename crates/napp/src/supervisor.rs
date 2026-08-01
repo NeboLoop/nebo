@@ -42,7 +42,9 @@ impl RestartState {
 
         self.restart_count += 1;
         self.last_restart = Instant::now();
-        // Exponential backoff: 10s, 20s, 40s, 80s, 160s (cap at 5min)
+        // Double the gate for the NEXT restart. The first restart is immediate
+        // (last_restart is seeded in the past by new()), so the effective waits
+        // are 20s, 40s, 80s, 160s, capped at 5min.
         self.backoff = (self.backoff * 2).min(Duration::from_secs(300));
     }
 }
