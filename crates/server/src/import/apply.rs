@@ -34,6 +34,15 @@ const PROVIDER_ENV_KEYS: &[(&str, &str)] = &[
     ("DEEPSEEK_API_KEY", "deepseek"),
 ];
 
+/// The Nebo provider a dotenv key maps to, if any. Shared with the scan so
+/// the dry-run lists exactly the keys apply will import — no more, no less.
+pub(super) fn provider_for_env_key(key: &str) -> Option<&'static str> {
+    PROVIDER_ENV_KEYS
+        .iter()
+        .find(|(k, _)| *k == key)
+        .map(|(_, p)| *p)
+}
+
 /// What an apply actually did — the receipt shown after the confirm.
 #[derive(Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -86,6 +95,10 @@ pub(super) struct SourceMessage {
 
 /// One employee normalized out of a foreign install.
 pub(super) struct SourceAgent {
+    /// Stable per-source slug (e.g. the OpenClaw agent id) — part of the
+    /// deterministic chat-id prefix so two agents' same-named session files
+    /// can never collide. Empty for single-agent sources.
+    pub slug: String,
     pub name: String,
     pub description: String,
     /// Persona prose (SOUL.md) — becomes the AGENT.md body and `soul`.
@@ -129,6 +142,10 @@ pub fn apply_hermes(t: &ApplyTargets, root: &Path) -> Result<ImportOutcome, Nebo
 
     if let Ok(text) = fs::read_to_string(root.join(".env")) {
         import_provider_env(t, &text, "Hermes", &mut out)?;
+    }
+    if root.join("auth.json").is_file() {
+        out.skipped
+            .push("auth.json (OAuth records): imported with the channels slice".into());
     }
 
     if root.join("cron").join("jobs.json").is_file() {
@@ -262,15 +279,22 @@ fn import_agent(
 ) -> Result<(), NeboError> {
     let agent_dir = t.user_agents_dir.join(&agent.name);
     let agent_id = if agent_dir.exists() {
-        out.skipped.push(format!(
-            "agent {}: already exists, persona untouched",
-            agent.name
-        ));
-        match existing_agent_id(t, &agent.name)? {
-            Some(id) => id,
+        // Attach follow-up data ONLY to an employee this importer created —
+        // verified by the id in the dir's manifest.json, never by display
+        // name, so a pre-existing unrelated agent that happens to share the
+        // name can't inherit a stranger's memory and conversations.
+        match import_owned_agent_id(t, &agent_dir)? {
+            Some(id) => {
+                out.skipped.push(format!(
+                    "agent {}: already imported, persona untouched",
+                    agent.name
+                ));
+                id
+            }
             None => {
                 out.skipped.push(format!(
-                    "agent {}: directory exists but no DB row — memory and history not attached",
+                    "agent {}: an agent with this name already exists and was not created \
+                     by an import — nothing attached to it",
                     agent.name
                 ));
                 return Ok(());
@@ -322,6 +346,10 @@ fn import_agent(
             "version": "1.0.0",
             "type": "agent",
             "description": agent.description,
+            // Ownership marker: import_owned_agent_id attaches follow-up
+            // memory/history only to dirs carrying this field, so imports can
+            // never adopt a user-created agent that shares the name.
+            "importedFrom": source_tag,
         });
         fs::write(
             agent_dir.join("manifest.json"),
@@ -340,17 +368,39 @@ fn import_agent(
     };
 
     import_memory_files(t, &agent_id, &agent.memory_files, source_tag, out)?;
-    import_conversations(t, &agent_id, source_tag, &agent.conversations, out)?;
+    // Chat ids carry the agent slug so two agents' same-named session files
+    // can never collide (an id collision silently drops the second agent's
+    // conversation as "already imported").
+    let chat_prefix = if agent.slug.is_empty() {
+        source_tag.to_string()
+    } else {
+        format!("{source_tag}-{}", agent.slug)
+    };
+    import_conversations(t, &agent_id, &chat_prefix, &agent.conversations, out)?;
     Ok(())
 }
 
-/// Look up a previously imported employee by name (re-import runs).
-fn existing_agent_id(t: &ApplyTargets, name: &str) -> Result<Option<String>, NeboError> {
-    Ok(t.store
-        .list_agents(i64::MAX, 0)?
-        .into_iter()
-        .find(|a| a.name == name)
-        .map(|a| a.id))
+/// The employee id a previous IMPORT created for this directory, verified by
+/// the `importedFrom` marker + id in its manifest.json. `None` for any dir the
+/// importer didn't create (user-created or marketplace agents also live under
+/// `user/agents/` with a manifest — the marker is what separates them).
+fn import_owned_agent_id(
+    t: &ApplyTargets,
+    agent_dir: &Path,
+) -> Result<Option<String>, NeboError> {
+    let Ok(text) = fs::read_to_string(agent_dir.join("manifest.json")) else {
+        return Ok(None);
+    };
+    let Ok(manifest) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return Ok(None);
+    };
+    if manifest.get("importedFrom").and_then(|v| v.as_str()).is_none() {
+        return Ok(None);
+    }
+    let Some(id) = manifest.get("id").and_then(|v| v.as_str()) else {
+        return Ok(None);
+    };
+    Ok(t.store.get_agent(id)?.map(|a| a.id))
 }
 
 /// Memory files → discrete Nebo memories scoped to the employee — the
@@ -413,7 +463,7 @@ fn import_memory_files(
 fn import_conversations(
     t: &ApplyTargets,
     agent_id: &str,
-    source_tag: &str,
+    chat_prefix: &str,
     conversations: &[SourceConversation],
     out: &mut ImportOutcome,
 ) -> Result<(), NeboError> {
@@ -428,7 +478,7 @@ fn import_conversations(
     let mut skipped_roles = 0usize;
     for c in conversations {
         let chat_id = format!(
-            "{source_tag}-{}",
+            "{chat_prefix}-{}",
             c.id.chars()
                 .map(|ch| if ch.is_alphanumeric() || ch == '-' { ch } else { '-' })
                 .collect::<String>()
@@ -447,26 +497,23 @@ fn import_conversations(
         let session_name = format!("agent:{agent_id}:thread:{chat_id}");
         t.store
             .create_chat_imported(&chat_id, &session_name, title, created, updated)?;
-        for (i, msg) in c.messages.iter().enumerate() {
-            // chat_messages constrains role; anything else is source-internal
-            // (compression markers etc.) and doesn't belong in the transcript.
-            if !matches!(msg.role.as_str(), "user" | "assistant" | "system" | "tool") {
-                skipped_roles += 1;
-                continue;
+        // One conversation is all-or-nothing: a partial chat would be
+        // permanently skipped as "already imported" on the next run, so on
+        // any message failure the stub is deleted (messages follow via the
+        // FK cascade) and the failure lands in the receipt — the rest of the
+        // import continues.
+        match insert_messages(t, &chat_id, created, c, &mut skipped_roles) {
+            Ok(n) => {
+                out.chat_messages += n;
+                out.chats += 1;
             }
-            let ts = msg.timestamp.unwrap_or(created + i as i64);
-            t.store.create_chat_message_imported(
-                &format!("{chat_id}-m{i}"),
-                &chat_id,
-                &msg.role,
-                &msg.content,
-                msg.tool_calls.as_deref(),
-                None,
-                ts,
-            )?;
-            out.chat_messages += 1;
+            Err(e) => {
+                let _ = t.store.delete_chat(&chat_id);
+                out.skipped.push(format!(
+                    "conversation \"{title}\": import failed and was rolled back ({e})"
+                ));
+            }
         }
-        out.chats += 1;
     }
     if already > 0 {
         out.skipped.push(format!(
@@ -479,6 +526,37 @@ fn import_conversations(
         ));
     }
     Ok(())
+}
+
+/// Insert one conversation's messages; returns how many landed. Roles outside
+/// the `chat_messages` constraint (source-internal compression markers etc.)
+/// are counted and skipped, not guessed at.
+fn insert_messages(
+    t: &ApplyTargets,
+    chat_id: &str,
+    created: i64,
+    c: &SourceConversation,
+    skipped_roles: &mut usize,
+) -> Result<usize, NeboError> {
+    let mut inserted = 0usize;
+    for (i, msg) in c.messages.iter().enumerate() {
+        if !matches!(msg.role.as_str(), "user" | "assistant" | "system" | "tool") {
+            *skipped_roles += 1;
+            continue;
+        }
+        let ts = msg.timestamp.unwrap_or(created + i as i64);
+        t.store.create_chat_message_imported(
+            &format!("{chat_id}-m{i}"),
+            chat_id,
+            &msg.role,
+            &msg.content,
+            msg.tool_calls.as_deref(),
+            None,
+            ts,
+        )?;
+        inserted += 1;
+    }
+    Ok(inserted)
 }
 
 /// Known LLM provider keys from dotenv-style text → `auth_profiles`, matching
@@ -759,8 +837,9 @@ mod tests {
         assert_eq!(anthropic.api_key, "sk-secretxxx");
         assert!(out.skipped.iter().any(|s| s.starts_with("TELEGRAM_TOKEN")));
 
-        // Deferred slices are named, not silently dropped.
+        // Deferred slices are named, not silently dropped — including auth.json.
         assert!(out.skipped.iter().any(|s| s.starts_with("cron jobs:")));
+        assert!(out.skipped.iter().any(|s| s.starts_with("auth.json")));
     }
 
     #[test]
@@ -854,15 +933,19 @@ mod tests {
 
         // History: one conversation per agent from sessions/*.jsonl, with
         // Anthropic-style content blocks flattened and junk lines skipped.
+        // Both agents' session files share the stem "s1" — the agent-scoped
+        // chat ids keep them from colliding (collision regression).
         assert_eq!(out.chats, 2);
         assert_eq!(out.chat_messages, 4);
-        let chat = f.store.get_chat("openclaw-m1").unwrap().unwrap();
+        let chat = f.store.get_chat("openclaw-main-s1").unwrap().unwrap();
         assert_eq!(chat.title, "Find the report");
         assert_eq!(
             chat.session_name.as_deref(),
-            Some(format!("agent:{}:thread:openclaw-m1", oc.id).as_str())
+            Some(format!("agent:{}:thread:openclaw-main-s1", oc.id).as_str())
         );
-        let msgs = f.store.get_chat_messages("openclaw-m1").unwrap();
+        let scout_chat = f.store.get_chat("openclaw-scout-s1").unwrap().unwrap();
+        assert_eq!(scout_chat.title, "Watch the feed");
+        let msgs = f.store.get_chat_messages("openclaw-main-s1").unwrap();
         assert_eq!(msgs.len(), 2);
         assert_eq!(msgs[1].content, "Found it.");
         assert_eq!(msgs[0].created_at, 1700200000);
@@ -896,6 +979,53 @@ mod tests {
         let before = snapshot(&f.root);
         apply_openclaw(&targets(&f), &f.root).unwrap();
         assert_eq!(before, snapshot(&f.root));
+    }
+
+    #[test]
+    fn preexisting_agent_of_same_name_inherits_nothing() {
+        let f = setup();
+        // A user-created (non-import) agent dir named "Hermes" already exists —
+        // no importedFrom marker. The import must not attach a stranger's
+        // memory or conversations to it.
+        fs::create_dir_all(f.agents_dir.join("Hermes")).unwrap();
+        fs::write(
+            f.agents_dir.join("Hermes/manifest.json"),
+            r#"{"id":"user-made-id","name":"Hermes","type":"agent"}"#,
+        )
+        .unwrap();
+
+        let out = apply_hermes(&targets(&f), &f.root).unwrap();
+        assert_eq!(out.agents, 0);
+        assert_eq!(out.memories, 0);
+        assert_eq!(out.chats, 0);
+        assert!(out
+            .skipped
+            .iter()
+            .any(|s| s.contains("not created by an import")));
+    }
+
+    #[test]
+    fn failed_conversation_rolls_back_and_can_retry() {
+        let f = setup();
+        // Poison message id "hermes-sess-1-m0" (chat_messages ids are a global
+        // PK): sess-1's import fails mid-conversation, must roll back its stub
+        // chat, and the rest of the import must continue.
+        f.store.create_chat("poison", "poison").unwrap();
+        f.store
+            .create_chat_message("hermes-sess-1-m0", "poison", "user", "occupied", None)
+            .unwrap();
+
+        let out = apply_hermes(&targets(&f), &f.root).unwrap();
+        assert!(out
+            .skipped
+            .iter()
+            .any(|s| s.contains("rolled back")));
+        // No stub left behind — a re-run isn't permanently poisoned into
+        // skipping the conversation as "already imported".
+        assert!(f.store.get_chat("hermes-sess-1").unwrap().is_none());
+        // The other conversation still imported.
+        assert!(f.store.get_chat("hermes-sess-2").unwrap().is_some());
+        assert_eq!(out.chats, 1);
     }
 
     fn snapshot(root: &Path) -> Vec<(PathBuf, u64)> {

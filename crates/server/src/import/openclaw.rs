@@ -143,7 +143,24 @@ pub fn scan(root: &Path) -> ImportManifest {
         });
     }
 
-    // Credentials: .env keys and the config env block — names only, never values.
+    // Credentials: the manifest lists ONLY what apply performs (known LLM
+    // provider keys → provider profiles); everything else is a note naming
+    // when its slice lands. Key names only — never values.
+    let mut credential_key = |key: &str, source_path: &str, m: &mut ImportManifest| {
+        match super::apply::provider_for_env_key(key) {
+            Some(provider) => m.push(ImportItem {
+                kind: ItemKind::Credential,
+                tier: TrustTier::Content,
+                name: key.to_string(),
+                detail: format!("{provider} key → LLM provider profile"),
+                target: "Provider profile",
+                source_path: source_path.to_string(),
+            }),
+            None => m.note(format!(
+                "{key}: channel/service tokens come with a later slice"
+            )),
+        }
+    };
     if let Ok(text) = fs::read_to_string(root.join(".env")) {
         for line in text.lines() {
             let line = line.trim();
@@ -153,28 +170,15 @@ pub fn scan(root: &Path) -> ImportManifest {
             if let Some((key, _)) = line.split_once('=') {
                 let key = key.trim().trim_start_matches("export ").trim();
                 if !key.is_empty() {
-                    m.push(ImportItem {
-                        kind: ItemKind::Credential,
-                        tier: TrustTier::Content,
-                        name: key.to_string(),
-                        detail: "secret → encrypted store".into(),
-                        target: "Encrypted credential",
-                        source_path: ".env".into(),
-                    });
+                    credential_key(key, ".env", &mut m);
                 }
             }
         }
     }
     if let Some(env) = cfg.get("env").and_then(|e| e.as_object()) {
-        for key in env.keys() {
-            m.push(ImportItem {
-                kind: ItemKind::Credential,
-                tier: TrustTier::Content,
-                name: key.clone(),
-                detail: "config env → provider profile".into(),
-                target: "Encrypted credential",
-                source_path: "openclaw.json".into(),
-            });
+        let keys: Vec<String> = env.keys().cloned().collect();
+        for key in keys {
+            credential_key(&key, "openclaw.json", &mut m);
         }
     }
 
@@ -313,6 +317,7 @@ pub(super) fn source_agents(
         let rules = fs::read_to_string(workspace.join("AGENTS.md")).ok();
 
         agents.push(SourceAgent {
+            slug: id.to_string(),
             name,
             description: "Imported from an OpenClaw install".to_string(),
             persona,
@@ -545,8 +550,10 @@ pub(super) fn openclaw_fixture() -> tempfile::TempDir {
             "---\nname: websearch\ndescription: Search\n---\nSearch.\n",
         );
         write(r.join("workspace-scout/SOUL.md"), "You are Scout.\n");
+        // Deliberately the same file stem as scout's session — the chat-id
+        // collision regression (ids must be agent-scoped).
         write(
-            r.join("agents/main/sessions/m1.jsonl"),
+            r.join("agents/main/sessions/s1.jsonl"),
             concat!(
                 r#"{"role":"user","content":"Find the report","timestamp":1700200000}"#,
                 "\n",

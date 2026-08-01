@@ -234,8 +234,8 @@ fn scan_skills(root: &Path, m: &mut ImportManifest) {
     }
 }
 
-/// `cron/jobs.json` → scheduled events. The file is either a bare array of jobs
-/// or an object with a `jobs` array.
+/// `cron/jobs.json`. Apply doesn't import schedules yet, so the dry-run
+/// reports them as a note — never as items promising an import.
 fn scan_cron(root: &Path, m: &mut ImportManifest) {
     let path = root.join("cron").join("jobs.json");
     let Ok(text) = fs::read_to_string(&path) else {
@@ -250,35 +250,21 @@ fn scan_cron(root: &Path, m: &mut ImportManifest) {
     };
     let jobs = val
         .as_array()
-        .cloned()
-        .or_else(|| val.get("jobs").and_then(|j| j.as_array()).cloned())
-        .unwrap_or_default();
-    for job in jobs {
-        let name = job
-            .get("name")
-            .or_else(|| job.get("id"))
-            .and_then(|n| n.as_str())
-            .unwrap_or("job")
-            .to_string();
-        let sched = job
-            .get("schedule")
-            .and_then(|s| s.get("display").or_else(|| s.get("expr")))
-            .and_then(|d| d.as_str())
-            .unwrap_or("schedule")
-            .to_string();
-        m.push(ImportItem {
-            kind: ItemKind::Cron,
-            tier: TrustTier::Content,
-            name,
-            detail: sched,
-            target: "Scheduled event",
-            source_path: "cron/jobs.json".into(),
-        });
+        .map(|a| a.len())
+        .or_else(|| val.get("jobs").and_then(|j| j.as_array()).map(|a| a.len()))
+        .unwrap_or(0);
+    if jobs > 0 {
+        m.note(format!(
+            "cron: {jobs} scheduled jobs — imported by the scheduling slice"
+        ));
     }
 }
 
-/// `.env` + `auth.json` → the encrypted credential store. Only key *names* are
-/// surfaced in the manifest — a secret value must never appear in a dry-run.
+/// `.env` + `auth.json` credentials. The manifest lists ONLY what apply
+/// actually performs (known LLM provider keys → provider profiles); every
+/// other secret is a note naming when its slice lands — the dry-run must never
+/// promise an import the apply doesn't do. Only key *names* are surfaced —
+/// a secret value must never appear in a dry-run.
 fn scan_credentials(root: &Path, m: &mut ImportManifest) {
     if let Ok(text) = fs::read_to_string(root.join(".env")) {
         for line in text.lines() {
@@ -293,25 +279,23 @@ fn scan_credentials(root: &Path, m: &mut ImportManifest) {
             if key.is_empty() {
                 continue;
             }
-            m.push(ImportItem {
-                kind: ItemKind::Credential,
-                tier: TrustTier::Content,
-                name: key.to_string(),
-                detail: "secret → encrypted store".into(),
-                target: "Encrypted credential",
-                source_path: ".env".into(),
-            });
+            match super::apply::provider_for_env_key(key) {
+                Some(provider) => m.push(ImportItem {
+                    kind: ItemKind::Credential,
+                    tier: TrustTier::Content,
+                    name: key.to_string(),
+                    detail: format!("{provider} key → LLM provider profile"),
+                    target: "Provider profile",
+                    source_path: ".env".into(),
+                }),
+                None => m.note(format!(
+                    "{key}: channel/service tokens come with a later slice"
+                )),
+            }
         }
     }
     if root.join("auth.json").is_file() {
-        m.push(ImportItem {
-            kind: ItemKind::Credential,
-            tier: TrustTier::Content,
-            name: "OAuth credentials".into(),
-            detail: "full OAuth records → encrypted store".into(),
-            target: "Encrypted credential",
-            source_path: "auth.json".into(),
-        });
+        m.note("auth.json (OAuth records): imported with the channels slice".to_string());
     }
 }
 
@@ -370,6 +354,7 @@ pub(super) fn source_agent(root: &Path, out: &mut ImportOutcome) -> Option<Sourc
         Vec::new()
     };
     Some(SourceAgent {
+        slug: String::new(),
         name: "Hermes".to_string(),
         description: "Imported from a Hermes install".to_string(),
         persona,
@@ -460,19 +445,17 @@ pub(super) fn read_history(root: &Path) -> Result<Vec<SourceConversation>, Strin
     Ok(sessions)
 }
 
-/// Hermes timestamps have shipped as unix ints, floats, and strings; take
-/// whatever parses to an epoch second, else `None` (import time is used).
+/// Hermes timestamps have shipped as unix ints, floats, ms, and strings; take
+/// whatever normalizes to an epoch second, else `None` (import time is used).
 fn read_epoch(row: &rusqlite::Row<'_>, idx: usize) -> Option<i64> {
     if let Ok(v) = row.get::<_, i64>(idx) {
-        return Some(v);
+        return Some(parse::normalize_epoch(v));
     }
     if let Ok(v) = row.get::<_, f64>(idx) {
-        return Some(v as i64);
+        return Some(parse::normalize_epoch(v as i64));
     }
     if let Ok(v) = row.get::<_, String>(idx) {
-        if let Ok(n) = v.parse::<f64>() {
-            return Some(n as i64);
-        }
+        return parse::epoch_from_str(&v);
     }
     None
 }
@@ -578,6 +561,7 @@ pub(super) fn hermes_fixture() -> tempfile::TempDir {
             "[{\"name\":\"daily-brief\",\"schedule\":{\"display\":\"every day at 9am\"},\"prompt\":\"brief me\"}]",
         );
         write(r.join(".env"), "# secrets\nANTHROPIC_API_KEY=sk-secretxxx\nTELEGRAM_TOKEN=123:abc\n\n");
+        write(r.join("auth.json"), "{\"linear\":{\"access_token\":\"oauth-secretzzz\"}}");
         let conn = rusqlite::Connection::open(r.join("state.db")).unwrap();
         conn.execute_batch(
             "CREATE TABLE sessions (id TEXT PRIMARY KEY, created_at INTEGER);
@@ -627,9 +611,14 @@ mod tests {
         assert_eq!(m.count(ItemKind::Agent), 1);
         assert_eq!(m.count(ItemKind::Memory), 2);
         assert_eq!(m.count(ItemKind::Skill), 2);
-        assert_eq!(m.count(ItemKind::Cron), 1);
-        assert_eq!(m.count(ItemKind::Credential), 2);
+        // Items are ONLY what apply performs: the provider key. Cron jobs,
+        // channel tokens, and auth.json are notes naming their future slices.
+        assert_eq!(m.count(ItemKind::Cron), 0);
+        assert_eq!(m.count(ItemKind::Credential), 1);
         assert_eq!(m.count(ItemKind::Session), 1);
+        assert!(m.notes.iter().any(|n| n.starts_with("cron:")));
+        assert!(m.notes.iter().any(|n| n.starts_with("TELEGRAM_TOKEN")));
+        assert!(m.notes.iter().any(|n| n.starts_with("auth.json")));
     }
 
     #[test]
@@ -651,14 +640,16 @@ mod tests {
     fn credentials_expose_key_names_never_values() {
         let f = hermes_fixture();
         let m = scan_root(f.path()).unwrap();
-        for item in &m.items {
-            assert!(!item.detail.contains("sk-secretxxx"));
-            assert!(!item.detail.contains("123:abc"));
-            assert!(!item.detail.contains("tok-secretyyy"));
-            assert!(!item.name.contains("sk-secretxxx"));
+        for secret in ["sk-secretxxx", "123:abc", "tok-secretyyy", "oauth-secretzzz"] {
+            for item in &m.items {
+                assert!(!item.detail.contains(secret));
+                assert!(!item.name.contains(secret));
+            }
+            for note in &m.notes {
+                assert!(!note.contains(secret));
+            }
         }
         assert!(m.items.iter().any(|i| i.name == "ANTHROPIC_API_KEY"));
-        assert!(m.items.iter().any(|i| i.name == "TELEGRAM_TOKEN"));
     }
 
     #[test]

@@ -188,6 +188,8 @@ mod tests {
             agent_name: Some("Atlas".into()),
             agent_handle: Some("atlas".into()),
             agent_color: Some("violet".into()),
+            platform: Some("linux".into()),
+            hostname: Some("devbox".into()),
         };
         let json = serde_json::to_string(&p).unwrap();
         // Identity fields use snake_case keys per the shared wire contract.
