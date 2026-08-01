@@ -174,6 +174,8 @@ var extraInterfaces = map[string]string{
 	mcpServers: number
 	authProfiles: number
 	memories: number
+	chats: number
+	chatMessages: number
 	agentId: string | null
 	agentName: string | null
 	skipped: string[]

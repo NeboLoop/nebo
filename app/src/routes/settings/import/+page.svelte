@@ -195,6 +195,7 @@
           skills: outcome.skills,
           mcp: outcome.mcpServers,
           memories: outcome.memories,
+          chats: outcome.chats,
           keys: outcome.authProfiles,
         },
       })}

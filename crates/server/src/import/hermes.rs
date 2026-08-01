@@ -331,22 +331,146 @@ fn scan_credentials(root: &Path, m: &mut ImportManifest) {
     }
 }
 
-/// `state.db` → chats + messages. The SQLite file itself is only noted here;
-/// the apply step reads history through Hermes's own `sessions export` (JSONL).
+/// `state.db` → chats + messages, with real conversation/message counts from
+/// the same reader the apply step uses. Unreadable databases fall back to a
+/// size-only line rather than hiding that history exists.
 fn scan_history(root: &Path, m: &mut ImportManifest) {
     let db = root.join("state.db");
     if !db.is_file() {
         return;
     }
-    let size = fs::metadata(&db).map(|md| md.len()).unwrap_or(0);
+    let detail = match read_history(root) {
+        Ok(sessions) => {
+            let messages: usize = sessions.iter().map(|s| s.messages.len()).sum();
+            format!("{} conversations · {messages} messages", sessions.len())
+        }
+        Err(e) => {
+            let size = fs::metadata(&db).map(|md| md.len()).unwrap_or(0);
+            m.note(format!("state.db could not be read for counts: {e}"));
+            format!("state.db · {}", human_size(size))
+        }
+    };
     m.push(ImportItem {
         kind: ItemKind::Session,
         tier: TrustTier::Content,
         name: "conversation history".into(),
-        detail: format!("state.db · {} — imported via export", human_size(size)),
+        detail,
         target: "Chats + messages",
         source_path: "state.db".into(),
     });
+}
+
+/// One Hermes conversation read from `state.db`.
+pub(super) struct HermesSession {
+    pub id: String,
+    /// First user message, truncated — the imported chat's title.
+    pub title: String,
+    pub started_at: Option<i64>,
+    pub ended_at: Option<i64>,
+    pub messages: Vec<HermesMessage>,
+}
+
+pub(super) struct HermesMessage {
+    pub role: String,
+    pub content: String,
+    pub tool_calls: Option<String>,
+    pub timestamp: Option<i64>,
+}
+
+/// Read every conversation out of `state.db`, read-only. Sessions are derived
+/// from the `messages` table itself (grouped by `session_id`, ordered by
+/// insertion) rather than Hermes's `sessions` table, whose columns vary across
+/// versions. Shared by scan (counts) and apply (writes).
+pub(super) fn read_history(root: &Path) -> Result<Vec<HermesSession>, String> {
+    let conn = rusqlite::Connection::open_with_flags(
+        root.join("state.db"),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .map_err(|e| e.to_string())?;
+
+    // Column availability varies across Hermes versions; fall back from the
+    // full shape to the minimal one instead of failing the whole read.
+    let full = "SELECT session_id, role, content, tool_calls, timestamp
+                FROM messages ORDER BY session_id, rowid";
+    let minimal = "SELECT session_id, role, content, NULL, NULL
+                   FROM messages ORDER BY session_id, rowid";
+    let mut stmt = match conn.prepare(full) {
+        Ok(s) => s,
+        Err(_) => conn.prepare(minimal).map_err(|e| e.to_string())?,
+    };
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                row.get::<_, Option<String>>(3)?,
+                read_epoch(row, 4),
+            ))
+        })
+        .map_err(|e| e.to_string())?;
+
+    let mut sessions: Vec<HermesSession> = Vec::new();
+    for row in rows.flatten() {
+        let (session_id, role, content, tool_calls, timestamp) = row;
+        if sessions.last().map(|s| s.id.as_str()) != Some(session_id.as_str()) {
+            sessions.push(HermesSession {
+                id: session_id,
+                title: String::new(),
+                started_at: None,
+                ended_at: None,
+                messages: Vec::new(),
+            });
+        }
+        let s = sessions.last_mut().expect("session pushed above");
+        if s.title.is_empty() && role == "user" && !content.trim().is_empty() {
+            s.title = truncate_title(&content);
+        }
+        if let Some(ts) = timestamp {
+            if s.started_at.is_none() {
+                s.started_at = Some(ts);
+            }
+            s.ended_at = Some(ts);
+        }
+        s.messages.push(HermesMessage {
+            role,
+            content,
+            tool_calls,
+            timestamp,
+        });
+    }
+    for s in &mut sessions {
+        if s.title.is_empty() {
+            s.title = "Imported conversation".to_string();
+        }
+    }
+    Ok(sessions)
+}
+
+/// Hermes timestamps have shipped as unix ints, floats, and strings; take
+/// whatever parses to an epoch second, else `None` (import time is used).
+fn read_epoch(row: &rusqlite::Row<'_>, idx: usize) -> Option<i64> {
+    if let Ok(v) = row.get::<_, i64>(idx) {
+        return Some(v);
+    }
+    if let Ok(v) = row.get::<_, f64>(idx) {
+        return Some(v as i64);
+    }
+    if let Ok(v) = row.get::<_, String>(idx) {
+        if let Ok(n) = v.parse::<f64>() {
+            return Some(n as i64);
+        }
+    }
+    None
+}
+
+fn truncate_title(content: &str) -> String {
+    let line = content.lines().next().unwrap_or("").trim();
+    let mut title: String = line.chars().take(60).collect();
+    if line.chars().count() > 60 {
+        title.push('…');
+    }
+    title
 }
 
 /// Recursively collect every `SKILL.md` under `dir`, skipping hidden folders.
@@ -450,7 +574,23 @@ pub(super) fn hermes_fixture() -> tempfile::TempDir {
             "[{\"name\":\"daily-brief\",\"schedule\":{\"display\":\"every day at 9am\"},\"prompt\":\"brief me\"}]",
         );
         write(r.join(".env"), "# secrets\nANTHROPIC_API_KEY=sk-secretxxx\nTELEGRAM_TOKEN=123:abc\n\n");
-        write(r.join("state.db"), "sqlite-bytes");
+        let conn = rusqlite::Connection::open(r.join("state.db")).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE sessions (id TEXT PRIMARY KEY, created_at INTEGER);
+             CREATE TABLE messages (
+                 id INTEGER PRIMARY KEY, session_id TEXT, role TEXT, content TEXT,
+                 timestamp INTEGER, token_count INTEGER, tool_calls TEXT,
+                 reasoning TEXT, api_content TEXT
+             );
+             INSERT INTO messages (session_id, role, content, timestamp) VALUES
+               ('sess-1', 'user', 'Help me plan the launch', 1700000000),
+               ('sess-1', 'assistant', 'Sure — here is the plan.', 1700000060),
+               ('sess-1', 'compression_marker', 'internal', 1700000090),
+               ('sess-2', 'user', 'Summarize my inbox', 1700100000);
+             INSERT INTO messages (session_id, role, content, timestamp, tool_calls) VALUES
+               ('sess-2', 'assistant', 'Done.', 1700100050, '[{\"name\":\"mail\"}]');",
+        )
+        .unwrap();
     }
     dir
 }

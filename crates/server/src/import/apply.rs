@@ -39,6 +39,8 @@ pub struct ImportOutcome {
     pub mcp_servers: usize,
     pub auth_profiles: usize,
     pub memories: usize,
+    pub chats: usize,
+    pub chat_messages: usize,
     /// Id + name of the created employee, when one was created.
     pub agent_id: Option<String>,
     pub agent_name: Option<String>,
@@ -71,6 +73,7 @@ pub fn apply_hermes(t: &ApplyTargets, root: &Path) -> Result<ImportOutcome, Nebo
     apply_skills(t, root, &mut out);
     apply_agent(t, root, &mut out)?;
     apply_memory(t, root, &mut out)?;
+    apply_history(t, root, &mut out)?;
     apply_provider_keys(t, root, &mut out)?;
     note_deferred(root, &mut out);
     Ok(out)
@@ -208,24 +211,12 @@ fn apply_memory(t: &ApplyTargets, root: &Path, out: &mut ImportOutcome) -> Resul
     if files.is_empty() {
         return Ok(());
     }
-    // Memories attach to the imported employee's scope. If the employee wasn't
-    // created this run (already existed), find it; with no employee at all
-    // there is no scope to attach to — report, don't guess.
-    let agent_id = match &out.agent_id {
-        Some(id) => id.clone(),
-        None => match t
-            .store
-            .list_agents(i64::MAX, 0)?
-            .into_iter()
-            .find(|a| a.name == "Hermes")
-        {
-            Some(a) => a.id,
-            None => {
-                out.skipped
-                    .push("memory: no imported employee to attach to".into());
-                return Ok(());
-            }
-        },
+    // Memories attach to the imported employee's scope. With no employee at
+    // all there is no scope to attach to — report, don't guess.
+    let Some(agent_id) = imported_agent_id(t, out)? else {
+        out.skipped
+            .push("memory: no imported employee to attach to".into());
+        return Ok(());
     };
     let owner = t.store.ensure_local_user_id()?;
     let scope = agent::memory::agent_memory_scope(&owner, &agent_id);
@@ -266,6 +257,99 @@ fn apply_memory(t: &ApplyTargets, root: &Path, out: &mut ImportOutcome) -> Resul
     if already > 0 {
         out.skipped
             .push(format!("memory: {already} entries already imported"));
+    }
+    Ok(())
+}
+
+/// The imported employee's id: the one created this run, else the previously
+/// imported "Hermes" agent (re-import / partial-import runs).
+fn imported_agent_id(t: &ApplyTargets, out: &ImportOutcome) -> Result<Option<String>, NeboError> {
+    if let Some(id) = &out.agent_id {
+        return Ok(Some(id.clone()));
+    }
+    Ok(t.store
+        .list_agents(i64::MAX, 0)?
+        .into_iter()
+        .find(|a| a.name == "Hermes")
+        .map(|a| a.id))
+}
+
+/// `state.db` → one Nebo chat per Hermes conversation, threaded under the
+/// imported employee (`agent:{id}:thread:{chat_id}` — the same session-name
+/// shape native threads use, so they list like any other conversation).
+/// Original timestamps are preserved via the imported-insert variants.
+fn apply_history(t: &ApplyTargets, root: &Path, out: &mut ImportOutcome) -> Result<(), NeboError> {
+    if !root.join("state.db").is_file() {
+        return Ok(());
+    }
+    let sessions = match hermes::read_history(root) {
+        Ok(s) => s,
+        Err(e) => {
+            out.skipped
+                .push(format!("conversation history: state.db unreadable ({e})"));
+            return Ok(());
+        }
+    };
+    if sessions.is_empty() {
+        return Ok(());
+    }
+    let Some(agent_id) = imported_agent_id(t, out)? else {
+        out.skipped
+            .push("conversation history: no imported employee to attach to".into());
+        return Ok(());
+    };
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let mut already = 0usize;
+    let mut skipped_roles = 0usize;
+    for s in sessions {
+        let chat_id = format!(
+            "hermes-{}",
+            s.id.chars()
+                .map(|c| if c.is_alphanumeric() || c == '-' { c } else { '-' })
+                .collect::<String>()
+        );
+        if t.store.get_chat(&chat_id)?.is_some() {
+            already += 1;
+            continue;
+        }
+        let created = s.started_at.unwrap_or(now);
+        let updated = s.ended_at.unwrap_or(created);
+        let session_name = format!("agent:{agent_id}:thread:{chat_id}");
+        t.store
+            .create_chat_imported(&chat_id, &session_name, &s.title, created, updated)?;
+        for (i, msg) in s.messages.iter().enumerate() {
+            // chat_messages constrains role; anything else is Hermes-internal
+            // (compression markers etc.) and doesn't belong in the transcript.
+            if !matches!(msg.role.as_str(), "user" | "assistant" | "system" | "tool") {
+                skipped_roles += 1;
+                continue;
+            }
+            let ts = msg.timestamp.unwrap_or(created + i as i64);
+            t.store.create_chat_message_imported(
+                &format!("{chat_id}-m{i}"),
+                &chat_id,
+                &msg.role,
+                &msg.content,
+                msg.tool_calls.as_deref(),
+                None,
+                ts,
+            )?;
+            out.chat_messages += 1;
+        }
+        out.chats += 1;
+    }
+    if already > 0 {
+        out.skipped
+            .push(format!("conversation history: {already} conversations already imported"));
+    }
+    if skipped_roles > 0 {
+        out.skipped.push(format!(
+            "conversation history: {skipped_roles} internal (non-transcript) messages skipped"
+        ));
     }
     Ok(())
 }
@@ -361,10 +445,6 @@ fn apply_provider_keys(
 /// Record what this slice deliberately defers, so the receipt never implies a
 /// clean copy of things that didn't move.
 fn note_deferred(root: &Path, out: &mut ImportOutcome) {
-    if root.join("state.db").is_file() {
-        out.skipped
-            .push("conversation history: imported by the history slice".into());
-    }
     if root.join("cron").join("jobs.json").is_file() {
         out.skipped
             .push("cron jobs: imported by the scheduling slice".into());
@@ -472,6 +552,8 @@ mod tests {
         assert_eq!(out.agents, 1);
         assert_eq!(out.auth_profiles, 1);
         assert_eq!(out.memories, 3);
+        assert_eq!(out.chats, 2);
+        assert_eq!(out.chat_messages, 4);
 
         // MCP rows landed with the right transport + normalized auth.
         let integrations = f.store.list_mcp_integrations().unwrap();
@@ -527,8 +609,27 @@ mod tests {
         assert_eq!(anthropic.api_key, "sk-secretxxx");
         assert!(out.skipped.iter().any(|s| s.starts_with("TELEGRAM_TOKEN")));
 
+        // History became real chats threaded under the employee, with original
+        // timestamps and titles; Hermes-internal roles were filtered.
+        let chat = f.store.get_chat("hermes-sess-1").unwrap().unwrap();
+        assert_eq!(chat.title, "Help me plan the launch");
+        assert_eq!(chat.created_at, 1700000000);
+        assert_eq!(
+            chat.session_name.as_deref(),
+            Some(format!("agent:{id}:thread:hermes-sess-1").as_str())
+        );
+        let msgs = f.store.get_chat_messages("hermes-sess-1").unwrap();
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0].role, "user");
+        assert_eq!(msgs[0].created_at, 1700000000);
+        let sess2 = f.store.get_chat_messages("hermes-sess-2").unwrap();
+        assert!(sess2.iter().any(|m| m.tool_calls.is_some()));
+        assert!(out
+            .skipped
+            .iter()
+            .any(|s| s.contains("internal (non-transcript)")));
+
         // Deferred slices are named, not silently dropped.
-        assert!(out.skipped.iter().any(|s| s.starts_with("conversation history:")));
         assert!(out.skipped.iter().any(|s| s.starts_with("cron jobs:")));
     }
 
@@ -544,6 +645,8 @@ mod tests {
         assert_eq!(second.agents, 0);
         assert_eq!(second.auth_profiles, 0);
         assert_eq!(second.memories, 0);
+        assert_eq!(second.chats, 0);
+        assert_eq!(second.chat_messages, 0);
 
         assert_eq!(f.store.list_mcp_integrations().unwrap().len(), 3);
         assert_eq!(f.store.count_agents().unwrap(), 1);

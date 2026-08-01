@@ -1365,7 +1365,7 @@
 		"runsCode": "runs code",
 		"importAll": "Import everything",
 		"importing": "Importing…",
-		"doneSummary": "Imported {agents} employee(s), {skills} skill(s), {mcp} MCP server(s), {memories} memory(ies), and {keys} provider key(s).",
+		"doneSummary": "Imported {agents} employee(s), {skills} skill(s), {mcp} MCP server(s), {memories} memory(ies), {chats} conversation(s), and {keys} provider key(s).",
 		"skippedTitle": "Not imported",
 		"kinds": {
 			"agent": "Employees",
