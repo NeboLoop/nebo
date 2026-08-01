@@ -1202,7 +1202,7 @@ See examples above.
 ln -s /path/to/my-app "$HOME/Library/Application Support/Nebo/user/agents/my-app"
 ```
 
-The filesystem watcher detects new symlinks automatically — the app appears in the Apps tab within seconds. Changes to your source directory take effect immediately — no copy step, no restart.
+The filesystem watcher detects new symlinks automatically — the app appears in the Apps tab within seconds, with no copy step. Note that the watcher does not follow symlinks *into* the target directory, so edits made in your source repo often won't fire a reload on their own. Touch the symlink, call `POST /agents/{id}/reload`, or restart Nebo to pick them up. (UI files under `ui/` are read per request, so frontend edits always show on refresh — this affects `AGENT.md` and `agent.json` changes.)
 
 ### 4. Build the sidecar (if needed)
 
