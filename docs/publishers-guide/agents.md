@@ -124,7 +124,7 @@ Input fields define a dynamic form rendered in the agent's Configure tab. Users 
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `key` | string | yes | Unique reference key (used in `{{key}}` template substitution and system prompt injection) |
+| `key` | string | yes | Unique reference key (used in `{{key}}` template substitution and system prompt injection). `name` is accepted as an alias — if `key` is omitted, `name` fills in. |
 | `label` | string | yes | Display label shown to the user |
 | `type` | string | yes | Field type: `text`, `textarea`, `number`, `select`, `checkbox`, `radio` |
 | `description` | string | no | Help text displayed below the field |
@@ -141,19 +141,17 @@ Input fields define a dynamic form rendered in the agent's Configure tab. Users 
 
 ### Memory
 
-Controls how the agent's memories are scoped and inherited. By default, each agent gets its own isolated memory pool (`user_id:agent:{agent_id}`). These fields extend that behavior.
+Controls how the agent's memories are scoped. By default, each agent gets its own isolated memory pool (`user_id:agent:{agent_id}`). In addition, every agent always reads the owner's identity memories — the `tacit/preferences` and `tacit/personality` prefixes (timezone, language, communication style) — read-only. This inheritance is built in and needs no flag. (An earlier `inherit_user` flag has been removed; if present in older agent.json files it parses fine and is ignored.)
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `inherit_user` | boolean | `false` | When `true`, the agent can **read** the user's main Nebo preferences (timezone, language, communication style). Read-only — the agent never writes to the user's memory scope. |
-| `context_isolated` | boolean | `false` | When `true`, memories are isolated per `contextId` from SDK embed sessions. Each document/project/record gets its own memory pool. |
+| `context_isolated` | boolean | `false` | When `true`, memories are isolated per context. Each document/project/record gets its own memory pool. The context comes from the SDK embed's `contextId` when set, otherwise from the session's active chat — so each chat thread becomes its own context. |
 
 **Example:**
 
 ```json
 {
   "memory": {
-    "inherit_user": true,
     "context_isolated": true
   }
 }
@@ -167,11 +165,9 @@ Use this when your agent handles multiple independent contexts — legal clients
 nebo.chat.mount(container, { contextId: document.id });
 ```
 
-Each context maintains its own memory pool. Agent-wide memories (stored without a `contextId`) are still visible to all contexts.
+Each context maintains its own memory pool. Only the agent-wide `tacit/` namespace is inherited into isolated contexts — working style crosses contexts, case facts do not.
 
-**When to use `inherit_user`:**
-
-Use this when your agent needs user preferences without asking for them — timezone for scheduling, language for communication, name for personalization. The agent reads from the primary Nebo employee's `tacit/preferences` memories (read-only).
+**Fail-closed writes:** if `context_isolated` is set but no context can be derived for a run (no embed `contextId` and no active chat), memory **writes are refused** for that run rather than silently landing in the shared agent scope — where they would be readable from every other context. Reads fall back to the agent-wide scope.
 
 **Three-tier user_id convention:**
 
@@ -183,11 +179,10 @@ Memory scoping follows a layered naming convention:
 | Layer 2 (Agent) | `"user123:agent:brief"` | Agent-wide memories |
 | Layer 3 (Context) | `"user123:agent:brief:ctx:doc-123"` | Per-document/project memories |
 
-How the config flags interact:
-- **Default** (both `false`) — reads/writes Layer 2 only
-- **`inherit_user: true`** — reads Layer 1 (read-only) + reads/writes Layer 2
-- **`context_isolated: true`** — reads/writes Layer 3 instead of Layer 2
-- **Both enabled** — reads all 3 layers, writes Layer 3
+How scoping resolves:
+- **Default** — reads/writes Layer 2, plus read-only Layer 1 identity prefixes (always on)
+- **`context_isolated: true`** — writes Layer 3; reads Layer 3 + the agent-wide `tacit/` namespace (Layer 2) + Layer 1 identity prefixes
+- **`context_isolated: true` with no derivable context** — fail closed: writes refused, reads fall back to Layer 2
 
 ### Workflows Overview
 
@@ -332,7 +327,7 @@ Tools can be declared directly in `agent.json`, turning sidecar HTTP endpoints i
 - Each entry becomes a tool the LLM can call directly
 - Path parameters are resolved from input: `/documents/{id}` with `{"id": "abc"}` becomes `/documents/abc`
 - HTTP method determines body vs query handling (GET uses query params, POST/PUT/PATCH send a JSON body)
-- Discovery is also available via a `GET /_tools` endpoint on the sidecar, returning the same format
+- `agent.json` is the only source of tool definitions — there is no HTTP discovery endpoint (sidecar paths starting with `_` are reserved and blocked from external clients)
 
 ---
 

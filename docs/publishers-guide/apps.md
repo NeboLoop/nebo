@@ -740,7 +740,7 @@ Your sidecar runs in a sandboxed environment. The injected variables are:
 | `NEBO_APP_ID` | `deal-tracker` | Agent identifier |
 | `NEBO_APP_NAME` | `Deal Tracker` | Display name |
 | `NEBO_APP_VERSION` | `1.0.0` | Manifest version |
-| `NEBO_APP_DIR` | `/Users/me/.nebo/user/agents/deal-tracker` | App root directory |
+| `NEBO_APP_DIR` | `<Nebo data dir>/user/agents/deal-tracker` | App root directory (versioned code dir — read-only in spirit; write to `NEBO_DATA_DIR`) |
 | `NEBO_APP_SOCK` | `...deal-tracker/deal-tracker.sock` | Unix socket path |
 | `NEBO_DATA_DIR` | `<Nebo appdata>/plugins/deal-tracker` | Writable data directory under Nebo's appdata (separate from code — survives upgrades). Always use the env var; never hardcode a path. |
 | `NEBO_API_URL` | `http://127.0.0.1:27895` | Local Nebo API base URL (the port is the running server's port, injected at launch) |
@@ -1185,8 +1185,10 @@ This is a complete app — no sidecar needed. The agent provides AI reflection, 
 
 ### 1. Create the directory
 
+App directories live in the platform-native `user/agents/` directory (macOS: `~/Library/Application Support/Nebo/user/agents/`, Linux: `~/.local/share/nebo/user/agents/`, Windows: `%APPDATA%\Nebo\user\agents\`; `NEBO_HOME` overrides the root):
+
 ```bash
-mkdir -p ~/.nebo/user/agents/my-app/ui
+mkdir -p "$HOME/Library/Application Support/Nebo/user/agents/my-app/ui"
 ```
 
 ### 2. Write manifest.json, AGENT.md, and ui/index.html
@@ -1197,7 +1199,7 @@ See examples above.
 
 ```bash
 # Work from a source repo, symlink into Nebo
-ln -s /path/to/my-app ~/.nebo/user/agents/my-app
+ln -s /path/to/my-app "$HOME/Library/Application Support/Nebo/user/agents/my-app"
 ```
 
 The filesystem watcher detects new symlinks automatically — the app appears in the Apps tab within seconds. Changes to your source directory take effect immediately — no copy step, no restart.
