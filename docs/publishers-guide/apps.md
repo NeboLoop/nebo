@@ -897,7 +897,7 @@ Sidecar tools bypass the contextual tool filter — they are always included for
 - Include `input_schema` for POST/PUT actions so the LLM knows what parameters to provide
 - Path parameter names in `input_schema.properties` should match the `{placeholder}` in the path
 - Omit the `tools` array entirely if your sidecar has no tools
-- Avoid tool names that collide with Nebo's core domain tools (`system`, `web`, `bot`, `loop`, `message`, `event`, `app`, `desktop`, `organizer`, `skill`)
+- Avoid tool names that collide with Nebo's core domain tools (`agent`, `os`, `web`, `loop`, `message`, `event`, `skill`, `work`)
 
 ### Skills
 
