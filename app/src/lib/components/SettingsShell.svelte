@@ -14,6 +14,7 @@
   import Cpu from 'lucide-svelte/icons/cpu';
   import Lock from 'lucide-svelte/icons/lock';
   import Cable from 'lucide-svelte/icons/cable';
+  import Import from 'lucide-svelte/icons/import';
   import Globe from 'lucide-svelte/icons/globe';
   import Shield from 'lucide-svelte/icons/shield';
   import Code from 'lucide-svelte/icons/code';
@@ -49,6 +50,7 @@
     { id: 'skills', path: '/settings/skills', label: 'settings.navItems.skills', icon: Zap },
     { id: 'plugins', path: '/settings/plugins', label: 'settings.navItems.plugins', icon: Puzzle },
     { id: 'mcp', path: '/settings/mcp', label: 'settings.navItems.mcp', icon: Cable },
+    { id: 'import', path: '/settings/import', label: 'settings.navItems.import', icon: Import },
     { id: 'browser', path: '/settings/browser', label: 'settings.navItems.browser', icon: Globe },
     { id: 'updates', path: '/settings/updates', label: 'settings.navItems.updates', icon: RefreshCw },
     null,

@@ -509,6 +509,52 @@ impl Store {
             .map_err(|e| NeboError::Database(e.to_string()))
     }
 
+    /// Create a chat with caller-supplied timestamps — the migration-importer
+    /// variant of [`Self::create_chat_for_session`]: imported conversations
+    /// keep their original creation/last-activity times instead of appearing
+    /// to have all happened at import time.
+    pub fn create_chat_imported(
+        &self,
+        id: &str,
+        session_name: &str,
+        title: &str,
+        created_at: i64,
+        updated_at: i64,
+    ) -> Result<Chat, NeboError> {
+        let conn = self.conn()?;
+        conn.query_row(
+            "INSERT INTO chats (id, session_name, title, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5) RETURNING *",
+            params![id, session_name, title, created_at, updated_at],
+            row_to_chat,
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
+    /// Insert a chat message with a caller-supplied timestamp — the
+    /// migration-importer variant of [`Self::create_chat_message_for_runner`].
+    /// `day_marker` is derived from the supplied timestamp so imported history
+    /// groups under its original days.
+    pub fn create_chat_message_imported(
+        &self,
+        id: &str,
+        chat_id: &str,
+        role: &str,
+        content: &str,
+        tool_calls: Option<&str>,
+        metadata: Option<&str>,
+        created_at: i64,
+    ) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "INSERT INTO chat_messages (id, chat_id, role, content, metadata, tool_calls, day_marker, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, date(?7, 'unixepoch', 'localtime'), ?7)",
+            params![id, chat_id, role, content, metadata, tool_calls, created_at],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
+
     /// Create a new chat linked to a session.
     pub fn create_chat_for_session(
         &self,

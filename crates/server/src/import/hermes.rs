@@ -1,0 +1,673 @@
+//! Read-only walker for a Hermes install (`~/.hermes`).
+//!
+//! Produces an [`ImportManifest`] describing what a migration would adopt and
+//! what each piece becomes in Nebo. Nothing here writes to Nebo or modifies the
+//! source directory — this is the dry-run half of the importer.
+//!
+//! Layout reference (Hermes docs + `scripts/install.sh`):
+//! `config.yaml` (`mcp_servers:`), `SOUL.md` (persona), `memories/{MEMORY,USER}.md`,
+//! `skills/**/SKILL.md`, `cron/jobs.json`, `.env` + `auth.json` (secrets),
+//! `state.db` (conversation history).
+
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use crate::handlers::integrations::parse_mcp_servers_block;
+
+use super::apply::{ImportOutcome, SourceAgent, SourceConversation, SourceMessage};
+use super::manifest::{ImportItem, ImportManifest, ItemKind, SourceKind, TrustTier};
+use super::parse;
+
+/// Walk a Hermes install root and build its dry-run manifest.
+pub fn scan(root: &Path) -> ImportManifest {
+    let mut m = ImportManifest::new(SourceKind::Hermes, root.display().to_string());
+    scan_mcp(root, &mut m);
+    scan_persona(root, &mut m);
+    scan_memory(root, &mut m);
+    scan_skills(root, &mut m);
+    scan_cron(root, &mut m);
+    scan_credentials(root, &mut m);
+    scan_history(root, &mut m);
+    m
+}
+
+/// `config.yaml` → `mcp_servers:` map. Hermes's dialect (`auth:` instead of
+/// `authType:`, no explicit `type` on remotes) is normalized into the canonical
+/// config block and handed to the one shared MCP parser, so the importer and
+/// paste-import can never drift.
+fn scan_mcp(root: &Path, m: &mut ImportManifest) {
+    let block = match mcp_block(root) {
+        Ok(Some(b)) => b,
+        Ok(None) => return,
+        Err(e) => {
+            m.note(format!("config.yaml could not be parsed: {e}"));
+            return;
+        }
+    };
+
+    for s in parse_mcp_servers_block(&block) {
+        let is_stdio = s.server_type == "stdio";
+        // A local subprocess launch is Code tier (needs confirm); a remote
+        // endpoint is Content (auto), matching the paste-import posture.
+        let tier = if is_stdio {
+            TrustTier::Code
+        } else {
+            TrustTier::Content
+        };
+        let detail = if is_stdio {
+            let cmd = s
+                .metadata
+                .as_deref()
+                .and_then(|md| serde_json::from_str::<serde_json::Value>(md).ok())
+                .and_then(|v| {
+                    v.get("command")
+                        .and_then(|c| c.as_str())
+                        .map(str::to_string)
+                });
+            match cmd {
+                Some(c) => format!("stdio · {c}"),
+                None => "stdio launch".to_string(),
+            }
+        } else {
+            match &s.server_url {
+                Some(url) => format!("{} · {url}", s.server_type),
+                None => s.server_type.clone(),
+            }
+        };
+        m.push(ImportItem {
+            kind: ItemKind::McpServer,
+            tier,
+            name: s.name,
+            detail,
+            target: "MCP integration",
+            source_path: "config.yaml".into(),
+        });
+    }
+}
+
+/// Read `config.yaml` and return its `mcp_servers:` map as a canonical
+/// `mcpServers` block, ready for `parse_mcp_servers_block`. `Ok(None)` when the
+/// file or key is absent, `Err` when the YAML doesn't parse. Shared by the
+/// dry-run scan and the apply step so both see identical servers.
+pub(super) fn mcp_block(root: &Path) -> Result<Option<serde_json::Value>, String> {
+    let Ok(text) = fs::read_to_string(root.join("config.yaml")) else {
+        return Ok(None);
+    };
+    let cfg: serde_json::Value = serde_yaml::from_str(&text).map_err(|e| e.to_string())?;
+    Ok(cfg
+        .get("mcp_servers")
+        .and_then(|v| v.as_object())
+        .map(normalize_mcp_block))
+}
+
+/// Normalize Hermes's `mcp_servers:` map into the canonical `mcpServers` block
+/// consumed by `parse_mcp_servers_block`. Hermes spells the auth field `auth:`
+/// with values `oauth` | `header`; Nebo's auth_type vocabulary is
+/// `none` | `oauth` | `api_key`, so `header` maps to `api_key`.
+fn normalize_mcp_block(servers: &serde_json::Map<String, serde_json::Value>) -> serde_json::Value {
+    let mut normalized = serde_json::Map::new();
+    for (name, entry) in servers {
+        let mut e = entry.clone();
+        if let Some(obj) = e.as_object_mut() {
+            if !obj.contains_key("authType") {
+                if let Some(auth) = obj.get("auth").and_then(|a| a.as_str()) {
+                    let mapped = if auth == "header" { "api_key" } else { auth };
+                    obj.insert("authType".into(), serde_json::json!(mapped));
+                }
+            }
+        }
+        normalized.insert(name.clone(), e);
+    }
+    serde_json::json!({ "mcpServers": normalized })
+}
+
+/// `SOUL.md` → the employee's persona.
+fn scan_persona(root: &Path, m: &mut ImportManifest) {
+    let path = root.join("SOUL.md");
+    if !path.is_file() {
+        return;
+    }
+    let lines = fs::read_to_string(&path)
+        .map(|t| t.lines().count())
+        .unwrap_or(0);
+    m.push(ImportItem {
+        kind: ItemKind::Agent,
+        tier: TrustTier::Content,
+        name: "Hermes agent".into(),
+        detail: format!("persona · {lines} lines"),
+        target: "Employee persona",
+        source_path: "SOUL.md".into(),
+    });
+}
+
+/// `memories/*.md` → Nebo memory, one manifest row per file with the real
+/// parsed entry count (the same parse the apply step uses).
+fn scan_memory(root: &Path, m: &mut ImportManifest) {
+    for (file, entries) in memory_entries(root) {
+        m.push(ImportItem {
+            kind: ItemKind::Memory,
+            tier: TrustTier::Content,
+            name: file.clone(),
+            detail: format!("{} entries → parsed + re-embedded", entries.len()),
+            target: "Nebo memory",
+            source_path: format!("memories/{file}"),
+        });
+    }
+}
+
+/// Parse every `memories/*.md` into discrete entries: `(file_name, entries)`.
+/// Hermes delimits entries with the section sign (`§`); files without `§`
+/// fall back to blank-line paragraphs. Markdown headings are structure, not
+/// memories, and are dropped. Shared by scan (counts) and apply (writes) so
+/// the dry-run can never promise a different import than the apply performs.
+pub(super) fn memory_entries(root: &Path) -> Vec<(String, Vec<String>)> {
+    let dir = root.join("memories");
+    let Ok(dir_entries) = fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    let mut paths: Vec<PathBuf> = dir_entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("md"))
+        .collect();
+    paths.sort();
+    for path in paths {
+        let Ok(text) = fs::read_to_string(&path) else {
+            continue;
+        };
+        let entries = parse::memory_text_entries(&text);
+        if entries.is_empty() {
+            continue;
+        }
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("memory")
+            .to_string();
+        out.push((name, entries));
+    }
+    out
+}
+
+/// `skills/**/SKILL.md` → Nebo skills. A skill that bundles a `scripts/` dir is
+/// Code tier (it can run), everything else is Content.
+fn scan_skills(root: &Path, m: &mut ImportManifest) {
+    let dir = root.join("skills");
+    if !dir.is_dir() {
+        return;
+    }
+    let mut found = Vec::new();
+    collect_skill_md(&dir, &mut found);
+    for skill_md in found {
+        let skill_dir = skill_md.parent().unwrap_or(&dir);
+        let name = skill_dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("skill")
+            .to_string();
+        let has_scripts = skill_dir.join("scripts").is_dir();
+        let tier = if has_scripts {
+            TrustTier::Code
+        } else {
+            TrustTier::Content
+        };
+        let desc = read_frontmatter_description(&skill_md).unwrap_or_else(|| "SKILL.md".into());
+        let detail = if has_scripts {
+            format!("{desc} · bundles scripts")
+        } else {
+            desc
+        };
+        let rel = skill_md
+            .strip_prefix(root)
+            .unwrap_or(&skill_md)
+            .display()
+            .to_string();
+        m.push(ImportItem {
+            kind: ItemKind::Skill,
+            tier,
+            name,
+            detail,
+            target: "Nebo skill",
+            source_path: rel,
+        });
+    }
+}
+
+/// `cron/jobs.json`. Apply doesn't import schedules yet, so the dry-run
+/// reports them as a note — never as items promising an import.
+fn scan_cron(root: &Path, m: &mut ImportManifest) {
+    let path = root.join("cron").join("jobs.json");
+    let Ok(text) = fs::read_to_string(&path) else {
+        return;
+    };
+    let val: serde_json::Value = match serde_json::from_str(&text) {
+        Ok(v) => v,
+        Err(e) => {
+            m.note(format!("cron/jobs.json could not be parsed: {e}"));
+            return;
+        }
+    };
+    let jobs = val
+        .as_array()
+        .map(|a| a.len())
+        .or_else(|| val.get("jobs").and_then(|j| j.as_array()).map(|a| a.len()))
+        .unwrap_or(0);
+    if jobs > 0 {
+        m.note(format!(
+            "cron: {jobs} scheduled jobs — imported by the scheduling slice"
+        ));
+    }
+}
+
+/// `.env` + `auth.json` credentials. The manifest lists ONLY what apply
+/// actually performs (known LLM provider keys → provider profiles); every
+/// other secret is a note naming when its slice lands — the dry-run must never
+/// promise an import the apply doesn't do. Only key *names* are surfaced —
+/// a secret value must never appear in a dry-run.
+fn scan_credentials(root: &Path, m: &mut ImportManifest) {
+    if let Ok(text) = fs::read_to_string(root.join(".env")) {
+        for line in text.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let Some((key, _value)) = line.split_once('=') else {
+                continue;
+            };
+            let key = key.trim().trim_start_matches("export ").trim();
+            if key.is_empty() {
+                continue;
+            }
+            match super::apply::provider_for_env_key(key) {
+                Some(provider) => m.push(ImportItem {
+                    kind: ItemKind::Credential,
+                    tier: TrustTier::Content,
+                    name: key.to_string(),
+                    detail: format!("{provider} key → LLM provider profile"),
+                    target: "Provider profile",
+                    source_path: ".env".into(),
+                }),
+                None => m.note(format!(
+                    "{key}: channel/service tokens come with a later slice"
+                )),
+            }
+        }
+    }
+    if root.join("auth.json").is_file() {
+        m.note("auth.json (OAuth records): imported with the channels slice".to_string());
+    }
+}
+
+/// `state.db` → chats + messages, with real conversation/message counts from
+/// the same reader the apply step uses. Unreadable databases fall back to a
+/// size-only line rather than hiding that history exists.
+fn scan_history(root: &Path, m: &mut ImportManifest) {
+    let db = root.join("state.db");
+    if !db.is_file() {
+        return;
+    }
+    // COUNT queries, not a full read — the scan must stay fast on big installs.
+    let detail = match history_counts(root) {
+        Ok((sessions, messages)) => {
+            format!("{sessions} conversations · {messages} messages")
+        }
+        Err(e) => {
+            let size = fs::metadata(&db).map(|md| md.len()).unwrap_or(0);
+            m.note(format!("state.db could not be read for counts: {e}"));
+            format!("state.db · {}", human_size(size))
+        }
+    };
+    m.push(ImportItem {
+        kind: ItemKind::Session,
+        tier: TrustTier::Content,
+        name: "conversation history".into(),
+        detail,
+        target: "Chats + messages",
+        source_path: "state.db".into(),
+    });
+}
+
+/// The Hermes install normalized to one [`SourceAgent`]: SOUL.md persona,
+/// memories, and conversation history. `None` (with a note) when there is no
+/// SOUL.md — Hermes is single-agent, so without a persona there is no
+/// employee to attach anything to.
+pub(super) fn source_agent(root: &Path, out: &mut ImportOutcome) -> Option<SourceAgent> {
+    let persona = match fs::read_to_string(root.join("SOUL.md")) {
+        Ok(s) => s,
+        Err(_) => {
+            out.skipped
+                .push("agent: no SOUL.md found, no employee created".into());
+            return None;
+        }
+    };
+    let conversations = if root.join("state.db").is_file() {
+        match read_history(root) {
+            Ok(c) => c,
+            Err(e) => {
+                out.skipped
+                    .push(format!("conversation history: state.db unreadable ({e})"));
+                Vec::new()
+            }
+        }
+    } else {
+        Vec::new()
+    };
+    Some(SourceAgent {
+        slug: String::new(),
+        name: "Hermes".to_string(),
+        description: "Imported from a Hermes install".to_string(),
+        persona,
+        rules: None,
+        memory_files: memory_entries(root),
+        conversations,
+    })
+}
+
+/// Conversation/message counts via SQL COUNT — the scan-side companion to
+/// [`read_history`], so the dry-run never pays a full table read.
+pub(super) fn history_counts(root: &Path) -> Result<(i64, i64), String> {
+    let conn = rusqlite::Connection::open_with_flags(
+        root.join("state.db"),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .map_err(|e| e.to_string())?;
+    conn.query_row(
+        "SELECT COUNT(DISTINCT session_id), COUNT(*) FROM messages",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )
+    .map_err(|e| e.to_string())
+}
+
+/// Read every conversation out of `state.db`, read-only. Sessions are derived
+/// from the `messages` table itself (grouped by `session_id`, ordered by
+/// insertion) rather than Hermes's `sessions` table, whose columns vary across
+/// versions. Shared by scan (counts) and apply (writes).
+pub(super) fn read_history(root: &Path) -> Result<Vec<SourceConversation>, String> {
+    let conn = rusqlite::Connection::open_with_flags(
+        root.join("state.db"),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .map_err(|e| e.to_string())?;
+
+    // Column availability varies across Hermes versions; fall back from the
+    // full shape to the minimal one instead of failing the whole read.
+    let full = "SELECT session_id, role, content, tool_calls, timestamp
+                FROM messages ORDER BY session_id, rowid";
+    let minimal = "SELECT session_id, role, content, NULL, NULL
+                   FROM messages ORDER BY session_id, rowid";
+    let mut stmt = match conn.prepare(full) {
+        Ok(s) => s,
+        Err(_) => conn.prepare(minimal).map_err(|e| e.to_string())?,
+    };
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                row.get::<_, Option<String>>(3)?,
+                read_epoch(row, 4),
+            ))
+        })
+        .map_err(|e| e.to_string())?;
+
+    let mut sessions: Vec<SourceConversation> = Vec::new();
+    for row in rows.flatten() {
+        let (session_id, role, content, tool_calls, timestamp) = row;
+        if sessions.last().map(|s| s.id.as_str()) != Some(session_id.as_str()) {
+            sessions.push(SourceConversation {
+                id: session_id,
+                title: String::new(),
+                started_at: None,
+                ended_at: None,
+                messages: Vec::new(),
+            });
+        }
+        let s = sessions.last_mut().expect("session pushed above");
+        if s.title.is_empty() && role == "user" && !content.trim().is_empty() {
+            s.title = parse::truncate_title(&content);
+        }
+        if let Some(ts) = timestamp {
+            if s.started_at.is_none() {
+                s.started_at = Some(ts);
+            }
+            s.ended_at = Some(ts);
+        }
+        s.messages.push(SourceMessage {
+            role,
+            content,
+            tool_calls,
+            timestamp,
+        });
+    }
+    Ok(sessions)
+}
+
+/// Hermes timestamps have shipped as unix ints, floats, ms, and strings; take
+/// whatever normalizes to an epoch second, else `None` (import time is used).
+fn read_epoch(row: &rusqlite::Row<'_>, idx: usize) -> Option<i64> {
+    if let Ok(v) = row.get::<_, i64>(idx) {
+        return Some(parse::normalize_epoch(v));
+    }
+    if let Ok(v) = row.get::<_, f64>(idx) {
+        return Some(parse::normalize_epoch(v as i64));
+    }
+    if let Ok(v) = row.get::<_, String>(idx) {
+        return parse::epoch_from_str(&v);
+    }
+    None
+}
+
+/// Recursively collect every `SKILL.md` under `dir`, skipping hidden folders.
+/// Shared by the dry-run scan and the apply step.
+pub(super) fn collect_skill_md(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            let hidden = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .map(|n| n.starts_with('.'))
+                .unwrap_or(false);
+            if !hidden {
+                collect_skill_md(&path, out);
+            }
+        } else if path.file_name().and_then(|n| n.to_str()) == Some("SKILL.md") {
+            out.push(path);
+        }
+    }
+}
+
+/// Pull the `description:` field out of a SKILL.md YAML frontmatter block.
+fn read_frontmatter_description(path: &Path) -> Option<String> {
+    let text = fs::read_to_string(path).ok()?;
+    let mut lines = text.lines();
+    if lines.next()?.trim() != "---" {
+        return None;
+    }
+    for line in lines {
+        let t = line.trim();
+        if t == "---" {
+            break;
+        }
+        if let Some(rest) = t.strip_prefix("description:") {
+            let d = rest.trim().trim_matches('"').trim_matches('\'').to_string();
+            if !d.is_empty() {
+                return Some(d);
+            }
+        }
+    }
+    None
+}
+
+fn human_size(bytes: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = KB * KB;
+    if bytes >= MB {
+        format!("{:.1} MB", bytes as f64 / MB as f64)
+    } else if bytes >= KB {
+        format!("{:.1} KB", bytes as f64 / KB as f64)
+    } else {
+        format!("{bytes} B")
+    }
+}
+
+/// Build a realistic Hermes install in a temp dir. Shared by the scan tests
+/// here and the apply tests in `apply.rs` so both halves exercise one fixture.
+#[cfg(test)]
+pub(super) fn hermes_fixture() -> tempfile::TempDir {
+    fn write(path: PathBuf, content: &str) {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, content).unwrap();
+    }
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let r = dir.path();
+        write(
+            r.join("config.yaml"),
+            "model: anthropic/claude\n\
+             mcp_servers:\n\
+             \x20 filesystem:\n\
+             \x20   command: npx\n\
+             \x20   args: [\"-y\", \"@modelcontextprotocol/server-filesystem\", \"/tmp\"]\n\
+             \x20 linear:\n\
+             \x20   url: https://mcp.linear.app/mcp\n\
+             \x20   auth: oauth\n\
+             \x20 company_api:\n\
+             \x20   url: https://mcp.internal.example.com\n\
+             \x20   auth: header\n\
+             \x20   headers:\n\
+             \x20     Authorization: \"Bearer tok-secretyyy\"\n",
+        );
+        write(r.join("SOUL.md"), "# Persona\nYou are Atlas.\n");
+        write(r.join("memories/MEMORY.md"), "§ prefers dark mode\n§ works in PST\n");
+        write(r.join("memories/USER.md"), "§ name is Sam\n");
+        write(
+            r.join("skills/research/quick/SKILL.md"),
+            "---\nname: quick\ndescription: Fast research\n---\nDo research.\n",
+        );
+        write(
+            r.join("skills/deploy/SKILL.md"),
+            "---\nname: deploy\ndescription: Ship it\n---\nDeploy.\n",
+        );
+        write(r.join("skills/deploy/scripts/run.sh"), "echo hi\n");
+        write(
+            r.join("cron/jobs.json"),
+            "[{\"name\":\"daily-brief\",\"schedule\":{\"display\":\"every day at 9am\"},\"prompt\":\"brief me\"}]",
+        );
+        write(r.join(".env"), "# secrets\nANTHROPIC_API_KEY=sk-secretxxx\nTELEGRAM_TOKEN=123:abc\n\n");
+        write(r.join("auth.json"), "{\"linear\":{\"access_token\":\"oauth-secretzzz\"}}");
+        let conn = rusqlite::Connection::open(r.join("state.db")).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE sessions (id TEXT PRIMARY KEY, created_at INTEGER);
+             CREATE TABLE messages (
+                 id INTEGER PRIMARY KEY, session_id TEXT, role TEXT, content TEXT,
+                 timestamp INTEGER, token_count INTEGER, tool_calls TEXT,
+                 reasoning TEXT, api_content TEXT
+             );
+             INSERT INTO messages (session_id, role, content, timestamp) VALUES
+               ('sess-1', 'user', 'Help me plan the launch', 1700000000),
+               ('sess-1', 'assistant', 'Sure — here is the plan.', 1700000060),
+               ('sess-1', 'compression_marker', 'internal', 1700000090),
+               ('sess-2', 'user', 'Summarize my inbox', 1700100000);
+             INSERT INTO messages (session_id, role, content, timestamp, tool_calls) VALUES
+               ('sess-2', 'assistant', 'Done.', 1700100050, '[{\"name\":\"mail\"}]');",
+        )
+        .unwrap();
+    }
+    dir
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::{detect, scan as scan_root};
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn detects_hermes() {
+        let f = hermes_fixture();
+        assert_eq!(detect(f.path()), Some(SourceKind::Hermes));
+    }
+
+    #[test]
+    fn empty_dir_is_unrecognized() {
+        let d = tempdir().unwrap();
+        assert!(detect(d.path()).is_none());
+        assert!(scan_root(d.path()).is_err());
+    }
+
+    #[test]
+    fn manifest_covers_all_artifact_kinds() {
+        let f = hermes_fixture();
+        let m = scan_root(f.path()).unwrap();
+        assert_eq!(m.source, SourceKind::Hermes);
+        assert_eq!(m.count(ItemKind::McpServer), 3);
+        assert_eq!(m.count(ItemKind::Agent), 1);
+        assert_eq!(m.count(ItemKind::Memory), 2);
+        assert_eq!(m.count(ItemKind::Skill), 2);
+        // Items are ONLY what apply performs: the provider key. Cron jobs,
+        // channel tokens, and auth.json are notes naming their future slices.
+        assert_eq!(m.count(ItemKind::Cron), 0);
+        assert_eq!(m.count(ItemKind::Credential), 1);
+        assert_eq!(m.count(ItemKind::Session), 1);
+        assert!(m.notes.iter().any(|n| n.starts_with("cron:")));
+        assert!(m.notes.iter().any(|n| n.starts_with("TELEGRAM_TOKEN")));
+        assert!(m.notes.iter().any(|n| n.starts_with("auth.json")));
+    }
+
+    #[test]
+    fn stdio_mcp_and_script_skill_are_code_tier() {
+        let f = hermes_fixture();
+        let m = scan_root(f.path()).unwrap();
+        let fs_srv = m.items.iter().find(|i| i.name == "filesystem").unwrap();
+        assert_eq!(fs_srv.tier, TrustTier::Code);
+        let linear = m.items.iter().find(|i| i.name == "linear").unwrap();
+        assert_eq!(linear.tier, TrustTier::Content);
+        let deploy = m.items.iter().find(|i| i.name == "deploy").unwrap();
+        assert_eq!(deploy.tier, TrustTier::Code);
+        let quick = m.items.iter().find(|i| i.name == "quick").unwrap();
+        assert_eq!(quick.tier, TrustTier::Content);
+        assert!(m.needs_confirmation());
+    }
+
+    #[test]
+    fn credentials_expose_key_names_never_values() {
+        let f = hermes_fixture();
+        let m = scan_root(f.path()).unwrap();
+        for secret in ["sk-secretxxx", "123:abc", "tok-secretyyy", "oauth-secretzzz"] {
+            for item in &m.items {
+                assert!(!item.detail.contains(secret));
+                assert!(!item.name.contains(secret));
+            }
+            for note in &m.notes {
+                assert!(!note.contains(secret));
+            }
+        }
+        assert!(m.items.iter().any(|i| i.name == "ANTHROPIC_API_KEY"));
+    }
+
+    #[test]
+    fn hermes_auth_header_maps_to_api_key() {
+        let servers = serde_json::json!({
+            "linear": { "url": "https://mcp.linear.app/mcp", "auth": "oauth" },
+            "company_api": { "url": "https://mcp.internal.example.com", "auth": "header" },
+        });
+        let block = normalize_mcp_block(servers.as_object().unwrap());
+        let parsed = parse_mcp_servers_block(&block);
+        let auth_of = |name: &str| {
+            parsed
+                .iter()
+                .find(|s| s.name == name)
+                .map(|s| s.auth_type.clone())
+                .unwrap()
+        };
+        assert_eq!(auth_of("linear"), "oauth");
+        assert_eq!(auth_of("company_api"), "api_key");
+    }
+}

@@ -107,9 +107,14 @@ fn verify_hub_url(hub_url: &str) -> Result<(), TunnelError> {
 ///   `evaluate`, local-file read via `file_upload`) — inherently local, never
 ///   legitimate from a remote UI.
 /// - `/api/v1/update/` manages and swaps the local binary — a local-only op.
+/// - `/api/v1/import/` reads arbitrary local install directories and copies
+///   their credentials — an owner-machine operation, never legitimate remotely.
 fn is_blocked_path(path: &str) -> bool {
     let p = path.split('?').next().unwrap_or(path);
-    p == "/ws/extension" || p.starts_with("/ws/extension/") || p.starts_with("/api/v1/update/")
+    p == "/ws/extension"
+        || p.starts_with("/ws/extension/")
+        || p.starts_with("/api/v1/update/")
+        || p.starts_with("/api/v1/import/")
 }
 
 /// Pipe one hub-opened stream to the local server, gating the request first.
@@ -225,6 +230,8 @@ mod tests {
         assert!(is_blocked_path("/ws/extension?x=1"));
         assert!(is_blocked_path("/api/v1/update/apply"));
         assert!(is_blocked_path("/api/v1/update/check"));
+        assert!(is_blocked_path("/api/v1/import/scan"));
+        assert!(is_blocked_path("/api/v1/import/apply?x=1"));
         // Management UI + chat stream must still pass.
         assert!(!is_blocked_path("/ws"));
         assert!(!is_blocked_path("/api/v1/agents"));

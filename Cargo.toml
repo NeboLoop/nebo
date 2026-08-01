@@ -123,6 +123,7 @@ sysinfo = "0.33"
 regex = "1"
 semver = "1"
 shellexpand = "3"
+json5 = "0.4"
 dirs = "6"
 rfd = "0.15"
 

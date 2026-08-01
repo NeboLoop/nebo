@@ -790,6 +790,27 @@ export function serveFile(path: string) {
 }
 
 /**
+ * @description "Apply install"
+ */
+export function applyInstall(req: Record<string, unknown> = {}) {
+	return webapi.post<components.ApplyInstallResponse>(`/api/v1/import/apply`, req)
+}
+
+/**
+ * @description "Detect installs"
+ */
+export function detectInstalls() {
+	return webapi.get<components.DetectInstallsResponse>(`/api/v1/import/detect`)
+}
+
+/**
+ * @description "Scan install"
+ */
+export function scanInstall(req: Record<string, unknown> = {}) {
+	return webapi.post<components.ScanInstallResponse>(`/api/v1/import/scan`, req)
+}
+
+/**
  * @description "List integrations"
  */
 export function listIntegrations() {

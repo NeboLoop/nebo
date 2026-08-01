@@ -67,6 +67,10 @@ pub struct JanusUsage {
 pub struct AppState {
     pub config: Config,
     pub store: Arc<Store>,
+    /// Embedding provider for memory vectors, when one is configured. The
+    /// boot backfill and the migration importer share it so imported
+    /// memories are vectored through the same pathway as native ones.
+    pub embedding_provider: Option<Arc<dyn ai::EmbeddingProvider>>,
     pub auth: Arc<AuthService>,
     pub hub: Arc<ClientHub>,
     pub runner: Arc<Runner>,
