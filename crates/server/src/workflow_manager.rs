@@ -857,7 +857,10 @@ impl WorkflowManager for WorkflowManagerImpl {
             match find_agent_by_name(&names, agent_ref) {
                 Some(id) => Ok(id.to_string()),
                 None => Err(format!(
-                    "no agent matching '{}' — available: {}",
+                    "no agent matching '{}' — available: {}. To create a NEW agent \
+                     with duties, use agent(resource: \"registry\", action: \"create\", \
+                     name: \"...\", automations: [...]) first — workflows can only \
+                     attach to an agent that exists.",
                     agent_ref,
                     names
                         .iter()
