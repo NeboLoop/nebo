@@ -64,6 +64,16 @@ pub trait WorkflowManager: Send + Sync {
         name_or_id: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<WorkflowInfo, String>> + Send + 'a>>;
 
+    /// Resolve an agent reference (id, exact name, or slug) to the agent's id.
+    /// Backs the work tool's `agent` input: the session key only identifies the
+    /// CALLER, so without this an assistant asked to change another employee's
+    /// duties could only self-scope — which is how weekend workflows silently
+    /// landed on the assistant instead of the Content Creator (2026-08-01).
+    fn resolve_agent<'a>(
+        &'a self,
+        agent_ref: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<String, String>> + Send + 'a>>;
+
     /// Run a workflow. Returns run_id immediately; execution happens in a spawned task.
     /// Accepts a standalone workflow id, or a binding-scoped id
     /// (`agent:{agent_id}:{binding_name}`) as returned by `resolve` for agent

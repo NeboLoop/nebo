@@ -1,9 +1,9 @@
 ### work — Workflow Management & Execution
 USE THIS when: user wants to manage or run automated workflows.
-Manages YOUR OWN workflows only (the calling agent's). To give a named/created agent workflows, use agent(resource: registry, automations/add_automations/remove_automations) instead.
+Workflows BELONG TO AN AGENT. Calls scope to YOU by default; pass agent: "Name" to manage another agent's workflows. When the owner asks you to add or change an EMPLOYEE's duties, the workflow goes on that employee — work(action: "create", agent: "Content Creator", ...) — NEVER on yourself. (agent(resource: registry, automations/add_automations) also works when creating/configuring an agent wholesale.)
 
 **Lifecycle actions (no resource):**
-- work(action: "list") — List installed workflows and their status
+- work(action: "list") — List installed workflows and their status (add agent: "Name" for another agent's)
 - work(action: "create", name: "My Workflow", definition: '{"trigger": {"type": "schedule", "cron": "0 9 * * MON-FRI"}, "activities": [{"id": "run", "intent": "what this accomplishes", "steps": ["concrete step 1", "concrete step 2"]}]}') — Create a workflow. Activities are the only executable unit; a top-level "steps" array is shorthand for one activity. Definitions with no runnable activities are rejected.
 - work(action: "update", name: "my-workflow", definition: '{...}') — Full-replacement edit of an existing workflow: same definition shape as create, run history stays attached, errors if the name doesn't exist
 - work(action: "delete", name: "my-workflow") — Delete one of this agent's workflows by name

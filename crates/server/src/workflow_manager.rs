@@ -837,6 +837,38 @@ impl WorkflowManager for WorkflowManagerImpl {
         })
     }
 
+    fn resolve_agent<'a>(
+        &'a self,
+        agent_ref: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + 'a>>
+    {
+        Box::pin(async move {
+            if let Ok(Some(_)) = self.store.get_agent(agent_ref) {
+                return Ok(agent_ref.to_string());
+            }
+            let agents = self
+                .store
+                .list_agents(500, 0)
+                .map_err(|e| format!("list_agents: {}", e))?;
+            let names: Vec<(&str, &str)> = agents
+                .iter()
+                .map(|a| (a.id.as_str(), a.name.as_str()))
+                .collect();
+            match find_agent_by_name(&names, agent_ref) {
+                Some(id) => Ok(id.to_string()),
+                None => Err(format!(
+                    "no agent matching '{}' — available: {}",
+                    agent_ref,
+                    names
+                        .iter()
+                        .map(|(_, n)| *n)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )),
+            }
+        })
+    }
+
     fn create<'a>(
         &'a self,
         agent_id: &'a str,
@@ -1848,6 +1880,26 @@ async fn review_failed_workflow_run(
     }
 }
 
+/// Match an agent reference against (id, name) pairs: exact name
+/// (case-insensitive) first, then slug equality ("Content Creator Agent"
+/// matches "content-creator-agent"). Pure core of `resolve_agent`.
+fn find_agent_by_name<'a>(agents: &[(&'a str, &str)], agent_ref: &str) -> Option<&'a str> {
+    if let Some((id, _)) = agents
+        .iter()
+        .find(|(_, n)| n.eq_ignore_ascii_case(agent_ref))
+    {
+        return Some(id);
+    }
+    let want = slug(agent_ref);
+    if want.is_empty() {
+        return None;
+    }
+    agents
+        .iter()
+        .find(|(_, n)| slug(n) == want)
+        .map(|(id, _)| *id)
+}
+
 /// Resolve a tool-authored workflow definition's trigger. Accepts a `trigger`
 /// object ({type, ...}) or a top-level `schedule` (cron string, or a
 /// {cron: "..."} map). A trigger that is PRESENT but malformed is a hard
@@ -2495,7 +2547,17 @@ fn post_automation_message(store: &db::Store, hub: &ClientHub, session_key: &str
 
 #[cfg(test)]
 mod trigger_tests {
-    use super::resolve_tool_trigger;
+    use super::{find_agent_by_name, resolve_tool_trigger};
+
+    #[test]
+    fn agent_ref_matches_name_and_slug() {
+        let agents = [("id-1", "Content Creator Agent"), ("id-2", "Map Master")];
+        assert_eq!(find_agent_by_name(&agents, "content creator agent"), Some("id-1"));
+        assert_eq!(find_agent_by_name(&agents, "content-creator-agent"), Some("id-1"));
+        assert_eq!(find_agent_by_name(&agents, "Map Master"), Some("id-2"));
+        assert_eq!(find_agent_by_name(&agents, "no-such-agent"), None);
+        assert_eq!(find_agent_by_name(&agents, ""), None);
+    }
 
     #[test]
     fn schedule_map_form_is_accepted_not_degraded() {

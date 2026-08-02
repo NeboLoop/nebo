@@ -36,6 +36,8 @@ struct WorkInput {
     name: String,
     #[serde(default)]
     definition: String,
+    #[serde(default)]
+    agent: String,
 }
 
 impl WorkTool {
@@ -63,7 +65,23 @@ impl WorkTool {
             Err(e) => return ToolResult::error(format!("invalid input: {}", e)),
         };
 
-        let agent_id = Self::calling_agent_id(ctx);
+        // Workflows belong to an agent. Default scope is the CALLING agent
+        // (from the session key); an explicit `agent` reference re-targets the
+        // call — resolved strictly, so a typo'd name errors instead of
+        // silently self-scoping (which is how weekend workflows once landed on
+        // the assistant instead of the employee they were meant for).
+        let resolved;
+        let agent_id = if parsed.agent.is_empty() {
+            Self::calling_agent_id(ctx)
+        } else {
+            match self.manager.resolve_agent(&parsed.agent).await {
+                Ok(id) => {
+                    resolved = id;
+                    &resolved
+                }
+                Err(e) => return ToolResult::error(e),
+            }
+        };
 
         // If resource is set, dispatch to that workflow
         if !parsed.resource.is_empty() {
@@ -264,12 +282,12 @@ impl DynTool for WorkTool {
     }
 
     fn description(&self) -> String {
-        "Workflow management & execution for YOUR OWN workflows (the calling agent's).\n\
+        "Workflow management & execution. Workflows BELONG TO AN AGENT: calls scope to the calling agent by default; pass agent: \"Name\" to manage another agent's workflows (e.g. when the owner asks you to change an employee's duties — the workflow goes on THAT employee, never on yourself).\n\
          USE THIS when: user wants to manage or run automated workflows.\n\
-         NOT for another agent's workflows — to give a named/created agent workflows, use agent(resource: \"registry\", automations/add_automations/remove_automations).\n\n\
+         (agent(resource: \"registry\", automations/add_automations) also works when creating/configuring an agent wholesale.)\n\n\
          Lifecycle actions (no resource):\n\
-         - work(action: \"list\") — List this agent's workflows and their status\n\
-         - work(action: \"create\", name: \"My Workflow\", definition: \"{\\\"trigger\\\": {\\\"type\\\": \\\"schedule\\\", \\\"cron\\\": \\\"0 9 * * MON-FRI\\\"}, \\\"activities\\\": [{\\\"id\\\": \\\"run\\\", \\\"intent\\\": \\\"...\\\", \\\"steps\\\": [\\\"concrete step\\\", ...]}]}\") — Create a workflow this agent owns (appears in its Workflows panel and fires on its trigger). Activities are the ONLY executable unit: each runs as its own scoped execution of its intent + steps. A top-level `steps` array is accepted as shorthand for one activity. Omit trigger for a manual workflow.\n\
+         - work(action: \"list\") — List this agent's workflows and their status (add agent: \"Name\" for another agent's)\n\
+         - work(action: \"create\", name: \"My Workflow\", agent: \"Content Creator\", definition: \"{\\\"trigger\\\": {\\\"type\\\": \\\"schedule\\\", \\\"cron\\\": \\\"0 9 * * MON-FRI\\\"}, \\\"activities\\\": [{\\\"id\\\": \\\"run\\\", \\\"intent\\\": \\\"...\\\", \\\"steps\\\": [\\\"concrete step\\\", ...]}]}\") — Create a workflow the target agent owns (appears in its Workflows panel and fires on its trigger; omit agent to create on yourself). Activities are the ONLY executable unit: each runs as its own scoped execution of its intent + steps. A top-level `steps` array is accepted as shorthand for one activity. Omit trigger for a manual workflow.\n\
          - work(action: \"update\", name: \"my-workflow\", definition: \"{...}\") — Full-replacement edit of an existing workflow (same definition shape as create; run history stays attached; errors if the name doesn't exist)\n\
          - work(action: \"delete\", name: \"my-workflow\") — Delete one of this agent's workflows by name\n\
          - work(action: \"install\", code: \"WORK-XXXX-XXXX\") — Install from marketplace\n\
@@ -316,6 +334,10 @@ impl DynTool for WorkTool {
                 "definition": {
                     "type": "string",
                     "description": "Workflow JSON definition (for create)"
+                },
+                "agent": {
+                    "type": "string",
+                    "description": "Target agent (name or id) whose workflows to manage. Defaults to the calling agent — set this whenever the workflow belongs to a different agent/employee."
                 }
             },
             "required": ["action"],
