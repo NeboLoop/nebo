@@ -293,11 +293,23 @@
 
           return false;
         },
-        handlePaste(_view, event) {
+        handlePaste(view, event) {
           const files = Array.from(event.clipboardData?.files || []);
           if (files.length > 0) {
             event.preventDefault();
             addFiles(files);
+            return true;
+          }
+          // Paste plain, never styled. A copy from a web page or doc carries a
+          // text/html flavour, and ProseMirror would faithfully reproduce its
+          // bold/italic/colours — formatting the user never typed, which then
+          // serializes into the message as markdown. pasteText runs the normal
+          // text-paste pipeline, so the deliberate markdown-paste behaviour
+          // (Markdown transformPastedText) still applies to what was copied.
+          const text = event.clipboardData?.getData('text/plain');
+          if (text && event.clipboardData?.types?.includes('text/html')) {
+            event.preventDefault();
+            view.pasteText(text);
             return true;
           }
           return false;
