@@ -13,7 +13,7 @@
 	import { page } from '$app/stores';
 	import { goto } from '$lib/nav';
 	import { onMount } from 'svelte';
-	import { marked } from 'marked';
+	import { parseMarkdown } from '$lib/markdown';
 	import {
 		installStoreProduct,
 		uninstallStoreProduct,
@@ -126,7 +126,7 @@
 		skill.longDescription.trim().length > 0 &&
 		skill.longDescription.trim() !== (skill?.description ?? '').trim()
 	);
-	const longHtml = $derived(hasLongDescription ? (marked.parse(skill.longDescription, { async: false }) as string) : '');
+	const longHtml = $derived(hasLongDescription ? parseMarkdown(skill.longDescription) : '');
 
 	const information = $derived.by(() => {
 		const rows: { label: string; value: string; mono?: boolean }[] = [];

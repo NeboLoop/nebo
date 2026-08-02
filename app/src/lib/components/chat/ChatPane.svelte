@@ -9,7 +9,7 @@
   import { downloadArtifact } from '$lib/chat/download';
   import { backendUrl, backendBase } from '$lib/api/base';
   import { addToast } from '$lib/stores/toast';
-  import { marked } from 'marked';
+  import { parseMarkdown } from '$lib/markdown';
   import FileText from 'lucide-svelte/icons/file-text';
   import Code from 'lucide-svelte/icons/code';
   import Table from 'lucide-svelte/icons/table';
@@ -17,12 +17,6 @@
   import type { UploadedAttachment } from '$lib/types/attachment';
   import { getAttachmentType, formatFileSize, attachmentMediaUrl } from '$lib/types/attachment';
   import { NEAR_BOTTOM_PX, distanceFromBottom } from '$lib/chat/scroll';
-
-  // Configure marked for streaming-friendly rendering
-  marked.setOptions({
-    breaks: true,
-    gfm: true,
-  });
 
   interface Artifact {
     /** Stable container id — same across every version of this document. */
@@ -72,7 +66,7 @@
     | { type: 'user'; content: string; time?: string; attachments?: UploadedAttachment[] }
     | { type: 'thinking'; content: string; duration: string }
     | { type: 'ask'; requestId: string; prompt: string; widgets: AskWidgetDef[]; response?: string }
-    | { type: 'assistant'; content: string; html?: string; time?: string; delegateAgentId?: string; delegateAgentName?: string; id?: string; attachments?: UploadedAttachment[]; tools?: ToolMsg[]; streaming?: boolean };
+    | { type: 'assistant'; content: string; time?: string; delegateAgentId?: string; delegateAgentName?: string; id?: string; attachments?: UploadedAttachment[]; tools?: ToolMsg[]; streaming?: boolean };
 
   type AgentInfo = { id: string; name: string; color: string; initial: string; role: string; status: string; isApp?: boolean };
 
@@ -133,7 +127,7 @@
   // wrapped <code>'s text, so no payload attributes are needed.
   function renderMarkdown(content: string): string {
     if (!content) return '';
-    const html = marked.parse(content, { async: false }) as string;
+    const html = parseMarkdown(content);
     const withCopy = html
       .replace(
         /<pre>/g,
@@ -1264,11 +1258,7 @@
           {/if}
           <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
           <div class="text-sm leading-relaxed prose prose-sm max-w-none" onclick={handleWorkMentionClick}>
-            {#if msg.html}
-              {@html linkWorkMentions(renderMentionChips(msg.html), (msg as any).workItems)}
-            {:else}
-              {@html linkWorkMentions(renderMarkdown(msg.content), (msg as any).workItems)}
-            {/if}
+            {@html linkWorkMentions(renderMarkdown(msg.content), (msg as any).workItems)}
           </div>
           <!-- Tools this reply ran, on the message itself — never a detached sibling. -->
           {#if msg.tools?.length}

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { t } from 'svelte-i18n';
-  import { marked } from 'marked';
+  import { parseMarkdown } from '$lib/markdown';
   import CheckCircle2 from 'lucide-svelte/icons/check-circle-2';
   import SearchIcon from 'lucide-svelte/icons/search';
   import X from 'lucide-svelte/icons/x';
@@ -397,7 +397,7 @@
       <div class="flex-1 overflow-y-auto">
         <div class="max-w-2xl mx-auto px-6 py-6">
           <div class="prose prose-sm max-w-none [&>:first-child]:mt-0">
-            {@html marked.parse(selected.message, { async: false })}
+            {@html parseMarkdown(selected.message)}
           </div>
           {#if approvalRunId(selected)}
             {@const runId = approvalRunId(selected)!}

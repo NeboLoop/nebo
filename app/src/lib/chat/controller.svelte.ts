@@ -78,7 +78,7 @@ export type ChatMessage =
   | { type: 'user'; content: string; time?: string; id?: string; attachments?: UploadedAttachment[] }
   | { type: 'thinking'; content: string; duration: string }
   | { type: 'ask'; requestId: string; prompt: string; widgets: AskWidgetDef[]; response?: string }
-  | { type: 'assistant'; content: string; html?: string; time?: string; delegateAgentId?: string; delegateAgentName?: string; id?: string; attachments?: UploadedAttachment[]; workItems?: WorkItem[]; tools?: ToolUse[]; streaming?: boolean };
+  | { type: 'assistant'; content: string; time?: string; delegateAgentId?: string; delegateAgentName?: string; id?: string; attachments?: UploadedAttachment[]; workItems?: WorkItem[]; tools?: ToolUse[]; streaming?: boolean };
 
 export interface ChatControllerConfig {
   agentId: string;
@@ -461,7 +461,6 @@ export function createChatController(config: ChatControllerConfig) {
         messages[idx] = {
           ...m,
           ...(content ? { content } : {}),
-          ...(data.html ? { html: data.html } : {}),
           time: formatTime(data.createdAt || Date.now()),
           ...(workItems.length ? { workItems } : {}),
         };
@@ -482,7 +481,6 @@ export function createChatController(config: ChatControllerConfig) {
       id: data.id || nextId(),
       type: 'assistant' as const,
       content,
-      html: data.html || undefined,
       time: formatTime(data.createdAt || Date.now()),
       ...(workItems.length ? { workItems } : {}),
       ...(delegateAgent ? {

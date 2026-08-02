@@ -343,12 +343,6 @@
         cur = newBubble(m.content);
       }
 
-      // A single plain segment can carry the server-rendered html; multi-segment
-      // turns render each segment's markdown from its own text.
-      if (bubbles.length === 1 && !bubbles[0].tools?.length && m.html) {
-        bubbles[0].html = m.html;
-      }
-
       // Persisted run artifacts (metadata.artifacts, written at chat_complete)
       // re-attach to the turn's LAST bubble so Work cards and inline media survive
       // history reload.

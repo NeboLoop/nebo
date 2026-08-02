@@ -22,19 +22,6 @@ use tools::Origin;
 use crate::run_registry::RegisterParams;
 use crate::state::AppState;
 
-/// Convert markdown to HTML using pulldown-cmark.
-/// Used for assistant messages so the frontend can render with `{@html}`.
-pub fn md_to_html(md: &str) -> String {
-    use pulldown_cmark::{Options, Parser, html};
-    let mut opts = Options::empty();
-    opts.insert(Options::ENABLE_STRIKETHROUGH);
-    opts.insert(Options::ENABLE_TABLES);
-    let parser = Parser::new_ext(md, opts);
-    let mut html_output = String::new();
-    html::push_html(&mut html_output, parser);
-    html_output
-}
-
 fn resolve_full_access(state: &AppState) -> bool {
     state
         .store

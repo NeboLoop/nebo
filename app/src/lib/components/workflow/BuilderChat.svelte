@@ -143,7 +143,6 @@
 				msgs[i] = {
 					...msg,
 					content: (extracted.cleaned || 'Done.') + summary,
-					html: undefined,
 				};
 				chat.setMessages(msgs);
 				break;
