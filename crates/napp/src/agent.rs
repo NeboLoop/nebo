@@ -168,6 +168,12 @@ pub struct AgentConfig {
     /// Memory scoping configuration (inheritance + context isolation).
     #[serde(default)]
     pub memory: MemoryConfig,
+    /// Workflows dropped by the lenient parse: (binding name, parse error).
+    /// Load-only diagnostic — the filesystem is a sanctioned write interface
+    /// (edit agent.json → watcher syncs the DB), so a skipped workflow must be
+    /// surfaced to the owner, never just warn-logged.
+    #[serde(skip)]
+    pub skipped_workflows: Vec<(String, String)>,
 }
 
 /// A single input field the agent needs from the user.
@@ -579,6 +585,7 @@ pub fn parse_agent_config(json_str: &str) -> Result<AgentConfig, NappError> {
                         Ok(wb) => { cfg.workflows.insert(key, wb); }
                         Err(e) => {
                             tracing::warn!(workflow = %key, error = %e, "skipping workflow with invalid schema");
+                            cfg.skipped_workflows.push((key, e.to_string()));
                         }
                     }
                 }
@@ -782,6 +789,22 @@ pub fn split_frontmatter(content: &str) -> Result<(String, String), NappError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_lenient_parse_records_skipped_workflows() {
+        // One valid workflow, one with a map-shaped trigger the schema rejects
+        let json = r#"{
+            "workflows": {
+                "good": {"trigger": {"type": "manual"}},
+                "bad": {"trigger": {"type": "schedule", "cron": {"nested": "map"}}}
+            }
+        }"#;
+        let cfg = parse_agent_config(json).unwrap();
+        assert!(cfg.workflows.contains_key("good"));
+        assert!(!cfg.workflows.contains_key("bad"));
+        assert_eq!(cfg.skipped_workflows.len(), 1);
+        assert_eq!(cfg.skipped_workflows[0].0, "bad");
+    }
 
     #[test]
     fn test_qualified_skill_ref_validation() {

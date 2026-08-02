@@ -2600,6 +2600,13 @@ async fn handle_agent_fs_events(
                 // Sync workflow bindings
                 if let Some(ref config) = loaded.config {
                     sync_agent_workflows(&state.store, &final_id, config);
+                    notify_skipped_workflows(
+                        &state.store,
+                        &state.hub,
+                        &final_id,
+                        &loaded.agent_def.name,
+                        &config.skipped_workflows,
+                    );
                 }
 
                 // If agent was previously enabled, restore to registry + start worker
@@ -2684,6 +2691,13 @@ async fn handle_agent_fs_events(
                 // Re-sync workflow bindings
                 if let Some(ref config) = loaded.config {
                     sync_agent_workflows(&state.store, &db_agent.id, config);
+                    notify_skipped_workflows(
+                        &state.store,
+                        &state.hub,
+                        &db_agent.id,
+                        &db_agent.name,
+                        &config.skipped_workflows,
+                    );
                 }
 
                 // Patch in-memory registry content only; identity stays DB-owned.
@@ -2820,6 +2834,58 @@ mod install_debris_tests {
 }
 
 /// Sync workflow bindings from an AgentConfig into the agent_workflows table.
+/// Surface workflows the lenient agent.json parse dropped. The filesystem is a
+/// sanctioned write interface (edit agent.json → watcher syncs the DB), so a
+/// schema-invalid workflow silently skipped at load is the same lie as the old
+/// tool-path manual-degrade: the file looks saved, the duty never fires. One
+/// Inbox notification per (agent, binding) — INSERT OR IGNORE keeps repeat
+/// watcher fires from spamming.
+fn notify_skipped_workflows(
+    store: &db::Store,
+    hub: &handlers::ws::ClientHub,
+    agent_id: &str,
+    agent_name: &str,
+    skipped: &[(String, String)],
+) {
+    let user_id = store.ensure_local_user_id().unwrap_or_default();
+    for (binding, error) in skipped {
+        let notif_id = format!("wf-invalid:{}:{}", agent_id, binding);
+        let title = format!("{}: workflow '{}' is invalid and will not run", agent_name, binding);
+        let body = format!(
+            "agent.json has a workflow this system can't parse ({}). Fix the \
+             definition or recreate it with the work tool.",
+            error
+        );
+        let action_url = format!("/{}/settings/workflows", agent_id);
+        if store
+            .create_notification_if_not_exists(
+                &notif_id,
+                &user_id,
+                "workflow_invalid",
+                &title,
+                Some(&body),
+                Some(&action_url),
+                None,
+                Some(agent_id),
+            )
+            .is_ok()
+        {
+            hub.broadcast(
+                "notification_created",
+                serde_json::json!({
+                    "id": notif_id,
+                    "type": "workflow_invalid",
+                    "title": title,
+                    "body": body,
+                    "actionUrl": action_url,
+                    "agentId": agent_id,
+                    "readAt": null,
+                }),
+            );
+        }
+    }
+}
+
 fn sync_agent_workflows(store: &db::Store, agent_id: &str, config: &napp::agent::AgentConfig) {
     for (binding_name, binding) in &config.workflows {
         let (trigger_type, trigger_config) = match &binding.trigger {
