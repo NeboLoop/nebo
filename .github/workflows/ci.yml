@@ -84,6 +84,13 @@ jobs:
           # otherwise goes unresolved at link time (see release.yml).
           echo "RUSTFLAGS=-C link-arg=-L/usr/lib/${MULTIARCH} -C link-arg=-Wl,--no-as-needed -C link-arg=-lopenblas -C link-arg=-Wl,--as-needed" >> $GITHUB_ENV
 
+      # nebo-server embeds app/build via rust-embed (spa.rs) — the derive needs
+      # the FOLDER to exist at compile time, but no test reads the embedded
+      # assets, so an empty directory suffices. Building the real frontend here
+      # would be minutes per run that the tests never observe.
+      - name: Satisfy the frontend embed folder
+        run: mkdir -p app/build
+
       # --exclude nebo: the desktop crate has no tests and its build script
       # wants ../app/build (frontendDist) — excluding it keeps this job free of
       # a frontend build. Everything else in the workspace runs.
