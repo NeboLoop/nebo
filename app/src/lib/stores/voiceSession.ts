@@ -533,7 +533,10 @@ function createVoiceSessionStore() {
 
 			log.info('Voice session stopped');
 			cleanup();
-			set(initialState);
+			// boundChatId records what the call produced, so it has to outlive the
+			// call — the closer reads it to land in the thread voice just created.
+			// `start()` clears it for the next session.
+			set({ ...initialState, boundChatId: current.boundChatId });
 		},
 
 		/**
