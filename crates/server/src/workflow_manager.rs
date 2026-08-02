@@ -1028,13 +1028,14 @@ impl WorkflowManager for WorkflowManagerImpl {
                             .get_workflow_suspension(rid)
                             .map_err(|e| format!("load suspension: {e}"))?
                             .ok_or_else(|| format!("no suspension for run {rid}"))?;
-                        let (_agent, _binding, activity_id, step_index, messages_json, pending_json, _op, _display) = row;
+                        let (_agent, _binding, activity_id, iteration, step_index, messages_json, pending_json, _op, _display) = row;
                         let messages: Vec<ai::Message> = serde_json::from_str(&messages_json)
                             .map_err(|e| format!("suspension messages corrupt: {e}"))?;
                         let pending: ai::ToolCall = serde_json::from_str(&pending_json)
                             .map_err(|e| format!("suspension pending call corrupt: {e}"))?;
                         Some(workflow::engine::ResumeState {
                             activity_id,
+                            iteration,
                             step_index,
                             messages,
                             pending,

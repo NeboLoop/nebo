@@ -371,10 +371,15 @@ impl Store {
 
     // ── Activity Results ──
 
+    /// Append one execution to a run's activity log. `iteration` is the loop
+    /// scope path ("" outside any loop) — a loop body appends one row per item,
+    /// and the path is what tells them apart on resume.
+    #[allow(clippy::too_many_arguments)]
     pub fn create_activity_result(
         &self,
         run_id: &str,
         activity_id: &str,
+        iteration: &str,
         status: &str,
         tokens_used: i64,
         attempts: i64,
@@ -385,11 +390,12 @@ impl Store {
         let conn = self.conn()?;
         conn.execute(
             "INSERT INTO workflow_activity_results
-             (run_id, activity_id, status, tokens_used, attempts, error, started_at, completed_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+             (run_id, activity_id, iteration, status, tokens_used, attempts, error, started_at, completed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 run_id,
                 activity_id,
+                iteration,
                 status,
                 tokens_used,
                 attempts,
@@ -512,35 +518,46 @@ impl Store {
         &self,
         run_id: &str,
         activity_id: &str,
+        iteration: &str,
         content: &str,
     ) -> Result<(), NeboError> {
         let conn = self.conn()?;
+        // Scoped to the iteration that produced it. Without the iteration
+        // clause this updated EVERY row for the activity, so each loop pass
+        // overwrote the output of every pass before it.
         conn.execute(
-            "UPDATE workflow_activity_results SET result_content = ?3
-             WHERE run_id = ?1 AND activity_id = ?2",
-            params![run_id, activity_id, content],
+            "UPDATE workflow_activity_results SET result_content = ?4
+             WHERE run_id = ?1 AND activity_id = ?2 AND iteration = ?3",
+            params![run_id, activity_id, iteration, content],
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;
         Ok(())
     }
 
-    /// Outputs of every completed activity in a run (activity_id → content).
-    /// Used on resume to skip finished work and rebuild prior context.
+    /// Outputs of every completed activity in a run, keyed by
+    /// (activity_id, iteration) — used on resume to skip finished work and
+    /// rebuild prior context.
+    ///
+    /// Keying on activity_id alone collapsed a loop body's per-iteration rows
+    /// into one entry, so the fast-forward treated item 2 as already done.
     pub fn completed_activity_contents(
         &self,
         run_id: &str,
-    ) -> Result<std::collections::HashMap<String, String>, NeboError> {
+    ) -> Result<std::collections::HashMap<(String, String), String>, NeboError> {
         let conn = self.conn()?;
         let mut stmt = conn
             .prepare(
-                "SELECT activity_id, COALESCE(result_content, '')
+                "SELECT activity_id, iteration, COALESCE(result_content, '')
                  FROM workflow_activity_results
                  WHERE run_id = ?1 AND status = 'completed'",
             )
             .map_err(|e| NeboError::Database(e.to_string()))?;
         let rows = stmt
             .query_map(params![run_id], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                Ok((
+                    (row.get::<_, String>(0)?, row.get::<_, String>(1)?),
+                    row.get::<_, String>(2)?,
+                ))
             })
             .map_err(|e| NeboError::Database(e.to_string()))?;
         rows.collect::<Result<std::collections::HashMap<_, _>, _>>()
@@ -555,6 +572,7 @@ impl Store {
         agent_id: &str,
         binding_name: &str,
         activity_id: &str,
+        iteration: &str,
         step_index: Option<i64>,
         messages: &str,
         pending_tool: &str,
@@ -564,13 +582,14 @@ impl Store {
         let conn = self.conn()?;
         conn.execute(
             "INSERT OR REPLACE INTO workflow_run_suspensions
-             (run_id, agent_id, binding_name, activity_id, step_index, messages, pending_tool, operation, display)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+             (run_id, agent_id, binding_name, activity_id, iteration, step_index, messages, pending_tool, operation, display)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 run_id,
                 agent_id,
                 binding_name,
                 activity_id,
+                iteration,
                 step_index,
                 messages,
                 pending_tool,
@@ -583,13 +602,14 @@ impl Store {
     }
 
     /// Load a run's suspension: (agent_id, binding_name, activity_id,
-    /// step_index, messages, pending_tool, operation, display).
+    /// iteration, step_index, messages, pending_tool, operation, display).
     #[allow(clippy::type_complexity)]
     pub fn get_workflow_suspension(
         &self,
         run_id: &str,
     ) -> Result<
         Option<(
+            String,
             String,
             String,
             String,
@@ -603,7 +623,7 @@ impl Store {
     > {
         let conn = self.conn()?;
         match conn.query_row(
-            "SELECT agent_id, binding_name, activity_id, step_index, messages, pending_tool, operation, display
+            "SELECT agent_id, binding_name, activity_id, iteration, step_index, messages, pending_tool, operation, display
              FROM workflow_run_suspensions WHERE run_id = ?1",
             params![run_id],
             |row| {
@@ -616,6 +636,7 @@ impl Store {
                     row.get(5)?,
                     row.get(6)?,
                     row.get(7)?,
+                    row.get(8)?,
                 ))
             },
         ) {
@@ -670,4 +691,51 @@ fn row_to_workflow_run(row: &rusqlite::Row) -> rusqlite::Result<WorkflowRun> {
         started_at: row.get(12)?,
         completed_at: row.get(13)?,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::Store;
+
+    /// A loop body appends one row per item under the SAME run and activity id.
+    /// Both the read and the content write must key on the iteration, or the
+    /// resume fast-forward treats item 2 as already done (it ran the body
+    /// exactly once however many items there were) and each pass overwrites
+    /// the recorded output of every pass before it.
+    #[test]
+    fn test_activity_results_are_per_iteration() {
+        let path = std::env::temp_dir()
+            .join(format!("nebo-wf-iter-test-{}.db", uuid::Uuid::new_v4()));
+        let store = Store::new(&path.to_string_lossy()).unwrap();
+        store
+            .create_workflow_run("run1", "wf1", "manual", None, None, None)
+            .unwrap();
+
+        for (iteration, content) in [("0", "first item"), ("1", "second item")] {
+            store
+                .create_activity_result("run1", "body", iteration, "completed", 0, 1, None, 0, Some(1))
+                .unwrap();
+            store
+                .set_activity_result_content("run1", "body", iteration, content)
+                .unwrap();
+        }
+
+        let done = store.completed_activity_contents("run1").unwrap();
+
+        // Distinct entries — not one collapsed key.
+        assert_eq!(done.len(), 2);
+        assert_eq!(
+            done.get(&("body".into(), "0".into())).map(String::as_str),
+            Some("first item")
+        );
+        // Writing iteration 1 must not have clobbered iteration 0.
+        assert_eq!(
+            done.get(&("body".into(), "1".into())).map(String::as_str),
+            Some("second item")
+        );
+        // An iteration that never ran is absent, so it is not fast-forwarded.
+        assert!(!done.contains_key(&("body".into(), "2".into())));
+
+        let _ = std::fs::remove_file(&path);
+    }
 }

@@ -3644,7 +3644,7 @@ pub async fn resolve_workflow_approval(
     Path(run_id): Path<String>,
     Json(body): Json<WorkflowApprovalBody>,
 ) -> HandlerResult<serde_json::Value> {
-    let Some((agent_id, binding_name, suspended_activity, _step, _messages, _pending_tool, _operation, display)) =
+    let Some((agent_id, binding_name, suspended_activity, _iteration, _step, _messages, _pending_tool, _operation, display)) =
         state
             .store
             .get_workflow_suspension(&run_id)

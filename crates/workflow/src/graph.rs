@@ -88,6 +88,11 @@ struct WalkScope {
     stop_node: Option<String>,
     /// Current loop item, exposed to expressions as `item`.
     item: Option<serde_json::Value>,
+    /// Dotted loop scope path — "" at top level, "2" inside the third item of
+    /// a loop, "2.0" for the first item of a loop nested inside that one. This
+    /// is the identity the resume fast-forward matches on; without it every
+    /// iteration of a body looks like the same completed activity.
+    iteration: String,
 }
 
 /// Execute a workflow with explicit connections. Completes the run record
@@ -141,6 +146,7 @@ pub(crate) async fn execute_graph(
         indegree: top_indegree(&ctx),
         stop_node: None,
         item: None,
+        iteration: String::new(),
     };
 
     let walks = entries
@@ -505,6 +511,7 @@ async fn run_wait<'a>(
     let _ = ctx.store.create_activity_result(
         &ctx.run_id,
         &activity.id,
+        &scope.iteration,
         "completed",
         0,
         1,
@@ -534,6 +541,7 @@ async fn run_http<'a>(
         let _ = ctx.store.create_activity_result(
             &ctx.run_id,
             &activity.id,
+            &scope.iteration,
             "failed",
             0,
             1,
@@ -587,6 +595,7 @@ async fn run_http<'a>(
     let _ = ctx.store.create_activity_result(
         &ctx.run_id,
         &activity.id,
+        &scope.iteration,
         "completed",
         0,
         1,
@@ -620,6 +629,7 @@ async fn run_condition<'a>(
             let _ = ctx.store.create_activity_result(
                 &ctx.run_id,
                 &activity.id,
+                &scope.iteration,
                 "completed",
                 0,
                 1,
@@ -644,6 +654,7 @@ async fn run_condition<'a>(
             let _ = ctx.store.create_activity_result(
                 &ctx.run_id,
                 &activity.id,
+                &scope.iteration,
                 "failed",
                 0,
                 1,
@@ -675,6 +686,7 @@ async fn run_loop<'a>(
             let _ = ctx.store.create_activity_result(
                 &ctx.run_id,
                 &activity.id,
+                &scope.iteration,
                 "failed",
                 0,
                 1,
@@ -725,6 +737,11 @@ async fn run_loop<'a>(
             indegree: body_indegree(ctx, &activity.id, &body),
             stop_node: Some(activity.id.clone()),
             item: Some(item),
+            iteration: if scope.iteration.is_empty() {
+                processed.to_string()
+            } else {
+                format!("{}.{}", scope.iteration, processed)
+            },
         };
         let walks = entry_edges
             .iter()
@@ -736,6 +753,7 @@ async fn run_loop<'a>(
     let _ = ctx.store.create_activity_result(
         &ctx.run_id,
         &activity.id,
+        &scope.iteration,
         "completed",
         0,
         1,
@@ -804,7 +822,12 @@ async fn run_llm_activity<'a>(
         ctx.progress_tx.as_ref(),
         &mut spent,
         ctx.checkpoint.as_ref(),
-        ctx.resume.as_ref().filter(|r| r.activity_id == activity.id),
+        // The parked call belongs to one activity in one iteration — a loop
+        // body resuming on item 5 must not replay item 2's pending call.
+        ctx.resume
+            .as_ref()
+            .filter(|r| r.activity_id == activity.id && r.iteration == scope.iteration),
+        &scope.iteration,
     )
     .await
     {
@@ -813,6 +836,7 @@ async fn run_llm_activity<'a>(
             let _ = ctx.store.create_activity_result(
                 &ctx.run_id,
                 &activity.id,
+                &scope.iteration,
                 "completed",
                 spent as i64,
                 1,
@@ -823,7 +847,7 @@ async fn run_llm_activity<'a>(
             // Output content backs the resume fast-forward (UPDATE — after the row exists).
             let _ = ctx
                 .store
-                .set_activity_result_content(&ctx.run_id, &activity.id, &result_text);
+                .set_activity_result_content(&ctx.run_id, &activity.id, &scope.iteration, &result_text);
 
             let over_budget = {
                 let mut st = ctx.state.lock().unwrap();
@@ -862,6 +886,7 @@ async fn run_llm_activity<'a>(
             let _ = ctx.store.create_activity_result(
                 &ctx.run_id,
                 &activity.id,
+                &scope.iteration,
                 "exited",
                 spent as i64,
                 1,
@@ -878,6 +903,7 @@ async fn run_llm_activity<'a>(
             let _ = ctx.store.create_activity_result(
                 &ctx.run_id,
                 &activity.id,
+                &scope.iteration,
                 "failed",
                 spent as i64,
                 activity.on_error.retry as i64,

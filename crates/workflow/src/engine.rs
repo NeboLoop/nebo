@@ -142,6 +142,9 @@ pub struct CheckpointCtx {
 #[derive(Debug, Clone)]
 pub struct ResumeState {
     pub activity_id: String,
+    /// Loop scope path the run suspended in ("" outside a loop) — resuming
+    /// must re-enter the same iteration, not the activity generally.
+    pub iteration: String,
     pub step_index: Option<i64>,
     pub messages: Vec<ai::Message>,
     /// The approved call — executed directly on resume (it IS what the owner
@@ -307,6 +310,7 @@ pub async fn execute_workflow(
             &mut activity_spent,
             checkpoint,
             resume.as_ref().filter(|r| r.activity_id == activity.id),
+            "", // sequential engine has no loop nodes
         )
         .await
         {
@@ -319,6 +323,7 @@ pub async fn execute_workflow(
                 if let Err(e) = store.create_activity_result(
                     &run_id,
                     &activity.id,
+                    "",
                     "completed",
                     activity_spent as i64,
                     1,
@@ -330,7 +335,7 @@ pub async fn execute_workflow(
                 }
                 // Output content backs the resume fast-forward — a parked run
                 // never re-executes an activity whose result is recorded.
-                let _ = store.set_activity_result_content(&run_id, &activity.id, &result_text);
+                let _ = store.set_activity_result_content(&run_id, &activity.id, "", &result_text);
 
                 // n8n-style branch termination: empty output = no downstream execution.
                 // If the activity produced no output (even after tool-result synthesis),
@@ -364,6 +369,7 @@ pub async fn execute_workflow(
                 let _ = store.create_activity_result(
                     &run_id,
                     &activity.id,
+                    "",
                     "exited",
                     activity_spent as i64,
                     1,
@@ -396,6 +402,7 @@ pub async fn execute_workflow(
                 if let Err(db_err) = store.create_activity_result(
                     &run_id,
                     &activity.id,
+                    "",
                     "failed",
                     activity_spent as i64,
                     activity.on_error.retry as i64,
@@ -516,13 +523,19 @@ pub(crate) async fn execute_activity_with_retry(
     spent: &mut u32,
     checkpoint: Option<&CheckpointCtx>,
     resume: Option<&ResumeState>,
+    iteration: &str,
 ) -> Result<(String, u32), WorkflowError> {
     // Resume fast-forward: an activity this run already completed returns its
     // recorded output instead of re-executing — the Temporal property that a
-    // resumed run never re-does finished (possibly non-idempotent) work. Fresh
-    // runs have no completed rows, so this is a no-op for them.
+    // resumed run never re-does finished (possibly non-idempotent) work.
+    //
+    // Keyed by (activity_id, iteration), NOT activity_id alone: a loop body
+    // appends a completed row per item within the SAME run, so matching on the
+    // id alone made item 2 replay item 1's output and the body ran exactly once
+    // however many items there were. `iteration` is "" outside a loop, so
+    // linear workflows behave exactly as before.
     if let Ok(done) = store.completed_activity_contents(run_id) {
-        if let Some(content) = done.get(&activity.id) {
+        if let Some(content) = done.get(&(activity.id.clone(), iteration.to_string())) {
             info!(activity = activity.id.as_str(), run_id, "resume: skipping completed activity");
             return Ok((content.clone(), 0));
         }
@@ -546,6 +559,7 @@ pub(crate) async fn execute_activity_with_retry(
             spent,
             checkpoint,
             resume,
+            iteration,
         )
         .await
         {
@@ -597,6 +611,7 @@ pub async fn execute_activity(
     spent: &mut u32,
     checkpoint: Option<&CheckpointCtx>,
     resume: Option<&ResumeState>,
+    iteration: &str,
 ) -> Result<(String, u32), WorkflowError> {
     // Detect if browser tool is available for this activity
     let has_browser = tools.iter().any(|t| t.name() == "web");
@@ -656,7 +671,7 @@ pub async fn execute_activity(
             Some(r) => (r.messages.clone(), Some(r.pending.clone())),
             None => (messages, None),
         };
-        return run_llm_loop(activity, provider, tools, &tool_defs, &system, messages, spent, make_trace(String::new()), store, checkpoint, pending).await;
+        return run_llm_loop(activity, provider, tools, &tool_defs, &system, messages, spent, make_trace(String::new()), store, checkpoint, pending, iteration).await;
     }
 
     // --- Per-step execution ---
@@ -737,6 +752,7 @@ pub async fn execute_activity(
             store,
             checkpoint,
             if resume.is_some() && (i as i64) == resume_step { resume_pending.take() } else { None },
+            iteration,
         )
         .await
         .map_err(|e| {
@@ -975,6 +991,7 @@ async fn run_llm_loop(
     store: &Arc<Store>,
     checkpoint: Option<&CheckpointCtx>,
     pending: Option<ai::ToolCall>,
+    iteration: &str,
 ) -> Result<(String, u32), WorkflowError> {
     let mut tokens_used: u32 = 0;
     let mut iterations: u32 = 0;
@@ -1215,6 +1232,7 @@ async fn run_llm_loop(
                                             &trace.agent_id,
                                             &cp.binding_name,
                                             &activity.id,
+                                            iteration,
                                             trace.step_id.parse::<i64>().ok(),
                                             &messages_json,
                                             &pending_json,
