@@ -1,8 +1,10 @@
 name: CI
 
-# Runs on every branch push and pull request. Frontend typecheck + unit tests
-# are the gate; Rust coverage stays on `make test` / release until a dedicated
-# cargo job is hardened for this runner image.
+# Runs on every branch push and pull request. Two gates: frontend typecheck +
+# unit tests, and the full cargo workspace test suite. The Rust job exists
+# because its absence let a workflow regression AND the compile break that hid
+# its test ship in one commit — the repo read green for weeks on frontend
+# checks alone.
 on:
   push:
   pull_request:
@@ -14,6 +16,7 @@ concurrency:
 env:
   NODE_VERSION: "22"
   PNPM_VERSION: "10.33.2"
+  RUST_VERSION: "1.95"
 
 jobs:
   frontend:
@@ -40,3 +43,49 @@ jobs:
 
       - name: Unit tests
         run: pnpm test
+
+  rust:
+    name: Cargo workspace tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ci-test
+          cache-on-failure: true
+
+      # Same dependency set as release.yml's Linux leg — that recipe is already
+      # hardened for this runner image; do not let the two drift.
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            pkg-config \
+            build-essential \
+            protobuf-compiler \
+            libopenblas-dev
+
+      - name: Configure OpenBLAS paths
+        run: |
+          MULTIARCH=$(dpkg-architecture -qDEB_HOST_MULTIARCH)
+          echo "PKG_CONFIG_PATH=/usr/lib/${MULTIARCH}/pkgconfig" >> $GITHUB_ENV
+          # `-l openblas` is REQUIRED — turbovec's `cblas_sgemm` reference
+          # otherwise goes unresolved at link time (see release.yml).
+          echo "RUSTFLAGS=-C link-arg=-L/usr/lib/${MULTIARCH} -C link-arg=-Wl,--no-as-needed -C link-arg=-lopenblas -C link-arg=-Wl,--as-needed" >> $GITHUB_ENV
+
+      # --exclude nebo: the desktop crate has no tests and its build script
+      # wants ../app/build (frontendDist) — excluding it keeps this job free of
+      # a frontend build. Everything else in the workspace runs.
+      - name: Run tests
+        run: cargo test --workspace --exclude nebo --no-fail-fast
