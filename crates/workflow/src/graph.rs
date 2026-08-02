@@ -1439,6 +1439,8 @@ mod walk_tests {
                 None,
                 None,
                 None,
+                None,
+                None,
             ),
         )
         .await
