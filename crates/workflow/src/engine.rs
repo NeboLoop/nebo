@@ -1573,7 +1573,22 @@ fn build_activity_prompt_with_context(
         prompt.push_str("## Available Tools\n");
         prompt.push_str("Your tools (case-sensitive, call ONLY these): ");
         prompt.push_str(&tool_names.join(", "));
-        prompt.push_str("\nDo NOT call any tool not in this list. Do NOT prefix tool names with mcp__ or any namespace.\n\n");
+        prompt.push_str("\nDo NOT call any tool not in this list. Do NOT prefix tool names with mcp__ or any namespace.\n");
+        // A step phrased as a CLI command ("Run: gws calendar +agenda") must go
+        // through the plugin tool — running the bare binary via os/shell skips
+        // the per-account credential injection and fails with "not
+        // authenticated" even when the account is connected.
+        if tool_names.iter().any(|t| t == "plugin") {
+            prompt.push_str(
+                "To run a plugin command (e.g. gws, slack, cos-store), ALWAYS use the plugin tool: \
+                 plugin(resource: \"<name>\", action: \"exec\", command: \"<the command>\"). \
+                 A step written as a shell command like `gws calendar +agenda --today` means \
+                 plugin(resource: \"gws\", action: \"exec\", command: \"calendar +agenda --today\"). \
+                 NEVER run a plugin binary through os or shell — only the plugin tool injects the \
+                 account credentials, so the shell path fails auth.\n",
+            );
+        }
+        prompt.push('\n');
     }
 
     // Typed-node contract: the type's preamble tells the model HOW this
@@ -1887,6 +1902,42 @@ mod engine_tests {
         let scoped = scoped_activity_tools(&activity, &registry, Some(&skills));
         let names: Vec<&str> = scoped.iter().map(|t| t.name()).collect();
         assert_eq!(names, vec!["plugin", "message"]);
+    }
+
+    fn prompt_with_tools(tool_names: &[&str]) -> String {
+        let activity: Activity = serde_json::from_value(serde_json::json!({
+            "id": "agenda",
+            "intent": "Read today's calendar",
+            "steps": ["Run: gws calendar +agenda --today"]
+        }))
+        .unwrap();
+        let names: Vec<String> = tool_names.iter().map(|s| s.to_string()).collect();
+        build_activity_prompt(
+            &activity,
+            "",
+            &serde_json::json!({}),
+            None,
+            None,
+            false,
+            &names,
+        )
+    }
+
+    #[test]
+    fn test_activity_prompt_routes_plugin_commands_through_plugin_tool() {
+        // A step written as a bare CLI command must be steered to the plugin
+        // tool — os/shell skips per-account credential injection.
+        let prompt = prompt_with_tools(&["plugin", "message"]);
+        assert!(prompt.contains("ALWAYS use the plugin tool"));
+        assert!(prompt.contains("NEVER run a plugin binary through os or shell"));
+    }
+
+    #[test]
+    fn test_activity_prompt_omits_plugin_guidance_without_plugin_tool() {
+        let prompt = prompt_with_tools(&["os", "message"]);
+        assert!(!prompt.contains("ALWAYS use the plugin tool"));
+        // Section spacing unchanged for the no-plugin case.
+        assert!(prompt.contains("or any namespace.\n\n"));
     }
 
     #[test]
