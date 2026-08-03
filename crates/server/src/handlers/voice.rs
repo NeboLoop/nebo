@@ -32,6 +32,15 @@ pub struct ConversationQuery {
     /// Loop stream for the relay ("agent_space" for agent chats, "dm").
     #[serde(default)]
     pub loop_stream: Option<String>,
+    /// Telephony mode: the peer is a phone bridge, not a browser. Switches
+    /// the wire audio to 8kHz μ-law (carried untouched from the carrier) and
+    /// adds phone delivery guidance. Any value enables it.
+    #[serde(default)]
+    pub telephony: Option<String>,
+    /// Caller's number, when known — the employee should know who it is
+    /// talking to before it says a word.
+    #[serde(default)]
+    pub caller_id: Option<String>,
 }
 
 pub async fn conversation_ws_handler(
@@ -381,8 +390,29 @@ async fn handle_conversation_ws(mut socket: WebSocket, state: AppState, mut q: C
         instructions.push_str(soul.trim());
         instructions.push_str("\n\n---\n\n");
     }
-    instructions.push_str(
-        "You are speaking with the user by voice. \
+    let telephony = q.telephony.is_some();
+    if telephony {
+        // A phone caller is not the owner: they are a stranger on a line the
+        // business forwards to us. Different medium, different manners.
+        instructions.push_str(
+            "You are answering a phone call. \
+                       Speak in short, plain sentences — no markdown, no lists, no spelling out \
+                       punctuation. Say numbers and times the way a person would. Confirm names \
+                       and numbers back to the caller before acting on them. \
+                       For ANYTHING that needs real data or action (calendar, messages, records, \
+                       lookups), call the `nebo` tool and relay its result aloud — never guess. \
+                       Tell the caller you're checking while it works. \
+                       If the caller asks for a person, says this isn't working, or is upset, \
+                       tell them you'll pass them to someone and stop talking. \
+                       Never claim to be human; if asked, say plainly that you're an AI \
+                       assistant for the business.",
+        );
+        if let Some(from) = q.caller_id.as_deref().filter(|s| !s.is_empty()) {
+            instructions.push_str(&format!("\n\nThe caller is phoning from {from}."));
+        }
+    } else {
+        instructions.push_str(
+            "You are speaking with the user by voice. \
                        Be concise and conversational — short sentences, no markdown, no lists. \
                        For ANYTHING that needs real data or action (files, printers, email, \
                        calendar, web, documents, system info), call the `nebo` tool with the \
@@ -390,8 +420,13 @@ async fn handle_conversation_ws(mut socket: WebSocket, state: AppState, mut q: C
                        act. While it works, tell the user you're on it. If the result says \
                        something needs approval or a permission, say so plainly and point them \
                        to the Nebo desktop app.",
-    );
-    if let Some(chat_id) = q.chat_id.as_deref() {
+        );
+    }
+    // A phone call is its own conversation — replaying desktop chat history
+    // into it would have the employee greet a stranger mid-thread.
+    if !telephony
+        && let Some(chat_id) = q.chat_id.as_deref()
+    {
         instructions.push_str(&chat_history_context(&state, chat_id));
     }
 
@@ -404,6 +439,13 @@ async fn handle_conversation_ws(mut socket: WebSocket, state: AppState, mut q: C
         instructions,
         replace,
         keyterms,
+        // Telephony carries the carrier's own μ-law end to end — nothing
+        // transcodes between the phone and the model.
+        audio_format: if telephony {
+            voice::realtime::AudioFormat::G711Ulaw
+        } else {
+            voice::realtime::AudioFormat::Pcm24k
+        },
         ..Default::default()
     };
     // Per-agent voice: each employee sounds like themselves (Identity tab).

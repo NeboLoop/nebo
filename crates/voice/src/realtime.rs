@@ -32,6 +32,35 @@ use tracing::{debug, info, warn};
 use crate::VoiceError;
 use crate::conversation::ConversationEvent;
 
+/// Wire audio format for both directions of a realtime session.
+///
+/// The desktop and loop clients capture at 24 kHz PCM; telephony carries
+/// G.711 μ-law at 8 kHz. Naming is provider-specific — xAI calls μ-law
+/// `audio/pcmu` (OpenAI calls the same codec `g711_ulaw`), verified against
+/// `wss://api.x.ai/v1/realtime`, which accepts `audio/pcm`, `audio/pcmu`,
+/// `audio/pcma` and `audio/opus`.
+///
+/// Carrying μ-law end to end means a phone call transcodes NOWHERE: Twilio's
+/// 8 kHz μ-law rides untouched all the way to the model and back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AudioFormat {
+    /// 24 kHz signed 16-bit PCM — desktop, loop, anything with a real mic.
+    #[default]
+    Pcm24k,
+    /// 8 kHz G.711 μ-law — telephony.
+    G711Ulaw,
+}
+
+impl AudioFormat {
+    /// The `session.audio.{input,output}.format` object for this format.
+    fn as_json(self) -> Value {
+        match self {
+            Self::Pcm24k => json!({ "type": "audio/pcm", "rate": 24000 }),
+            Self::G711Ulaw => json!({ "type": "audio/pcmu", "rate": 8000 }),
+        }
+    }
+}
+
 /// Configuration for one realtime session.
 #[derive(Debug, Clone)]
 pub struct RealtimeConfig {
@@ -59,6 +88,9 @@ pub struct RealtimeConfig {
     /// tools like mcp/web_search are never exposed; they'd execute outside
     /// the policy engine).
     pub tools: Vec<Value>,
+    /// Wire audio format. Defaults to 24 kHz PCM, so every existing caller is
+    /// byte-identical; telephony opts into μ-law.
+    pub audio_format: AudioFormat,
 }
 
 impl Default for RealtimeConfig {
@@ -75,6 +107,7 @@ impl Default for RealtimeConfig {
             replace: serde_json::Map::new(),
             keyterms: Vec::new(),
             tools: Vec::new(),
+            audio_format: AudioFormat::default(),
         }
     }
 }
@@ -82,7 +115,9 @@ impl Default for RealtimeConfig {
 /// Commands into a live realtime session.
 #[derive(Debug)]
 pub enum RealtimeCommand {
-    /// Raw PCM16 LE mono audio @ 24kHz — forwarded as a binary WS frame.
+    /// Raw audio bytes in the session's configured `AudioFormat` (PCM16 LE
+    /// mono @ 24 kHz by default; μ-law @ 8 kHz for telephony) — forwarded as
+    /// a binary WS frame.
     Audio(Bytes),
     /// Typed user input (no audio): creates a message item and requests a
     /// response.
@@ -150,11 +185,11 @@ fn session_update(cfg: &RealtimeConfig) -> Value {
         "resumption": { "enabled": true },
         "audio": {
             "input": {
-                "format": { "type": "audio/pcm", "rate": 24000 },
+                "format": cfg.audio_format.as_json(),
                 "transport": "binary",
             },
             "output": {
-                "format": { "type": "audio/pcm", "rate": 24000 },
+                "format": cfg.audio_format.as_json(),
                 "transport": "binary",
                 "speed": cfg.speed,
             },
@@ -456,6 +491,28 @@ mod tests {
         assert_eq!(s["audio"]["input"]["transcription"]["keyterms"][0], "Nebo");
         assert_eq!(s["replace"]["NeboAI"], "Neebo A I");
         assert_eq!(s["tools"][0]["name"], "os");
+    }
+
+    /// Telephony pins the other half of the contract: μ-law at 8kHz, under
+    /// xAI's name for it (`audio/pcmu`, NOT OpenAI's `g711_ulaw` — xAI
+    /// rejects that string). Getting this wrong is silent: the session opens
+    /// and every frame is noise.
+    #[test]
+    fn session_update_pins_telephony_audio_contract() {
+        let cfg = RealtimeConfig {
+            audio_format: AudioFormat::G711Ulaw,
+            ..Default::default()
+        };
+
+        let v = session_update(&cfg);
+        let s = &v["session"];
+        assert_eq!(s["turn_detection"]["type"], "server_vad");
+        assert_eq!(s["resumption"]["enabled"], true);
+        for dir in ["input", "output"] {
+            assert_eq!(s["audio"][dir]["format"]["type"], "audio/pcmu");
+            assert_eq!(s["audio"][dir]["format"]["rate"], 8000);
+            assert_eq!(s["audio"][dir]["transport"], "binary");
+        }
     }
 
     /// Cumulative transcription events must map to TranscriptionText with the
