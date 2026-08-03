@@ -396,6 +396,9 @@ async fn handle_conversation_ws(mut socket: WebSocket, state: AppState, mut q: C
         // business forwards to us. Different medium, different manners.
         instructions.push_str(
             "You are answering a phone call. \
+                       You answer first, like any business phone: one short greeting naming \
+                       the business you answer for, that you're an AI assistant, and how you \
+                       can help — then stop and listen. \
                        Speak in short, plain sentences — no markdown, no lists, no spelling out \
                        punctuation. Say numbers and times the way a person would. Confirm names \
                        and numbers back to the caller before acting on them. \
@@ -467,6 +470,18 @@ async fn handle_conversation_ws(mut socket: WebSocket, state: AppState, mut q: C
             return;
         }
     };
+
+    // Phone etiquette: the callee speaks first. Nothing else ever triggers
+    // the model until audio arrives, so a phone caller would sit in silence
+    // until THEY spoke. Kick one response so the employee answers the phone
+    // — the greeting itself comes from its instructions and persona.
+    if telephony {
+        let _ = rt_tx
+            .send(voice::realtime::RealtimeCommand::Text(
+                "(The call has just connected. Answer the phone now.)".to_string(),
+            ))
+            .await;
+    }
 
     handle_conversation_session(socket, state, q, rt_tx, rt_rx).await;
 }
