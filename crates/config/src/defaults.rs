@@ -281,3 +281,37 @@ pub fn mark_setup_complete() -> Result<(), NeboError> {
     fs::write(dir.join(files::SETUP_COMPLETE), timestamp.to_string())?;
     Ok(())
 }
+
+/// Per-(agent, plugin, account) credential directory for multi-account
+/// plugins, and its parent. ONE owner for this path shape: the server's
+/// account-login flow allocates `plugin_account_dir` per connected account,
+/// and channel bridges are handed `plugin_profiles_root` to scan — if these
+/// ever drift, bridges silently stop seeing accounts.
+pub fn plugin_profiles_root(agent_id: &str, plugin_slug: &str) -> Result<PathBuf, NeboError> {
+    Ok(data_dir()?
+        .join("nebo")
+        .join("plugin-profiles")
+        .join(sanitize_path_component(agent_id))
+        .join(sanitize_path_component(plugin_slug)))
+}
+
+/// The isolated config dir for one connected account.
+pub fn plugin_account_dir(
+    agent_id: &str,
+    plugin_slug: &str,
+    account_label: &str,
+) -> Result<PathBuf, NeboError> {
+    Ok(plugin_profiles_root(agent_id, plugin_slug)?.join(sanitize_path_component(account_label)))
+}
+
+fn sanitize_path_component(s: &str) -> String {
+    s.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}

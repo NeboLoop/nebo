@@ -1274,6 +1274,42 @@ impl NeboAIApi {
             .await
     }
 
+    // ── Phone numbers ("a number is a connected account") ──────────
+
+    /// Bind a freshly provisioned phone number to an employee on this bot.
+    /// NeboAI picks and purchases the number, mints the signed endpoint
+    /// token, and wires the carrier webhook at the nebo-phone gateway — the
+    /// response is everything the phonecall plugin's account profile needs.
+    pub async fn bind_bot_phone(
+        &self,
+        agent_id: &str,
+        label: &str,
+        business_name: Option<&str>,
+    ) -> Result<serde_json::Value, CommError> {
+        let body = serde_json::json!({
+            "agentId": agent_id,
+            "label": label,
+            "businessName": business_name.unwrap_or(""),
+        });
+        self.do_json(
+            reqwest::Method::POST,
+            &format!("/api/v1/bots/{}/phone", self.bot_id),
+            Some(&body),
+        )
+        .await
+    }
+
+    /// Release a bound phone number (the account was disconnected).
+    pub async fn unbind_bot_phone(&self, number: &str) -> Result<serde_json::Value, CommError> {
+        let body = serde_json::json!({ "number": number });
+        self.do_json(
+            reqwest::Method::DELETE,
+            &format!("/api/v1/bots/{}/phone", self.bot_id),
+            Some(&body),
+        )
+        .await
+    }
+
     /// Fetch license keys for sealed .napp artifacts.
     ///
     /// Returns decryption keys for all artifacts this bot is licensed to access.

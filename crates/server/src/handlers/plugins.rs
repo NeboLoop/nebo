@@ -283,18 +283,11 @@ pub async fn auth_login_account(
 
 /// Per-(agent, plugin, account) credential directory. Lives under the Nebo
 /// data dir so it's isolated from the global `~/.config/<plugin>` default.
+/// The path shape is owned by config::plugin_account_dir — channel bridges
+/// scan its parent (config::plugin_profiles_root), so the two must agree.
 fn plugin_profile_dir(agent_id: &str, slug: &str, account_label: &str) -> std::path::PathBuf {
-    let sanitize = |s: &str| -> String {
-        s.chars()
-            .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' { c } else { '_' })
-            .collect()
-    };
-    let base = config::data_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    base.join("nebo")
-        .join("plugin-profiles")
-        .join(sanitize(agent_id))
-        .join(sanitize(slug))
-        .join(sanitize(account_label))
+    config::plugin_account_dir(agent_id, slug, account_label)
+        .unwrap_or_else(|_| std::path::PathBuf::from("."))
 }
 
 /// Shared background login flow used by both global and per-account login.
@@ -333,8 +326,18 @@ fn spawn_plugin_login(
         let mut cmd = runtime.command(&login_command);
         // Per-account: point the plugin at this account's isolated config dir
         // so its login/token/refresh all land there, not the global default.
+        // The login also gets this Nebo's own address and the agent it acts
+        // for — some logins are server-side flows through the local API (the
+        // phone plugin's "login" provisions a number via the cloud) rather
+        // than third-party OAuth.
         if let Some(ref p) = profile {
             cmd.env(&p.env_name, &p.config_dir);
+            let port = std::env::var("NEBO_PORT")
+                .ok()
+                .and_then(|v| v.parse::<u16>().ok())
+                .unwrap_or(types::constants::DEFAULT_PORT);
+            cmd.env("NEBO_LOCAL_URL", format!("http://127.0.0.1:{port}"));
+            cmd.env("NEBO_AGENT_ID", &p.agent_id);
         }
         // Cloud bots (NEBOAI_PUBLIC_OAUTH=1, set by the provisioner): the user's
         // browser can't reach the pod's loopback listener, so hand the plugin
@@ -684,12 +687,50 @@ pub async fn disconnect_plugin_account(
     Path(slug): Path<String>,
     Query(q): Query<DisconnectAccountQuery>,
 ) -> HandlerResult<serde_json::Value> {
+    // Run the plugin's own logout against this account's config dir BEFORE
+    // deleting it — logout is where server-side release happens (revoking an
+    // OAuth token, returning a phone number). Deleting the dir first would
+    // orphan whatever the account held. Best-effort with a bound: disconnect
+    // must still succeed when the plugin or network is broken.
+    let dir = plugin_profile_dir(&q.agent_id, &slug, &q.account_label);
+    if dir.is_dir()
+        && let Some((binary_path, auth)) = state.plugin_store.get_auth_info(&slug)
+        && let (Some(logout_cmd), Some(env_name)) =
+            (auth.commands.logout.as_deref(), auth.profile_dir_env.as_deref())
+    {
+        let runtime = napp::PluginRuntime::new(&slug, binary_path, state.plugin_store.clone());
+        let mut cmd = runtime.command(logout_cmd);
+        cmd.env(env_name, &dir);
+        // Same locals a login gets — a logout that releases something
+        // server-side (a phone number) goes back through the local API.
+        let port = std::env::var("NEBO_PORT")
+            .ok()
+            .and_then(|v| v.parse::<u16>().ok())
+            .unwrap_or(types::constants::DEFAULT_PORT);
+        cmd.env("NEBO_LOCAL_URL", format!("http://127.0.0.1:{port}"));
+        cmd.env("NEBO_AGENT_ID", &q.agent_id);
+        match tokio::time::timeout(std::time::Duration::from_secs(30), cmd.output()).await {
+            Ok(Ok(out)) if out.status.success() => {}
+            Ok(Ok(out)) => {
+                warn!(plugin = %slug, account = %q.account_label,
+                    stderr = %String::from_utf8_lossy(&out.stderr),
+                    "account logout command failed; disconnecting anyway");
+            }
+            Ok(Err(e)) => {
+                warn!(plugin = %slug, error = %e, "account logout could not run; disconnecting anyway");
+            }
+            Err(_) => {
+                warn!(plugin = %slug, account = %q.account_label,
+                    "account logout timed out; disconnecting anyway");
+            }
+        }
+    }
+
     state
         .store
         .delete_plugin_account_profile(&q.agent_id, &slug, &q.account_label)
         .map_err(to_error_response)?;
     // Remove the account's credential directory so disconnect is a real removal.
-    let dir = plugin_profile_dir(&q.agent_id, &slug, &q.account_label);
     if dir.is_dir() {
         let _ = std::fs::remove_dir_all(&dir);
     }

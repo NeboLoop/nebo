@@ -107,4 +107,14 @@ pub fn routes() -> Router<AppState> {
             "/neboai/share",
             axum::routing::post(handlers::neboai::share_artifact),
         )
+        // Phone binding, called by the phonecall plugin's auth login/logout
+        // over the local API ("a number is a connected account").
+        .route(
+            "/phone/bind",
+            axum::routing::post(handlers::neboai::phone_bind),
+        )
+        .route(
+            "/phone/unbind",
+            axum::routing::post(handlers::neboai::phone_unbind),
+        )
 }

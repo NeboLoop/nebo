@@ -1459,3 +1459,54 @@ pub async fn force_reconnect(State(state): State<AppState>) -> HandlerResult<ser
         }
     }
 }
+
+// --- Phone binding proxy ("a number is a connected account") ---
+//
+// Called by the phonecall plugin's `auth login` / `auth logout` over the
+// local API. The heavy lifting happens at NeboAI: pick and purchase the
+// number, mint the endpoint token, wire the carrier webhook to the
+// nebo-phone gateway. This side only adds the owner's identity.
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PhoneBindRequest {
+    pub agent_id: String,
+    #[serde(default)]
+    pub label: String,
+    #[serde(default)]
+    pub business_name: Option<String>,
+}
+
+/// POST /api/v1/phone/bind — provision + bind a number for an employee.
+pub async fn phone_bind(
+    State(state): State<AppState>,
+    Json(req): Json<PhoneBindRequest>,
+) -> HandlerResult<serde_json::Value> {
+    let api = build_api_client(&state).map_err(to_error_response)?;
+    let resp = api
+        .bind_bot_phone(&req.agent_id, &req.label, req.business_name.as_deref())
+        .await
+        .map_err(|e| to_error_response(NeboError::Internal(format!("phone bind: {e}"))))?;
+    info!(agent = %req.agent_id, "phone number bound via NeboAI");
+    Ok(Json(resp))
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PhoneUnbindRequest {
+    pub number: String,
+}
+
+/// POST /api/v1/phone/unbind — release a bound number.
+pub async fn phone_unbind(
+    State(state): State<AppState>,
+    Json(req): Json<PhoneUnbindRequest>,
+) -> HandlerResult<serde_json::Value> {
+    let api = build_api_client(&state).map_err(to_error_response)?;
+    let resp = api
+        .unbind_bot_phone(&req.number)
+        .await
+        .map_err(|e| to_error_response(NeboError::Internal(format!("phone unbind: {e}"))))?;
+    info!(number = %req.number, "phone number released via NeboAI");
+    Ok(Json(resp))
+}

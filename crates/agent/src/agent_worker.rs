@@ -1802,6 +1802,25 @@ async fn channel_loop(
                 .with_env("NEBO_AGENT_ID", agent_id.clone());
         }
 
+        // A multi-account plugin's bridge serves EVERY account the agent has
+        // connected (the phone bridge answers all of an employee's numbers on
+        // one socket), so it gets the parent of the per-account profile dirs
+        // and rescans it — added or removed accounts go live without a
+        // restart. The path shape is owned by config::plugin_profiles_root,
+        // the same source the account-login flow allocates dirs from.
+        if plugin_store
+            .get_manifest(&plugin_slug)
+            .and_then(|m| m.auth)
+            .and_then(|a| a.profile_dir_env)
+            .is_some()
+            && let Ok(profiles_root) = config::plugin_profiles_root(&agent_id, &plugin_slug)
+        {
+            runtime = runtime.with_env(
+                "NEBO_PLUGIN_PROFILES_DIR",
+                profiles_root.to_string_lossy().to_string(),
+            );
+        }
+
         let has_own_creds = !agent_config.is_empty();
         info!(
             agent = %agent_id,
