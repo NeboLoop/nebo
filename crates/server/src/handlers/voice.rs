@@ -364,15 +364,33 @@ async fn handle_conversation_ws(mut socket: WebSocket, state: AppState, mut q: C
         return;
     };
 
-    let mut instructions = "You are the user's Nebo AI employee, speaking with them by voice. \
+    // Identity first, delivery rules second. The agent's soul is WHO is
+    // speaking; everything below is only HOW to speak on this medium. Without
+    // the soul the employee answers as a generic Nebo — which the user hears
+    // immediately, and which a customer on a phone line would hear as the
+    // wrong company entirely.
+    let agent_row = q
+        .agent_id
+        .as_deref()
+        .and_then(|id| state.store.get_agent(id).ok().flatten());
+
+    let mut instructions = String::new();
+    if let Some(soul) = agent_row.as_ref().and_then(|a| a.soul.as_deref())
+        && !soul.trim().is_empty()
+    {
+        instructions.push_str(soul.trim());
+        instructions.push_str("\n\n---\n\n");
+    }
+    instructions.push_str(
+        "You are speaking with the user by voice. \
                        Be concise and conversational — short sentences, no markdown, no lists. \
                        For ANYTHING that needs real data or action (files, printers, email, \
                        calendar, web, documents, system info), call the `nebo` tool with the \
                        task and relay its result aloud — never guess and never claim you can't \
                        act. While it works, tell the user you're on it. If the result says \
                        something needs approval or a permission, say so plainly and point them \
-                       to the Nebo desktop app."
-        .to_string();
+                       to the Nebo desktop app.",
+    );
     if let Some(chat_id) = q.chat_id.as_deref() {
         instructions.push_str(&chat_history_context(&state, chat_id));
     }
@@ -389,11 +407,10 @@ async fn handle_conversation_ws(mut socket: WebSocket, state: AppState, mut q: C
         ..Default::default()
     };
     // Per-agent voice: each employee sounds like themselves (Identity tab).
-    if let Some(id) = q.agent_id.as_deref()
-        && let Ok(Some(agent)) = state.store.get_agent(id)
+    if let Some(agent) = agent_row.as_ref()
         && !agent.voice.is_empty()
     {
-        cfg.voice = agent.voice;
+        cfg.voice = agent.voice.clone();
     }
 
     let (rt_tx, rt_rx) = match voice::realtime::connect(cfg).await {
