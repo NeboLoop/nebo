@@ -1779,7 +1779,7 @@ async fn channel_loop(
             }
         };
 
-        let runtime = napp::PluginRuntime::new(
+        let mut runtime = napp::PluginRuntime::new(
             &plugin_slug,
             binary_path.clone(),
             plugin_store.clone(),
@@ -1788,6 +1788,19 @@ async fn channel_loop(
         .with_agent_config(agent_config.clone())
         .with_permissions();
 
+        // A bridge that declares needsLocalApi is handed this Nebo's own
+        // address and which agent it speaks for — the phone bridge uses it to
+        // reach the local voice session, so the employee's real persona and
+        // tools answer the call. Bridges that don't declare it get nothing.
+        if channel_def.needs_local_api {
+            let port = std::env::var("NEBO_PORT")
+                .ok()
+                .and_then(|v| v.parse::<u16>().ok())
+                .unwrap_or(types::constants::DEFAULT_PORT);
+            runtime = runtime
+                .with_env("NEBO_LOCAL_URL", format!("http://127.0.0.1:{port}"))
+                .with_env("NEBO_AGENT_ID", agent_id.clone());
+        }
 
         let has_own_creds = !agent_config.is_empty();
         info!(

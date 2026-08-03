@@ -126,6 +126,12 @@ pub struct PluginChannel {
     /// replies are posted with its own display identity.
     #[serde(default)]
     pub shared: bool,
+    /// When true, the bridge is handed this Nebo's own local API — base URL,
+    /// a per-spawn token, and its agent id. A phone bridge needs it to reach
+    /// the local voice session; a Slack bridge does not, and gets nothing.
+    /// Off by default: local API access is granted, never assumed.
+    #[serde(default)]
+    pub needs_local_api: bool,
 }
 
 fn default_channel_restart_delay() -> u64 {
