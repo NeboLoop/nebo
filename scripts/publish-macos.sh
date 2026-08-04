@@ -45,8 +45,12 @@ gh release upload "${TAG}" "$work/checksums.txt" --clobber --repo "${REPO}"
 echo "checksums.txt now:"; sed 's/^/    /' "$work/checksums.txt"
 
 # ── CDN (best-effort) — the auto-updater reads these ──────────────────────────
-AKEY="${DO_SPACES_ACCESS_KEY:-${AWS_ACCESS_KEY_ID:-}}"
-SKEY="${DO_SPACES_SECRET_KEY:-${AWS_SECRET_ACCESS_KEY:-}}"
+# Creds come from the env when set (CI), otherwise from the local `digitalocean`
+# AWS profile. Without the profile fallback this step silently skipped whenever
+# the shell happened not to export them — publishing a release whose mac assets
+# never reached the CDN, so mac auto-update 404s while everything reads "done".
+AKEY="${DO_SPACES_ACCESS_KEY:-${AWS_ACCESS_KEY_ID:-$(aws configure get aws_access_key_id --profile digitalocean 2>/dev/null || true)}}"
+SKEY="${DO_SPACES_SECRET_KEY:-${AWS_SECRET_ACCESS_KEY:-$(aws configure get aws_secret_access_key --profile digitalocean 2>/dev/null || true)}}"
 if [ -n "$AKEY" ] && [ -n "$SKEY" ] && command -v aws >/dev/null 2>&1; then
   echo "==> Uploading mac assets + merged checksums + version.json to CDN (DO Spaces)"
   export AWS_ACCESS_KEY_ID="$AKEY" AWS_SECRET_ACCESS_KEY="$SKEY"
