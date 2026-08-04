@@ -1980,8 +1980,14 @@ async fn channel_loop(
         // NOOP); Nebo only watches the cross-plugin keepalive event.
         // See docs/publishers-guide/channel-plugins.md "Bridge Keepalive".
         let last_keepalive = Arc::new(tokio::sync::Mutex::new(std::time::Instant::now()));
+        // Separate clock for upstream health: keepalives that explicitly say
+        // `status: "disconnected"` do NOT advance it. A bridge can emit
+        // healthy keepalives for days while its upstream socket is dead (the
+        // Jul-25 Slack outage) — silence-only watching can't see that.
+        let last_connected = Arc::new(tokio::sync::Mutex::new(std::time::Instant::now()));
         let bridge_stale = CancellationToken::new();
         let watchdog_last = last_keepalive.clone();
+        let watchdog_connected = last_connected.clone();
         let watchdog_signal = bridge_stale.clone();
         let watchdog_outer = cancel.clone();
         let watchdog_agent = agent_id.clone();
@@ -2003,6 +2009,22 @@ async fn channel_loop(
                                 channel = %watchdog_channel,
                                 elapsed_secs = elapsed.as_secs(),
                                 "bridge watchdog: no keepalive for > 30s, triggering respawn"
+                            );
+                            watchdog_signal.cancel();
+                            return;
+                        }
+                        // Escalation: alive but reporting `disconnected` for
+                        // 3+ minutes straight — its own reconnect logic isn't
+                        // recovering, so a fresh process (fresh config, fresh
+                        // TLS state) is the next lever. Respawn backoff keeps
+                        // a truly-unreachable upstream from hot-looping.
+                        let disconnected = watchdog_connected.lock().await.elapsed();
+                        if disconnected > std::time::Duration::from_secs(180) {
+                            warn!(
+                                agent = %watchdog_agent,
+                                channel = %watchdog_channel,
+                                disconnected_secs = disconnected.as_secs(),
+                                "bridge watchdog: upstream disconnected for > 180s, triggering respawn"
                             );
                             watchdog_signal.cancel();
                             return;
@@ -2069,20 +2091,23 @@ async fn channel_loop(
                                 }
                             }
 
-                            // Bridge keepalive: reset watchdog. Status is
-                            // logged for observability; future versions can
-                            // surface it in the UI ("Slack reconnecting...")
-                            // but Nebo doesn't act on the value yet — a
-                            // bridge in `disconnected` state is still
-                            // alive and reconnecting under its own logic.
+                            // Bridge keepalive: reset the liveness watchdog
+                            // always; advance the upstream-health clock only
+                            // when the bridge does NOT explicitly report
+                            // `disconnected` (no status field = older plugin,
+                            // treated as healthy). Sustained `disconnected`
+                            // triggers the watchdog's escalation respawn.
                             if payload.get("event").and_then(|v| v.as_str())
                                 == Some("keepalive")
                             {
                                 *last_keepalive.lock().await = std::time::Instant::now();
-                                if let Some(status) = payload
+                                let status = payload
                                     .get("status")
-                                    .and_then(|v| v.as_str())
-                                {
+                                    .and_then(|v| v.as_str());
+                                if status != Some("disconnected") {
+                                    *last_connected.lock().await = std::time::Instant::now();
+                                }
+                                if let Some(status) = status {
                                     debug!(
                                         agent = %agent_id,
                                         channel = %channel_name,
@@ -2604,8 +2629,13 @@ async fn shared_channel_loop(
         // Required across plugin types because a hung shared bridge starves
         // every agent registered against it.
         let last_keepalive = Arc::new(tokio::sync::Mutex::new(std::time::Instant::now()));
+        // Upstream-health clock — see the per-agent channel_loop twin: only
+        // keepalives NOT reporting `disconnected` advance it; 3 min of
+        // sustained disconnected escalates to a respawn.
+        let last_connected = Arc::new(tokio::sync::Mutex::new(std::time::Instant::now()));
         let bridge_stale = CancellationToken::new();
         let watchdog_last = last_keepalive.clone();
+        let watchdog_connected = last_connected.clone();
         let watchdog_signal = bridge_stale.clone();
         let watchdog_outer = cancel.clone();
         let watchdog_channel = channel_name.clone();
@@ -2622,6 +2652,16 @@ async fn shared_channel_loop(
                                 channel = %watchdog_channel,
                                 elapsed_secs = elapsed.as_secs(),
                                 "shared bridge watchdog: no keepalive for > 30s, triggering respawn"
+                            );
+                            watchdog_signal.cancel();
+                            return;
+                        }
+                        let disconnected = watchdog_connected.lock().await.elapsed();
+                        if disconnected > std::time::Duration::from_secs(180) {
+                            warn!(
+                                channel = %watchdog_channel,
+                                disconnected_secs = disconnected.as_secs(),
+                                "shared bridge watchdog: upstream disconnected for > 180s, triggering respawn"
                             );
                             watchdog_signal.cancel();
                             return;
@@ -2683,10 +2723,18 @@ async fn shared_channel_loop(
 
                             // Bridge keepalive resets the watchdog. Must be
                             // checked BEFORE the catch-all event drop below.
+                            // Upstream-health clock advances only when the
+                            // bridge doesn't explicitly report `disconnected`
+                            // (same contract as the per-agent loop).
                             if payload.get("event").and_then(|v| v.as_str())
                                 == Some("keepalive")
                             {
                                 *last_keepalive.lock().await = std::time::Instant::now();
+                                if payload.get("status").and_then(|v| v.as_str())
+                                    != Some("disconnected")
+                                {
+                                    *last_connected.lock().await = std::time::Instant::now();
+                                }
                                 continue;
                             }
 
