@@ -14,9 +14,11 @@
 //! (`/ws/extension`, `/api/v1/update/`) — see `is_blocked_path`. Everything
 //! else (the management REST API + `/ws` chat stream) passes through unchanged.
 
+use std::future::Future;
 use std::io;
 use std::pin::Pin;
 use std::task::{Context, Poll};
+use std::time::Duration;
 
 use futures::{AsyncRead, AsyncWrite, Sink, Stream};
 use tokio::net::TcpStream;
@@ -25,6 +27,10 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use tokio_util::compat::FuturesAsyncReadCompatExt;
 use tracing::{debug, info};
+
+/// How long the hub may stay silent before the bot declares the tunnel dead.
+/// The hub's yamux keepalive writes every 30s, so three missed keepalives.
+const HUB_SILENCE: Duration = Duration::from_secs(90);
 
 #[derive(Debug, thiserror::Error)]
 pub enum TunnelError {
@@ -54,8 +60,11 @@ pub async fn run(hub_url: &str, token: &str, local_addr: &str) -> Result<(), Tun
         .map_err(|e| TunnelError::Dial(e.to_string()))?;
     info!(hub = %hub_url, "tunnel: connected to hub");
 
-    let mut conn =
-        yamux::Connection::new(WsIo::new(ws), yamux::Config::default(), yamux::Mode::Server);
+    let mut conn = yamux::Connection::new(
+        WsIo::new(ws, HUB_SILENCE),
+        yamux::Config::default(),
+        yamux::Mode::Server,
+    );
     loop {
         match futures::future::poll_fn(|cx| conn.poll_next_inbound(cx)).await {
             Some(Ok(stream)) => {
@@ -260,19 +269,69 @@ mod tests {
         let out2 = force_connection_close(h2);
         assert_eq!(out2, "GET /x HTTP/1.1\r\nHost: a\r\nConnection: close\r\n\r\n");
     }
+
+    /// A hub that goes silent must fail the read rather than hang forever —
+    /// that failure is what makes the watcher redial.
+    #[tokio::test]
+    async fn silent_hub_times_out_the_read() {
+        use futures::AsyncReadExt;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (sock, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(sock).await.unwrap();
+            use futures::SinkExt;
+            ws.send(WsMessage::Binary(vec![7u8; 4].into())).await.unwrap();
+            // Then say nothing at all, holding the socket open.
+            futures::future::pending::<()>().await;
+        });
+
+        let (ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/"))
+            .await
+            .unwrap();
+        let mut io = WsIo::new(ws, Duration::from_millis(200));
+
+        let mut buf = [0u8; 4];
+        assert_eq!(io.read(&mut buf).await.unwrap(), 4);
+        let err = io.read(&mut buf).await.unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::TimedOut);
+    }
 }
 
 /// Adapts the WebSocket to the plain byte stream yamux expects: each write
 /// becomes one binary frame, reads drain binary frames, and everything else
 /// is skipped (tungstenite answers pings internally).
+///
+/// Reads also carry the liveness check. When the hub disappears without a TCP
+/// FIN — a pod rolls, a load balancer forgets the flow — an idle tunnel would
+/// otherwise sit on a dead socket forever: our yamux only pings while the
+/// connection is active, so an idle bot never writes and never learns the peer
+/// is gone. The hub's yamux keepalive puts a frame on the wire every 30s, so
+/// silence past `hub_silence` means the hub is gone; failing the read unwinds
+/// the session and the watcher redials.
 struct WsIo {
     ws: WebSocketStream<MaybeTlsStream<TcpStream>>,
     buf: tokio_tungstenite::tungstenite::Bytes,
+    hub_silence: Duration,
+    deadline: Pin<Box<tokio::time::Sleep>>,
 }
 
 impl WsIo {
-    fn new(ws: WebSocketStream<MaybeTlsStream<TcpStream>>) -> Self {
-        Self { ws, buf: tokio_tungstenite::tungstenite::Bytes::new() }
+    fn new(ws: WebSocketStream<MaybeTlsStream<TcpStream>>, hub_silence: Duration) -> Self {
+        Self {
+            ws,
+            buf: tokio_tungstenite::tungstenite::Bytes::new(),
+            hub_silence,
+            deadline: Box::pin(tokio::time::sleep(hub_silence)),
+        }
+    }
+}
+
+impl WsIo {
+    fn reset_deadline(&mut self) {
+        let next = tokio::time::Instant::now() + self.hub_silence;
+        self.deadline.as_mut().reset(next);
     }
 }
 
@@ -290,13 +349,24 @@ impl AsyncRead for WsIo {
                 return Poll::Ready(Ok(n));
             }
             match Pin::new(&mut self.ws).poll_next(cx) {
-                Poll::Ready(Some(Ok(WsMessage::Binary(data)))) => self.buf = data,
+                Poll::Ready(Some(Ok(WsMessage::Binary(data)))) => {
+                    self.reset_deadline();
+                    self.buf = data;
+                }
                 Poll::Ready(Some(Ok(WsMessage::Close(_)))) | Poll::Ready(None) => {
                     return Poll::Ready(Ok(0));
                 }
-                Poll::Ready(Some(Ok(_))) => {} // ping/pong/text — not tunnel bytes
+                Poll::Ready(Some(Ok(_))) => self.reset_deadline(), // ping/pong/text — liveness, not bytes
                 Poll::Ready(Some(Err(e))) => return Poll::Ready(Err(io::Error::other(e))),
-                Poll::Pending => return Poll::Pending,
+                Poll::Pending => {
+                    return match self.deadline.as_mut().poll(cx) {
+                        Poll::Ready(()) => Poll::Ready(Err(io::Error::new(
+                            io::ErrorKind::TimedOut,
+                            "hub sent nothing for the keepalive window — treating the tunnel as dead",
+                        ))),
+                        Poll::Pending => Poll::Pending,
+                    };
+                }
             }
         }
     }
