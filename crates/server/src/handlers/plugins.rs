@@ -338,6 +338,10 @@ fn spawn_plugin_login(
                 .unwrap_or(types::constants::DEFAULT_PORT);
             cmd.env("NEBO_LOCAL_URL", format!("http://127.0.0.1:{port}"));
             cmd.env("NEBO_AGENT_ID", &p.agent_id);
+            // The account's display label ("Front Desk") — server-side logins
+            // pass it upstream so the same name identifies the account
+            // everywhere (e.g. a phone line's label on neboai.com).
+            cmd.env("NEBO_ACCOUNT_LABEL", &p.account_label);
         }
         // Cloud bots (NEBOAI_PUBLIC_OAUTH=1, set by the provisioner): the user's
         // browser can't reach the pod's loopback listener, so hand the plugin

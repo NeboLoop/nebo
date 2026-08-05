@@ -41,6 +41,14 @@ pub struct ConversationQuery {
     /// talking to before it says a word.
     #[serde(default)]
     pub caller_id: Option<String>,
+    /// The business this line answers as ("Miller Dental") — the greeting
+    /// must name the caller's business, never anything about Nebo.
+    #[serde(default)]
+    pub business: Option<String>,
+    /// Which line rang ("Front Desk", "Support") — an employee can hold
+    /// several lines, each with its own purpose.
+    #[serde(default)]
+    pub line: Option<String>,
 }
 
 pub async fn conversation_ws_handler(
@@ -410,6 +418,18 @@ async fn handle_conversation_ws(mut socket: WebSocket, state: AppState, mut q: C
                        Never claim to be human; if asked, say plainly that you're an AI \
                        assistant for the business.",
         );
+        if let Some(biz) = q.business.as_deref().filter(|s| !s.is_empty()) {
+            instructions.push_str(&format!(
+                "\n\nYou are answering for the business \"{biz}\" — greet as {biz} \
+                 and stay {biz} for the whole call."
+            ));
+        }
+        if let Some(line) = q.line.as_deref().filter(|s| !s.is_empty()) {
+            instructions.push_str(&format!(
+                "\n\nThis call came in on your \"{line}\" line. If your persona or \
+                 workflows say what the {line} line is for, handle the call that way."
+            ));
+        }
         if let Some(from) = q.caller_id.as_deref().filter(|s| !s.is_empty()) {
             instructions.push_str(&format!("\n\nThe caller is phoning from {from}."));
         }
@@ -475,7 +495,13 @@ async fn handle_conversation_ws(mut socket: WebSocket, state: AppState, mut q: C
     // the model until audio arrives, so a phone caller would sit in silence
     // until THEY spoke. Kick one response so the employee answers the phone
     // — the greeting itself comes from its instructions and persona.
+    // The pause first: on a cold call the carrier audio path is still
+    // settling for a beat after connect, and a greeting that starts inside
+    // that window reaches the caller with its head clipped ("...ebo, I'm the
+    // receptionist"). Half a ring of silence is what a human caller expects
+    // anyway.
     if telephony {
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
         let _ = rt_tx
             .send(voice::realtime::RealtimeCommand::Text(
                 "(The call has just connected. Answer the phone now.)".to_string(),
