@@ -806,7 +806,11 @@ pub struct PendingWrite {
     /// Hash of the on-disk target at stage time ('' for create); re-checked
     /// at approve to surface conflicts instead of blind-replaying.
     pub target_hash: String,
-    /// pending | approved | rejected | expired | conflict
+    /// Full prior state captured at apply time — the previous SKILL.md, or the
+    /// previous workflow binding JSON — or None when the target did not exist
+    /// before (a create). The restore point a revert writes back.
+    pub prior_content: Option<String>,
+    /// pending | approved | rejected | expired | conflict | reverted
     pub status: String,
     pub created_at: i64,
     pub resolved_at: Option<i64>,

@@ -3901,6 +3901,7 @@ pub async fn resolve_learning(
         session_key: format!("agent:{}:learning-approval", row.agent_id),
         learned_write_agent: Some(row.agent_id.clone()),
         learned_write_staged: false,
+        learned_write_reapply: true,
         skills_read: std::sync::Arc::new(std::sync::Mutex::new(skills_read)),
         ..Default::default()
     };
@@ -3927,4 +3928,129 @@ pub async fn resolve_learning(
     );
     info!(id, agent_id = %row.agent_id, target = %row.target, action = %row.action, "learning approved and applied");
     Ok(Json(serde_json::json!({ "status": "approved" })))
+}
+
+/// POST /api/v1/agents/learnings/{id}/revert — undo an APPLIED learned
+/// adjustment by writing its restore point (prior_content) back through the
+/// same pathway that applied it. Only 'approved' rows are revertible. A revert
+/// refuses (never clobbers) if the target no longer matches what the learning
+/// produced — something changed it since, and undoing would lose that change.
+pub async fn revert_learning(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> HandlerResult<serde_json::Value> {
+    let row = state
+        .store
+        .get_pending_write(&id)
+        .map_err(to_error_response)?
+        .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
+    if row.status != "approved" {
+        return Ok(Json(serde_json::json!({
+            "status": row.status,
+            "message": "Only an applied learning can be reverted."
+        })));
+    }
+
+    // Conflict: the row stays 'approved' (untouched) so a later revert can
+    // still run once the target is back to a matching state.
+    let conflict = || -> HandlerResult<serde_json::Value> {
+        Ok(Json(serde_json::json!({
+            "status": "conflict",
+            "message": "The target changed after this learning was applied; the revert was skipped rather than discarding that change."
+        })))
+    };
+
+    // Workflow tuning edit: restore the prior binding JSON if the current
+    // binding still matches the tuned value this learning wrote.
+    if row.kind == "workflow" {
+        let current = crate::workflow_manager::current_binding_json(&state.store, &row.agent_id, &row.target);
+        if current != row.content.clone().unwrap_or_default() {
+            return conflict();
+        }
+        let Some(prior_raw) = row.prior_content.as_deref().filter(|s| !s.is_empty()) else {
+            return Ok(Json(serde_json::json!({
+                "status": "error",
+                "message": "No restore point was recorded for this learning; it predates revert support."
+            })));
+        };
+        let prior_val: serde_json::Value = serde_json::from_str(prior_raw)
+            .map_err(|_| to_error_response(types::NeboError::Internal("restore point unparseable".into())))?;
+        crate::workflow_manager::apply_workflow_binding(&state.store, &row.agent_id, &row.target, &prior_val)
+            .map_err(|e| to_error_response(types::NeboError::Internal(format!("revert failed: {}", e))))?;
+        restart_agent_worker_if_active(&state, &row.agent_id).await;
+        state.store.revert_pending_write(&id).map_err(to_error_response)?;
+        state.hub.broadcast(
+            "learning_resolved",
+            serde_json::json!({ "id": id, "status": "reverted", "agentId": row.agent_id }),
+        );
+        info!(id, agent_id = %row.agent_id, binding = %row.target, "workflow tuning reverted");
+        return Ok(Json(serde_json::json!({ "status": "reverted" })));
+    }
+
+    // Learned skill: the inverse action restores the prior state.
+    //   create → delete · update → update(prior) · delete → create(prior)
+    let current = state.skill_loader.get(&row.target, Some(&row.agent_id)).await;
+    let current_content = current
+        .as_ref()
+        .and_then(|s| s.source_path.as_deref())
+        .and_then(|p| std::fs::read_to_string(p).ok());
+    let applied_still_present = match row.action.as_str() {
+        "create" | "update" => current_content.as_deref() == row.content.as_deref(),
+        "delete" => current.is_none(),
+        _ => false,
+    };
+    if !applied_still_present {
+        return conflict();
+    }
+    let (inverse_action, inverse_content) = match row.action.as_str() {
+        "create" => ("delete", None),
+        "update" | "delete" => {
+            let Some(prior) = row.prior_content.clone() else {
+                return Ok(Json(serde_json::json!({
+                    "status": "error",
+                    "message": "No restore point was recorded for this learning; it predates revert support."
+                })));
+            };
+            (if row.action == "update" { "update" } else { "create" }, Some(prior))
+        }
+        other => {
+            return Err(to_error_response(types::NeboError::Internal(format!(
+                "cannot revert unknown action '{}'",
+                other
+            ))))
+        }
+    };
+
+    // Apply through the ONE learned-skill write pathway (fork-scoped), read-mark
+    // pre-set so update/delete's read-before-write guard is satisfied.
+    let skills_read: std::collections::HashSet<String> =
+        std::collections::HashSet::from([row.target.clone()]);
+    let ctx = tools::ToolContext {
+        origin: tools::Origin::System,
+        session_key: format!("agent:{}:learning-revert", row.agent_id),
+        learned_write_agent: Some(row.agent_id.clone()),
+        learned_write_staged: false,
+        learned_write_reapply: true,
+        skills_read: std::sync::Arc::new(std::sync::Mutex::new(skills_read)),
+        ..Default::default()
+    };
+    let mut input = serde_json::json!({ "action": inverse_action, "name": row.target });
+    if let Some(ref content) = inverse_content {
+        input["content"] = serde_json::json!(content);
+    }
+    let result = state.tools.execute(&ctx, "skill", input).await;
+    if result.is_error {
+        return Err(to_error_response(types::NeboError::Internal(format!(
+            "revert failed: {}",
+            result.content
+        ))));
+    }
+
+    state.store.revert_pending_write(&id).map_err(to_error_response)?;
+    state.hub.broadcast(
+        "learning_resolved",
+        serde_json::json!({ "id": id, "status": "reverted", "agentId": row.agent_id }),
+    );
+    info!(id, agent_id = %row.agent_id, target = %row.target, action = %row.action, "learning reverted");
+    Ok(Json(serde_json::json!({ "status": "reverted" })))
 }

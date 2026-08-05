@@ -553,6 +553,7 @@ export interface PendingWrite {
 	content?: string
 	gist: string
 	targetHash: string
+	priorContent?: string
 	status: string
 	createdAt: number
 	resolvedAt?: number
@@ -1525,6 +1526,10 @@ export interface ResolveLearningResponse {
 export interface ResolveWorkflowApprovalResponse {
 	status: string
 	runId: unknown
+}
+
+export interface RevertLearningResponse {
+	status: string
 }
 
 export interface RunAgentWorkflowResponse {

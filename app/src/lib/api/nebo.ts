@@ -209,6 +209,13 @@ export function resolveLearning(id: string, req: Record<string, unknown> = {}) {
 }
 
 /**
+ * @description "Revert learning"
+ */
+export function revertLearning(id: string, req: Record<string, unknown> = {}) {
+	return webapi.post<components.RevertLearningResponse>(`/api/v1/agents/learnings/${id}/revert`, req)
+}
+
+/**
  * @description "Get workflow approval status"
  */
 export function getWorkflowApprovalStatus(runId: string) {
@@ -1207,6 +1214,20 @@ export function deleteNotification(id: string) {
  */
 export function markRead(id: string, req: Record<string, unknown> = {}) {
 	return webapi.put<components.MarkReadResponse>(`/api/v1/notifications/${id}/read`, req)
+}
+
+/**
+ * @description "Nebo a i phone bind"
+ */
+export function neboAIPhoneBind(req: Record<string, unknown> = {}) {
+	return webapi.post<unknown>(`/api/v1/phone/bind`, req)
+}
+
+/**
+ * @description "Nebo a i phone unbind"
+ */
+export function neboAIPhoneUnbind(req: Record<string, unknown> = {}) {
+	return webapi.post<unknown>(`/api/v1/phone/unbind`, req)
 }
 
 /**

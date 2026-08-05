@@ -2655,7 +2655,9 @@
 		"conflict": "Skill changed — discarded",
 		"updateNow": "Update now",
 		"later": "Later",
-		"updated": "Updated"
+		"updated": "Updated",
+		"revert": "Revert",
+		"reverted": "Reverted"
 	},
 	"voice": {
 		"startConversation": "Voice conversation",

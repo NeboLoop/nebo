@@ -2458,6 +2458,9 @@ async fn workflow_tuning_sweep(
 
         let pending_id = uuid::Uuid::new_v4().to_string();
         let gist = format!("Tune workflow '{}': {}", binding, reason);
+        // The prior binding JSON is both the conflict token AND the revert
+        // restore point: an approve replays over it only if it still matches,
+        // and a revert writes it back.
         let conflict_token = current_binding_json(store, &agent.id, binding);
         if let Err(e) = store.create_pending_write(
             &pending_id,
@@ -2468,6 +2471,7 @@ async fn workflow_tuning_sweep(
             Some(&workflow_val.to_string()),
             &gist,
             &conflict_token,
+            Some(&conflict_token),
         ) {
             warn!(agent = %agent.name, error = %e, "tuning pass: failed to record proposal");
             continue;

@@ -48,6 +48,10 @@ pub fn routes() -> Router<AppState> {
             axum::routing::post(handlers::agents::resolve_learning),
         )
         .route(
+            "/agents/learnings/{id}/revert",
+            axum::routing::post(handlers::agents::revert_learning),
+        )
+        .route(
             "/agents/active",
             axum::routing::get(handlers::agents::list_active_agents),
         )

@@ -18,7 +18,7 @@
   } from '$lib/stores/notifications';
 
   import Hand from 'lucide-svelte/icons/hand';
-  import { applyUpdate, getLearning, getWorkflowApprovalStatus, listUpdates, resolveLearning, resolveWorkflowApproval } from '$lib/api/nebo';
+  import { applyUpdate, getLearning, getWorkflowApprovalStatus, listUpdates, resolveLearning, resolveWorkflowApproval, revertLearning } from '$lib/api/nebo';
 
   let copied = $state(false);
   let filter = $state<'all' | 'agent' | 'system' | 'warning' | 'error'>('all');
@@ -124,7 +124,29 @@
     if (s === 'denied' || s === 'rejected') return 'inbox.denied';
     if (s === 'conflict') return 'inbox.conflict';
     if (s === 'applied') return 'inbox.updated';
+    if (s === 'reverted') return 'inbox.reverted';
     return null;
+  }
+
+  /** An applied learned adjustment (skill or workflow tuning) can be undone —
+   *  its restore point is written back through the same pathway that applied it. */
+  function canRevert(n: Notification): boolean {
+    const ref = approvalRef(n);
+    return !!ref && ref.kind === 'learning' && approvalStatuses[approvalRunId(n) ?? ''] === 'approved';
+  }
+
+  async function revert(n: Notification) {
+    const ref = approvalRef(n);
+    if (!ref || ref.kind !== 'learning' || deciding[n.id]) return;
+    deciding = { ...deciding, [n.id]: true };
+    try {
+      // May come back 'conflict' (the target changed since it was applied).
+      const r = await revertLearning(ref.id);
+      const status = (r as { status?: string }).status ?? 'reverted';
+      approvalStatuses = { ...approvalStatuses, [n.id]: status };
+    } finally {
+      deciding = { ...deciding, [n.id]: false };
+    }
   }
 
   async function decide(n: Notification, approved: boolean) {
@@ -342,6 +364,13 @@
                 <span class="text-sm truncate {n.read ? 'font-normal text-base-content/70' : 'font-semibold text-base-content'}">{n.title}</span>
                 {#if approvalChip(n)}
                   <span class="badge badge-sm shrink-0 {approvalChip(n) === 'inbox.approved' ? 'badge-success badge-outline' : 'badge-ghost text-base-content/60'}">{$t(approvalChip(n)!)}</span>
+                {/if}
+                {#if canRevert(n)}
+                  <button
+                    class="btn btn-xs btn-ghost border border-base-content/15 shrink-0"
+                    disabled={!!deciding[n.id]}
+                    onclick={(e) => { e.stopPropagation(); revert(n); }}
+                  >{$t('inbox.revert')}</button>
                 {/if}
                 <span class="text-xs text-base-content/50 font-mono shrink-0 ml-auto">{n.time}</span>
               </div>

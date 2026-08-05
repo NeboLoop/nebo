@@ -130,6 +130,11 @@ pub struct ToolContext {
     /// With `learned_write_agent`: stage writes to pending_writes for Inbox
     /// approval instead of committing (employee's learning_mode = "staged").
     pub learned_write_staged: bool,
+    /// Set when the skill write is a RE-application of an already-tracked
+    /// learning (an Inbox approval or a revert), not a fresh auto-mode learning.
+    /// Suppresses the auto-mode audit row so approve/revert don't mint a
+    /// duplicate `learn:` record for a write a pending_writes row already covers.
+    pub learned_write_reapply: bool,
     /// Read marks for the review fork: learned-skill names loaded via the
     /// skill tool THIS run. update/delete on a learned skill is refused
     /// unless its name is here — the fork must write against actual on-disk
