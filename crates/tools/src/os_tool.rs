@@ -228,7 +228,7 @@ impl OsTool {
     pub(crate) fn infer_resource(action: &str) -> &str {
         match action {
             // File
-            "read" | "write" | "edit" | "glob" | "grep" | "convert" => "file",
+            "read" | "write" | "edit" | "share" | "glob" | "grep" | "convert" => "file",
             // Shell
             "exec" | "poll" | "log" => "shell",
             // Input
@@ -354,7 +354,7 @@ impl DynTool for OsTool {
          - glob = find files by NAME pattern (*.md, src/**/*.rs); grep = match text INSIDE files by regex. Do not confuse them.\n\
          - NEVER use sudo without asking the user first; on permission denied, explain and offer alternatives.\n\n\
          Resources:\n\
-         - file: read, write, edit, glob, grep, convert — to list a directory, glob its path (pattern defaults to *); convert generates documents via embedded engines: .md→pdf/docx, .csv→xlsx, .jsx/.tsx→html (interactive React) (never use host binaries like wkhtmltopdf/pandoc)\n\
+         - file: read, write, edit, share, glob, grep, convert — to list a directory, glob its path (pattern defaults to *); share hands an EXISTING file to the user as a download card (a deck/PDF/binary already on disk — never recite its path or copy it to \"trigger\" a card); convert generates documents via embedded engines: .md→pdf/docx, .csv→xlsx, .jsx/.tsx→html (interactive React) (never use host binaries like wkhtmltopdf/pandoc)\n\
          - shell: exec, list, poll, log, write, kill, info\n\
          - window: list, focus, minimize, maximize, resize, close, move\n\
          - input: click, double_click, right_click, type, press, hotkey, move, scroll, drag, paste\n\
