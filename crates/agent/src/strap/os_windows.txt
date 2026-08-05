@@ -16,6 +16,7 @@ Prefer file actions over shell: use file read NOT shell cat, file grep NOT shell
 | read | read file contents | path | offset, limit |
 | write | create new file, or overwrite (read first to overwrite) | path, content | append |
 | edit | replace text in file (READ the file first) | path, old_string, new_string | replace_all |
+| share | hand an EXISTING file to the user as a download card (a deck, PDF, image, or any binary already on disk) | path | |
 | glob | find files by NAME pattern (*.yaml, src/**/*.rs) | pattern, path | limit |
 | grep | search file CONTENTS for a regex match | pattern, path | glob, case_insensitive, output_mode, context_before, context_after |
 
@@ -23,6 +24,7 @@ Examples (every call MUST include all required params):
 - os(resource: "file", action: "read", path: "C:\Users\user\file.txt")
 - os(resource: "file", action: "write", path: "C:\temp\out.txt", content: "hello")
 - os(resource: "file", action: "edit", path: "C:\temp\out.txt", old_string: "hello", new_string: "goodbye")
+- os(resource: "file", action: "share", path: "C:\Users\user\Documents\ai-trends-2026-2027.pptx")  # give the user an existing file as a download
 - os(resource: "file", action: "glob", pattern: "**/*.yaml", path: "fixtures/")
 - os(resource: "file", action: "grep", pattern: "TODO", path: "C:\src\")
 - os(resource: "file", action: "grep", pattern: "fn main", path: ".", context_before: 2, context_after: 5)

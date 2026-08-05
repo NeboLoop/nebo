@@ -7,7 +7,7 @@ use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-/// File operations: read, write, edit, glob, grep.
+/// File operations: read, write, edit, share, glob, grep.
 pub struct FileTool {
     pub on_file_read: Option<Box<dyn Fn(&str) + Send + Sync>>,
     /// Per-(session, path) record of the file's mtime (ms) at the last successful read,
@@ -89,12 +89,15 @@ impl FileTool {
             "edit" => self.handle_edit(session, &fi),
             "glob" => self.handle_glob(&fi),
             "grep" => self.handle_grep(&fi),
+            // Hand an EXISTING file to the user as a download card. Synonyms the
+            // model reaches for map to the one implementation.
+            "share" | "present" | "send" => self.handle_share(&fi),
             // Prior-redirect ("ls ~/Desktop"): a directory listing IS glob with
             // its defaulted "*" pattern — route to the one implementation. Not
             // advertised in the schema; glob stays the single documented way.
             "list" | "ls" => self.handle_glob(&fi),
             other => ToolResult::error(format!(
-                "Unknown action: {} (valid: read, write, edit, glob, grep)",
+                "Unknown action: {} (valid: read, write, edit, share, glob, grep)",
                 other
             )),
         }
@@ -546,6 +549,76 @@ impl FileTool {
         } else {
             result
         }
+    }
+
+    /// Hand an EXISTING file to the user as a download card.
+    ///
+    /// write/edit/convert only surface a file the run PRODUCES this turn (the
+    /// artifact rides on that tool's `image_url`). A file that already exists —
+    /// a deck a skill generated, a binary the user points at, anything the model
+    /// can't re-`write` as text — had no delivery path at all: the model was left
+    /// reciting `/data/files/…` paths or `cp`-ing the file to trip the freshly-
+    /// produced heuristic. share is that missing path: it emits the file on the
+    /// SAME `image_url` artifact channel write uses, so the chat dispatcher renders
+    /// it as a card (and uploads it on a loop reply) — no re-generation, no copy.
+    ///
+    /// Any file type is allowed: the provider layer sniffs magic bytes and omits
+    /// non-image bytes from the model payload (see `ai::image_source_to_base64`),
+    /// so a `.pptx`/`.zip` path is carried as an attachment, never a bogus image.
+    fn handle_share(&self, input: &FileInput) -> ToolResult {
+        if input.path.is_empty() {
+            return ToolResult::error(errors::missing_param(
+                "share",
+                "path",
+                "os(resource: \"file\", action: \"share\", path: \"/data/files/deck.pptx\")",
+            ));
+        }
+
+        let path = match types::pathres::resolve(&input.path) {
+            Ok(p) => p.to_string_lossy().into_owned(),
+            Err(e) => return ToolResult::error(format!("Error: {}", e)),
+        };
+
+        if let Err(e) = validate_file_path(&path, "share") {
+            return ToolResult::error(format!("Error: {}", e));
+        }
+
+        let meta = match std::fs::metadata(&path) {
+            Ok(m) => m,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return ToolResult::error(errors::file_not_found(&path));
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                return ToolResult::error(errors::permission_denied(&path, "share"));
+            }
+            Err(e) => return ToolResult::error(format!("Error accessing file: {}", e)),
+        };
+        if meta.is_dir() {
+            return ToolResult::error(format!(
+                "Error: {path} is a directory. share delivers a single file — pass the path to the file itself."
+            ));
+        }
+
+        let name = std::path::Path::new(&path)
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| path.clone());
+        let size = meta.len();
+        let size_str = if size >= 1024 {
+            format!("{}KB", size / 1024)
+        } else {
+            format!("{size} bytes")
+        };
+
+        // The result text is relayed to the user — state plainly that delivery is
+        // done, so the model never follows up by telling them to open a local path
+        // or claiming it can't share files.
+        ToolResult::ok(format!(
+            "Delivered {name} ({size_str}) to the chat as a downloadable card. \
+             The user has the file now — do not tell them to open a local path or \
+             say you can't share files."
+        ))
+        .with_image_url(path)
     }
 
     fn handle_glob(&self, input: &FileInput) -> ToolResult {
@@ -1442,6 +1515,51 @@ mod tests {
         );
         assert!(r.is_error);
         assert!(r.content.contains("has not been read yet"), "{}", r.content);
+    }
+
+    // ── share ────────────────────────────────────────────────────────
+    #[test]
+    fn share_existing_file_emits_download_artifact() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("deck.pptx");
+        fs::write(&path, b"PK\x03\x04 not-really-a-deck").unwrap();
+        let tool = FileTool::new();
+        // No prior read required — share hands over a file that already exists.
+        let r = tool.execute(
+            &ctx(),
+            json!({"action":"share","path": path.to_str().unwrap()}),
+        );
+        assert!(!r.is_error, "{}", r.content);
+        assert!(
+            r.image_url.as_deref().is_some_and(|u| u.ends_with("deck.pptx")),
+            "share must emit the file on the image_url artifact channel, got {:?}",
+            r.image_url
+        );
+    }
+
+    #[test]
+    fn share_missing_file_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nope.pptx");
+        let tool = FileTool::new();
+        let r = tool.execute(
+            &ctx(),
+            json!({"action":"share","path": path.to_str().unwrap()}),
+        );
+        assert!(r.is_error);
+        assert!(r.image_url.is_none());
+    }
+
+    #[test]
+    fn share_directory_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let tool = FileTool::new();
+        let r = tool.execute(
+            &ctx(),
+            json!({"action":"share","path": dir.path().to_str().unwrap()}),
+        );
+        assert!(r.is_error);
+        assert!(r.content.contains("directory"), "{}", r.content);
     }
 
     // ── relativize_path ─────────────────────────────────────────────
