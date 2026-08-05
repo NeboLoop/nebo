@@ -216,6 +216,13 @@ export function resolveLearning(id: string, req: Record<string, unknown> = {}) {
 }
 
 /**
+ * @description "Revert learning"
+ */
+export function revertLearning(id: string, req: Record<string, unknown> = {}) {
+	return webapi.post<components.RevertLearningResponse>(`/api/v1/agents/learnings/${id}/revert`, req)
+}
+
+/**
  * @description "Get workflow approval status"
  */
 export function getWorkflowApprovalStatus(runId: string) {
@@ -409,6 +416,13 @@ export function listAgentRuns(id: string, limit?: number, offset?: number) {
  */
 export function triggerAgentSetup(id: string, req: Record<string, unknown> = {}) {
 	return webapi.post<components.TriggerAgentSetupResponse>(`/api/v1/agents/${id}/setup`, req)
+}
+
+/**
+ * @description "List agent skills"
+ */
+export function listAgentSkills(id: string) {
+	return webapi.get<components.ListExtensionsResponse>(`/api/v1/agents/${id}/skills`)
 }
 
 /**
@@ -905,7 +919,7 @@ export function pickFolder(req: Record<string, unknown> = {}) {
  * @description "Upload file"
  */
 export function uploadFile(req: Record<string, unknown> = {}) {
-	return webapi.post<components.UploadFileResponse>(`/api/v1/files/upload`, req)
+	return webapi.post<unknown>(`/api/v1/files/upload`, req)
 }
 
 /**
@@ -2026,6 +2040,13 @@ export function updateApply(req: Record<string, unknown> = {}) {
  */
 export function updateCheck() {
 	return webapi.get<unknown>(`/api/v1/update/check`)
+}
+
+/**
+ * @description "Read upload"
+ */
+export function readUpload(req: Record<string, unknown> = {}) {
+	return webapi.post<unknown>(`/api/v1/upload`, req)
 }
 
 /**
