@@ -1,0 +1,11 @@
+-- Revertible learned adjustments. A learning (learned skill write or workflow
+-- tuning edit) had no restore point: skills stored only a HASH of the prior
+-- SKILL.md (target_hash, for conflict detection) and auto-mode skill writes
+-- left no row at all, so an applied learning could not be undone.
+--
+-- prior_content is the FULL prior state captured at apply time — the previous
+-- SKILL.md, or the previous workflow binding JSON — or NULL when the target did
+-- not exist before (a create). A revert restores this content through the same
+-- write pathway that applied the learning. `status` gains a 'reverted' value
+-- (the column is free-form TEXT, so no constraint change is needed).
+ALTER TABLE pending_writes ADD COLUMN prior_content TEXT;

@@ -54,6 +54,7 @@ impl SkillTool {
     /// Stage a learned-skill write for owner approval: pending_writes row +
     /// Inbox notification (`learn:<id>`) + live broadcast. The ONE staging
     /// pathway for every learned write when learning_mode = "staged".
+    #[allow(clippy::too_many_arguments)]
     fn stage_learned_write(
         &self,
         agent_id: &str,
@@ -62,6 +63,7 @@ impl SkillTool {
         content: Option<&str>,
         gist: &str,
         target_hash: &str,
+        prior_content: Option<&str>,
     ) -> ToolResult {
         let Some(store) = self.store.as_ref() else {
             return ToolResult::error("Staging unavailable: no store configured.");
@@ -69,6 +71,7 @@ impl SkillTool {
         let pending_id = uuid::Uuid::new_v4().to_string();
         if let Err(e) = store.create_pending_write(
             &pending_id, agent_id, "skill", action, target, content, gist, target_hash,
+            prior_content,
         ) {
             return ToolResult::error(format!("Failed to stage write: {}. Do not retry — this is a database error.", e));
         }
@@ -112,6 +115,72 @@ impl SkillTool {
             "Staged for the owner's approval: {}. NOTHING has been saved yet — the owner reviews this from their Inbox. Report it as 'staged for approval', never as 'saved'.",
             gist
         ))
+    }
+
+    /// Record an auto-mode learned write that was ALREADY applied to disk, as an
+    /// approved audit row (+ an `info` Inbox notification). This is the revert
+    /// anchor for `learning_mode = "auto"`: without it, auto-applied learned
+    /// skills leave no trace and cannot be undone. The staged path already
+    /// produces a row on approval; this is its auto-mode counterpart. Best
+    /// effort — a failure here must not fail the write that already succeeded.
+    #[allow(clippy::too_many_arguments)]
+    fn record_applied_learning(
+        &self,
+        agent_id: &str,
+        action: &str,
+        target: &str,
+        content: Option<&str>,
+        gist: &str,
+        target_hash: &str,
+        prior_content: Option<&str>,
+    ) {
+        let Some(store) = self.store.as_ref() else {
+            return;
+        };
+        let pending_id = uuid::Uuid::new_v4().to_string();
+        if let Err(e) = store.record_applied_write(
+            &pending_id, agent_id, "skill", action, target, content, gist, target_hash,
+            prior_content,
+        ) {
+            tracing::warn!(error = %e, "auto learned write: could not record audit row");
+            return;
+        }
+        let user_id = store.ensure_local_user_id().unwrap_or_default();
+        let agent_name = store
+            .get_agent(agent_id)
+            .ok()
+            .flatten()
+            .map(|a| a.name)
+            .unwrap_or_else(|| "An employee".to_string());
+        let notif_id = format!("learn:{}", pending_id);
+        let title = format!("{} refined a skill", agent_name);
+        if let Err(e) = store.create_notification_if_not_exists(
+            &notif_id,
+            &user_id,
+            "info",
+            &title,
+            Some(gist),
+            Some("/inbox"),
+            None,
+            Some(agent_id),
+        ) {
+            tracing::warn!(error = %e, "auto learned write: could not persist notification");
+        }
+        let notify = self.notify_fn.read().ok().and_then(|g| g.clone());
+        if let Some(notify) = notify {
+            notify(
+                "notification_created",
+                serde_json::json!({
+                    "id": notif_id,
+                    "type": "info",
+                    "title": title,
+                    "body": gist,
+                    "actionUrl": "/inbox",
+                    "agentId": agent_id,
+                    "readAt": null,
+                }),
+            );
+        }
     }
 
     /// Inject the shared canonical-installer cell (from the `Registry`).
@@ -763,6 +832,7 @@ impl DynTool for SkillTool {
                                 Some(&final_content),
                                 &gist,
                                 "",
+                                None,
                             );
                         }
                     }
@@ -771,12 +841,23 @@ impl DynTool for SkillTool {
                         return ToolResult::error(format!("Failed to create skill dir: {}. Do not retry — this is a filesystem error.", e));
                     }
                     let path = skill_dir.join("SKILL.md");
-                    match std::fs::write(&path, final_content) {
+                    match std::fs::write(&path, &final_content) {
                         Ok(_) => {
                             // Make the skill (and its triggers) live NOW — the fs
                             // watcher is not instant and first-call trigger tests
                             // race it. Same pattern as the install paths.
                             self.loader.reload_from_disk().await;
+                            // Auto-mode learned create: record the revert anchor
+                            // (prior_content None — nothing existed before). Skipped
+                            // on a re-apply (approve/revert already have a row).
+                            if let Some(owner) =
+                                learned_owner.as_deref().filter(|_| !ctx.learned_write_reapply)
+                            {
+                                let gist = format!("Create learned skill '{}'", name);
+                                self.record_applied_learning(
+                                    owner, "create", name, Some(&final_content), &gist, "", None,
+                                );
+                            }
                             ToolResult::ok(format!(
                                 "Created skill '{}' at {}",
                                 name,
@@ -860,6 +941,10 @@ impl DynTool for SkillTool {
                                     .as_deref()
                                     .map(crate::skills::hash_skill_file)
                                     .unwrap_or_default();
+                                let prior = skill
+                                    .source_path
+                                    .as_deref()
+                                    .and_then(|p| std::fs::read_to_string(p).ok());
                                 let gist = format!("Update learned skill '{}'", name);
                                 return self.stage_learned_write(
                                     owner,
@@ -868,6 +953,7 @@ impl DynTool for SkillTool {
                                     Some(&final_content),
                                     &gist,
                                     &hash,
+                                    prior.as_deref(),
                                 );
                             }
                         }
@@ -894,9 +980,29 @@ impl DynTool for SkillTool {
                                     e
                                 ));
                             }
-                            match std::fs::write(path, final_content) {
+                            // Capture the restore point BEFORE overwriting, but
+                            // only for an auto-mode learned write (a user-skill
+                            // edit is not a "learning" and gets no revert anchor).
+                            let learned_write = matches!(skill.source, SkillSource::Learned)
+                                .then(|| learned_owner.as_deref())
+                                .flatten();
+                            let prior = learned_write
+                                .and_then(|_| std::fs::read_to_string(path).ok());
+                            let prior_hash = learned_write
+                                .map(|_| crate::skills::hash_skill_file(path))
+                                .unwrap_or_default();
+                            match std::fs::write(path, &final_content) {
                                 Ok(_) => {
                                     self.loader.reload_from_disk().await;
+                                    if let Some(owner) =
+                                        learned_write.filter(|_| !ctx.learned_write_reapply)
+                                    {
+                                        let gist = format!("Update learned skill '{}'", name);
+                                        self.record_applied_learning(
+                                            owner, "update", name, Some(&final_content), &gist,
+                                            &prior_hash, prior.as_deref(),
+                                        );
+                                    }
                                     return ToolResult::ok(format!("Updated skill '{}'", name));
                                 }
                                 Err(e) => {
@@ -963,16 +1069,23 @@ impl DynTool for SkillTool {
                                     name
                                 ));
                             }
+                            // The full SKILL.md is the delete's restore point —
+                            // a revert re-creates the skill from it.
+                            let prior = skill
+                                .source_path
+                                .as_deref()
+                                .and_then(|p| std::fs::read_to_string(p).ok());
+                            let hash = skill
+                                .source_path
+                                .as_deref()
+                                .map(crate::skills::hash_skill_file)
+                                .unwrap_or_default();
                             // Staged learning: park the delete for approval.
                             if ctx.learned_write_staged {
-                                let hash = skill
-                                    .source_path
-                                    .as_deref()
-                                    .map(crate::skills::hash_skill_file)
-                                    .unwrap_or_default();
                                 let gist = format!("Delete learned skill '{}'", name);
                                 return self.stage_learned_write(
                                     owner, "delete", name, None, &gist, &hash,
+                                    prior.as_deref(),
                                 );
                             }
                             let dir = match self.learned_skill_dir(owner, name) {
@@ -988,6 +1101,14 @@ impl DynTool for SkillTool {
                                 }
                             }
                             self.loader.reload_from_disk().await;
+                            // Auto-mode learned delete: record the revert anchor
+                            // (skipped on a re-apply — approve/revert own the row).
+                            if !ctx.learned_write_reapply {
+                                let gist = format!("Delete learned skill '{}'", name);
+                                self.record_applied_learning(
+                                    owner, "delete", name, None, &gist, &hash, prior.as_deref(),
+                                );
+                            }
                             return ToolResult::ok(format!("Deleted learned skill '{}'", name));
                         }
                     }

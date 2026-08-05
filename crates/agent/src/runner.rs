@@ -3700,6 +3700,8 @@ async fn run_loop(
                 tool_whitelist: review_fork.as_ref().map(|r| r.whitelist.clone()),
                 learned_write_agent: review_fork.as_ref().map(|r| r.owner_agent_id.clone()),
                 learned_write_staged: review_fork.as_ref().map(|r| r.staged).unwrap_or(false),
+                // A fresh fork learning, not a re-apply — records its audit row.
+                learned_write_reapply: false,
                 skills_read: review_fork
                     .as_ref()
                     .map(|r| r.skills_read.clone())
