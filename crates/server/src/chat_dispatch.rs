@@ -524,7 +524,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                 let mut text_buffer = String::new();
                 let mut last_flush = tokio::time::Instant::now();
                 // Tight coalesce window so text streams in small, token-smooth chunks
-                // (ChatGPT/Claude feel) rather than arriving a sentence at a time. Applies
+                // (polished consumer-chat feel) rather than arriving a sentence at a time. Applies
                 // to both the local app and the loop/comm channel so they stream identically.
                 const COALESCE_MS: u64 = 25;
 
@@ -544,7 +544,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                 // URLs, streamed to the LOCAL app on chat_complete so it renders inline.
                 let mut app_file_artifacts: Vec<String> = Vec::new();
                 // Match the local-chat streaming cadence (COALESCE_MS) so loop
-                // replies stream token-smooth like ChatGPT/Claude instead of
+                // replies stream token-smooth like leading chat apps instead of
                 // arriving in half-second chunks. The chunks are ephemeral
                 // fanout frames, so a tight window is cheap.
                 const COMM_COALESCE_MS: u64 = COALESCE_MS;

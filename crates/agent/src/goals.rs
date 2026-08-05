@@ -17,8 +17,7 @@
 //!   server restart drops the counters).
 //! - The judge fails CLOSED: any provider error, timeout, or unparseable
 //!   verdict is treated as `done` (we auto-continue on EVERY chat, not just
-//!   explicit goals, so uncertainty must halt the loop — the opposite of
-//!   Hermes' fail-open choice for explicit goals).
+//!   explicit goals, so uncertainty must halt the loop — never fail-open).
 //! - Subagent sessions, errored/cancelled runs, and empty responses are never
 //!   judged (see [`eligible_for_judging`]).
 //!

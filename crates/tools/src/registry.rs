@@ -536,7 +536,7 @@ impl Registry {
         debug!(tool = %name, "executing tool");
 
         // ── Phase 1: Validate + determine resource permit ──────────
-        let (name, input) = if let Some((strap_name, params)) = resolve_flat_alias(name) {
+        let (name, mut input) = if let Some((strap_name, params)) = resolve_flat_alias(name) {
             let mut merged = input;
             if let Some(obj) = merged.as_object_mut() {
                 for (k, v) in params {
@@ -569,6 +569,17 @@ impl Registry {
                     ));
                 }
             };
+
+            // Repair model-stringified object/array args against the tool's own
+            // schema, the same way MCP proxy tools already do. Some providers
+            // serialize a structured argument as a JSON string
+            // (`tasks: "[{\"prompt\":…}]"` instead of the array), and the tool
+            // then reports the parameter as missing. The model cannot see the
+            // difference, so it re-sends the identical call until the spiral
+            // backstop ends the turn ("'agent:spawn_parallel' was called 8
+            // times this turn without progress"). Coerce once here, at the one
+            // dispatch point every tool goes through.
+            crate::mcp_tool::coerce_schema_types(&mut input, &tool.schema());
 
             // Hard safety guard — unconditional, cannot be overridden
             if let Some(err) = safeguard::check_safeguard(name, &input) {
@@ -1297,6 +1308,58 @@ fn tool_correction(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A model that serializes a structured argument as a JSON string must not
+    /// reach the tool that way: `agent(action:"spawn_parallel", tasks:"[{…}]")`
+    /// read as a missing `tasks` param, and the model re-sent the identical call
+    /// until the spiral backstop killed the turn.
+    struct ArrayParamTool;
+
+    impl DynTool for ArrayParamTool {
+        fn name(&self) -> &str {
+            "arrayparam"
+        }
+        fn description(&self) -> String {
+            String::new()
+        }
+        fn schema(&self) -> serde_json::Value {
+            serde_json::json!({
+                "type": "object",
+                "properties": { "tasks": { "type": "array" }, "note": { "type": "string" } }
+            })
+        }
+        fn requires_approval(&self) -> bool {
+            false
+        }
+        fn execute_dyn<'a>(
+            &'a self,
+            _ctx: &'a ToolContext,
+            input: serde_json::Value,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send + 'a>> {
+            Box::pin(async move {
+                match input.get("tasks").and_then(|t| t.as_array()) {
+                    Some(a) => ToolResult::ok(format!("array:{}", a.len())),
+                    None => ToolResult::error("missing tasks"),
+                }
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn test_stringified_array_arg_is_coerced_before_dispatch() {
+        let registry = Registry::new(Policy::default());
+        registry.register(Box::new(ArrayParamTool)).await;
+
+        let ctx = ToolContext::default();
+        let stringified = serde_json::json!({
+            "tasks": "[{\"prompt\": \"a\"}, {\"prompt\": \"b\"}]",
+            "note": "[not, parsed]"
+        });
+
+        let result = registry.execute(&ctx, "arrayparam", stringified).await;
+        assert!(!result.is_error, "stringified array should reach the tool as an array: {}", result.content);
+        assert_eq!(result.content, "array:2");
+    }
 
     #[test]
     fn test_strip_mcp_prefix() {

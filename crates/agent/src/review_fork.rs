@@ -10,15 +10,14 @@
 //!
 //! This module owns the trigger counters (turns since the last VOLUNTARY
 //! skill save — a review fires only when organic learning stalled) and the
-//! per-session single-flight guard (a gap Hermes left open). The spawn itself
+//! per-session single-flight guard. The spawn itself
 //! lives in `runner::run_loop`'s post-turn tail beside memory extraction,
 //! where the full run context is in scope.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 
-/// Turns without a voluntary skill save before a review fires (Hermes
-/// default). A voluntary `skill create/update` during a normal run resets
+/// Turns without a voluntary skill save before a review fires. A voluntary `skill create/update` during a normal run resets
 /// the counter — the review is a backstop, not a metronome.
 pub const REVIEW_TURN_INTERVAL: u32 = 10;
 
@@ -94,7 +93,7 @@ pub fn finish(session_id: &str) {
     }
 }
 
-/// The review prompt — Hermes `_SKILL_REVIEW_PROMPT` adapted to Nebo's skill
+/// The review prompt — adapted to Nebo's skill
 /// tool (load / update / create; memory is handled by the separate extraction
 /// pass, not this fork). Keep the ACTIVE bias, the update ladder, and the
 /// anti-capture rules intact — they are the loop's quality control.

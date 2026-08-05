@@ -261,8 +261,8 @@ const PACING_DEFAULT: &str = "Lead with the action or answer. Keep text alongsid
 /// Rich-channel pacing (Slack/Discord/Teams…): these render full formatting
 /// and their users expect substance — a capped reply reads as shallow next to
 /// any other assistant in the workspace. No word ceiling; depth is governed by
-/// the work, not a count. (The Hermes comparison: their Slack prompt carries
-/// NO length cap, and it's a big part of why their replies read as thorough.)
+/// the work, not a count. (Competing assistants carry no length cap in
+/// chat channels — a big part of why their replies read as thorough.)
 const PACING_RICH: &str = "Lead with the action or answer. Keep text alongside a tool call to one short line (≤25 words). For your FINAL response, write at the depth the work deserves: this channel renders full formatting, so give real answers real structure — bold leads, bullets, and tables — instead of compressing them. Never pad, but never truncate substance to hit a length target. Every state change must be spoken.";
 
 /// A rich messaging channel: full markdown rendering + workspace users who
@@ -323,7 +323,7 @@ You share this machine with a real person. Clean up after yourself — close win
 
 Before finalizing: Does the output meet every requirement? Is every factual claim backed by a tool result from this turn? Does the format match what was asked? If the next step has side effects, confirm scope before executing."#;
 
-// --- Model-specific execution guidance (dynamic suffix, non-Claude only) ---
+// --- Model-specific execution guidance (dynamic suffix, weaker models only) ---
 
 const TOOL_USE_ENFORCEMENT: &str = r#"
 ## Tool-Use Enforcement
@@ -460,13 +460,13 @@ fn channel_guidance(channel: &str) -> String {
 }
 
 /// Build model-specific execution guidance for the dynamic suffix.
-/// Claude follows instructions well and needs no enforcement.
+/// Frontier models follow instructions well and need no enforcement.
 /// GPT/Gemini/Janus get progressively stronger guidance.
 fn build_model_specific_guidance(provider_name: &str, model_name: &str) -> String {
     let lower_model = model_name.to_lowercase();
     let lower_provider = provider_name.to_lowercase();
 
-    // Claude follows system prompt well — no enforcement needed
+    // Strong models follow the system prompt well — no enforcement needed
     if lower_provider == "anthropic" || lower_model.contains("claude") {
         return String::new();
     }
@@ -479,7 +479,7 @@ fn build_model_specific_guidance(provider_name: &str, model_name: &str) -> Strin
         || lower_model.contains("gemma")
         || lower_provider == "google";
 
-    // Base enforcement for all non-Claude models (including Janus which may route anywhere)
+    // Base enforcement for all other models (including Janus which may route anywhere)
     let mut sb = String::from(TOOL_USE_ENFORCEMENT);
 
     if is_gpt {
@@ -908,7 +908,7 @@ pub fn build_dynamic_suffix(dctx: &DynamicContext) -> String {
         sb.push_str("\nMessage source: NeboAI (this message was sent to you through the NeboAI network — you ARE connected and reachable)");
     }
 
-    // 2b. Model-specific execution guidance (non-Claude models need enforcement)
+    // 2b. Model-specific execution guidance (weaker models need enforcement)
     let model_guidance = build_model_specific_guidance(&dctx.provider_name, &dctx.model_name);
     if !model_guidance.is_empty() {
         sb.push_str(&model_guidance);
@@ -1041,7 +1041,7 @@ mod tests {
     fn test_strap_no_prose_tool_docs() {
         // build_strap_section never re-documents tools in prose — each tool's full
         // declaration lives in the provider `tools` field (single source, like
-        // Claude). With no MCP tools present, the section is empty.
+        // the strong direct provider). With no MCP tools present, the section is empty.
         let result = build_strap_section(
             &["web".to_string(), "os".to_string(), "agent".to_string()],
             &["app".to_string(), "music".to_string()],
@@ -1121,7 +1121,7 @@ mod tests {
         let result = build_model_specific_guidance("janus", "nebo-fast");
         assert!(
             result.contains("Tool-Use Enforcement"),
-            "Janus should get enforcement (routes to non-Claude models)"
+            "Janus should get enforcement (may route to weaker models)"
         );
     }
 
@@ -1141,7 +1141,7 @@ mod tests {
         let result = build_dynamic_suffix(&dctx);
         assert!(
             !result.contains("Tool-Use Enforcement"),
-            "Claude should not get tool-use enforcement"
+            "strong direct models should not get tool-use enforcement"
         );
     }
 

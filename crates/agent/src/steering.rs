@@ -46,7 +46,7 @@ pub struct ReminderContext<'a> {
     pub execution_mode: tools::ExecutionMode,
     pub messages: &'a [ChatMessage],
     pub recent_tool_names: &'a [String],
-    /// Provider for Claude-skip rules ("anthropic" = direct Claude, self-regulates).
+    /// Provider for strong-model skip rules ("anthropic" = direct frontier provider, self-regulates).
     pub provider_id: &'a str,
     /// Tracked work tasks for the session (task-tracking reminders).
     pub work_tasks: &'a [WorkTask],
@@ -90,7 +90,7 @@ pub fn channel_is_external(channel: &str) -> bool {
 }
 
 impl ReminderContext<'_> {
-    /// Direct Claude follows the system prompt well — suppression-style reminders skip it.
+    /// Strong direct models follow the system prompt well — suppression-style reminders skip them.
     fn is_claude(&self) -> bool {
         self.provider_id == "anthropic"
     }
@@ -438,7 +438,7 @@ fn user_requested_stop(messages: &[ChatMessage]) -> bool {
 pub fn should_force_break(messages: &[ChatMessage], iteration: usize) -> Option<String> {
     // Only hard-stop on explicit user stop command.
     // Everything else is handled by the iteration budget (100 iterations).
-    // Hermes uses budget-only (90 iterations, no error/loop tracking) and it works.
+    // Budget-only pacing (~90-100 iterations, no error/loop tracking) is proven in production.
     // The model is smart enough to self-correct — aggressive circuit breakers
     // kill legitimate browser automation (Google Flights, Amazon, etc.).
     if user_requested_stop(messages) && iteration > 2 {
@@ -474,8 +474,8 @@ const INTERACTIVE_NARRATION_THRESHOLD: usize = 3;
 /// only fires on genuine overrun rather than a normal milestone update.
 const INTERACTIVE_OUTPUT_CHAR_LIMIT: usize = 600;
 
-// 5. Output Discipline — proactive reinforcement for non-Claude models.
-// Modeled after Hermes TOOL_USE_ENFORCEMENT_GUIDANCE which uses forceful
+// 5. Output Discipline — proactive reinforcement for weaker models.
+// Deliberately uses forceful
 // language ("MUST", "immediately", "not acceptable") targeted at GPT/Codex.
 struct OutputDiscipline;
 impl Reminder for OutputDiscipline {
@@ -661,7 +661,7 @@ impl Reminder for RepetitionDetector {
 // tool detection → DuplicateToolCall. Its soft "user asked to STOP" directive was
 // dropped — should_force_break already hard-stops on user-stop (the authoritative path).
 
-/// BudgetWarning — iteration-budget pressure (Hermes 70%/90% thresholds).
+/// BudgetWarning — iteration-budget pressure (70%/90% thresholds).
 struct BudgetWarning;
 impl Reminder for BudgetWarning {
     fn name(&self) -> &'static str {
@@ -730,7 +730,7 @@ impl Reminder for DuplicateToolCall {
 }
 
 // 8. AutomationSpeed — REMOVED.
-// Hermes has no equivalent. It penalized legitimate browser workflows
+// It penalized legitimate browser workflows
 // (snapshot→click→snapshot→click is how browser automation works).
 // The iteration budget is sufficient to prevent runaway execution.
 
@@ -826,7 +826,7 @@ impl Reminder for JanusQuotaWarning {
 }
 
 // 14. Error Recovery — soft advisory after sustained errors.
-// Hermes has no error recovery steering at all. We keep a light nudge at 3+
+// We keep a light nudge at 3+
 // consecutive errors as an advisory, not a command. Single failures are normal
 // (browser timeouts, transient network issues).
 struct ErrorRecovery;
@@ -863,7 +863,7 @@ const OBJECTIVE_REINFORCE_EVERY: usize = 8;
 /// on task-bearing turns from iteration 2 on — INCLUDING right after a tool call, which is
 /// exactly where the stall happens — so it's present in the stream when the model decides, not
 /// after it already stopped (a reactive reminder can't fire then: the loop has exited). Skipped
-/// for direct Claude (binds intent natively). Restores the cut PendingTaskAction with the right
+/// for strong direct models (they bind intent natively). Restores the cut PendingTaskAction with the right
 /// trigger (no "no-recent-tool-use" gate that made the original miss the post-tool stall).
 struct ExecuteIntent;
 impl Reminder for ExecuteIntent {
@@ -1008,7 +1008,7 @@ const IDENTITY_REINFORCE_EVERY: usize = 8;
 /// in multi-agent setups where pam/donna/Researcher must stay themselves). The static
 /// prompt establishes Persona/Soul, but periodically re-asserting "You are {name} —
 /// {essence}" in the high-salience stream keeps the model in character. Skipped for
-/// direct Claude (holds identity well) and the default unnamed companion (the static
+/// strong direct models (hold identity well) and the default unnamed companion (the static
 /// prompt's identity already saturates). Migrated from the old IdentityGuard generator.
 struct IdentityReinforce;
 impl Reminder for IdentityReinforce {
@@ -1022,7 +1022,7 @@ impl Reminder for IdentityReinforce {
         IDENTITY_REINFORCE_EVERY
     }
     fn check(&self, ctx: &ReminderContext) -> Option<String> {
-        // Claude follows the static persona faithfully; the default companion's identity
+        // Strong models follow the static persona faithfully; the default companion's identity
         // is already established in SECTION_CORE — only named personas need re-asserting.
         if ctx.is_claude() || ctx.agent_name.is_empty() || ctx.agent_name == "Nebo" {
             return None;
@@ -1096,7 +1096,7 @@ fn recent_plugin_slugs(messages: &[ChatMessage]) -> Vec<String> {
 
 /// PluginAffinity — after the agent uses a channel/messaging plugin, surface the slugs
 /// it's already used so it calls them directly instead of re-running `plugin` discovery.
-/// Informational (Claude-Code style "a capability is available"); migrated from the
+/// Informational ("a capability is available" tone); migrated from the
 /// runner's suffix injection in R8. Fires after a plugin call lands in the window.
 struct PluginAffinity;
 impl Reminder for PluginAffinity {
@@ -1255,7 +1255,7 @@ impl Reminder for ToolResultHonesty {
         2
     }
     fn check(&self, ctx: &ReminderContext) -> Option<String> {
-        // Claude self-regulates; only weak models need this.
+        // Strong models self-regulate; only weak models need this.
         if ctx.is_claude() || ctx.recent_tool_names.is_empty() {
             return None;
         }
@@ -1552,7 +1552,7 @@ impl Reminder for SerialReadGrind {
         4
     }
     fn check(&self, ctx: &ReminderContext) -> Option<String> {
-        // Direct Claude batches/delegates on its own; this is a weak-model nudge.
+        // Strong direct models batch/delegate on their own; this is a weak-model nudge.
         if ctx.is_claude() {
             return None;
         }
@@ -1620,7 +1620,7 @@ mod tests {
             messages.push(make_msg("user", &format!("msg {}", i)));
             messages.push(make_msg("assistant", &format!("reply {}", i)));
         }
-        // Named, non-Claude agent with a soul → fires at turn 8 with its essence.
+        // Named weak-model agent with a soul → fires at turn 8 with its essence.
         let ctx = ReminderContext {
             messages: &messages,
             agent_name: "Donna",
@@ -1631,7 +1631,7 @@ mod tests {
         assert!(out.contains("You are Donna"));
         assert!(out.contains("Sharp, loyal, unflappable"));
 
-        // Default companion ("Nebo") and direct Claude are skipped.
+        // Default companion ("Nebo") and strong direct models are skipped.
         let nebo = ReminderContext { messages: &messages, agent_name: "Nebo", ..base_rctx() };
         assert!(IdentityReinforce.check(&nebo).is_none());
         let claude = ReminderContext {
@@ -1660,7 +1660,7 @@ mod tests {
         let ctx = ReminderContext { messages: &messages, ..base_rctx() };
         assert!(SerialReadGrind.check(&ctx).is_some(), "grind should fire");
 
-        // Direct Claude self-regulates → skipped.
+        // Strong direct models self-regulate → skipped.
         let claude = ReminderContext {
             messages: &messages,
             provider_id: "anthropic",
@@ -1714,7 +1714,7 @@ mod tests {
             .expect("fires after a successful tool result");
         assert!(out.contains("Report exactly what the tool returned"));
 
-        // Direct Claude self-regulates → skipped.
+        // Strong direct models self-regulate → skipped.
         let claude = ReminderContext {
             messages: &messages,
             recent_tool_names: &names,
@@ -2062,19 +2062,19 @@ mod tests {
             make_msg("user", "Search for flights"),
             make_assistant_with_tools(narration, tc),
         ];
-        // Non-Claude (autonomous): fires on the first narrating turn.
+        // Weak model (autonomous): fires on the first narrating turn.
         assert!(
             NarrationSuppressor
                 .check(&rctx_prov(&msgs, tools::ExecutionMode::Autonomous, "openai", 2))
                 .is_some(),
-            "fires for non-Claude when text+tool detected"
+            "fires for weak models when text+tool detected"
         );
-        // Direct Claude: skipped — it self-regulates.
+        // Strong direct model: skipped — it self-regulates.
         assert!(
             NarrationSuppressor
                 .check(&rctx_prov(&msgs, tools::ExecutionMode::Autonomous, "anthropic", 2))
                 .is_none(),
-            "skipped for direct Claude"
+            "skipped for strong direct models"
         );
     }
 
@@ -2082,19 +2082,19 @@ mod tests {
     fn test_output_discipline_fires_and_skips_claude() {
         let verbose = "I'd be happy to help you with that! Let me explain in detail what I'm going to do. First, I'll search the web for the latest information. Then I'll compile all the results into a comprehensive summary. After that, I'll format everything nicely for you. This process might take a moment, so please bear with me while I work through each step carefully and thoroughly.";
         let msgs = vec![make_msg("user", "weather?"), make_msg("assistant", verbose)];
-        // Non-Claude (autonomous, >300 chars): fires.
+        // Weak model (autonomous, >300 chars): fires.
         assert!(
             OutputDiscipline
                 .check(&rctx_prov(&msgs, tools::ExecutionMode::Autonomous, "openai", 2))
                 .is_some(),
-            "fires for non-Claude when response > 300 chars"
+            "fires for weak models when response > 300 chars"
         );
-        // Direct Claude: skipped.
+        // Strong direct model: skipped.
         assert!(
             OutputDiscipline
                 .check(&rctx_prov(&msgs, tools::ExecutionMode::Autonomous, "anthropic", 2))
                 .is_none(),
-            "skipped for direct Claude"
+            "skipped for strong direct models"
         );
     }
 
@@ -2325,7 +2325,7 @@ mod tests {
 
     #[test]
     fn test_execute_intent_fires_mid_task_not_chitchat() {
-        // Mid-task (active objective), iteration ≥ 2, non-Claude → fires with the bind rule.
+        // Mid-task (active objective), iteration ≥ 2, weak model → fires with the bind rule.
         let out = ExecuteIntent
             .check(&ReminderContext {
                 iteration: 2,
@@ -2361,7 +2361,7 @@ mod tests {
                 .check(&ReminderContext { iteration: 5, ..base_rctx() })
                 .is_none()
         );
-        // Direct Claude → skipped (binds intent natively).
+        // Strong direct model → skipped (binds intent natively).
         assert!(
             ExecuteIntent
                 .check(&ReminderContext {

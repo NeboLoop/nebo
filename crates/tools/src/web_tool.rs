@@ -1769,7 +1769,7 @@ impl WebTool {
         let args = build_extension_args(action, input);
 
         // Execute with auto-retry for read_page character limit errors.
-        // The extension (at parity with Claude) returns an error when output > maxChars.
+        // The extension returns an error when output > maxChars.
         // Nebo handles this by retrying with tighter params so the agent always gets content.
         tracing::info!(
             tool = %tool_name,
@@ -2436,7 +2436,7 @@ fn build_extension_args(action: &str, input: &serde_json::Value) -> serde_json::
 /// Head/tail split of the inline budget for spilled results: the opening of a
 /// page (title, lede) plus its end (conclusions, footers, latest entries) is
 /// usually enough for the model to decide whether paging the full text is
-/// worth it — the Hermes Agent "spill and page" pattern.
+/// worth it — the "spill and page" pattern.
 const SPILL_HEAD_BUDGET: usize = MAX_INLINE_CHARS * 60 / 100;
 const SPILL_TAIL_BUDGET: usize = MAX_INLINE_CHARS * 40 / 100;
 
@@ -2464,7 +2464,7 @@ fn spill_cache_path(key: &str) -> std::path::PathBuf {
     dir.join(format!("{:016x}.txt", fnv1a_64(key.as_bytes())))
 }
 
-/// Bound an inline tool result WITHOUT losing data (the Hermes Agent "spill
+/// Bound an inline tool result WITHOUT losing data (the "spill
 /// and page" pattern). Short results pass through untouched; large ones return
 /// a head+tail window — the first ~60% of the inline budget from the head and
 /// the last ~40% from the tail, an explicit omission marker in between — and

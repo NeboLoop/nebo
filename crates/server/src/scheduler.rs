@@ -94,7 +94,7 @@ async fn tick(
     }
 
     // Expire staged self-improvement writes past their 30-day TTL and clear
-    // their Inbox cards (the audited Hermes gap: pending forever).
+    // their Inbox cards (audited gap: approvals pending forever).
     match store.expire_pending_writes() {
         Ok(ids) => {
             if !ids.is_empty() {

@@ -7,8 +7,8 @@ use crate::models::PendingWrite;
 use crate::store::Store;
 use types::NeboError;
 
-/// Pending rows older than this are auto-expired (audited Hermes gap: their
-/// pending store accumulates forever).
+/// Pending rows older than this are auto-expired (a pending store must never
+/// accumulate forever).
 pub const PENDING_WRITE_TTL_SECS: i64 = 30 * 24 * 3600;
 
 fn row_to_pending_write(row: &rusqlite::Row) -> rusqlite::Result<PendingWrite> {

@@ -204,7 +204,23 @@ fn action_key(call: &ai::ToolCall) -> String {
         .get("action")
         .and_then(|v| v.as_str())
         .unwrap_or("");
-    format!("{}:{}", call.name, action)
+    if !action.is_empty() {
+        return format!("{}:{}", call.name, action);
+    }
+    // No `action` field — the plugin tool's verb lives in `command` ("gmail
+    // +send …", "drive +upload …"). Without this every plugin call in a turn
+    // collapsed into the single key "plugin:", so eight DIFFERENT commands
+    // tripped the backstop as if they were one retried call.
+    let verb = call
+        .input
+        .get("command")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .split_whitespace()
+        .take(2)
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!("{}:{}", call.name, verb)
 }
 
 /// Cap on unproductive repeats of the same (tool, action) before the spiral
@@ -1259,7 +1275,7 @@ impl Runner {
             // employee's learning_mode = "auto"; single-flight per session.
             // The fork runs with skip_memory=true, so it can never spawn a
             // review of itself, and its harness prompt never touches the
-            // user's chat (the Hermes "curator takeover" lesson — STUDY §2).
+            // user's chat (the "curator takeover" lesson).
             if !skip_memory && run_ok && !cancel_token.is_cancelled() && !agent_id.is_empty() {
                 // "auto" commits directly; "staged" stages to pending_writes
                 // for Inbox approval; anything else (off/NULL) = no fork.
@@ -2411,7 +2427,7 @@ async fn run_loop(
         }
 
         // Compute context thresholds — use model's actual context window when
-        // available so large-context providers (200K Claude, 128K GPT-4o) aren't
+        // available so large-context providers (200K/128K class) aren't
         // under-utilized.  Falls back to DEFAULT_CONTEXT_TOKEN_LIMIT (80K).
         let estimate_correction = state.estimate_correction;
         let thresholds = state.thresholds.get_or_insert_with(|| {
@@ -3810,14 +3826,19 @@ async fn run_loop(
             // Spiral backstop (see action_call_counts): once one (tool, action) has
             // racked up SAME_ACTION_LIMIT UNPRODUCTIVE attempts this turn (errored or
             // returning content the model already had — glob-wander / browser re-read /
-            // shell-retry), END the run with a terminal result. Productive calls that
+            // shell-retry), nudge the model off that action. Productive calls that
             // return novel results don't count, so legitimate bulk work (create N
             // todos, write N files) never trips this. (FRAMES Phase 2.)
             //
-            // The tripped action key is recorded so the terminal break below emits a
-            // typed ControlNotice ("repeated_tool_calls") — the model-facing tool
-            // result text must never surface as user-visible reply text.
-            let mut spiral_stop: Option<String> = None;
+            // This is a NUDGE, not a stop. It used to end the run with a terminal
+            // result, which turned every false positive into a dead turn the user saw
+            // as a red "Stopped: … called 8 times without progress" banner — the model
+            // had more to do and no way to say so. The offending call is refused with a
+            // corrective error; every other tool, and the turn, carries on.
+            //
+            // The budget resets when it fires, so a model that changes approach isn't
+            // locked out of the action for the rest of the turn — a genuine loop simply
+            // earns another nudge in another SAME_ACTION_LIMIT unproductive calls.
             for (idx, tc) in tool_calls.iter().enumerate() {
                 if blocked_results[idx].is_some() {
                     continue;
@@ -3828,14 +3849,16 @@ async fn run_loop(
                         session_id,
                         action = %key,
                         limit = SAME_ACTION_LIMIT,
-                        "spiral backstop: ending run after repeated action"
+                        "spiral backstop: nudging model off repeated action"
                     );
-                    spiral_stop.get_or_insert_with(|| key.clone());
+                    action_call_counts.insert(key.clone(), 0);
                     blocked_results[idx] = Some((
                         tc.clone(),
-                        ToolResult::terminal(format!(
+                        ToolResult::error(format!(
                             "'{}' has been called {} times this turn without resolving. \
-                             Report what you found so far and ask for the missing detail.",
+                             Do not repeat it unchanged — change the arguments, use a \
+                             different tool, or tell the user what you have so far and \
+                             what is blocking you.",
                             key, SAME_ACTION_LIMIT
                         )),
                     ));
@@ -4774,19 +4797,9 @@ async fn run_loop(
             // assistant prose and it leaked verbatim into channel replies.
             if let Some(msg) = terminal_error {
                 warn!(session_id, iteration, "terminal tool error — ending run");
-                let (control_reason, notice) = match &spiral_stop {
-                    Some(action) => (
-                        "repeated_tool_calls",
-                        format!(
-                            "Stopped: '{}' was called {} times this turn without progress.",
-                            action, SAME_ACTION_LIMIT
-                        ),
-                    ),
-                    None => ("terminal_tool_error", msg),
-                };
-                turn_exit_reason = control_reason.to_string();
+                turn_exit_reason = "terminal_tool_error".to_string();
                 let _ = tx
-                    .send(StreamEvent::control_notice(notice, control_reason))
+                    .send(StreamEvent::control_notice(msg, "terminal_tool_error"))
                     .await;
                 break;
             }
@@ -5014,7 +5027,7 @@ async fn run_loop(
         }
 
         // No tool calls — handle empty responses before checking auto-continuation.
-        // Matches Hermes: post-tool nudge → empty retries → auto-continue → break.
+        // Order: post-tool nudge → empty retries → auto-continue → break.
         if assistant_content.trim().is_empty() {
             // Post-tool empty response nudge: model returned empty after tool results.
             // Append assistant("(empty)") + user(nudge) to keep message sequence valid,
@@ -5134,7 +5147,7 @@ async fn run_loop(
         break;
     }
 
-    // Post-loop: budget exhaustion summary request (matches Hermes _handle_max_iterations).
+    // Post-loop: budget exhaustion summary request.
     // If the loop exited because we hit max_iterations without a final text response,
     // make ONE more API call with tools stripped to get a summary.
     if final_iteration >= max_iterations && !turn_exit_reason.starts_with("text_response") {
@@ -5210,7 +5223,7 @@ async fn run_loop(
         }
     }
 
-    // Turn exit diagnostic (matches Hermes _turn_exit_reason logging)
+    // Turn exit diagnostic
     info!(
         session_id,
         exit_reason = %turn_exit_reason,
@@ -6294,6 +6307,46 @@ mod tests {
 
         // Other tools' errors still count.
         assert!(counts_toward_action_spiral(&web_search("nebo"), true, false));
+    }
+
+    /// The repeated-action backstop is a nudge: it refuses the offending call and
+    /// lets the turn continue. Making it terminal again would resurrect the dead
+    /// turns users saw as "Stopped: … called 8 times without progress".
+    #[test]
+    fn spiral_backstop_is_a_nudge_not_a_stop() {
+        let src = include_str!("runner.rs");
+        let block = src
+            .split("racked up SAME_ACTION_LIMIT UNPRODUCTIVE attempts")
+            .nth(1)
+            .expect("spiral backstop block");
+        let block = &block[..block.find("\n            // ──").unwrap_or(block.len())];
+        assert!(
+            !block.contains("ToolResult::terminal"),
+            "spiral backstop must not end the run — use ToolResult::error"
+        );
+        assert!(
+            block.contains("action_call_counts.insert(key.clone(), 0)"),
+            "the budget must reset when the nudge fires, or the action is locked out for the turn"
+        );
+    }
+
+    /// The plugin tool carries no `action` — its verb is the head of `command`.
+    /// Distinct commands must land in distinct buckets, or a turn that ran eight
+    /// different plugin commands trips the backstop as one retried call.
+    #[test]
+    fn action_key_separates_plugin_commands() {
+        let call = |cmd: &str| ai::ToolCall {
+            id: String::new(),
+            name: "plugin".into(),
+            input: serde_json::json!({"resource": "gws", "command": cmd}),
+        };
+        assert_eq!(action_key(&call("drive +upload --path /a/b")), "plugin:drive +upload");
+        assert_ne!(
+            action_key(&call("drive +upload --path /a/b")),
+            action_key(&call("gmail +send --to a@b.c"))
+        );
+        // Tools that do carry an action are unchanged.
+        assert_eq!(action_key(&os_glob("/tmp")), "os:glob");
     }
 
     #[test]

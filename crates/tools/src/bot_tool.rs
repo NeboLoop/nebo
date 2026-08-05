@@ -1419,7 +1419,7 @@ impl AgentTool {
                 // HITL gate: asking is only valid in direct, interactive chat (desktop/mobile).
                 // Automated/workflow/channel/sub-agent runs have nobody at the keyboard and
                 // ask_user() would block an ephemeral oneshot forever — so it must be
-                // unavailable, not merely fail. (Mirrors Claude disabling AskUserQuestion in
+                // unavailable, not merely fail. (Mirrors reference harnesses that disable ask-user prompts in
                 // channel mode.) `Origin::Workflow` and all autonomous origins are blocked here.
                 if crate::origin::ExecutionMode::from(ctx.origin)
                     != crate::origin::ExecutionMode::Interactive

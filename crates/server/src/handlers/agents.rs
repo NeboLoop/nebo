@@ -3797,7 +3797,7 @@ pub async fn get_learning(
 /// POST /api/v1/agents/learnings/{id}/resolve — approve or reject a staged
 /// self-improvement write. Approve re-checks the stage-time content hash
 /// (a target that changed meanwhile becomes a CONFLICT, never a blind
-/// replay — the gap Hermes left open), then applies through the ONE skill
+/// replay), then applies through the ONE skill
 /// tool pathway with the read-mark pre-set (the content was human-reviewed).
 pub async fn resolve_learning(
     State(state): State<AppState>,
