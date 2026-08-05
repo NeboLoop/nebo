@@ -554,19 +554,56 @@ fn relay_loop_turn(state: &AppState, conv_id: &str, stream: &str, role: &str, co
     });
 }
 
+/// The chat title a phone call gets: who called, formatted the way a phone
+/// shows it — "Call from (801) 023-2342". Marked custom so the auto-namer
+/// never renames a call after whatever the caller happened to say. Line
+/// label rides along when the employee holds several lines.
+fn phone_chat_title(caller_id: Option<&str>, line: Option<&str>) -> String {
+    let who = caller_id.filter(|s| !s.is_empty()).map(|raw| {
+        let digits: String = raw.chars().filter(|c| c.is_ascii_digit()).collect();
+        if digits.len() == 11 && digits.starts_with('1') {
+            format!("({}) {}-{}", &digits[1..4], &digits[4..7], &digits[7..])
+        } else {
+            raw.to_string()
+        }
+    });
+    let mut title = match who {
+        Some(w) => format!("Call from {w}"),
+        None => "Phone call".to_string(),
+    };
+    if let Some(l) = line.filter(|s| !s.is_empty()) {
+        title.push_str(&format!(" · {l}"));
+    }
+    title
+}
+
 /// Create the voice call's chat row if it does not exist yet — the LAZY half
 /// of "voice is a modality of a chat". Called from every path that is about to
 /// put real activity into the thread (a finished turn, a delegated run), and
 /// from nowhere else, so a call that dies before producing anything leaves no
-/// row behind. Returns true once the chat exists.
-fn ensure_voice_chat(state: &AppState, chat_id: &str, session_key: &str) -> bool {
+/// row behind. `title` is Some for phone calls (caller-ID title, protected
+/// from the auto-namer); None means "New Chat" + auto-naming as usual.
+/// Returns true once the chat exists.
+fn ensure_voice_chat(
+    state: &AppState,
+    chat_id: &str,
+    session_key: &str,
+    title: Option<&str>,
+) -> bool {
     match state.store.get_chat(chat_id) {
         Ok(Some(_)) => true,
-        Ok(None) => match state
-            .store
-            .create_chat_for_session(chat_id, session_key, "New Chat", None)
-        {
+        Ok(None) => match state.store.create_chat_for_session(
+            chat_id,
+            session_key,
+            title.unwrap_or("New Chat"),
+            None,
+        ) {
             Ok(_) => {
+                if let Some(t) = title
+                    && let Err(e) = state.store.update_chat_title(chat_id, t, true)
+                {
+                    warn!(error = %e, chat = %chat_id, "failed to protect phone chat title");
+                }
                 info!(chat = %chat_id, "voice chat created on first activity");
                 true
             }
@@ -675,6 +712,13 @@ async fn handle_conversation_session(
     use voice::realtime::RealtimeCommand;
 
     let chat_id = q.chat_id.filter(|c| !c.is_empty());
+    // Phone calls get a deterministic caller-ID title ("Call from (801)
+    // 023-2342"), protected from the auto-namer — a call's name is who
+    // called, not whatever the caller happened to say first.
+    let phone_title = q
+        .telephony
+        .is_some()
+        .then(|| phone_chat_title(q.caller_id.as_deref(), q.line.as_deref()));
     // Loop-originated call: relay every finished turn into this conversation.
     let loop_relay = q.loop_conversation_id.clone().filter(|c| !c.is_empty()).map(|conv| {
         let stream = q
@@ -741,7 +785,7 @@ async fn handle_conversation_session(
                         // (late transcript corrections have landed by now).
                         if let Some(cid) = chat_id.as_deref()
                             && !user_partial.trim().is_empty()
-                            && ensure_voice_chat(&state, cid, &ctx.session_key)
+                            && ensure_voice_chat(&state, cid, &ctx.session_key, phone_title.as_deref())
                         {
                             if !chat_bound_announced {
                                 chat_bound_announced = true;
@@ -761,7 +805,7 @@ async fn handle_conversation_session(
                     ConversationEvent::PlaybackEnd => {
                         if let Some(cid) = chat_id.as_deref()
                             && !agent_partial.trim().is_empty()
-                            && ensure_voice_chat(&state, cid, &ctx.session_key)
+                            && ensure_voice_chat(&state, cid, &ctx.session_key, phone_title.as_deref())
                         {
                             if !chat_bound_announced {
                                 chat_bound_announced = true;
@@ -808,6 +852,7 @@ async fn handle_conversation_session(
                         let ctx = ctx.clone();
                         let done = tool_done_tx.clone();
                         let delegate_chat_id = chat_id.clone();
+                        let phone_title = phone_title.clone();
                         tokio::spawn(async move {
                             let input = decode_tool_arguments(&arguments);
                             // `nebo` delegates to the Runner (the ONE tuned
@@ -824,7 +869,7 @@ async fn handle_conversation_session(
                                     // A delegated run appends to the thread —
                                     // real activity, so the chat must exist.
                                     if let Some(cid) = delegate_chat_id.as_deref() {
-                                        ensure_voice_chat(&state, cid, &ctx.session_key);
+                                        ensure_voice_chat(&state, cid, &ctx.session_key, phone_title.as_deref());
                                     }
                                     run_delegated_task(&state, &ctx.session_key, task).await
                                 };
