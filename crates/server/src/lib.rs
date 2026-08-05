@@ -1583,17 +1583,38 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         }
         // Filesystem is the source of truth for which agents are active.
         // Soft-deactivate any DB agent not on the filesystem — same policy as
-        // the fs-watcher's Removed branch. Do NOT delete: the listing may be
-        // incomplete (partial load_all after transient IO), and the user may
-        // re-add the directory; chats/sessions/memories must survive.
+        // the fs-watcher's Removed branch. Do NOT delete: the user may re-add
+        // the directory; chats/sessions/memories must survive.
+        //
+        // Circuit breaker first: the scan swallows IO errors, so a boot that
+        // races a slow volume mount produces a PARTIAL listing that looks
+        // like mass deletion. One such boot deactivated a whole roster of
+        // employees. A real user removes agents one at a time — losing more
+        // than a third of the enabled roster in a single sweep means the
+        // scan is lying, not the user.
         let fs_ids: std::collections::HashSet<String> = fs_agents
             .iter()
             .map(|a| a.id.clone().unwrap_or_else(|| a.agent_def.name.clone()))
             .collect();
         if let Ok(db_agents) = store.list_agents(1000, 0) {
-            let mut deactivated = 0usize;
-            for db_agent in &db_agents {
-                if !fs_ids.contains(&db_agent.id) && db_agent.is_enabled != 0 {
+            let enabled: Vec<_> = db_agents
+                .iter()
+                .filter(|a| a.is_enabled != 0 && a.id != "assistant")
+                .collect();
+            let orphans: Vec<_> = enabled
+                .iter()
+                .filter(|a| !fs_ids.contains(&a.id))
+                .collect();
+            if !orphans.is_empty() && orphans.len() * 3 > enabled.len() {
+                warn!(
+                    orphans = orphans.len(),
+                    enabled = enabled.len(),
+                    scanned = fs_ids.len(),
+                    "agent scan would deactivate an implausible share of the roster — treating the scan as incomplete, deactivating nothing"
+                );
+            } else {
+                let mut deactivated = 0usize;
+                for db_agent in orphans {
                     match store.set_agent_enabled(&db_agent.id, false) {
                         Ok(()) => {
                             deactivated += 1;
@@ -1604,12 +1625,12 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
                         }
                     }
                 }
-            }
-            if deactivated > 0 {
-                info!(
-                    deactivated,
-                    "deactivated orphan agents missing from filesystem"
-                );
+                if deactivated > 0 {
+                    info!(
+                        deactivated,
+                        "deactivated orphan agents missing from filesystem"
+                    );
+                }
             }
         }
 
