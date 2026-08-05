@@ -424,17 +424,21 @@ fn channel_guidance(channel: &str) -> String {
              document itself (e.g. a \"Sample data\" subtitle) — never present invented \
              numbers as real."
         );
-        // Loop conversations also need to share EXISTING files the user points
-        // at (a deliverable the agent writes uploads automatically per above;
-        // this covers a pre-existing local file the user references).
-        if channel == "neboai" {
-            guidance.push_str(
-                " To share an EXISTING local file the user points you at (not a deliverable \
-                 you write — those upload automatically), call `loop(resource: \"channel\", \
-                 action: \"share\", path: \"<abs_path>\")` (or `resource: \"dm\"` for a direct \
-                 message). You do NOT need a plugin for this.",
-            );
-        }
+        // Files the agent WRITES upload automatically (above). A file that
+        // already exists — a deck/PDF a skill generated, or anything the user
+        // points at that wasn't written this turn — has no automatic artifact,
+        // so it needs an explicit hand-off. `os file share` is that one path; it
+        // emits the same download-card artifact on every local/loop surface, so
+        // the model never has to recite a path or copy a file to "trigger" a card.
+        guidance.push_str(
+            " To hand the user a file that ALREADY exists — a deck or PDF a skill \
+             generated, or any file on disk you did NOT write this turn — call \
+             `os(resource: \"file\", action: \"share\", path: \"<abs_path>\")`; it \
+             renders as a downloadable card (write/edit only surface files you \
+             produce in the same turn). NEVER tell the user to open a local path, \
+             copy a file into place to \"trigger\" a card, or say you can't access \
+             or share files — just share it.",
+        );
         return guidance;
     }
 
