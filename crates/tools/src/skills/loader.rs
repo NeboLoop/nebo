@@ -164,6 +164,24 @@ impl Loader {
             }
         };
 
+        // A manifest can outlive the files it points at: a plugin update
+        // replaces its versioned directory (0.2.7/ -> 0.2.8/) and every entry
+        // under the old path goes dark — the catalog says the skill exists,
+        // every load/browse fails, and the model flies blind. If any entry's
+        // backing directory is gone, the whole manifest is stale: fall back to
+        // a cold scan, which rebuilds it from what is actually on disk.
+        let stale = manifest.skills.iter().find(|(_, s)| {
+            s.base_dir.as_deref().is_some_and(|d| !d.exists())
+                || s.source_path.as_deref().is_some_and(|p| !p.exists())
+        });
+        if let Some((name, _)) = stale {
+            info!(
+                skill = %name,
+                "skill manifest points at missing files — cold rescanning"
+            );
+            return None;
+        }
+
         let count = manifest.skills.len();
         let mut loaded = manifest.into_skill_map();
 
