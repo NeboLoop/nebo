@@ -52,5 +52,6 @@ xxhash-rust = { version = "0.8", features = ["xxh3"] }
 pdf-extract = "0.12"
 
 [dev-dependencies]
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 flate2 = "1"
 tar = "0.4"

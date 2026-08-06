@@ -1247,7 +1247,15 @@ pub(crate) async fn fetch_and_install_plugin(
         .plugin_store
         .install_from_napp(slug, &version, &napp_data)
         .await;
-    state.skill_loader.load_all().await;
+    // COLD reload, not load_all(): a plugin install/update just deleted the old
+    // version dir and wrote a new one, and load_all()'s warm path trusts the
+    // stale manifest — whose entries point at the deleted paths, so every skill
+    // this plugin ships silently vanishes from the catalog and the next
+    // manifest write persists the loss. Observed live: a nebo-office
+    // auto-update orphaned all 21 of its skills and the agent told the user
+    // "the pptx-design skill isn't installed" while the files sat on disk.
+    // (The skill-install path 900 lines up documents this same trap.)
+    state.skill_loader.reload_from_disk().await;
     state.skill_loader.resume_watcher();
     let path = install.map_err(|e| NeboError::Internal(format!("install plugin {slug}: {e}")))?;
     info!(plugin = %name, path = %path.display(), "installed plugin");
@@ -2451,7 +2459,9 @@ pub(crate) async fn refresh_license_keys(state: &AppState) -> Result<(), NeboErr
         // skills AND agents become available without a restart.
         state.skill_loader.set_license_keys(keys.clone()).await;
         state.agent_loader.set_license_keys(keys).await;
-        state.skill_loader.load_all().await;
+        // Cold reload: sealed skills absent from the stale manifest (they failed
+        // to decrypt last scan) only appear if the filesystem is rescanned.
+        state.skill_loader.reload_from_disk().await;
         state.agent_loader.load_all().await;
         state.hub.broadcast(
             "license_keys_refreshed",
