@@ -460,6 +460,9 @@ pub struct Setting {
     /// When ON, the runner's per-tool approval gate is bypassed.
     #[serde(serialize_with = "i64_as_bool")]
     pub full_access: i64,
+    /// Loop-guardrail thresholds as a JSON object (see agent::guardrails).
+    /// '{}' means built-in defaults.
+    pub guardrails: serde_json::Value,
     #[serde(skip_serializing)]
     pub updated_at: i64,
 }

@@ -293,6 +293,8 @@ pub async fn execute_workflow(
         // Accumulates every token this activity consumes — successful turns,
         // evaluator turns, failed retry attempts, and exit-path turns.
         let mut activity_spent: u32 = 0;
+        // Output tokens only — the unit token budgets are enforced in.
+        let mut activity_spent_output: u32 = 0;
 
         match execute_activity_with_retry(
             activity,
@@ -308,6 +310,7 @@ pub async fn execute_workflow(
             &def.id,
             progress_tx.as_ref(),
             &mut activity_spent,
+            &mut activity_spent_output,
             checkpoint,
             resume.as_ref().filter(|r| r.activity_id == activity.id),
             "", // sequential engine has no loop nodes
@@ -521,6 +524,7 @@ pub(crate) async fn execute_activity_with_retry(
     workflow_id: &str,
     progress_tx: Option<&tokio::sync::mpsc::UnboundedSender<WorkflowProgress>>,
     spent: &mut u32,
+    spent_output: &mut u32,
     checkpoint: Option<&CheckpointCtx>,
     resume: Option<&ResumeState>,
     iteration: &str,
@@ -557,6 +561,7 @@ pub(crate) async fn execute_activity_with_retry(
             workflow_id,
             progress_tx,
             spent,
+            spent_output,
             checkpoint,
             resume,
             iteration,
@@ -609,6 +614,7 @@ pub async fn execute_activity(
     workflow_id: &str,
     progress_tx: Option<&tokio::sync::mpsc::UnboundedSender<WorkflowProgress>>,
     spent: &mut u32,
+    spent_output: &mut u32,
     checkpoint: Option<&CheckpointCtx>,
     resume: Option<&ResumeState>,
     iteration: &str,
@@ -671,7 +677,7 @@ pub async fn execute_activity(
             Some(r) => (r.messages.clone(), Some(r.pending.clone())),
             None => (messages, None),
         };
-        return run_llm_loop(activity, provider, tools, &tool_defs, &system, messages, spent, make_trace(String::new()), store, checkpoint, pending, iteration).await;
+        return run_llm_loop(activity, provider, tools, &tool_defs, &system, messages, spent, spent_output, make_trace(String::new()), store, checkpoint, pending, iteration).await;
     }
 
     // --- Per-step execution ---
@@ -748,6 +754,7 @@ pub async fn execute_activity(
             &system,
             messages.clone(),
             spent,
+            spent_output,
             make_trace(i.to_string()),
             store,
             checkpoint,
@@ -847,11 +854,12 @@ pub async fn execute_activity(
         // Record completion
         total_tokens += step_tokens;
 
-        // Cumulative per-activity budget across steps + evaluator turns.
-        if activity.token_budget.max > 0 && *spent > activity.token_budget.max {
+        // Cumulative per-activity budget across steps + evaluator turns —
+        // output tokens, same unit as the in-loop check.
+        if activity.token_budget.max > 0 && *spent_output > activity.token_budget.max {
             return Err(WorkflowError::BudgetExceeded {
                 activity_id: activity.id.clone(),
-                used: *spent,
+                used: *spent_output,
                 limit: activity.token_budget.max,
             });
         }
@@ -958,6 +966,14 @@ async fn evaluate_step(
                 warn!("step evaluator error: {:?}", event.error);
                 return Ok((EvalDecision::Proceed, eval_tokens));
             }
+            // Providers emit usage as a dedicated Usage event; Done carries
+            // usage: None everywhere (done()/done_with_reason() construct it
+            // that way). Reading usage only on Done left eval_tokens at 0.
+            StreamEventType::Usage => {
+                if let Some(usage) = event.usage {
+                    eval_tokens = (usage.input_tokens + usage.output_tokens) as u32;
+                }
+            }
             StreamEventType::Done => {
                 if let Some(usage) = event.usage {
                     eval_tokens = (usage.input_tokens + usage.output_tokens) as u32;
@@ -978,6 +994,11 @@ async fn evaluate_step(
 /// `spent` accumulates EVERY token consumed, including turns that later end
 /// in an error — error variants can't carry token counts, so callers read
 /// the accumulator to keep run totals truthful across exits/failures/retries.
+///
+/// `spent_output` accumulates output tokens only, across all of an activity's
+/// steps — the unit token budgets are enforced in. Input tokens are dominated
+/// by the fixed tool-schema overhead resent every turn (~30k), so an
+/// input-inclusive budget of the default 4096 would fail every run on turn 1.
 #[allow(clippy::too_many_arguments)]
 async fn run_llm_loop(
     activity: &Activity,
@@ -987,6 +1008,7 @@ async fn run_llm_loop(
     system: &str,
     mut messages: Vec<ai::Message>,
     spent: &mut u32,
+    spent_output: &mut u32,
     trace: ai::RequestTrace,
     store: &Arc<Store>,
     checkpoint: Option<&CheckpointCtx>,
@@ -1073,6 +1095,7 @@ async fn run_llm_loop(
 
         let mut response_text = String::new();
         let mut tool_calls: Vec<ai::ToolCall> = Vec::new();
+        let mut turn_counted = false;
 
         while let Some(event) = rx.recv().await {
             match event.event_type {
@@ -1090,11 +1113,27 @@ async fn run_llm_loop(
                         event.error.unwrap_or_default(),
                     ));
                 }
-                StreamEventType::Done => {
+                // Providers emit usage as a dedicated Usage event; Done always
+                // carries usage: None. Reading usage only on Done recorded 0
+                // tokens for every workflow run, so token budgets never
+                // enforced and the only runaway stop was the iteration cap.
+                StreamEventType::Usage => {
                     if let Some(usage) = event.usage {
                         let turn = (usage.input_tokens + usage.output_tokens) as u32;
                         tokens_used += turn;
                         *spent += turn;
+                        *spent_output += usage.output_tokens.max(0) as u32;
+                        turn_counted = true;
+                    }
+                }
+                StreamEventType::Done => {
+                    if !turn_counted {
+                        if let Some(usage) = event.usage {
+                            let turn = (usage.input_tokens + usage.output_tokens) as u32;
+                            tokens_used += turn;
+                            *spent += turn;
+                            *spent_output += usage.output_tokens.max(0) as u32;
+                        }
                     }
                     break;
                 }
@@ -1105,10 +1144,12 @@ async fn run_llm_loop(
         // Per-activity token budget — enforced DURING the loop, not after the
         // activity finishes. A runaway activity stops at its own ceiling
         // instead of spending unboundedly until the workflow-total check.
-        if activity.token_budget.max > 0 && tokens_used > activity.token_budget.max {
+        // Budgets meter OUTPUT tokens (the model's work), cumulative across
+        // the activity's steps; run totals stay full input+output.
+        if activity.token_budget.max > 0 && *spent_output > activity.token_budget.max {
             return Err(WorkflowError::BudgetExceeded {
                 activity_id: activity.id.clone(),
-                used: tokens_used,
+                used: *spent_output,
                 limit: activity.token_budget.max,
             });
         }

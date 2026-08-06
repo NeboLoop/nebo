@@ -1,9 +1,48 @@
 <script lang="ts">
   import SettingsHeader from '$lib/components/settings/SettingsHeader.svelte';
+  import { onMount } from 'svelte';
   import { t } from 'svelte-i18n';
   import { devMode } from '$lib/stores/devmode.js';
 
   let appPath = $state('');
+
+  // Loop-guardrail thresholds (settings.guardrails blob; defaults mirror
+  // agent::guardrails::GuardrailConfig).
+  const GUARDRAIL_DEFAULTS = {
+    sameActionLimit: 8,
+    identicalArgsBlockAfter: 3,
+    maxAutoContinuations: 5,
+    hardStop: false,
+  };
+  let guardrails = $state({ ...GUARDRAIL_DEFAULTS });
+  let guardrailsStatus = $state<'idle' | 'saving' | 'saved' | 'error'>('idle');
+
+  onMount(async () => {
+    try {
+      const api = await import('$lib/api/nebo');
+      const resp = (await api.getSettings()) as { settings?: { guardrails?: Record<string, unknown> } };
+      guardrails = { ...GUARDRAIL_DEFAULTS, ...(resp?.settings?.guardrails ?? {}) };
+    } catch {
+      // keep defaults
+    }
+  });
+
+  async function saveGuardrails() {
+    guardrailsStatus = 'saving';
+    try {
+      const api = await import('$lib/api/nebo');
+      await api.updateSettings({ guardrails });
+      guardrailsStatus = 'saved';
+    } catch {
+      guardrailsStatus = 'error';
+    }
+    setTimeout(() => (guardrailsStatus = 'idle'), 2500);
+  }
+
+  function resetGuardrails() {
+    guardrails = { ...GUARDRAIL_DEFAULTS };
+    void saveGuardrails();
+  }
 
   const sideloadedApps = [
     { name: 'My Custom Tool', path: '~/projects/custom-tool', status: 'running' as const },
@@ -27,6 +66,51 @@
 <p class="text-sm text-base-content/40 mb-6">{$t('settingsDeveloper.defaultRoutingNote')}</p>
 
 {#if $devMode}
+  <!-- Loop guardrails -->
+  <div class="mb-6">
+    <h3 class="text-base font-semibold mb-1">{$t('settingsDeveloper.guardrails')}</h3>
+    <p class="text-xs text-base-content/50 mb-3">{$t('settingsDeveloper.guardrailsDesc')}</p>
+    <div class="p-4 rounded-xl border border-base-content/10 bg-base-100 flex flex-col gap-4">
+      <div class="flex items-center justify-between gap-4">
+        <div>
+          <div class="text-sm font-semibold">{$t('settingsDeveloper.sameActionLimit')}</div>
+          <div class="text-xs text-base-content/50">{$t('settingsDeveloper.sameActionLimitDesc')}</div>
+        </div>
+        <input type="number" min="2" max="100" class="input input-sm input-bordered w-24 text-right" bind:value={guardrails.sameActionLimit} />
+      </div>
+      <div class="flex items-center justify-between gap-4">
+        <div>
+          <div class="text-sm font-semibold">{$t('settingsDeveloper.identicalArgsBlockAfter')}</div>
+          <div class="text-xs text-base-content/50">{$t('settingsDeveloper.identicalArgsBlockAfterDesc')}</div>
+        </div>
+        <input type="number" min="1" max="50" class="input input-sm input-bordered w-24 text-right" bind:value={guardrails.identicalArgsBlockAfter} />
+      </div>
+      <div class="flex items-center justify-between gap-4">
+        <div>
+          <div class="text-sm font-semibold">{$t('settingsDeveloper.maxAutoContinuations')}</div>
+          <div class="text-xs text-base-content/50">{$t('settingsDeveloper.maxAutoContinuationsDesc')}</div>
+        </div>
+        <input type="number" min="0" max="50" class="input input-sm input-bordered w-24 text-right" bind:value={guardrails.maxAutoContinuations} />
+      </div>
+      <div class="flex items-center justify-between gap-4">
+        <div>
+          <div class="text-sm font-semibold">{$t('settingsDeveloper.hardStop')}</div>
+          <div class="text-xs text-base-content/50">{$t('settingsDeveloper.hardStopDesc')}</div>
+        </div>
+        <input type="checkbox" class="toggle toggle-sm toggle-primary" bind:checked={guardrails.hardStop} />
+      </div>
+      <div class="flex items-center justify-end gap-2 pt-1">
+        {#if guardrailsStatus === 'saved'}
+          <span class="text-xs text-success">{$t('settingsDeveloper.guardrailsSaved')}</span>
+        {:else if guardrailsStatus === 'error'}
+          <span class="text-xs text-error">{$t('settingsDeveloper.guardrailsSaveFailed')}</span>
+        {/if}
+        <button class="px-3 py-1.5 rounded-lg border border-base-content/10 text-sm cursor-pointer bg-transparent hover:bg-base-200 transition-colors" onclick={resetGuardrails}>{$t('settingsDeveloper.resetDefaults')}</button>
+        <button class="px-4 py-1.5 rounded-lg text-sm font-medium cursor-pointer bg-primary text-primary-content hover:opacity-90 transition-opacity disabled:opacity-50" disabled={guardrailsStatus === 'saving'} onclick={saveGuardrails}>{$t('settingsDeveloper.save')}</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Sideload app -->
   <div class="mb-6">
     <h3 class="text-base font-semibold mb-3">{$t('settingsDeveloper.sideloadApp')}</h3>

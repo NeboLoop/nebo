@@ -138,6 +138,23 @@ pub async fn update_settings(
         )
         .map_err(to_error_response)?;
 
+    // Loop-guardrail thresholds (Settings → Developer). Round-trip through the
+    // typed config so junk fields are dropped and floors are enforced before
+    // anything is persisted — the runner must never load a blob that blocks
+    // every call.
+    if body["guardrails"].is_object() {
+        let cfg = agent::guardrails::GuardrailConfig::from_json(
+            &body["guardrails"].to_string(),
+        )
+        .sanitized();
+        let json = serde_json::to_string(&cfg).map_err(|e| {
+            to_error_response(types::NeboError::Validation(format!(
+                "invalid guardrails: {e}"
+            )))
+        })?;
+        state.store.set_guardrails(&json).map_err(to_error_response)?;
+    }
+
     let settings = state.store.get_settings().map_err(to_error_response)?;
     Ok(Json(serde_json::json!({"settings": settings})))
 }

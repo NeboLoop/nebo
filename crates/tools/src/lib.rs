@@ -337,14 +337,26 @@ pub async fn persist_skill_from_api(
 
 /// Generate a minimal SKILL.md from metadata when the API returns no manifest content.
 fn generate_minimal_skill_md(name: &str, description: &str) -> String {
+    frontmatter_md(name, description)
+}
+
+/// YAML-safe `---` frontmatter + body. Values go through serde_yaml so colons,
+/// quotes, etc. are escaped — raw format! wrote frontmatter the loaders could
+/// never parse back.
+fn frontmatter_md(name: &str, description: &str) -> String {
+    let desc = if description.is_empty() {
+        name
+    } else {
+        description
+    };
+    let fm = serde_yaml::to_string(&serde_json::json!({
+        "name": name,
+        "description": desc,
+    }))
+    .unwrap_or_default();
     format!(
-        "---\nname: {}\ndescription: {}\n---\n{}\n",
-        name,
-        if description.is_empty() {
-            name
-        } else {
-            description
-        },
+        "---\n{}---\n{}\n",
+        fm,
         if description.is_empty() {
             ""
         } else {
@@ -820,18 +832,5 @@ mod staged_install_tests {
 
 /// Generate a minimal AGENT.md from metadata.
 fn generate_minimal_agent_md(name: &str, description: &str) -> String {
-    format!(
-        "---\nname: {}\ndescription: {}\n---\n{}\n",
-        name,
-        if description.is_empty() {
-            name
-        } else {
-            description
-        },
-        if description.is_empty() {
-            ""
-        } else {
-            description
-        },
-    )
+    frontmatter_md(name, description)
 }

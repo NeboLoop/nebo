@@ -582,15 +582,39 @@ impl PersonaTool {
                     "either 'agent_md' or 'description' is required to create an agent",
                 );
             }
-            format!(
-                "---\nname: {}\ndescription: {}\n---\nYou are {}. {}",
-                name, description, name, description
-            )
+            // Serialize frontmatter through serde_yaml so values with colons,
+            // quotes, etc. are properly escaped — a raw format! wrote YAML the
+            // loader could never parse back, creating invisible "ghost" agents
+            // whose duties kept running.
+            let fm = serde_yaml::to_string(&serde_json::json!({
+                "name": name,
+                "description": description,
+            }))
+            .unwrap_or_default();
+            format!("---\n{}---\nYou are {}. {}", fm, name, description)
         } else {
             // LLMs often send literal \n instead of real newlines in tool call strings.
             // Unescape so AGENT.md frontmatter parses correctly.
             agent_md_raw.replace("\\n", "\n")
         };
+
+        // Validate BEFORE persisting, with the same parsers the roster loader
+        // uses (load_from_dir): never write an agent to disk/DB that the
+        // Employees list cannot load — its duties would run invisibly.
+        if let Err(e) = napp::agent::parse_agent(&agent_md) {
+            return ToolResult::error(format!(
+                "AGENT.md is invalid and was not saved: {}. Fix the frontmatter and retry.",
+                e
+            ));
+        }
+        if let Some(ref rj) = agent_json_str {
+            if let Err(e) = napp::agent::parse_agent_config(rj) {
+                return ToolResult::error(format!(
+                    "agent.json is invalid and was not saved: {}. Fix the config and retry.",
+                    e
+                ));
+            }
+        }
 
         let agent_dir = self.agent_loader.user_dir().join(name);
         if agent_dir.exists() {
@@ -804,7 +828,16 @@ impl PersonaTool {
         // Update agent_md (persona)
         if let Some(md) = input["agent_md"].as_str() {
             if !md.is_empty() {
-                current_md = md.replace("\\n", "\n");
+                let candidate = md.replace("\\n", "\n");
+                // Same guard as create: never persist an AGENT.md the roster
+                // loader cannot parse back.
+                if let Err(e) = napp::agent::parse_agent(&candidate) {
+                    return ToolResult::error(format!(
+                        "AGENT.md is invalid and was not saved: {}. Fix the frontmatter and retry.",
+                        e
+                    ));
+                }
+                current_md = candidate;
                 // Write to filesystem
                 let agent_dir = self.agent_loader.user_dir().join(&current_name);
                 if agent_dir.exists() {

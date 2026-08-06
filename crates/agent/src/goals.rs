@@ -257,20 +257,21 @@ impl GoalTracker {
     }
 
     /// Cheap peek: true while budget remains (used to skip the judge call
-    /// entirely once exhausted).
-    pub fn has_budget(&self, session_key: &str) -> bool {
+    /// entirely once exhausted). `limit` comes from the guardrail settings
+    /// (default [`MAX_AUTO_CONTINUATIONS`]); 0 disables auto-continuation.
+    pub fn has_budget(&self, session_key: &str, limit: u32) -> bool {
         self.lock()
             .get(session_key)
-            .map(|s| s.continuations < MAX_AUTO_CONTINUATIONS)
-            .unwrap_or(true)
+            .map(|s| s.continuations < limit)
+            .unwrap_or(limit > 0)
     }
 
     /// Consume one continuation slot. Returns false when the budget is
     /// exhausted (the last assistant message simply stands).
-    pub fn try_consume(&self, session_key: &str) -> bool {
+    pub fn try_consume(&self, session_key: &str, limit: u32) -> bool {
         let mut map = self.lock();
         let entry = map.entry(session_key.to_string()).or_default();
-        if entry.continuations >= MAX_AUTO_CONTINUATIONS {
+        if entry.continuations >= limit {
             return false;
         }
         entry.continuations += 1;
@@ -287,15 +288,19 @@ mod tests {
         let t = GoalTracker::new();
         t.on_real_message("agent:a:web", "do five things");
         for i in 0..MAX_AUTO_CONTINUATIONS {
-            assert!(t.try_consume("agent:a:web"), "continuation {} should fit", i);
+            assert!(
+                t.try_consume("agent:a:web", MAX_AUTO_CONTINUATIONS),
+                "continuation {} should fit",
+                i
+            );
         }
-        assert!(!t.has_budget("agent:a:web"));
+        assert!(!t.has_budget("agent:a:web", MAX_AUTO_CONTINUATIONS));
         assert!(
-            !t.try_consume("agent:a:web"),
+            !t.try_consume("agent:a:web", MAX_AUTO_CONTINUATIONS),
             "6th continuation must be refused"
         );
         // Other sessions are unaffected.
-        assert!(t.try_consume("agent:b:web"));
+        assert!(t.try_consume("agent:b:web", MAX_AUTO_CONTINUATIONS));
     }
 
     #[test]
@@ -303,13 +308,13 @@ mod tests {
         let t = GoalTracker::new();
         t.on_real_message("agent:a:web", "first ask");
         for _ in 0..MAX_AUTO_CONTINUATIONS {
-            assert!(t.try_consume("agent:a:web"));
+            assert!(t.try_consume("agent:a:web", MAX_AUTO_CONTINUATIONS));
         }
-        assert!(!t.try_consume("agent:a:web"));
+        assert!(!t.try_consume("agent:a:web", MAX_AUTO_CONTINUATIONS));
 
         t.on_real_message("agent:a:web", "second ask");
-        assert!(t.has_budget("agent:a:web"));
-        assert!(t.try_consume("agent:a:web"));
+        assert!(t.has_budget("agent:a:web", MAX_AUTO_CONTINUATIONS));
+        assert!(t.try_consume("agent:a:web", MAX_AUTO_CONTINUATIONS));
         assert_eq!(
             t.last_real_prompt("agent:a:web").as_deref(),
             Some("second ask")

@@ -43,6 +43,9 @@ struct GraphState {
     outputs: HashMap<String, String>,
     visits: HashMap<String, u32>,
     total_tokens: u32,
+    /// Output tokens only — the unit `budget.total_per_run` is enforced in
+    /// (input is dominated by fixed tool-schema overhead resent every turn).
+    total_output_tokens: u32,
 }
 
 struct GraphCtx<'a> {
@@ -305,6 +308,7 @@ fn build_ctx<'a>(
             outputs: HashMap::new(),
             visits: HashMap::new(),
             total_tokens: 0,
+            total_output_tokens: 0,
         }),
     }
 }
@@ -807,6 +811,8 @@ async fn run_llm_activity<'a>(
     let started_at = chrono::Utc::now().timestamp();
     // Accumulates every token this activity consumes, error paths included.
     let mut spent: u32 = 0;
+    // Output tokens only — the unit token budgets are enforced in.
+    let mut spent_output: u32 = 0;
     match execute_activity_with_retry(
         activity,
         &prior_context,
@@ -821,6 +827,7 @@ async fn run_llm_activity<'a>(
         &ctx.def.id,
         ctx.progress_tx.as_ref(),
         &mut spent,
+        &mut spent_output,
         ctx.checkpoint.as_ref(),
         // The parked call belongs to one activity in one iteration — a loop
         // body resuming on item 5 must not replay item 2's pending call.
@@ -852,10 +859,12 @@ async fn run_llm_activity<'a>(
             let over_budget = {
                 let mut st = ctx.state.lock().unwrap();
                 st.total_tokens += spent;
-                ctx.def.budget.total_per_run > 0 && st.total_tokens > ctx.def.budget.total_per_run
+                st.total_output_tokens += spent_output;
+                ctx.def.budget.total_per_run > 0
+                    && st.total_output_tokens > ctx.def.budget.total_per_run
             };
             if over_budget {
-                let used = ctx.state.lock().unwrap().total_tokens;
+                let used = ctx.state.lock().unwrap().total_output_tokens;
                 return Err(WorkflowError::BudgetExceeded {
                     activity_id: "workflow".into(),
                     used,
@@ -881,7 +890,11 @@ async fn run_llm_activity<'a>(
             route(ctx, scope, &activity.id, |_| true).await
         }
         Err(WorkflowError::Exited(reason)) => {
-            ctx.state.lock().unwrap().total_tokens += spent;
+            {
+                let mut st = ctx.state.lock().unwrap();
+                st.total_tokens += spent;
+                st.total_output_tokens += spent_output;
+            }
             let completed_at = chrono::Utc::now().timestamp();
             let _ = ctx.store.create_activity_result(
                 &ctx.run_id,
@@ -897,7 +910,11 @@ async fn run_llm_activity<'a>(
             Err(WorkflowError::Exited(reason))
         }
         Err(e) => {
-            ctx.state.lock().unwrap().total_tokens += spent;
+            {
+                let mut st = ctx.state.lock().unwrap();
+                st.total_tokens += spent;
+                st.total_output_tokens += spent_output;
+            }
             let completed_at = chrono::Utc::now().timestamp();
             let err_msg = e.to_string();
             let _ = ctx.store.create_activity_result(
@@ -1401,13 +1418,14 @@ mod walk_tests {
 
     #[tokio::test]
     async fn test_activity_token_budget_enforced() {
-        // 100 tokens/turn against a 50-token activity budget → the engine
-        // stops the activity at its own ceiling and the run records failed.
+        // Budgets meter OUTPUT tokens: 100 tokens/turn (50 of them output)
+        // against a 40-output-token activity budget → the engine stops the
+        // activity at its own ceiling and the run records failed.
         let provider = MockProvider::new(&[]).with_usage(100);
         let def = r#"{
             "version":"1.0","id":"t","name":"T",
             "activities":[
-                {"id":"a","intent":"task-a","token_budget":{"max":50}},
+                {"id":"a","intent":"task-a","token_budget":{"max":40}},
                 {"id":"b","intent":"task-b"}],
             "connections":[
                 {"from":"__trigger__","to":"a"},{"from":"a","to":"b"},
@@ -1417,8 +1435,8 @@ mod walk_tests {
         match result {
             Err(WorkflowError::BudgetExceeded { activity_id, used, limit }) => {
                 assert_eq!(activity_id, "a");
-                assert_eq!(limit, 50);
-                assert!(used >= 100);
+                assert_eq!(limit, 40);
+                assert!(used >= 50);
             }
             other => panic!("expected BudgetExceeded, got {:?}", other),
         }

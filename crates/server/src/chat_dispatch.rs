@@ -1520,8 +1520,14 @@ fn maybe_auto_continue(
         {
             return;
         }
+        // Continuation budget from guardrail settings (Settings → Developer);
+        // 0 disables auto-continuation entirely.
+        let continuation_limit = agent::guardrails::GuardrailConfig::from_json(
+            &state.store.get_guardrails().unwrap_or_else(|_| "{}".into()),
+        )
+        .max_auto_continuations;
         // Cheap peek before paying for a judge call.
-        if !state.goal_tracker.has_budget(&p.session_key) {
+        if !state.goal_tracker.has_budget(&p.session_key, continuation_limit) {
             tracing::debug!(session = %p.session_key, "auto-continue: budget exhausted");
             return;
         }
@@ -1546,7 +1552,7 @@ fn maybe_auto_continue(
             tracing::debug!(session = %p.session_key, "auto-continue: preempted during judging");
             return;
         }
-        if !state.goal_tracker.try_consume(&p.session_key) {
+        if !state.goal_tracker.try_consume(&p.session_key, continuation_limit) {
             return;
         }
         tracing::info!(

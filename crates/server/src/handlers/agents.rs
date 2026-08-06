@@ -140,19 +140,18 @@ pub async fn list_agents(
     let fs_agents = state.agent_loader.list().await;
 
     // Build a lookup map from DB for supplemental state
-    let db_map: std::collections::HashMap<String, db::models::Agent> = state
-        .store
-        .list_agents(1000, 0)
-        .unwrap_or_default()
-        .into_iter()
+    let db_rows = state.store.list_agents(1000, 0).unwrap_or_default();
+    let db_map: std::collections::HashMap<String, db::models::Agent> = db_rows
+        .iter()
         .flat_map(|a| {
             let name_key = a.name.to_lowercase();
             let id_key = a.id.clone();
-            vec![(id_key, a.clone()), (name_key, a)]
+            vec![(id_key, a.clone()), (name_key, a.clone())]
         })
         .collect();
 
     let mut agents = Vec::with_capacity(fs_agents.len());
+    let mut matched_db_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
     for loaded in &fs_agents {
         let fs_id = loaded
             .id
@@ -167,6 +166,9 @@ pub async fn list_agents(
         let db_row = db_map
             .get(&fs_id)
             .or_else(|| db_map.get(&loaded.agent_def.name.to_lowercase()));
+        if let Some(r) = db_row {
+            matched_db_ids.insert(r.id.clone());
+        }
 
         // Prefer DB ID (UUID) over filesystem-derived ID (agent name)
         let agent_id = db_row
@@ -256,6 +258,35 @@ pub async fn list_agents(
             entry["appWindowConfig"] = serde_json::to_value(wc).unwrap_or_default();
         }
         agents.push(entry);
+    }
+
+    // DB agents with no loadable filesystem counterpart (broken AGENT.md /
+    // agent.json, or files deleted out from under the DB). Their duties still
+    // run from agent_workflows, so hiding them made unmanageable "ghost"
+    // employees — surface them flagged loadError so they can be disabled or
+    // deleted from the UI.
+    for r in &db_rows {
+        if matched_db_ids.contains(&r.id) {
+            continue;
+        }
+        agents.push(serde_json::json!({
+            "id": r.id,
+            "name": r.name,
+            "displayName": r.name,
+            "description": r.description,
+            "color": r.color,
+            "handle": r.handle,
+            "source": "user",
+            "version": serde_json::Value::Null,
+            "isApp": r.is_app.unwrap_or(0) != 0,
+            "isEnabled": r.is_enabled != 0,
+            "inputValues": r.input_values,
+            "installedAt": r.installed_at,
+            "loopExposed": r.loop_exposed != 0,
+            "voice": r.voice,
+            "needsSetup": false,
+            "loadError": "agent files failed to load — this employee cannot run correctly; delete it or repair its files",
+        }));
     }
 
     let total = agents.len() as i64;
