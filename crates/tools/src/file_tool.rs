@@ -114,32 +114,37 @@ impl FileTool {
         }
     }
 
-    /// Guard for edit/overwrite: the file must have been read in this session, and
-    /// must not have changed on disk since that read. Returns Err(message) otherwise.
-    fn check_editable(&self, session: &str, path: &str, verb: &str) -> Result<(), String> {
-        let guard = match self.read_state.lock() {
-            Ok(g) => g,
-            Err(_) => return Ok(()), // poisoned lock: don't block the edit on our bookkeeping
-        };
+    /// Overwrite advisory: a warning to attach to the result when the target
+    /// exists and was not read this session, or changed on disk since that read.
+    ///
+    /// A WARNING, never a block. This used to hard-error, and a blocked model
+    /// does not give up on the write — it wants the file to exist, so it routes
+    /// around the guard through the shell heredoc, where it gets no staleness
+    /// protection at all. The block converted a supervised write into an
+    /// unsupervised one. A warning rides on the write the model was going to
+    /// make anyway, and names what it may have just clobbered so it can go look.
+    fn overwrite_warning(&self, session: &str, path: &str, verb: &str) -> Option<String> {
+        let guard = self.read_state.lock().ok()?; // poisoned lock: no advisory
         match guard.get(&Self::read_state_key(session, path)) {
-            None => Err(format!(
-                "File has not been read yet: {path}\n\
-                 Read it first so your {verb} is based on its current contents:\n\
-                 os(resource: \"file\", action: \"read\", path: \"{path}\")"
+            None => Some(format!(
+                "Warning: {path} already existed and you had not read it this session — \
+                 it may have been written by a sub-agent or another process. Your {verb} \
+                 changed it without you having seen what was there. If that content \
+                 mattered, read the file now to confirm the result is what you intended."
             )),
             Some(&read_mtime) => {
-                // Only reject when the file is demonstrably newer than our recorded read.
-                // If we can't stat it, stay lenient (don't block on our own bookkeeping).
-                if let Some(cur) = current_mtime_ms(path) {
-                    if cur > read_mtime {
-                        return Err(format!(
-                            "File has been modified since you last read it (by the user, a \
-                             linter, or another process): {path}\n\
-                             Read it again before this {verb} so you don't overwrite those changes."
-                        ));
-                    }
+                // Warn only when the file is demonstrably newer than the recorded
+                // read. If we can't stat it, stay quiet — don't alarm on our own
+                // bookkeeping.
+                if current_mtime_ms(path).is_some_and(|cur| cur > read_mtime) {
+                    Some(format!(
+                        "Warning: {path} was modified since you last read it (by the user, \
+                         a linter, or another process), and your {verb} overwrote those \
+                         changes. Re-read the file if you need to confirm the result."
+                    ))
+                } else {
+                    None
                 }
-                Ok(())
             }
         }
     }
@@ -255,6 +260,13 @@ impl FileTool {
                     // to work on. Extract the text rather than refusing the file.
                     if sample.starts_with(b"%PDF-") {
                         return read_pdf_text(&path);
+                    }
+
+                    // Office and e-book containers: Word, PowerPoint, Excel,
+                    // OpenDocument, RTF, EPUB. Refusing these is the wrong answer
+                    // when the nebo-office plugin can turn them into Markdown.
+                    if let Some(result) = read_office_document(&path) {
+                        return result;
                     }
 
                     return ToolResult::ok(format!(
@@ -387,14 +399,13 @@ impl FileTool {
 
         let path = expand_path(&input.path);
 
-        // Overwriting an existing file requires a prior read (and that it hasn't changed
-        // since), so we don't silently clobber edits made by the user or another process.
-        // Creating a new file, or appending, does not need a prior read.
-        if !input.append && Path::new(&path).exists() {
-            if let Err(msg) = self.check_editable(session, &path, "write") {
-                return ToolResult::error(msg);
-            }
-        }
+        // Overwrite advisory, captured BEFORE the write clobbers the evidence.
+        // Creating a new file, or appending, needs no advisory.
+        let overwrite_note = if !input.append && Path::new(&path).exists() {
+            self.overwrite_warning(session, &path, "write")
+        } else {
+            None
+        };
 
         // Create parent directories
         if let Some(parent) = Path::new(&path).parent() {
@@ -440,6 +451,10 @@ impl FileTool {
                 }
                 let action = if input.append { "Appended" } else { "Wrote" };
                 let mut msg = format!("{} {} bytes to {}", action, input.content.len(), path);
+                if let Some(note) = overwrite_note {
+                    msg.push_str("\n\n");
+                    msg.push_str(&note);
+                }
                 // Raw JSX in a .html with no transpiler renders blank in every browser.
                 // Redirect to the canonical pathway: write a .jsx, then convert to html
                 // (Nebo's SWC engine produces a self-contained, renderable page).
@@ -487,11 +502,11 @@ impl FileTool {
             return ToolResult::error(format!("Error: {}", e));
         }
 
-        // Edit requires a prior read of the current contents, and that the file hasn't
-        // changed on disk since that read (read-before-edit + staleness guard).
-        if let Err(msg) = self.check_editable(session, &path, "edit") {
-            return ToolResult::error(msg);
-        }
+        // Overwrite advisory (warn, never block — see overwrite_warning). Edit is
+        // additionally self-guarding: old_string must match the CURRENT on-disk
+        // content read below, so a surgical edit cannot land on text the model
+        // has never seen the way a whole-file write can.
+        let overwrite_note = self.overwrite_warning(session, &path, "edit");
 
         let content = match std::fs::read_to_string(&path) {
             Ok(c) => c,
@@ -535,11 +550,16 @@ impl FileTool {
             self.record_read(session, &path, m);
         }
 
-        let result = if input.replace_all && count > 1 {
-            ToolResult::ok(format!("Replaced {} occurrences in {}", count, path))
+        let mut msg = if input.replace_all && count > 1 {
+            format!("Replaced {} occurrences in {}", count, path)
         } else {
-            ToolResult::ok(format!("Edited {}", path))
+            format!("Edited {}", path)
         };
+        if let Some(note) = overwrite_note {
+            msg.push_str("\n\n");
+            msg.push_str(&note);
+        }
+        let result = ToolResult::ok(msg);
         // An edited work document must re-emit its artifact exactly like a write,
         // or the Work panel keeps rendering the pre-edit version — observed live:
         // the owner saw a stale document, told the agent "you didn't update it",
@@ -967,6 +987,48 @@ fn sensitive_paths() -> Vec<String> {
 /// PDF that parses fine but holds no text at all (a scan — pixels, no text
 /// layer). Returning an empty string for the second would read to the model as
 /// "this document is blank".
+/// Containers the nebo-office `read` command turns into Markdown.
+const OFFICE_READ_EXTS: &[&str] = &[
+    "doc", "docx", "docm", "ppt", "pptx", "pptm", "xls", "xlsx", "xlsm", "xlsb",
+    "odt", "ods", "odp", "rtf", "epub",
+];
+
+/// Read an office document as Markdown via the nebo-office binary.
+///
+/// Returns `None` when the file is not one of these formats or the binary is not
+/// installed, so the caller falls through to its generic binary-file message.
+fn read_office_document(path: &str) -> Option<ToolResult> {
+    let ext = std::path::Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())?;
+    if !OFFICE_READ_EXTS.contains(&ext.as_str()) {
+        return None;
+    }
+
+    // The plugin exports its binary path; fall back to PATH for a dev checkout.
+    let bin = std::env::var("NEBO_OFFICE_BIN").unwrap_or_else(|_| "nebo-office".to_string());
+    let output = std::process::Command::new(&bin).arg("read").arg(path).output().ok()?;
+
+    if !output.status.success() {
+        let err = String::from_utf8_lossy(&output.stderr);
+        return Some(ToolResult::error(format!(
+            "Could not read {} as Markdown: {}",
+            path,
+            err.trim()
+        )));
+    }
+    let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if text.is_empty() {
+        return Some(ToolResult::ok(format!(
+            "[{}: parsed successfully but contains no extractable text. If it is a scan, \
+             say so rather than guessing at its contents.]",
+            path
+        )));
+    }
+    Some(ToolResult::ok(text))
+}
+
 fn read_pdf_text(path: &str) -> ToolResult {
     // pdf-extract panics on some malformed files; a panic here would take the
     // whole run down, so it is caught and reported as a normal tool error.
@@ -1421,9 +1483,12 @@ mod tests {
         );
     }
 
-    // ── Read-before-edit + staleness guard ──────────────────────────
+    // ── Overwrite advisory: warn, never block ───────────────────────
+    // A hard block here taught the model to route the write through a shell
+    // heredoc, where it got no staleness protection at all. The write goes
+    // through; the warning rides on the result.
     #[test]
-    fn edit_requires_prior_read() {
+    fn edit_without_prior_read_succeeds_with_warning() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("e.txt");
         fs::write(&path, "alpha\n").unwrap();
@@ -1432,8 +1497,13 @@ mod tests {
             &ctx(),
             json!({"action":"edit","path": path.to_str().unwrap(),"old_string":"alpha","new_string":"beta"}),
         );
-        assert!(r.is_error);
-        assert!(r.content.contains("has not been read yet"), "{}", r.content);
+        assert!(!r.is_error, "{}", r.content);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "beta\n");
+        assert!(
+            r.content.contains("Warning") && r.content.contains("had not read it"),
+            "the edit lands, the advisory rides along: {}",
+            r.content
+        );
     }
 
     #[test]
@@ -1453,7 +1523,7 @@ mod tests {
     }
 
     #[test]
-    fn edit_rejected_when_modified_since_read() {
+    fn stale_edit_succeeds_with_warning() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("e.txt");
         fs::write(&path, "alpha\n").unwrap();
@@ -1467,7 +1537,8 @@ mod tests {
             &ctx(),
             json!({"action":"edit","path": p,"old_string":"alpha","new_string":"beta"}),
         );
-        assert!(r.is_error);
+        assert!(!r.is_error, "{}", r.content);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "beta changed\n");
         assert!(r.content.contains("modified since"), "{}", r.content);
     }
 
@@ -1504,7 +1575,7 @@ mod tests {
     }
 
     #[test]
-    fn overwrite_existing_without_read_rejected() {
+    fn overwrite_existing_without_read_succeeds_with_warning() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("exists.txt");
         fs::write(&path, "old\n").unwrap();
@@ -1513,8 +1584,26 @@ mod tests {
             &ctx(),
             json!({"action":"write","path": path.to_str().unwrap(),"content":"new\n"}),
         );
-        assert!(r.is_error);
-        assert!(r.content.contains("has not been read yet"), "{}", r.content);
+        assert!(!r.is_error, "{}", r.content);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "new\n");
+        assert!(
+            r.content.contains("Warning") && r.content.contains("had not read it"),
+            "{}",
+            r.content
+        );
+    }
+
+    #[test]
+    fn fresh_file_write_carries_no_warning() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("brand-new.json");
+        let tool = FileTool::new();
+        let r = tool.execute(
+            &ctx(),
+            json!({"action":"write","path": path.to_str().unwrap(),"content":"{}"}),
+        );
+        assert!(!r.is_error, "{}", r.content);
+        assert!(!r.content.contains("Warning"), "new files are clean: {}", r.content);
     }
 
     // ── share ────────────────────────────────────────────────────────

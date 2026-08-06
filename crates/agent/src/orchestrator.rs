@@ -87,6 +87,31 @@ struct ActiveAgent {
     cancel: CancellationToken,
 }
 
+/// Enough for any realistic pasted payload (the observed SVG + brief was ~1.6K);
+/// a cap so a pasted book cannot blow the delegate's context.
+const MAX_ORIGINAL_CHARS: usize = 12_000;
+
+/// Pure half of `original_request_block`: dedup against the parent's prompt,
+/// clip, and wrap in the authoritative-source framing.
+fn compose_original_block(original: &str, prompt: &str) -> String {
+    let original = original.trim();
+    if original.is_empty() || prompt.contains(original) {
+        // Nothing to carry, or the parent quoted it in full already.
+        return String::new();
+    }
+    let clipped: String = original.chars().take(MAX_ORIGINAL_CHARS).collect();
+    let truncated = if clipped.len() < original.len() {
+        "\n[...truncated]"
+    } else {
+        ""
+    };
+    format!(
+        "\n\n--- ORIGINAL USER REQUEST (verbatim; authoritative over the summary above — \
+         any content it embeds, such as pasted markup, copy, or data, is source material \
+         you must use) ---\n{clipped}{truncated}"
+    )
+}
+
 /// The sub-agent orchestrator: manages lifecycle, DAG execution, concurrency.
 pub struct Orchestrator {
     runner: Arc<Runner>,
@@ -114,6 +139,31 @@ impl Orchestrator {
     pub fn with_lanes(mut self, lanes: Arc<LaneManager>) -> Self {
         self.lanes = Some(lanes);
         self
+    }
+
+    /// The user's own words, carried into every delegation.
+    ///
+    /// A parent agent writes the sub-agent's prompt as a SUMMARY of what the
+    /// user asked, and summaries drop payloads: a pasted SVG logo, exact copy,
+    /// a schema, a stack trace. Observed live — a deck task summarised as one
+    /// subject line, and the logo the user pasted never reached the delegate,
+    /// twice. The delegate must see the source material, not the paraphrase,
+    /// so the originating user message travels verbatim with every spawn.
+    ///
+    /// Empty when there is no parent user message (cron, automation), or when
+    /// the parent already embedded the full text in its prompt.
+    fn original_request_block(&self, parent_session_id: &str, prompt: &str) -> String {
+        let Ok(messages) = self.runner.sessions().get_messages(parent_session_id) else {
+            return String::new();
+        };
+        let Some(user_msg) = messages
+            .iter()
+            .rev()
+            .find(|m| m.role == "user" && !m.content.trim().is_empty())
+        else {
+            return String::new();
+        };
+        compose_original_block(&user_msg.content, prompt)
     }
 
     /// Spawn a single sub-agent.
@@ -165,7 +215,12 @@ impl Orchestrator {
         }
 
         let task_prefix = task_prefix_for_type(&agent_type);
-        let prefixed_prompt = format!("{}{}", task_prefix, req.prompt);
+        let prefixed_prompt = format!(
+            "{}{}{}",
+            task_prefix,
+            req.prompt,
+            self.original_request_block(&req.parent_session_id, &req.prompt)
+        );
 
         if req.wait {
             // Blocking: run and return result
@@ -1231,6 +1286,34 @@ impl SubAgentOrchestrator for Orchestrator {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // The observed failure: the user pasted an SVG logo, the parent summarised
+    // the delegation as one line, and the logo never reached the sub-agent.
+    #[test]
+    fn original_request_travels_with_the_spawn() {
+        let user = "Make a deck. This is our logo: <svg viewBox=\"0 0 1 1\"><path d=\"M0 0\"/></svg>";
+        let prompt = "Create an 8-slide recruiting deck spec using the Bold Split pack.";
+        let block = compose_original_block(user, prompt);
+        assert!(block.contains("<svg viewBox="), "the pasted payload must survive");
+        assert!(block.contains("ORIGINAL USER REQUEST"), "framed as authoritative source");
+    }
+
+    #[test]
+    fn quoted_in_full_adds_nothing() {
+        let user = "Summarise this thread.";
+        let prompt = format!("Do the following exactly: Summarise this thread.");
+        assert_eq!(compose_original_block(user, &prompt), "");
+        assert_eq!(compose_original_block("", "anything"), "");
+        assert_eq!(compose_original_block("   ", "anything"), "");
+    }
+
+    #[test]
+    fn a_pasted_book_is_clipped_not_forwarded_whole() {
+        let user = "x".repeat(MAX_ORIGINAL_CHARS * 2);
+        let block = compose_original_block(&user, "summary");
+        assert!(block.contains("[...truncated]"));
+        assert!(block.len() < MAX_ORIGINAL_CHARS + 400, "cap holds: {}", block.len());
+    }
 
     #[test]
     fn test_format_dep_context_empty() {

@@ -55,7 +55,8 @@ pub struct ReminderContext<'a> {
     /// The current modifiable objective (active_task) — the goal-anchor reminder re-injects it.
     pub active_task: &'a str,
     /// Rolling (name_hash, args_hash, result_hash) for recent tool calls (duplicate detection).
-    pub recent_tool_result_hashes: &'a [(u64, u64, u64)],
+    /// (name_hash, args_hash, result_hash, was_unproductive)
+    pub recent_tool_result_hashes: &'a [(u64, u64, u64, bool)],
     /// User presence: "focused" / "unfocused" / "away" / "" (presence reminder).
     pub user_presence: &'a str,
     /// Whether the user just transitioned back to focused.
@@ -706,10 +707,22 @@ impl Reminder for DuplicateToolCall {
     fn min_turns_between(&self) -> usize {
         3
     }
+    /// Only counts repeats that made no progress. A successful repeat of a tool
+    /// that changes state is normal work — re-running a build after editing its
+    /// input is supposed to produce something new each time — so telling the model
+    /// "the result will not change" there is both false and actively harmful: it
+    /// argues for abandoning a loop that is converging.
     fn check(&self, ctx: &ReminderContext) -> Option<String> {
         let mut seen: std::collections::HashMap<(u64, u64), (usize, String)> =
             std::collections::HashMap::new();
-        for (i, &(name_hash, args_hash, _)) in ctx.recent_tool_result_hashes.iter().enumerate() {
+        for (i, &(name_hash, args_hash, _, unproductive)) in
+            ctx.recent_tool_result_hashes.iter().enumerate()
+        {
+            if !unproductive {
+                // Progress resets the count, rather than accruing toward a nudge.
+                seen.remove(&(name_hash, args_hash));
+                continue;
+            }
             let name = ctx.recent_tool_names.get(i).cloned().unwrap_or_default();
             seen.entry((name_hash, args_hash))
                 .and_modify(|e| e.0 += 1)
@@ -718,9 +731,10 @@ impl Reminder for DuplicateToolCall {
         for (count, tool_name) in seen.values() {
             if *count >= 3 {
                 return Some(format!(
-                    "You have called {} with identical arguments {} times. The result will not \
-                     change. Try a different approach: different parameters, a different tool, or \
-                     summarize what you know and respond to the user.",
+                    "You have called {} with identical arguments {} times without making \
+                     progress — it errored or returned what you already had. Read the error and \
+                     change the arguments, try a different tool, or tell the user what is \
+                     blocking you.",
                     tool_name, count
                 ));
             }
@@ -2249,7 +2263,7 @@ mod tests {
     }
 
     fn rctx_hashes<'a>(
-        hashes: &'a [(u64, u64, u64)],
+        hashes: &'a [(u64, u64, u64, bool)],
         names: &'a [String],
     ) -> ReminderContext<'a> {
         ReminderContext {
@@ -2259,29 +2273,64 @@ mod tests {
         }
     }
 
+    fn names(n: usize, name: &str) -> Vec<String> {
+        vec![name.to_string(); n]
+    }
+
     #[test]
     fn test_duplicate_detection_fires_at_3_with_tool_name() {
-        let hashes = [(42, 99, 1), (42, 99, 2), (42, 99, 3)];
-        let names = vec!["web".to_string(), "web".to_string(), "web".to_string()];
+        // Three identical calls that all made no progress.
+        let hashes = [(42, 99, 1, true), (42, 99, 2, true), (42, 99, 3, true)];
         let out = DuplicateToolCall
-            .check(&rctx_hashes(&hashes, &names))
-            .expect("fires at 3 identical (name, args) pairs");
+            .check(&rctx_hashes(&hashes, &names(3, "web")))
+            .expect("fires at 3 unproductive identical (name, args) pairs");
         assert!(out.contains("web"), "names the duplicated tool");
+        assert!(
+            out.contains("without making progress"),
+            "says why it fired, so the model can act on it: {out}"
+        );
     }
 
     #[test]
     fn test_duplicate_detection_silent_below_3() {
-        let hashes = [(42, 99, 1), (42, 99, 2)];
-        let names = vec!["web".to_string(), "web".to_string()];
-        assert!(DuplicateToolCall.check(&rctx_hashes(&hashes, &names)).is_none());
+        let hashes = [(42, 99, 1, true), (42, 99, 2, true)];
+        assert!(DuplicateToolCall.check(&rctx_hashes(&hashes, &names(2, "web"))).is_none());
     }
 
     #[test]
     fn test_duplicate_detection_different_args_no_fire() {
         // Same tool, different args each time → not a duplicate.
-        let hashes = [(42, 100, 1), (42, 200, 2), (42, 300, 3)];
-        let names = vec!["system".to_string(), "system".to_string(), "system".to_string()];
-        assert!(DuplicateToolCall.check(&rctx_hashes(&hashes, &names)).is_none());
+        let hashes = [(42, 100, 1, true), (42, 200, 2, true), (42, 300, 3, true)];
+        assert!(DuplicateToolCall.check(&rctx_hashes(&hashes, &names(3, "system"))).is_none());
+    }
+
+    #[test]
+    fn test_successful_repeats_never_nudge() {
+        // The real-world case: a model edits a spec and re-runs the same build
+        // command each time. Identical arguments, different output every time,
+        // all succeeding. Telling it "the result will not change" is false, and
+        // acting on that advice means abandoning a loop that is converging — or
+        // renaming the output file to get past the guard.
+        let hashes = [
+            (7, 7, 1, false),
+            (7, 7, 2, false),
+            (7, 7, 3, false),
+            (7, 7, 4, false),
+        ];
+        assert!(
+            DuplicateToolCall.check(&rctx_hashes(&hashes, &names(4, "plugin"))).is_none(),
+            "productive repeats are normal work, not a loop"
+        );
+    }
+
+    #[test]
+    fn test_progress_resets_the_count() {
+        // Two failures, then a success, then a failure: not three in a row.
+        let hashes = [(7, 7, 1, true), (7, 7, 2, true), (7, 7, 3, false), (7, 7, 4, true)];
+        assert!(
+            DuplicateToolCall.check(&rctx_hashes(&hashes, &names(4, "plugin"))).is_none(),
+            "a call that made progress clears the streak"
+        );
     }
 
     #[test]

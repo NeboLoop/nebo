@@ -52,7 +52,7 @@ draft an outbound email, follow these steps:
 3. Ask the user to review before sending
 
 ## Examples
-- "Write a cold email to the VP of Engineering at Acme Corp"
+- "Draft an intro email to the VP of Engineering at Acme Corp, who requested info at the trade show"
 - "Draft a follow-up to my meeting with Jane at TechCo"
 
 ## Guidelines

@@ -392,23 +392,30 @@ impl PluginTool {
 
 }
 
-/// Render a skill name as a likely command label for the description.
+/// Render a skill name as a command label, but ONLY when the plugin actually
+/// follows the convention that makes the label true.
 ///
-/// Plugins follow the convention `<slug>-<service>-<verb>` for skill dirs
-/// (e.g. `gws-gmail-triage` → command `gmail +triage`). Strip the slug
-/// prefix and convert dashes; surface the rest as-is.
+/// GWS names its skill dirs `<slug>-<service>-<verb>` (`gws-gmail-triage`), and
+/// each one really is a subcommand, so `gmail +triage` is a fact the model can
+/// act on. A plugin that does NOT prefix its skills with its slug is not making
+/// that promise: nebo-office ships `pptx-design`, which documents a JSON spec and
+/// is not a subcommand at all.
 ///
-/// If the skill name doesn't follow the convention, show the raw name —
-/// better to over-disclose than mislead.
+/// This used to split on the first dash regardless, so `pptx-design` was
+/// advertised as `pptx +design`. An agent believed it, ran `pptx design --help`,
+/// got "unrecognized subcommand", and concluded from the invented label that the
+/// plugin's 21 skills documented features that did not exist — filing a report
+/// recommending they be deleted. An invented command name is worse than a raw
+/// directory name, so a skill that isn't slug-prefixed is shown as-is.
 fn display_command_for_skill(slug: &str, skill_name: &str) -> String {
-    let prefix = format!("{}-", slug);
-    let trimmed = skill_name.strip_prefix(&prefix).unwrap_or(skill_name);
-    // First segment becomes the service, rest becomes the command (with `+` per GWS convention).
-    // For non-GWS-style plugins this collapses to a single token, which is fine.
-    if let Some((service, verb)) = trimmed.split_once('-') {
-        format!("{} +{}", service, verb)
-    } else {
-        trimmed.to_string()
+    match skill_name.strip_prefix(&format!("{}-", slug)) {
+        // Slug-prefixed: the remainder is service + verb, per the GWS convention.
+        Some(trimmed) => match trimmed.split_once('-') {
+            Some((service, verb)) => format!("{} +{}", service, verb),
+            None => trimmed.to_string(),
+        },
+        // Not slug-prefixed: we have no idea whether this names a subcommand.
+        None => skill_name.to_string(),
     }
 }
 
@@ -774,7 +781,7 @@ impl PluginTool {
 
         let services = self.list_services(slug);
         if !services.is_empty() {
-            out.push_str("## Available services / commands\n\n");
+            out.push_str("## Bundled skills\n\n");
             for (name, desc) in &services {
                 let label = display_command_for_skill(slug, name);
                 if desc.is_empty() {
@@ -783,8 +790,14 @@ impl PluginTool {
                     out.push_str(&format!("- {} — {}\n", label, desc));
                 }
             }
+            // These are skill directories, and only some plugins name them after
+            // subcommands. Reading one is always right; assuming it is a
+            // subcommand is how an agent ends up running `pptx design --help`.
             out.push_str(&format!(
-                "\nFor a specific service's full usage: plugin(resource: \"{}\", action: \"help\", command: \"<service>\").",
+                "\nRead a skill with skill(action: \"load\", name: \"<name above>\") — a skill is documentation, \
+                 and only names a subcommand when it is written as `<service> +<verb>`. \
+                 For a subcommand's real flags, ask the binary: \
+                 plugin(resource: \"{}\", action: \"exec\", command: \"<subcommand> --help\").",
                 slug
             ));
         }
@@ -1845,6 +1858,27 @@ fn build_op_json(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn skill_labels_never_invent_a_subcommand() {
+        // GWS prefixes its skill dirs with its slug, and each really is a
+        // subcommand — the `+` label is a fact.
+        assert_eq!(display_command_for_skill("gws", "gws-gmail-triage"), "gmail +triage");
+        assert_eq!(display_command_for_skill("gws", "gws-calendar-insert"), "calendar +insert");
+        assert_eq!(display_command_for_skill("gws", "gws-auth"), "auth");
+
+        // nebo-office does not, and `pptx design` is not a subcommand. Showing
+        // the raw name is the only honest option — the `pptx +design` label this
+        // used to print sent an agent chasing a command that never existed.
+        for name in ["pptx-design", "pptx-shapes", "docx-tables", "xlsx-formulas"] {
+            assert_eq!(
+                display_command_for_skill("nebo-office", name),
+                name,
+                "a skill not prefixed with the plugin slug must be shown verbatim"
+            );
+        }
+        assert_eq!(display_command_for_skill("nebo-office", "pptx"), "pptx");
+    }
 
     #[test]
     fn test_port_suffix_matches_operation() {

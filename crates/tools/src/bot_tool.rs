@@ -709,7 +709,7 @@ impl AgentTool {
                 };
                 let wait = input["wait"].as_bool().unwrap_or(true);
                 let max_iterations = input["max_iterations"].as_u64().unwrap_or(0) as usize;
-                let skills: Vec<String> = input["skills"]
+                let mut skills: Vec<String> = input["skills"]
                     .as_array()
                     .map(|arr| {
                         arr.iter()
@@ -717,6 +717,18 @@ impl AgentTool {
                             .collect()
                     })
                     .unwrap_or_default();
+                // A delegate does not see its parent's context, so skills the
+                // parent loaded this run — the instructions the delegated work
+                // is supposed to follow — vanish at the handoff unless they
+                // travel with it. Observed live: a parent loaded the deck
+                // design system, spawned the deck build, and the sub-agent
+                // worked without it. An explicit skills list still wins.
+                if skills.is_empty() {
+                    if let Ok(read) = ctx.skills_read.lock() {
+                        skills = read.iter().cloned().collect();
+                        skills.sort();
+                    }
+                }
                 let plugins: Vec<String> = input["plugins"]
                     .as_array()
                     .map(|arr| {

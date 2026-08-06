@@ -1607,7 +1607,12 @@ async fn run_loop(
     // from turn 1 (bypasses deferred-loading discovery for sub-agents).
     let mut called_tools: Vec<String> = preactivate_tools.to_vec();
     // Rolling hashes of recent tool results for stale-result detection in steering
-    let mut recent_tool_result_hashes: Vec<(u64, u64, u64)> = Vec::new();
+    // (name_hash, args_hash, result_hash, was_unproductive)
+    let mut recent_tool_result_hashes: Vec<(u64, u64, u64, bool)> = Vec::new();
+    // Per-(name, args) hash of a read-only call's own last result, for the
+    // no-progress check: identical read + identical answer = no new information.
+    let mut readonly_result_hash_by_call: std::collections::HashMap<(u64, u64), u64> =
+        std::collections::HashMap::new();
     // Parallel vec of tool names (same indexing as recent_tool_result_hashes)
     let mut recent_tool_names: Vec<String> = Vec::new();
     // Hashes of recent tool-result CONTENT (any tool, any args) for tool-agnostic
@@ -3773,26 +3778,44 @@ async fn run_loop(
                 }
             }
 
-            // Hard guard: block tool calls that repeat 3+ times with identical args.
+            // Hard guard: block tool calls that keep repeating identical args WITHOUT
+            // making progress.
+            //
+            // Only UNPRODUCTIVE repeats count — a call that errored, or returned content
+            // the model already had. This guard used to count every repeat including
+            // successes, and "the result will not change" is simply false for a tool that
+            // changes the world: re-running `pptx create` after editing its input spec
+            // produces a different file every time. Blocking it stranded a model
+            // mid-iteration and, because the block says to "use different parameters",
+            // pushed it into renaming its own output to get past the guard — which is how
+            // one deck became `deck.pptx`, `deck-v2.pptx`, `deck-final.pptx`.
+            //
+            // This is the same correction already applied to the spiral backstop (see
+            // `counts_toward_action_spiral`): failures accrue, successes reset, and a tool
+            // that mutates state is never held to a no-progress rule.
             for (idx, tc) in tool_calls.iter().enumerate() {
                 if blocked_results[idx].is_some() {
                     continue;
                 }
                 let name_hash = simple_hash(tc.name.as_bytes());
                 let args_hash = simple_hash(tc.input.to_string().as_bytes());
-                let dup_count = recent_tool_result_hashes
+                let unproductive_repeats = recent_tool_result_hashes
                     .iter()
-                    .filter(|&&(nh, ah, _)| nh == name_hash && ah == args_hash)
+                    .filter(|&&(nh, ah, _, unproductive)| {
+                        nh == name_hash && ah == args_hash && unproductive
+                    })
                     .count();
-                if dup_count >= 3 {
+                if unproductive_repeats >= 3 {
                     blocked_results[idx] = Some((
                         tc.clone(),
                         ToolResult::error(format!(
-                            "Blocked: {} called with identical arguments {} times. \
-                             The result will not change. Use different parameters, \
-                             a different tool, or respond with what you already know.",
+                            "Blocked: {} has been called {} times with identical arguments \
+                             and has not made progress — it errored or returned what you \
+                             already had. Retrying it unchanged will not help: read the \
+                             error, change the arguments, or tell the user what is blocking \
+                             you. Do NOT work around this by renaming an output file.",
                             tc.name,
-                            dup_count + 1
+                            unproductive_repeats + 1
                         )),
                     ));
                 }
@@ -4558,6 +4581,10 @@ async fn run_loop(
             const ERROR_HALF: usize = 5_000;
             const UNIVERSAL_TOOL_RESULT_CAP: usize = 100_000;
             let mut all_errors_this_iteration = true;
+            // Per-call productivity, indexed alongside the hash push below, so the
+            // identical-args guard can count only the repeats that made no progress.
+            let mut unproductive_this_iteration: std::collections::HashMap<(u64, u64), bool> =
+                std::collections::HashMap::new();
             let mut had_results = false;
             // Terminal tool error (auth/permission/connection) → end the turn after
             // this batch and surface to the user, instead of feeding it back for the
@@ -4649,6 +4676,35 @@ async fn run_loop(
                     flagged_redundant,
                 );
 
+                // Remember whether THIS call made progress, keyed the same way the
+                // identical-args guard looks calls up. A call that succeeded with a
+                // novel result is progress and must never count toward a block.
+                //
+                // For a READ-ONLY call, "novel" is checked against its own previous
+                // result under the same arguments: a browse that answers the same
+                // "no resources found" for the twentieth time is a loop even though
+                // every response was a success. (The general content-dedup above
+                // ignores results under 200 chars, which is exactly the size of
+                // such answers.) A mutating call is judged only by errors —
+                // re-running a build after editing its input legitimately repeats
+                // the same args AND the same "Created: <path>" result.
+                let call_key = (
+                    simple_hash(tc.name.as_bytes()),
+                    simple_hash(tc.input.to_string().as_bytes()),
+                );
+                let mut no_progress = result.is_error || flagged_redundant;
+                // Read-only per the registry's own classifier — the same verdict
+                // the concurrency scheduler trusts, so there is exactly one
+                // definition of "this call has no side effects".
+                if !no_progress && tools.is_concurrent_safe(&tc.name, &tc.input).await {
+                    let own_hash = simple_hash(result.content.as_bytes());
+                    if readonly_result_hash_by_call.get(&call_key) == Some(&own_hash) {
+                        no_progress = true;
+                    }
+                    readonly_result_hash_by_call.insert(call_key, own_hash);
+                }
+                unproductive_this_iteration.insert(call_key, no_progress);
+
                 // Arg-identity dedup (complements the content check above, which only
                 // fires on byte-identical output): the model repeated a call it already
                 // made this turn — same tool, identical arguments. Results that drift
@@ -4660,7 +4716,7 @@ async fn run_loop(
                     let ah = simple_hash(tc.input.to_string().as_bytes());
                     if recent_tool_result_hashes
                         .iter()
-                        .any(|&(n, a, _)| n == nh && a == ah)
+                        .any(|&(n, a, _, _)| n == nh && a == ah)
                     {
                         result.content.push_str(
                             "\n\n(Note: you already made this exact call — same tool, same arguments — earlier this turn. Reuse results you already have instead of repeating calls.)",
@@ -4819,7 +4875,16 @@ async fn run_loop(
                     .and_then(|m| m.tool_results)
                     .map(|tr| simple_hash(tr.as_bytes().get(..2000).unwrap_or(tr.as_bytes())))
                     .unwrap_or(0);
-                recent_tool_result_hashes.push((name_hash, args_hash, content_hash));
+                let unproductive = unproductive_this_iteration
+                    .get(&(name_hash, args_hash))
+                    .copied()
+                    .unwrap_or(false);
+                recent_tool_result_hashes.push((
+                    name_hash,
+                    args_hash,
+                    content_hash,
+                    unproductive,
+                ));
                 recent_tool_names.push(tc.name.clone());
                 // Keep last 10 for ping-pong detection
                 if recent_tool_result_hashes.len() > 10 {
@@ -5979,6 +6044,7 @@ fn paths_overlap(a: &std::path::Path, b: &std::path::Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
 
     /// Minimal provider stub for resolve_aux tests (only id() matters).
     struct StubProvider(&'static str);

@@ -539,6 +539,26 @@ impl DynTool for SkillTool {
                     match self.loader.get(name, agent).await {
                         Some(skill) => match skill.list_resources() {
                             Ok(mut resources) => {
+                                // Browsing straight to a file means "show me this
+                                // file" — read it. Treating the path only as a
+                                // directory prefix answered "No resources found"
+                                // for a file that exists, and the model's next
+                                // guess was an absolute path that missed the
+                                // skill's real directory entirely.
+                                if !filter_path.is_empty()
+                                    && resources.iter().any(|r| r == filter_path)
+                                {
+                                    return match skill.read_resource(filter_path) {
+                                        Ok(data) => match String::from_utf8(data.clone()) {
+                                            Ok(text) => ToolResult::ok(text),
+                                            Err(_) => ToolResult::ok(format!(
+                                                "binary file, {} bytes",
+                                                data.len()
+                                            )),
+                                        },
+                                        Err(e) => ToolResult::error(e),
+                                    };
+                                }
                                 if !filter_path.is_empty() {
                                     let prefix = if filter_path.ends_with('/') {
                                         filter_path.to_string()
@@ -555,8 +575,10 @@ impl DynTool for SkillTool {
                                         ))
                                     } else {
                                         ToolResult::ok(format!(
-                                            "No resources found in '{}/{}'.",
-                                            name, filter_path
+                                            "No resources found under '{}/{}'. Use \
+                                             skill(action: \"browse\", name: \"{}\") to list \
+                                             what exists; pass a listed file path to read it.",
+                                            name, filter_path, name
                                         ))
                                     }
                                 } else {

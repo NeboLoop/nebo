@@ -79,7 +79,7 @@ run the standalone headless binary:
 
 ```bash
 sudo apt install -y libwayland-client0 libopenblas0
-curl -fL -o nebo https://cdn.neboai.com/releases/v0.12.9/nebo-linux-arm64-headless
+curl -fL -o nebo https://github.com/NeboLoop/nebo/releases/latest/download/nebo-linux-arm64-headless
 chmod +x nebo && ./nebo --headless
 # → http://localhost:27895 (needs glibc 2.39+, e.g. Ubuntu 24.04 / Pi OS trixie)
 ```
@@ -126,7 +126,20 @@ nebo chat "What can you do?"
 nebo chat -i    # Interactive mode
 ```
 
-Web UI runs at `http://localhost:27895`. Add your API key in **Settings > Providers**. The UI speaks 25 languages, auto-detected from your system.
+Web UI runs at `http://localhost:27895`. Sign in and Nebo routes to a curated provider for you, no API keys to manage. Prefer your own? Add a key in **Settings > Providers**, or point it at Ollama and run fully local. The UI speaks 25 languages, auto-detected from your system.
+
+### Updates
+
+One click, and it's done. Nebo checks for new versions in the background, and when
+you accept, it updates itself and restarts. Your employees, their memory, your
+workflows, and your settings all carry over. No reinstall, no reconfiguration, no
+rebuilding the setup you already got working.
+
+### Or skip the install
+
+Launch a cloud Nebo from the browser at [neboai.com/cloud](https://neboai.com/cloud):
+same employees, same roster, always on, nothing to host. Start on your machine and
+move to the cloud later, or run both. Your data stays yours either way.
 
 ## Multi-Provider
 
@@ -176,7 +189,7 @@ Nebo is a Rust workspace — one binary, no runtime dependencies beyond SQLite.
 | `browser` | Chrome/CDP management, snapshot, native host |
 | `comm` | Binary wire protocol, loopback transport, ULID |
 | `notify` | System notifications |
-| `updater` | Background version checker |
+| `updater` | One-click self-update, state preserved |
 | `voice` | Voice input/output |
 | `a2ui` | A2UI protocol toolkit (vendored, MIT) |
 | `vm` / `vm-daemon` | Sandboxed VM subsystem |

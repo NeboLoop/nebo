@@ -117,6 +117,31 @@ const ALLOWED_FILES: &[&str] = &[
     "plugin.json",
 ];
 
+/// File extensions a bundled skill may carry beyond its SKILL.md — reference
+/// decks, scripts, templates and brand assets. Mirrors the marketplace's upload
+/// allowlist so a .napp that passed publishing also passes extraction.
+///
+/// Deliberately an allowlist, and deliberately without executable formats
+/// (`.exe`, `.dylib`, `.so`, extensionless): a skill's supporting files are data
+/// the model reads, not code the host runs.
+const ALLOWED_SKILL_FILE_EXTS: &[&str] = &[
+    "md", "json", "yaml", "yml", "txt", "csv", "toml", "cfg", "sql", "html", "css", // data
+    "py", "sh", "ps1", "js", "ts", "rb", // generators a skill ships for reference
+    "png", "jpg", "jpeg", "gif", "svg", "webp", "ico", "bmp", "pdf", // assets
+    "woff", "woff2", "ttf", "otf", // fonts
+];
+
+/// Whether a `skills/...` entry is a supporting file a skill may ship.
+fn is_allowed_skill_file(path: &str) -> bool {
+    // Dotfiles and extensionless entries have no allowlisted type.
+    match Path::new(path).extension().and_then(|e| e.to_str()) {
+        Some(ext) => ALLOWED_SKILL_FILE_EXTS
+            .iter()
+            .any(|allowed| ext.eq_ignore_ascii_case(allowed)),
+        None => false,
+    }
+}
+
 /// Extract a .napp (tar.gz) archive securely.
 pub fn extract_napp(napp_path: &Path, dest_dir: &Path) -> Result<Manifest, NappError> {
     std::fs::create_dir_all(dest_dir)?;
@@ -172,14 +197,21 @@ pub fn extract_napp(napp_path: &Path, dest_dir: &Path) -> Result<Manifest, NappE
                 && !base_name.contains('/'));
 
         if is_skill {
-            // Skills directory: only allow SKILL.md or skill.md files
+            // Skills directory: SKILL.md plus the supporting files a skill needs.
+            //
+            // This used to reject anything but SKILL.md, which meant a skill could
+            // not ship the reference files its own instructions point at — and
+            // because it REJECTS rather than skips, a .napp containing them fails
+            // to install at all. Deny-by-default is kept: the extension must be on
+            // the allowlist, which is the same list the marketplace enforces on
+            // upload, so both ends agree on what a skill may carry.
             let file_name = Path::new(base_name)
                 .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or("");
-            if !file_name.eq_ignore_ascii_case("skill.md") {
+            if !file_name.eq_ignore_ascii_case("skill.md") && !is_allowed_skill_file(base_name) {
                 return Err(NappError::Extraction(format!(
-                    "only SKILL.md files allowed in skills/ directory: {}",
+                    "file type not allowed in skills/ directory: {}",
                     name
                 )));
             }
@@ -325,5 +357,44 @@ mod tests {
     #[test]
     fn test_reject_too_small() {
         assert!(validate_binary_format(&[0, 1]).is_err());
+    }
+}
+
+#[cfg(test)]
+mod skill_file_tests {
+    use super::*;
+
+    // nebo-office's pptx-design skill instructs the model to copy geometry from
+    // references/pptx-archetypes-<pack>.json. Those files could not ship: the
+    // extractor rejected every skills/ entry that was not SKILL.md, so a .napp
+    // carrying them failed to install outright.
+    #[test]
+    fn a_skill_may_ship_its_reference_files() {
+        for path in [
+            "skills/pptx-design/references/pptx-archetypes-bold-split.json",
+            "skills/pptx-design/references/deckkit.py",
+            "skills/pptx-design/references/notes.md",
+            "skills/brand/assets/logo.svg",
+            "skills/brand/assets/mark.png",
+            "skills/report/fonts/Inter.woff2",
+            "skills/data/table.csv",
+        ] {
+            assert!(is_allowed_skill_file(path), "{path} must extract");
+        }
+    }
+
+    // Deny-by-default survives: supporting files are data, not host executables.
+    #[test]
+    fn executables_and_unknown_types_stay_rejected() {
+        for path in [
+            "skills/evil/run.exe",
+            "skills/evil/lib.dylib",
+            "skills/evil/lib.so",
+            "skills/evil/binary",
+            "skills/evil/.hidden",
+            "skills/evil/payload.bin",
+        ] {
+            assert!(!is_allowed_skill_file(path), "{path} must be rejected");
+        }
     }
 }
