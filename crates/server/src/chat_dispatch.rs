@@ -623,13 +623,16 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                             // status channel + recorded as the typed stop
                             // reason for chat_complete, never reply prose.
                             if reply_fragment(&event).is_none() {
-                                control_stop = Some((
-                                    event
-                                        .stop_reason
-                                        .clone()
-                                        .unwrap_or_else(|| "control_stop".to_string()),
-                                    event.text.clone(),
-                                ));
+                                let reason = event
+                                    .stop_reason
+                                    .clone()
+                                    .unwrap_or_else(|| "control_stop".to_string());
+                                // A mid-stream reconnect is transient status —
+                                // surface it, but never record it as the run's
+                                // stop reason: the run continues and completes.
+                                if reason != "stream_reconnecting" {
+                                    control_stop = Some((reason, event.text.clone()));
+                                }
                                 hub.broadcast(
                                     "chat_error",
                                     ws_payload!(

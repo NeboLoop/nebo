@@ -3432,25 +3432,57 @@ async fn run_loop(
             // with no tool result is an invalid sequence for every provider.
             // Called only on the branches that actually retry; the
             // non-retryable fall-through persists via the normal save.
+            // The user watched this text stream and then freeze mid-sentence.
+            // Without a status line the dead bubble reads as the model giving
+            // up; with one, the retry reads as what it is — a reconnect.
+            let had_partial = !assistant_content.is_empty();
+            let reconnect_notice = || {
+                tx.send(StreamEvent::control_notice(
+                    "Connection dropped mid-response — reconnecting to resume where it left off.",
+                    "stream_reconnecting",
+                ))
+            };
             let mut queue_cutoff_continuation = || {
-                if assistant_content.is_empty() {
+                if assistant_content.is_empty() && tool_calls.is_empty() {
                     return;
                 }
-                if let Err(e) = sessions.append_message(
-                    session_id,
-                    "assistant",
-                    &assistant_content,
-                    None,
-                    None,
-                    None,
-                ) {
-                    warn!(session_id = %session_id, error = %e, "failed to save partial assistant message before stream retry");
+                if !assistant_content.is_empty() {
+                    if let Err(e) = sessions.append_message(
+                        session_id,
+                        "assistant",
+                        &assistant_content,
+                        None,
+                        None,
+                        None,
+                    ) {
+                        warn!(session_id = %session_id, error = %e, "failed to save partial assistant message before stream retry");
+                    }
                 }
-                pending_stream_reminders.push(steering::wrap_system_reminder(
+                // A stream that dies while a tool call is in flight is almost
+                // always killed by the call itself — one enormous streamed
+                // argument (a whole document inline). A generic "continue"
+                // makes the model re-emit the same giant call and die the same
+                // way; name the cause and steer it to chunk the work instead.
+                let reminder = if tool_calls.is_empty() {
                     "Your previous response was cut off mid-stream by a \
                      connection error. Continue EXACTLY where you left off — \
-                     do not repeat or restart.",
-                ));
+                     do not repeat or restart."
+                        .to_string()
+                } else {
+                    let names: Vec<&str> =
+                        tool_calls.iter().map(|tc| tc.name.as_str()).collect();
+                    format!(
+                        "Your previous response was cut off mid-stream while \
+                         emitting a tool call ({}) — the call was NOT delivered. \
+                         Oversized tool arguments are the usual cause. Do NOT \
+                         retry one giant call: break the work into several \
+                         smaller tool calls (write large files in pieces, edit \
+                         one section at a time), then continue from where you \
+                         stopped.",
+                        names.join(", ")
+                    )
+                };
+                pending_stream_reminders.push(steering::wrap_system_reminder(&reminder));
             };
 
             // Layer 1: Transient errors (connection reset, timeout, EOF)
@@ -3458,6 +3490,9 @@ async fn run_loop(
                 transient_retries += 1;
                 if transient_retries <= MAX_TRANSIENT_RETRIES {
                     queue_cutoff_continuation();
+                    if had_partial {
+                        let _ = reconnect_notice().await;
+                    }
                     let prov_count = providers.read().await.len();
                     if prov_count > 1 {
                         provider_idx += 1;
@@ -3497,6 +3532,9 @@ async fn run_loop(
                     retryable_retries, "retryable stream error, trying next provider"
                 );
                 queue_cutoff_continuation();
+                if had_partial {
+                    let _ = reconnect_notice().await;
+                }
                 let prov_count = providers.read().await.len();
                 if prov_count > 1 {
                     provider_idx += 1;
