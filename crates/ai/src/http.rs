@@ -27,10 +27,14 @@ pub fn streaming_client() -> reqwest::Client {
         // OS-level keepalive probes. After ~3 failed probes (~45s), reads
         // return ECONNRESET instead of blocking forever.
         .tcp_keepalive(Duration::from_secs(15))
-        // Per-read deadline on the streaming body. If the server stops sending
-        // chunks for this long, the read fails — much faster than waiting for
-        // tcp_keepalive to give up.
-        .read_timeout(Duration::from_secs(60))
+        // Per-read deadline on the streaming body. Generous on purpose:
+        // providers BUFFER tool-call arguments, so a model emitting a large
+        // call (a 30KB document spec) goes wire-silent for minutes while the
+        // JSON generates upstream. At 60s this deadline guillotined every
+        // long generation at the same mark — the retry restarted the same
+        // emission and died identically, an infinite loop. Dead sockets are
+        // the keepalive probes' job (~45s); silence is not death.
+        .read_timeout(Duration::from_secs(300))
         .build()
         .expect("reqwest streaming client builder is infallible with these options")
 }

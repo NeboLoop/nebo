@@ -49,7 +49,10 @@ const TOOL_EXECUTION_TIMEOUT: Duration = Duration::from_secs(300);
 /// Max gap between stream events before the stream is declared wedged
 /// (connection open, no tokens). A 90s idle watchdog, classified transient so
 /// the normal retry/failover path re-issues the request.
-const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
+// Generous for the same reason as the HTTP client's read_timeout: buffered
+// tool-call arguments make healthy streams go silent for minutes. TCP
+// keepalive surfaces dead sockets as read errors long before this fires.
+const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Retry backoff: exponential 500ms × 2^(n−1) capped at 32s, plus 0–25% jitter.
 /// An explicit provider Retry-After wins outright.
@@ -224,8 +227,9 @@ fn action_key(call: &ai::ToolCall) -> String {
 }
 
 /// Cap on unproductive repeats of the same (tool, action) before the spiral
-/// backstop ends the turn. See `counts_toward_action_spiral`.
-const SAME_ACTION_LIMIT: usize = 8;
+/// backstop ends the turn. Default only — the live value comes from
+/// Settings → Developer via `guardrails::GuardrailConfig`.
+const SAME_ACTION_LIMIT: usize = crate::guardrails::DEFAULT_SAME_ACTION_LIMIT;
 
 /// Whether an unproductive tool attempt should feed the coarse (tool, action)
 /// spiral counter (`SAME_ACTION_LIMIT`).
@@ -1642,6 +1646,11 @@ async fn run_loop(
     // error is what STARTS the spiral.
     let mut action_call_counts: std::collections::HashMap<String, usize> =
         std::collections::HashMap::new();
+    // Loop-guardrail thresholds — Settings → Developer, loaded once per run.
+    let guard_cfg = crate::guardrails::GuardrailConfig::from_json(
+        &store.get_guardrails().unwrap_or_else(|_| "{}".into()),
+    )
+    .sanitized();
     let mut provider_idx: usize = 0;
     // Janus provider metadata for tool stickiness — echoed back in subsequent requests
     let mut sticky_metadata: Option<std::collections::HashMap<String, String>> = None;
@@ -3843,7 +3852,7 @@ async fn run_loop(
                         nh == name_hash && ah == args_hash && unproductive
                     })
                     .count();
-                if unproductive_repeats >= 3 {
+                if unproductive_repeats >= guard_cfg.identical_args_block_after {
                     blocked_results[idx] = Some((
                         tc.clone(),
                         ToolResult::error(format!(
@@ -3900,18 +3909,29 @@ async fn run_loop(
             // The budget resets when it fires, so a model that changes approach isn't
             // locked out of the action for the rest of the turn — a genuine loop simply
             // earns another nudge in another SAME_ACTION_LIMIT unproductive calls.
+            let mut spiral_hard_stop: Option<String> = None;
             for (idx, tc) in tool_calls.iter().enumerate() {
                 if blocked_results[idx].is_some() {
                     continue;
                 }
                 let key = action_key(tc);
-                if action_call_counts.get(&key).copied().unwrap_or(0) >= SAME_ACTION_LIMIT {
+                if action_call_counts.get(&key).copied().unwrap_or(0)
+                    >= guard_cfg.same_action_limit
+                {
                     warn!(
                         session_id,
                         action = %key,
-                        limit = SAME_ACTION_LIMIT,
+                        limit = guard_cfg.same_action_limit,
+                        hard_stop = guard_cfg.hard_stop,
                         "spiral backstop: nudging model off repeated action"
                     );
+                    // Hard-stop opt-in (Settings → Developer): end the turn with
+                    // a typed ControlNotice instead of nudging. Off by default —
+                    // interactive sessions keep the gentle correction.
+                    if guard_cfg.hard_stop {
+                        spiral_hard_stop = Some(key);
+                        break;
+                    }
                     action_call_counts.insert(key.clone(), 0);
                     blocked_results[idx] = Some((
                         tc.clone(),
@@ -3920,10 +3940,24 @@ async fn run_loop(
                              Do not repeat it unchanged — change the arguments, use a \
                              different tool, or tell the user what you have so far and \
                              what is blocking you.",
-                            key, SAME_ACTION_LIMIT
+                            key, guard_cfg.same_action_limit
                         )),
                     ));
                 }
+            }
+            if let Some(key) = spiral_hard_stop {
+                turn_exit_reason = "repeated_tool_calls".to_string();
+                let _ = tx
+                    .send(StreamEvent::control_notice(
+                        format!(
+                            "Stopped: '{}' was repeated {} times without progress \
+                             (hard stop is enabled in Settings → Developer).",
+                            key, guard_cfg.same_action_limit
+                        ),
+                        "repeated_tool_calls",
+                    ))
+                    .await;
+                break;
             }
 
             // ── Review-fork whitelist (docs/design/SELF_IMPROVEMENT.md WS2) ──
@@ -4694,6 +4728,35 @@ async fn run_loop(
                         if recent_result_content_hashes.len() > 20 {
                             recent_result_content_hashes.remove(0);
                         }
+                    }
+                }
+
+                // Idempotent-mutation dedup: os(write) carries its ENTIRE effect
+                // (path + content) in its arguments, so a successful re-write with
+                // byte-identical args leaves the file exactly as it was — no
+                // progress by construction. Mutating tools are rightly exempt from
+                // no-progress rules in general (re-running a build after editing
+                // its input is legitimate), but that exemption let the
+                // promise → write-same-JSON → rebuild-same-deck spiral run for an
+                // hour: every cycle "succeeded", every counter stayed at zero.
+                // Flagging it as redundant feeds the same downstream guards as a
+                // redundant read (spiral counter, no-progress ledger, 3-strike
+                // identical-args block).
+                if !flagged_redundant
+                    && !result.is_error
+                    && tc.name == "os"
+                    && tc.input.get("action").and_then(|v| v.as_str()) == Some("write")
+                {
+                    let nh = simple_hash(tc.name.as_bytes());
+                    let ah = simple_hash(tc.input.to_string().as_bytes());
+                    if recent_tool_result_hashes
+                        .iter()
+                        .any(|&(n, a, _, unproductive)| n == nh && a == ah && !unproductive)
+                    {
+                        result.content.push_str(
+                            "\n\n(Note: this wrote byte-identical content to the same path as an earlier write this turn — the file is unchanged. If you meant to expand or modify it, actually change the content before writing again.)",
+                        );
+                        flagged_redundant = true;
                     }
                 }
 
