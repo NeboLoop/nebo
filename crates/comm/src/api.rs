@@ -1310,6 +1310,43 @@ impl NeboAIApi {
         .await
     }
 
+    /// Place one outbound call from an employee's bound line. NeboAI is the
+    /// authority: it refuses without the owner's signed outbound agreement,
+    /// a live consent row for the recipient, the calling window and the
+    /// daily caps — this client just carries the ask.
+    pub async fn call_bot_phone(
+        &self,
+        agent_id: &str,
+        from: &str,
+        to: &str,
+        purpose: &str,
+    ) -> Result<serde_json::Value, CommError> {
+        let body = serde_json::json!({
+            "agentId": agent_id,
+            "from": from,
+            "to": to,
+            "purpose": purpose,
+        });
+        self.do_json(
+            reqwest::Method::POST,
+            &format!("/api/v1/bots/{}/phone/call", self.bot_id),
+            Some(&body),
+        )
+        .await
+    }
+
+    /// Revoke calling consent for a number — the employee's mid-call "stop
+    /// calling me" honor path. Revocation only ever reduces calling.
+    pub async fn optout_bot_phone(&self, number: &str) -> Result<serde_json::Value, CommError> {
+        let body = serde_json::json!({ "number": number });
+        self.do_json(
+            reqwest::Method::POST,
+            &format!("/api/v1/bots/{}/phone/optout", self.bot_id),
+            Some(&body),
+        )
+        .await
+    }
+
     /// Fetch license keys for sealed .napp artifacts.
     ///
     /// Returns decryption keys for all artifacts this bot is licensed to access.

@@ -1497,6 +1497,55 @@ pub struct PhoneUnbindRequest {
     pub number: String,
 }
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PhoneCallRequest {
+    #[serde(default)]
+    pub agent_id: String,
+    /// The line to call from — picks between an employee's lines; optional
+    /// when it holds only one.
+    #[serde(default)]
+    pub from: String,
+    pub to: String,
+    pub purpose: String,
+}
+
+/// POST /api/v1/phone/call — place one consent-gated outbound call. Called
+/// by the phonecall plugin's `dial`; every gate lives at NeboAI.
+pub async fn phone_call(
+    State(state): State<AppState>,
+    Json(req): Json<PhoneCallRequest>,
+) -> HandlerResult<serde_json::Value> {
+    let api = build_api_client(&state).map_err(to_error_response)?;
+    let resp = api
+        .call_bot_phone(&req.agent_id, &req.from, &req.to, &req.purpose)
+        .await
+        .map_err(|e| to_error_response(NeboError::Internal(format!("phone call: {e}"))))?;
+    info!(to = %req.to, "outbound call placed via NeboAI");
+    Ok(Json(resp))
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PhoneOptOutRequest {
+    pub number: String,
+}
+
+/// POST /api/v1/phone/optout — revoke calling consent for a number (the
+/// "stop calling me" honor path).
+pub async fn phone_optout(
+    State(state): State<AppState>,
+    Json(req): Json<PhoneOptOutRequest>,
+) -> HandlerResult<serde_json::Value> {
+    let api = build_api_client(&state).map_err(to_error_response)?;
+    let resp = api
+        .optout_bot_phone(&req.number)
+        .await
+        .map_err(|e| to_error_response(NeboError::Internal(format!("phone optout: {e}"))))?;
+    info!(number = %req.number, "phone opt-out recorded via NeboAI");
+    Ok(Json(resp))
+}
+
 /// POST /api/v1/phone/unbind — release a bound number.
 pub async fn phone_unbind(
     State(state): State<AppState>,

@@ -1136,6 +1136,20 @@ impl PluginTool {
         .with_deps()
         .with_permissions();
 
+        // The local API's address and the acting agent — the same pair
+        // channel bridges and auth-login spawns already get, so a plugin
+        // command run BY an agent (e.g. `phonecall dial`) can reach this
+        // Nebo's own endpoints as that agent. Loopback address, not a
+        // credential.
+        let port = std::env::var("NEBO_PORT")
+            .ok()
+            .and_then(|v| v.parse::<u16>().ok())
+            .unwrap_or(types::constants::DEFAULT_PORT);
+        runtime = runtime.with_env("NEBO_LOCAL_URL", format!("http://127.0.0.1:{port}"));
+        if let Some(agent_id) = agent_id_from_session_key(&ctx.session_key) {
+            runtime = runtime.with_env("NEBO_AGENT_ID", agent_id);
+        }
+
         // Channel context so channel-plugin subcommands (e.g. `slack upload`)
         // can target the current channel/thread without the agent looking up ids.
         // See `docs/publishers-guide/channel-plugins.md`.

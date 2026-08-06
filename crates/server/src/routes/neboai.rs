@@ -117,4 +117,15 @@ pub fn routes() -> Router<AppState> {
             "/phone/unbind",
             axum::routing::post(handlers::neboai::phone_unbind),
         )
+        // Outbound dialing + the "stop calling me" honor path, called by the
+        // phonecall plugin's `dial`/`optout`. Consent lives at NeboAI; these
+        // are couriers.
+        .route(
+            "/phone/call",
+            axum::routing::post(handlers::neboai::phone_call),
+        )
+        .route(
+            "/phone/optout",
+            axum::routing::post(handlers::neboai::phone_optout),
+        )
 }

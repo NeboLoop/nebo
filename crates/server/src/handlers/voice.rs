@@ -49,6 +49,14 @@ pub struct ConversationQuery {
     /// several lines, each with its own purpose.
     #[serde(default)]
     pub line: Option<String>,
+    /// "outbound" when the employee placed this call (the consent-gated
+    /// dialer) — flips the manners from answering to calling.
+    #[serde(default)]
+    pub direction: Option<String>,
+    /// Why the employee is calling ("appointment reminder for Tuesday 2pm").
+    /// Outbound only; stated to the recipient up front.
+    #[serde(default)]
+    pub purpose: Option<String>,
 }
 
 pub async fn conversation_ws_handler(
@@ -399,7 +407,39 @@ async fn handle_conversation_ws(mut socket: WebSocket, state: AppState, mut q: C
         instructions.push_str("\n\n---\n\n");
     }
     let telephony = q.telephony.is_some();
-    if telephony {
+    let outbound = q.direction.as_deref() == Some("outbound");
+    if telephony && outbound {
+        // The employee placed this call (consent-gated dialer): it speaks
+        // first, discloses itself, states the purpose, and honors an opt-out
+        // on the spot — TCPA manners, enforced in the prompt.
+        instructions.push_str(
+            "You are making an outbound phone call that your business asked you to place. \
+                       When the person answers, speak first: one short sentence saying who you \
+                       are — an AI assistant calling on behalf of the business — and why you're \
+                       calling. Then let them react. \
+                       Stick to the purpose of the call; be brief and warm; this is their time. \
+                       Speak in short, plain sentences — no markdown, no lists. Say numbers and \
+                       times the way a person would. \
+                       If voicemail answers, leave one short message: who you are, the business, \
+                       the purpose, and that they can call this number back — then use the nebo \
+                       tool to note that you left a voicemail, and end the call. \
+                       If the person says to stop calling, remove them, or not to call again: \
+                       apologize once, confirm they won't be called again, use the `nebo` tool to \
+                       run `phonecall optout` for their number, and end the call politely. \
+                       Never claim to be human; if asked, say plainly that you're an AI assistant.",
+        );
+        if let Some(biz) = q.business.as_deref().filter(|s| !s.is_empty()) {
+            instructions.push_str(&format!(
+                "\n\nYou are calling on behalf of \"{biz}\" — say so in your opening."
+            ));
+        }
+        if let Some(purpose) = q.purpose.as_deref().filter(|s| !s.is_empty()) {
+            instructions.push_str(&format!("\n\nThe purpose of this call: {purpose}."));
+        }
+        if let Some(to) = q.caller_id.as_deref().filter(|s| !s.is_empty()) {
+            instructions.push_str(&format!("\n\nYou are calling {to}."));
+        }
+    } else if telephony {
         // A phone caller is not the owner: they are a stranger on a line the
         // business forwards to us. Different medium, different manners.
         instructions.push_str(
@@ -558,7 +598,7 @@ fn relay_loop_turn(state: &AppState, conv_id: &str, stream: &str, role: &str, co
 /// shows it — "Call from (801) 023-2342". Marked custom so the auto-namer
 /// never renames a call after whatever the caller happened to say. Line
 /// label rides along when the employee holds several lines.
-fn phone_chat_title(caller_id: Option<&str>, line: Option<&str>) -> String {
+fn phone_chat_title(caller_id: Option<&str>, line: Option<&str>, outbound: bool) -> String {
     let who = caller_id.filter(|s| !s.is_empty()).map(|raw| {
         let digits: String = raw.chars().filter(|c| c.is_ascii_digit()).collect();
         if digits.len() == 11 && digits.starts_with('1') {
@@ -567,9 +607,10 @@ fn phone_chat_title(caller_id: Option<&str>, line: Option<&str>) -> String {
             raw.to_string()
         }
     });
-    let mut title = match who {
-        Some(w) => format!("Call from {w}"),
-        None => "Phone call".to_string(),
+    let mut title = match (who, outbound) {
+        (Some(w), false) => format!("Call from {w}"),
+        (Some(w), true) => format!("Call to {w}"),
+        (None, _) => "Phone call".to_string(),
     };
     if let Some(l) = line.filter(|s| !s.is_empty()) {
         title.push_str(&format!(" · {l}"));
@@ -715,10 +756,13 @@ async fn handle_conversation_session(
     // Phone calls get a deterministic caller-ID title ("Call from (801)
     // 023-2342"), protected from the auto-namer — a call's name is who
     // called, not whatever the caller happened to say first.
-    let phone_title = q
-        .telephony
-        .is_some()
-        .then(|| phone_chat_title(q.caller_id.as_deref(), q.line.as_deref()));
+    let phone_title = q.telephony.is_some().then(|| {
+        phone_chat_title(
+            q.caller_id.as_deref(),
+            q.line.as_deref(),
+            q.direction.as_deref() == Some("outbound"),
+        )
+    });
     // Loop-originated call: relay every finished turn into this conversation.
     let loop_relay = q.loop_conversation_id.clone().filter(|c| !c.is_empty()).map(|conv| {
         let stream = q
