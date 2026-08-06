@@ -1285,16 +1285,29 @@ impl NeboAIApi {
         agent_id: &str,
         label: &str,
         business_name: Option<&str>,
+        number: Option<&str>,
     ) -> Result<serde_json::Value, CommError> {
         let body = serde_json::json!({
             "agentId": agent_id,
             "label": label,
             "businessName": business_name.unwrap_or(""),
+            "number": number.unwrap_or(""),
         });
         self.do_json(
             reqwest::Method::POST,
             &format!("/api/v1/bots/{}/phone", self.bot_id),
             Some(&body),
+        )
+        .await
+    }
+
+    /// The owner's attachable phone lines — the connect modal's number
+    /// picker renders from this so line→agent assignment is explicit.
+    pub async fn claimable_bot_phone(&self) -> Result<serde_json::Value, CommError> {
+        self.do_json(
+            reqwest::Method::GET,
+            &format!("/api/v1/bots/{}/phone/claimable", self.bot_id),
+            None::<&()>,
         )
         .await
     }

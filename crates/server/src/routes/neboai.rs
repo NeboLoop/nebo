@@ -125,6 +125,10 @@ pub fn routes() -> Router<AppState> {
             axum::routing::post(handlers::neboai::phone_call),
         )
         .route(
+            "/phone/claimable",
+            axum::routing::get(handlers::neboai::phone_claimable),
+        )
+        .route(
             "/phone/optout",
             axum::routing::post(handlers::neboai::phone_optout),
         )

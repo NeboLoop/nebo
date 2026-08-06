@@ -223,6 +223,11 @@ pub async fn auth_login(
 struct LoginProfile {
     agent_id: String,
     account_label: String,
+    /// The exact resource the account should attach ("+18015551234" for a
+    /// phone line) — chosen by the user in the connect modal so which line
+    /// lands on which agent is never an invisible default. Empty = the
+    /// plugin's own default behavior.
+    account_number: String,
     /// The plugin's profile_dir_env name (e.g. GOOGLE_WORKSPACE_CLI_CONFIG_DIR).
     env_name: String,
     config_dir: String,
@@ -239,6 +244,9 @@ struct LoginProfile {
 pub struct AccountLoginRequest {
     pub agent_id: String,
     pub account_label: String,
+    /// Optional resource selector (a phone line's E.164) — see LoginProfile.
+    #[serde(default)]
+    pub account_number: String,
 }
 
 pub async fn auth_login_account(
@@ -274,6 +282,7 @@ pub async fn auth_login_account(
         Some(LoginProfile {
             agent_id: req.agent_id,
             account_label: req.account_label,
+            account_number: req.account_number,
             env_name,
             config_dir: config_dir.to_string_lossy().into_owned(),
         }),
@@ -342,6 +351,9 @@ fn spawn_plugin_login(
             // pass it upstream so the same name identifies the account
             // everywhere (e.g. a phone line's label on neboai.com).
             cmd.env("NEBO_ACCOUNT_LABEL", &p.account_label);
+            if !p.account_number.is_empty() {
+                cmd.env("NEBO_ACCOUNT_NUMBER", &p.account_number);
+            }
         }
         // Cloud bots (NEBOAI_PUBLIC_OAUTH=1, set by the provisioner): the user's
         // browser can't reach the pod's loopback listener, so hand the plugin

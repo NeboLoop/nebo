@@ -1475,6 +1475,10 @@ pub struct PhoneBindRequest {
     pub label: String,
     #[serde(default)]
     pub business_name: Option<String>,
+    /// The exact owned line to attach — picked in the connect modal.
+    /// Empty = the oldest unclaimed line.
+    #[serde(default)]
+    pub number: String,
 }
 
 /// POST /api/v1/phone/bind — provision + bind a number for an employee.
@@ -1483,11 +1487,25 @@ pub async fn phone_bind(
     Json(req): Json<PhoneBindRequest>,
 ) -> HandlerResult<serde_json::Value> {
     let api = build_api_client(&state).map_err(to_error_response)?;
+    let number = Some(req.number.as_str()).filter(|n| !n.is_empty());
     let resp = api
-        .bind_bot_phone(&req.agent_id, &req.label, req.business_name.as_deref())
+        .bind_bot_phone(&req.agent_id, &req.label, req.business_name.as_deref(), number)
         .await
         .map_err(|e| to_error_response(NeboError::Internal(format!("phone bind: {e}"))))?;
-    info!(agent = %req.agent_id, "phone number bound via NeboAI");
+    info!(agent = %req.agent_id, number = %req.number, "phone number bound via NeboAI");
+    Ok(Json(resp))
+}
+
+/// GET /api/v1/phone/claimable — the owner's attachable lines, for the
+/// connect modal's number picker.
+pub async fn phone_claimable(
+    State(state): State<AppState>,
+) -> HandlerResult<serde_json::Value> {
+    let api = build_api_client(&state).map_err(to_error_response)?;
+    let resp = api
+        .claimable_bot_phone()
+        .await
+        .map_err(|e| to_error_response(NeboError::Internal(format!("phone claimable: {e}"))))?;
     Ok(Json(resp))
 }
 

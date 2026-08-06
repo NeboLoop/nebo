@@ -33,11 +33,30 @@ export function listPluginAccounts(slug: string, agentId: string) {
  * (`plugin_auth_complete` / `plugin_auth_error`, each carrying `plugin` and
  * `account`).
  */
-export function startPluginAccountLogin(slug: string, agentId: string, accountLabel: string) {
-	return webapi.post<{ started: boolean }>(
-		`/api/v1/plugins/${slug}/accounts/login`,
-		{ agentId, accountLabel }
-	);
+export function startPluginAccountLogin(
+	slug: string,
+	agentId: string,
+	accountLabel: string,
+	accountNumber?: string
+) {
+	return webapi.post<{ started: boolean }>(`/api/v1/plugins/${slug}/accounts/login`, {
+		agentId,
+		accountLabel,
+		accountNumber: accountNumber ?? ''
+	});
+}
+
+export interface ClaimablePhoneNumber {
+	number: string;
+	label?: string;
+	businessName: string;
+	status: string;
+}
+
+/** GET /phone/claimable — the owner's attachable phone lines, so connecting
+ * a line to an agent is an explicit pick, never an invisible default. */
+export function listClaimablePhoneNumbers() {
+	return webapi.get<{ numbers: ClaimablePhoneNumber[] }>(`/api/v1/phone/claimable`);
 }
 
 /**

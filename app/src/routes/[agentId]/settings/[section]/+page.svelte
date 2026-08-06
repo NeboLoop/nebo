@@ -401,6 +401,14 @@
   }
 
   function openAuthModal(ch: ChannelInfo) {
+    // Account-based channel plugins (phone lines, and anything else that
+    // declares profile-dir auth) have NO credentials to paste — their setup
+    // IS adding an account. The old credentials modal here was a dead end
+    // that could never configure them; send the user to the real flow.
+    if (ch.pluginSlug === 'phonecall') {
+      goto(`/${agentId}/settings/accounts`);
+      return;
+    }
     channelAuthModal = ch;
     channelAuthInputs = {};
     channelAuthError = null;
@@ -514,6 +522,10 @@
   let addAccountLabel = $state('');
   let addAccountConnectingSlug = $state<string | null>(null);
   let addAccountError = $state<string | null>(null);
+  // Phone-line picker state: which owned number this account attaches.
+  let addAccountNumber = $state('');
+  let claimableNumbers = $state<import('$lib/api/pluginAccounts').ClaimablePhoneNumber[]>([]);
+  let claimableLoading = $state(false);
 
   $effect(() => { if (section === 'accounts') loadAccounts(); });
 
@@ -584,6 +596,23 @@
     addAccountPlugin = p;
     addAccountLabel = '';
     addAccountError = null;
+    addAccountNumber = '';
+    claimableNumbers = [];
+    // ponytail: phonecall is first-party — its "account" is a phone line, so
+    // the modal shows a picker of the owner's attachable numbers instead of
+    // a free-text label guessing game. Generalize via a manifest field when
+    // a second plugin needs a resource picker.
+    if (p.slug === 'phonecall') {
+      claimableLoading = true;
+      import('$lib/api/pluginAccounts')
+        .then((api) => api.listClaimablePhoneNumbers())
+        .then((res) => {
+          claimableNumbers = res.numbers ?? [];
+          if (claimableNumbers.length === 1) addAccountNumber = claimableNumbers[0].number;
+        })
+        .catch(() => { claimableNumbers = []; })
+        .finally(() => { claimableLoading = false; });
+    }
   }
 
   function closeAddAccount() {
@@ -624,13 +653,18 @@
 
   async function submitAddAccount() {
     const p = addAccountPlugin;
-    const label = addAccountLabel.trim();
-    if (!p || !label || addAccountConnectingSlug) return;
+    if (!p || addAccountConnectingSlug) return;
+    const isPhone = p.slug === 'phonecall';
+    // A phone account IS a number — the label defaults to the number's own
+    // label (or the number itself) so nothing is invented.
+    const picked = claimableNumbers.find((n) => n.number === addAccountNumber);
+    const label = addAccountLabel.trim() || (isPhone ? picked?.label || addAccountNumber : '');
+    if (!label || (isPhone && claimableNumbers.length > 0 && !addAccountNumber)) return;
     addAccountConnectingSlug = p.slug;
     addAccountError = null;
     try {
       const accountsApi = await import('$lib/api/pluginAccounts');
-      await accountsApi.startPluginAccountLogin(p.slug, agentId, label);
+      await accountsApi.startPluginAccountLogin(p.slug, agentId, label, addAccountNumber);
       // Login runs in the background; completion arrives via WS.
     } catch (e) {
       addAccountConnectingSlug = null;
@@ -1332,21 +1366,57 @@
       </div>
 
       <div class="p-5 space-y-4">
-        <label class="flex flex-col gap-1.5">
-          <span class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('agentSettings.accountLabel')}</span>
-          <input
-            type="text"
-            class="input input-sm input-bordered w-full text-sm font-body"
-            placeholder={$t('agentSettings.accountLabelPlaceholder')}
-            bind:value={addAccountLabel}
-            disabled={connecting}
-            onkeydown={(e) => { if (e.key === 'Enter') submitAddAccount(); }}
-          />
-          <span class="text-xs text-base-content/50">{$t('agentSettings.accountLabelHint')}</span>
-        </label>
+        {#if plugin.slug === 'phonecall'}
+          {#if claimableLoading}
+            <div class="flex items-center gap-2 text-xs text-base-content/60"><span class="loading loading-spinner loading-xs"></span> Loading your numbers…</div>
+          {:else if claimableNumbers.length === 0}
+            <div class="rounded-lg bg-base-200 p-3 text-xs text-base-content/70">
+              No numbers are free to attach. Buy a number (or park one from another employee) at
+              <span class="font-mono">neboai.com/manage/phone</span>, then come back here.
+            </div>
+          {:else}
+            <div class="flex flex-col gap-1.5">
+              <span class="text-xs font-semibold uppercase tracking-wider text-base-content/50">Which number should this employee answer?</span>
+              <div class="flex flex-col gap-1">
+                {#each claimableNumbers as n (n.number)}
+                  <label class="flex items-center gap-2.5 rounded-lg border {addAccountNumber === n.number ? 'border-primary bg-primary/5' : 'border-base-300'} px-3 py-2 cursor-pointer">
+                    <input type="radio" class="radio radio-xs radio-primary" name="phone-number-pick" value={n.number} bind:group={addAccountNumber} disabled={connecting} />
+                    <span class="text-sm font-mono">{n.number}</span>
+                    {#if n.label}<span class="text-xs text-base-content/60 truncate">{n.label}</span>{/if}
+                    <span class="ml-auto text-[10px] uppercase tracking-wide text-base-content/40">{n.status === 'parked' ? 'parked' : 'unassigned'}</span>
+                  </label>
+                {/each}
+              </div>
+            </div>
+            <label class="flex flex-col gap-1.5">
+              <span class="text-xs font-semibold uppercase tracking-wider text-base-content/50">Line name (optional)</span>
+              <input
+                type="text"
+                class="input input-sm input-bordered w-full text-sm font-body"
+                placeholder="Front Desk, Support, Spanish line…"
+                bind:value={addAccountLabel}
+                disabled={connecting}
+                onkeydown={(e) => { if (e.key === 'Enter') submitAddAccount(); }}
+              />
+            </label>
+          {/if}
+        {:else}
+          <label class="flex flex-col gap-1.5">
+            <span class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('agentSettings.accountLabel')}</span>
+            <input
+              type="text"
+              class="input input-sm input-bordered w-full text-sm font-body"
+              placeholder={$t('agentSettings.accountLabelPlaceholder')}
+              bind:value={addAccountLabel}
+              disabled={connecting}
+              onkeydown={(e) => { if (e.key === 'Enter') submitAddAccount(); }}
+            />
+            <span class="text-xs text-base-content/50">{$t('agentSettings.accountLabelHint')}</span>
+          </label>
+        {/if}
 
         {#if connecting}
-          <div class="rounded-lg bg-primary/5 border border-primary/30 p-3 text-xs text-base-content/70">{$t('agentSettings.signInWindowOpened')}</div>
+          <div class="rounded-lg bg-primary/5 border border-primary/30 p-3 text-xs text-base-content/70">{plugin.slug === 'phonecall' ? 'Attaching the number to this employee…' : $t('agentSettings.signInWindowOpened')}</div>
         {/if}
 
         {#if addAccountError}
@@ -1359,9 +1429,16 @@
         <button class="btn btn-sm btn-ghost" onclick={closeAddAccount}>{connecting ? $t('agentSettings.cancelSignIn') : $t('common.cancel')}</button>
         <button
           class="btn btn-sm btn-primary"
-          disabled={connecting || !addAccountLabel.trim()}
+          disabled={connecting ||
+            (plugin.slug === 'phonecall'
+              ? claimableNumbers.length === 0 || !addAccountNumber
+              : !addAccountLabel.trim())}
           onclick={submitAddAccount}
-        >{connecting ? $t('agentSettings.signingIn') : $t('agentSettings.signIn')}</button>
+        >{connecting
+            ? $t('agentSettings.signingIn')
+            : plugin.slug === 'phonecall'
+              ? 'Attach number'
+              : $t('agentSettings.signIn')}</button>
       </div>
     </div>
   </div>
