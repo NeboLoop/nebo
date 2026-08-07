@@ -447,6 +447,12 @@ pub struct RunRequest {
     pub mention_context: Option<String>,
     /// Tool scope name from agent.json for SDK-driven tool filtering.
     pub tool_scope: Option<String>,
+    /// Explicit tool allowlist for restricted runs (phone callers). Entries
+    /// are bare tool names ("skill") or `tool:resource` compounds
+    /// ("agent:memory"). Enforced at the runner gate AND the registry choke
+    /// point via `ToolContext::whitelist_allows`, and the declared schema is
+    /// filtered to match. `None` = every normal run, unrestricted.
+    pub tool_allowlist: Option<std::collections::HashSet<String>>,
     /// Skill names to pre-load into this run's context. Full SKILL.md content
     /// is injected into the system prompt so the agent has instructions without
     /// needing to discover/load them. Used by sub-agent spawning.
@@ -1156,6 +1162,7 @@ impl Runner {
                         channel_ctx.as_ref(),
                         None, // forks carry no mention context
                         None, // command forks are not review forks
+                        req.tool_allowlist.as_ref(),
                     )
                     .await;
 
@@ -1243,6 +1250,7 @@ impl Runner {
                 channel_ctx.as_ref(),
                 mention_context.as_deref(),
                 None, // top-level runs are never review forks
+                req.tool_allowlist.as_ref(),
             )
             .await;
 
@@ -1421,6 +1429,7 @@ impl Runner {
                             channel_ctx_rf.as_ref(),
                             None,
                             Some(rfctx),
+                            None, // the review fork's whitelist rides ReviewForkCtx
                         )
                         .await;
                         drop(sub_tx);
@@ -1577,6 +1586,7 @@ async fn run_loop(
     channel_ctx: Option<&tools::ChannelContext>,
     mention_context: Option<&str>,
     review_fork: Option<crate::review_fork::ReviewForkCtx>,
+    tool_allowlist: Option<&std::collections::HashSet<String>>,
 ) -> Result<(), String> {
     let mut state = RunState::new();
     // Stream reminders are EPHEMERAL: queued here, injected into the NEXT
@@ -2649,6 +2659,25 @@ async fn run_loop(
             &called_tools,
             &agent_tool_names,
         );
+
+        // Restricted runs (phone callers) declare ONLY their allowlisted
+        // tools — an untrusted caller must not even see the rest of the
+        // roster. This deliberately diverges from the review fork's
+        // declare-everything invariant: the fork shares a prompt-cache
+        // lineage with its parent conversation; a phone call is a fresh
+        // session with its own lineage, so there is no cache to preserve.
+        // Dispatch-time denial (whitelist_allows at the runner gate AND the
+        // registry choke point) remains the enforcement backstop.
+        if review_fork.is_none() {
+            if let Some(wl) = tool_allowlist {
+                tool_defs.retain(|td| {
+                    wl.contains(&td.name)
+                        || wl.iter().any(|e| {
+                            e.split_once(':').is_some_and(|(tool, _)| tool == td.name)
+                        })
+                });
+            }
+        }
 
         // Pattern 3: Deterministic sort for prompt cache stability.
         // Stable alphabetical ordering ensures identical tool blocks across turns,
@@ -3764,8 +3793,13 @@ async fn run_loop(
                 memory_writes_disabled,
                 // Populated by the approval gate below, before tool execution.
                 approved_categories: std::collections::HashSet::new(),
-                // Review-fork restrictions (None/default for normal runs).
-                tool_whitelist: review_fork.as_ref().map(|r| r.whitelist.clone()),
+                // Restricted-run allowlist: the review fork's whitelist, or
+                // the request's explicit allowlist (phone callers). None for
+                // every normal run.
+                tool_whitelist: review_fork
+                    .as_ref()
+                    .map(|r| r.whitelist.clone())
+                    .or_else(|| tool_allowlist.cloned()),
                 learned_write_agent: review_fork.as_ref().map(|r| r.owner_agent_id.clone()),
                 learned_write_staged: review_fork.as_ref().map(|r| r.staged).unwrap_or(false),
                 skills_read: review_fork
@@ -3960,22 +3994,32 @@ async fn run_loop(
                 break;
             }
 
-            // ── Review-fork whitelist (docs/design/SELF_IMPROVEMENT.md WS2) ──
-            // The fork DECLARES the full roster (prompt-cache byte parity) but
-            // may only EXECUTE whitelisted tools; everything else is denied
-            // here with a corrective error — the ONE dispatch choke point.
-            if let Some(ref rf) = review_fork {
+            // ── Restricted-run allowlist ─────────────────────────────────────
+            // Review fork (docs/design/SELF_IMPROVEMENT.md WS2) and phone-
+            // caller runs: only allowlisted tools may EXECUTE; everything
+            // else is denied here with a corrective error. Matching is
+            // `tool:resource`-aware and shared with the registry choke point
+            // (ToolContext::whitelist_allows) so the two fences can't drift.
+            if ctx.tool_whitelist.is_some() {
                 for (idx, tc) in tool_calls.iter().enumerate() {
-                    if blocked_results[idx].is_none() && !rf.whitelist.contains(&tc.name) {
-                        blocked_results[idx] = Some((
-                            tc.clone(),
-                            ToolResult::error(format!(
+                    if blocked_results[idx].is_none() && !ctx.whitelist_allows(&tc.name, &tc.input)
+                    {
+                        let msg = if review_fork.is_some() {
+                            format!(
                                 "Background review denied non-whitelisted tool: {}. \
                                  Only the skill tool is available in this review pass — \
                                  save the learning with it or reply 'Nothing to save.'",
                                 tc.name
-                            )),
-                        ));
+                            )
+                        } else {
+                            format!(
+                                "'{}' is not available in this call. Use the tools you \
+                                 were given, or tell the caller plainly that you can't \
+                                 do that and offer to take a message.",
+                                tc.name
+                            )
+                        };
+                        blocked_results[idx] = Some((tc.clone(), ToolResult::error(msg)));
                     }
                 }
             }

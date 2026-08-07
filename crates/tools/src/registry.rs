@@ -605,6 +605,18 @@ impl Registry {
                 }
             }
 
+            // Restricted-run allowlist (review fork, phone callers). Checked
+            // at THIS choke point too — the runner's gate covers the normal
+            // loop, but direct registry callers (the voice fallback path, the
+            // flat-name aliases resolved above) must hit the same fence.
+            if !ctx.whitelist_allows(name, &input) {
+                return ToolResult::error(format!(
+                    "Tool '{}' is not available in this restricted run. Use one of the \
+                     tools you were given, or say plainly that you can't do that.",
+                    name
+                ));
+            }
+
             tool.resource_permit(&input)
         }; // ← tools read-lock dropped
 

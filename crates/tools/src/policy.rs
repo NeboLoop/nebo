@@ -576,6 +576,25 @@ fn default_origin_deny_list() -> HashMap<Origin, HashSet<String>> {
     // External MCP clients: at most comm-level trust. An authenticated client
     // is still another program injecting prompts from outside our UI.
     deny_list.insert(Origin::Mcp, shell_deny);
+    // A phone caller is a stranger. The allowlist on their delegated run is
+    // the real fence (deny-by-default); this hard set is the backstop that
+    // holds even if an allowlist is ever mis-built: nothing that touches the
+    // machine, the mailbox, or money is reachable from a phone line.
+    let caller_deny: HashSet<String> = [
+        "os:shell",
+        "os:file",
+        "os:mail",
+        "os:contacts",
+        "os:capture",
+        "web",
+        "execute",
+        "vm",
+        "publisher",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    deny_list.insert(Origin::Caller, caller_deny);
     deny_list
 }
 

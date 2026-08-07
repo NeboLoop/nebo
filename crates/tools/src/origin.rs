@@ -17,6 +17,11 @@ pub enum Origin {
     /// Automated workflow activity (engine-driven, unattended). Never HITL —
     /// the ask tool is unavailable here (see `BotTool::handle_ask`).
     Workflow,
+    /// An untrusted phone caller. A stranger on a line the business answers:
+    /// their speech is DATA, their authority is nothing. Deny-by-default —
+    /// delegated runs carry an explicit tool allowlist (the line's call tree
+    /// or the take-a-message floor) and can never reach approval modals.
+    Caller,
 }
 
 impl Default for Origin {
@@ -47,12 +52,16 @@ impl From<Origin> for ExecutionMode {
         // Exhaustive match (no `_`): a future Origin variant must be classified.
         match origin {
             Origin::User => ExecutionMode::Interactive,
+            // Caller is deliberately Autonomous: a phone caller must never
+            // reach the ask tool or raise an approval modal on the owner's
+            // desktop — there is no human in the loop they're entitled to.
             Origin::Comm
             | Origin::App
             | Origin::Skill
             | Origin::System
             | Origin::Mcp
-            | Origin::Workflow => ExecutionMode::Autonomous,
+            | Origin::Workflow
+            | Origin::Caller => ExecutionMode::Autonomous,
         }
     }
 }
@@ -210,6 +219,28 @@ impl ToolContext {
         self
     }
 
+    /// Whether the run's tool allowlist admits this call. `None` =
+    /// unrestricted (every normal run). Entries are either a bare tool name
+    /// ("skill" — the whole tool) or a `tool:resource` compound
+    /// ("agent:memory") admitting only calls whose `resource` input matches —
+    /// bare `os` in an allowlist would otherwise hand a restricted run the
+    /// shell. Matching lives HERE so the runner's gate and the registry's
+    /// choke point can never drift apart.
+    pub fn whitelist_allows(&self, tool: &str, input: &serde_json::Value) -> bool {
+        let Some(wl) = &self.tool_whitelist else {
+            return true;
+        };
+        if wl.contains(tool) {
+            return true;
+        }
+        if let Some(res) = input.get("resource").and_then(|v| v.as_str()) {
+            if wl.contains(&format!("{tool}:{res}")) {
+                return true;
+            }
+        }
+        false
+    }
+
     /// Show a UI prompt to the user and block until they respond.
     ///
     /// Emits an `AskRequest` stream event (rendered as `AskWidget` in the frontend)
@@ -257,9 +288,18 @@ mod tests {
             Origin::System,
             Origin::Mcp,
             Origin::Workflow,
+            Origin::Caller,
         ] {
             assert_eq!(ExecutionMode::from(o), ExecutionMode::Autonomous);
         }
+    }
+
+    #[test]
+    fn caller_origin_is_never_interactive() {
+        // A phone caller must not reach ask/approval pathways: Interactive is
+        // what unlocks them, and a stranger on the line is not the human in
+        // the loop.
+        assert_eq!(ExecutionMode::from(Origin::Caller), ExecutionMode::Autonomous);
     }
 
     #[test]
