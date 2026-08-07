@@ -1072,6 +1072,8 @@ pub async fn process_agent_bindings(
                 ("folder", cfg.to_string())
             }
             napp::agent::AgentTrigger::Manual => ("manual", String::new()),
+            // The line label is the whole config; the worker no-ops on it.
+            napp::agent::AgentTrigger::Call { line } => ("call", line.clone()),
         };
 
         let inputs_json = if binding.inputs.is_empty() {
@@ -1370,7 +1372,7 @@ pub async fn list_agent_workflows(
     Path(id): Path<String>,
 ) -> HandlerResult<serde_json::Value> {
     // Verify agent exists
-    state
+    let agent = state
         .store
         .get_agent(&id)
         .map_err(to_error_response)?
@@ -1380,6 +1382,11 @@ pub async fn list_agent_workflows(
         .store
         .list_agent_workflows(&id)
         .map_err(to_error_response)?;
+
+    // Binding kind ("call_tree") lives in frontmatter only — the tracking
+    // row is trigger/state. Merge it in so the UI knows what it's editing.
+    let fm: serde_json::Value =
+        serde_json::from_str(&agent.frontmatter).unwrap_or(serde_json::json!({}));
 
     // Build a map keyed by binding_name with structured trigger
     let mut wf_map = serde_json::Map::new();
@@ -1394,6 +1401,15 @@ pub async fn list_agent_workflows(
             "activities": wf.activities,
             "connections": wf.connections,
         });
+        if let Some(bt) = fm
+            .get("workflows")
+            .and_then(|w| w.get(&wf.binding_name))
+            .and_then(|b| b.get("type"))
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+        {
+            entry["type"] = serde_json::json!(bt);
+        }
         if let Some(inputs_str) = &wf.inputs {
             if let Ok(inputs) = serde_json::from_str::<serde_json::Value>(inputs_str) {
                 entry["inputs"] = inputs;
@@ -1471,6 +1487,8 @@ fn reconstruct_trigger(trigger_type: &str, trigger_config: &str) -> serde_json::
             }
         }
         "manual" => serde_json::json!({ "type": "manual" }),
+        // The line label is the whole config.
+        "call" => serde_json::json!({ "type": "call", "line": trigger_config }),
         _ => serde_json::json!({ "type": trigger_type }),
     }
 }
@@ -2472,6 +2490,15 @@ pub(crate) fn build_trigger_json(
             }
             t
         }
+        "call" => {
+            // A call tree's line binding. Empty line = catch-all for every
+            // line without a more specific tree.
+            let line = trigger_config
+                .get("line")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            serde_json::json!({ "type": "call", "line": line })
+        }
         _ => serde_json::json!({ "type": "manual" }),
     }
 }
@@ -2518,6 +2545,12 @@ pub(crate) fn flatten_trigger_config(
         // binding flattened its config to "" and killed the trigger.
         "watch" => trigger_config.to_string(),
         "folder" => trigger_config.to_string(),
+        // The line label IS the call trigger's config.
+        "call" => trigger_config
+            .get("line")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
         _ => String::new(),
     }
 }
@@ -2597,6 +2630,10 @@ pub async fn create_agent_workflow(
     let mut binding_val = serde_json::json!({
         "trigger": trigger_json,
     });
+    // Binding kind ("call_tree"); absent = standard workflow.
+    if let Some(bt) = body.get("type").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+        binding_val["type"] = serde_json::json!(bt);
+    }
     if let Some(desc) = body.get("description").and_then(|v| v.as_str()) {
         binding_val["description"] = serde_json::json!(desc);
     }
@@ -2727,6 +2764,13 @@ pub async fn update_agent_workflow(
             .cloned()
             .unwrap_or(serde_json::json!({}));
         updated["trigger"] = build_trigger_json(trigger_type, &trigger_config);
+    }
+    if let Some(bt) = body.get("type").and_then(|v| v.as_str()) {
+        if bt.is_empty() {
+            updated.as_object_mut().map(|m| m.remove("type"));
+        } else {
+            updated["type"] = serde_json::json!(bt);
+        }
     }
     if let Some(desc) = body.get("description") {
         updated["description"] = desc.clone();

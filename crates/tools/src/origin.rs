@@ -238,7 +238,12 @@ impl ToolContext {
                 return true;
             }
         }
-        false
+        // Prefix entries ("mcp__monument__*") admit a tool family — how a
+        // call-tree intent grants one MCP server's tools without naming each.
+        wl.iter().any(|e| {
+            e.strip_suffix('*')
+                .is_some_and(|prefix| !prefix.is_empty() && tool.starts_with(prefix))
+        })
     }
 
     /// Show a UI prompt to the user and block until they respond.

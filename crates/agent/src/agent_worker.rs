@@ -576,6 +576,10 @@ impl AgentWorker {
                 "manual" => {
                     // No-op: user triggers via chat
                 }
+                "call" => {
+                    // No-op: a call tree isn't scheduled — the voice session
+                    // resolves the line's bound tree when the phone rings.
+                }
                 other => {
                     warn!(
                         agent = %agent_id,

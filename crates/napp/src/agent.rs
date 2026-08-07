@@ -289,6 +289,13 @@ pub struct WorkflowConnection {
 /// No external workflow references — the agent owns the full procedure.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkflowBinding {
+    /// Binding kind. Empty/absent = a standard workflow (every existing
+    /// binding — absent MUST keep meaning today's behavior). "call_tree" =
+    /// a phone line's declarative config: never engine-executed; consumed
+    /// live by the voice session (greeting, intents, per-intent tool
+    /// grants). New kinds must default-off the engine the same way.
+    #[serde(default, rename = "type", skip_serializing_if = "String::is_empty")]
+    pub binding_type: String,
     /// When this workflow runs.
     pub trigger: AgentTrigger,
     /// Human-readable description of this binding.
@@ -334,6 +341,7 @@ impl WorkflowBinding {
             "version": "1.0",
             "id": name,
             "name": name,
+            "type": self.binding_type,
             "inputs": inputs,
             "activities": self.activities,
             "connections": self.connections,
@@ -346,6 +354,12 @@ impl WorkflowBinding {
     /// Returns true if this binding has inline activities to execute.
     pub fn has_activities(&self) -> bool {
         !self.activities.is_empty()
+    }
+
+    /// A call tree is line config for the voice session, not a procedure —
+    /// nothing may hand it to the workflow engine.
+    pub fn is_call_tree(&self) -> bool {
+        self.binding_type == "call_tree"
     }
 }
 
@@ -531,6 +545,15 @@ pub enum AgentTrigger {
     /// Explicit user trigger.
     #[serde(rename = "manual")]
     Manual,
+    /// A phone line ringing. Only legal on `call_tree` bindings; registers
+    /// NOTHING in the agent worker — the voice session resolves the bound
+    /// tree at call time by the line's label. Empty line = every line this
+    /// employee answers that has no more specific tree.
+    #[serde(rename = "call")]
+    Call {
+        #[serde(default)]
+        line: String,
+    },
 }
 
 fn default_restart_delay() -> u64 {
@@ -671,6 +694,74 @@ fn validate_agent_config(config: &AgentConfig) -> Result<(), NappError> {
                 return Err(NappError::Manifest(format!(
                     "workflow '{}' has duplicate activity id: {}",
                     name, activity.id
+                )));
+            }
+        }
+        // Call trees: the phone-line config shape. A tree without its call
+        // trigger can never fire; call-tree node types inside a standard
+        // workflow would reach the engine, which refuses them — catch both
+        // at save time, not at 2am when the line rings.
+        let tree_node_types = ["greeting", "intent", "transfer", "take_message"];
+        if binding.is_call_tree() {
+            if !matches!(binding.trigger, AgentTrigger::Call { .. }) {
+                return Err(NappError::Manifest(format!(
+                    "call tree '{}' must use the call trigger (which line it answers)",
+                    name
+                )));
+            }
+            let greetings = binding
+                .activities
+                .iter()
+                .filter(|a| a.activity_type == "greeting")
+                .count();
+            if greetings != 1 {
+                return Err(NappError::Manifest(format!(
+                    "call tree '{}' needs exactly one greeting node (has {})",
+                    name, greetings
+                )));
+            }
+            if !binding.activities.iter().any(|a| a.activity_type == "intent") {
+                return Err(NappError::Manifest(format!(
+                    "call tree '{}' needs at least one intent node",
+                    name
+                )));
+            }
+            let mut intent_names = std::collections::HashSet::new();
+            for a in binding.activities.iter().filter(|a| a.activity_type == "intent") {
+                let iname = a
+                    .params
+                    .as_ref()
+                    .and_then(|p| p.get("name"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default();
+                if iname.trim().is_empty() {
+                    return Err(NappError::Manifest(format!(
+                        "call tree '{}': every intent needs a name",
+                        name
+                    )));
+                }
+                if !intent_names.insert(iname.to_string()) {
+                    return Err(NappError::Manifest(format!(
+                        "call tree '{}' has duplicate intent name: {}",
+                        name, iname
+                    )));
+                }
+            }
+        } else {
+            if matches!(binding.trigger, AgentTrigger::Call { .. }) {
+                return Err(NappError::Manifest(format!(
+                    "workflow '{}' uses the call trigger but is not a call tree",
+                    name
+                )));
+            }
+            if let Some(a) = binding
+                .activities
+                .iter()
+                .find(|a| tree_node_types.contains(&a.activity_type.as_str()))
+            {
+                return Err(NappError::Manifest(format!(
+                    "workflow '{}' uses call-tree node '{}' — those only live in a call tree",
+                    name, a.activity_type
                 )));
             }
         }

@@ -2952,6 +2952,7 @@ fn sync_agent_workflows(store: &db::Store, agent_id: &str, config: &napp::agent:
                 ("folder", cfg.to_string())
             }
             napp::agent::AgentTrigger::Manual => ("manual", String::new()),
+            napp::agent::AgentTrigger::Call { line } => ("call", line.clone()),
         };
         let inputs_json = if binding.inputs.is_empty() {
             None

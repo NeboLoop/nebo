@@ -219,7 +219,29 @@ fn wav_from_pcm16_mono_24k(pcm: &[u8]) -> Vec<u8> {
 /// Runner stays the ONE brain: full harness, full tool loop, same policy
 /// engine — and the voice model just narrates the result. Never re-expose the
 /// raw registry here; that recreates a second, untuned tool pathway.
-fn voice_tools(transfer: bool) -> Vec<serde_json::Value> {
+fn voice_tools(transfer: bool, intents: &[String]) -> Vec<serde_json::Value> {
+    let mut nebo_params = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "task": {
+                "type": "string",
+                "description": "The user's request, self-contained (include names, files, choices already made in this conversation)."
+            }
+        },
+        "required": ["task"]
+    });
+    if !intents.is_empty() {
+        // The line's call-tree intents: the voice model routes by picking
+        // one, and the delegated run gets THAT intent's tool grants. A wrong
+        // pick still lands inside owner-declared surface, never outside it.
+        let mut options: Vec<String> = intents.to_vec();
+        options.push("other".to_string());
+        nebo_params["properties"]["intent"] = serde_json::json!({
+            "type": "string",
+            "enum": options,
+            "description": "Which of this line's jobs the caller's request is — 'other' if none fit."
+        });
+    }
     let mut tools = vec![serde_json::json!({
         "type": "function",
         "name": "nebo",
@@ -228,16 +250,7 @@ fn voice_tools(transfer: bool) -> Vec<serde_json::Value> {
                         documents, system info. Pass the user's request restated with all spoken \
                         context needed to complete it. It runs the full toolchain and returns the \
                         completed result for you to relay aloud.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "task": {
-                    "type": "string",
-                    "description": "The user's request, self-contained (include names, files, choices already made in this conversation)."
-                }
-            },
-            "required": ["task"]
-        }
+        "parameters": nebo_params
     })];
     if transfer {
         // Only declared when the line HAS an owner-set target — a tool the
@@ -273,6 +286,134 @@ fn caller_floor_allowlist() -> std::collections::HashSet<String> {
         .iter()
         .map(|s| s.to_string())
         .collect()
+}
+
+/// One intent branch of a resolved call tree: what the line's owner said
+/// this line handles, and the exact tool surface that intent may touch.
+#[derive(Clone)]
+struct TreeIntent {
+    name: String,
+    description: String,
+    allowlist: std::collections::HashSet<String>,
+}
+
+/// A line's resolved call tree — the declarative config the voice session
+/// consumes live. Never executed by the workflow engine.
+#[derive(Clone)]
+struct CallTree {
+    greeting: String,
+    intents: Vec<TreeIntent>,
+    has_transfer: bool,
+    take_message_fields: String,
+}
+
+/// Find the agent's active call tree for a line: exact label match wins,
+/// then the empty-line catch-all. Inactive bindings never resolve.
+fn resolve_call_tree(state: &AppState, agent_id: &str, line: &str) -> Option<CallTree> {
+    let agent = state.store.get_agent(agent_id).ok().flatten()?;
+    let cfg = napp::agent::parse_agent_config(&agent.frontmatter).ok()?;
+    let active: std::collections::HashSet<String> = state
+        .store
+        .list_agent_workflows(agent_id)
+        .map(|rows| {
+            rows.iter()
+                .filter(|r| r.is_active != 0)
+                .map(|r| r.binding_name.clone())
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let mut exact = None;
+    let mut catch_all = None;
+    for (name, b) in cfg.workflows.iter().filter(|(_, b)| b.is_call_tree()) {
+        if !active.contains(name) {
+            continue;
+        }
+        if let napp::agent::AgentTrigger::Call { line: l } = &b.trigger {
+            if !line.is_empty() && l == line {
+                exact = Some(b);
+            } else if l.is_empty() {
+                catch_all = Some(b);
+            }
+        }
+    }
+    let binding = exact.or(catch_all)?;
+
+    let param_str = |a: &napp::agent::AgentActivity, key: &str| -> String {
+        a.params
+            .as_ref()
+            .and_then(|p| p.get(key))
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string()
+    };
+
+    let greeting = binding
+        .activities
+        .iter()
+        .find(|a| a.activity_type == "greeting")
+        .map(|a| {
+            let t = param_str(a, "text");
+            if t.is_empty() { a.intent.clone() } else { t }
+        })
+        .unwrap_or_default();
+
+    let mut intents = Vec::new();
+    for a in binding.activities.iter().filter(|a| a.activity_type == "intent") {
+        let name = param_str(a, "name");
+        if name.is_empty() {
+            continue;
+        }
+        // The intent's tool surface: the caller floor plus exactly what the
+        // owner granted — tools (tool:resource), sibling workflows (via the
+        // work tool, resource-scoped), plugins (slug-scoped), MCP servers
+        // (prefix-scoped). Owner-declared, per line, enforced server-side.
+        let mut allowlist = caller_floor_allowlist();
+        if let Some(g) = a.params.as_ref().and_then(|p| p.get("grants")) {
+            let strs = |key: &str| -> Vec<String> {
+                g.get(key)
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str())
+                            .map(|s| s.trim().to_string())
+                            .filter(|s| !s.is_empty())
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            };
+            for t in strs("tools") {
+                allowlist.insert(t);
+            }
+            for w in strs("workflows") {
+                allowlist.insert(format!("work:{w}"));
+            }
+            for p in strs("plugins") {
+                allowlist.insert(format!("plugin:{p}"));
+            }
+            for m in strs("mcp") {
+                allowlist.insert(format!("mcp__{m}__*"));
+            }
+        }
+        intents.push(TreeIntent {
+            name,
+            description: {
+                let d = param_str(a, "description");
+                if d.is_empty() { a.intent.clone() } else { d }
+            },
+            allowlist,
+        });
+    }
+
+    let has_transfer = binding.activities.iter().any(|a| a.activity_type == "transfer");
+    let take_message_fields = binding
+        .activities
+        .iter()
+        .find(|a| a.activity_type == "take_message")
+        .map(|a| param_str(a, "fields"))
+        .unwrap_or_default();
+
+    Some(CallTree { greeting, intents, has_transfer, take_message_fields })
 }
 
 /// Who is on the line when the speaker is NOT the owner: the agent that
@@ -497,6 +638,16 @@ async fn handle_conversation_ws(mut socket: WebSocket, state: AppState, mut q: C
     }
     let telephony = q.telephony.is_some();
     let outbound = q.direction.as_deref() == Some("outbound");
+    // The line's call tree, when the owner designed one: the greeting, the
+    // intent vocabulary, and per-intent tool grants the session enforces.
+    let call_tree = (telephony && !outbound)
+        .then(|| {
+            q.agent_id
+                .as_deref()
+                .filter(|a| !a.is_empty())
+                .and_then(|a| resolve_call_tree(&state, a, q.line.as_deref().unwrap_or("")))
+        })
+        .flatten();
     if telephony && outbound {
         // The employee placed this call (consent-gated dialer): it speaks
         // first, discloses itself, states the purpose, and honors an opt-out
@@ -545,10 +696,45 @@ async fn handle_conversation_ws(mut socket: WebSocket, state: AppState, mut q: C
                        Never claim to be human; if asked, say plainly that you're an AI \
                        assistant for the business.",
         );
+        // The line's call tree: greeting + intent vocabulary. Routing is the
+        // conversation itself; enforcement is the per-intent allowlists on
+        // every delegated run — the tree TELLS the model its jobs, the
+        // policy layer makes anything else unreachable.
+        if let Some(tree) = call_tree.as_ref() {
+            if !tree.greeting.is_empty() {
+                instructions.push_str(&format!(
+                    "\n\nOpen the call with exactly this greeting: \"{}\"",
+                    tree.greeting
+                ));
+            }
+            if !tree.intents.is_empty() {
+                instructions.push_str(
+                    "\n\nThis line handles the following, and ONLY the following — route by \
+                     listening, and pass the matching intent name to the nebo tool:",
+                );
+                for i in &tree.intents {
+                    instructions.push_str(&format!("\n- {}: {}", i.name, i.description));
+                }
+                instructions.push_str(
+                    "\nAnything that fits none of these: take a message (name, number, what \
+                     it's about) and say someone will call back.",
+                );
+            }
+            if !tree.take_message_fields.is_empty() {
+                instructions.push_str(&format!(
+                    "\n\nWhen taking a message, capture: {}.",
+                    tree.take_message_fields
+                ));
+            }
+        }
         // Only promise what this line can actually do. A transfer offer with
         // no target behind it is the exact broken promise callers complained
-        // about — the tool and the offer appear together or not at all.
-        if q.transfer.is_some() {
+        // about — the tool and the offer appear together or not at all. A
+        // tree without a transfer node keeps transfers off even on a line
+        // that has a target: the tree is the line's whole job description.
+        let offer_transfer =
+            q.transfer.is_some() && call_tree.as_ref().is_none_or(|t| t.has_transfer);
+        if offer_transfer {
             instructions.push_str(
                 "\n\nIf the caller asks for a person, needs a human, or you can't help: say \
                  one brief handoff sentence, then use the transfer_call tool to connect them \
@@ -598,11 +784,18 @@ async fn handle_conversation_ws(mut socket: WebSocket, state: AppState, mut q: C
     }
 
     let (replace, keyterms) = brand_voice_hints();
+    let tree_intents: Vec<String> = call_tree
+        .as_ref()
+        .map(|t| t.intents.iter().map(|i| i.name.clone()).collect())
+        .unwrap_or_default();
+    let declare_transfer = telephony
+        && q.transfer.is_some()
+        && call_tree.as_ref().is_none_or(|t| t.has_transfer);
     let mut cfg = voice::realtime::RealtimeConfig {
         endpoint,
         bearer,
         bot_id: q.agent_id.clone(),
-        tools: voice_tools(telephony && q.transfer.is_some()),
+        tools: voice_tools(declare_transfer, &tree_intents),
         instructions,
         replace,
         keyterms,
@@ -653,7 +846,7 @@ async fn handle_conversation_ws(mut socket: WebSocket, state: AppState, mut q: C
             .await;
     }
 
-    handle_conversation_session(socket, state, q, rt_tx, rt_rx).await;
+    handle_conversation_session(socket, state, q, call_tree, rt_tx, rt_rx).await;
 }
 
 /// Relay one finished voice turn into a loop conversation so the loop UI
@@ -850,6 +1043,7 @@ async fn handle_conversation_session(
     mut socket: WebSocket,
     state: AppState,
     q: ConversationQuery,
+    call_tree: Option<CallTree>,
     rt_tx: mpsc::Sender<voice::realtime::RealtimeCommand>,
     mut rt_rx: mpsc::Receiver<voice::conversation::ConversationEvent>,
 ) {
@@ -879,14 +1073,25 @@ async fn handle_conversation_session(
 
     // Caller-scoped context for telephony sessions: the speaker is an
     // untrusted stranger, so their delegated runs carry Origin::Caller and
-    // an explicit tool allowlist (today: the take-a-message floor; a bound
-    // call tree replaces it per intent). None = the owner's own voice.
-    let caller_ctx = q.telephony.is_some().then(|| CallerContext {
-        agent_id: q.agent_id.clone().unwrap_or_default(),
-        caller_id: q.caller_id.clone().unwrap_or_default(),
-        business: q.business.clone().unwrap_or_default(),
-        line: q.line.clone().unwrap_or_default(),
-        allowlist: caller_floor_allowlist(),
+    // an explicit tool allowlist — the line's tree per intent, or the
+    // take-a-message floor. None = the owner's own voice. The context's
+    // default allowlist is the UNION of the tree's grants (the worst-case
+    // fence for anything that skips intent selection); each delegated run
+    // narrows to its chosen intent below.
+    let caller_ctx = q.telephony.is_some().then(|| {
+        let mut allowlist = caller_floor_allowlist();
+        if let Some(tree) = call_tree.as_ref() {
+            for i in &tree.intents {
+                allowlist.extend(i.allowlist.iter().cloned());
+            }
+        }
+        CallerContext {
+            agent_id: q.agent_id.clone().unwrap_or_default(),
+            caller_id: q.caller_id.clone().unwrap_or_default(),
+            business: q.business.clone().unwrap_or_default(),
+            line: q.line.clone().unwrap_or_default(),
+            allowlist,
+        }
     });
 
     // Voice tool execution context: empty approved_categories — OFF
@@ -1057,8 +1262,26 @@ async fn handle_conversation_session(
                         let delegate_chat_id = chat_id.clone();
                         let phone_title = phone_title.clone();
                         let caller = caller_ctx.clone();
+                        let tree = call_tree.clone();
                         tokio::spawn(async move {
                             let input = decode_tool_arguments(&arguments);
+                            // Narrow the delegated run to the chosen intent's
+                            // grants. Unknown/"other"/no intent = the floor —
+                            // never the union, so a lazy pick can't widen.
+                            let caller = caller.map(|mut c| {
+                                if let Some(t) = tree.as_ref() {
+                                    let picked = input.get("intent").and_then(|v| v.as_str());
+                                    c.allowlist = picked
+                                        .and_then(|name| {
+                                            t.intents
+                                                .iter()
+                                                .find(|i| i.name == name)
+                                                .map(|i| i.allowlist.clone())
+                                        })
+                                        .unwrap_or_else(caller_floor_allowlist);
+                                }
+                                c
+                            });
                             // `nebo` delegates to the Runner (the ONE tuned
                             // tool brain); anything else the model improvises
                             // still runs through the policy-gated registry.

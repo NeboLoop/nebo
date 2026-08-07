@@ -2134,6 +2134,12 @@ async fn run_loop(
                             format!("folder: {}", path)
                         }
                         napp::agent::AgentTrigger::Manual => "manual".to_string(),
+                        napp::agent::AgentTrigger::Call { line } => {
+                            format!(
+                                "call tree for the {} phone line",
+                                if line.is_empty() { "every" } else { line }
+                            )
+                        }
                     };
                     let desc = if binding.description.is_empty() {
                         String::new()
@@ -2674,6 +2680,9 @@ async fn run_loop(
                     wl.contains(&td.name)
                         || wl.iter().any(|e| {
                             e.split_once(':').is_some_and(|(tool, _)| tool == td.name)
+                                || e.strip_suffix('*').is_some_and(|prefix| {
+                                    !prefix.is_empty() && td.name.starts_with(prefix)
+                                })
                         })
                 });
             }

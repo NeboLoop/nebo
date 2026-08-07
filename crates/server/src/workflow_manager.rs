@@ -987,6 +987,20 @@ impl WorkflowManager for WorkflowManagerImpl {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + 'a>>
     {
         Box::pin(async move {
+            // A call tree is a phone line's declarative config — the voice
+            // session consumes it live; the engine must NEVER execute it as
+            // a graph. Any pathway that lands one here (cron drift, the work
+            // tool, a manual run) is a bug, refused loudly.
+            if serde_json::from_str::<serde_json::Value>(&definition_json)
+                .ok()
+                .and_then(|v| v.get("type").and_then(|t| t.as_str()).map(|t| t == "call_tree"))
+                .unwrap_or(false)
+            {
+                return Err(
+                    "call trees are phone-line configuration, not runnable workflows".into(),
+                );
+            }
+
             let def = workflow::parser::parse_workflow(&definition_json)
                 .map_err(|e| format!("parse inline workflow: {}", e))?;
 

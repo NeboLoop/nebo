@@ -498,6 +498,9 @@ impl PersonaTool {
                                     format!("folder({})", path)
                                 }
                                 napp::agent::AgentTrigger::Manual => "manual".to_string(),
+                                napp::agent::AgentTrigger::Call { line } => {
+                                    format!("call(line: {})", if line.is_empty() { "any" } else { line })
+                                }
                             };
                             let desc = if wf.description.is_empty() {
                                 ""
@@ -715,6 +718,9 @@ impl PersonaTool {
                                     format!("folder({})", path)
                                 }
                                 napp::agent::AgentTrigger::Manual => "manual".to_string(),
+                                napp::agent::AgentTrigger::Call { line } => {
+                                    format!("call(line: {})", if line.is_empty() { "any" } else { line })
+                                }
                             };
                             format!("{} [{}]", name, t)
                         })
@@ -1672,6 +1678,7 @@ impl PersonaTool {
                     ("folder", cfg.to_string())
                 }
                 napp::agent::AgentTrigger::Manual => ("manual", String::new()),
+                napp::agent::AgentTrigger::Call { line } => ("call", line.clone()),
             };
 
             let inputs_json = if binding.inputs.is_empty() {
@@ -2030,6 +2037,7 @@ impl PersonaTool {
                 ("folder".to_string(), cfg.to_string())
             }
             napp::agent::AgentTrigger::Manual => ("manual".to_string(), String::new()),
+            napp::agent::AgentTrigger::Call { line } => ("call".to_string(), line.clone()),
         }
     }
 
