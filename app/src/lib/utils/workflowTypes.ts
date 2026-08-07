@@ -24,7 +24,13 @@ export type ActivityType =
 	| 'agent'
 	| 'connector'
 	| 'http'
-	| 'transform';
+	| 'transform'
+	// Call-tree nodes — only legal inside a call_tree binding; never
+	// executed by the workflow engine (the voice session consumes them).
+	| 'greeting'
+	| 'intent'
+	| 'transfer'
+	| 'take_message';
 
 // ── Type definition ──────────────────────────────────────────────────
 export interface ActivityTypeDefinition {
@@ -58,6 +64,110 @@ export interface ActivityParameter {
 
 // ── Type definitions ─────────────────────────────────────────────────
 export const ACTIVITY_TYPES: Record<ActivityType, ActivityTypeDefinition> = {
+	greeting: {
+		type: 'greeting',
+		label: 'Greeting',
+		description: 'What this line says when it answers',
+		icon: '☎',
+		accentClass: 'border-primary',
+		defaultSkills: [],
+		defaultSteps: [],
+		parameters: [
+			{
+				key: 'text',
+				label: 'Greeting',
+				type: 'textarea',
+				placeholder: "Thanks for calling Miller Dental! How can I help?",
+				description: 'Spoken word-for-word when the call connects.',
+			},
+		],
+	},
+	intent: {
+		type: 'intent',
+		label: 'Intent',
+		description: 'One job this line handles, with its allowed tools',
+		icon: '⌁',
+		accentClass: 'border-info',
+		defaultSkills: [],
+		defaultSteps: [],
+		parameters: [
+			{
+				key: 'name',
+				label: 'Intent name',
+				type: 'text',
+				placeholder: 'book_appointment',
+				description: 'Short id the router uses (unique per tree).',
+			},
+			{
+				key: 'description',
+				label: 'When callers mean this',
+				type: 'textarea',
+				placeholder: 'Caller wants to schedule, reschedule, or cancel an appointment',
+			},
+			{
+				key: 'tools',
+				label: 'Allowed tools',
+				type: 'text',
+				placeholder: 'agent:memory, os:calendar',
+				description: 'Comma-separated tool:resource grants for this intent only.',
+			},
+			{
+				key: 'workflows',
+				label: 'Allowed workflows',
+				type: 'text',
+				placeholder: 'booking-flow',
+				description: "Comma-separated names of this agent's workflows the intent may run.",
+			},
+			{
+				key: 'plugins',
+				label: 'Allowed plugins',
+				type: 'text',
+				placeholder: 'gws',
+				description: 'Comma-separated plugin slugs.',
+			},
+			{
+				key: 'mcp',
+				label: 'Allowed MCP servers',
+				type: 'text',
+				placeholder: 'crm',
+				description: 'Comma-separated connected MCP server names.',
+			},
+		],
+	},
+	transfer: {
+		type: 'transfer',
+		label: 'Transfer to human',
+		description: "Live handoff to the line's transfer number",
+		icon: '➦',
+		accentClass: 'border-warning',
+		defaultSkills: [],
+		defaultSteps: [],
+		parameters: [
+			{
+				key: 'when',
+				label: 'When to transfer',
+				type: 'textarea',
+				placeholder: 'Caller asks for a person, is upset, or has an emergency',
+			},
+		],
+	},
+	take_message: {
+		type: 'take_message',
+		label: 'Take a message',
+		description: 'Capture a message for the owner (the fallback)',
+		icon: '✉',
+		accentClass: 'border-base-300',
+		defaultSkills: [],
+		defaultSteps: [],
+		parameters: [
+			{
+				key: 'fields',
+				label: 'What to capture',
+				type: 'text',
+				placeholder: 'name, number, reason for calling, best time to call back',
+			},
+		],
+	},
 	custom: {
 		type: 'custom',
 		label: 'Custom',

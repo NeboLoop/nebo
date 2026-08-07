@@ -664,6 +664,7 @@ export interface Setting {
 	developerMode: boolean
 	autoUpdate: boolean
 	fullAccess: boolean
+	guardrails: unknown
 }
 
 export interface ShareChannel {
@@ -1819,6 +1820,7 @@ export interface AgentStats {
 
 export interface AgentWorkflowEntry {
 	trigger: AgentWorkflowTrigger
+	type?: string
 	description?: string
 	isActive: boolean
 	lastFired?: string

@@ -123,6 +123,17 @@ export const NODE_CATALOG_ITEMS = [
     ],
   },
   {
+    // Only shown when the builder is editing a call tree (and the groups
+    // above are hidden there) — see NodeCatalog.svelte.
+    category: 'Call Tree',
+    items: [
+      { type: 'activity-greeting', label: 'Greeting', desc: 'What the line says when it answers', icon: '☎' },
+      { type: 'activity-intent', label: 'Intent', desc: 'One job + its allowed tools', icon: '⌁' },
+      { type: 'activity-transfer', label: 'Transfer to human', desc: 'Live handoff to the transfer number', icon: '➦' },
+      { type: 'activity-take_message', label: 'Take a message', desc: 'Capture a message (the fallback)', icon: '✉' },
+    ],
+  },
+  {
     category: 'Flow Control',
     items: [
       { type: 'flow-condition', label: 'Condition', desc: 'If/else branching', icon: '⑂' },

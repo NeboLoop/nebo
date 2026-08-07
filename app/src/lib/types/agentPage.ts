@@ -28,6 +28,8 @@ export interface EnrichedChat {
 /** Workflow trigger configuration. */
 export interface WorkflowTrigger {
 	type: string
+	/** Call trigger: which phone line's label this tree answers ('' = all). */
+	line?: string
 	event?: string
 	sources?: string[]
 	schedule?: string
@@ -40,6 +42,8 @@ export interface WorkflowTrigger {
 
 /** Workflow object used in the agent config. */
 export interface WorkflowConfig {
+	/** Binding kind: undefined = standard workflow, 'call_tree' = phone-line config. */
+	type?: string
 	trigger?: WorkflowTrigger
 	schedule?: string
 	activities?: WorkflowActivity[]

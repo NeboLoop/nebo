@@ -740,6 +740,7 @@
 					ondrop={(e) => { e.preventDefault(); e.stopPropagation(); }}
 				>
 					<NodeCatalog
+						callTree={activeWorkflow?.type === 'call_tree'}
 						onselect={(item) => handleAddNode(item, catalogInsertAfter, catalogInsertBranchLabel)}
 						onclose={() => { catalogOpen = false; catalogInsertAfter = null; catalogInsertBranchLabel = null; catalogInsertBeforeTarget = null; }}
 					/>

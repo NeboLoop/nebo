@@ -143,6 +143,7 @@ var extraInterfaces = map[string]string{
 
 	"AgentWorkflowEntry": `export interface AgentWorkflowEntry {
 	trigger: AgentWorkflowTrigger
+	type?: string
 	description?: string
 	isActive: boolean
 	lastFired?: string

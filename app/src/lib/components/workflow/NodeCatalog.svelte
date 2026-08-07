@@ -7,9 +7,12 @@
 	let {
 		onselect,
 		onclose,
+		callTree = false,
 	}: {
 		onselect?: (item: Record<string, unknown>) => void;
 		onclose?: () => void;
+		/** Editing a call tree: show ONLY the call-tree node group. */
+		callTree?: boolean;
 	} = $props();
 
 	let search = $state('');
@@ -56,9 +59,14 @@
 	});
 
 	const filtered = $derived.by(() => {
+		// A call tree has its own node vocabulary; a standard workflow never
+		// shows tree nodes (the parser refuses them anyway).
+		const scoped = callTree
+			? dynamicCatalog.filter((c) => c.category === 'Call Tree')
+			: dynamicCatalog.filter((c) => c.category !== 'Call Tree');
 		const q = search.toLowerCase().trim();
-		if (!q) return dynamicCatalog;
-		return dynamicCatalog
+		if (!q) return scoped;
+		return scoped
 			.map(cat => ({
 				...cat,
 				items: cat.items.filter(item =>

@@ -3516,6 +3516,21 @@ pub async fn start_workflow_chat(
            {{\"op\":\"connect\",\"workflow\":\"triage\",\"from\":\"urgent-check\",\"to\":\"ping-owner\",\"label\":\"True\"}}\n\
          ]}}\n\
          ```\n\n\
+         ## Call trees (phone lines)\n\
+         A CALL TREE is a special binding: `type:\"call_tree\"` with trigger \
+         {{type:\"call\", line:LABEL}} (empty line = every line). It is a phone line's job \
+         description, consumed live by the voice session — never executed by the engine. \
+         Node types (ONLY these, ONLY inside call trees): \n\
+         - greeting (params: text — spoken word-for-word; exactly one required)\n\
+         - intent (params: name kebab-case unique, description, and the intent's grants as \
+           comma-separated strings — tools e.g. \"agent:memory, os:calendar\", workflows \
+           (this agent's workflow names), plugins (slugs), mcp (server names)). Grants are \
+           ENFORCED: a caller in that intent can touch nothing else.\n\
+         - transfer (params: when — needs the line's owner-set transfer number to work)\n\
+         - take_message (params: fields — the fallback for everything unmatched)\n\
+         Create one with: {{\"op\":\"create_workflow\",\"name\":NAME,\"workflow\":{{\"type\":\"call_tree\",\
+         \"trigger\":{{\"type\":\"call\",\"line\":\"Front Desk\"}}}}}} then add_activity the nodes. \
+         Grant the MINIMUM each intent needs — the grants are a security boundary, not decoration.\n\n\
          ## Rules\n\
          - Reference ONLY workflow names and activity ids that exist in the draft below (or ones you create in the same batch).\n\
          - New activity ids: short kebab-case, unique within the workflow.\n\

@@ -34,20 +34,38 @@
   const section = $derived($page.params.section);
   const isFullHeightEditor = $derived(section === 'persona' || section === 'soul');
 
-  function createNewWorkflow() {
+  function createNewWorkflow(callTree = false) {
     const existing = workflowEntries.map(([name]: [string, WorkflowConfig]) => name);
+    const base = callTree ? 'New Call Tree' : 'New Workflow';
     let idx = 1;
-    let name = 'New Workflow';
+    let name = base;
     while (existing.includes(name)) {
       idx++;
-      name = `New Workflow ${idx}`;
+      name = `${base} ${idx}`;
     }
-    const wf = {
-      trigger: { type: 'manual' as const },
-      description: '',
-      isActive: true,
-      activities: [],
-    };
+    // A call tree seeds its required shape: the call trigger (line picked in
+    // the builder) and a greeting node — the parser insists on both.
+    const wf = callTree
+      ? {
+          type: 'call_tree',
+          trigger: { type: 'call' as const, line: '' },
+          description: '',
+          isActive: true,
+          activities: [
+            {
+              id: 'greeting',
+              type: 'greeting',
+              label: 'Greeting',
+              params: { text: '' },
+            },
+          ],
+        }
+      : {
+          trigger: { type: 'manual' as const },
+          description: '',
+          isActive: true,
+          activities: [],
+        };
     ctx.openWorkflow(name, wf);
   }
 
@@ -1051,7 +1069,8 @@
         </div>
       {/if}
 
-      <button class="mt-3 w-full py-2.5 rounded-lg border border-dashed border-base-300 text-sm text-primary font-medium cursor-pointer bg-transparent hover:bg-base-200 transition-colors" onclick={createNewWorkflow}>{$t('agentSettings.newWorkflow')}</button>
+      <button class="mt-3 w-full py-2.5 rounded-lg border border-dashed border-base-300 text-sm text-primary font-medium cursor-pointer bg-transparent hover:bg-base-200 transition-colors" onclick={() => createNewWorkflow()}>{$t('agentSettings.newWorkflow')}</button>
+      <button class="mt-2 w-full py-2.5 rounded-lg border border-dashed border-base-300 text-sm text-primary font-medium cursor-pointer bg-transparent hover:bg-base-200 transition-colors" onclick={() => createNewWorkflow(true)}>New Call Tree — design what a phone line handles</button>
 
     {:else if section === 'skills'}
       <div class="mb-1">

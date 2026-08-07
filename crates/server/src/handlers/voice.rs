@@ -368,32 +368,38 @@ fn resolve_call_tree(state: &AppState, agent_id: &str, line: &str) -> Option<Cal
         // owner granted — tools (tool:resource), sibling workflows (via the
         // work tool, resource-scoped), plugins (slug-scoped), MCP servers
         // (prefix-scoped). Owner-declared, per line, enforced server-side.
+        // Grant params live flat on the intent node (tools/workflows/
+        // plugins/mcp), each a comma-separated string (the builder's form
+        // fields) or an array (the AI architect) — one shape, two spellings.
+        let grant_values = |key: &str| -> Vec<String> {
+            let v = a.params.as_ref().and_then(|p| p.get(key));
+            match v {
+                Some(serde_json::Value::Array(arr)) => arr
+                    .iter()
+                    .filter_map(|v| v.as_str())
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect(),
+                Some(serde_json::Value::String(s)) => s
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect(),
+                _ => Vec::new(),
+            }
+        };
         let mut allowlist = caller_floor_allowlist();
-        if let Some(g) = a.params.as_ref().and_then(|p| p.get("grants")) {
-            let strs = |key: &str| -> Vec<String> {
-                g.get(key)
-                    .and_then(|v| v.as_array())
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|v| v.as_str())
-                            .map(|s| s.trim().to_string())
-                            .filter(|s| !s.is_empty())
-                            .collect()
-                    })
-                    .unwrap_or_default()
-            };
-            for t in strs("tools") {
-                allowlist.insert(t);
-            }
-            for w in strs("workflows") {
-                allowlist.insert(format!("work:{w}"));
-            }
-            for p in strs("plugins") {
-                allowlist.insert(format!("plugin:{p}"));
-            }
-            for m in strs("mcp") {
-                allowlist.insert(format!("mcp__{m}__*"));
-            }
+        for t in grant_values("tools") {
+            allowlist.insert(t);
+        }
+        for w in grant_values("workflows") {
+            allowlist.insert(format!("work:{w}"));
+        }
+        for p in grant_values("plugins") {
+            allowlist.insert(format!("plugin:{p}"));
+        }
+        for m in grant_values("mcp") {
+            allowlist.insert(format!("mcp__{m}__*"));
         }
         intents.push(TreeIntent {
             name,

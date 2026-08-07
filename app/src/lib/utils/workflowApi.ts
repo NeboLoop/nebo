@@ -20,6 +20,7 @@ export function mapWorkflows(
 		if (!name) continue;
 		const trigger = wf.trigger ?? { type: 'manual' };
 		wfMap[name] = {
+			type: typeof wf.type === 'string' && wf.type ? wf.type : undefined,
 			trigger: {
 				...trigger,
 				type: trigger.type || 'manual',
@@ -74,6 +75,9 @@ export function triggerPayload(wf: WorkflowConfig): {
 			const { type, ...rest } = t;
 			return { triggerType: type, triggerConfig: rest };
 		}
+		case 'call':
+			// A call tree's line binding — the label is the whole config.
+			return { triggerType: 'call', triggerConfig: { line: t.line ?? '' } };
 		default:
 			return { triggerType: 'manual', triggerConfig: {} };
 	}
@@ -99,6 +103,8 @@ export async function saveWorkflows(
 		const payload: Record<string, unknown> = {
 			triggerType,
 			triggerConfig,
+			// Binding kind ('call_tree'); '' clears back to a standard workflow.
+			type: wf.type ?? '',
 			description: wf.description ?? '',
 			activities: wf.activities ?? [],
 			connections: wf.connections ?? [],
