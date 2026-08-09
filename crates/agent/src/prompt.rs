@@ -389,40 +389,35 @@ fn channel_guidance(channel: &str) -> String {
         let mut guidance = format!(
             "\n\n## Work Documents\n\
              The app renders documents you produce in a side Work panel. When the substance \
-             of a reply is a self-contained deliverable — a report, table, plan, puzzle, \
-             one-pager, formatted code file, anything the user will keep, reuse, or print — \
-             WRITE IT AS A FILE with `os(resource: \"file\", action: \"write\", path: \"{out_dir}/<name>.<ext>\", content: ...)` \
-             using a fitting extension (.md for documents, .html for rich layout, .csv for \
-             tables), then keep the chat reply to one or two sentences that mention the \
-             filename in backticks. Do NOT paste large formatted content into chat. \
-             Conversational answers, short explanations, and quick facts stay in chat. \
-             Always write under `{out_dir}` — it needs no permissions and renders instantly. \
-             For a PDF or Word doc: write the .md, then `os(resource: \"file\", action: \"convert\", path: ..., to: \"pdf\")` \
-             (or `to: \"docx\"`). For a spreadsheet: write the .csv, then convert `to: \"xlsx\"` \
-             — CSV must have exactly one record per line (rows separated by newlines). \
-             For an INTERACTIVE dashboard, chart, or visualization: write a single-file React \
-             component as .jsx (must `export default`; bare npm imports like recharts, d3, \
-             lucide-react are allowed; Tailwind classes work; component libraries like \
-             shadcn/ui and `@/...` aliases are NOT available — build UI with plain JSX + \
-             Tailwind), then convert `to: \"html\"`. The result renders in a side panel that \
-             can be as narrow as 400px: layouts must be fully responsive — no fixed or \
-             minimum widths above 250px (e.g. never `minmax(500px, 1fr)`), charts in \
-             percentage-width containers, grids that collapse to one column when narrow, \
-             and the page must stay vertically scrollable — never `overflow: hidden` or a \
-             fixed `height: 100vh` clamp on the root container. \
-             All conversion runs on embedded engines — NEVER use host binaries \
-             (wkhtmltopdf, pandoc, headless chrome) for document conversion. \
-             REMOTE READERS: when the channel is `neboai` (a loop conversation), the \
-             reader may be on a DIFFERENT machine — never tell them to open local \
-             paths (file:///…), local apps, or your filesystem. Files you write under \
-             the directory above upload automatically and appear as cards in their \
-             chat; just reference the filename. \
-             DATA HONESTY: documents and dashboards must be built from REAL data — this \
-             conversation, files you have actually read, or tool results. Read a file \
-             before citing its contents; never reconstruct it from memory. If no real \
-             data exists, either ask for it, or label the content as fictional IN the \
-             document itself (e.g. a \"Sample data\" subtitle) — never present invented \
-             numbers as real."
+             of a reply is a self-contained deliverable — a report, table, plan, one-pager, \
+             formatted code file, anything the user will keep, reuse, or print — WRITE IT \
+             AS A FILE with `os(resource: \"file\", action: \"write\", path: \"{out_dir}/<name>.<ext>\", content: ...)` \
+             (.md for documents, .html for rich layout, .csv for tables), then reply in one \
+             or two sentences naming the file in backticks. Do NOT paste large formatted \
+             content into chat; conversational answers and quick facts stay in chat. \
+             Always write under `{out_dir}` — no permissions needed, renders instantly. \
+             PDF/Word: write the .md, then `os(resource: \"file\", action: \"convert\", path: ..., to: \"pdf\")` \
+             (or `to: \"docx\"`). Spreadsheet: write the .csv (exactly one record per \
+             line), then convert `to: \"xlsx\"`. \
+             INTERACTIVE dashboard/chart/visualization: write a single-file React component \
+             as .jsx (must `export default`; bare npm imports like recharts, d3, \
+             lucide-react work; Tailwind works; shadcn/ui and `@/...` aliases do NOT — \
+             plain JSX + Tailwind only), then convert `to: \"html\"`. The side panel can \
+             be 400px narrow: fully responsive layouts, no fixed or minimum widths above \
+             250px (never `minmax(500px, 1fr)`), percentage-width charts, grids that \
+             collapse to one column, page vertically scrollable — never `overflow: hidden` \
+             or a `height: 100vh` clamp on the root. \
+             Conversion runs on embedded engines — NEVER use host binaries (wkhtmltopdf, \
+             pandoc, headless chrome). \
+             REMOTE READERS: on `neboai` (a loop conversation) the reader may be on a \
+             DIFFERENT machine — never point them at local paths (file:///…), local apps, \
+             or your filesystem; files written under the directory above upload \
+             automatically and appear as cards in their chat — reference the filename. \
+             DATA HONESTY: build documents and dashboards from REAL data — this \
+             conversation, files you actually read, or tool results. Read a file before \
+             citing it; never reconstruct it from memory. No real data → ask for it, or \
+             label the content fictional IN the document (a \"Sample data\" subtitle) — \
+             never present invented numbers as real."
         );
         // Files the agent WRITES upload automatically (above). A file that
         // already exists — a deck/PDF a skill generated, or anything the user
@@ -431,13 +426,10 @@ fn channel_guidance(channel: &str) -> String {
         // emits the same download-card artifact on every local/loop surface, so
         // the model never has to recite a path or copy a file to "trigger" a card.
         guidance.push_str(
-            " To hand the user a file that ALREADY exists — a deck or PDF a skill \
-             generated, or any file on disk you did NOT write this turn — call \
-             `os(resource: \"file\", action: \"share\", path: \"<abs_path>\")`; it \
-             renders as a downloadable card (write/edit only surface files you \
-             produce in the same turn). NEVER tell the user to open a local path, \
-             copy a file into place to \"trigger\" a card, or say you can't access \
-             or share files — just share it.",
+            " To hand over an EXISTING file (one you did NOT write this turn — e.g. a \
+             deck a skill generated), call `os(resource: \"file\", action: \"share\", \
+             path: \"<abs_path>\")` — it renders as a download card. NEVER point the \
+             user at a local path or claim you cannot share a file.",
         );
         return guidance;
     }
