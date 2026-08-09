@@ -657,6 +657,9 @@ impl WorkflowManager for WorkflowManagerImpl {
                     None
                 };
 
+                // Deferred tool names (MCP proxies etc.): activities only get
+                // their schemas when they declare or reference them.
+                let deferred_names = tools_registry.get_deferred_names().await;
                 match workflow::engine::execute_workflow(
                     &def,
                     "", // standalone workflow run — not bound to an agent
@@ -666,6 +669,7 @@ impl WorkflowManager for WorkflowManagerImpl {
                     &store,
                     &*provider,
                     &resolved_tools,
+                    Some(&deferred_names),
                     Some(&run_id_clone),
                     Some(&cancel_token),
                     skill_content.as_ref(),
@@ -1345,6 +1349,9 @@ impl WorkflowManager for WorkflowManagerImpl {
                     });
                 }
 
+                // Deferred tool names (MCP proxies etc.): activities only get
+                // their schemas when they declare or reference them.
+                let deferred_names = tools_registry.get_deferred_names().await;
                 match workflow::engine::execute_workflow(
                     &def,
                     &agent_id_owned,
@@ -1354,6 +1361,7 @@ impl WorkflowManager for WorkflowManagerImpl {
                     &store,
                     &*provider,
                     &resolved_tools,
+                    Some(&deferred_names),
                     Some(&run_id_clone),
                     Some(&cancel_token),
                     skill_content.as_ref(),

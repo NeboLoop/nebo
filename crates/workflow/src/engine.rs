@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use tokio_util::sync::CancellationToken;
@@ -53,21 +53,33 @@ fn parse_eval_response(content: &str) -> EvalDecision {
     }
 }
 
-/// Scope an activity's toolset to what its text actually references.
+/// Scope an activity's toolset to what it declares and references.
 ///
 /// The full registry (~38 tools, ~21k tokens of schemas) went out with EVERY
 /// LLM turn and invited small models to wander — web-searching for
 /// instructions the step already spells out, or shelling out to plugin
-/// binaries via `os` instead of the plugin tool. Scan the activity's intent,
-/// steps, and skill docs for `<tool>(` call references; when at least one
-/// registry tool matches, run with just those plus `message` (the delivery
-/// primitive — steps often say "alert" without naming it). No match → fail
-/// open with the full roster (can't infer usage → don't break agents that
-/// rely on free tool choice).
+/// binaries via `os` instead of the plugin tool. A tool is included when:
+///
+/// - the activity DECLARES it in agent.json — `mcps` entries select that
+///   server's proxy tools (`mcp__<server>__*`), `cmds` (plugin commands)
+///   select the `plugin` tool — the authored contract comes first;
+/// - or its intent/steps/skill docs REFERENCE it — `<tool>(` — directly or
+///   through a legacy pre-STRAP name (`organizer(` → `os`, `gws(` →
+///   `plugin`; see `tools::registry::legacy_tool_aliases`), so imported
+///   workflows authored against old tool names still scope correctly;
+/// - or it is `message` (the delivery primitive — steps often say "alert"
+///   without naming it).
+///
+/// When nothing is declared or referenced, fall back to the NON-DEFERRED
+/// roster only. Deferred tools (MCP proxies, heavyweight domain tools) are
+/// deferred precisely so their schemas don't ship until needed — the old
+/// fail-open-with-everything sent every connected MCP server's full schemas
+/// (~20k tokens/call) to activities whose agent.json declared `mcps: []`.
 pub(crate) fn scoped_activity_tools<'a>(
     activity: &Activity,
     resolved_tools: &'a [Box<dyn DynTool>],
     skill_content: Option<&HashMap<String, String>>,
+    deferred: Option<&HashSet<String>>,
 ) -> Vec<&'a Box<dyn DynTool>> {
     let mut text = activity.intent.clone();
     for s in &activity.steps {
@@ -80,19 +92,65 @@ pub(crate) fn scoped_activity_tools<'a>(
             }
         }
     }
+
+    // Declared MCP servers → proxy-name prefixes (server keys are normalized
+    // the same way proxy names are built: lowercase, non-alphanumeric → `_`).
+    let mcp_prefixes: Vec<String> = activity
+        .mcps
+        .iter()
+        .map(|s| {
+            let norm: String = s
+                .to_lowercase()
+                .chars()
+                .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+                .collect();
+            format!("mcp__{norm}")
+        })
+        .collect();
+    // Declared plugin commands run through the plugin tool ("emit" is the
+    // event primitive, injected separately — it declares no plugin need).
+    let wants_plugin = activity.cmds.iter().any(|c| c != "emit");
+    // Legacy pre-STRAP names appearing in the text → their absorbing tool.
+    let alias_targets: HashSet<&'static str> = tools::registry::legacy_tool_aliases()
+        .iter()
+        .filter(|(alias, _)| text.contains(&format!("{alias}(")))
+        .map(|(_, target)| *target)
+        .collect();
+
     let referenced: Vec<&'a Box<dyn DynTool>> = resolved_tools
         .iter()
-        .filter(|t| t.name() == "message" || text.contains(&format!("{}(", t.name())))
+        .filter(|t| {
+            let n = t.name();
+            n == "message"
+                || text.contains(&format!("{n}("))
+                || alias_targets.contains(n)
+                || (wants_plugin && n == "plugin")
+                || mcp_prefixes.iter().any(|p| n.to_lowercase().starts_with(p.as_str()))
+                || activity.mcps.iter().any(|m| m == n)
+        })
         .collect();
     if referenced.iter().any(|t| t.name() != "message") {
         info!(
             activity = activity.id.as_str(),
             tools = referenced.len(),
-            "scoped activity toolset to referenced tools"
+            "scoped activity toolset to declared + referenced tools"
         );
         referenced
     } else {
-        resolved_tools.iter().collect()
+        // Fail-soft: active (non-deferred) tools only — never ship deferred
+        // schemas an activity neither declared nor referenced. Loud, so a
+        // workflow whose steps reference only unknown/stale tool names shows
+        // up in logs instead of silently running with a blanket roster.
+        let fallback: Vec<&'a Box<dyn DynTool>> = resolved_tools
+            .iter()
+            .filter(|t| deferred.is_none_or(|d| !d.contains(t.name())))
+            .collect();
+        warn!(
+            activity = activity.id.as_str(),
+            tools = fallback.len(),
+            "activity declares and references no known tools; using non-deferred roster"
+        );
+        fallback
     }
 }
 
@@ -162,6 +220,10 @@ pub async fn execute_workflow(
     store: &Arc<Store>,
     provider: &dyn ai::Provider,
     resolved_tools: &[Box<dyn DynTool>],
+    // Names of deferred tools in the registry (MCP proxies etc.) — excluded
+    // from the fail-soft roster so their schemas only ship to activities
+    // that declare or reference them. `None` = treat all tools as active.
+    deferred_tools: Option<&HashSet<String>>,
     existing_run_id: Option<&str>,
     cancel_token: Option<&CancellationToken>,
     skill_content: Option<&HashMap<String, String>>,
@@ -209,6 +271,7 @@ pub async fn execute_workflow(
             store,
             provider,
             resolved_tools,
+            deferred_tools,
             &run_id,
             cancel_token,
             skill_content,
@@ -275,7 +338,7 @@ pub async fn execute_workflow(
         // scoped_activity_tools) — the full registry went out with EVERY LLM
         // turn (~21k tokens of schemas) and invited small models to wander.
         let mut activity_tools: Vec<&Box<dyn DynTool>> =
-            scoped_activity_tools(activity, resolved_tools, skill_content);
+            scoped_activity_tools(activity, resolved_tools, skill_content, deferred_tools);
 
         // Inject emit tool if event bus is available (always available, no declaration needed)
         let emit_tool_box: Option<Box<dyn DynTool>> =
@@ -1922,7 +1985,7 @@ mod engine_tests {
         }))
         .unwrap();
         let registry = fake_registry();
-        let scoped = scoped_activity_tools(&activity, &registry, None);
+        let scoped = scoped_activity_tools(&activity, &registry, None, None);
         let names: Vec<&str> = scoped.iter().map(|t| t.name()).collect();
         // plugin + agent referenced; message always rides along; os/web/browser stripped
         assert_eq!(names, vec!["plugin", "agent", "message"]);
@@ -1937,9 +2000,70 @@ mod engine_tests {
         }))
         .unwrap();
         let registry = fake_registry();
-        let scoped = scoped_activity_tools(&activity, &registry, None);
-        // Nothing referenced → full roster (fail open)
+        let scoped = scoped_activity_tools(&activity, &registry, None, None);
+        // Nothing referenced, no deferral info → full roster (fail soft)
         assert_eq!(scoped.len(), registry.len());
+    }
+
+    #[test]
+    fn test_scoped_activity_tools_failsoft_excludes_deferred() {
+        // A context-compile activity that references nothing must NOT be
+        // handed deferred schemas (MCP proxies) it never declared — that was
+        // ~20k tokens of Monument schemas on every call of an activity whose
+        // agent.json said mcps: [].
+        let activity: Activity = serde_json::from_value(serde_json::json!({
+            "id": "compile",
+            "intent": "Compile the briefing from prior context",
+            "steps": ["Keep it scannable"]
+        }))
+        .unwrap();
+        let mut registry = fake_registry();
+        registry.push(Box::new(FakeTool("mcp__monument__project")));
+        let deferred: HashSet<String> = ["mcp__monument__project".to_string()].into();
+        let scoped = scoped_activity_tools(&activity, &registry, None, Some(&deferred));
+        let names: Vec<&str> = scoped.iter().map(|t| t.name()).collect();
+        assert!(!names.contains(&"mcp__monument__project"));
+        assert_eq!(names.len(), registry.len() - 1);
+    }
+
+    #[test]
+    fn test_scoped_activity_tools_resolves_legacy_alias() {
+        // Imported workflows authored pre-STRAP say `organizer(...)` — that
+        // tool no longer exists (folded into os). The alias table must scope
+        // this to os instead of matching nothing and blanketing the roster.
+        let activity: Activity = serde_json::from_value(serde_json::json!({
+            "id": "parse-brief",
+            "intent": "List unread messages",
+            "steps": ["List unread: organizer(resource: \"mail\", action: \"unread\")"]
+        }))
+        .unwrap();
+        let registry = fake_registry();
+        let scoped = scoped_activity_tools(&activity, &registry, None, None);
+        let names: Vec<&str> = scoped.iter().map(|t| t.name()).collect();
+        assert_eq!(names, vec!["message", "os"]);
+    }
+
+    #[test]
+    fn test_scoped_activity_tools_honors_declared_mcps_and_cmds() {
+        // agent.json declarations are the authored tool contract: mcps
+        // selects that server's proxy tools, cmds selects the plugin tool —
+        // even when the step prose never writes a `tool(` call.
+        let activity: Activity = serde_json::from_value(serde_json::json!({
+            "id": "sync",
+            "intent": "Sync project changes",
+            "mcps": ["monument"],
+            "cmds": ["gws gmail +triage"],
+            "steps": ["Pull recent changes and file them"]
+        }))
+        .unwrap();
+        let mut registry = fake_registry();
+        registry.push(Box::new(FakeTool("mcp__monument__project")));
+        let deferred: HashSet<String> = ["mcp__monument__project".to_string()].into();
+        let scoped = scoped_activity_tools(&activity, &registry, None, Some(&deferred));
+        let names: Vec<&str> = scoped.iter().map(|t| t.name()).collect();
+        assert!(names.contains(&"mcp__monument__project"), "declared mcps scope in: {names:?}");
+        assert!(names.contains(&"plugin"), "declared cmds scope the plugin tool in: {names:?}");
+        assert!(!names.contains(&"web"), "undeclared tools stay out: {names:?}");
     }
 
     #[test]
@@ -1958,7 +2082,7 @@ mod engine_tests {
         );
         let registry = fake_registry();
         // Step text never names a tool, but the skill doc shows plugin( usage
-        let scoped = scoped_activity_tools(&activity, &registry, Some(&skills));
+        let scoped = scoped_activity_tools(&activity, &registry, Some(&skills), None);
         let names: Vec<&str> = scoped.iter().map(|t| t.name()).collect();
         assert_eq!(names, vec!["plugin", "message"]);
     }

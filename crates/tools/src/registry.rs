@@ -1240,6 +1240,33 @@ fn resolve_flat_alias(name: &str) -> Option<(String, Vec<(String, serde_json::Va
     Some((tool.to_string(), params))
 }
 
+/// Legacy tool names from before the STRAP consolidation → the STRAP tool
+/// that absorbed them. The structured counterpart of `tool_correction`'s
+/// prose (which carries usage examples and must agree with this table).
+/// Consumed by the workflow engine's activity tool-scoping so a workflow
+/// authored (or imported) against pre-STRAP names — `organizer(...)`,
+/// `gws ...` — still scopes to the right live tool instead of matching
+/// nothing and falling back to the full roster.
+pub fn legacy_tool_aliases() -> &'static [(&'static str, &'static str)] {
+    &[
+        ("organizer", "os"),
+        ("app", "os"),
+        ("settings", "os"),
+        ("music", "os"),
+        ("keychain", "os"),
+        ("spotlight", "os"),
+        ("desktop", "os"),
+        ("system", "os"),
+        ("gws", "plugin"),
+        ("google-workspace", "plugin"),
+        ("gmail", "plugin"),
+        ("gcalendar", "plugin"),
+        ("gdrive", "plugin"),
+        ("gsheets", "plugin"),
+        ("gdocs", "plugin"),
+    ]
+}
+
 /// Provide specific correction for known hallucinated tool names.
 fn tool_correction(name: &str) -> String {
     match name.to_lowercase().as_str() {
@@ -1305,7 +1332,13 @@ fn tool_correction(name: &str) -> String {
         }
         _ => {
             if name.starts_with("mcp__") {
-                "INSTEAD USE: mcp(server: \"<server>\", resource: \"<tool>\", action: \"<action>\") — call MCP tools via the mcp STRAP tool, not by their namespaced name".to_string()
+                // Namespaced MCP proxies ARE the way to call MCP tools (see
+                // strap/mcp.txt) — they're just deferred. A miss here means the
+                // exact proxy name doesn't exist or isn't activated yet.
+                format!(
+                    "'{}' is not an active tool name. Connected MCP tools are named mcp__<server>__<tool> and activate on demand: run tool_search(query: \"<server or capability>\") to find the exact proxy name and its schema, then call it directly. mcp(action: \"list\") enumerates connected servers.",
+                    name
+                )
             } else {
                 format!(
                     "'{}' is not a recognized tool. Use skill(action: \"discover\", query: \"{}\") to find a skill, \
