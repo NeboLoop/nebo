@@ -1199,11 +1199,34 @@ pub fn file_mutation_paths(
     Some(paths)
 }
 
-/// Resolve flat tool names (the model-facing convention) to STRAP tool + injected params.
-/// Returns (strap_tool_name, params_to_inject) or None if not a known alias.
-fn resolve_flat_alias(name: &str) -> Option<(String, Vec<(String, serde_json::Value)>)> {
+/// Resolve flat tool names (the model-facing convention) AND legacy pre-STRAP
+/// tool names to STRAP tool + injected params. Returns (strap_tool_name,
+/// params_to_inject) or None if not a known alias. Injected params only fill
+/// keys the call didn't provide (entry().or_insert at the dispatch site), so
+/// passthrough aliases carry the model's own resource/action untouched.
+///
+/// Public because it is THE call-time resolution table: the registry's chat
+/// dispatch and the workflow engine's activity dispatch both consult it, so a
+/// first tool call written against an old name (`organizer(resource: "mail")`)
+/// EXECUTES instead of bouncing through a correction round-trip — small models
+/// follow step text literally and don't get a second turn for free.
+pub fn resolve_flat_alias(name: &str) -> Option<(String, Vec<(String, serde_json::Value)>)> {
     let lc = name.to_lowercase();
     let (tool, params): (&str, Vec<(&str, &str)>) = match lc.as_str() {
+        // Legacy STRAP consolidations — tools absorbed into os/plugin. The
+        // call shape carried over (resource/action args), so organizer-style
+        // calls pass through untouched; single-purpose tools inject their
+        // absorbed resource. Must agree with tool_correction's prose and
+        // legacy_tool_aliases (the scoping table).
+        "organizer" | "desktop" | "system" => ("os", vec![]),
+        "app" => ("os", vec![("resource", "app")]),
+        "settings" => ("os", vec![("resource", "settings")]),
+        "music" => ("os", vec![("resource", "music")]),
+        "keychain" => ("os", vec![("resource", "keychain")]),
+        "spotlight" => ("os", vec![("resource", "search")]),
+        "gws" | "google-workspace" | "gmail" | "gcalendar" | "gdrive" | "gsheets" | "gdocs" => {
+            ("plugin", vec![("resource", "gws")])
+        }
         // File operations → os
         "file_read" | "read_file" | "fileread" | "read" => {
             ("os", vec![("resource", "file"), ("action", "read")])
@@ -1466,7 +1489,10 @@ mod tests {
         assert!(tool_correction("unknown_tool").contains("not a recognized tool"));
         assert!(tool_correction("unknown_tool").contains("skill(action: \"discover\""));
         assert!(tool_correction("unknown_tool").contains("tool_search"));
-        assert!(tool_correction("mcp__server__tool").contains("mcp(server:"));
+        // Namespaced proxies are the real MCP call path (strap/mcp.txt) —
+        // the correction steers to discovery, never to a wrapper call.
+        assert!(tool_correction("mcp__server__tool").contains("tool_search"));
+        assert!(tool_correction("mcp__server__tool").contains("mcp__<server>__<tool>"));
     }
 
     /// Drift guard for the tool-rename class (TD-001, capability vocabulary,

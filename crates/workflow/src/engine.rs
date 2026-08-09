@@ -365,6 +365,7 @@ pub async fn execute_workflow(
             &inputs,
             provider,
             &activity_tools,
+            resolved_tools,
             skill_content,
             activity_emit,
             store,
@@ -579,6 +580,9 @@ pub(crate) async fn execute_activity_with_retry(
     inputs: &serde_json::Value,
     provider: &dyn ai::Provider,
     tools: &[&Box<dyn DynTool>],
+    // Full resolved roster — dispatch fallback only (see resolve_tool_call);
+    // schemas advertised to the model come from `tools` (the scoped set).
+    roster: &[Box<dyn DynTool>],
     skill_content: Option<&HashMap<String, String>>,
     emit_source: Option<&str>,
     store: &Arc<Store>,
@@ -616,6 +620,7 @@ pub(crate) async fn execute_activity_with_retry(
             inputs,
             provider,
             tools,
+            roster,
             skill_content,
             emit_source,
             store,
@@ -669,6 +674,9 @@ pub async fn execute_activity(
     inputs: &serde_json::Value,
     provider: &dyn ai::Provider,
     tools: &[&Box<dyn DynTool>],
+    // Full resolved roster — dispatch fallback only (see resolve_tool_call);
+    // schemas advertised to the model come from `tools` (the scoped set).
+    roster: &[Box<dyn DynTool>],
     skill_content: Option<&HashMap<String, String>>,
     emit_source: Option<&str>,
     store: &Arc<Store>,
@@ -740,7 +748,7 @@ pub async fn execute_activity(
             Some(r) => (r.messages.clone(), Some(r.pending.clone())),
             None => (messages, None),
         };
-        return run_llm_loop(activity, provider, tools, &tool_defs, &system, messages, spent, spent_output, make_trace(String::new()), store, checkpoint, pending, iteration).await;
+        return run_llm_loop(activity, provider, tools, roster, &tool_defs, &system, messages, spent, spent_output, make_trace(String::new()), store, checkpoint, pending, iteration).await;
     }
 
     // --- Per-step execution ---
@@ -813,6 +821,7 @@ pub async fn execute_activity(
             activity,
             provider,
             tools,
+            roster,
             &tool_defs,
             &system,
             messages.clone(),
@@ -1062,11 +1071,62 @@ async fn evaluate_step(
 /// steps — the unit token budgets are enforced in. Input tokens are dominated
 /// by the fixed tool-schema overhead resent every turn (~30k), so an
 /// input-inclusive budget of the default 4096 would fail every run on turn 1.
+
+/// Resolve a model tool call to an executable tool + input.
+///
+/// The first-tool-call-success contract: a call written against a legacy
+/// pre-STRAP name (`organizer(resource: "mail")`) EXECUTES — resolved through
+/// the one canonical alias table (tools::registry::resolve_flat_alias) — it
+/// never bounces through a correction round-trip. And scoping restricts the
+/// advertised MENU, never the executable KITCHEN: a real roster tool called
+/// by name runs (with a warning that names the scope miss) even when its
+/// schema wasn't shipped for this activity. Small models follow step text
+/// literally; their first call has to land.
+fn resolve_tool_call<'a>(
+    scoped: &[&'a Box<dyn DynTool>],
+    roster: &'a [Box<dyn DynTool>],
+    call_name: &str,
+    input: &serde_json::Value,
+) -> (String, serde_json::Value, Option<&'a Box<dyn DynTool>>) {
+    let (name, input) = match tools::registry::resolve_flat_alias(call_name) {
+        Some((strap, params)) => {
+            let mut merged = input.clone();
+            if let Some(obj) = merged.as_object_mut() {
+                for (k, v) in params {
+                    obj.entry(&k).or_insert(v);
+                }
+            }
+            info!(requested = %call_name, resolved = %strap, "legacy tool name resolved at dispatch");
+            (strap, merged)
+        }
+        None => (call_name.to_string(), input.clone()),
+    };
+    let stripped = strip_mcp_prefix(&name).to_string();
+    let found: Option<&'a Box<dyn DynTool>> = scoped
+        .iter()
+        .find(|t| t.name() == name)
+        .or_else(|| scoped.iter().find(|t| t.name() == stripped))
+        .copied()
+        .or_else(|| {
+            roster
+                .iter()
+                .find(|t| t.name() == name || t.name() == stripped)
+                .inspect(|t| {
+                    warn!(
+                        tool = %t.name(),
+                        "tool executed outside activity scope — declare or reference it so its schema ships"
+                    );
+                })
+        });
+    (name, input, found)
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_llm_loop(
     activity: &Activity,
     provider: &dyn ai::Provider,
     tools: &[&Box<dyn DynTool>],
+    roster: &[Box<dyn DynTool>],
     tool_defs: &[ai::ToolDefinition],
     system: &str,
     mut messages: Vec<ai::Message>,
@@ -1101,15 +1161,9 @@ async fn run_llm_loop(
     // the normal loop: the next model turn sees the outcome and continues
     // the workflow from precisely where it paused. Nothing earlier re-runs.
     if let Some(tc) = pending {
-        let tool = tools
-            .iter()
-            .find(|t| t.name() == tc.name)
-            .or_else(|| {
-                let stripped = strip_mcp_prefix(&tc.name);
-                tools.iter().find(|t| t.name() == stripped)
-            });
+        let (_name, input, tool) = resolve_tool_call(tools, roster, &tc.name, &tc.input);
         let result = match tool {
-            Some(t) => t.execute_dyn(&ctx, tc.input.clone()).await,
+            Some(t) => t.execute_dyn(&ctx, input).await,
             None => tools::ToolResult::error(format!("tool not found: {}", tc.name)),
         };
         if result.terminal {
@@ -1266,16 +1320,8 @@ async fn run_llm_loop(
         // with tools::workflow_session_key — supersedes the older inline binding).
         let mut tool_result_entries = Vec::new();
         for tc in &tool_calls {
-            let tool = tools.iter().find(|t| t.name() == tc.name)
-                .or_else(|| {
-                    let stripped = strip_mcp_prefix(&tc.name);
-                    if stripped != tc.name {
-                        warn!(requested = %tc.name, resolved = %stripped, "stripped MCP prefix from tool call");
-                        tools.iter().find(|t| t.name() == stripped)
-                    } else {
-                        None
-                    }
-                });
+            let (_name, resolved_input, tool) =
+                resolve_tool_call(tools, roster, &tc.name, &tc.input);
             // ── Approval checkpoint (per-employee operation policy) ──────
             // The headless analog of the chat runner's operation gate: a gated
             // interface operation is decided by the SAME OperationPolicy.
@@ -1370,7 +1416,7 @@ async fn run_llm_loop(
                 }
             }
             let result = match tool {
-                Some(t) => t.execute_dyn(&ctx, tc.input.clone()).await,
+                Some(t) => t.execute_dyn(&ctx, resolved_input).await,
                 None => tools::ToolResult::error(format!("tool not found: {}", tc.name)),
             };
 
@@ -2041,6 +2087,39 @@ mod engine_tests {
         let scoped = scoped_activity_tools(&activity, &registry, None, None);
         let names: Vec<&str> = scoped.iter().map(|t| t.name()).collect();
         assert_eq!(names, vec!["message", "os"]);
+    }
+
+    #[test]
+    fn test_resolve_tool_call_first_call_lands() {
+        // The first-call contract: a legacy name EXECUTES (no correction
+        // round-trip), and scoping narrows the advertised menu but never the
+        // executable kitchen.
+        let roster = fake_registry();
+        let scoped: Vec<&Box<dyn DynTool>> =
+            roster.iter().filter(|t| t.name() == "os" || t.name() == "message").collect();
+
+        // Legacy alias: organizer( → os, params passed through untouched.
+        let input = serde_json::json!({"resource": "mail", "action": "unread"});
+        let (name, resolved_input, tool) = resolve_tool_call(&scoped, &roster, "organizer", &input);
+        assert_eq!(name, "os");
+        assert_eq!(resolved_input, input);
+        assert_eq!(tool.expect("resolves to a live tool").name(), "os");
+
+        // Single-purpose legacy alias injects its absorbed resource.
+        let (_n, resolved_input, tool) =
+            resolve_tool_call(&scoped, &roster, "spotlight", &serde_json::json!({"query": "q"}));
+        assert_eq!(resolved_input["resource"], "search");
+        assert_eq!(tool.unwrap().name(), "os");
+
+        // Out-of-scope but real: plugin isn't in the scoped menu, still runs.
+        let (_n, _i, tool) =
+            resolve_tool_call(&scoped, &roster, "plugin", &serde_json::json!({}));
+        assert_eq!(tool.expect("kitchen is never narrowed").name(), "plugin");
+
+        // Genuinely unknown names still fail (no phantom tools).
+        let (_n, _i, tool) =
+            resolve_tool_call(&scoped, &roster, "definitely_not_a_tool", &serde_json::json!({}));
+        assert!(tool.is_none());
     }
 
     #[test]

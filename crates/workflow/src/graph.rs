@@ -832,6 +832,7 @@ async fn run_llm_activity<'a>(
         ctx.inputs,
         ctx.provider,
         &activity_tools,
+        ctx.resolved_tools,
         ctx.skill_content,
         activity_emit,
         ctx.store,
