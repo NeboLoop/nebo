@@ -1112,10 +1112,11 @@ impl PluginTool {
             .and_then(|a| a.profile_dir_env)
         {
             Some(env_name) => {
-                let profile = agent_id_from_session_key(&ctx.session_key).and_then(|agent_id| {
+                let agent_id = agent_id_from_session_key(&ctx.session_key);
+                let profile = agent_id.as_deref().and_then(|agent_id| {
                     self.db_store
                         .resolve_plugin_account_profile(
-                            &agent_id,
+                            agent_id,
                             &pi.resource,
                             selected_account.as_deref(),
                         )
@@ -1125,11 +1126,38 @@ impl PluginTool {
                 match profile {
                     Some(p) => Some((env_name, p.config_dir)),
                     None => {
-                        return ToolResult::error(format!(
-                            "No {res} account is connected for this agent. Connect one in \
-                             this agent's Settings → Connected Accounts before using {res}.",
-                            res = pi.resource
-                        ));
+                        // Tell the truth about WHICH failure this is. Claiming
+                        // "no account is connected" when accounts exist but the
+                        // `--account` label didn't match sent workflows into
+                        // early exit over one apostrophe glyph — the model
+                        // trusts this message verbatim. Naming the connected
+                        // labels lets it retry with the right one.
+                        let connected: Vec<String> = agent_id
+                            .as_deref()
+                            .and_then(|a| {
+                                self.db_store
+                                    .list_plugin_account_profiles(a, &pi.resource)
+                                    .ok()
+                            })
+                            .unwrap_or_default()
+                            .into_iter()
+                            .map(|p| p.account_label)
+                            .collect();
+                        let msg = match (selected_account.as_deref(), connected.is_empty()) {
+                            (Some(label), false) => format!(
+                                "No {res} account named \"{label}\" for this agent. Connected \
+                                 {res} accounts: {labels}. Retry with one of those exact labels \
+                                 (or omit --account to use the primary).",
+                                res = pi.resource,
+                                labels = connected.join(", ")
+                            ),
+                            _ => format!(
+                                "No {res} account is connected for this agent. Connect one in \
+                                 this agent's Settings → Connected Accounts before using {res}.",
+                                res = pi.resource
+                            ),
+                        };
+                        return ToolResult::error(msg);
                     }
                 }
             }
