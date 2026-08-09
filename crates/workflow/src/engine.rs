@@ -285,6 +285,12 @@ pub async fn execute_workflow(
     }
 
     let mut total_tokens: u32 = 0;
+    // Output tokens only — what budget.total_per_run is enforced in (same
+    // semantics as the graph executor and the per-activity budgets). Input is
+    // dominated by fixed per-turn overhead (tool schemas, context) resent every
+    // call, so metering the run budget in input+output made small budgets trip
+    // on the first call regardless of how much work the model actually did.
+    let mut total_output_tokens: u32 = 0;
     let mut prior_context = String::new();
     let activity_count = def.activities.len();
 
@@ -383,6 +389,7 @@ pub async fn execute_workflow(
         {
             Ok((result_text, _tokens_used)) => {
                 total_tokens += activity_spent;
+                total_output_tokens += activity_spent_output;
                 consecutive_failures = 0;
                 last_failure_pattern = None;
 
@@ -432,6 +439,7 @@ pub async fn execute_workflow(
             }
             Err(WorkflowError::Exited(reason)) => {
                 total_tokens += activity_spent;
+                total_output_tokens += activity_spent_output;
                 let completed_at = chrono::Utc::now().timestamp();
                 let _ = store.create_activity_result(
                     &run_id,
@@ -464,6 +472,7 @@ pub async fn execute_workflow(
             }
             Err(e) => {
                 total_tokens += activity_spent;
+                total_output_tokens += activity_spent_output;
                 let completed_at = chrono::Utc::now().timestamp();
                 let err_msg = e.to_string();
                 if let Err(db_err) = store.create_activity_result(
@@ -528,8 +537,10 @@ pub async fn execute_workflow(
             }
         }
 
-        // Check total budget
-        if def.budget.total_per_run > 0 && total_tokens > def.budget.total_per_run {
+        // Check total budget — output tokens only, matching the graph executor
+        // and the per-activity budgets (`total_tokens` keeps full input+output
+        // for run reporting).
+        if def.budget.total_per_run > 0 && total_output_tokens > def.budget.total_per_run {
             if let Err(e) = store.complete_workflow_run(
                 &run_id,
                 "failed",
@@ -542,7 +553,7 @@ pub async fn execute_workflow(
             }
             return Err(WorkflowError::BudgetExceeded {
                 activity_id: "workflow".into(),
-                used: total_tokens,
+                used: total_output_tokens,
                 limit: def.budget.total_per_run,
             });
         }
@@ -1030,12 +1041,19 @@ async fn evaluate_step(
         .map_err(|e| WorkflowError::Provider(e.to_string()))?;
 
     let mut response_text = String::new();
-    let mut eval_tokens: u32 = 0;
+    // Max-merged per field: usage counters are cumulative running totals, and
+    // a provider may emit them once (OpenAI final chunk), per chunk (Janus),
+    // or split across two events with disjoint fields (input at start, output
+    // at end). Max per field is correct for all three; summing or last-wins
+    // is not.
+    let mut eval_input: i32 = 0;
+    let mut eval_output: i32 = 0;
     while let Some(event) = rx.recv().await {
         match event.event_type {
             StreamEventType::Text => response_text.push_str(&event.text),
             StreamEventType::Error => {
                 warn!("step evaluator error: {:?}", event.error);
+                let eval_tokens = (eval_input.max(0) + eval_output.max(0)) as u32;
                 return Ok((EvalDecision::Proceed, eval_tokens));
             }
             // Providers emit usage as a dedicated Usage event; Done carries
@@ -1043,12 +1061,14 @@ async fn evaluate_step(
             // that way). Reading usage only on Done left eval_tokens at 0.
             StreamEventType::Usage => {
                 if let Some(usage) = event.usage {
-                    eval_tokens = (usage.input_tokens + usage.output_tokens) as u32;
+                    eval_input = eval_input.max(usage.input_tokens);
+                    eval_output = eval_output.max(usage.output_tokens);
                 }
             }
             StreamEventType::Done => {
                 if let Some(usage) = event.usage {
-                    eval_tokens = (usage.input_tokens + usage.output_tokens) as u32;
+                    eval_input = eval_input.max(usage.input_tokens);
+                    eval_output = eval_output.max(usage.output_tokens);
                 }
                 break;
             }
@@ -1056,6 +1076,7 @@ async fn evaluate_step(
         }
     }
 
+    let eval_tokens = (eval_input.max(0) + eval_output.max(0)) as u32;
     Ok((parse_eval_response(&response_text), eval_tokens))
 }
 
@@ -1070,7 +1091,8 @@ async fn evaluate_step(
 /// `spent_output` accumulates output tokens only, across all of an activity's
 /// steps — the unit token budgets are enforced in. Input tokens are dominated
 /// by the fixed tool-schema overhead resent every turn (~30k), so an
-/// input-inclusive budget of the default 4096 would fail every run on turn 1.
+/// input-inclusive budget would fail on turn 1 regardless of the model's work.
+/// Budgets are opt-in: an activity with no declared budget (max 0) is uncapped.
 
 /// Resolve a model tool call to an executable tool + input.
 ///
@@ -1212,7 +1234,12 @@ async fn run_llm_loop(
 
         let mut response_text = String::new();
         let mut tool_calls: Vec<ai::ToolCall> = Vec::new();
-        let mut turn_counted = false;
+        // Per-turn usage, merged max-per-field across however many Usage
+        // events the provider emits. Usage counters are cumulative running
+        // totals, so max = final; SUMMING them counted a ~200-token turn as
+        // tens of thousands and tripped every budget (the 71613/8000 failures).
+        let mut turn_input: i32 = 0;
+        let mut turn_output: i32 = 0;
 
         while let Some(event) = rx.recv().await {
             match event.event_type {
@@ -1236,27 +1263,26 @@ async fn run_llm_loop(
                 // enforced and the only runaway stop was the iteration cap.
                 StreamEventType::Usage => {
                     if let Some(usage) = event.usage {
-                        let turn = (usage.input_tokens + usage.output_tokens) as u32;
-                        tokens_used += turn;
-                        *spent += turn;
-                        *spent_output += usage.output_tokens.max(0) as u32;
-                        turn_counted = true;
+                        turn_input = turn_input.max(usage.input_tokens);
+                        turn_output = turn_output.max(usage.output_tokens);
                     }
                 }
                 StreamEventType::Done => {
-                    if !turn_counted {
-                        if let Some(usage) = event.usage {
-                            let turn = (usage.input_tokens + usage.output_tokens) as u32;
-                            tokens_used += turn;
-                            *spent += turn;
-                            *spent_output += usage.output_tokens.max(0) as u32;
-                        }
+                    if let Some(usage) = event.usage {
+                        turn_input = turn_input.max(usage.input_tokens);
+                        turn_output = turn_output.max(usage.output_tokens);
                     }
                     break;
                 }
                 _ => {}
             }
         }
+
+        // Commit the merged turn usage exactly once, after the stream ends.
+        let turn_total = (turn_input.max(0) + turn_output.max(0)) as u32;
+        tokens_used += turn_total;
+        *spent += turn_total;
+        *spent_output += turn_output.max(0) as u32;
 
         // Per-activity token budget — enforced DURING the loop, not after the
         // activity finishes. A runaway activity stops at its own ceiling

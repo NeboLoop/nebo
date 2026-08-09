@@ -326,6 +326,13 @@ impl OpenAIProvider {
         let mut errored = false;
         let mut last_finish_reason: Option<String> = None;
         let mut last_provider_metadata: Option<HashMap<String, String>> = None;
+        // Latest usage seen on the stream. Usage counters are CUMULATIVE:
+        // vanilla OpenAI sends one usage chunk at the end, but proxies (Janus)
+        // may attach the running totals to every chunk. Emitting an event per
+        // chunk made consumers that sum per-event (workflow engine, chat run
+        // totals) count a ~200-token turn as tens of thousands — so we hold
+        // the latest values and emit exactly ONE Usage event after the loop.
+        let mut latest_usage: Option<UsageInfo> = None;
 
         'outer: while let Some(result) = byte_stream.next().await {
             let bytes = match result {
@@ -492,21 +499,21 @@ impl OpenAIProvider {
                             }
                         }
 
-                        // Check for usage (include_usage sends it on final chunk)
+                        // Capture usage (include_usage sends it on the final
+                        // chunk; Janus may send running totals on every chunk).
+                        // Latest-wins here; ONE event is emitted after the loop.
                         if let Some(ref usage) = response.usage {
                             let cached = usage
                                 .prompt_tokens_details
                                 .as_ref()
                                 .and_then(|d| d.cached_tokens)
                                 .unwrap_or(0) as i32;
-                            let _ = tx
-                                .send(StreamEvent::usage(UsageInfo {
-                                    input_tokens: usage.prompt_tokens as i32,
-                                    output_tokens: usage.completion_tokens as i32,
-                                    cache_read_input_tokens: cached,
-                                    ..Default::default()
-                                }))
-                                .await;
+                            latest_usage = Some(UsageInfo {
+                                input_tokens: usage.prompt_tokens as i32,
+                                output_tokens: usage.completion_tokens as i32,
+                                cache_read_input_tokens: cached,
+                                ..Default::default()
+                            });
                         }
 
                         // Break after processing this chunk if we saw finish_reason.
@@ -566,6 +573,11 @@ impl OpenAIProvider {
                     }))
                     .await;
             }
+        }
+
+        // The one Usage event for this stream — final cumulative totals.
+        if let Some(usage) = latest_usage {
+            let _ = tx.send(StreamEvent::usage(usage)).await;
         }
 
         let mut done_event = match last_finish_reason {
