@@ -104,7 +104,12 @@ pub struct TokenBudget {
 }
 
 fn default_token_max() -> u32 {
-    4096
+    // 0 = no per-activity budget. Enforcement is opt-in: budgets only bind
+    // when the workflow author declares one. A non-zero default here silently
+    // capped every activity that never asked for a budget — invisible while
+    // usage metering recorded 0, and failing every run the moment metering
+    // was fixed. Behavior must be unchanged until tuned.
+    0
 }
 
 impl Default for TokenBudget {
@@ -568,6 +573,31 @@ mod tests {
         let def = parse_workflow(json).unwrap();
         assert_eq!(def.id, "test-wf");
         assert_eq!(def.activities.len(), 1);
+    }
+
+    #[test]
+    fn test_undeclared_token_budget_is_unlimited() {
+        // Budgets are opt-in: an activity that declares none gets max 0
+        // (uncapped), so enforcement only ever binds where an author asked
+        // for it. A silent non-zero default capped every legacy activity the
+        // moment usage metering started reporting real numbers.
+        let json = r#"{
+            "version": "1.0",
+            "id": "wf",
+            "name": "n",
+            "activities": [{"id": "a", "intent": "do"}]
+        }"#;
+        let def = parse_workflow(json).unwrap();
+        assert_eq!(def.activities[0].token_budget.max, 0);
+        // Declared budgets still parse and bind.
+        let json2 = r#"{
+            "version": "1.0",
+            "id": "wf2",
+            "name": "n",
+            "activities": [{"id": "a", "intent": "do", "token_budget": {"max": 2000}}]
+        }"#;
+        let def2 = parse_workflow(json2).unwrap();
+        assert_eq!(def2.activities[0].token_budget.max, 2000);
     }
 
     #[test]
