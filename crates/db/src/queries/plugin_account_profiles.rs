@@ -143,6 +143,13 @@ impl Store {
     /// Resolve a specific account for an agent+plugin. When `account_label` is
     /// `None`, returns the primary (or the only) profile. Returns `None` if the
     /// agent has no profile for this plugin (caller falls back to global creds).
+    ///
+    /// Label matching is exact first, then punctuation/case-normalized: labels
+    /// are display strings typed on real devices ("Alma’s Gmail" with iOS smart
+    /// punctuation), while the model RE-TYPES the label into `--account` and
+    /// predictably folds curly quotes to ASCII. Exact-only matching made a
+    /// connected account intermittently invisible over one apostrophe glyph —
+    /// the workflow then exited claiming no account was connected at all.
     pub fn resolve_plugin_account_profile(
         &self,
         agent_id: &str,
@@ -151,7 +158,13 @@ impl Store {
     ) -> Result<Option<PluginAccountProfile>, NeboError> {
         let profiles = self.list_plugin_account_profiles(agent_id, plugin_slug)?;
         if let Some(label) = account_label {
-            return Ok(profiles.into_iter().find(|p| p.account_label == label));
+            if let Some(exact) = profiles.iter().position(|p| p.account_label == label) {
+                return Ok(profiles.into_iter().nth(exact));
+            }
+            let wanted = normalize_account_label(label);
+            return Ok(profiles
+                .into_iter()
+                .find(|p| normalize_account_label(&p.account_label) == wanted));
         }
         // No explicit account: prefer the primary, else the first (list is
         // ordered primary-first), else none.
@@ -235,4 +248,91 @@ fn row_to_profile(row: &rusqlite::Row) -> rusqlite::Result<PluginAccountProfile>
         needs_reauth: row.get::<_, i32>(6)? != 0,
         reauth_notified: row.get::<_, i32>(7)? != 0,
     })
+}
+
+/// Fold an account label to a comparison key: lowercase, whitespace-collapsed,
+/// with typographic quotes/dashes mapped to their ASCII forms. Display labels
+/// keep their original glyphs; only matching goes through this.
+fn normalize_account_label(label: &str) -> String {
+    let mut out = String::with_capacity(label.len());
+    let mut last_space = true;
+    for c in label.trim().chars() {
+        let mapped = match c {
+            '\u{2018}' | '\u{2019}' | '\u{02BC}' => '\'',
+            '\u{201C}' | '\u{201D}' => '"',
+            '\u{2013}' | '\u{2014}' => '-',
+            '\u{00A0}' | '\u{202F}' => ' ',
+            other => other,
+        };
+        if mapped.is_whitespace() {
+            if !last_space {
+                out.push(' ');
+            }
+            last_space = true;
+        } else {
+            for lc in mapped.to_lowercase() {
+                out.push(lc);
+            }
+            last_space = false;
+        }
+    }
+    out.trim_end().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::Store;
+
+    fn temp_store() -> Store {
+        let path = std::env::temp_dir().join(format!(
+            "nebo-plugin-accounts-test-{}-{}.db",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        Store::new(path.to_str().unwrap()).unwrap()
+    }
+
+    #[test]
+    fn label_matching_survives_smart_punctuation() {
+        let s = temp_store();
+        // Stored with the iOS curly apostrophe, exactly as the UI label had it.
+        s.upsert_plugin_account_profile(
+            "p1", "agent-a", "gws", "Alma\u{2019}s Gmail", "/data/profiles/Alma_s_Gmail",
+        )
+        .unwrap();
+
+        // Exact form resolves.
+        let hit = s
+            .resolve_plugin_account_profile("agent-a", "gws", Some("Alma\u{2019}s Gmail"))
+            .unwrap();
+        assert!(hit.is_some());
+
+        // The model's ASCII re-typing resolves too — this was the live failure:
+        // one apostrophe glyph made a connected account read as "not connected".
+        let hit = s
+            .resolve_plugin_account_profile("agent-a", "gws", Some("Alma's Gmail"))
+            .unwrap();
+        assert_eq!(hit.unwrap().config_dir, "/data/profiles/Alma_s_Gmail");
+
+        // Case/whitespace slop resolves.
+        let hit = s
+            .resolve_plugin_account_profile("agent-a", "gws", Some("  alma's  gmail "))
+            .unwrap();
+        assert!(hit.is_some());
+
+        // A genuinely different label still misses.
+        let miss = s
+            .resolve_plugin_account_profile("agent-a", "gws", Some("Work Gmail"))
+            .unwrap();
+        assert!(miss.is_none());
+
+        // No label → primary (the only profile).
+        let primary = s
+            .resolve_plugin_account_profile("agent-a", "gws", None)
+            .unwrap();
+        assert!(primary.unwrap().is_primary);
+    }
 }
