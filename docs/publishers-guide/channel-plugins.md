@@ -4,7 +4,7 @@ A **channel plugin** is a plugin that connects a Nebo agent to a messaging surfa
 
 This guide describes the conventions a channel plugin MUST follow. The convention exists because **every channel plugin in Nebo MUST have exactly one canonical pathway for every messaging operation**. Two invocation models for the same operation (e.g. a CLI subcommand and a bridge handler) race for the upstream socket and create silent failures — we've shipped fewer pathways, not more.
 
-This shape mirrors the trait-based adapters used by [openclaw](https://github.com/openclaw/openclaw)'s `ChannelPlugin<TAccount, TProbe>` and the `BasePlatformAdapter` ABC in hermes-agent — expressed through Nebo's sidecar process model.
+The shape is a platform-adapter pattern: one typed adapter per messaging platform, a shared contract for accounts, probes, and message exchange — expressed through Nebo's sidecar process model rather than in-process traits.
 
 ---
 

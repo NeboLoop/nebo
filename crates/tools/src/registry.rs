@@ -1199,11 +1199,34 @@ pub fn file_mutation_paths(
     Some(paths)
 }
 
-/// Resolve flat tool names (the model-facing convention) to STRAP tool + injected params.
-/// Returns (strap_tool_name, params_to_inject) or None if not a known alias.
-fn resolve_flat_alias(name: &str) -> Option<(String, Vec<(String, serde_json::Value)>)> {
+/// Resolve flat tool names (the model-facing convention) AND legacy pre-STRAP
+/// tool names to STRAP tool + injected params. Returns (strap_tool_name,
+/// params_to_inject) or None if not a known alias. Injected params only fill
+/// keys the call didn't provide (entry().or_insert at the dispatch site), so
+/// passthrough aliases carry the model's own resource/action untouched.
+///
+/// Public because it is THE call-time resolution table: the registry's chat
+/// dispatch and the workflow engine's activity dispatch both consult it, so a
+/// first tool call written against an old name (`organizer(resource: "mail")`)
+/// EXECUTES instead of bouncing through a correction round-trip — small models
+/// follow step text literally and don't get a second turn for free.
+pub fn resolve_flat_alias(name: &str) -> Option<(String, Vec<(String, serde_json::Value)>)> {
     let lc = name.to_lowercase();
     let (tool, params): (&str, Vec<(&str, &str)>) = match lc.as_str() {
+        // Legacy STRAP consolidations — tools absorbed into os/plugin. The
+        // call shape carried over (resource/action args), so organizer-style
+        // calls pass through untouched; single-purpose tools inject their
+        // absorbed resource. Must agree with tool_correction's prose and
+        // legacy_tool_aliases (the scoping table).
+        "organizer" | "desktop" | "system" => ("os", vec![]),
+        "app" => ("os", vec![("resource", "app")]),
+        "settings" => ("os", vec![("resource", "settings")]),
+        "music" => ("os", vec![("resource", "music")]),
+        "keychain" => ("os", vec![("resource", "keychain")]),
+        "spotlight" => ("os", vec![("resource", "search")]),
+        "gws" | "google-workspace" | "gmail" | "gcalendar" | "gdrive" | "gsheets" | "gdocs" => {
+            ("plugin", vec![("resource", "gws")])
+        }
         // File operations → os
         "file_read" | "read_file" | "fileread" | "read" => {
             ("os", vec![("resource", "file"), ("action", "read")])
@@ -1238,6 +1261,33 @@ fn resolve_flat_alias(name: &str) -> Option<(String, Vec<(String, serde_json::Va
         .map(|(k, v)| (k.to_string(), serde_json::Value::String(v.to_string())))
         .collect();
     Some((tool.to_string(), params))
+}
+
+/// Legacy tool names from before the STRAP consolidation → the STRAP tool
+/// that absorbed them. The structured counterpart of `tool_correction`'s
+/// prose (which carries usage examples and must agree with this table).
+/// Consumed by the workflow engine's activity tool-scoping so a workflow
+/// authored (or imported) against pre-STRAP names — `organizer(...)`,
+/// `gws ...` — still scopes to the right live tool instead of matching
+/// nothing and falling back to the full roster.
+pub fn legacy_tool_aliases() -> &'static [(&'static str, &'static str)] {
+    &[
+        ("organizer", "os"),
+        ("app", "os"),
+        ("settings", "os"),
+        ("music", "os"),
+        ("keychain", "os"),
+        ("spotlight", "os"),
+        ("desktop", "os"),
+        ("system", "os"),
+        ("gws", "plugin"),
+        ("google-workspace", "plugin"),
+        ("gmail", "plugin"),
+        ("gcalendar", "plugin"),
+        ("gdrive", "plugin"),
+        ("gsheets", "plugin"),
+        ("gdocs", "plugin"),
+    ]
 }
 
 /// Provide specific correction for known hallucinated tool names.
@@ -1305,7 +1355,13 @@ fn tool_correction(name: &str) -> String {
         }
         _ => {
             if name.starts_with("mcp__") {
-                "INSTEAD USE: mcp(server: \"<server>\", resource: \"<tool>\", action: \"<action>\") — call MCP tools via the mcp STRAP tool, not by their namespaced name".to_string()
+                // Namespaced MCP proxies ARE the way to call MCP tools (see
+                // strap/mcp.txt) — they're just deferred. A miss here means the
+                // exact proxy name doesn't exist or isn't activated yet.
+                format!(
+                    "'{}' is not an active tool name. Connected MCP tools are named mcp__<server>__<tool> and activate on demand: run tool_search(query: \"<server or capability>\") to find the exact proxy name and its schema, then call it directly. mcp(action: \"list\") enumerates connected servers.",
+                    name
+                )
             } else {
                 format!(
                     "'{}' is not a recognized tool. Use skill(action: \"discover\", query: \"{}\") to find a skill, \
@@ -1433,7 +1489,10 @@ mod tests {
         assert!(tool_correction("unknown_tool").contains("not a recognized tool"));
         assert!(tool_correction("unknown_tool").contains("skill(action: \"discover\""));
         assert!(tool_correction("unknown_tool").contains("tool_search"));
-        assert!(tool_correction("mcp__server__tool").contains("mcp(server:"));
+        // Namespaced proxies are the real MCP call path (strap/mcp.txt) —
+        // the correction steers to discovery, never to a wrapper call.
+        assert!(tool_correction("mcp__server__tool").contains("tool_search"));
+        assert!(tool_correction("mcp__server__tool").contains("mcp__<server>__<tool>"));
     }
 
     /// Drift guard for the tool-rename class (TD-001, capability vocabulary,

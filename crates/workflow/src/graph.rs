@@ -54,6 +54,9 @@ struct GraphCtx<'a> {
     store: &'a Arc<Store>,
     provider: &'a dyn ai::Provider,
     resolved_tools: &'a [Box<dyn DynTool>],
+    /// Deferred tool names — excluded from the scoping fail-soft roster
+    /// (see `scoped_activity_tools`).
+    deferred_tools: Option<&'a HashSet<String>>,
     cancel_token: Option<&'a CancellationToken>,
     skill_content: Option<&'a HashMap<String, String>>,
     event_bus: Option<&'a tools::EventBus>,
@@ -108,6 +111,8 @@ pub(crate) async fn execute_graph(
     store: &Arc<Store>,
     provider: &dyn ai::Provider,
     resolved_tools: &[Box<dyn DynTool>],
+    // See scoped_activity_tools — deferred schemas ship only when declared/referenced.
+    deferred_tools: Option<&HashSet<String>>,
     run_id: &str,
     cancel_token: Option<&CancellationToken>,
     skill_content: Option<&HashMap<String, String>>,
@@ -124,6 +129,7 @@ pub(crate) async fn execute_graph(
         store,
         provider,
         resolved_tools,
+        deferred_tools,
         cancel_token,
         skill_content,
         event_bus,
@@ -215,6 +221,7 @@ fn build_ctx<'a>(
     store: &'a Arc<Store>,
     provider: &'a dyn ai::Provider,
     resolved_tools: &'a [Box<dyn DynTool>],
+    deferred_tools: Option<&'a HashSet<String>>,
     cancel_token: Option<&'a CancellationToken>,
     skill_content: Option<&'a HashMap<String, String>>,
     event_bus: Option<&'a tools::EventBus>,
@@ -289,6 +296,7 @@ fn build_ctx<'a>(
         store,
         provider,
         resolved_tools,
+        deferred_tools,
         cancel_token,
         skill_content,
         event_bus,
@@ -792,7 +800,12 @@ async fn run_llm_activity<'a>(
     // scoped_activity_tools); the emit tool is injected only on terminal
     // nodes (edge to __emit__).
     let mut activity_tools: Vec<&Box<dyn DynTool>> =
-        crate::engine::scoped_activity_tools(activity, ctx.resolved_tools, ctx.skill_content);
+        crate::engine::scoped_activity_tools(
+            activity,
+            ctx.resolved_tools,
+            ctx.skill_content,
+            ctx.deferred_tools,
+        );
     let emit_tool_box: Option<Box<dyn DynTool>> = ctx
         .event_bus
         .map(|bus| Box::new(tools::EmitTool::new(bus.clone())) as Box<dyn DynTool>);
@@ -819,6 +832,7 @@ async fn run_llm_activity<'a>(
         ctx.inputs,
         ctx.provider,
         &activity_tools,
+        ctx.resolved_tools,
         ctx.skill_content,
         activity_emit,
         ctx.store,
@@ -1225,6 +1239,7 @@ mod walk_tests {
             &store,
             provider,
             &[],
+            None,
             &run_id,
             None,
             None,
@@ -1477,6 +1492,7 @@ mod walk_tests {
                 &store,
                 &provider,
                 &[],
+                None,
                 &run_id,
                 None,
                 None,
