@@ -149,6 +149,24 @@ pub(crate) fn parse_mcp_servers_block(v: &serde_json::Value) -> Vec<ParsedMcpSer
     out
 }
 
+/// Count the server-brokered ("managed") entries in a config block. Managed
+/// connectors carry no command/url — NeboLoop drives the third-party app
+/// through its broker and the tools arrive over the NeboAI MCP connection, so
+/// no local integration row exists for them. parse_mcp_servers_block skips
+/// them by design; this is how the install/update paths tell "managed
+/// connector" apart from "broken config".
+pub(crate) fn managed_server_count(v: &serde_json::Value) -> usize {
+    v.get("mcpServers")
+        .or_else(|| v.get("servers"))
+        .and_then(|m| m.as_object())
+        .map(|map| {
+            map.values()
+                .filter(|b| b.get("authType").and_then(|a| a.as_str()) == Some("managed"))
+                .count()
+        })
+        .unwrap_or(0)
+}
+
 /// Create local `mcp_integrations` from a standard config block, then connect
 /// the ones that can connect without user interaction (stdio + no-auth remote;
 /// OAuth servers wait for the user to authorize). Returns the created rows.
@@ -192,7 +210,8 @@ pub(crate) async fn sync_integrations_from_block(
     block: &serde_json::Value,
 ) -> Result<usize, types::NeboError> {
     let servers = parse_mcp_servers_block(block);
-    if servers.is_empty() {
+    let managed = managed_server_count(block);
+    if servers.is_empty() && managed == 0 {
         return Err(types::NeboError::Validation(
             "connector config has no valid MCP servers".into(),
         ));
@@ -238,7 +257,7 @@ pub(crate) async fn sync_integrations_from_block(
     }
 
     sync_bridge(state).await;
-    Ok(servers.len())
+    Ok(servers.len() + managed)
 }
 
 /// Fix legacy integrations that were saved as "stdio" but have HTTP URLs.

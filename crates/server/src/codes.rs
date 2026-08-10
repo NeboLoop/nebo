@@ -650,9 +650,28 @@ async fn handle_connection_code(
     .map_err(|e| NeboError::Internal(format!("create MCP integration(s): {e}")))?;
 
     if created.is_empty() {
-        return Err(NeboError::Internal(format!(
-            "connector '{artifact_name}' has no valid MCP servers in its config"
-        )));
+        // Managed connectors carry no command/url on purpose: NeboLoop drives
+        // the third-party app server-side and the tools arrive through the
+        // NeboAI MCP connection. Nothing local to create — the install itself
+        // is the deliverable (the account link happens on first use).
+        let managed = crate::handlers::integrations::managed_server_count(&block);
+        if managed == 0 {
+            return Err(NeboError::Internal(format!(
+                "connector '{artifact_name}' has no valid MCP servers in its config"
+            )));
+        }
+        let _ = state
+            .store
+            .upsert_artifact_update_pref(&artifact_id, "connector", &detail.item.version);
+        return Ok(CodeHandlerResult {
+            message: format!(
+                "Added \"{artifact_name}\" — a managed connection. Its tools are available through your NeboAI connection; you'll be asked to link your {artifact_name} account the first time an employee uses it."
+            ),
+            artifact_name: Some(artifact_name),
+            artifact_id: Some(artifact_id),
+            artifact_type: Some("connection".to_string()),
+            ..Default::default()
+        });
     }
 
     // Seed update tracking so Settings → Updates can check this connector for
