@@ -4917,8 +4917,12 @@ async fn run_loop(
                         warn!(error = %e, "failed to persist large tool result");
                     }
                     let preview = truncate_str(&result.content, 4_000);
+                    // Guidance matters: models follow it literally. Telling them to
+                    // "read the file" re-inhales the whole payload into context —
+                    // observed live with a 99KB tool list read straight back in.
+                    // Point at targeted search, with full reads as the exception.
                     result.content = format!(
-                        "{}\n\n[Output too large ({} chars). Full output saved to: {}. Use os(resource: \"file\", action: \"read\", path: \"{}\") to access.]",
+                        "{}\n\n[Output too large ({} chars); preview above. Full output saved to: {}. Search it with os(resource: \"file\", action: \"grep\", path: \"{}\", pattern: \"...\") — extract only what you need; avoid reading the whole file into context. For broad exploration of it, delegate to a subagent and keep only the conclusions.]",
                         preview,
                         total_len,
                         result_path.display(),
