@@ -968,7 +968,6 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState) {
 /// Scan prompt text for image file paths, read them, and return (cleaned_prompt, images).
 /// Preserves the original prompt formatting (newlines, whitespace) when no images are found.
 fn extract_images_from_prompt(prompt: &str) -> (String, Vec<ai::ImageContent>) {
-    use base64::Engine;
 
     let image_extensions = ["png", "jpg", "jpeg", "gif", "webp", "bmp", "tiff"];
     let mut images = Vec::new();
@@ -984,21 +983,13 @@ fn extract_images_from_prompt(prompt: &str) -> (String, Vec<ai::ImageContent>) {
 
         if is_image && path.exists() {
             if let Ok(bytes) = std::fs::read(path) {
-                let media_type = match path.extension().and_then(|e| e.to_str()) {
-                    Some("png") => "image/png",
-                    Some("jpg" | "jpeg") => "image/jpeg",
-                    Some("gif") => "image/gif",
-                    Some("webp") => "image/webp",
-                    Some("bmp") => "image/bmp",
-                    Some("tiff") => "image/tiff",
-                    _ => "image/png",
-                };
-                let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
-                images.push(ai::ImageContent {
-                    media_type: media_type.to_string(),
-                    data,
-                });
-                image_paths.push(token);
+                // Same normalization gate as uploaded attachments: resized and
+                // canonically re-encoded regardless of input size/format, so a
+                // dragged-in 12MP photo works exactly like an uploaded one.
+                if let Some((media_type, data)) = ai::image_norm::normalize_for_llm(&bytes) {
+                    images.push(ai::ImageContent { media_type, data });
+                    image_paths.push(token);
+                }
             }
         }
     }

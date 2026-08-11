@@ -4804,16 +4804,10 @@ async fn process_comm_attachments(
     attachments: &[comm::wire::Attachment],
     prompt: &mut String,
 ) -> Vec<ai::ImageContent> {
-    use base64::Engine;
 
     if attachments.is_empty() {
         return vec![];
     }
-
-    // Anthropic's per-image ceiling, and the strictest of the providers we ship.
-    // Past it the request is rejected outright, so the image goes to disk and the
-    // agent gets a path instead of a doomed payload.
-    const MAX_IMAGE_BASE64: usize = 5 * 1024 * 1024;
 
     // Absent when signed out. Attachments uploaded on this machine still work —
     // only ones that live solely in the loop need the client.
@@ -4872,23 +4866,12 @@ async fn process_comm_attachments(
             }
         };
 
-        // Trust the bytes, never the declared type — a mislabelled attachment
-        // sent as image/png gets rejected by the provider with a useless error.
-        let sniffed = ai::sniff_image_mime(&bytes);
-        if let Some(media_type) = sniffed {
-            let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
-            if data.len() <= MAX_IMAGE_BASE64 {
-                images.push(ai::ImageContent {
-                    media_type: media_type.to_string(),
-                    data,
-                });
-                continue;
-            }
-            tracing::warn!(
-                file_id = %att.file_id,
-                size = att.size,
-                "image too large to inline; saving to disk instead"
-            );
+        // The normalization gate: any decodable image — regardless of size or
+        // format — is resized and re-encoded to a canonical provider-friendly
+        // form. Only genuinely non-image bytes fall through to disk.
+        if let Some((media_type, data)) = ai::image_norm::normalize_for_llm(&bytes) {
+            images.push(ai::ImageContent { media_type, data });
+            continue;
         }
 
         // Everything else — documents, audio, video, oversized or mislabelled
@@ -4954,8 +4937,11 @@ async fn process_comm_attachments(
 
         match saved {
             Some(path) => {
-                let hint = if sniffed.is_some() {
-                    " (too large to view inline — read the file to inspect it)"
+                // Anything landing here is not a decodable image (normalize_for_llm
+                // now absorbs oversized ones by resizing). A sniffable image type
+                // that STILL failed to decode is corrupt or unsupported (e.g. HEIC).
+                let hint = if ai::sniff_image_mime(&bytes).is_some() {
+                    " (image could not be decoded for viewing — read the file to inspect it)"
                 } else {
                     ""
                 };

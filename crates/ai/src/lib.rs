@@ -1,5 +1,6 @@
 pub mod embedding;
 pub mod http;
+pub mod image_norm;
 pub mod local_models;
 pub mod providers;
 pub mod sse;
