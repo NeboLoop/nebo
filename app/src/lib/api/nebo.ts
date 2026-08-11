@@ -1210,6 +1210,41 @@ export function markRead(id: string, req: Record<string, unknown> = {}) {
 }
 
 /**
+ * @description "Nebo a i phone bind"
+ */
+export function neboAIPhoneBind(req: Record<string, unknown> = {}) {
+	return webapi.post<unknown>(`/api/v1/phone/bind`, req)
+}
+
+/**
+ * @description "Nebo a i phone call"
+ */
+export function neboAIPhoneCall(req: Record<string, unknown> = {}) {
+	return webapi.post<unknown>(`/api/v1/phone/call`, req)
+}
+
+/**
+ * @description "Nebo a i phone claimable"
+ */
+export function neboAIPhoneClaimable() {
+	return webapi.get<unknown>(`/api/v1/phone/claimable`)
+}
+
+/**
+ * @description "Nebo a i phone optout"
+ */
+export function neboAIPhoneOptout(req: Record<string, unknown> = {}) {
+	return webapi.post<unknown>(`/api/v1/phone/optout`, req)
+}
+
+/**
+ * @description "Nebo a i phone unbind"
+ */
+export function neboAIPhoneUnbind(req: Record<string, unknown> = {}) {
+	return webapi.post<unknown>(`/api/v1/phone/unbind`, req)
+}
+
+/**
  * @description "List plugins"
  */
 export function listPlugins() {

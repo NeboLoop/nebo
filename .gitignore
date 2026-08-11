@@ -36,3 +36,5 @@ src-tauri/binaries/
 
 # Session screenshots — scratch, never commit these (see f7873583)
 /*.png
+/target-linux-amd64
+appimage-build.log

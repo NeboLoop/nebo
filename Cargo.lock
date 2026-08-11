@@ -5359,6 +5359,7 @@ dependencies = [
  "base64 0.22.1",
  "futures",
  "hex",
+ "image",
  "libc",
  "llama-cpp-2",
  "nebo-db",
