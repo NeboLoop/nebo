@@ -3090,6 +3090,83 @@ fn comm_origin(is_personal: bool) -> tools::Origin {
     }
 }
 
+/// Run an agent's named workflow binding with a webhook payload as the
+/// standard event envelope. Fire-and-forget: NeboLoop already 202'd the
+/// caller; failures land in the log with the workflow named.
+async fn run_webhook_workflow(
+    state: &AppState,
+    agent_id: &str,
+    agent_slug: &str,
+    binding_name: &str,
+    raw: Option<String>,
+) {
+    use tools::workflows::WorkflowManager;
+
+    let agent_rec = match state.store.get_agent(agent_id) {
+        Ok(Some(a)) => a,
+        _ => {
+            tracing::warn!(agent = %agent_id, workflow = %binding_name, "webhook workflow: agent not found");
+            return;
+        }
+    };
+    let config = match napp::agent::parse_agent_config(&agent_rec.frontmatter) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(agent = %agent_id, workflow = %binding_name, error = %e, "webhook workflow: bad agent config");
+            return;
+        }
+    };
+    let Some(binding) = config.workflows.get(binding_name) else {
+        tracing::warn!(agent = %agent_id, workflow = %binding_name, "webhook workflow: no such binding");
+        return;
+    };
+    if !binding.has_activities() {
+        tracing::warn!(agent = %agent_id, workflow = %binding_name, "webhook workflow: binding has no activities");
+        return;
+    }
+
+    let def_json = binding.to_workflow_json(binding_name);
+    let mut inputs = serde_json::to_value(&binding.inputs).unwrap_or_default();
+    // The POST body rides the canonical event envelope: JSON bodies as JSON,
+    // anything else as a string.
+    let payload = raw
+        .as_deref()
+        .map(|r| serde_json::from_str::<serde_json::Value>(r).unwrap_or_else(|_| serde_json::json!(r)))
+        .unwrap_or(serde_json::Value::Null);
+    workflow::events::insert_event_envelope(
+        &mut inputs,
+        &format!("webhook.{}", binding_name),
+        payload,
+        "webhook",
+    );
+    let emit_source = binding
+        .emit
+        .as_ref()
+        .map(|emit_name| format!("{}.{}", agent_slug, emit_name));
+
+    match state
+        .workflow_manager
+        .run_inline(
+            def_json,
+            inputs,
+            "webhook",
+            Some(binding_name.to_string()),
+            agent_id,
+            emit_source,
+        )
+        .await
+    {
+        Ok(run_id) => tracing::info!(
+            agent = %agent_id, workflow = %binding_name, run_id = %run_id,
+            "webhook triggered workflow run"
+        ),
+        Err(e) => tracing::warn!(
+            agent = %agent_id, workflow = %binding_name, error = %e,
+            "webhook workflow run failed"
+        ),
+    }
+}
+
 async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
     tracing::info!(
         target: "neboai_identity",
@@ -3314,14 +3391,22 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
         // even in the personal loop: the nbwh_ API key lives in external
         // systems, so it must never confer owner-level (shell) privileges.
         // See neboloop docs/PRD_WEBHOOKS.md §10.
-        let is_webhook = serde_json::from_str::<serde_json::Value>(&msg.content)
-            .map(|v| {
-                v.get("platformData")
-                    .and_then(|p| p.get("channel"))
-                    .and_then(|c| c.as_str())
-                    == Some("webhook")
-            })
-            .unwrap_or(false);
+        let webhook_platform = serde_json::from_str::<serde_json::Value>(&msg.content)
+            .ok()
+            .and_then(|v| v.get("platformData").cloned())
+            .filter(|p| p.get("channel").and_then(|c| c.as_str()) == Some("webhook"));
+        let is_webhook = webhook_platform.is_some();
+
+        // Workflow-destination webhooks fire the bound workflow with the
+        // payload and never run the agent chat: the key was minted for a
+        // workflow, so a chat reply would be a surprise (and a cost).
+        if let Some(pd) = &webhook_platform {
+            if let Some(wf_name) = pd.get("workflowName").and_then(|w| w.as_str()) {
+                let raw = pd.get("raw").and_then(|r| r.as_str()).map(str::to_string);
+                run_webhook_workflow(&state, &agent_id, &agent_slug, wf_name, raw).await;
+                return;
+            }
+        }
 
         let config = chat_dispatch::ChatConfig {
             session_key,
