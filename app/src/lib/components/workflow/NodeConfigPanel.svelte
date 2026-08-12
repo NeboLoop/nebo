@@ -57,8 +57,10 @@
 	];
 
 	/** Parse "8:00 AM daily" or "3:00 PM weekdays" into structured parts */
-	function parseScheduleString(s: string): { hour: number; minute: number; ampm: string; days: string; customDays: number[] } {
-		const defaults = { hour: 8, minute: 0, ampm: 'AM', days: 'daily', customDays: [] as number[] };
+	const MONTH_LABELS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+	function parseScheduleString(s: string): { hour: number; minute: number; ampm: string; days: string; customDays: number[]; cadence: string; dom: number; month: number } {
+		const defaults = { hour: 8, minute: 0, ampm: 'AM', days: 'daily', customDays: [] as number[], cadence: 'weekly', dom: 1, month: 1 };
 		if (!s) return defaults;
 		const timeMatch = s.match(/(\d{1,2}):(\d{2})\s*(AM|PM)/i);
 		if (timeMatch) {
@@ -67,6 +69,20 @@
 			defaults.ampm = timeMatch[3].toUpperCase();
 		}
 		const lower = s.toLowerCase();
+		// Month-anchored cadences round-trip through the strings buildScheduleString writes.
+		const monthly = lower.match(/monthly on day (\d{1,2})/);
+		const biannual = lower.match(/every 6 months on ([a-z]{3})\w* (\d{1,2})/);
+		const yearly = lower.match(/yearly on ([a-z]{3})\w* (\d{1,2})/);
+		const monthIdx = (name: string) => Math.max(0, MONTH_LABELS.findIndex(m => m.toLowerCase() === name));
+		if (monthly) {
+			return { ...defaults, days: 'custom', cadence: 'monthly', dom: parseInt(monthly[1]) };
+		}
+		if (biannual) {
+			return { ...defaults, days: 'custom', cadence: 'biannual', month: monthIdx(biannual[1]) + 1, dom: parseInt(biannual[2]) };
+		}
+		if (yearly) {
+			return { ...defaults, days: 'custom', cadence: 'annual', month: monthIdx(yearly[1]) + 1, dom: parseInt(yearly[2]) };
+		}
 		if (lower.includes('weekday')) defaults.days = 'weekdays';
 		else if (lower.includes('weekend')) defaults.days = 'weekends';
 		else if (lower.includes('daily') || lower.includes('every day')) defaults.days = 'daily';
@@ -75,9 +91,17 @@
 		return defaults;
 	}
 
+	/** The month 6 months after `m` (1-12). */
+	function sixMonthsLater(m: number): number {
+		return ((m + 5) % 12) + 1;
+	}
+
 	/** Build schedule string from structured parts */
-	function buildScheduleString(hour: number, minute: number, ampm: string, days: string, customDays: number[]): string {
+	function buildScheduleString(hour: number, minute: number, ampm: string, days: string, customDays: number[], cadence: string, dom: number, month: number): string {
 		const time = `${hour}:${minute.toString().padStart(2, '0')} ${ampm}`;
+		if (days === 'custom' && cadence === 'monthly') return `${time} monthly on day ${dom}`;
+		if (days === 'custom' && cadence === 'biannual') return `${time} every 6 months on ${MONTH_LABELS[month - 1]} ${dom}`;
+		if (days === 'custom' && cadence === 'annual') return `${time} yearly on ${MONTH_LABELS[month - 1]} ${dom}`;
 		if (days === 'weekdays') return `${time} weekdays`;
 		if (days === 'weekends') return `${time} weekends`;
 		if (days === 'daily') return `${time} daily`;
@@ -89,10 +113,17 @@
 	}
 
 	/** Build a 5-field cron from structured parts. Day-of-week uses named days
-	 *  (MON-FRI) — numeric DOW is ambiguous between Unix and Quartz conventions. */
-	function buildCron(hour: number, minute: number, ampm: string, days: string, customDays: number[]): string {
+	 *  (MON-FRI) — numeric DOW is ambiguous between Unix and Quartz conventions.
+	 *  Month-anchored cadences use the day-of-month and month fields instead. */
+	function buildCron(hour: number, minute: number, ampm: string, days: string, customDays: number[], cadence: string, dom: number, month: number): string {
 		let h = hour % 12;
 		if (ampm === 'PM') h += 12;
+		if (days === 'custom' && cadence === 'monthly') return `${minute} ${h} ${dom} * *`;
+		if (days === 'custom' && cadence === 'biannual') {
+			const months = [month, sixMonthsLater(month)].sort((a, b) => a - b);
+			return `${minute} ${h} ${dom} ${months.join(',')} *`;
+		}
+		if (days === 'custom' && cadence === 'annual') return `${minute} ${h} ${dom} ${month} *`;
 		const names = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'];
 		let dow = '*';
 		if (days === 'weekdays') dow = 'MON-FRI';
@@ -108,6 +139,9 @@
 	let schedAmpm = $state('AM');
 	let schedDays = $state('daily');
 	let schedCustomDays = $state<number[]>([]);
+	let schedCadence = $state('weekly');
+	let schedDom = $state(1);
+	let schedMonth = $state(1);
 	let schedInitFor = $state<string | null>(null);
 
 	// Sync parsed schedule into editing state when switching workflows — keyed
@@ -121,13 +155,16 @@
 			schedAmpm = p.ampm;
 			schedDays = p.days;
 			schedCustomDays = p.customDays;
+			schedCadence = p.cadence;
+			schedDom = p.dom;
+			schedMonth = p.month;
 			schedInitFor = workflowName;
 		}
 	});
 
 	function emitSchedule() {
-		const str = buildScheduleString(schedHour, schedMinute, schedAmpm, schedDays, schedCustomDays);
-		const cron = buildCron(schedHour, schedMinute, schedAmpm, schedDays, schedCustomDays);
+		const str = buildScheduleString(schedHour, schedMinute, schedAmpm, schedDays, schedCustomDays, schedCadence, schedDom, schedMonth);
+		const cron = buildCron(schedHour, schedMinute, schedAmpm, schedDays, schedCustomDays, schedCadence, schedDom, schedMonth);
 		onupdateTrigger?.({ ...currentTrigger(), schedule: str, cron });
 	}
 
@@ -137,8 +174,8 @@
 		if (tt === 'schedule') {
 			onupdateTrigger?.({
 				type: tt,
-				schedule: buildScheduleString(schedHour, schedMinute, schedAmpm, schedDays, schedCustomDays),
-				cron: buildCron(schedHour, schedMinute, schedAmpm, schedDays, schedCustomDays),
+				schedule: buildScheduleString(schedHour, schedMinute, schedAmpm, schedDays, schedCustomDays, schedCadence, schedDom, schedMonth),
+				cron: buildCron(schedHour, schedMinute, schedAmpm, schedDays, schedCustomDays, schedCadence, schedDom, schedMonth),
 			});
 		} else if (tt === 'heartbeat') {
 			onupdateTrigger?.({ type: tt, interval: '30m' });
@@ -573,24 +610,69 @@
 								{/each}
 							</div>
 
-							<!-- Custom day picker -->
+							<!-- Custom: pick a cadence, then its anchor -->
 							{#if schedDays === 'custom'}
 								<div class="flex gap-1">
-									{#each DAY_LABELS as d, i}
+									{#each [['weekly', 'Days of week'], ['monthly', 'Monthly'], ['biannual', 'Every 6 months'], ['annual', 'Yearly']] as [val, label]}
 										<button
-											class="w-8 h-8 rounded-full text-xs font-medium border cursor-pointer transition-colors
-												{schedCustomDays.includes(i)
+											class="flex-1 py-1 text-xs font-medium rounded-md border cursor-pointer transition-colors
+												{schedCadence === val
 													? 'border-primary bg-primary/10 text-primary'
-													: 'border-base-300 bg-transparent text-base-content/50 hover:border-base-content/20'}"
-											onclick={() => {
-												schedCustomDays = schedCustomDays.includes(i)
-													? schedCustomDays.filter(x => x !== i)
-													: [...schedCustomDays, i].sort();
-												emitSchedule();
-											}}
-										>{d}</button>
+													: 'border-base-300 bg-transparent text-base-content/60 hover:border-base-content/20'}"
+											onclick={() => { schedCadence = val; emitSchedule(); }}
+										>{label}</button>
 									{/each}
 								</div>
+								{#if schedCadence === 'weekly'}
+									<div class="flex gap-1">
+										{#each DAY_LABELS as d, i}
+											<button
+												class="w-8 h-8 rounded-full text-xs font-medium border cursor-pointer transition-colors
+													{schedCustomDays.includes(i)
+														? 'border-primary bg-primary/10 text-primary'
+														: 'border-base-300 bg-transparent text-base-content/50 hover:border-base-content/20'}"
+												onclick={() => {
+													schedCustomDays = schedCustomDays.includes(i)
+														? schedCustomDays.filter(x => x !== i)
+														: [...schedCustomDays, i].sort();
+													emitSchedule();
+												}}
+											>{d}</button>
+										{/each}
+									</div>
+								{:else}
+									<div class="flex items-center gap-2">
+										{#if schedCadence !== 'monthly'}
+											<select
+												class="select select-sm select-bordered"
+												value={schedMonth}
+												onchange={(e) => { schedMonth = parseInt((e.target as HTMLSelectElement).value); emitSchedule(); }}
+											>
+												{#each MONTH_LABELS as m, i}
+													<option value={i + 1}>{m}</option>
+												{/each}
+											</select>
+										{/if}
+										<span class="text-xs text-base-content/60">on day</span>
+										<select
+											class="select select-sm select-bordered w-16"
+											value={schedDom}
+											onchange={(e) => { schedDom = parseInt((e.target as HTMLSelectElement).value); emitSchedule(); }}
+										>
+											{#each Array.from({ length: 31 }, (_, i) => i + 1) as d}
+												<option value={d}>{d}</option>
+											{/each}
+										</select>
+									</div>
+									{#if schedCadence === 'biannual'}
+										<div class="text-xs text-base-content/40">
+											Runs {MONTH_LABELS[schedMonth - 1]} {schedDom} and {MONTH_LABELS[((schedMonth + 5) % 12)]} {schedDom}.
+										</div>
+									{/if}
+									{#if schedDom > 28}
+										<div class="text-xs text-base-content/40">Months without day {schedDom} are skipped.</div>
+									{/if}
+								{/if}
 							{/if}
 						</div>
 					{/if}
