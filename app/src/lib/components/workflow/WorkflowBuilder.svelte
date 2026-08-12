@@ -752,6 +752,7 @@
 	<!-- Right panel: Node Config -->
 	{#if activeWorkflow && configOpen}
 		<NodeConfigPanel
+			{agentId}
 			workflowName={activeWorkflowName}
 			workflow={activeWorkflow}
 			{selectedNodeId}

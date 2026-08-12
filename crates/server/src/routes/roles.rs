@@ -124,6 +124,10 @@ pub fn routes() -> Router<AppState> {
             axum::routing::post(handlers::agents::run_agent_workflow),
         )
         .route(
+            "/agents/{id}/workflows/{name}/publish",
+            axum::routing::post(handlers::agents::publish_agent_workflow),
+        )
+        .route(
             "/agents/{id}/surfaces",
             axum::routing::get(handlers::agents::get_agent_surfaces),
         )

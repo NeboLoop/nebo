@@ -1500,6 +1500,16 @@ export interface ProxyPluginRouteResponse {
 	output: unknown
 }
 
+export interface PublishAgentWorkflowResponse {
+	id: string
+	agentId: string
+	label: string
+	workflowName: string
+	key: string
+	keyPrefix: string
+	url: string
+}
+
 export interface ReauthenticateIntegrationResponse {
 	authUrl: string
 }

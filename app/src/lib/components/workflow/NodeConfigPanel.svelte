@@ -4,6 +4,7 @@
 	import type { WorkflowConfig, WorkflowActivity, WorkflowTrigger } from '$lib/types/agentPage';
 
 	let {
+		agentId = '',
 		workflowName = '',
 		workflow = null,
 		selectedNodeId = null,
@@ -19,6 +20,7 @@
 		onclose,
 		onselectActivity,
 	}: {
+		agentId?: string;
 		workflowName: string;
 		workflow: WorkflowConfig | null;
 		selectedNodeId: string | null;
@@ -211,6 +213,46 @@
 				.catch(() => { /* suggestions are an enhancement, not a dependency */ });
 		}
 	});
+
+	// ── Publish endpoint — mints a NeboLoop webhook (URL + one-time key) so
+	// external callers can trigger this workflow over HTTPS.
+	let publishing = $state(false);
+	let publishError = $state('');
+	let published = $state<import('$lib/api/neboComponents').PublishAgentWorkflowResponse | null>(null);
+	let copiedField = $state('');
+
+	const curlExample = $derived(
+		published
+			? `curl -X POST ${published.url} -H "Authorization: Bearer ${published.key}" -H "Content-Type: application/json" -d '{"text":"..."}'`
+			: ''
+	);
+
+	// The key is shown once — never carry one workflow's result over to another.
+	$effect(() => {
+		void workflowName;
+		published = null;
+		publishError = '';
+	});
+
+	async function publishEndpoint() {
+		if (!agentId || !workflowName || publishing) return;
+		publishing = true;
+		publishError = '';
+		try {
+			const api = await import('$lib/api/nebo');
+			published = await api.publishAgentWorkflow(agentId, workflowName);
+		} catch (e) {
+			publishError = e instanceof Error ? e.message : 'Failed to publish endpoint';
+		} finally {
+			publishing = false;
+		}
+	}
+
+	function copyText(field: string, text: string) {
+		navigator.clipboard.writeText(text);
+		copiedField = field;
+		setTimeout(() => { copiedField = ''; }, 2000);
+	}
 
 	// ── Editing state for steps
 	let editingStepIdx = $state<number | null>(null);
@@ -846,6 +888,45 @@
 						</button>
 					{/each}
 				</div>
+			</div>
+
+			<!-- API endpoint (publish via NeboLoop) -->
+			<div class="mt-4 pt-4 border-t border-base-content/10">
+				<div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1">API Endpoint</div>
+				{#if published}
+					<div class="mb-2">
+						<div class="text-xs text-base-content/50 mb-0.5">URL</div>
+						<div class="flex items-center gap-1.5">
+							<code class="text-xs font-mono bg-base-200 rounded px-2 py-1 flex-1 min-w-0 truncate">{published.url}</code>
+							<button class="btn btn-xs btn-ghost shrink-0" onclick={() => copyText('url', published?.url ?? '')}>{copiedField === 'url' ? 'Copied' : 'Copy'}</button>
+						</div>
+					</div>
+					<div class="mb-2">
+						<div class="text-xs text-base-content/50 mb-0.5">API key</div>
+						<div class="flex items-center gap-1.5">
+							<code class="text-xs font-mono bg-base-200 rounded px-2 py-1 flex-1 min-w-0 truncate">{published.key}</code>
+							<button class="btn btn-xs btn-ghost shrink-0" onclick={() => copyText('key', published?.key ?? '')}>{copiedField === 'key' ? 'Copied' : 'Copy'}</button>
+						</div>
+						<div class="text-xs text-warning mt-1">Shown once — store it now.</div>
+					</div>
+					<div>
+						<div class="text-xs text-base-content/50 mb-0.5">Example</div>
+						<div class="flex items-start gap-1.5">
+							<code class="text-xs font-mono bg-base-200 rounded px-2 py-1 flex-1 min-w-0 whitespace-pre-wrap break-all">{curlExample}</code>
+							<button class="btn btn-xs btn-ghost shrink-0" onclick={() => copyText('curl', curlExample)}>{copiedField === 'curl' ? 'Copied' : 'Copy'}</button>
+						</div>
+					</div>
+				{:else}
+					<div class="text-xs text-base-content/60 mb-2">Mint a key so external systems can trigger this workflow over HTTPS.</div>
+					<button
+						class="btn btn-sm btn-outline w-full"
+						disabled={publishing || !agentId}
+						onclick={publishEndpoint}
+					>{publishing ? 'Publishing…' : 'Publish endpoint'}</button>
+					{#if publishError}
+						<div class="text-xs text-error mt-1">{publishError}</div>
+					{/if}
+				{/if}
 			</div>
 
 			<!-- Delete workflow (edit mode) -->

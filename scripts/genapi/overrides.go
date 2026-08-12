@@ -47,6 +47,15 @@ var typeOverrides = map[string]string{
 	// ── Event sources (emit + watch auto-emissions, for trigger suggestions) ──
 	"list_event_sources.sources": "EventSourceOption[]",
 
+	// ── Published workflow endpoint (passthrough of NeboLoop's webhook JSON) ──
+	"publish_agent_workflow.id":           "string",
+	"publish_agent_workflow.agentId":      "string",
+	"publish_agent_workflow.label":        "string",
+	"publish_agent_workflow.workflowName": "string",
+	"publish_agent_workflow.key":          "string",
+	"publish_agent_workflow.keyPrefix":    "string",
+	"publish_agent_workflow.url":          "string",
+
 	// ── Misc ──
 	"get_agent_stats.stats":       "AgentStats",
 	"list_aliases.aliases":        "AliasEntry[]",

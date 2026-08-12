@@ -1934,6 +1934,71 @@ pub async fn run_agent_workflow(
     Ok(Json(serde_json::json!({ "runId": run_id, "run": run })))
 }
 
+/// POST /agents/{id}/workflows/{name}/publish — mint a publishable NeboLoop
+/// webhook endpoint + API key for an agent workflow binding, so external
+/// callers can trigger the workflow over HTTPS.
+pub async fn publish_agent_workflow(
+    State(state): State<AppState>,
+    Path((id, binding_name)): Path<(String, String)>,
+) -> HandlerResult<serde_json::Value> {
+    let agent_rec = state
+        .store
+        .get_agent(&id)
+        .map_err(to_error_response)?
+        .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
+
+    let config = napp::agent::parse_agent_config(&agent_rec.frontmatter)
+        .map_err(|e| to_error_response(types::NeboError::Internal(format!("parse agent config: {}", e))))?;
+
+    if !config.workflows.contains_key(&binding_name) {
+        return Err(to_error_response(types::NeboError::NotFound));
+    }
+
+    let token = crate::codes::neboai_token(&state).ok_or_else(|| {
+        to_error_response(types::NeboError::Validation(
+            "not connected to NeboLoop — connect your account first".to_string(),
+        ))
+    })?;
+
+    let api_url = &state.config.neboai.api_url;
+    let resp = reqwest::Client::new()
+        .post(format!("{api_url}/api/v1/bots/self/webhooks"))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({
+            "agentId": id,
+            "label": format!("{} · {}", agent_rec.name, binding_name),
+            "workflowName": binding_name,
+        }))
+        .send()
+        .await
+        .map_err(|e| to_error_response(types::NeboError::Internal(format!("publish webhook: {e}"))))?;
+
+    let status = resp.status();
+    let body: serde_json::Value = resp.json().await.map_err(|e| {
+        to_error_response(types::NeboError::Internal(format!(
+            "publish webhook: parse response: {e}"
+        )))
+    })?;
+
+    if !status.is_success() {
+        return Err(to_error_response(types::NeboError::Internal(format!(
+            "publish webhook: HTTP {status}: {body}"
+        ))));
+    }
+
+    // Echo NeboLoop's response fields explicitly so the generated TS client
+    // carries the full contract (the key is shown once — the UI must surface it now).
+    Ok(Json(serde_json::json!({
+        "id": body["id"],
+        "agentId": body["agentId"],
+        "label": body["label"],
+        "workflowName": body["workflowName"],
+        "key": body["key"],
+        "keyPrefix": body["keyPrefix"],
+        "url": body["url"],
+    })))
+}
+
 /// POST /agents/{id}/activate — activate an agent from the REST API (makes it appear in sidebar).
 pub async fn activate_agent(
     State(state): State<AppState>,
