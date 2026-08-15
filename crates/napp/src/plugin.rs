@@ -891,6 +891,12 @@ impl PluginStore {
         let mut cmd = tokio::process::Command::new(&binary_path);
         cmd.args(&args);
         cmd.env("PATH", &path_env);
+        // Silent refresh is the FIRST path to break when this is missing: a
+        // hub-managed install has no client secret locally, so renewal goes
+        // through the local API — which the process can only find via this env.
+        for (key, value) in plugin_base_env() {
+            cmd.env(key, value);
+        }
         for (key, value) in &resolved_env {
             cmd.env(key, value);
         }
@@ -2482,6 +2488,27 @@ pub fn current_platform_key() -> String {
     format!("{}-{}", os, arch)
 }
 
+/// Env every plugin process must carry regardless of which code path spawned it.
+///
+/// `NEBO_LOCAL_URL` is how a plugin reaches this Nebo's own API — including the
+/// OAuth token relay that hub-managed client secrets depend on, so a spawn path
+/// that omits it breaks token refresh for every non-BYO install it launches.
+/// History: this pair used to be assembled inline at each spawn site, and every
+/// new launch path forgot it (tool exec and per-account login had it; watchers,
+/// the global login, and the silent-refresh path did not) — the fourth instance
+/// of launch-path drift. One constructor, called by every spawn site, is the
+/// fix. Grep rule: no other code builds `NEBO_LOCAL_URL`.
+pub fn plugin_base_env() -> Vec<(String, String)> {
+    let port = std::env::var("NEBO_PORT")
+        .ok()
+        .and_then(|v| v.parse::<u16>().ok())
+        .unwrap_or(types::constants::DEFAULT_PORT);
+    vec![(
+        "NEBO_LOCAL_URL".to_string(),
+        format!("http://127.0.0.1:{port}"),
+    )]
+}
+
 /// Derive the environment variable name for a plugin binary path.
 ///
 /// `gws` → `GWS_BIN`, `my-tool` → `MY_TOOL_BIN`.
@@ -2528,6 +2555,11 @@ async fn run_auth_status_check_inner(
     let mut cmd = tokio::process::Command::new(&binary_path);
     cmd.args(&args);
     cmd.env("PATH", path_env);
+    // Status must see the same world a real command would — a probe that can't
+    // reach the local API would mis-report hub-managed installs.
+    for (key, value) in plugin_base_env() {
+        cmd.env(key, value);
+    }
     for (key, value) in &resolved_env {
         cmd.env(key, value);
     }

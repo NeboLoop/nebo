@@ -147,6 +147,43 @@ impl NeboAIApi {
         Ok(())
     }
 
+    // ── Plugin OAuth (hub-held client secrets) ─────────────────────
+
+    /// Relay an OAuth token exchange to the hub, which holds the plugin's
+    /// client secret server-side. The body carries slug/account/grant fields;
+    /// the hub resolves the secret and the provider token endpoint from its own
+    /// storage and returns the provider's token JSON verbatim.
+    ///
+    /// Callers must never log the returned value — it contains live user
+    /// tokens (access + refresh).
+    pub async fn plugin_oauth_token(
+        &self,
+        body: &serde_json::Value,
+    ) -> Result<serde_json::Value, CommError> {
+        self.do_json(reqwest::Method::POST, "/api/v1/plugins/oauth/token", Some(body))
+            .await
+    }
+
+    /// Public client id for a plugin's CLOUD OAuth app (relay-mode logins).
+    /// Identifier only — the hub never returns the secret. Slugs are validated
+    /// to the marketplace's kebab charset so the path needs no URL-encoding.
+    pub async fn plugin_oauth_client(&self, slug: &str) -> Result<String, CommError> {
+        if !slug.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+            return Err(CommError::Other("invalid plugin slug".into()));
+        }
+        let v: serde_json::Value = self
+            .do_json(
+                reqwest::Method::GET,
+                &format!("/api/v1/plugins/oauth/client?slug={}", slug),
+                None::<&()>,
+            )
+            .await?;
+        v.get("clientId")
+            .and_then(|c| c.as_str())
+            .map(String::from)
+            .ok_or_else(|| CommError::Other("hub returned no clientId".into()))
+    }
+
     // ── Products (unified) ─────────────────────────────────────────
 
     /// List products from NeboAI catalog (agents, skills, workflows).
