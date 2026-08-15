@@ -19,6 +19,12 @@ pub fn routes() -> Router<AppState> {
             "/plugins/oauth/relay",
             axum::routing::get(handlers::plugins::oauth_relay),
         )
+        // Token-exchange relay for hub-held client secrets. Static segment
+        // wins over `/plugins/{slug}/...` here too.
+        .route(
+            "/plugins/oauth/token",
+            axum::routing::post(handlers::plugins::oauth_token),
+        )
         .route(
             "/plugins/{slug}",
             axum::routing::delete(handlers::plugins::remove_plugin),

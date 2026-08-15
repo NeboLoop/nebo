@@ -227,6 +227,20 @@ fn summarize_event_payload(payload: &serde_json::Value) -> serde_json::Value {
         }
     }
 
+    // Promote attachment handles (email-style payloads: payload.parts[], possibly
+    // nested multiparts). The full `payload` object is dropped above for being an
+    // object, which is precisely when attachments exist — a message with a real
+    // attachment is always over the size cutoff. Without this promotion every
+    // "process the attachment" workflow would have to refetch the message just
+    // to rediscover the attachmentId the event already had in hand.
+    let mut attachments = Vec::new();
+    if let Some(parts) = map.get("payload").and_then(|p| p.get("parts")) {
+        collect_attachments(parts, &mut attachments);
+    }
+    if !attachments.is_empty() {
+        summary.insert("attachments".to_string(), serde_json::Value::Array(attachments));
+    }
+
     // Promote nested headers (email-style payloads: payload.headers[{name, value}])
     if let Some(headers) = map
         .get("payload")
@@ -247,6 +261,33 @@ fn summarize_event_payload(payload: &serde_json::Value) -> serde_json::Value {
     }
 
     serde_json::Value::Object(summary)
+}
+
+/// Walk a Gmail-style MIME part tree collecting attachment handles.
+///
+/// A part is an attachment when it carries a filename and an attachmentId
+/// (inline body parts have neither). Multipart containers nest their children
+/// under `parts`, so recurse.
+fn collect_attachments(parts: &serde_json::Value, out: &mut Vec<serde_json::Value>) {
+    let Some(arr) = parts.as_array() else { return };
+    for part in arr {
+        let filename = part.get("filename").and_then(|v| v.as_str()).unwrap_or("");
+        let att_id = part
+            .get("body")
+            .and_then(|b| b.get("attachmentId"))
+            .and_then(|v| v.as_str());
+        if let (false, Some(att_id)) = (filename.is_empty(), att_id) {
+            out.push(serde_json::json!({
+                "filename": filename,
+                "mimeType": part.get("mimeType").cloned().unwrap_or(serde_json::Value::Null),
+                "size": part.get("body").and_then(|b| b.get("size")).cloned().unwrap_or(serde_json::Value::Null),
+                "attachmentId": att_id,
+            }));
+        }
+        if let Some(nested) = part.get("parts") {
+            collect_attachments(nested, out);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -272,6 +313,35 @@ mod tests {
         let small = serde_json::json!({"from": "alice@test.com", "subject": "Hello"});
         let result = summarize_event_payload(&small);
         assert_eq!(result, small); // unchanged — under 8KB
+    }
+
+    #[test]
+    fn test_summarize_promotes_attachment_handles() {
+        // A message with a real attachment is always over the 8KB cutoff, which
+        // drops `payload` wholesale — the promotion is the only way the
+        // attachmentId reaches the workflow.
+        let payload = serde_json::json!({
+            "id": "msg9",
+            "snippet": "invoice attached",
+            "payload": {
+                "mimeType": "multipart/mixed",
+                "headers": [{"name": "From", "value": "vendor@test.com"}],
+                "parts": [
+                    {"filename": "", "mimeType": "multipart/alternative", "parts": [
+                        {"filename": "", "mimeType": "text/plain", "body": {"data": "x".repeat(9000)}}
+                    ]},
+                    {"filename": "invoice.pdf", "mimeType": "application/pdf",
+                     "body": {"attachmentId": "ATT123", "size": 52133}}
+                ]
+            }
+        });
+        let result = summarize_event_payload(&payload);
+        let atts = result["attachments"].as_array().unwrap();
+        assert_eq!(atts.len(), 1); // inline text parts are NOT attachments
+        assert_eq!(atts[0]["filename"], "invoice.pdf");
+        assert_eq!(atts[0]["attachmentId"], "ATT123");
+        assert_eq!(atts[0]["size"], 52133);
+        assert_eq!(result["from"], "vendor@test.com");
     }
 
     #[test]

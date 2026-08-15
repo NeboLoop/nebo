@@ -407,12 +407,24 @@ impl PluginTool {
 /// plugin's 21 skills documented features that did not exist — filing a report
 /// recommending they be deleted. An invented command name is worse than a raw
 /// directory name, so a skill that isn't slug-prefixed is shown as-is.
-fn display_command_for_skill(slug: &str, skill_name: &str) -> String {
+fn display_command_for_skill(
+    slug: &str,
+    skill_name: &str,
+    siblings: &std::collections::HashSet<String>,
+) -> String {
     match skill_name.strip_prefix(&format!("{}-", slug)) {
-        // Slug-prefixed: the remainder is service + verb, per the GWS convention.
+        // Slug-prefixed: the remainder may be service + verb, per the GWS
+        // convention (`gws-gmail-send` → `gmail +send`). It is only a helper
+        // when the service it claims to extend is itself a skill here — GWS
+        // ships `gws-gmail` alongside `gws-gmail-send`. Without that check a
+        // multi-word service name reads as a helper on a service that does not
+        // exist: `google-calendar-free-busy` printed `free +busy`, sending
+        // agents after a `free` subcommand when the command is `free-busy`.
         Some(trimmed) => match trimmed.split_once('-') {
-            Some((service, verb)) => format!("{} +{}", service, verb),
-            None => trimmed.to_string(),
+            Some((service, verb)) if siblings.contains(&format!("{}-{}", slug, service)) => {
+                format!("{} +{}", service, verb)
+            }
+            _ => trimmed.to_string(),
         },
         // Not slug-prefixed: we have no idea whether this names a subcommand.
         None => skill_name.to_string(),
@@ -492,8 +504,10 @@ impl DynTool for PluginTool {
             let total = services.len();
             let mut included = 0usize;
             let mut truncated = false;
+            let sibling_names: std::collections::HashSet<String> =
+                services.iter().map(|(n, _)| n.clone()).collect();
             for (name, desc) in services {
-                let label = display_command_for_skill(slug, name);
+                let label = display_command_for_skill(slug, name, &sibling_names);
                 let line = if desc.is_empty() {
                     format!("  - {}\n", label)
                 } else {
@@ -782,8 +796,10 @@ impl PluginTool {
         let services = self.list_services(slug);
         if !services.is_empty() {
             out.push_str("## Bundled skills\n\n");
+            let sibling_names: std::collections::HashSet<String> =
+                services.iter().map(|(n, _)| n.clone()).collect();
             for (name, desc) in &services {
-                let label = display_command_for_skill(slug, name);
+                let label = display_command_for_skill(slug, name, &sibling_names);
                 if desc.is_empty() {
                     out.push_str(&format!("- {}\n", label));
                 } else {
@@ -1182,11 +1198,9 @@ impl PluginTool {
         // command run BY an agent (e.g. `phonecall dial`) can reach this
         // Nebo's own endpoints as that agent. Loopback address, not a
         // credential.
-        let port = std::env::var("NEBO_PORT")
-            .ok()
-            .and_then(|v| v.parse::<u16>().ok())
-            .unwrap_or(types::constants::DEFAULT_PORT);
-        runtime = runtime.with_env("NEBO_LOCAL_URL", format!("http://127.0.0.1:{port}"));
+        for (key, value) in napp::plugin::plugin_base_env() {
+            runtime = runtime.with_env(key, value);
+        }
         if let Some(agent_id) = agent_id_from_session_key(&ctx.session_key) {
             runtime = runtime.with_env("NEBO_AGENT_ID", agent_id);
         }
@@ -1887,25 +1901,42 @@ fn build_op_json(
 mod tests {
     use super::*;
 
+    fn skill_set(names: &[&str]) -> std::collections::HashSet<String> {
+        names.iter().map(|n| n.to_string()).collect()
+    }
+
     #[test]
     fn skill_labels_never_invent_a_subcommand() {
         // GWS prefixes its skill dirs with its slug, and each really is a
-        // subcommand — the `+` label is a fact.
-        assert_eq!(display_command_for_skill("gws", "gws-gmail-triage"), "gmail +triage");
-        assert_eq!(display_command_for_skill("gws", "gws-calendar-insert"), "calendar +insert");
-        assert_eq!(display_command_for_skill("gws", "gws-auth"), "auth");
+        // subcommand — the `+` label is a fact, vouched for by the service
+        // skill sitting next to the helper.
+        let gws = skill_set(&["gws-gmail", "gws-gmail-triage", "gws-calendar", "gws-calendar-insert", "gws-auth"]);
+        assert_eq!(display_command_for_skill("gws", "gws-gmail-triage", &gws), "gmail +triage");
+        assert_eq!(display_command_for_skill("gws", "gws-calendar-insert", &gws), "calendar +insert");
+        assert_eq!(display_command_for_skill("gws", "gws-auth", &gws), "auth");
 
-        // nebo-office does not, and `pptx design` is not a subcommand. Showing
-        // the raw name is the only honest option — the `pptx +design` label this
-        // used to print sent an agent chasing a command that never existed.
+        // A multi-word service is not a helper. google-calendar ships
+        // `free-busy` with no `free` service, so the label must stay whole —
+        // `free +busy` advertised a subcommand the binary does not have.
+        let cal = skill_set(&["google-calendar-calendars", "google-calendar-free-busy", "google-calendar-shared"]);
+        assert_eq!(
+            display_command_for_skill("google-calendar", "google-calendar-free-busy", &cal),
+            "free-busy"
+        );
+
+        // nebo-office does not prefix with its slug, and `pptx design` is not a
+        // subcommand. Showing the raw name is the only honest option — the
+        // `pptx +design` label this used to print sent an agent chasing a
+        // command that never existed.
+        let office = skill_set(&["pptx", "pptx-design", "pptx-shapes", "docx-tables", "xlsx-formulas"]);
         for name in ["pptx-design", "pptx-shapes", "docx-tables", "xlsx-formulas"] {
             assert_eq!(
-                display_command_for_skill("nebo-office", name),
+                display_command_for_skill("nebo-office", name, &office),
                 name,
                 "a skill not prefixed with the plugin slug must be shown verbatim"
             );
         }
-        assert_eq!(display_command_for_skill("nebo-office", "pptx"), "pptx");
+        assert_eq!(display_command_for_skill("nebo-office", "pptx", &office), "pptx");
     }
 
     #[test]

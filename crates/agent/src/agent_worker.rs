@@ -1129,6 +1129,15 @@ async fn watch_loop(
         .with_home()
         .with_permissions();
 
+        // A watcher outlives its access token — hourly for Google-class
+        // providers — and renews it itself. Hub-managed installs renew through
+        // the local API, so without this env the watcher's first refresh fails,
+        // the process dies, and the restart re-baselines the cursor: silently
+        // dropped events, every hour. This was the launch path that forgot it.
+        for (key, value) in napp::plugin::plugin_base_env() {
+            runtime = runtime.with_env(key, value);
+        }
+
         // Per-account credential isolation: point the watcher at this agent's
         // chosen account directory (applied last so it wins over any global).
         if let Some((env_name, config_dir)) = &profile_dir {
