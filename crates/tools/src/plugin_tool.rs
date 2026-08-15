@@ -196,6 +196,24 @@ impl PluginTool {
         }
     }
 
+    /// The gated interface operation a raw exec command corresponds to, if any.
+    ///
+    /// Matches the command's leading tokens against the plugin's declared
+    /// `interfaceBindings` values (a binding command may be multi-word, e.g.
+    /// `documents list`), and returns the operation only when the catalog marks
+    /// it gated — ungated reads stay runnable through exec.
+    fn gated_operation_for_command(&self, slug: &str, command: &str) -> Option<String> {
+        let manifest = self.plugin_store.get_manifest(slug)?;
+        let command = command.trim();
+        for (op, bound_cmd) in &manifest.interface_bindings {
+            if command_matches_binding(command, bound_cmd) && crate::interface_catalog::is_gated(op)
+            {
+                return Some(op.clone());
+            }
+        }
+        None
+    }
+
     /// The provider a department has bound for a capability (e.g. accounting's
     /// `mail` → "postmark", support's `mail` → a different provider). This is what
     /// makes resolution department-scoped and collision-free. Populated by the
@@ -715,6 +733,22 @@ impl DynTool for PluginTool {
                              Example: plugin(resource: \"gws\", action: \"exec\", command: \"gmail +triage\")"
                                 .to_string(),
                         );
+                    }
+                    // Raw exec must not be a side door around the per-employee
+                    // operation gate: a command that IS a gated bound operation
+                    // (e.g. ballast's `ingest` = kb.article.create) only runs
+                    // through the typed port, where the runner's OperationPolicy
+                    // gate (Blocked / Approval) applies. Observed live: an agent
+                    // whose kb.article.create was Blocked offered to run the
+                    // same write via exec instead.
+                    if let Some(op) = self.gated_operation_for_command(&pi.resource, &pi.command) {
+                        return ToolResult::error(format!(
+                            "'{}' on {} is the gated operation '{op}'. Call it as \
+                             plugin(operation: \"{op}\", input: {{...}}, display: \"<plain-language \
+                             summary for the owner>\") so the owner's approval controls apply — \
+                             do not retry it through exec.",
+                            pi.command, pi.resource
+                        ));
                     }
                     self.handle_exec(&pi, ctx).await
                 }
@@ -1897,12 +1931,34 @@ fn build_op_json(
     Ok(serde_json::Value::Object(obj))
 }
 
+/// Whether a raw exec command invokes a bound operation's command — the bound
+/// command exactly, or with additional arguments/flags after it. A binding may
+/// be multi-word ("documents list"), so plain prefix matching would false-match
+/// "documents listing"; the boundary must be end-of-string or whitespace.
+fn command_matches_binding(command: &str, bound_cmd: &str) -> bool {
+    match command.strip_prefix(bound_cmd) {
+        Some(rest) => rest.is_empty() || rest.starts_with(char::is_whitespace),
+        None => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn skill_set(names: &[&str]) -> std::collections::HashSet<String> {
         names.iter().map(|n| n.to_string()).collect()
+    }
+
+    #[test]
+    fn exec_binding_match_requires_word_boundary() {
+        assert!(command_matches_binding("ingest", "ingest"));
+        assert!(command_matches_binding("ingest --limit 5", "ingest"));
+        assert!(command_matches_binding("documents list --limit 2", "documents list"));
+        // No boundary → not the bound command.
+        assert!(!command_matches_binding("ingestion-report", "ingest"));
+        assert!(!command_matches_binding("documents listing", "documents list"));
+        assert!(!command_matches_binding("search foo", "ingest"));
     }
 
     #[test]
