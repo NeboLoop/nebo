@@ -115,6 +115,22 @@ mod tests {
         assert!(!is_critical("mail.message.send"));
     }
 
+    /// The knowledge base plugin's read/write split rides this catalog: its
+    /// manifest binds `kb.article.search` (read) and `kb.article.create` /
+    /// `kb.article.update` (write), and a seat calls them as `ballast.kb.article.*`.
+    /// If a future edit drops the `kb` entries or changes suffix normalization, KB
+    /// writes silently stop asking for approval — so pin the exact strings.
+    #[test]
+    fn kb_read_write_split_is_gated_as_the_plugin_expects() {
+        assert!(!is_gated("ballast.kb.article.search"), "search must stay ungated");
+        assert!(is_gated("ballast.kb.article.create"), "ingest must be gated");
+        assert!(is_gated("ballast.kb.article.update"), "forget must be gated");
+
+        // A KB write is not money movement, so it must not be `critical` — the
+        // owner can grant it standing approval; a payment op never can.
+        assert!(!is_critical("ballast.kb.article.create"));
+    }
+
     #[test]
     fn catalog_entries_are_valid_suffixes() {
         // Every entry must be a 3-segment operation suffix (capability.resource.action),

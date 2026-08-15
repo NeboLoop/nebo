@@ -612,6 +612,60 @@ mod tests {
     }
 
     #[test]
+    /// A read-only AI employee: KB search still runs, KB writes are refused.
+    /// This is the whole read/write split for the knowledge base plugin — it has
+    /// no capability toggle of its own (plugin tools are exempt from
+    /// `entity_config.permissions`), so `Blocked` here is the only hard denial.
+    #[test]
+    fn read_only_employee_can_search_kb_but_not_write_to_it() {
+        let mut read_only = OperationPolicy::default();
+        read_only
+            .operations
+            .insert("kb.article.create".to_string(), OperationAccess::Blocked);
+        read_only
+            .operations
+            .insert("kb.article.update".to_string(), OperationAccess::Blocked);
+
+        // Reads are ungated, so they resolve to Always no matter what is stored.
+        assert_eq!(
+            read_only.decide("ballast.kb.article.search"),
+            OperationAccess::Always
+        );
+        // Writes are refused, and the block survives the provenance prefix a seat
+        // adds to the port.
+        assert_eq!(
+            read_only.decide("ballast.kb.article.create"),
+            OperationAccess::Blocked
+        );
+        assert_eq!(
+            read_only.decide("research.analyst.kb.article.update"),
+            OperationAccess::Blocked
+        );
+
+        // A full-autonomy employee runs KB writes without prompting — a KB write
+        // is not `critical`, so nothing forces it back to Approval.
+        let autonomous = OperationPolicy {
+            default: OperationAccess::Always,
+            operations: HashMap::new(),
+        };
+        assert_eq!(
+            autonomous.decide("ballast.kb.article.create"),
+            OperationAccess::Always
+        );
+
+        // The default employee is asked before a KB write, never before a read.
+        let default = OperationPolicy::default();
+        assert_eq!(
+            default.decide("ballast.kb.article.create"),
+            OperationAccess::Approval
+        );
+        assert_eq!(
+            default.decide("ballast.kb.article.search"),
+            OperationAccess::Always
+        );
+    }
+
+    #[test]
     fn operation_policy_decide_precedence_and_critical() {
         // Non-gated ops are never gated.
         let p = OperationPolicy::default();
