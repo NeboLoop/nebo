@@ -1946,6 +1946,21 @@ fn command_matches_binding(command: &str, bound_cmd: &str) -> bool {
 mod tests {
     use super::*;
 
+    fn skill_set(names: &[&str]) -> std::collections::HashSet<String> {
+        names.iter().map(|n| n.to_string()).collect()
+    }
+
+    #[test]
+    fn exec_binding_match_requires_word_boundary() {
+        assert!(command_matches_binding("ingest", "ingest"));
+        assert!(command_matches_binding("ingest --limit 5", "ingest"));
+        assert!(command_matches_binding("documents list --limit 2", "documents list"));
+        // No boundary → not the bound command.
+        assert!(!command_matches_binding("ingestion-report", "ingest"));
+        assert!(!command_matches_binding("documents listing", "documents list"));
+        assert!(!command_matches_binding("search foo", "ingest"));
+    }
+
     #[test]
     fn exec_binding_match_requires_word_boundary() {
         assert!(command_matches_binding("ingest", "ingest"));
