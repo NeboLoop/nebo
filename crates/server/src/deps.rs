@@ -466,6 +466,13 @@ async fn resolve_marketplace_code(
     if crate::codes::detect_code(reference).is_some() {
         return Ok(reference.to_string()); // already an install code
     }
+    if reference.starts_with('@') {
+        // Qualified name — the redeem endpoint resolves these server-side
+        // (GetByQualifiedName, no visibility filter), so pass it through.
+        // Resolving via the public product listing here would lose every
+        // unlisted/private dependency: they never appear in that listing.
+        return Ok(reference.to_string());
+    }
     let slug = extract_simple_name(reference);
     // Page through the type's products and match by slug (then qualifiedName) locally.
     // Two traps avoided:

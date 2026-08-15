@@ -622,6 +622,10 @@ fn main() {
             .inner_size(w, h)
             .min_inner_size(800.0, 600.0)
             .visible(false)
+            // Tauri's own drag-drop handler swallows OS file drops before the
+            // webview sees them; disabling it lets the composer's HTML5 ondrop
+            // receive real File objects (same code path as paste/browse).
+            .disable_drag_drop_handler()
             .on_navigation(|url| {
                 let host = url.host_str().unwrap_or("");
                 if host == "localhost" || host == "127.0.0.1" || is_stripe_domain(host) {
@@ -783,32 +787,6 @@ fn main() {
                         let _ = window.hide();
                     }
                     // App windows (app-*) close normally — state was saved above.
-                }
-                tauri::WindowEvent::DragDrop(event) => {
-                    // Tauri intercepts file drops at the OS level — browser ondrop never fires.
-                    // Push dropped paths into the Svelte input via eval() on the webview.
-                    if let Some(wv) = window.app_handle().get_webview_window(window.label()) {
-                        match event {
-                            tauri::DragDropEvent::Enter { .. } => {
-                                let _ = wv.eval("if(window.__NEBO_DRAG_ENTER__)window.__NEBO_DRAG_ENTER__()");
-                            }
-                            tauri::DragDropEvent::Leave => {
-                                let _ = wv.eval("if(window.__NEBO_DRAG_LEAVE__)window.__NEBO_DRAG_LEAVE__()");
-                            }
-                            tauri::DragDropEvent::Drop { paths, .. } => {
-                                let json_paths: Vec<String> = paths
-                                    .iter()
-                                    .filter_map(|p| p.to_str())
-                                    .map(|s| s.to_string())
-                                    .collect();
-                                if let Ok(json) = serde_json::to_string(&json_paths) {
-                                    let js = format!("if(window.__NEBO_INSERT_FILES__)window.__NEBO_INSERT_FILES__({json})");
-                                    let _ = wv.eval(&js);
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
                 }
                 tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_) => {
                     // Only save after the main window has been fully initialized.

@@ -330,6 +330,7 @@ fn spawn_plugin_login(
     // gws writes the OAuth URL to stderr, so we read both streams and open the URL
     // with open::that(), mirroring how onboarding opens the browser.
     let plugin_store_clone = state.plugin_store.clone();
+    let neboai_api_url = state.config.neboai.api_url.clone();
     tokio::spawn(async move {
         let runtime = napp::PluginRuntime::new(&slug_owned, binary_path, plugin_store_clone);
         let mut cmd = runtime.command(&login_command);
@@ -339,13 +340,14 @@ fn spawn_plugin_login(
         // for — some logins are server-side flows through the local API (the
         // phone plugin's "login" provisions a number via the cloud) rather
         // than third-party OAuth.
+        // Unconditional: a GLOBAL (no-profile) login needs the local API too —
+        // hub-managed installs exchange their auth code through it. Gating this
+        // on the per-account profile silently broke exactly the default path.
+        for (key, value) in napp::plugin::plugin_base_env() {
+            cmd.env(key, value);
+        }
         if let Some(ref p) = profile {
             cmd.env(&p.env_name, &p.config_dir);
-            let port = std::env::var("NEBO_PORT")
-                .ok()
-                .and_then(|v| v.parse::<u16>().ok())
-                .unwrap_or(types::constants::DEFAULT_PORT);
-            cmd.env("NEBO_LOCAL_URL", format!("http://127.0.0.1:{port}"));
             cmd.env("NEBO_AGENT_ID", &p.agent_id);
             // The account's display label ("Front Desk") — server-side logins
             // pass it upstream so the same name identifies the account
@@ -368,6 +370,37 @@ fn spawn_plugin_login(
                         cmd.env("NEBO_OAUTH_REDIRECT_URI", crate::plugin_oauth::PUBLIC_REDIRECT_URI);
                         cmd.env("NEBO_OAUTH_STATE", &relay.state);
                         cmd.env("NEBO_OAUTH_PORT", relay.port.to_string());
+                        // The https relay redirect only exists on the plugin's
+                        // CLOUD (Web-application) OAuth client — the Desktop
+                        // client in the manifest cannot register it, so an
+                        // authorize URL built with the manifest's client id
+                        // dies at Google with redirect_uri_mismatch. Ask the
+                        // hub which client id backs the relay (public
+                        // identifier; the secret stays hub-side). Best-effort:
+                        // plugins with one client for both modes (or BYO
+                        // setups) work without it.
+                        let cloud_client = match (
+                            config::read_bot_id(),
+                            profile_store.list_all_active_auth_profiles_by_provider("neboai"),
+                        ) {
+                            (Some(bot_id), Ok(profiles)) if !profiles.is_empty() => {
+                                let api = comm::api::NeboAIApi::new(
+                                    neboai_api_url.clone(),
+                                    bot_id,
+                                    profiles[0].api_key.clone(),
+                                );
+                                api.plugin_oauth_client(&slug_owned).await.ok()
+                            }
+                            _ => None,
+                        };
+                        match cloud_client {
+                            Some(client_id) => {
+                                cmd.env("NEBO_OAUTH_CLIENT_ID", client_id);
+                            }
+                            None => {
+                                warn!(plugin = %slug_owned, "plugin auth: no cloud client id from hub; using manifest client id");
+                            }
+                        }
                     }
                     Err(e) => {
                         warn!(plugin = %slug_owned, error = %e, "plugin auth: failed to set up public OAuth relay; falling back to loopback redirect");
@@ -652,6 +685,65 @@ pub async fn oauth_relay(
     )
 }
 
+/// POST /plugins/oauth/token
+///
+/// Relay hop for hub-held OAuth client secrets. A plugin whose manifest ships
+/// no client secret performs its token exchange here instead of directly with
+/// the provider: this handler forwards the body to the hub with the bot's JWT
+/// (the plugin never holds hub credentials), and the hub — which alone knows
+/// the secret and the provider's token endpoint — returns the provider token
+/// JSON verbatim. No logic beyond attaching identity lives here, and the
+/// response body is NEVER logged: it contains live user tokens.
+///
+/// Trust model matches the sibling plugin routes: the server binds loopback,
+/// so callers are local processes this Nebo spawned.
+pub async fn oauth_token(
+    State(state): State<AppState>,
+    Json(body): Json<serde_json::Value>,
+) -> (axum::http::StatusCode, Json<serde_json::Value>) {
+    let err = |status: axum::http::StatusCode, msg: String| {
+        (status, Json(serde_json::json!({ "error": msg })))
+    };
+
+    let Some(bot_id) = config::read_bot_id() else {
+        return err(
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            "not connected to NeboAI — this plugin's OAuth app is managed by the hub,              which requires a connected instance (or set the plugin's client secret              locally to use your own OAuth app)"
+                .to_string(),
+        );
+    };
+    let profile = match state.store.list_all_active_auth_profiles_by_provider("neboai") {
+        Ok(profiles) => match profiles.into_iter().next() {
+            Some(p) => p,
+            None => {
+                return err(
+                    axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                    "not connected to NeboAI — redeem a NEBO code first".to_string(),
+                )
+            }
+        },
+        Err(e) => {
+            return err(
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                format!("failed to query auth profiles: {e}"),
+            )
+        }
+    };
+
+    let api = comm::api::NeboAIApi::new(
+        state.config.neboai.api_url.clone(),
+        bot_id,
+        profile.api_key.clone(),
+    );
+    match api.plugin_oauth_token(&body).await {
+        Ok(tokens) => (axum::http::StatusCode::OK, Json(tokens)),
+        // The hub's error text is safe to surface (it never echoes secrets),
+        // and the plugin needs it verbatim to tell an expired grant from a
+        // config problem.
+        Err(e) => err(axum::http::StatusCode::BAD_GATEWAY, e.to_string()),
+    }
+}
+
 /// GET /plugins/{slug}/accounts?agentId=<id>
 ///
 /// List the accounts an agent has connected for a multi-account plugin.
@@ -719,11 +811,9 @@ pub async fn disconnect_plugin_account(
         cmd.env(env_name, &dir);
         // Same locals a login gets — a logout that releases something
         // server-side (a phone number) goes back through the local API.
-        let port = std::env::var("NEBO_PORT")
-            .ok()
-            .and_then(|v| v.parse::<u16>().ok())
-            .unwrap_or(types::constants::DEFAULT_PORT);
-        cmd.env("NEBO_LOCAL_URL", format!("http://127.0.0.1:{port}"));
+        for (key, value) in napp::plugin::plugin_base_env() {
+            cmd.env(key, value);
+        }
         cmd.env("NEBO_AGENT_ID", &q.agent_id);
         match tokio::time::timeout(std::time::Duration::from_secs(30), cmd.output()).await {
             Ok(Ok(out)) if out.status.success() => {}
