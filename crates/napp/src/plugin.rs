@@ -98,7 +98,17 @@ pub struct PluginManifest {
     /// suffix, to whichever installed plugin declares that binding — so the same
     /// seat runs on QuickBooks, Xero, or Wave unchanged. Empty for plugins that
     /// implement no interface.
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    #[serde(
+        default,
+        skip_serializing_if = "HashMap::is_empty",
+        // Accept the snake_case spelling too: the first manifests in the field
+        // (quickbooks, ballast 0.1.0) shipped `interface_bindings`, which the
+        // struct-level camelCase rename silently deserialized to an EMPTY map —
+        // no error, no ports, typed operations dead. The alias makes both
+        // spellings bind; camelCase (matching every other manifest key) is
+        // canonical going forward.
+        alias = "interface_bindings"
+    )]
     pub interface_bindings: HashMap<String, String>,
 }
 
@@ -2704,6 +2714,27 @@ fn interpret_auth_status_output(stdout: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Both manifest spellings must populate interface_bindings — the field is
+    /// `#[serde(default)]`, so a casing mismatch fails SILENTLY into an empty
+    /// map and every typed port on the plugin goes dead (shipped that way in
+    /// quickbooks and ballast 0.1.0).
+    #[test]
+    fn interface_bindings_accepts_both_spellings() {
+        for key in ["interfaceBindings", "interface_bindings"] {
+            let json = format!(
+                r#"{{"id":"x","slug":"kb","name":"KB","version":"1.0.0","platforms":{{}},
+                     "{key}":{{"kb.article.search":"search"}}}}"#
+            );
+            let m: PluginManifest = serde_json::from_str(&json)
+                .unwrap_or_else(|e| panic!("{key}: {e}"));
+            assert_eq!(
+                m.interface_bindings.get("kb.article.search").map(String::as_str),
+                Some("search"),
+                "spelling {key} must bind"
+            );
+        }
+    }
 
     #[test]
     fn test_current_platform_key() {
