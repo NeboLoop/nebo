@@ -21,7 +21,9 @@ env:
 jobs:
   frontend:
     name: Frontend check & test
-    runs-on: ubuntu-latest
+    # Self-hosted: Lima VM (ubuntu arm64) on the stadium Mac mini — GH-hosted
+    # minutes were exhausting the 2000/mo plan quota.
+    runs-on: [self-hosted, nebo-linux]
     defaults:
       run:
         working-directory: app
@@ -46,7 +48,7 @@ jobs:
 
   rust:
     name: Cargo workspace tests
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, nebo-linux]
     steps:
       - uses: actions/checkout@v4
 
