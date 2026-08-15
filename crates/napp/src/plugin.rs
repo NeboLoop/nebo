@@ -2033,17 +2033,12 @@ impl PluginStore {
     /// Remove a plugin entirely (all versions). Checks both user and installed dirs.
     pub fn remove(&self, slug: &str) -> Result<(), NappError> {
         let mut found = false;
-        // Remove from user dir if present
-        let user_slug_dir = self.user_dir.join(slug);
-        if user_slug_dir.exists() {
-            std::fs::remove_dir_all(&user_slug_dir)?;
-            found = true;
-        }
-        // Remove from installed dir if present
-        let installed_slug_dir = self.installed_dir.join(slug);
-        if installed_slug_dir.exists() {
-            std::fs::remove_dir_all(&installed_slug_dir)?;
-            found = true;
+        for root in [&self.user_dir, &self.installed_dir] {
+            let slug_dir = root.join(slug);
+            if slug_dir.exists() {
+                remove_store_artifacts(&slug_dir)?;
+                found = true;
+            }
         }
         if !found {
             return Err(NappError::PluginNotFound(slug.to_string()));
@@ -2711,9 +2706,67 @@ fn interpret_auth_status_output(stdout: &[u8]) -> bool {
 
 // ── Tests ───────────────────────────────────────────────────────────
 
+
+/// Delete only the store-owned artifacts inside a plugin slug directory —
+/// semver version dirs and `.napp` archives — and keep everything else.
+///
+/// The slug dir doubles as the plugin's persistent data directory
+/// (`plugin_data_dir` → `NEBO_DATA_DIR`), so a blanket `remove_dir_all` here
+/// destroys the plugin's data on every update/reinstall: observed live when a
+/// ballast (Knowledge Base) update deleted the customer's entire index
+/// (`ballast.db`). Anything a plugin wrote — databases, OAuth token caches —
+/// belongs to the plugin, not the store, and must survive.
+///
+/// The slug dir itself is kept (empty or with data); install recreates version
+/// dirs inside it.
+fn remove_store_artifacts(slug_dir: &Path) -> Result<(), NappError> {
+    for entry in std::fs::read_dir(slug_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let is_version_dir =
+            path.is_dir() && semver::Version::parse(name.trim_end_matches(".napp")).is_ok();
+        let is_napp = path.is_file() && name.ends_with(".napp");
+        if is_version_dir {
+            std::fs::remove_dir_all(&path)?;
+        } else if is_napp {
+            std::fs::remove_file(&path)?;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A remove (as run before every update/reinstall) must delete only the
+    /// store's own artifacts — version dirs and .napp files — and preserve the
+    /// plugin's persistent data living in the same slug directory.
+    #[test]
+    fn remove_preserves_plugin_data() {
+        let tmp = tempfile::tempdir().unwrap();
+        let installed = tmp.path().join("plugins");
+        let slug_dir = installed.join("kb");
+        std::fs::create_dir_all(slug_dir.join("0.1.0")).unwrap();
+        std::fs::write(slug_dir.join("0.1.0").join("plugin.json"), "{}").unwrap();
+        std::fs::write(slug_dir.join("0.1.0.napp"), b"NAPP").unwrap();
+        // The plugin's own data: a database file and a nested dir.
+        std::fs::write(slug_dir.join("kb.db"), b"data").unwrap();
+        std::fs::create_dir_all(slug_dir.join("cache")).unwrap();
+        std::fs::write(slug_dir.join("cache").join("state.json"), "{}").unwrap();
+
+        let user_dir = tmp.path().join("user_plugins");
+        std::fs::create_dir_all(&user_dir).unwrap();
+        let store = PluginStore::new(installed.clone(), user_dir, None);
+        store.remove("kb").unwrap();
+
+        assert!(!slug_dir.join("0.1.0").exists(), "version dir must be removed");
+        assert!(!slug_dir.join("0.1.0.napp").exists(), "napp must be removed");
+        assert!(slug_dir.join("kb.db").exists(), "plugin data must survive");
+        assert!(slug_dir.join("cache/state.json").exists(), "plugin dirs must survive");
+    }
 
     /// Both manifest spellings must populate interface_bindings — the field is
     /// `#[serde(default)]`, so a casing mismatch fails SILENTLY into an empty
