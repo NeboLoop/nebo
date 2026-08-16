@@ -402,11 +402,12 @@ impl Store {
         id: &str,
         status: &str,
         tool_count: i64,
+        last_error: Option<&str>,
     ) -> Result<(), NeboError> {
         let conn = self.conn()?;
         conn.execute(
-            "UPDATE mcp_integrations SET connection_status = ?1, tool_count = ?2, last_connected_at = unixepoch(), updated_at = unixepoch() WHERE id = ?3",
-            params![status, tool_count, id],
+            "UPDATE mcp_integrations SET connection_status = ?1, tool_count = ?2, last_error = ?3, last_connected_at = unixepoch(), updated_at = unixepoch() WHERE id = ?4",
+            params![status, tool_count, last_error, id],
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;
         Ok(())

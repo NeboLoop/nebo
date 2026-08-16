@@ -260,7 +260,21 @@ pub(crate) async fn sync_integrations_from_block(
     Ok(servers.len() + managed)
 }
 
-/// Fix legacy integrations that were saved as "stdio" but have HTTP URLs.
+/// Message shown on legacy stdio rows that have no launch spec — they predate
+/// the `{command, args, env}` metadata format and can never connect (issue #53).
+pub(crate) const MISSING_LAUNCH_SPEC_ERROR: &str =
+    "missing launch command — remove this server and add it again";
+
+/// A stdio row that can never connect: no URL and no `{command,args,env}`
+/// launch spec in metadata. The one predicate both the list-path heal and the
+/// sync-path skip decide on, so they can never drift apart.
+fn is_unlaunchable_stdio(server_type: &str, server_url: Option<&str>, metadata: Option<&str>) -> bool {
+    server_type == "stdio"
+        && server_url.map(str::is_empty).unwrap_or(true)
+        && !metadata_is_stdio(metadata)
+}
+
+/// Fix legacy integrations saved in shapes the current code can't run.
 fn fix_server_type(state: &AppState) {
     if let Ok(integrations) = state.store.list_mcp_integrations() {
         for i in &integrations {
@@ -273,6 +287,20 @@ fn fix_server_type(state: &AppState) {
                         // Direct SQL update for server_type since update_mcp_integration doesn't expose it
                         let _ = state.store.set_mcp_server_type(&i.id, "http");
                     }
+                } else if is_unlaunchable_stdio(&i.server_type, i.server_url.as_deref(), i.metadata.as_deref())
+                    && i.connection_status.as_deref() != Some("error")
+                {
+                    // Second legacy shape: a stdio row with no URL and no
+                    // {command,args,env} in metadata. sync_bridge skips it, so it
+                    // sat forever showing its last (stale) status while never
+                    // connecting. Flag it — never delete: it's a user-added row,
+                    // and the flag is what tells them why their tools vanished.
+                    let _ = state.store.set_mcp_connection_status(
+                        &i.id,
+                        "error",
+                        0,
+                        Some(MISSING_LAUNCH_SPEC_ERROR),
+                    );
                 }
             }
         }
@@ -309,8 +337,21 @@ pub(crate) async fn sync_bridge(state: &AppState) {
             continue;
         }
         // Remote servers need a URL; stdio servers carry a command in metadata.
+        // A row with neither is the legacy shape fix_server_type flags — write
+        // the same error here too, since sync runs at startup before any list
+        // view triggers the heal, and a silent skip leaves stale status behind.
         let server_url = i.server_url.clone().unwrap_or_default();
         if server_url.is_empty() && !metadata_is_stdio(i.metadata.as_deref()) {
+            if is_unlaunchable_stdio(&i.server_type, i.server_url.as_deref(), i.metadata.as_deref())
+                && i.connection_status.as_deref() != Some("error")
+            {
+                let _ = state.store.set_mcp_connection_status(
+                    &i.id,
+                    "error",
+                    0,
+                    Some(MISSING_LAUNCH_SPEC_ERROR),
+                );
+            }
             continue;
         }
         if i.auth_type == "oauth" && i.connection_status.is_none() {
@@ -327,7 +368,7 @@ pub(crate) async fn sync_bridge(state: &AppState) {
             tools::mcp_tool::TokenResolution::NeedsReauth => {
                 // Don't connect with a stale token (it would 401 and drop). Surface
                 // needs_reauth; the proactive refresher will retry on its next tick.
-                let _ = state.store.set_mcp_connection_status(&i.id, "needs_reauth", 0);
+                let _ = state.store.set_mcp_connection_status(&i.id, "needs_reauth", 0, None);
                 warn!(name = %i.name, "MCP token needs reauth during sync — skipping connect");
                 continue;
             }
@@ -349,10 +390,11 @@ pub(crate) async fn sync_bridge(state: &AppState) {
                     &i.id,
                     "connected",
                     tools_list.len() as i64,
+                    None,
                 );
             }
             Err(e) => {
-                let _ = state.store.set_mcp_connection_status(&i.id, "error", 0);
+                let _ = state.store.set_mcp_connection_status(&i.id, "error", 0, None);
                 warn!(name = %i.name, error = %e, "MCP reconnect failed during sync");
             }
         }
@@ -727,7 +769,7 @@ pub async fn test_integration(
     {
         tools::mcp_tool::TokenResolution::Ready(t) => t,
         tools::mcp_tool::TokenResolution::NeedsReauth => {
-            let _ = state.store.set_mcp_connection_status(&id, "needs_reauth", 0);
+            let _ = state.store.set_mcp_connection_status(&id, "needs_reauth", 0, None);
             return Ok(Json(serde_json::json!({
                 "success": false,
                 "needsReauth": true,
@@ -751,11 +793,11 @@ pub async fn test_integration(
     {
         Ok(tools_list) => {
             let n = tools_list.len();
-            let _ = state.store.set_mcp_connection_status(&id, "connected", n as i64);
+            let _ = state.store.set_mcp_connection_status(&id, "connected", n as i64, None);
             (true, format!("Connected — {} tools available", n))
         }
         Err(e) => {
-            let _ = state.store.set_mcp_connection_status(&id, "error", 0);
+            let _ = state.store.set_mcp_connection_status(&id, "error", 0, None);
             (false, format!("Connection failed: {}", e))
         }
     };
@@ -798,7 +840,7 @@ pub async fn connect_integration(
     {
         tools::mcp_tool::TokenResolution::Ready(t) => t,
         tools::mcp_tool::TokenResolution::NeedsReauth => {
-            let _ = state.store.set_mcp_connection_status(&id, "needs_reauth", 0);
+            let _ = state.store.set_mcp_connection_status(&id, "needs_reauth", 0, None);
             return Ok(Json(serde_json::json!({
                 "success": false,
                 "needsReauth": true,
@@ -841,7 +883,7 @@ pub async fn connect_integration(
             // Also update connection_status column directly
             let _ = state
                 .store
-                .set_mcp_connection_status(&id, "connected", tool_count as i64);
+                .set_mcp_connection_status(&id, "connected", tool_count as i64, None);
 
             let tool_names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
             Ok(Json(serde_json::json!({
@@ -859,7 +901,7 @@ pub async fn connect_integration(
                 "MCP connect failed"
             );
             let err_msg = format!("Connection failed: {}", e);
-            let _ = state.store.set_mcp_connection_status(&id, "error", 0);
+            let _ = state.store.set_mcp_connection_status(&id, "error", 0, None);
             // Also persist the error message for display
             let _ = state.store.update_mcp_integration(
                 &id,
@@ -900,7 +942,7 @@ pub async fn reauthenticate_integration(
     state.bridge.disconnect(&id).await;
     let _ = state
         .store
-        .set_mcp_connection_status(&id, "disconnected", 0);
+        .set_mcp_connection_status(&id, "disconnected", 0, None);
 
     // Clear stored OAuth credentials so a fresh flow can start
     let _ = state.store.delete_mcp_credentials(&id, "oauth_token");
@@ -1312,6 +1354,7 @@ pub async fn oauth_callback(
                     &integration.id,
                     "connected",
                     tools.len() as i64,
+                    None,
                 );
                 info!(integration = %integration.id, tools = tools.len(), "MCP connected after OAuth");
                 return oauth_result_page(
@@ -1324,7 +1367,7 @@ pub async fn oauth_callback(
                 // Tokens stored — set as disconnected, user can retry
                 let _ = state
                     .store
-                    .set_mcp_connection_status(&integration.id, "disconnected", 0);
+                    .set_mcp_connection_status(&integration.id, "disconnected", 0, None);
                 return oauth_result_page(
                     true,
                     "Authorized — click Connect in Nebo to finish setup",
@@ -1408,6 +1451,26 @@ pub async fn list_registry() -> HandlerResult<serde_json::Value> {
 #[cfg(test)]
 mod tests {
     use super::derive_public_base;
+    use super::is_unlaunchable_stdio;
+
+    /// Issue #53: a legacy stdio row whose metadata holds only status info
+    /// (`{"connection_status":"connected","tool_count":37}`) must be flagged,
+    /// while a proper stdio row (has `command`) and remote rows must not be.
+    #[test]
+    fn legacy_stdio_without_launch_spec_is_unlaunchable() {
+        let legacy = r#"{"connection_status":"connected","tool_count":37}"#;
+        assert!(is_unlaunchable_stdio("stdio", None, Some(legacy)));
+        assert!(is_unlaunchable_stdio("stdio", Some(""), Some(legacy)));
+        assert!(is_unlaunchable_stdio("stdio", None, None));
+
+        // A real stdio spec connects — never flag it.
+        let spec = r#"{"command":"npx","args":["-y","kb-shard"]}"#;
+        assert!(!is_unlaunchable_stdio("stdio", None, Some(spec)));
+        // Remote rows are a different failure mode — wrong message for them.
+        assert!(!is_unlaunchable_stdio("http", None, Some(legacy)));
+        // A stdio row healed to have a URL is handled by the http heal instead.
+        assert!(!is_unlaunchable_stdio("stdio", Some("https://x"), Some(legacy)));
+    }
 
     #[test]
     fn loopback_hosts_use_localhost_base() {

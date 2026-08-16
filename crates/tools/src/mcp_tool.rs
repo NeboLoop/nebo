@@ -304,7 +304,7 @@ pub async fn call_mcp_tool(
                     },
                     Err(refresh_err) => {
                         let _ =
-                            store.set_mcp_connection_status(integration_id, "disconnected", 0);
+                            store.set_mcp_connection_status(integration_id, "disconnected", 0, None);
                         ToolResult::error(format!(
                             "MCP authentication expired and refresh failed: {}. Reconnect the integration in settings.",
                             refresh_err

@@ -1229,7 +1229,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
                         tools::mcp_tool::TokenResolution::Ready(t) => t,
                         tools::mcp_tool::TokenResolution::NeedsReauth => {
                             let _ =
-                                store_init.set_mcp_connection_status(&i.id, "needs_reauth", 0);
+                                store_init.set_mcp_connection_status(&i.id, "needs_reauth", 0, None);
                             warn!(name = %i.name, "MCP token needs reauth on startup — skipping connect");
                             continue;
                         }
@@ -1257,11 +1257,12 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
                                 &i.id,
                                 "connected",
                                 tools.len() as i64,
+                                None,
                             );
                             info!(name = %i.name, tools = tools.len(), "MCP reconnected on startup");
                         }
                         Err(e) => {
-                            let _ = store_init.set_mcp_connection_status(&i.id, "error", 0);
+                            let _ = store_init.set_mcp_connection_status(&i.id, "error", 0, None);
                             warn!(name = %i.name, error = %e, "MCP reconnect failed on startup");
                         }
                     }
