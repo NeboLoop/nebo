@@ -21,9 +21,9 @@ env:
 jobs:
   frontend:
     name: Frontend check & test
-    # Self-hosted: Lima VM (ubuntu arm64) on the stadium Mac mini — GH-hosted
-    # minutes were exhausting the 2000/mo plan quota.
-    runs-on: [self-hosted, nebo-linux]
+    # GH-hosted is correct here: the repo is public, so standard runners are
+    # free and unmetered — the 2000 min/mo quota only meters private repos.
+    runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: app
@@ -48,7 +48,7 @@ jobs:
 
   rust:
     name: Cargo workspace tests
-    runs-on: [self-hosted, nebo-linux]
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
