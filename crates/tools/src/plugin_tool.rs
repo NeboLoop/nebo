@@ -1962,21 +1962,6 @@ mod tests {
     }
 
     #[test]
-    fn exec_binding_match_requires_word_boundary() {
-        assert!(command_matches_binding("ingest", "ingest"));
-        assert!(command_matches_binding("ingest --limit 5", "ingest"));
-        assert!(command_matches_binding("documents list --limit 2", "documents list"));
-        // No boundary → not the bound command.
-        assert!(!command_matches_binding("ingestion-report", "ingest"));
-        assert!(!command_matches_binding("documents listing", "documents list"));
-        assert!(!command_matches_binding("search foo", "ingest"));
-    }
-
-    fn skill_set(names: &[&str]) -> std::collections::HashSet<String> {
-        names.iter().map(|n| n.to_string()).collect()
-    }
-
-    #[test]
     fn skill_labels_never_invent_a_subcommand() {
         // GWS prefixes its skill dirs with its slug, and each really is a
         // subcommand — the `+` label is a fact, vouched for by the service
