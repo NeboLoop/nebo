@@ -64,6 +64,9 @@ jobs:
           - target: aarch64-apple-darwin
             arch: arm64
             osx_arch: arm64
+          - target: x86_64-apple-darwin
+            arch: amd64
+            osx_arch: x86_64
     runs-on: macos-latest
     env:
       HAS_SIGNING_CERT: ${{ secrets.APPLE_CERTIFICATE_P12 != '' && 'true' || 'false' }}
@@ -154,10 +157,13 @@ jobs:
         run: |
           TRIPLE="${{ matrix.target }}"
           git clone --depth 1 --branch "$OBSCURA_REF" "$OBSCURA_FORK" obscura-src
-          ( cd obscura-src && cargo build --release -p obscura-cli )
+          # Always build with an explicit --target: on the arm64 host the amd64
+          # matrix entry must cross-compile, or the Intel app ships arm64
+          # sidecars that Intel Macs cannot exec.
+          ( cd obscura-src && cargo build --release -p obscura-cli --target "$TRIPLE" )
           mkdir -p src-tauri/binaries
           for bin in obscura obscura-worker; do
-            cp "obscura-src/target/release/${bin}" "src-tauri/binaries/${bin}-${TRIPLE}"
+            cp "obscura-src/target/${TRIPLE}/release/${bin}" "src-tauri/binaries/${bin}-${TRIPLE}"
             chmod +x "src-tauri/binaries/${bin}-${TRIPLE}"
           done
           ls -la src-tauri/binaries
@@ -284,6 +290,7 @@ jobs:
       matrix:
         include:
           - arch: arm64
+          - arch: amd64
     runs-on: macos-latest
     env:
       HAS_NOTARIZE_CREDS: ${{ secrets.APPLE_ID != '' && 'true' || 'false' }}
@@ -343,13 +350,46 @@ jobs:
           key: release-${{ github.run_id }}-nebo-darwin-${{ matrix.arch }}-dmg
           path: dist/
 
-      # Publish the notarized mac assets ourselves. When mac is built in CI the
-      # `release` job doesn't wait for us (it was written for LOCAL mac publish),
-      # so nothing else uploads the DMG — without this the Homebrew cask points at
-      # a release URL that 404s. Reuses the canonical publish-macos.sh: uploads the
-      # DMG to the GitHub release + CDN and merges the mac checksums.
-      - name: Publish notarized mac assets (release + CDN)
-        if: ${{ env.HAS_NOTARIZE_CREDS == 'true' }}
+  # ─── Publish mac assets (single job, both arches) ────────────────────
+  # When mac is built in CI the `release` job doesn't wait for it (it was
+  # written for LOCAL mac publish), so nothing else uploads the DMGs. One job
+  # publishes BOTH arches in one publish-macos.sh invocation — the script's
+  # checksums.txt merge is download-modify-upload, so two concurrent per-arch
+  # publishes would race and drop an arch's hashes. `needs: release` orders the
+  # merge after the Linux/Windows checksums exist (the release job merges too,
+  # so either order is correct — this just keeps it deterministic).
+  publish-macos:
+    needs: [notarize-macos, release]
+    if: ${{ vars.BUILD_MACOS_IN_CI == 'true' }}
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore notarized DMGs
+        uses: actions/cache/restore@v4
+        with:
+          key: release-${{ github.run_id }}-nebo-darwin-arm64-dmg
+          path: dist/
+          fail-on-cache-miss: true
+      - uses: actions/cache/restore@v4
+        with:
+          key: release-${{ github.run_id }}-nebo-darwin-amd64-dmg
+          path: dist/
+          fail-on-cache-miss: true
+
+      - name: Restore bare binaries
+        uses: actions/cache/restore@v4
+        with:
+          key: release-${{ github.run_id }}-nebo-darwin-arm64-binary
+          path: nebo-darwin-arm64
+          fail-on-cache-miss: true
+      - uses: actions/cache/restore@v4
+        with:
+          key: release-${{ github.run_id }}-nebo-darwin-amd64-binary
+          path: nebo-darwin-amd64
+          fail-on-cache-miss: true
+
+      - name: Publish mac assets (release + CDN)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.ref_name }}
@@ -357,9 +397,9 @@ jobs:
           DO_SPACES_SECRET_KEY: ${{ secrets.DO_SPACES_SECRET_KEY }}
         run: |
           brew list awscli >/dev/null 2>&1 || brew install awscli
-          # publish-macos.sh expects dist/checksums-macos.txt (normally created by
-          # `make release-macos`, which doesn't run in CI). Build it from the
-          # notarized assets we actually have.
+          mv nebo-darwin-arm64 nebo-darwin-amd64 dist/
+          # publish-macos.sh expects dist/checksums-macos.txt (normally created
+          # by `make release-macos`, which doesn't run in CI).
           ( cd dist && for f in Nebo-*.dmg nebo-darwin-arm64 nebo-darwin-amd64; do [ -f "$f" ] && shasum -a 256 "$f"; done > checksums-macos.txt )
           RELEASE_VERSION="${TAG#v}" TAG="$TAG" bash scripts/publish-macos.sh
 
