@@ -14,7 +14,26 @@ use tracing::{info, warn};
 /// queued by the semaphore and execute as earlier runs complete.
 /// Rust+Tokio overhead is ~500KB per in-flight task — 100 concurrent ≈ 50MB.
 /// The real ceiling is LLM provider rate limits, not local resources.
-const BINDING_CONCURRENCY: usize = 100;
+/// How many runs of ONE binding may execute at once.
+///
+/// 1 — serial per binding. An event binding shares mutable state across its
+/// runs: one mailbox, one OAuth token (each plugin call is a separate process,
+/// so parallel runs raced the token refresh into `invalid_grant`), and one
+/// memory record per lead. Running six replies concurrently produced exactly
+/// the failures you would predict: dropped sends, contradictory memory writes,
+/// and duplicate outreach. Events are not lost when serialized — they queue on
+/// the semaphore and run in order, which is also what the human this replaces
+/// would do.
+///
+/// Raise deliberately per deployment with NEBO_BINDING_CONCURRENCY when a
+/// binding is genuinely stateless (was effectively 100 = unbounded before).
+fn binding_concurrency() -> usize {
+    std::env::var("NEBO_BINDING_CONCURRENCY")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(1)
+}
 
 use ai::Provider;
 use tools::origin::ToolContext;
@@ -39,7 +58,7 @@ pub struct WorkflowManagerImpl {
     /// Skill loader for resolving skill_content in workflow execution.
     skill_loader: Option<Arc<tools::skills::Loader>>,
     /// Per-binding concurrency semaphores. Key: "agent:{agent_id}:{binding}".
-    /// Allows up to BINDING_CONCURRENCY concurrent runs; additional events wait.
+    /// Allows up to binding_concurrency() concurrent runs; additional events wait.
     binding_semaphores: Arc<std::sync::Mutex<HashMap<String, Arc<Semaphore>>>>,
     /// Consecutive failure counts per (agent_id, binding_name) for unattended
     /// (non-manual) automations. The owner is notified once, at the 2nd
@@ -1089,7 +1108,7 @@ impl WorkflowManager for WorkflowManagerImpl {
                 let sem_key = format!("agent:{}:{}", agent_id, binding_name);
                 let mut sems = self.binding_semaphores.lock().unwrap();
                 sems.entry(sem_key)
-                    .or_insert_with(|| Arc::new(Semaphore::new(BINDING_CONCURRENCY)))
+                    .or_insert_with(|| Arc::new(Semaphore::new(binding_concurrency())))
                     .clone()
             });
 
