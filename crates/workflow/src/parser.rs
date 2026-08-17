@@ -94,6 +94,17 @@ pub struct Activity {
     /// When set, forces continuation even on text-only responses.
     #[serde(default)]
     pub min_iterations: u32,
+    /// Tools this activity MUST successfully call before it may complete.
+    /// An activity whose whole point is an outward effect ("send the email")
+    /// otherwise reports success while having sent nothing: the model hits a
+    /// tool error, narrates it in prose, and stops — which reads as a clean
+    /// run in every log. Naming the tool here turns that into a loud failure.
+    /// Empty (the default) keeps the old behaviour. Accepts both spellings:
+    /// this struct is snake_case on the wire, but hand-written agent.json and
+    /// the builder both reach for camelCase, and a silently-ignored guard is
+    /// worse than none (the ballast interfaceBindings incident).
+    #[serde(default, alias = "requiresTools")]
+    pub requires_tools: Vec<String>,
 }
 
 /// Token budget for an activity.
@@ -774,5 +785,27 @@ mod tests {
             ]
         }"#;
         assert!(parse_workflow(json).is_err());
+    }
+}
+
+#[cfg(test)]
+mod requires_tools_tests {
+    use super::*;
+
+    /// requiresTools is camelCase on the wire (builder + agent.json) and
+    /// defaults to empty, so existing workflows are untouched.
+    #[test]
+    fn parses_requires_tools_and_defaults_empty() {
+        for body in [
+            r#"{"id":"converse","requiresTools":["plugin"],"intent":"send it"}"#,
+            r#"{"id":"converse","requires_tools":["plugin"],"intent":"send it"}"#,
+        ] {
+            let a: Activity = serde_json::from_str(body).expect("parse with requires_tools");
+            assert_eq!(a.requires_tools, vec!["plugin".to_string()], "body: {body}");
+        }
+
+        let without: Activity =
+            serde_json::from_str(r#"{"id":"converse","intent":"think"}"#).expect("parse bare");
+        assert!(without.requires_tools.is_empty());
     }
 }
