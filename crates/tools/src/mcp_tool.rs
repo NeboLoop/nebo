@@ -65,6 +65,18 @@ pub async fn resolve_mcp_token(
             _ => TokenResolution::NeedsReauth,
         };
     }
+    if integration.auth_type == "neboai" {
+        // Platform-authenticated server (e.g. the Nebo KB): bearer is this
+        // Nebo's own NeboAI token, read live from the auth profile — never a
+        // stored copy, because the token rotates on every comms reconnect and
+        // a copy would go stale. No profile = not paired with NeboAI yet.
+        return match store.list_all_active_auth_profiles_by_provider("neboai") {
+            Ok(profiles) if !profiles.is_empty() => {
+                TokenResolution::Ready(Some(profiles[0].api_key.clone()))
+            }
+            _ => TokenResolution::NeedsReauth,
+        };
+    }
     if integration.auth_type != "oauth" {
         return TokenResolution::Ready(None);
     }
@@ -410,6 +422,55 @@ impl DynTool for McpTool {
                 lines.join("\n")
             ))
         })
+    }
+}
+
+#[cfg(test)]
+mod neboai_token_tests {
+    use super::{resolve_mcp_token, TokenResolution};
+    use std::sync::Arc;
+
+    fn kb_integration() -> db::models::McpIntegration {
+        db::models::McpIntegration {
+            id: "kb-test".into(),
+            name: "nebo-kb".into(),
+            server_type: "http".into(),
+            server_url: Some("https://kb.example".into()),
+            auth_type: "neboai".into(),
+            is_enabled: Some(1),
+            connection_status: None,
+            last_connected_at: None,
+            last_error: None,
+            metadata: None,
+            created_at: 0,
+            updated_at: 0,
+            tool_count: None,
+            artifact_id: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn neboai_auth_resolves_live_profile_token() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = db::Store::new(dir.path().join("t.db").to_str().unwrap()).unwrap();
+        let client = mcp::McpClient::new(Arc::new(mcp::crypto::Encryptor::generate()));
+
+        // No NeboAI profile → NeedsReauth, never Ready(None) (a tokenless
+        // connect to a platform-authed server would 401 and drop the server).
+        assert!(matches!(
+            resolve_mcp_token(&store, &client, &kb_integration()).await,
+            TokenResolution::NeedsReauth
+        ));
+
+        store
+            .create_auth_profile(
+                "p1", "NeboAI", "neboai", "live-token", None, None, 0, 1, Some("token"), None,
+            )
+            .unwrap();
+        match resolve_mcp_token(&store, &client, &kb_integration()).await {
+            TokenResolution::Ready(Some(t)) => assert_eq!(t, "live-token"),
+            _ => panic!("expected the live NeboAI profile token"),
+        }
     }
 }
 
