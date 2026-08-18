@@ -233,8 +233,18 @@ impl WorkflowManagerImpl {
     /// so a script path written once in SKILL.md and once in agent.json resolve
     /// identically. Done here, before the definition reaches the engine, so
     /// the graph node stays a pure "run this string" executor.
-    async fn expand_command_params(&self, def: &mut workflow::WorkflowDef, store: &db::Store) {
-        let Some(loader) = self.skill_loader.as_ref() else { return };
+    ///
+    /// Fails LOUD, never soft: a command that names a skill which isn't
+    /// installed, or that still carries a `${...}` placeholder after
+    /// expansion, is refused before the run starts. Left to the shell, an
+    /// unknown `${VAR}` silently expands to "" and the operator gets a
+    /// misleading "python3: can't open file '/scripts/x.py'" three layers
+    /// below the actual cause (observed live).
+    async fn expand_command_params(
+        &self,
+        def: &mut workflow::WorkflowDef,
+        store: &db::Store,
+    ) -> Result<(), String> {
         for activity in def.activities.iter_mut() {
             if activity.activity_type != "command" {
                 continue;
@@ -248,20 +258,37 @@ impl WorkflowManagerImpl {
                 .unwrap_or("")
                 .to_string();
             let Some(command) = params.get("command").and_then(|v| v.as_str()) else { continue };
-            if !command.contains("${") || skill_name.is_empty() {
-                continue;
-            }
-            if let Some(mut skill) = loader.get(&skill_name, None).await {
+            let mut expanded = command.to_string();
+            if !skill_name.is_empty() {
+                let Some(loader) = self.skill_loader.as_ref() else {
+                    return Err(format!(
+                        "command activity '{}' names skill '{}' but no skill loader is available",
+                        activity.id, skill_name
+                    ));
+                };
+                let Some(mut skill) = loader.get(&skill_name, None).await else {
+                    return Err(format!(
+                        "command activity '{}' references skill '{}', which is not installed on this instance",
+                        activity.id, skill_name
+                    ));
+                };
                 // expand_template expands the skill's own body; reuse its
                 // context by temporarily making the command the body.
                 skill.template = command.to_string();
-                let expanded = loader.expand_template(&skill, Some(store));
-                params.insert("command".into(), serde_json::Value::String(expanded));
-            } else {
-                warn!(activity = %activity.id, skill = %skill_name,
-                      "command activity names a skill that is not loaded; template vars left unexpanded");
+                expanded = loader.expand_template(&skill, Some(store));
             }
+            if let Some(start) = expanded.find("${") {
+                let end = expanded[start..].find('}').map(|i| start + i + 1).unwrap_or(expanded.len());
+                return Err(format!(
+                    "command activity '{}' still contains an unexpanded template variable {} \
+                     — set params.skill to the skill that defines it, or remove the placeholder",
+                    activity.id,
+                    &expanded[start..end]
+                ));
+            }
+            params.insert("command".into(), serde_json::Value::String(expanded));
         }
+        Ok(())
     }
 
     fn run_to_info(run: &db::models::WorkflowRun) -> WorkflowRunInfo {
@@ -595,7 +622,7 @@ impl WorkflowManager for WorkflowManagerImpl {
             let mut def = self
                 .load_workflow_def(&wf)
                 .map_err(|e| format!("parse error: {}", e))?;
-            self.expand_command_params(&mut def, &self.store).await;
+            self.expand_command_params(&mut def, &self.store).await?;
 
             // Create run record
             let run_id = uuid::Uuid::new_v4().to_string();
@@ -1065,7 +1092,7 @@ impl WorkflowManager for WorkflowManagerImpl {
 
             let mut def = workflow::parser::parse_workflow(&definition_json)
                 .map_err(|e| format!("parse inline workflow: {}", e))?;
-            self.expand_command_params(&mut def, &self.store).await;
+            self.expand_command_params(&mut def, &self.store).await?;
 
             // Merge agent-level input_values into workflow inputs
             let inputs = {
