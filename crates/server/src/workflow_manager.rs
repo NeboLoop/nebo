@@ -14,7 +14,26 @@ use tracing::{info, warn};
 /// queued by the semaphore and execute as earlier runs complete.
 /// Rust+Tokio overhead is ~500KB per in-flight task — 100 concurrent ≈ 50MB.
 /// The real ceiling is LLM provider rate limits, not local resources.
-const BINDING_CONCURRENCY: usize = 100;
+/// How many runs of ONE binding may execute at once.
+///
+/// 1 — serial per binding. An event binding shares mutable state across its
+/// runs: one mailbox, one OAuth token (each plugin call is a separate process,
+/// so parallel runs raced the token refresh into `invalid_grant`), and one
+/// memory record per lead. Running six replies concurrently produced exactly
+/// the failures you would predict: dropped sends, contradictory memory writes,
+/// and duplicate outreach. Events are not lost when serialized — they queue on
+/// the semaphore and run in order, which is also what the human this replaces
+/// would do.
+///
+/// Raise deliberately per deployment with NEBO_BINDING_CONCURRENCY when a
+/// binding is genuinely stateless (was effectively 100 = unbounded before).
+fn binding_concurrency() -> usize {
+    std::env::var("NEBO_BINDING_CONCURRENCY")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(1)
+}
 
 use ai::Provider;
 use tools::origin::ToolContext;
@@ -39,7 +58,7 @@ pub struct WorkflowManagerImpl {
     /// Skill loader for resolving skill_content in workflow execution.
     skill_loader: Option<Arc<tools::skills::Loader>>,
     /// Per-binding concurrency semaphores. Key: "agent:{agent_id}:{binding}".
-    /// Allows up to BINDING_CONCURRENCY concurrent runs; additional events wait.
+    /// Allows up to binding_concurrency() concurrent runs; additional events wait.
     binding_semaphores: Arc<std::sync::Mutex<HashMap<String, Arc<Semaphore>>>>,
     /// Consecutive failure counts per (agent_id, binding_name) for unattended
     /// (non-manual) automations. The owner is notified once, at the 2nd
@@ -205,6 +224,44 @@ impl WorkflowManagerImpl {
 
         // Fall back to definition stored in DB
         workflow::parser::parse_workflow(&wf.definition).map_err(|e| e.to_string())
+    }
+
+    /// Expand `${NEBO_DATA_DIR}` / `${NEBO_SKILL_DIR}` (and the rest of the
+    /// skill template variables) inside `command` activities' `params.command`.
+    /// A command node names its skill via `params.skill`; expansion uses the
+    /// SAME `SkillLoader::expand_template` context the skill body itself gets,
+    /// so a script path written once in SKILL.md and once in agent.json resolve
+    /// identically. Done here, before the definition reaches the engine, so
+    /// the graph node stays a pure "run this string" executor.
+    async fn expand_command_params(&self, def: &mut workflow::WorkflowDef, store: &db::Store) {
+        let Some(loader) = self.skill_loader.as_ref() else { return };
+        for activity in def.activities.iter_mut() {
+            if activity.activity_type != "command" {
+                continue;
+            }
+            let Some(params) = activity.params.as_mut().and_then(|p| p.as_object_mut()) else {
+                continue;
+            };
+            let skill_name = params
+                .get("skill")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let Some(command) = params.get("command").and_then(|v| v.as_str()) else { continue };
+            if !command.contains("${") || skill_name.is_empty() {
+                continue;
+            }
+            if let Some(mut skill) = loader.get(&skill_name, None).await {
+                // expand_template expands the skill's own body; reuse its
+                // context by temporarily making the command the body.
+                skill.template = command.to_string();
+                let expanded = loader.expand_template(&skill, Some(store));
+                params.insert("command".into(), serde_json::Value::String(expanded));
+            } else {
+                warn!(activity = %activity.id, skill = %skill_name,
+                      "command activity names a skill that is not loaded; template vars left unexpanded");
+            }
+        }
     }
 
     fn run_to_info(run: &db::models::WorkflowRun) -> WorkflowRunInfo {
@@ -535,9 +592,10 @@ impl WorkflowManager for WorkflowManagerImpl {
                 return Err("workflow is disabled".into());
             }
 
-            let def = self
+            let mut def = self
                 .load_workflow_def(&wf)
                 .map_err(|e| format!("parse error: {}", e))?;
+            self.expand_command_params(&mut def, &self.store).await;
 
             // Create run record
             let run_id = uuid::Uuid::new_v4().to_string();
@@ -1005,8 +1063,9 @@ impl WorkflowManager for WorkflowManagerImpl {
                 );
             }
 
-            let def = workflow::parser::parse_workflow(&definition_json)
+            let mut def = workflow::parser::parse_workflow(&definition_json)
                 .map_err(|e| format!("parse inline workflow: {}", e))?;
+            self.expand_command_params(&mut def, &self.store).await;
 
             // Merge agent-level input_values into workflow inputs
             let inputs = {
@@ -1089,7 +1148,7 @@ impl WorkflowManager for WorkflowManagerImpl {
                 let sem_key = format!("agent:{}:{}", agent_id, binding_name);
                 let mut sems = self.binding_semaphores.lock().unwrap();
                 sems.entry(sem_key)
-                    .or_insert_with(|| Arc::new(Semaphore::new(BINDING_CONCURRENCY)))
+                    .or_insert_with(|| Arc::new(Semaphore::new(binding_concurrency())))
                     .clone()
             });
 
@@ -1289,7 +1348,8 @@ impl WorkflowManager for WorkflowManagerImpl {
                                 // and not declarable in workflow activities.
                                 if let Some(skill) = loader.get(skill_name, None).await {
                                     if !skill.template.is_empty() {
-                                        map.insert(skill_name.clone(), skill.template.clone());
+                                        let expanded = loader.expand_template(&skill, Some(&store));
+                                        map.insert(skill_name.clone(), expanded);
                                     }
                                 }
                             }

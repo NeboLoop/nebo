@@ -1165,6 +1165,11 @@ async fn run_llm_loop(
     let mut consecutive_all_not_found: u32 = 0;
     let mut last_tool_name: String = String::new();
     let mut consecutive_same_tool: u32 = 0;
+    // Tools this activity must actually land before it may finish (see
+    // Activity::requires_tools). Only a NON-error result counts: an attempt
+    // that failed is exactly the case this guard exists to catch.
+    let mut required_pending: std::collections::HashSet<String> =
+        activity.requires_tools.iter().cloned().collect();
 
     // Workflow activities are unattended — Origin::Workflow keeps the ask tool
     // (and any HITL-gated capability) unavailable so the engine never blocks on
@@ -1331,6 +1336,22 @@ async fn run_llm_loop(
             if response_text.is_empty() && iterations > 0 {
                 response_text = synthesize_from_tool_results(&messages);
             }
+            // The activity declared an outward effect it never achieved. Fail
+            // loudly: a run that "completed" while its email never sent looks
+            // healthy in every log and is the worst kind of silent failure.
+            if !required_pending.is_empty() {
+                let mut missing: Vec<String> = required_pending.into_iter().collect();
+                missing.sort();
+                return Err(WorkflowError::ActivityFailed(
+                    activity.id.clone(),
+                    format!(
+                        "stopped without a successful {} call — the activity's required effect \
+                         never happened. The model's own summary said: {}",
+                        missing.join(", "),
+                        response_text.chars().take(300).collect::<String>()
+                    ),
+                ));
+            }
             return Ok((response_text, tokens_used));
         }
 
@@ -1461,6 +1482,7 @@ async fn run_llm_loop(
                 if let Some(reason) = result.content.strip_prefix(tools::EXIT_SENTINEL) {
                     return Err(WorkflowError::Exited(reason.to_string()));
                 }
+                required_pending.remove(&tc.name);
             }
 
             tool_result_entries.push(serde_json::json!({

@@ -59,11 +59,11 @@ pub struct InputParam {
 pub struct Activity {
     pub id: String,
     /// Activity type from the builder: custom, research, email, notify, code,
-    /// condition, loop, wait, agent, connector, http, transform. Empty = custom.
+    /// condition, loop, wait, agent, connector, http, command, transform. Empty = custom.
     #[serde(rename = "type", default)]
     pub activity_type: String,
-    /// Natural-language task. Optional — typed nodes (http, wait, condition)
-    /// may be fully described by `params`.
+    /// Natural-language task. Optional — typed nodes (http, wait, condition,
+    /// command) may be fully described by `params`.
     #[serde(default)]
     pub intent: String,
     /// Display label from the builder.
@@ -94,6 +94,17 @@ pub struct Activity {
     /// When set, forces continuation even on text-only responses.
     #[serde(default)]
     pub min_iterations: u32,
+    /// Tools this activity MUST successfully call before it may complete.
+    /// An activity whose whole point is an outward effect ("send the email")
+    /// otherwise reports success while having sent nothing: the model hits a
+    /// tool error, narrates it in prose, and stops — which reads as a clean
+    /// run in every log. Naming the tool here turns that into a loud failure.
+    /// Empty (the default) keeps the old behaviour. Accepts both spellings:
+    /// this struct is snake_case on the wire, but hand-written agent.json and
+    /// the builder both reach for camelCase, and a silently-ignored guard is
+    /// worse than none (the ballast interfaceBindings incident).
+    #[serde(default, alias = "requiresTools")]
+    pub requires_tools: Vec<String>,
 }
 
 /// Token budget for an activity.
@@ -303,6 +314,15 @@ fn validate_activities(def: &WorkflowDef) -> Result<(), WorkflowError> {
                 if param_str(activity, "url").trim().is_empty() {
                     return Err(WorkflowError::Validation(format!(
                         "http activity '{}' requires params.url",
+                        activity.id
+                    )));
+                }
+            }
+            "command" => {
+                if param_str(activity, "command").trim().is_empty() {
+                    return Err(WorkflowError::Validation(format!(
+                        "command activity '{}' requires params.command (shell command; \
+                         stdout becomes the node output)",
                         activity.id
                     )));
                 }
@@ -731,6 +751,13 @@ mod tests {
         assert!(wf(r#"[{"id":"a"}]"#, "[]").is_err());
         // http needs a url; wait needs a parseable duration and rejects waitUntil.
         assert!(wf(r#"[{"id":"h","type":"http"}]"#, "[]").is_err());
+        // command: params.command is the contract; no intent needed
+        assert!(wf(r#"[{"id":"c","type":"command"}]"#, "[]").is_err());
+        assert!(wf(
+            r#"[{"id":"c","type":"command","params":{"command":"echo hi"}}]"#,
+            "[]"
+        )
+        .is_ok());
         assert!(wf(
             r#"[{"id":"h","type":"http","params":{"url":"https://example.com"}}]"#,
             "[]"
@@ -774,5 +801,27 @@ mod tests {
             ]
         }"#;
         assert!(parse_workflow(json).is_err());
+    }
+}
+
+#[cfg(test)]
+mod requires_tools_tests {
+    use super::*;
+
+    /// requiresTools is camelCase on the wire (builder + agent.json) and
+    /// defaults to empty, so existing workflows are untouched.
+    #[test]
+    fn parses_requires_tools_and_defaults_empty() {
+        for body in [
+            r#"{"id":"converse","requiresTools":["plugin"],"intent":"send it"}"#,
+            r#"{"id":"converse","requires_tools":["plugin"],"intent":"send it"}"#,
+        ] {
+            let a: Activity = serde_json::from_str(body).expect("parse with requires_tools");
+            assert_eq!(a.requires_tools, vec!["plugin".to_string()], "body: {body}");
+        }
+
+        let without: Activity =
+            serde_json::from_str(r#"{"id":"converse","intent":"think"}"#).expect("parse bare");
+        assert!(without.requires_tools.is_empty());
     }
 }

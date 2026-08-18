@@ -37,6 +37,12 @@ struct ShellInput {
     session_id: String,
     #[serde(default)]
     data: String,
+    /// Machine-consumer mode: on success return stdout ONLY (no STDERR
+    /// section, no "(no output)" placeholder, no truncation footer); on a
+    /// non-zero exit return an error carrying stderr. Used by deterministic
+    /// workflow nodes whose output is parsed, not read by a model.
+    #[serde(default)]
+    raw: bool,
 }
 
 impl ShellTool {
@@ -225,6 +231,18 @@ impl ShellTool {
                 }
             }
             Ok(Ok(output)) => {
+                if input.raw {
+                    if !output.status.success() {
+                        return ToolResult::error(format!(
+                            "Command exited with code {}\n{}",
+                            output.status.code().unwrap_or(-1),
+                            String::from_utf8_lossy(&output.stderr)
+                        ));
+                    }
+                    return ToolResult::ok(
+                        String::from_utf8_lossy(&output.stdout).into_owned(),
+                    );
+                }
                 let mut result = String::new();
 
                 let stdout = String::from_utf8_lossy(&output.stdout);
