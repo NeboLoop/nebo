@@ -59,11 +59,11 @@ pub struct InputParam {
 pub struct Activity {
     pub id: String,
     /// Activity type from the builder: custom, research, email, notify, code,
-    /// condition, loop, wait, agent, connector, http, transform. Empty = custom.
+    /// condition, loop, wait, agent, connector, http, command, transform. Empty = custom.
     #[serde(rename = "type", default)]
     pub activity_type: String,
-    /// Natural-language task. Optional — typed nodes (http, wait, condition)
-    /// may be fully described by `params`.
+    /// Natural-language task. Optional — typed nodes (http, wait, condition,
+    /// command) may be fully described by `params`.
     #[serde(default)]
     pub intent: String,
     /// Display label from the builder.
@@ -314,6 +314,15 @@ fn validate_activities(def: &WorkflowDef) -> Result<(), WorkflowError> {
                 if param_str(activity, "url").trim().is_empty() {
                     return Err(WorkflowError::Validation(format!(
                         "http activity '{}' requires params.url",
+                        activity.id
+                    )));
+                }
+            }
+            "command" => {
+                if param_str(activity, "command").trim().is_empty() {
+                    return Err(WorkflowError::Validation(format!(
+                        "command activity '{}' requires params.command (shell command; \
+                         stdout becomes the node output)",
                         activity.id
                     )));
                 }
@@ -742,6 +751,13 @@ mod tests {
         assert!(wf(r#"[{"id":"a"}]"#, "[]").is_err());
         // http needs a url; wait needs a parseable duration and rejects waitUntil.
         assert!(wf(r#"[{"id":"h","type":"http"}]"#, "[]").is_err());
+        // command: params.command is the contract; no intent needed
+        assert!(wf(r#"[{"id":"c","type":"command"}]"#, "[]").is_err());
+        assert!(wf(
+            r#"[{"id":"c","type":"command","params":{"command":"echo hi"}}]"#,
+            "[]"
+        )
+        .is_ok());
         assert!(wf(
             r#"[{"id":"h","type":"http","params":{"url":"https://example.com"}}]"#,
             "[]"

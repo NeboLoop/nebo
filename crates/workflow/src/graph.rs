@@ -490,8 +490,118 @@ async fn execute_node<'a>(
         "loop" => run_loop(ctx, scope, activity).await,
         "wait" => run_wait(ctx, scope, activity).await,
         "http" => run_http(ctx, scope, activity).await,
+        "command" => run_command(ctx, scope, activity).await,
         _ => run_llm_activity(ctx, scope, activity).await,
     }
+}
+
+/// Deterministic shell step: run `params.command` through the `os` tool and
+/// make its stdout the node output, byte for byte. No model, no tokens — the
+/// node exists so parsers, converters, and state commits never pass through
+/// an LLM that can paraphrase (or invent) their output.
+///
+/// `{{item.x}}` / `{{inputs.x}}` / `{{nodes.id.x}}` interpolate from the data
+/// context (strings verbatim, other values as JSON). `${NEBO_DATA_DIR}` /
+/// `${NEBO_SKILL_DIR}` are expanded before the definition reaches the engine
+/// (workflow manager, `params.skill` names the skill) — same expansion the
+/// skill system uses, so this node never grows its own.
+async fn run_command<'a>(
+    ctx: &GraphCtx<'a>,
+    scope: &WalkScope,
+    activity: &Activity,
+) -> Result<(), WorkflowError> {
+    let started_at = chrono::Utc::now().timestamp();
+
+    let fail = |err_msg: String| {
+        let _ = ctx.store.create_activity_result(
+            &ctx.run_id,
+            &activity.id,
+            &scope.iteration,
+            "failed",
+            0,
+            1,
+            Some(&err_msg),
+            started_at,
+            Some(chrono::Utc::now().timestamp()),
+        );
+        Err(WorkflowError::ActivityFailed(activity.id.clone(), err_msg))
+    };
+
+    let Some(os_tool) = ctx.resolved_tools.iter().find(|t| t.name() == "os") else {
+        return fail("command activity requires the os tool, which is not available".into());
+    };
+
+    let data = data_context(ctx, scope);
+    let command = interpolate_context(param_str(activity, "command"), &data);
+
+    let input = serde_json::json!({
+        "resource": "shell",
+        "action": "exec",
+        "command": command,
+        "raw": true,
+    });
+    let tool_ctx = tools::ToolContext::new(tools::Origin::Workflow).with_session(
+        tools::workflow_session_key(&ctx.agent_id, &ctx.run_id),
+        ctx.run_id.clone(),
+    );
+    let result = os_tool.execute_dyn(&tool_ctx, input).await;
+    if result.is_error {
+        return fail(result.content);
+    }
+
+    let _ = ctx.store.create_activity_result(
+        &ctx.run_id,
+        &activity.id,
+        &scope.iteration,
+        "completed",
+        0,
+        1,
+        None,
+        started_at,
+        Some(chrono::Utc::now().timestamp()),
+    );
+    let _ = ctx.store.set_activity_result_content(
+        &ctx.run_id,
+        &activity.id,
+        &scope.iteration,
+        &result.content,
+    );
+    info!(activity = activity.id.as_str(), "command node completed");
+    ctx.state
+        .lock()
+        .unwrap()
+        .outputs
+        .insert(activity.id.clone(), result.content);
+    route(ctx, scope, &activity.id, |_| true).await
+}
+
+/// Replace `{{path}}` placeholders with values from the data context. String
+/// values are inserted verbatim; anything else is inserted as JSON. Unknown
+/// paths are left as-is so a typo is visible in the executed command.
+fn interpolate_context(template: &str, data: &serde_json::Value) -> String {
+    let mut out = String::with_capacity(template.len());
+    let mut rest = template;
+    while let Some(start) = rest.find("{{") {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + 2..];
+        let Some(end) = after.find("}}") else {
+            out.push_str(&rest[start..]);
+            return out;
+        };
+        let path = after[..end].trim();
+        match resolve_path(data, path) {
+            Some(serde_json::Value::String(s)) => out.push_str(&s),
+            Some(v) => out.push_str(&v.to_string()),
+            None => {
+                out.push_str("{{");
+                out.push_str(path);
+                out.push_str("}}");
+            }
+        }
+        rest = &after[end + 2..];
+    }
+    out.push_str(rest);
+    out
 }
 
 /// Maximum wait-node sleep — anything longer belongs in a trigger, not a
@@ -1537,6 +1647,12 @@ mod graph_tests {
         assert_eq!(resolve_path(&d, "fetch.ok"), Some(serde_json::json!(true))); // bare → nodes
         assert_eq!(resolve_path(&d, "item.name"), Some(serde_json::json!("alpha")));
         assert_eq!(resolve_path(&d, "inputs.items.1"), Some(serde_json::json!(2)));
+        // interpolate_context: strings verbatim, non-strings as JSON, unknown left visible
+        let cmd = interpolate_context(
+            "python3 x.py {{item.name}} --n {{inputs.items.1}} {{nope.missing}}",
+            &d,
+        );
+        assert_eq!(cmd, "python3 x.py alpha --n 2 {{nope.missing}}");
         assert_eq!(resolve_path(&d, "inputs.missing"), None);
     }
 
