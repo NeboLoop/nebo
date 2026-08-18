@@ -47,10 +47,55 @@ enum EvalDecision {
 fn parse_eval_response(content: &str) -> EvalDecision {
     let trimmed = content.trim();
     if let Some(reason) = trimmed.strip_prefix("exit:") {
-        EvalDecision::Exit(reason.trim().to_string())
+        let reason = reason.trim();
+        if exit_reason_is_really_proceed(reason) {
+            return EvalDecision::Proceed;
+        }
+        EvalDecision::Exit(reason.to_string())
     } else {
         EvalDecision::Proceed
     }
+}
+
+/// An `exit:` whose reason is actually a proceed/skip statement is treated as
+/// proceed. Observed live, four times across one workflow: the evaluator wrote
+/// `exit: Email is valid ... proceeding to Step 2`, `exit: ... skipping as
+/// instructed`, `exit: SKIP` (a step's own sentinel echoed back), and
+/// `exit: Report file path identified from payload: /data/.../report.xls` — a
+/// healthy, affirmative step result — each of which killed the RUN, not the
+/// step, so downstream loops and summaries never executed. Exit is reserved
+/// for "this task is inapplicable / a precondition failed / continuing would
+/// be harmful"; a reason that says the step succeeded, is proceeding, or is a
+/// conditional skip is none of those.
+fn exit_reason_is_really_proceed(reason: &str) -> bool {
+    let r = reason.to_ascii_lowercase();
+    if r.is_empty() {
+        return false;
+    }
+    const PROCEED_SIGNALS: &[&str] = &[
+        "proceed",
+        "continu",
+        "next step",
+        "as instructed",
+        "not applicable to this",
+        "no action needed",
+        "nothing to do for this",
+        "skipping",
+        "skipped",
+        "identified",
+        "completed",
+        "successfully",
+        "ready for",
+    ];
+    if r == "skip" || r == "skipped" || r == "none" {
+        return true;
+    }
+    // A reason that names a concrete artifact (a path, an id) is a step
+    // result, not an exit condition.
+    if r.contains('/') && (r.ends_with(".xls") || r.ends_with(".xlsx") || r.ends_with(".csv") || r.ends_with(".json") || r.ends_with(".pdf")) {
+        return true;
+    }
+    PROCEED_SIGNALS.iter().any(|s| r.contains(s))
 }
 
 /// Scope an activity's toolset to what it declares and references.
@@ -2272,6 +2317,31 @@ mod engine_tests {
         match parse_eval_response("maybe continue?") {
             EvalDecision::Proceed => {}
             other => panic!("expected Proceed, got {:?}", other),
+        }
+        // Contradictory exits — an exit whose reason is a proceed/skip
+        // statement — are proceed. Every one of these killed a live run.
+        for contradictory in [
+            "exit: Email is valid order report - proceeding to Step 2/5 to parse the attachment",
+            "exit: Local test payload - no real mailbox message, skipping label operations as instructed",
+            "exit: SKIP",
+            "exit: Report file path identified from payload: /data/appdata/skills/x/inbox/oor.xls",
+            "exit: no action needed for this item, continuing",
+        ] {
+            match parse_eval_response(contradictory) {
+                EvalDecision::Proceed => {}
+                other => panic!("expected Proceed for {contradictory:?}, got {:?}", other),
+            }
+        }
+        // Real exits still exit.
+        for real in [
+            "exit: QuickBooks authentication is not configured; cannot pull transactions",
+            "exit: task inapplicable — the email is a shipping notice, not an order",
+            "exit: precondition failed: no connected account for gws",
+        ] {
+            match parse_eval_response(real) {
+                EvalDecision::Exit(_) => {}
+                other => panic!("expected Exit for {real:?}, got {:?}", other),
+            }
         }
     }
 
