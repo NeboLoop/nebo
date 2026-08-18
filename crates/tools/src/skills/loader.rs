@@ -469,9 +469,15 @@ impl Loader {
     /// agents' learned skills are never returned.
     pub async fn get(&self, name: &str, agent: Option<&str>) -> Option<Skill> {
         let skills = self.skills.read().await;
+        // Registry keys are the frontmatter `name` (short). Workflow bindings and
+        // agent manifests reference skills by qualified name
+        // (`@org/skills/<name>`), so resolve that form to its short name here —
+        // one lookup rule for every caller, instead of each caller trimming.
+        let short = qualified_short_name(name);
         let mut skill = agent
             .and_then(|a| skills.get(&learned_key(a, name)))
             .or_else(|| skills.get(name))
+            .or_else(|| short.and_then(|s| skills.get(s)))
             .cloned()?;
         drop(skills);
         if !skill.visible_to(agent) {
@@ -1283,6 +1289,19 @@ impl Loader {
 ///
 /// Without this listing the model has no way to know a matching skill exists
 /// and hand-rolls the task (the nebo-office pptx flail).
+/// The short name inside a qualified skill reference — `@org/skills/name` →
+/// `name` (an optional `@version` suffix is dropped). `None` when the input
+/// isn't in qualified form, so plain names never get mangled.
+fn qualified_short_name(name: &str) -> Option<&str> {
+    let rest = name.strip_prefix('@')?;
+    let (_org, after_org) = rest.split_once('/')?;
+    let (kind, short) = after_org.split_once('/')?;
+    if kind != "skills" || short.is_empty() {
+        return None;
+    }
+    Some(short.split('@').next().unwrap_or(short))
+}
+
 /// Map key for a learned skill: namespaced by owner so per-employee skills
 /// can never collide with or shadow the global roster (skill names cannot
 /// contain ':', so "::" is unambiguous).
@@ -1780,6 +1799,15 @@ fn verify_dependencies(
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    fn qualified_short_name_resolves_marketplace_refs_only() {
+        assert_eq!(qualified_short_name("@org/skills/my-skill"), Some("my-skill"));
+        assert_eq!(qualified_short_name("@org/skills/my-skill@^1.0.0"), Some("my-skill"));
+        assert_eq!(qualified_short_name("my-skill"), None);
+        assert_eq!(qualified_short_name("@org/agents/my-agent"), None);
+        assert_eq!(qualified_short_name("@org/skills/"), None);
+    }
 
     fn create_skill_md(dir: &Path, name: &str, content: &str) {
         let skill_dir = dir.join(name);
