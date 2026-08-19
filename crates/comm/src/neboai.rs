@@ -262,22 +262,7 @@ impl NeboAIPlugin {
 
     /// Acknowledge messages up to seq in a conversation.
     pub async fn ack(&self, conversation_id: &str, acked_seq: u64) -> Result<(), CommError> {
-        let payload = serde_json::to_vec(&wire::AckPayload {
-            conversation_id: conversation_id.to_string(),
-            acked_seq,
-        })
-        .map_err(|e| CommError::Other(e.to_string()))?;
-
-        let encoded = frame::encode(
-            Header {
-                frame_type: frame::TYPE_ACK,
-                ..Default::default()
-            },
-            &payload,
-        )
-        .map_err(|e| CommError::Other(e.to_string()))?;
-
-        self.queue_send(encoded).await
+        self.queue_send(encode_ack(conversation_id, acked_seq)?).await
     }
 
     /// Send a DM on a conversation.
@@ -505,7 +490,7 @@ impl CommPlugin for NeboAIPlugin {
 
         {
             let mut inner = self.inner.write().await;
-            inner.send_tx = Some(send_tx);
+            inner.send_tx = Some(send_tx.clone());
             inner.cancel = Some(cancel.clone());
             inner.api = Some(api);
         }
@@ -536,6 +521,7 @@ impl CommPlugin for NeboAIPlugin {
                 devlog_for_read,
                 connected_for_read,
                 notify_for_read,
+                send_tx,
             )
             .await;
         });
@@ -1167,6 +1153,25 @@ impl ConvMaps {
     }
 }
 
+/// Encode an ACK frame for `acked_seq` on a conversation. One encoder, shared
+/// by the public `ack()` and the read loop's automatic per-delivery ack.
+fn encode_ack(conversation_id: &str, acked_seq: u64) -> Result<Vec<u8>, CommError> {
+    let payload = serde_json::to_vec(&wire::AckPayload {
+        conversation_id: conversation_id.to_string(),
+        acked_seq,
+    })
+    .map_err(|e| CommError::Other(e.to_string()))?;
+
+    frame::encode(
+        Header {
+            frame_type: frame::TYPE_ACK,
+            ..Default::default()
+        },
+        &payload,
+    )
+    .map_err(|e| CommError::Other(e.to_string()))
+}
+
 /// Read loop — receives WebSocket messages, decodes frames, dispatches.
 async fn read_loop(
     mut read: SplitStream<WsStream>,
@@ -1178,6 +1183,7 @@ async fn read_loop(
     devlog: Option<DevLog>,
     connected: Arc<AtomicBool>,
     disconnect_notify: Arc<Notify>,
+    send_tx: mpsc::Sender<Vec<u8>>,
 ) {
     if let Some(ref dl) = devlog {
         dl.event(&format!(
@@ -1345,7 +1351,7 @@ async fn read_loop(
                             from: delivery.sender_id.clone(),
                             to: String::new(),
                             topic,
-                            conversation_id: conv_id_str,
+                            conversation_id: conv_id_str.clone(),
                             msg_type: CommMessageType::Message,
                             content: delivery.content.to_string(),
                             metadata,
@@ -1365,6 +1371,27 @@ async fn read_loop(
 
                         if let Some(ref h) = handler {
                             h(msg);
+
+                            // Ack what we took. The server replays an agent
+                            // space from this offset on the next connect, so a
+                            // conversation we never ack is one whose backlog it
+                            // can never hand back — that is how inbound
+                            // webhooks went missing. Ephemeral frames (presence,
+                            // identity) carry no durable seq: never ack those.
+                            if header.seq > 0 && !header.is_ephemeral() {
+                                match encode_ack(&conv_id_str, header.seq) {
+                                    Ok(frame) => {
+                                        if send_tx.try_send(frame).is_err() {
+                                            debug!(
+                                                conv_id = %conv_id_str,
+                                                seq = header.seq,
+                                                "ack not queued (send channel full or closed)"
+                                            );
+                                        }
+                                    }
+                                    Err(e) => debug!(error = %e, "ack encode failed"),
+                                }
+                            }
                         } else {
                             warn!(stream = %delivery.stream, "message dropped: no handler set");
                             if let Some(ref dl) = devlog {
