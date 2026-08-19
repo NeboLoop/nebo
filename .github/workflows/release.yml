@@ -843,9 +843,14 @@ jobs:
           EOFJ
           sed -i 's/^          //' version.json
 
-          # Upload latest version pointer
+          # Upload latest version pointer. Short TTL on purpose: this object is
+          # MUTABLE and is how the download site and every desktop update check
+          # learn a release exists. On the CDN default (max-age=3600) a shipped
+          # release stayed invisible for up to an hour. The per-tag assets below
+          # are immutable and keep the long default.
           aws s3 cp version.json s3://neboloop/releases/version.json \
-            --endpoint-url "$S3_ENDPOINT" --acl public-read --content-type application/json
+            --endpoint-url "$S3_ENDPOINT" --acl public-read --content-type application/json \
+            --cache-control "public, max-age=60"
 
           # Upload all release assets under releases/{tag}/
           for f in artifacts/nebo-* artifacts/Nebo-* artifacts/*.deb artifacts/checksums.txt; do
