@@ -29,6 +29,13 @@ pub struct ConnectPayload {
     /// The machine's hostname (".local" stripped) — "which computer is this?".
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hostname: Option<String>,
+    /// This client ACKs deliveries, so its subscriber offset actually tracks
+    /// what it has processed. The gateway only backfills an agent space for
+    /// clients that set this: replaying to a client that never acks would
+    /// re-send everything since its baseline on EVERY reconnect, because its
+    /// offset can never advance. Absent (older clients) ⇒ no backfill.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub acks_offsets: bool,
 }
 
 /// AUTH_OK / AUTH_FAIL frame payload (server -> client).
@@ -190,15 +197,31 @@ mod tests {
             agent_color: Some("violet".into()),
             platform: Some("linux".into()),
             hostname: Some("devbox".into()),
+            acks_offsets: true,
         };
         let json = serde_json::to_string(&p).unwrap();
         // Identity fields use snake_case keys per the shared wire contract.
         assert!(json.contains("\"agentName\":\"Atlas\""));
         assert!(json.contains("\"agentHandle\":\"atlas\""));
         assert!(json.contains("\"agentColor\":\"violet\""));
+        assert!(json.contains("\"acksOffsets\":true"));
         let p2: ConnectPayload = serde_json::from_str(&json).unwrap();
         assert_eq!(p2.bot_id.as_deref(), Some("bot-123"));
         assert_eq!(p2.agent_name.as_deref(), Some("Atlas"));
+        assert!(p2.acks_offsets);
+    }
+
+    /// The gateway gates agent-space backfill on acksOffsets, so an older
+    /// client must deserialize as false — never as "assume it acks", which
+    /// would replay its whole backlog on every reconnect.
+    #[test]
+    fn connect_without_acks_offsets_defaults_false() {
+        let legacy = r#"{"botId":"bot-123","token":"jwt","agentName":"Atlas"}"#;
+        let p: ConnectPayload = serde_json::from_str(legacy).unwrap();
+        assert!(!p.acks_offsets);
+        // ...and a false flag stays off the wire entirely.
+        let json = serde_json::to_string(&p).unwrap();
+        assert!(!json.contains("acksOffsets"));
     }
 
     #[test]
