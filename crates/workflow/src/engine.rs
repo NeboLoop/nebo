@@ -1231,6 +1231,18 @@ async fn run_llm_loop(
 ) -> Result<(String, u32), WorkflowError> {
     let mut tokens_used: u32 = 0;
     let mut iterations: u32 = 0;
+    // Per-activity turn budget: params.maxIterations overrides the default,
+    // same shape the graph loop node already accepts (graph.rs).
+    let max_iterations: u32 = activity
+        .params
+        .as_ref()
+        .and_then(|p| p.get("maxIterations"))
+        .and_then(|v| {
+            v.as_u64()
+                .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+        })
+        .map(|v| v as u32)
+        .unwrap_or(MAX_ITERATIONS);
     let mut consecutive_all_not_found: u32 = 0;
     let mut last_tool_name: String = String::new();
     let mut consecutive_same_tool: u32 = 0;
@@ -1283,7 +1295,7 @@ async fn run_llm_loop(
     }
 
     loop {
-        if iterations >= MAX_ITERATIONS {
+        if iterations >= max_iterations {
             return Err(WorkflowError::MaxIterations(activity.id.clone()));
         }
         let req = ChatRequest {
