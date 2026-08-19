@@ -83,7 +83,9 @@ fn exit_reason_is_really_proceed(reason: &str) -> bool {
         "skipping",
         "skipped",
         "identified",
-        "completed",
+        "complete",
+        "resolved",
+        "logged",
         "successfully",
         "ready for",
     ];
@@ -941,6 +943,28 @@ pub async fn execute_activity(
         match eval {
             EvalDecision::Proceed => {
                 // Normal flow: append result, continue to next step
+                messages.push(ai::Message {
+                    role: "assistant".into(),
+                    content: step_result.clone(),
+                    ..Default::default()
+                });
+            }
+            EvalDecision::Exit(reason) if i + 1 == total_steps => {
+                // FINAL step: there are nothing left to skip — the eval prompt
+                // itself says "(none — this is the final step)" — so an exit
+                // here can only kill downstream graph nodes (loop re-entry,
+                // commit, delivery) for zero benefit. Observed live: the
+                // evaluator exited on "Chunk 7 complete: 4 rows resolved..."
+                // — an affirmative completion — after the keyword guard in
+                // exit_reason_is_really_proceed missed it ("complete:" vs
+                // "completed"). Keyword lists leak; position doesn't. Treat a
+                // final-step exit as normal completion of the activity.
+                info!(
+                    activity = %activity.id,
+                    step = i,
+                    reason = %reason,
+                    "evaluator exit on final step demoted to completion"
+                );
                 messages.push(ai::Message {
                     role: "assistant".into(),
                     content: step_result.clone(),
