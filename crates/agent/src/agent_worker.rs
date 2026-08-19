@@ -1097,6 +1097,15 @@ async fn watch_loop(
     profile_dir: Option<(String, String)>,
 ) {
     let mut backoff_secs = cfg.restart_delay_secs;
+    // Consecutive auth-classified exits. ONE auth-looking failure must not
+    // kill the watch: a transient refresh hiccup matches is_auth_error's
+    // patterns too, and pausing on it silently unhooks a live trigger
+    // (observed: a watch died at token expiry, the next credential use
+    // succeeded, and the day's business-critical email arrived into a dead
+    // trigger — nebo#69). Retry through blips; pause + notify only when the
+    // failure is persistent — that is what actually needs a human.
+    let mut consecutive_auth_failures: u32 = 0;
+    const AUTH_PAUSE_THRESHOLD: u32 = 3;
     let max_backoff_secs = 300; // 5 minutes
 
     // Clean stale dedup entries on (re)start
@@ -1394,6 +1403,18 @@ async fn watch_loop(
         {
             let stderr_text = stderr_collected.lock().await;
             if tools::plugin_tool::is_auth_error(&stderr_text) {
+                consecutive_auth_failures += 1;
+                if consecutive_auth_failures < AUTH_PAUSE_THRESHOLD {
+                    warn!(
+                        agent = %agent_id,
+                        binding = %binding_name,
+                        plugin = %cfg.plugin,
+                        attempt = consecutive_auth_failures,
+                        "watch exited with an auth-looking error; retrying with backoff \
+                         (pausing only after {AUTH_PAUSE_THRESHOLD} consecutive auth failures)"
+                    );
+                    // fall through to the normal restart-with-backoff below
+                } else {
                 warn!(
                     agent = %agent_id,
                     binding = %binding_name,
@@ -1435,6 +1456,9 @@ async fn watch_loop(
                 }
 
                 break; // Stop retrying — worker restarted via plugin_auth_complete
+                }
+            } else {
+                consecutive_auth_failures = 0;
             }
         }
 
