@@ -1,0 +1,156 @@
+- generic [ref=f8e1]:
+  - generic [ref=f8e3]:
+    - generic [ref=f8e4]:
+      - complementary "Skip links" [ref=f8e5]:
+        - link "Skip to main content" [ref=f8e6] [cursor=pointer]:
+          - /url: /auth/overview/create?project=neboloop-gmail
+        - button "Keyboard shortcuts" [ref=f8e8]
+        - link [ref=f8e10] [cursor=pointer]:
+          - /url: https://cloud.google.com/docs/accessibility?hl=en_US
+          - generic [ref=f8e11]:
+            - text: Accessibility Help
+            - generic "external, opens new window" [ref=f8e12]:
+              - img "external, opens new window" [ref=f8e13]
+        - link [ref=f8e16] [cursor=pointer]:
+          - /url: https://support.google.com/accessibility/contact/feedback?hl=en_US
+          - generic [ref=f8e17]:
+            - text: Accessibility Feedback
+            - generic "external, opens new window" [ref=f8e18]:
+              - img "external, opens new window" [ref=f8e19]
+      - banner [ref=f8e23]:
+        - generic [ref=f8e24]:
+          - navigation [ref=f8e372]:
+            - button "Navigation menu (.)" [ref=f8e373] [cursor=pointer]
+          - link "Google Cloud Platform Home" [ref=f8e31] [cursor=pointer]:
+            - /url: /?project=neboloop-gmail
+          - button "You're currently working in NeuoLoop gmail. Hit enter to switch projects, folders, or organizations" [ref=f8e384]:
+            - generic [ref=f8e385]: NeuoLoop gmail
+        - search "Google Cloud Platform" [ref=f8e394]:
+          - combobox [ref=f8e395]:
+            - searchbox "Enter query to search for resources, docs, products, and more" [ref=f8e396]
+          - button "See all search results" [disabled]:
+            - generic: Search
+        - generic [ref=f8e39]:
+          - generic [ref=f8e40]:
+            - button "Open or close Gemini Cloud Assist chat (Option G)" [ref=f8e400] [cursor=pointer]
+            - button "Activate Cloud Shell (G then S)" [ref=f8e406] [cursor=pointer]
+            - button "Open notifications" [ref=f8e412] [cursor=pointer]
+            - button "Settings and utilities" [ref=f8e419] [cursor=pointer]
+          - 'button "Account: Alma Tuck (alma.tuck@gmail.com)" [ref=f8e425]'
+    - generic [ref=f8e70]:
+      - navigation "Breadcrumb" [ref=f8e75]:
+        - link "Google Auth Platform" [ref=f8e78] [cursor=pointer]:
+          - /url: /auth?project=neboloop-gmail
+        - list [ref=f8e84]:
+          - listitem [ref=f8e85]:
+            - generic [ref=f8e86]: /
+            - link "Overview" [ref=f8e89] [cursor=pointer]:
+              - /url: /auth/overview?project=neboloop-gmail
+          - listitem [ref=f8e92]:
+            - generic [ref=f8e93]: /
+            - link "Create branding" [ref=f8e96] [cursor=pointer]:
+              - /url: /auth/overview/create?project=neboloop-gmail
+      - generic [ref=f8e109]:
+        - navigation "Google Auth Platform" [ref=f8e116]:
+          - generic [ref=f8e117]:
+            - list "Overview, 1 of 7 More options Branding, 2 of 7 More options Audience, 3 of 7 More options Clients, 4 of 7 More options Data Access, 5 of 7 More options Verification Center, 6 of 7 More options Settings, 7 of 7 More options" [ref=f8e121]:
+              - listitem [ref=f8e122]:
+                - generic [ref=f8e125]:
+                  - link "Overview, 1 of 7" [ref=f8e126] [cursor=pointer]:
+                    - /url: /auth/overview?project=neboloop-gmail
+                    - generic [ref=f8e127]: Overview
+                  - button "More options" [ref=f8e134] [cursor=pointer]
+              - listitem [ref=f8e138]:
+                - generic [ref=f8e141]:
+                  - link "Branding, 2 of 7" [ref=f8e142] [cursor=pointer]:
+                    - /url: /auth/branding?project=neboloop-gmail
+                    - generic [ref=f8e143]: Branding
+                  - button "More options" [ref=f8e154] [cursor=pointer]
+              - listitem [ref=f8e158]:
+                - generic [ref=f8e161]:
+                  - link "Audience, 3 of 7" [ref=f8e162] [cursor=pointer]:
+                    - /url: /auth/audience?project=neboloop-gmail
+                    - generic [ref=f8e163]: Audience
+                  - button "More options" [ref=f8e170] [cursor=pointer]
+              - listitem [ref=f8e174]:
+                - generic [ref=f8e177]:
+                  - link "Clients, 4 of 7" [ref=f8e178] [cursor=pointer]:
+                    - /url: /auth/clients?project=neboloop-gmail
+                    - generic [ref=f8e179]: Clients
+                  - button "More options" [ref=f8e186] [cursor=pointer]
+              - listitem [ref=f8e190]:
+                - generic [ref=f8e193]:
+                  - link "Data Access, 5 of 7" [ref=f8e194] [cursor=pointer]:
+                    - /url: /auth/scopes?project=neboloop-gmail
+                    - generic [ref=f8e195]: Data Access
+                  - button "More options" [ref=f8e203] [cursor=pointer]
+              - listitem [ref=f8e207]:
+                - generic [ref=f8e210]:
+                  - link "Verification Center, 6 of 7" [ref=f8e211] [cursor=pointer]:
+                    - /url: /auth/verification?project=neboloop-gmail
+                    - generic [ref=f8e212]: Verification Center
+                  - button "More options" [ref=f8e220] [cursor=pointer]
+              - listitem [ref=f8e224]:
+                - generic [ref=f8e227]:
+                  - link "Settings, 7 of 7" [ref=f8e228] [cursor=pointer]:
+                    - /url: /auth/settings?project=neboloop-gmail
+                    - generic [ref=f8e229]: Settings
+                  - button "More options" [ref=f8e236] [cursor=pointer]
+            - button "Toggle Google Auth Platform navigation menu" [expanded] [ref=f8e241] [cursor=pointer]
+        - main [ref=f8e247]:
+          - generic [ref=f8e259]:
+            - heading "Project configuration" [level=1] [ref=f8e265]
+            - generic [ref=f8e276]:
+              - generic [ref=f8e278]:
+                - heading "App Information, step 1 of 4, in progress" [level=2] [ref=f8e281]:
+                  - generic [ref=f8e282]:
+                    - generic [ref=f8e283]: "1"
+                    - generic [ref=f8e286]: App Information
+                - generic [ref=f8e289]:
+                  - generic [ref=f8e290]:
+                    - generic [ref=f8e291]:
+                      - generic [ref=f8e293] [cursor=pointer]:
+                        - generic [ref=f8e294]:
+                          - text: App name
+                          - generic [ref=f8e295]: "*"
+                        - textbox "App name" [ref=f8e297]: NeboAI Gmail
+                      - generic [ref=f8e298]: The name of the app asking for consent
+                    - generic [ref=f8e302]:
+                      - generic [ref=f8e304] [cursor=pointer]:
+                        - generic [ref=f8e305]:
+                          - text: User support email
+                          - generic [ref=f8e306]: "*"
+                        - generic [ref=f8e307]:
+                          - combobox "User support email" [expanded] [ref=f8e308]
+                          - listbox "Options" [ref=f8e433]:
+                            - option "alma.tuck@gmail.com" [active] [ref=f8e434]
+                            - group "Google Groups managed by you" [ref=f8e437]:
+                              - option "No groups" [disabled] [ref=f8e439]
+                      - generic [ref=f8e316]:
+                        - text: For users to contact you with questions about their consent.
+                        - link "Learn more about the user support email external, opens new window" [ref=f8e317] [cursor=pointer]:
+                          - /url: https://support.google.com/cloud/answer/10311615#user-support-email
+                          - text: Learn more
+                          - img "external, opens new window" [ref=f8e318]
+                  - button "Next" [ref=f8e323]
+              - heading "Audience, step 2 of 4, unavailable until current step completion" [level=2] [ref=f8e329]:
+                - generic [ref=f8e330]:
+                  - generic [ref=f8e331]: "2"
+                  - generic [ref=f8e334]: Audience
+              - generic [ref=f8e338]:
+                - heading "Contact Information, step 3 of 4, unavailable until current step completion" [level=2] [ref=f8e341]:
+                  - generic [ref=f8e342]:
+                    - generic [ref=f8e343]: "3"
+                    - generic [ref=f8e346]: Contact Information
+                - generic [ref=f8e347]: "*"
+              - heading "Finish, step 4 of 4, unavailable until current step completion" [level=2] [ref=f8e353]:
+                - generic [ref=f8e354]:
+                  - generic [ref=f8e355]: "4"
+                  - generic [ref=f8e358]: Finish
+              - generic [ref=f8e360]:
+                - button "Create" [ref=f8e363]
+                - button "Cancel" [ref=f8e365]
+  - iframe [ref=f8e368]:
+    
+  - iframe [ref=f8e369]:
+    

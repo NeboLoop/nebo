@@ -1,0 +1,83 @@
+{
+  "title": "Join NeboAI",
+  "slides": [
+    {
+      "type": "split-hero",
+      "title": "Join NeboAI",
+      "subtitle": "An Invitation-Only Opportunity",
+      "panel_claim": "Build your future on the AI revolution"
+    },
+    {
+      "type": "three-columns",
+      "heading": "I'm just like you",
+      "columns": [
+        "Started with no tech background, just hustle",
+        "Was skeptical of AI until I saw it work",
+        "Chose NeboAI over traditional sales roles"
+      ]
+    },
+    {
+      "type": "statement",
+      "kicker": "Who We Are",
+      "statement": "NeboAI is the operating system powering digital AI employees",
+      "support": "Founded with clear vision, stable growth trajectory, proven product-market fit in enterprise automation"
+    },
+    {
+      "type": "split-stats",
+      "claim": "The AI market is exploding",
+      "stats": [
+        {"label": "Market Size 2026", "value": "$539B"},
+        {"label": "Market Size 2033", "value": "$3.6T"},
+        {"label": "CAGR", "value": "29%"},
+        {"label": "Enterprise Adoption", "value": "40%"}
+      ]
+    },
+    {
+      "type": "grid-dark",
+      "heading": "What Nebo Is",
+      "capabilities": [
+        "Multi-agent platform",
+        "Voice agent",
+        "Phone agent",
+        "Workflow automation (1 = 10,000)",
+        "Memory isolation (medical/legal)",
+        "Self-learning (on/off)"
+      ]
+    },
+    {
+      "type": "reversed-split",
+      "panel_claim": "Build wealth here",
+      "checklist": [
+        "Base + commission structure",
+        "Team building opportunities",
+        "Uncapped earning potential",
+        "Accelerators and bonuses"
+      ]
+    },
+    {
+      "type": "numbered-band",
+      "steps": [
+        {"number": "01", "text": "Expert leaders"},
+        {"number": "02", "text": "Complete training program"},
+        {"number": "03", "text": "No prior experience needed"}
+      ],
+      "band": "We teach you everything"
+    },
+    {
+      "type": "stacked-close",
+      "question": "Where do you stand?",
+      "options": [
+        {"number": "1", "text": "Thanks but no thanks"},
+        {"number": "2", "text": "Want to research more"},
+        {"number": "3", "text": "I'm in! Let's go"}
+      ]
+    }
+  ],
+  "design_pack": {
+    "name": "Bold Split",
+    "colors": {
+      "primary": "#0D1A38",
+      "accent": "#2F60C9"
+    }
+  }
+}
