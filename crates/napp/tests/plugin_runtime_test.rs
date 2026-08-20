@@ -373,9 +373,23 @@ async fn run_capture_leaves_no_tracked_pids() {
         .await
         .expect_err("must time out");
 
-    assert_eq!(
-        nebo_napp::child_guard::tracked_pids().len(),
-        before,
-        "pids left registered after run_capture (success and/or timeout path)"
-    );
+    // tracked_pids() is process-global and sibling tests in this binary run
+    // in parallel, so a point-in-time count race-fails two honest ways: our
+    // own timeout path unregisters a beat after run_capture returns, and a
+    // concurrent test's still-live child can legitimately sit in the set at
+    // our snapshot (that one held a killed-at-1s sleeper — the exact "1 vs 0"
+    // CI flake). The property under test is that registrations DRAIN, so
+    // assert that, with a bound loose enough for a loaded runner.
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let now = nebo_napp::child_guard::tracked_pids().len();
+        if now <= before {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "pids left registered after run_capture (success and/or timeout path): {now} still tracked, started at {before}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 }
