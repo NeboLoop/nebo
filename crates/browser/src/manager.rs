@@ -35,16 +35,28 @@ pub struct ProfileStatus {
 
 impl Manager {
     pub fn new(config: BrowserConfig, data_dir: String) -> Self {
-        // Tier-2 built-in browser: the bundled Obscura headless browser, driven over CDP.
-        // Launched lazily on first fallback use; None if the binary isn't found (→ tier-3 direct).
-        let cdp = find_obscura(&data_dir).map(|binary| {
-            Arc::new(CdpBridge::new(ObscuraConfig {
+        // Tier-2 built-in browser, driven over CDP. Preferred: the bundled
+        // Obscura (stealth). Fallback: a stock Chromium/Chrome on PATH — the
+        // cloud image ships one, so cloud bots get programmatic browsing too.
+        // None only when neither exists (→ tier-3 direct fetch).
+        let cdp = find_obscura(&data_dir)
+            .map(|binary| ObscuraConfig {
                 binary,
                 storage_dir: Some(PathBuf::from(&data_dir).join("obscura-profile")),
                 stealth: true,
                 log_path: Some(PathBuf::from(&data_dir).join("logs").join("obscura.log")),
-            }))
-        });
+                chromium: false,
+            })
+            .or_else(|| {
+                crate::chrome::find_chrome().map(|binary| ObscuraConfig {
+                    binary,
+                    storage_dir: Some(PathBuf::from(&data_dir).join("chromium-profile")),
+                    stealth: false,
+                    log_path: Some(PathBuf::from(&data_dir).join("logs").join("chromium.log")),
+                    chromium: true,
+                })
+            })
+            .map(|cfg| Arc::new(CdpBridge::new(cfg)));
         Self {
             config,
             data_dir,
