@@ -68,7 +68,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       build-essential pkg-config \
       jq unzip zip ripgrep less procps sqlite3 \
       ffmpeg \
-      xvfb x11vnc xdotool wmctrl scrot xclip x11-utils dbus-x11 at-spi2-core \
+      xvfb x11vnc xdotool wmctrl scrot xclip x11-utils xinput dbus-x11 at-spi2-core \
       xfwm4 xfce4-panel xfce4-terminal thunar adwaita-icon-theme \
       chromium \
       fonts-dejavu fonts-liberation fonts-noto-color-emoji \

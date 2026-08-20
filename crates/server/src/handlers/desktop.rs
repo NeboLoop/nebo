@@ -17,6 +17,44 @@ use tracing::{info, warn};
 
 use crate::state::AppState;
 
+fn teach_err(e: &str) -> Response {
+    (
+        axum::http::StatusCode::BAD_REQUEST,
+        axum::Json(serde_json::json!({ "error": e })),
+    )
+        .into_response()
+}
+
+/// POST /api/v1/desktop/teach/start — begin recording a demonstration on the
+/// live desktop. Starts the desktop if needed.
+pub async fn teach_start(State(_state): State<AppState>) -> Response {
+    if let Err(e) = tools::desktop_session::ensure_started().await {
+        return teach_err(&e);
+    }
+    match tools::desktop_session::start_recording().await {
+        Ok((id, dir)) => axum::Json(serde_json::json!({
+            "sessionId": id,
+            "dir": dir.to_string_lossy(),
+        }))
+        .into_response(),
+        Err(e) => teach_err(&e),
+    }
+}
+
+/// POST /api/v1/desktop/teach/stop — finalize the recording. Returns the
+/// artifact locations; the caller (chat) hands them to the agent to study.
+pub async fn teach_stop(State(_state): State<AppState>) -> Response {
+    match tools::desktop_session::stop_recording().await {
+        Ok((id, dir, keyframes)) => axum::Json(serde_json::json!({
+            "sessionId": id,
+            "dir": dir.to_string_lossy(),
+            "keyframes": keyframes,
+        }))
+        .into_response(),
+        Err(e) => teach_err(&e),
+    }
+}
+
 pub async fn desktop_ws_handler(
     State(_state): State<AppState>,
     headers: axum::http::HeaderMap,

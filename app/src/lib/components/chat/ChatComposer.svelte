@@ -47,7 +47,7 @@
 
   type AgentInfo = { id: string; name: string; role: string; initial: string; status: string; color: string; isApp?: boolean };
 
-  let { agentName = 'Agent', agentId = '', threadId = '', placeholder = '', allAgents = [], onsend, onstop, isLoading = false, sessionId = '', allowAttachments = true }: {
+  let { agentName = 'Agent', agentId = '', threadId = '', placeholder = '', allAgents = [], onsend, onstop, isLoading = false, sessionId = '', allowAttachments = true, onteach }: {
     agentName?: string;
     agentId?: string;
     threadId?: string;
@@ -61,6 +61,9 @@
      *  for files (e.g. the workflow Architect) — a paperclip that silently
      *  drops the file is worse than none. */
     allowAttachments?: boolean;
+    /** Present on surfaces where the bot has a computer: adds "Teach a task"
+     *  to the + menu. The parent owns the recording lifecycle. */
+    onteach?: () => void;
   } = $props();
 
   let editorElement = $state<HTMLDivElement | null>(null);
@@ -630,7 +633,31 @@
     <!-- Toolbar -->
     <div class="flex items-center justify-between mt-2">
       <div class="flex items-center gap-1">
-        {#if allowAttachments}
+        {#if allowAttachments && onteach}
+          <div class="dropdown dropdown-top">
+            <button
+              class="w-8 h-8 rounded-lg grid place-items-center text-base-content/60 hover:text-base-content hover:bg-base-200 cursor-pointer transition-colors border-none bg-transparent"
+              title={$t('chatInput.more')}
+              tabindex={-1}
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+              </svg>
+            </button>
+            <ul class="dropdown-content menu bg-base-100 rounded-box z-20 w-48 p-1 shadow-md border border-base-300">
+              <li>
+                <button class="text-sm" onclick={() => { browseFiles(); (document.activeElement as HTMLElement | null)?.blur(); }}>
+                  {$t('chatInput.attachFiles')}
+                </button>
+              </li>
+              <li>
+                <button class="text-sm" onclick={() => { onteach?.(); (document.activeElement as HTMLElement | null)?.blur(); }}>
+                  {$t('chatInput.teachTask')}
+                </button>
+              </li>
+            </ul>
+          </div>
+        {:else if allowAttachments}
           <button
             class="w-8 h-8 rounded-lg grid place-items-center text-base-content/60 hover:text-base-content hover:bg-base-200 cursor-pointer transition-colors border-none bg-transparent"
             onclick={browseFiles}

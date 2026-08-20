@@ -3,6 +3,7 @@
   import ChatComposer from './ChatComposer.svelte';
   import WorkViewer from './WorkViewer.svelte';
   import DesktopView from './DesktopView.svelte';
+  import { teachStart, teachStop } from '$lib/api/desktop';
   import ShareArtifactModal from './ShareArtifactModal.svelte';
   import AskWidget from './AskWidget.svelte';
   import type { AskWidgetDef } from './AskWidget.svelte';
@@ -108,6 +109,54 @@
   let creationsOpen = $state(false);
   // The bot's computer takes over the work panel while open.
   let desktopOpen = $state(false);
+
+  // Teach-a-task: record a demonstration on the bot's computer, then hand
+  // the artifacts to the agent to study (the normal run does the learning —
+  // vision + file + skill tools; a voluntary skill save is the organic
+  // learning pathway).
+  let teachActive = $state(false);
+  let teachError = $state('');
+  let teachSeconds = $state(0);
+  let teachTimer: ReturnType<typeof setInterval> | null = null;
+
+  async function startTeach() {
+    teachError = '';
+    try {
+      await teachStart();
+    } catch (e) {
+      teachError = e instanceof Error ? e.message : String(e);
+      return;
+    }
+    desktopOpen = true;
+    creationsOpen = true;
+    teachActive = true;
+    teachSeconds = 0;
+    teachTimer = setInterval(() => (teachSeconds += 1), 1000);
+  }
+
+  async function stopTeach() {
+    if (teachTimer) { clearInterval(teachTimer); teachTimer = null; }
+    teachActive = false;
+    try {
+      const res = await teachStop();
+      handleSend(
+        `I just demonstrated a task for you on your computer (teach session ${res.sessionId}). ` +
+        `The recording is in ${res.dir}: review the ${res.keyframes} keyframes in frames/ with your vision, ` +
+        `read events.log for the exact clicks and keys, and study the sequence until you understand the task. ` +
+        `Then save it as a learned skill with the skill tool — name it after the class of task, write out the ` +
+        `steps you'd follow to repeat it on your computer, and note which inputs varied. Reply with what you learned.`,
+        []
+      );
+    } catch (e) {
+      teachError = e instanceof Error ? e.message : String(e);
+    }
+  }
+
+  function fmtTeach(sec: number): string {
+    const m = Math.floor(sec / 60);
+    const s2 = (sec % 60).toString().padStart(2, '0');
+    return `${m}:${s2}`;
+  }
   // Empty = default panel title ($t('chat.work') at render time).
   let creationsTitle = $state('');
   let activeArtifactId = $state<string | null>(null);
@@ -1410,6 +1459,25 @@
     </div>
   {/if}
 
+  <!-- Teach-a-task record bar -->
+  {#if teachActive || teachError}
+    <div class="max-w-3xl mx-auto w-full shrink-0 mb-2">
+      <div class="flex items-center gap-2.5 rounded-lg px-3 py-2 {teachError ? 'bg-error/10 text-error' : 'bg-error/10'}">
+        {#if teachActive}
+          <span class="w-2 h-2 rounded-full bg-error animate-pulse"></span>
+          <span class="text-sm">{$t('chat.watchingAndLearning', { values: { name: agentName } })}</span>
+          <span class="text-xs tabular-nums text-base-content/60">{fmtTeach(teachSeconds)}</span>
+          <button type="button" class="btn btn-error btn-xs ml-auto normal-case" onclick={stopTeach}>
+            {$t('chat.stopRecording')}
+          </button>
+        {:else}
+          <span class="text-sm">{teachError}</span>
+          <button type="button" class="btn btn-ghost btn-xs ml-auto" onclick={() => (teachError = '')}>✕</button>
+        {/if}
+      </div>
+    </div>
+  {/if}
+
   <!-- Composer -->
   <div class="max-w-3xl mx-auto w-full shrink-0">
     <ChatComposer
@@ -1423,6 +1491,7 @@
       {onstop}
       {isLoading}
       {allowAttachments}
+      onteach={startTeach}
       bind:this={composerRef}
     />
   </div>

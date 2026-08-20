@@ -205,6 +205,125 @@ pub async fn ensure_started() -> Result<u16, String> {
     Ok(VNC_PORT)
 }
 
+// --- Teach-a-task recording -------------------------------------------------
+//
+// A recording is a mode of the live session: ffmpeg captures the SAME X
+// display x11vnc serves (one canonical frame source) into a human-viewable
+// mp4 plus a deduped ~1fps keyframe series, and xinput logs the raw input
+// events. Artifacts land in the bot's own home so they're visible in its
+// file manager: ~/teach-sessions/<id>/{session.mp4, frames/, events.log}.
+
+struct RecInner {
+    id: String,
+    dir: std::path::PathBuf,
+    video: Child,
+    frames: Child,
+    events: Child,
+}
+
+static REC: OnceLock<tokio::sync::Mutex<Option<RecInner>>> = OnceLock::new();
+
+fn rec_slot() -> &'static tokio::sync::Mutex<Option<RecInner>> {
+    REC.get_or_init(|| tokio::sync::Mutex::new(None))
+}
+
+/// Where teach sessions live: the bot's home, browsable in Thunar.
+fn teach_root() -> std::path::PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+    std::path::Path::new(&home).join("teach-sessions")
+}
+
+/// Start recording the live desktop. Returns (session_id, session_dir).
+/// One recording at a time; the desktop must be up (start it first).
+pub async fn start_recording() -> Result<(String, std::path::PathBuf), String> {
+    if !active() {
+        return Err("the desktop isn't running — open the computer first".into());
+    }
+    let mut rec = rec_slot().lock().await;
+    if rec.is_some() {
+        return Err("a recording is already in progress".into());
+    }
+
+    let id = uuid::Uuid::new_v4().to_string();
+    let dir = teach_root().join(&id);
+    let frames_dir = dir.join("frames");
+    std::fs::create_dir_all(&frames_dir).map_err(|e| format!("teach dir: {e}"))?;
+
+    // Human-viewable replay of the whole demonstration.
+    let video = Command::new("ffmpeg")
+        .args([
+            "-loglevel", "error",
+            "-f", "x11grab", "-framerate", "10", "-i", DISPLAY,
+            "-vcodec", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+        ])
+        .arg(dir.join("session.mp4"))
+        .stdin(std::process::Stdio::piped()) // 'q' for a clean mp4 finalize
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| format!("recorder failed to start: {e}"))?;
+
+    // Deduped ~1fps keyframes — the distillation pass reads these, not video.
+    let frames = Command::new("ffmpeg")
+        .args([
+            "-loglevel", "error",
+            "-f", "x11grab", "-framerate", "2", "-i", DISPLAY,
+            "-vf", "mpdecimate,fps=1", "-q:v", "4",
+        ])
+        .arg(frames_dir.join("%04d.jpg"))
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| format!("keyframe sampler failed to start: {e}"))?;
+
+    // Raw input event log (clicks, keys, focus) — parsed at distill time.
+    let events_file = std::fs::File::create(dir.join("events.log"))
+        .map_err(|e| format!("events log: {e}"))?;
+    let events = Command::new("xinput")
+        .args(["test-xi2", "--root"])
+        .env("DISPLAY", DISPLAY)
+        .stdin(std::process::Stdio::null())
+        .stdout(events_file)
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| format!("input logger failed to start: {e}"))?;
+
+    set_recording(true);
+    info!(session = %id, "teach recording started");
+    *rec = Some(RecInner { id: id.clone(), dir: dir.clone(), video, frames, events });
+    Ok((id, dir))
+}
+
+/// Stop the recording and finalize artifacts. Returns (session_id, dir,
+/// keyframe_count). No recording in progress is an error.
+pub async fn stop_recording() -> Result<(String, std::path::PathBuf, usize), String> {
+    let mut rec = rec_slot().lock().await;
+    let Some(mut inner) = rec.take() else {
+        return Err("no recording in progress".into());
+    };
+    set_recording(false);
+
+    // Ask ffmpeg to finalize (write the moov atom) instead of killing it.
+    for child in [&mut inner.video, &mut inner.frames] {
+        if let Some(mut stdin) = child.stdin.take() {
+            use tokio::io::AsyncWriteExt;
+            let _ = stdin.write_all(b"q").await;
+        }
+    }
+    let _ = tokio::time::timeout(Duration::from_secs(10), inner.video.wait()).await;
+    let _ = tokio::time::timeout(Duration::from_secs(10), inner.frames.wait()).await;
+    let _ = inner.video.kill().await;
+    let _ = inner.frames.kill().await;
+    let _ = inner.events.kill().await;
+
+    let count = std::fs::read_dir(inner.dir.join("frames"))
+        .map(|d| d.count())
+        .unwrap_or(0);
+    info!(session = %inner.id, keyframes = count, "teach recording stopped");
+    Ok((inner.id, inner.dir, count))
+}
+
 /// Tear the desktop down. The workspace is untouched; a later
 /// [`ensure_started`] brings a fresh desktop back in ~2-3s.
 pub async fn stop() {
