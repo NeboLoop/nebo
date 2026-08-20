@@ -187,6 +187,7 @@ pub fn inject_ollama_models(store: &db::Store, selector: &agent::ModelSelector) 
                     context_window: m.context_window.unwrap_or(128_000) as i32,
                     input_price: 0.0,
                     output_price: 0.0,
+                    cached_input_price: 0.0,
                     capabilities: m
                         .capabilities
                         .as_ref()
