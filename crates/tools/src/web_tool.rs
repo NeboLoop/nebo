@@ -1388,11 +1388,17 @@ impl WebTool {
         // toast the user about a browser that can't exist. Redirect the model to
         // the fetch pathway instead.
         if crate::server_mode() && !executor.is_connected() {
-            return ToolResult::error(
+            let computer_hint = if crate::desktop_session::active() {
+                " This bot's desktop session is live: you can also open Chromium \
+                 on it and drive it with the os window/input/ui tools."
+            } else {
+                ""
+            };
+            return ToolResult::error(format!(
                 "Browser automation isn't available on this cloud bot. Use \
                  web(action: \"fetch\", url: ...) instead — it returns the page's \
-                 extracted text — or web(action: \"search\", query: ...).",
-            );
+                 extracted text — or web(action: \"search\", query: ...).{computer_hint}"
+            ));
         }
 
         // Nudge to install the extension whenever it isn't connected — even if the built-in
