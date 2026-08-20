@@ -53,6 +53,12 @@ FROM debian:bookworm-slim
 # computer, and sudo is (correctly) hard-blocked — so anything the agent
 # should be able to use must ship in the image. Standard dev/scripting
 # tools + media processing (ffmpeg pairs with audio/video attachments).
+#
+# The desktop rows (xvfb…fonts) are the bot's on-demand computer: a curated
+# xfce subset (NOT the xfce4 metapackage — no screensaver/power-manager),
+# x11vnc for the live view, xdotool/wmctrl/scrot/xclip/at-spi2-core so the
+# existing desktop-tool Linux backend works against the session's DISPLAY.
+# Nothing starts at boot; nebo-server spawns the tree on demand.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates libssl3 libopenblas0-pthread \
       libwayland-client0 libxkbcommon0 \
@@ -62,6 +68,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       build-essential pkg-config \
       jq unzip zip ripgrep less procps sqlite3 \
       ffmpeg \
+      xvfb x11vnc xdotool wmctrl scrot xclip x11-utils dbus-x11 at-spi2-core \
+      xfwm4 xfce4-panel xfce4-terminal thunar adwaita-icon-theme \
+      chromium \
+      fonts-dejavu fonts-liberation fonts-noto-color-emoji \
     && rm -rf /var/lib/apt/lists/* \
     && useradd -u 1000 -m nebo
 COPY --from=build /src/target/server/nebo-cli /usr/local/bin/nebo-cli
