@@ -1,5 +1,6 @@
 mod a2ui_surfaces;
 mod advisors;
+mod approval_ledger;
 mod agent_profile;
 mod agents;
 mod channel_bindings;
@@ -28,5 +29,6 @@ mod users;
 mod work;
 mod workflows;
 
+pub use approval_ledger::{ApprovalEntry, ApprovalSummary};
 pub use license_keys::LicenseKeyRow;
 pub use plugin_account_profiles::PluginAccountProfile;

@@ -115,6 +115,16 @@ pub fn routes() -> Router<AppState> {
             "/agents/{id}/stats",
             axum::routing::get(handlers::agents::agent_stats),
         )
+        // The approval ledger: graduation evidence per action class, and the
+        // rollback that resets it (and demotes an Always back to ask-first).
+        .route(
+            "/agents/{id}/approvals",
+            axum::routing::get(handlers::agents::get_approval_evidence),
+        )
+        .route(
+            "/agents/{id}/approvals/rollback",
+            axum::routing::post(handlers::agents::record_approval_rollback),
+        )
         .route(
             "/agents/{id}/runs",
             axum::routing::get(handlers::agents::list_agent_runs),
