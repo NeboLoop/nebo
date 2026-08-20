@@ -56,7 +56,7 @@ impl ClientHub {
 /// unconditionally and page JS cannot suppress it — so it is rejected here.
 /// NOTE (Phase 4): remote UI through the tunnel will carry the loop's Origin;
 /// the hub must strip/rewrite Origin before proxying into the tunnel.
-fn origin_is_trusted(headers: &axum::http::HeaderMap) -> bool {
+pub(crate) fn origin_is_trusted(headers: &axum::http::HeaderMap) -> bool {
     let Some(origin) = headers
         .get(axum::http::header::ORIGIN)
         .and_then(|v| v.to_str().ok())

@@ -2404,6 +2404,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         .route("/ws/app/{agent_id}", axum::routing::get(handlers::ws::app_ws_handler))
         .route("/ws/extension", axum::routing::get(handlers::ws::extension_ws_handler))
         .route("/ws/voice/conversation", axum::routing::get(handlers::voice::conversation_ws_handler))
+        .route("/ws/desktop", axum::routing::get(handlers::desktop::desktop_ws_handler))
         .route("/apps/{agent_id}/ui/{*path}", axum::routing::get(handlers::apps::serve_app_ui))
         .route("/sdk/nebo.global.js", axum::routing::get(handlers::apps::serve_sdk_iife))
         .merge(http_routes)

@@ -22,6 +22,7 @@ pub mod skills;
 pub mod store;
 pub mod tasks;
 pub mod user;
+pub mod desktop;
 pub mod voice;
 pub mod workflows;
 pub mod ws;
