@@ -1,12 +1,18 @@
 name: CI
 
-# Runs on every branch push and pull request. Two gates: frontend typecheck +
-# unit tests, and the full cargo workspace test suite. The Rust job exists
-# because its absence let a workflow regression AND the compile break that hid
-# its test ship in one commit — the repo read green for weeks on frontend
-# checks alone.
+# Two gates: frontend typecheck + unit tests, and the full cargo workspace
+# test suite. The Rust job exists because its absence let a workflow
+# regression AND the compile break that hid its test ship in one commit — the
+# repo read green for weeks on frontend checks alone.
+#
+# push is main-only ON PURPOSE. A bare `push:` plus `pull_request:` ran every
+# PR'd commit twice — and the concurrency group below could never dedupe the
+# pair, because the two events carry different refs (refs/heads/... vs
+# refs/pull/N/merge). PR commits get the pull_request run, which tests the
+# merge ref — the better signal; direct pushes to main keep their own run.
 on:
   push:
+    branches: [main]
   pull_request:
 
 concurrency:
@@ -51,6 +57,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      # The workspace debug-build plus the restored cache can crowd the
+      # runner's ~14GB free disk, and a full disk kills test binaries with
+      # SIGBUS (their pages are mmap'd from files that can no longer be
+      # read back) — a crash that looks like memory corruption and isn't.
+      # These preinstalled toolchains are dead weight for this job; dropping
+      # them frees ~25-30GB.
+      - name: Reclaim runner disk
+        run: |
+          df -h / | tail -1
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc             /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h / | tail -1
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -98,3 +116,13 @@ jobs:
       # a frontend build. Everything else in the workspace runs.
       - name: Run tests
         run: cargo test --workspace --exclude nebo --no-fail-fast
+
+      # A test binary dying of SIGBUS or an OOM-kill leaves its cause in the
+      # kernel log and the disk numbers, not in cargo's output. Capture both
+      # while the evidence exists, so the next crash is a diagnosis instead
+      # of a rerun-and-hope.
+      - name: Crash evidence (disk + kernel log)
+        if: failure()
+        run: |
+          df -h
+          sudo dmesg --ctime 2>/dev/null | tail -50 || true
