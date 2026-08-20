@@ -97,6 +97,18 @@ fn nice(cmd: &str) -> Command {
 
 /// Start the desktop if it isn't running; idempotent. Returns the VNC port.
 pub async fn ensure_started() -> Result<u16, String> {
+    // In the cloud, the provisioner stamps NEBO_DESKTOP=1 only on pods whose
+    // owner enabled the computer — those get the bigger envelope. Without it
+    // the pod is sized 1Gi and Chromium would OOM the bot mid-run: refuse.
+    if std::env::var_os("NEBO_SERVER_MODE").is_some()
+        && std::env::var_os("NEBO_DESKTOP").is_none()
+    {
+        return Err(
+            "this bot's computer isn't enabled — turn it on in the bot's cloud settings \
+             (the bot restarts once to get a bigger machine)"
+                .into(),
+        );
+    }
     touch();
     let mut guard = slot().lock().await;
     if let Some(inner) = guard.as_mut() {

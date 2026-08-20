@@ -14,6 +14,9 @@ importers:
       '@neboai/app-sdk':
         specifier: ^0.1.0
         version: 0.1.0
+      '@novnc/novnc':
+        specifier: ^1.7.0
+        version: 1.7.0
       '@tauri-apps/api':
         specifier: ~2.10.0
         version: 2.10.1
@@ -539,6 +542,9 @@ packages:
     peerDependenciesMeta:
       '@a2ui/web_core':
         optional: true
+
+  '@novnc/novnc@1.7.0':
+    resolution: {integrity: sha512-ucEJOx4T2avIRCleodk7YobZj5O2Ga2AeLfQ69A/yjG9HHba2+PDgwSkN3FttrmG+70ZGx21sElNFouK13RzyA==}
 
   '@oxc-project/types@0.127.0':
     resolution: {integrity: sha512-aIYXQBo4lCbO4z0R3FHeucQHpF46l2LbMdxRvqvuRuW2OxdnSkcng5B8+K12spgLDj93rtN3+J2Vac/TIO+ciQ==}
@@ -2101,6 +2107,8 @@ snapshots:
     optional: true
 
   '@neboai/app-sdk@0.1.0': {}
+
+  '@novnc/novnc@1.7.0': {}
 
   '@oxc-project/types@0.127.0': {}
 

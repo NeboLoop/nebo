@@ -2,6 +2,7 @@
   import { t } from 'svelte-i18n';
   import ChatComposer from './ChatComposer.svelte';
   import WorkViewer from './WorkViewer.svelte';
+  import DesktopView from './DesktopView.svelte';
   import ShareArtifactModal from './ShareArtifactModal.svelte';
   import AskWidget from './AskWidget.svelte';
   import type { AskWidgetDef } from './AskWidget.svelte';
@@ -105,6 +106,8 @@
 
   let composerRef = $state<{ focus: () => void; focusAndInsert: (char: string) => void; addFiles: (files: File[]) => void } | null>(null);
   let creationsOpen = $state(false);
+  // The bot's computer takes over the work panel while open.
+  let desktopOpen = $state(false);
   // Empty = default panel title ($t('chat.work') at render time).
   let creationsTitle = $state('');
   let activeArtifactId = $state<string | null>(null);
@@ -280,6 +283,7 @@
   }
 
   function openArtifact(id: string) {
+    desktopOpen = false;
     activeArtifactId = id;
     activeVersion = null; // follow latest; the version dropdown pins an older one
     viewSource = false;
@@ -906,11 +910,20 @@
   {#if headerTitle}
     <div class="h-11 px-[18px] border-b border-base-content/10 flex items-center gap-2 shrink-0">
       <span class="text-sm font-semibold truncate min-w-0">{headerTitle}</span>
+      <button
+        class="text-sm ml-auto shrink-0 cursor-pointer bg-transparent border-none text-base-content/70 hover:text-base-content transition-colors flex items-center"
+        onclick={() => { if (desktopOpen && creationsOpen) { desktopOpen = false; creationsOpen = false; } else { desktopOpen = true; creationsOpen = true; } }}
+        title={$t('chat.openComputer')}
+      >
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="{desktopOpen && creationsOpen ? 'text-primary' : ''}">
+          <rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>
+        </svg>
+      </button>
       {#if headerRight}
         <button
           data-tour="work"
-          class="text-sm ml-auto shrink-0 whitespace-nowrap cursor-pointer bg-transparent border-none text-base-content/70 hover:text-base-content transition-colors flex items-center gap-1.5"
-          onclick={() => creationsOpen ? (creationsOpen = false) : openWorkPanel()}
+          class="text-sm shrink-0 whitespace-nowrap cursor-pointer bg-transparent border-none text-base-content/70 hover:text-base-content transition-colors flex items-center gap-1.5"
+          onclick={() => { if (creationsOpen && !desktopOpen) { creationsOpen = false; } else { desktopOpen = false; openWorkPanel(); } }}
           title={creationsOpen ? $t('chat.closeWorkPanel') : $t('chat.openWorkPanel')}
         >
           {headerRight}
@@ -1557,7 +1570,7 @@
       </button>
       <button
         class="w-7 h-7 rounded-md flex items-center justify-center hover:bg-base-200 cursor-pointer bg-transparent border-none text-base-content/70 hover:text-base-content transition-colors shrink-0"
-        onclick={() => { creationsOpen = false; workFull = false; }}
+        onclick={() => { creationsOpen = false; workFull = false; desktopOpen = false; }}
         title={$t('chat.closeWorkPanel')}
       >
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
@@ -1565,7 +1578,9 @@
     </div>
     <!-- Creations content — one renderer for every format, routed by extension -->
     <div class="flex-1 overflow-y-auto">
-      {#if activeArtifact?.url}
+      {#if desktopOpen}
+        <DesktopView />
+      {:else if activeArtifact?.url}
         <!-- Key on documentId:version so a new version re-mounts the viewer in
              place (and the version-specific URL also defeats the browser cache). -->
         {#key `${activeArtifact.documentId}:${activeArtifact.version}:${viewSource}`}
