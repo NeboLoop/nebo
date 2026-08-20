@@ -8,6 +8,7 @@ mod queries;
 
 pub use pool::create_pool;
 pub use queries::LicenseKeyRow;
+pub use queries::{ApprovalEntry, ApprovalSummary};
 pub use queries::PluginAccountProfile;
 pub use store::Store;
 

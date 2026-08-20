@@ -3799,7 +3799,7 @@ pub async fn resolve_workflow_approval(
     Path(run_id): Path<String>,
     Json(body): Json<WorkflowApprovalBody>,
 ) -> HandlerResult<serde_json::Value> {
-    let Some((agent_id, binding_name, suspended_activity, _iteration, _step, _messages, _pending_tool, _operation, display)) =
+    let Some((agent_id, binding_name, suspended_activity, _iteration, _step, _messages, _pending_tool, operation, display)) =
         state
             .store
             .get_workflow_suspension(&run_id)
@@ -3808,7 +3808,35 @@ pub async fn resolve_workflow_approval(
         return Err(to_error_response(types::NeboError::NotFound));
     };
 
+    // The ledger is the evidence that earns (and revokes) autonomy, so every
+    // resolution is appended before anything else happens to the run. The
+    // asset comes from the run's inputs when the workflow carries one —
+    // graduation requires spread across assets, and untagged decisions
+    // simply don't count toward that spread.
+    let ledger_asset = state
+        .store
+        .get_workflow_run(&run_id)
+        .ok()
+        .flatten()
+        .map(|r| asset_from_inputs(r.inputs.as_deref().unwrap_or("")))
+        .unwrap_or_default();
+    let record_decision = |kind: &str| {
+        if let Err(e) = state.store.record_approval_decision(
+            &agent_id,
+            &operation,
+            kind,
+            false,
+            &run_id,
+            &binding_name,
+            &ledger_asset,
+            &display,
+        ) {
+            tracing::warn!(error = %e, run = %run_id, "approval ledger write failed");
+        }
+    };
+
     if !body.approved {
+        record_decision("denied");
         state
             .store
             .delete_workflow_suspension(&run_id)
@@ -3843,6 +3871,8 @@ pub async fn resolve_workflow_approval(
         .get(&binding_name)
         .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
     let def_json = binding.to_workflow_json(&binding_name);
+
+    record_decision("approved");
 
     // Definition-drift guard for long-tail resumes (days/months later): if the
     // seat's current definition no longer contains the suspended activity, a
@@ -4082,4 +4112,119 @@ pub async fn resolve_learning(
     );
     info!(id, agent_id = %row.agent_id, target = %row.target, action = %row.action, "learning approved and applied");
     Ok(Json(serde_json::json!({ "status": "approved" })))
+}
+
+/// Extract the asset tag from a run's inputs JSON, if the workflow carries
+/// one. Checked keys, in order: assetId, asset, canonicalId. Anything else —
+/// including malformed inputs — is simply "no asset", never an error: the
+/// ledger records the decision regardless, it just can't count it toward
+/// asset spread.
+fn asset_from_inputs(inputs: &str) -> String {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(inputs) else {
+        return String::new();
+    };
+    for key in ["assetId", "asset", "canonicalId"] {
+        if let Some(s) = v.get(key).and_then(|x| x.as_str()) {
+            if !s.trim().is_empty() {
+                return s.trim().to_string();
+            }
+        }
+    }
+    String::new()
+}
+
+/// GET /agents/{id}/approvals — the graduation evidence per action class:
+/// clean streak, asset spread, session spread, and lifetime totals. This is
+/// what turns "remove gates one class at a time" from a gut call into a
+/// measurement.
+pub async fn get_approval_evidence(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> HandlerResult<serde_json::Value> {
+    let summaries = state
+        .store
+        .approval_summaries(&id)
+        .map_err(to_error_response)?;
+    Ok(Json(serde_json::json!({ "operations": summaries })))
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordRollbackBody {
+    pub operation: String,
+    #[serde(default)]
+    pub run_id: String,
+    #[serde(default)]
+    pub asset: String,
+    #[serde(default)]
+    pub note: String,
+}
+
+/// POST /agents/{id}/approvals/rollback — record that a previously approved
+/// (or autonomous) action turned out bad and was reverted.
+///
+/// A rollback does two things, deliberately in this order:
+///  1. Appends to the ledger — resetting the graduation streak, so the class
+///     has to re-earn autonomy on fresh evidence.
+///  2. DEMOTES the operation back to ask-first if it had been granted
+///     Always. Graduation is a one-way door without this; demotion is the
+///     half of the autonomy model that makes the ledger worth having.
+pub async fn record_approval_rollback(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<RecordRollbackBody>,
+) -> HandlerResult<serde_json::Value> {
+    let operation = body.operation.trim().to_string();
+    if operation.is_empty() {
+        return Err(to_error_response(types::NeboError::Validation(
+            "operation is required".into(),
+        )));
+    }
+
+    state
+        .store
+        .record_approval_decision(
+            &id,
+            &operation,
+            "rollback",
+            false,
+            &body.run_id,
+            "",
+            body.asset.trim(),
+            body.note.trim(),
+        )
+        .map_err(to_error_response)?;
+
+    // Demote: only if the op currently stands at Always. Ask-first stays
+    // ask-first; Blocked stays blocked.
+    let mut demoted = false;
+    if let Ok(Some(cfg)) = state.store.get_entity_config("agent", &id) {
+        if let Some(raw) = cfg.operation_policy {
+            if let Ok(mut policy) =
+                serde_json::from_str::<tools::policy::OperationPolicy>(&raw)
+            {
+                if policy.decide(&operation) == tools::policy::OperationAccess::Always {
+                    policy
+                        .operations
+                        .insert(operation.clone(), tools::policy::OperationAccess::Approval);
+                    let patch = serde_json::json!({
+                        "operationPolicy": serde_json::to_value(&policy)
+                            .unwrap_or(serde_json::json!({}))
+                    });
+                    if let Err(e) = state.store.upsert_entity_config("agent", &id, &patch) {
+                        tracing::warn!(error = %e, agent = %id, "rollback demotion failed to persist");
+                    } else {
+                        demoted = true;
+                        tracing::warn!(
+                            agent = %id,
+                            operation = %operation,
+                            "DEMOTED to ask-first after rollback — autonomy must be re-earned"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(Json(serde_json::json!({ "recorded": true, "demoted": demoted })))
 }

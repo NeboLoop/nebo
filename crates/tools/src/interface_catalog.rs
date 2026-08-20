@@ -44,11 +44,22 @@ const GATED: &[&str] = &[
     "ats.interview.schedule",
     "cms.post.create",
     "cms.post.update",
+    // Pages are the write that matters for local-search portfolios: a city
+    // landing page IS the asset's surface. Leaving pages ungated while posts
+    // were gated meant the higher-stakes publish was the unguarded one.
+    "cms.page.create",
+    "cms.page.update",
     "social.post.schedule",
     "social.post.publish",
     // email-marketing / reviews / ads / tickets
     "email-marketing.campaign.send",
     "reviews.review.respond",
+    // Google Business Profile substance (categories, services, attributes,
+    // hours, description). Suspension-class risk: a bad profile edit can
+    // remove the asset from Maps entirely, so it never runs ungated.
+    // Identity-level fields (name, address, verification) are not bound to
+    // any operation at all — those stay with a human, full stop.
+    "gbp.location.update",
     "ads.campaign.update",
     "tickets.issue.create",
     "tickets.issue.update",
