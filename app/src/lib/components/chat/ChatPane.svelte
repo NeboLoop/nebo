@@ -437,9 +437,10 @@
   }
 
   /** Loop-uploaded attachments (have a fileId) render through the local
-   *  authenticated proxy; artifact-derived ones keep their local url. */
+   *  authenticated proxy; artifact-derived ones resolve against backendBase()
+   *  so they load through the tunnel's /t/<botID> prefix, not the hub origin. */
   function attSrc(att: UploadedAttachment): string {
-    return att.fileId ? attachmentMediaUrl(att, backendBase()) : att.url;
+    return att.fileId ? attachmentMediaUrl(att, backendBase()) : backendUrl(att.url);
   }
 
   /** Hostname for a search-result row (favicon + domain column). */
