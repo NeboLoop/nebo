@@ -268,8 +268,55 @@ pub(crate) fn coerce_schema_types(input: &mut serde_json::Value, schema: &serde_
             if (wants_object && parsed.is_object()) || (wants_array && parsed.is_array()) {
                 *val = parsed;
             }
+            continue;
+        }
+        // The most common LLM serialization fault: raw control characters
+        // (real newlines/tabs) inside string literals — invalid JSON that
+        // left the value an opaque string and sent models into identical-call
+        // retry spirals. Repair by escaping control chars inside strings.
+        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&escape_control_chars(s)) {
+            if (wants_object && parsed.is_object()) || (wants_array && parsed.is_array()) {
+                *val = parsed;
+            }
         }
     }
+}
+
+/// Escape raw control characters that appear INSIDE string literals of an
+/// almost-JSON document. Leaves structure whitespace untouched.
+pub(crate) fn escape_control_chars(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 16);
+    let mut in_str = false;
+    let mut escaped = false;
+    for c in s.chars() {
+        if in_str {
+            if escaped {
+                out.push(c);
+                escaped = false;
+                continue;
+            }
+            match c {
+                '\\' => {
+                    out.push(c);
+                    escaped = true;
+                }
+                '"' => {
+                    out.push(c);
+                    in_str = false;
+                }
+                '\n' => out.push_str("\\n"),
+                '\r' => out.push_str("\\r"),
+                '\t' => out.push_str("\\t"),
+                _ => out.push(c),
+            }
+        } else {
+            if c == '"' {
+                in_str = true;
+            }
+            out.push(c);
+        }
+    }
+    out
 }
 
 /// Canonical MCP tool execution: proactive token refresh, call via the bridge, and a
@@ -476,7 +523,26 @@ mod neboai_token_tests {
 
 #[cfg(test)]
 mod coerce_tests {
-    use super::coerce_schema_types;
+    use super::{coerce_schema_types, escape_control_chars};
+
+    // The exact spiral from the field: `tasks` as a string whose prompt values
+    // contain REAL newlines — invalid JSON the silent coercion used to skip.
+    #[test]
+    fn repairs_raw_newlines_inside_string_literals() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": { "tasks": { "type": "array" } }
+        });
+        let mut input = serde_json::json!({
+            "tasks": "\n[{\"prompt\": \"line one\nline two\"}]"
+        });
+        coerce_schema_types(&mut input, &schema);
+        assert!(input["tasks"].is_array(), "repaired string must coerce to array");
+        assert_eq!(input["tasks"][0]["prompt"], "line one\nline two");
+        // structure whitespace stays untouched; escapes inside strings survive
+        let fixed = escape_control_chars("{\"a\": \"x\\ny\"}");
+        assert_eq!(fixed, "{\"a\": \"x\\ny\"}");
+    }
     use serde_json::json;
 
     #[test]

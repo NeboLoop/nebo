@@ -801,11 +801,26 @@ impl AgentTool {
             "spawn_parallel" => {
                 let tasks = match input["tasks"].as_array() {
                     Some(arr) => arr,
-                    None => return ToolResult::error(errors::missing_param(
-                        "spawn_parallel",
-                        "tasks",
-                        "agent(resource: \"task\", action: \"spawn_parallel\", tasks: [{\"prompt\": \"task 1\"}, {\"prompt\": \"task 2\"}])",
-                    )),
+                    None => {
+                        // Name the ACTUAL fault. "missing tasks" against a call
+                        // that visibly contains tasks sent models into
+                        // identical-retry spirals until the backstop killed
+                        // the turn.
+                        if let Some(s) = input["tasks"].as_str() {
+                            let parse_err = serde_json::from_str::<serde_json::Value>(s)
+                                .err()
+                                .map(|e| e.to_string())
+                                .unwrap_or_else(|| "not a JSON array".into());
+                            return ToolResult::error(format!(
+                                "`tasks` arrived as a STRING that is not valid JSON ({parse_err}).                                  Send `tasks` as a real JSON array — not a quoted string — and make                                  sure newlines inside prompt text are escaped as \\n.                                  Example: tasks: [{{\"prompt\": \"task 1\"}}, {{\"prompt\": \"task 2\"}}]"
+                            ));
+                        }
+                        return ToolResult::error(errors::missing_param(
+                            "spawn_parallel",
+                            "tasks",
+                            "agent(resource: \"task\", action: \"spawn_parallel\", tasks: [{\"prompt\": \"task 1\"}, {\"prompt\": \"task 2\"}])",
+                        ));
+                    }
                 };
 
                 if tasks.is_empty() {
