@@ -379,6 +379,19 @@ fn notify_updates_available(state: &AppState) {
                     "readAt": null,
                 }),
             );
+            // Mirror to the owner's web inbox (informational — no action
+            // buttons; applying an update stays a bot-UI decision). The hub
+            // upsert on the id keeps the every-check re-push idempotent.
+            crate::codes::push_inbox(
+                state,
+                serde_json::json!({
+                    "id": notif_id,
+                    "type": "info",
+                    "title": title,
+                    "body": body,
+                    "link": action_url,
+                }),
+            );
         }
     }
 }

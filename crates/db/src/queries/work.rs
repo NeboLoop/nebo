@@ -33,6 +33,24 @@ pub struct WorkDocumentVersion {
     pub created_at: i64,
 }
 
+/// One row of the account-wide document index: the container joined with its
+/// latest version and the owning chat's title/session (for agent attribution).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkDocumentListing {
+    pub id: String,
+    pub chat_id: String,
+    pub filename: String,
+    pub kind: String,
+    pub latest_version: i64,
+    pub url: String,
+    pub content_type: Option<String>,
+    pub chat_title: Option<String>,
+    pub session_name: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
 fn row_to_document(row: &rusqlite::Row) -> rusqlite::Result<WorkDocument> {
     Ok(WorkDocument {
         id: row.get("id")?,
@@ -213,6 +231,51 @@ impl Store {
         Ok(version)
     }
 
+    /// The account-wide document index, newest first: every work document with
+    /// its latest version's URL and the owning chat's title/session. This is
+    /// the read side the Library pulls through the tunnel — the Work panel is
+    /// a per-thread view; this is the only cross-chat list.
+    pub fn list_work_documents(
+        &self,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<WorkDocumentListing>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT d.id, d.chat_id, d.filename, d.kind, d.latest_version,
+                        v.url, v.content_type,
+                        c.title AS chat_title, c.session_name,
+                        d.created_at, d.updated_at
+                 FROM work_documents d
+                 JOIN work_document_versions v
+                   ON v.document_id = d.id AND v.version_number = d.latest_version
+                 LEFT JOIN chats c ON c.id = d.chat_id
+                 ORDER BY d.updated_at DESC
+                 LIMIT ?1 OFFSET ?2",
+            )
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map(params![limit, offset], |row| {
+                Ok(WorkDocumentListing {
+                    id: row.get("id")?,
+                    chat_id: row.get("chat_id")?,
+                    filename: row.get("filename")?,
+                    kind: row.get("kind")?,
+                    latest_version: row.get("latest_version")?,
+                    url: row.get("url")?,
+                    content_type: row.get("content_type")?,
+                    chat_title: row.get("chat_title")?,
+                    session_name: row.get("session_name")?,
+                    created_at: row.get("created_at")?,
+                    updated_at: row.get("updated_at")?,
+                })
+            })
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
     /// Register a content-addressed blob (idempotent). The bytes themselves live
     /// on disk at <data_dir>/files/work/blobs/<hash>.<ext>; this is the registry
     /// many versions dedup against.
@@ -323,5 +386,42 @@ mod tests {
         assert_eq!(restored.url, v1.url);
         assert_eq!(restored.content_hash.as_deref(), Some("hashA"));
         assert_eq!(restored.parent_version_id.as_deref(), Some(v2.id.as_str()));
+    }
+
+    #[test]
+    fn test_list_work_documents_index() {
+        let store = temp_store();
+        store.create_chat("c1", "Alpha chat").unwrap();
+        store.create_chat("c2", "Beta chat").unwrap();
+
+        let d1 = store.upsert_work_document("c1", "report.md", "document").unwrap();
+        store
+            .add_work_version(&d1.id, None, "/api/v1/files/work/blobs/a.md", Some("hA"), Some("text/markdown"), None)
+            .unwrap();
+        let d2 = store.upsert_work_document("c2", "data.csv", "table").unwrap();
+        store
+            .add_work_version(&d2.id, None, "/api/v1/files/work/blobs/b.csv", Some("hB"), Some("text/csv"), None)
+            .unwrap();
+        store
+            .add_work_version(&d2.id, None, "/api/v1/files/work/blobs/c.csv", Some("hC"), Some("text/csv"), None)
+            .unwrap();
+
+        let all = store.list_work_documents(50, 0).unwrap();
+        assert_eq!(all.len(), 2);
+        // Each row carries the LATEST version's url + the chat title.
+        let row2 = all.iter().find(|r| r.id == d2.id).unwrap();
+        assert_eq!(row2.latest_version, 2);
+        assert_eq!(row2.url, "/api/v1/files/work/blobs/c.csv");
+        assert_eq!(row2.chat_title.as_deref(), Some("Beta chat"));
+        let row1 = all.iter().find(|r| r.id == d1.id).unwrap();
+        assert_eq!(row1.url, "/api/v1/files/work/blobs/a.md");
+
+        // Pagination applies.
+        assert_eq!(store.list_work_documents(1, 0).unwrap().len(), 1);
+        assert_eq!(store.list_work_documents(50, 2).unwrap().len(), 0);
+
+        // A container with no versions yet never appears (JOIN, not LEFT).
+        store.upsert_work_document("c1", "empty.md", "document").unwrap();
+        assert_eq!(store.list_work_documents(50, 0).unwrap().len(), 2);
     }
 }

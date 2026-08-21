@@ -1393,6 +1393,24 @@ pub(crate) async fn reconcile_app_fields(state: &AppState) {
                 .and_then(|w| serde_json::to_string(w).ok())
                 .as_deref(),
         );
+        // Mirror the app into the owner's web library. Idempotent (hub
+        // upserts on the id) and re-run from every install path + boot, so
+        // the mirror self-heals with no per-event bookkeeping.
+        let title = loaded
+            .app_window_config
+            .as_ref()
+            .and_then(|w| w.title.clone())
+            .unwrap_or_else(|| loaded.agent_def.name.clone());
+        push_artifact(
+            state,
+            serde_json::json!({
+                "id": format!("app:{}", id),
+                "kind": "app",
+                "title": title,
+                "description": loaded.agent_def.description,
+                "openPath": format!("/apps/{}/ui/", id),
+            }),
+        );
     }
 }
 
@@ -1773,8 +1791,13 @@ fn host_label() -> String {
 }
 
 pub(crate) fn neboai_token(state: &AppState) -> Option<String> {
-    let profiles = state
-        .store
+    neboai_token_from(&state.store)
+}
+
+/// Store-level variant for callers without an AppState (workflow manager).
+/// Honors the rotated-token cache — the DB copy goes stale after rotation.
+pub(crate) fn neboai_token_from(store: &db::Store) -> Option<String> {
+    let profiles = store
         .list_all_active_auth_profiles_by_provider("neboai")
         .unwrap_or_default();
     let mut token = profiles.first().map(|p| p.api_key.clone())?;
@@ -1792,6 +1815,56 @@ pub(crate) fn neboai_token(state: &AppState) -> Option<String> {
         }
     }
     Some(token)
+}
+
+/// Fire-and-forget push of a durable inbox item (or a `resolved: true` delta)
+/// to the owner's unified inbox at neboai.com/app. Uses `neboai_token()` —
+/// rotated-cache aware, unlike `build_api_client` whose DB token goes stale
+/// after rotation — and spawns so a hub outage never blocks or breaks local
+/// notification creation. Silently a no-op when not connected to NeboAI.
+pub(crate) fn push_inbox(state: &AppState, item: serde_json::Value) {
+    push_inbox_via(&state.store, &state.config.neboai.api_url, item);
+}
+
+/// Store-level variant for callers without an AppState (workflow manager).
+pub(crate) fn push_inbox_via(store: &db::Store, api_url: &str, item: serde_json::Value) {
+    let Some(bot_id) = config::read_bot_id() else {
+        return;
+    };
+    let Some(token) = neboai_token_from(store) else {
+        return;
+    };
+    let api_server = api_url.to_string();
+    tokio::spawn(async move {
+        let api = NeboAIApi::new(api_server, bot_id, token);
+        if let Err(e) = api.push_inbox_item(&item).await {
+            debug!(error = %e, "owner inbox push failed (best-effort)");
+        }
+    });
+}
+
+/// Fire-and-forget registration of a produced thing (document version, app)
+/// in the owner's library at neboai.com/app. Same trust and failure model as
+/// [`push_inbox`].
+pub(crate) fn push_artifact(state: &AppState, artifact: serde_json::Value) {
+    push_artifact_via(&state.store, &state.config.neboai.api_url, artifact);
+}
+
+/// Store-level variant for callers without an AppState (chat dispatch).
+pub(crate) fn push_artifact_via(store: &db::Store, api_url: &str, artifact: serde_json::Value) {
+    let Some(bot_id) = config::read_bot_id() else {
+        return;
+    };
+    let Some(token) = neboai_token_from(store) else {
+        return;
+    };
+    let api_server = api_url.to_string();
+    tokio::spawn(async move {
+        let api = NeboAIApi::new(api_server, bot_id, token);
+        if let Err(e) = api.push_owner_artifact(&artifact).await {
+            debug!(error = %e, "owner artifact push failed (best-effort)");
+        }
+    });
 }
 
 /// Activate the NeboAI connection using stored credentials.
@@ -1928,10 +2001,49 @@ pub async fn activate_neboai(state: &AppState) -> Result<(), NeboError> {
             if let Err(e) = refresh_license_keys(&st).await {
                 warn!(error = %e, "license key refresh failed");
             }
+            // Backfill the owner's web inbox with any still-parked approvals —
+            // pushes are best-effort, so reconnect is the reconcile point. The
+            // upsert is idempotent on the item id.
+            reconcile_owner_inbox(&st);
         });
     }
 
     Ok(())
+}
+
+/// Re-push every parked workflow approval to the owner's web inbox. Called on
+/// NeboAI connect; idempotent (the hub upserts on the item id), so a missed
+/// best-effort push heals here.
+pub(crate) fn reconcile_owner_inbox(state: &AppState) {
+    let suspensions = match state.store.list_workflow_suspensions() {
+        Ok(s) => s,
+        Err(e) => {
+            warn!(error = %e, "owner inbox reconcile: failed to list suspensions");
+            return;
+        }
+    };
+    for (run_id, agent_id, binding_name, display) in suspensions {
+        let approval_path = format!("/api/v1/agents/workflow-runs/{}/approval", run_id);
+        push_inbox(
+            state,
+            serde_json::json!({
+                "id": format!("wf-approval:{}", run_id),
+                "type": "approval",
+                "title": format!("{} needs your approval", binding_name),
+                "body": display,
+                "link": format!("/{}/runs/{}", agent_id, run_id),
+                "actions": {
+                    "buttons": [
+                        {"label": "Approve", "style": "primary", "method": "POST",
+                         "path": approval_path, "body": {"approved": true}},
+                        {"label": "Deny", "style": "danger", "method": "POST",
+                         "path": approval_path, "body": {"approved": false}},
+                    ],
+                    "status": {"method": "GET", "path": approval_path},
+                },
+            }),
+        );
+    }
 }
 
 /// Sync the bot's display name to NeboAI from the local agent profile.

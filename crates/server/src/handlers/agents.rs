@@ -3825,6 +3825,12 @@ pub async fn resolve_workflow_approval(
             "workflow_run_denied",
             serde_json::json!({ "runId": run_id, "agentId": agent_id }),
         );
+        // Resolved-delta: clear the mirror row in the owner's web inbox no
+        // matter which surface denied.
+        crate::codes::push_inbox(
+            &state,
+            serde_json::json!({ "id": format!("wf-approval:{}", run_id), "resolved": true }),
+        );
         return Ok(Json(serde_json::json!({ "status": "denied" })));
     }
 
@@ -3885,6 +3891,12 @@ pub async fn resolve_workflow_approval(
         .map_err(|e| to_error_response(types::NeboError::Internal(e)))?;
 
     info!(run_id, resumed, agent_id, "workflow approval accepted — resuming parked run");
+    // Resolved-delta: clear the mirror row in the owner's web inbox no matter
+    // which surface approved.
+    crate::codes::push_inbox(
+        &state,
+        serde_json::json!({ "id": format!("wf-approval:{}", run_id), "resolved": true }),
+    );
     Ok(Json(serde_json::json!({ "status": "approved", "runId": resumed })))
 }
 
@@ -3977,6 +3989,10 @@ pub async fn resolve_learning(
             "learning_resolved",
             serde_json::json!({ "id": id, "status": "rejected", "agentId": row.agent_id }),
         );
+        crate::codes::push_inbox(
+            &state,
+            serde_json::json!({ "id": format!("learn:{}", id), "resolved": true }),
+        );
         return Ok(Json(serde_json::json!({ "status": "rejected" })));
     }
 
@@ -3993,6 +4009,10 @@ pub async fn resolve_learning(
                 "learning_resolved",
                 serde_json::json!({ "id": id, "status": "conflict", "agentId": row.agent_id }),
             );
+        crate::codes::push_inbox(
+            &state,
+            serde_json::json!({ "id": format!("learn:{}", id), "resolved": true }),
+        );
             return Ok(Json(serde_json::json!({
                 "status": "conflict",
                 "message": "The workflow changed after this was proposed; the proposal was discarded rather than overwriting it."
@@ -4013,6 +4033,10 @@ pub async fn resolve_learning(
         state.hub.broadcast(
             "learning_resolved",
             serde_json::json!({ "id": id, "status": "approved", "agentId": row.agent_id }),
+        );
+        crate::codes::push_inbox(
+            &state,
+            serde_json::json!({ "id": format!("learn:{}", id), "resolved": true }),
         );
         info!(id, agent_id = %row.agent_id, binding = %row.target, "workflow tuning proposal approved and applied");
         return Ok(Json(serde_json::json!({ "status": "approved" })));
@@ -4040,6 +4064,10 @@ pub async fn resolve_learning(
         state.hub.broadcast(
             "learning_resolved",
             serde_json::json!({ "id": id, "status": "conflict", "agentId": row.agent_id }),
+        );
+        crate::codes::push_inbox(
+            &state,
+            serde_json::json!({ "id": format!("learn:{}", id), "resolved": true }),
         );
         return Ok(Json(serde_json::json!({
             "status": "conflict",
@@ -4080,6 +4108,10 @@ pub async fn resolve_learning(
         "learning_resolved",
         serde_json::json!({ "id": id, "status": "approved", "agentId": row.agent_id }),
     );
+        crate::codes::push_inbox(
+            &state,
+            serde_json::json!({ "id": format!("learn:{}", id), "resolved": true }),
+        );
     info!(id, agent_id = %row.agent_id, target = %row.target, action = %row.action, "learning approved and applied");
     Ok(Json(serde_json::json!({ "status": "approved" })))
 }

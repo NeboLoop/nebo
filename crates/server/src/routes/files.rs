@@ -27,6 +27,10 @@ pub fn routes() -> Router<AppState> {
             axum::routing::get(handlers::files::serve_file),
         )
         .route(
+            "/work/documents",
+            axum::routing::get(handlers::files::list_work_documents),
+        )
+        .route(
             "/comm-files/{id}",
             axum::routing::get(handlers::files::serve_comm_file),
         )

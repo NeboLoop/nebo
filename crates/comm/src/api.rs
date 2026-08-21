@@ -1085,6 +1085,26 @@ impl NeboAIApi {
             .await
     }
 
+    /// Push a durable inbox item (or a resolved-delta with `resolved: true`)
+    /// to the owner's unified inbox at neboai.com/app. Idempotent hub-side on
+    /// the item's `id`. Callers fire-and-forget: a hub outage must never break
+    /// local notification creation.
+    pub async fn push_inbox_item(&self, item: &serde_json::Value) -> Result<(), CommError> {
+        self.do_void(reqwest::Method::POST, "/api/v1/bots/self/inbox", Some(item))
+            .await
+    }
+
+    /// Register a produced thing (document version stream, app) in the
+    /// owner's library at neboai.com/app. Idempotent hub-side on `id`.
+    pub async fn push_owner_artifact(&self, artifact: &serde_json::Value) -> Result<(), CommError> {
+        self.do_void(
+            reqwest::Method::POST,
+            "/api/v1/bots/self/artifacts",
+            Some(artifact),
+        )
+        .await
+    }
+
     pub async fn referral_code(&self) -> Result<serde_json::Value, CommError> {
         self.do_json(
             reqwest::Method::GET,
