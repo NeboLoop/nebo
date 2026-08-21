@@ -552,6 +552,10 @@ struct RunState {
     total_input_tokens: i32,
     /// Cumulative output tokens across all iterations in this run.
     total_output_tokens: i32,
+    /// Cumulative cache tokens. Read for calibration since forever but never
+    /// kept — and cache reads are most of a long conversation's bill.
+    total_cache_read_tokens: i32,
+    total_cache_creation_tokens: i32,
     thresholds: Option<ContextThresholds>,
     /// Janus quota warning string, populated when session or weekly usage exceeds 80%.
     quota_warning: Option<String>,
@@ -569,6 +573,8 @@ impl RunState {
             estimate_correction: 0,
             total_input_tokens: 0,
             total_output_tokens: 0,
+            total_cache_read_tokens: 0,
+            total_cache_creation_tokens: 0,
             thresholds: None,
             quota_warning: None,
             quota_warning_sent: false,
@@ -3370,6 +3376,8 @@ async fn run_loop(
                         state.last_input_tokens = usage.input_tokens as usize;
                         state.total_input_tokens += usage.input_tokens;
                         state.total_output_tokens += usage.output_tokens;
+                        state.total_cache_read_tokens += usage.cache_read_input_tokens;
+                        state.total_cache_creation_tokens += usage.cache_creation_input_tokens;
                         usage.overhead_tokens = state.system_overhead_tokens as i32;
 
                         // Calibrate the local token estimate against ground truth.
@@ -5578,7 +5586,100 @@ async fn run_loop(
         crate::memory_flush::track_extraction(handle).await;
     }
 
+    // The run becomes a record: what it cost, and (later, per role) what it
+    // achieved. This is the ONE write point — chat, workflow and heartbeat
+    // runs all pass through this loop, so persisting here covers every run
+    // type without a second writer per caller. Best-effort like the timeline:
+    // a failed insert is logged loudly, never allowed to fail a finished run.
+    // (Runs that end in an error return earlier and are not yet recorded —
+    // their cost is real, and wiring the error exits is deliberate follow-up
+    // rather than a silent partial number today.)
+    record_run_usage(
+        store,
+        selector,
+        agent_id,
+        session_id,
+        &last_model_name,
+        &state,
+    );
+
     Ok(())
+}
+
+/// Persists the finished run's usage. Cost is computed from models.yaml
+/// pricing at write time; a model with no pricing records zero rather than a
+/// wrong number — a silently invented figure is worse than a visibly missing
+/// one, because this number ends up on an invoice.
+fn record_run_usage(
+    store: &Arc<Store>,
+    selector: &ModelSelector,
+    agent_id: &str,
+    session_id: &str,
+    model_name: &str,
+    state: &RunState,
+) {
+    if state.total_input_tokens == 0 && state.total_output_tokens == 0 {
+        // Nothing was spent — a run that never reached a provider (immediate
+        // cancellation, empty prompt) has no cost to record.
+        return;
+    }
+
+    let (run_type, run_id) = classify_run(session_id);
+
+    let mut cost: i64 = 0;
+    if let Some(info) = selector.get_model_info(model_name) {
+        cost = db::cost_microcents(
+            state.total_input_tokens as i64,
+            state.total_output_tokens as i64,
+            state.total_cache_read_tokens as i64,
+            state.total_cache_creation_tokens as i64,
+            info.input_price,
+            info.output_price,
+            info.cached_input_price,
+        );
+    }
+
+    let entry = db::models::RunUsageEntry {
+        agent_id: agent_id.to_string(),
+        session_key: Some(session_id.to_string()),
+        run_id,
+        run_type: run_type.to_string(),
+        model_id: model_name.to_string(),
+        input_tokens: state.total_input_tokens as i64,
+        output_tokens: state.total_output_tokens as i64,
+        cache_read_tokens: state.total_cache_read_tokens as i64,
+        cache_creation_tokens: state.total_cache_creation_tokens as i64,
+        cost_microcents: cost,
+        outcome: None,
+    };
+    if let Err(e) = store.record_run_usage(&entry) {
+        // Loudly: this row is money. But the work is already done, and
+        // failing a finished run over its receipt would be worse.
+        tracing::error!(session_id, error = %e, "failed to record run usage");
+    }
+}
+
+/// classify_run derives what kind of run a session key names, and for the
+/// canonical workflow form, which workflow run it was — the join that lets
+/// "what did this workflow cost" be answered at all.
+fn classify_run(session_id: &str) -> (&'static str, Option<String>) {
+    if session_id.starts_with("heartbeat-") {
+        return ("heartbeat", None);
+    }
+    if let Some(idx) = session_id.find(":workflow:") {
+        let run_id = &session_id[idx + ":workflow:".len()..];
+        if !run_id.is_empty() {
+            return ("workflow", Some(run_id.to_string()));
+        }
+        return ("workflow", None);
+    }
+    // The engine's legacy key ("workflow-{def}-{run}") is ambiguous — both
+    // segments may contain hyphens — so it classifies without a join rather
+    // than guessing a wrong id into a money table.
+    if session_id.starts_with("workflow-") {
+        return ("workflow", None);
+    }
+    ("chat", None)
 }
 
 /// Load workspace context from `.nebo.md` or `NEBO.md`.
@@ -6696,6 +6797,25 @@ mod tests {
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].role, "user");
         assert_eq!(result[1].role, "assistant");
+    }
+
+    // classify_run feeds a money table: a wrong run_id joins someone's cost
+    // to the wrong workflow, so the parse gets a check rather than a comment.
+    #[test]
+    fn classify_run_reads_every_session_key_shape() {
+        // Canonical workflow key carries the run id for the cost join.
+        assert_eq!(
+            classify_run("agent:abc:workflow:run-123-xyz"),
+            ("workflow", Some("run-123-xyz".to_string()))
+        );
+        // The legacy engine key is ambiguous (both segments may contain
+        // hyphens) — classified, but never a guessed id in a money table.
+        assert_eq!(classify_run("workflow-def-1-run-2"), ("workflow", None));
+        assert_eq!(classify_run("heartbeat-agent-42"), ("heartbeat", None));
+        assert_eq!(classify_run("agent:abc:desktop"), ("chat", None));
+        assert_eq!(classify_run("subagent:parent:child"), ("chat", None));
+        // A truncated workflow key must not record an empty-string id.
+        assert_eq!(classify_run("agent:abc:workflow:"), ("workflow", None));
     }
 }
 

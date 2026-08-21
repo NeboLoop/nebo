@@ -43,6 +43,10 @@ pub struct ModelInfo {
     pub context_window: i32,
     pub input_price: f64,
     pub output_price: f64,
+    /// $/M for cache reads. Distinct from input_price on purpose: billing
+    /// cache reads at the input rate would overbill every long conversation,
+    /// which is most of them.
+    pub cached_input_price: f64,
     pub capabilities: Vec<String>,
     pub kind: Vec<String>,
     pub preferred: bool,
@@ -83,9 +87,9 @@ impl ModelRoutingConfig {
             let infos: Vec<ModelInfo> = models
                 .iter()
                 .map(|m| {
-                    let (input_price, output_price) = match &m.pricing {
-                        Some(p) => (p.input, p.output),
-                        None => (0.0, 0.0),
+                    let (input_price, output_price, cached_input_price) = match &m.pricing {
+                        Some(p) => (p.input, p.output, p.cached_input),
+                        None => (0.0, 0.0, 0.0),
                     };
                     let override_key = format!("{}/{}", provider_name, m.id);
                     ModelInfo {
@@ -94,6 +98,7 @@ impl ModelRoutingConfig {
                         context_window: m.context_window as i32,
                         input_price,
                         output_price,
+                        cached_input_price,
                         capabilities: m.capabilities.clone(),
                         kind: m.kind.clone(),
                         preferred: m.preferred,
@@ -650,6 +655,7 @@ mod tests {
                 context_window: 200000,
                 input_price: 3.0,
                 output_price: 15.0,
+                cached_input_price: 0.0,
                 capabilities: vec![],
                 kind: vec![],
                 preferred: true,
@@ -664,6 +670,7 @@ mod tests {
                 context_window: 128000,
                 input_price: 5.0,
                 output_price: 15.0,
+                cached_input_price: 0.0,
                 capabilities: vec![],
                 kind: vec![],
                 preferred: false,
@@ -724,6 +731,7 @@ mod tests {
                 context_window: 200000,
                 input_price: 0.0,
                 output_price: 0.0,
+                cached_input_price: 0.0,
                 capabilities: vec![],
                 kind: vec![],
                 preferred: true,
@@ -738,6 +746,7 @@ mod tests {
                 context_window: 200000,
                 input_price: 3.0,
                 output_price: 15.0,
+                cached_input_price: 0.0,
                 capabilities: vec![],
                 kind: vec![],
                 preferred: true,
