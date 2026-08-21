@@ -161,7 +161,7 @@ pub async fn ensure_started() -> Result<u16, String> {
     // windows. Compositor off: no GPU under Xvfb, and x11vnc reads the
     // plain framebuffer anyway.
     let session = nice("dbus-run-session")
-        .args(["--", "sh", "-c", "xfwm4 --compositor=off & exec xfce4-panel"])
+        .args(["--", "sh", "-c", "xsetroot -solid '#101726' 2>/dev/null; xfwm4 --compositor=off & exec xfce4-panel"])
         .env("DISPLAY", DISPLAY)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())

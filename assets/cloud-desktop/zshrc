@@ -1,0 +1,8 @@
+# Default shell setup for the bot's computer. Seeded into ~/.zshrc by
+# nebo-entry on first boot (the home dir lives on the persistent volume, so
+# anything the owner or bot changes here sticks).
+export ZSH=/usr/share/oh-my-zsh
+ZSH_THEME="robbyrussell"
+ZSH_DISABLE_COMPFIX=true
+plugins=(git)
+source $ZSH/oh-my-zsh.sh

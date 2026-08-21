@@ -12,6 +12,8 @@
 	import RFB from '@novnc/novnc';
 	import { backendWsBase } from '$lib/api/base';
 
+	let { onclose }: { onclose?: () => void } = $props();
+
 	let container: HTMLDivElement | undefined = $state();
 	let status = $state<'connecting' | 'connected' | 'error'>('connecting');
 	let viewOnly = $state(false);
@@ -72,6 +74,16 @@
 		>
 			{viewOnly ? $t('chat.watching') : $t('chat.driving')}
 		</button>
+		{#if onclose}
+			<button
+				type="button"
+				class="btn btn-ghost btn-xs"
+				onclick={onclose}
+				title={$t('chat.closeComputer')}
+			>
+				<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+			</button>
+		{/if}
 	</div>
 	<div class="flex-1 min-h-0 bg-neutral relative">
 		<div bind:this={container} class="absolute inset-0 [&_canvas]:outline-none"></div>

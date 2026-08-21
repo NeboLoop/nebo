@@ -68,17 +68,25 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       build-essential pkg-config \
       jq unzip zip ripgrep less procps sqlite3 \
       ffmpeg \
-      xvfb x11vnc xdotool wmctrl scrot xclip x11-utils xinput dbus-x11 at-spi2-core \
+      xvfb x11vnc xdotool wmctrl scrot xclip x11-utils x11-xserver-utils xinput dbus-x11 at-spi2-core \
       xfwm4 xfce4-panel xfce4-terminal thunar adwaita-icon-theme \
       chromium \
       fonts-dejavu fonts-liberation fonts-noto-color-emoji \
+      zsh \
     && rm -rf /var/lib/apt/lists/* \
-    && useradd -u 1000 -m nebo
+    && git clone --depth=1 https://github.com/ohmyzsh/ohmyzsh.git /usr/share/oh-my-zsh \
+    && useradd -u 1000 -m -s /usr/bin/zsh nebo
 COPY --from=build /src/target/server/nebo-cli /usr/local/bin/nebo-cli
+# The computer's face: a 3-launcher dock (Chromium / Terminal / Files) instead
+# of xfce's placeholder gears, and the default ~/.zshrc oh-my-zsh seed. The
+# panel default applies only until the user customizes (their config lands on
+# the persistent volume and wins).
+COPY assets/cloud-desktop/xfce4-panel.xml /etc/xdg/xfce4/xfconf/xfce-perchannel-xml/xfce4-panel.xml
+COPY assets/cloud-desktop/zshrc /etc/nebo/zshrc
 # $HOME lives on the persistent /data volume so toolchains the agent installs
 # (rustup, Go, nvm, pip --user) survive restarts and consent-update rolls —
 # an ephemeral homedir silently eats them, which reads as "my tools vanished".
-RUN printf '#!/bin/sh\nmkdir -p "$HOME"\nexec nebo-cli serve "$@"\n' \
+RUN printf '#!/bin/sh\nmkdir -p "$HOME"\n[ -f "$HOME/.zshrc" ] || cp /etc/nebo/zshrc "$HOME/.zshrc" 2>/dev/null || true\nexec nebo-cli serve "$@"\n' \
       > /usr/local/bin/nebo-entry && chmod +x /usr/local/bin/nebo-entry
 USER 1000
 # pip installs land in ~/.local (PEP 668 would otherwise refuse outside a venv
