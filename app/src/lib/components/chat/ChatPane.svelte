@@ -2,6 +2,8 @@
   import { t } from 'svelte-i18n';
   import ChatComposer from './ChatComposer.svelte';
   import WorkViewer from './WorkViewer.svelte';
+  import DesktopView from './DesktopView.svelte';
+  import { teachStart, teachStop } from '$lib/api/desktop';
   import ShareArtifactModal from './ShareArtifactModal.svelte';
   import AskWidget from './AskWidget.svelte';
   import type { AskWidgetDef } from './AskWidget.svelte';
@@ -105,6 +107,58 @@
 
   let composerRef = $state<{ focus: () => void; focusAndInsert: (char: string) => void; addFiles: (files: File[]) => void } | null>(null);
   let creationsOpen = $state(false);
+  // The bot's computer takes over the work panel while open.
+  let desktopOpen = $state(false);
+
+  // Teach-a-task: record a demonstration on the bot's computer, then hand
+  // the artifacts to the agent to study (the normal run does the learning —
+  // vision + file + skill tools; a voluntary skill save is the organic
+  // learning pathway).
+  let teachActive = $state(false);
+  let teachError = $state('');
+  let teachSeconds = $state(0);
+  let teachTimer: ReturnType<typeof setInterval> | null = null;
+
+  async function startTeach() {
+    teachError = '';
+    try {
+      await teachStart();
+    } catch (e) {
+      teachError = e instanceof Error ? e.message : String(e);
+      return;
+    }
+    desktopOpen = true;
+    creationsOpen = true;
+    teachActive = true;
+    teachSeconds = 0;
+    teachTimer = setInterval(() => (teachSeconds += 1), 1000);
+  }
+
+  async function stopTeach() {
+    if (teachTimer) { clearInterval(teachTimer); teachTimer = null; }
+    teachActive = false;
+    try {
+      const res = await teachStop();
+      handleSend(
+        `I just demonstrated a task for you on your computer (teach session ${res.sessionId}). ` +
+        `The recording is in ${res.dir}. Start with timeline.md — the reconstructed click-and-keystroke ` +
+        `timeline of exactly what I did — then confirm the visual context by viewing 5-6 spread keyframes ` +
+        `from frames/ (there are ${res.keyframes}; do NOT read them all, and do not use sub-agents). ` +
+        `Then save it as a learned skill with the skill tool — name it after the class of task, write out the ` +
+        `steps you'd follow to repeat it on your computer, and note which inputs varied. Reply with what you ` +
+        `learned, then ask me whether you should run this on a schedule or only when I ask.`,
+        []
+      );
+    } catch (e) {
+      teachError = e instanceof Error ? e.message : String(e);
+    }
+  }
+
+  function fmtTeach(sec: number): string {
+    const m = Math.floor(sec / 60);
+    const s2 = (sec % 60).toString().padStart(2, '0');
+    return `${m}:${s2}`;
+  }
   // Empty = default panel title ($t('chat.work') at render time).
   let creationsTitle = $state('');
   let activeArtifactId = $state<string | null>(null);
@@ -280,6 +334,7 @@
   }
 
   function openArtifact(id: string) {
+    desktopOpen = false;
     activeArtifactId = id;
     activeVersion = null; // follow latest; the version dropdown pins an older one
     viewSource = false;
@@ -382,9 +437,10 @@
   }
 
   /** Loop-uploaded attachments (have a fileId) render through the local
-   *  authenticated proxy; artifact-derived ones keep their local url. */
+   *  authenticated proxy; artifact-derived ones resolve against backendBase()
+   *  so they load through the tunnel's /t/<botID> prefix, not the hub origin. */
   function attSrc(att: UploadedAttachment): string {
-    return att.fileId ? attachmentMediaUrl(att, backendBase()) : att.url;
+    return att.fileId ? attachmentMediaUrl(att, backendBase()) : backendUrl(att.url);
   }
 
   /** Hostname for a search-result row (favicon + domain column). */
@@ -748,8 +804,12 @@
     lastScrollTop = scrollTop;
     showScrollButton = dist > NEAR_BOTTOM_PX;
 
-    // Touch scrolls are user intent by construction (finger on glass).
-    if (touchActive && scrolledUp && dist > NEAR_BOTTOM_PX) {
+    // Any non-programmatic upward scroll is user intent — touch AND wheel.
+    // Wheel-up used to leave follow engaged, so every stream chunk yanked
+    // the reader back to the bottom mid-scroll ("can't scroll up in an
+    // active run"). The programmatic-scroll guard keeps turn-positioning
+    // and prepend-anchoring from tripping this.
+    if ((touchActive || !isProgrammaticScroll()) && scrolledUp && dist > NEAR_BOTTOM_PX) {
       autoScrollEnabled = false;
     } else if (dist <= NEAR_BOTTOM_PX) {
       autoScrollEnabled = true;
@@ -906,11 +966,20 @@
   {#if headerTitle}
     <div class="h-11 px-[18px] border-b border-base-content/10 flex items-center gap-2 shrink-0">
       <span class="text-sm font-semibold truncate min-w-0">{headerTitle}</span>
+      <button
+        class="text-sm ml-auto shrink-0 cursor-pointer bg-transparent border-none text-base-content/70 hover:text-base-content transition-colors flex items-center"
+        onclick={() => { if (desktopOpen && creationsOpen) { desktopOpen = false; creationsOpen = false; } else { desktopOpen = true; creationsOpen = true; } }}
+        title={$t('chat.openComputer')}
+      >
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="{desktopOpen && creationsOpen ? 'text-primary' : ''}">
+          <rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>
+        </svg>
+      </button>
       {#if headerRight}
         <button
           data-tour="work"
-          class="text-sm ml-auto shrink-0 whitespace-nowrap cursor-pointer bg-transparent border-none text-base-content/70 hover:text-base-content transition-colors flex items-center gap-1.5"
-          onclick={() => creationsOpen ? (creationsOpen = false) : openWorkPanel()}
+          class="text-sm shrink-0 whitespace-nowrap cursor-pointer bg-transparent border-none text-base-content/70 hover:text-base-content transition-colors flex items-center gap-1.5"
+          onclick={() => { if (creationsOpen && !desktopOpen) { creationsOpen = false; } else { desktopOpen = false; openWorkPanel(); } }}
           title={creationsOpen ? $t('chat.closeWorkPanel') : $t('chat.openWorkPanel')}
         >
           {headerRight}
@@ -1397,6 +1466,25 @@
     </div>
   {/if}
 
+  <!-- Teach-a-task record bar -->
+  {#if teachActive || teachError}
+    <div class="max-w-3xl mx-auto w-full shrink-0 mb-2">
+      <div class="flex items-center gap-2.5 rounded-lg px-3 py-2 {teachError ? 'bg-error/10 text-error' : 'bg-error/10'}">
+        {#if teachActive}
+          <span class="w-2 h-2 rounded-full bg-error animate-pulse"></span>
+          <span class="text-sm">{$t('chat.watchingAndLearning', { values: { name: agentName } })}</span>
+          <span class="text-xs tabular-nums text-base-content/60">{fmtTeach(teachSeconds)}</span>
+          <button type="button" class="btn btn-error btn-xs ml-auto normal-case" onclick={stopTeach}>
+            {$t('chat.stopRecording')}
+          </button>
+        {:else}
+          <span class="text-sm">{teachError}</span>
+          <button type="button" class="btn btn-ghost btn-xs ml-auto" onclick={() => (teachError = '')}>✕</button>
+        {/if}
+      </div>
+    </div>
+  {/if}
+
   <!-- Composer -->
   <div class="max-w-3xl mx-auto w-full shrink-0">
     <ChatComposer
@@ -1410,6 +1498,7 @@
       {onstop}
       {isLoading}
       {allowAttachments}
+      onteach={startTeach}
       bind:this={composerRef}
     />
   </div>
@@ -1557,7 +1646,7 @@
       </button>
       <button
         class="w-7 h-7 rounded-md flex items-center justify-center hover:bg-base-200 cursor-pointer bg-transparent border-none text-base-content/70 hover:text-base-content transition-colors shrink-0"
-        onclick={() => { creationsOpen = false; workFull = false; }}
+        onclick={() => { creationsOpen = false; workFull = false; desktopOpen = false; }}
         title={$t('chat.closeWorkPanel')}
       >
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
@@ -1565,7 +1654,9 @@
     </div>
     <!-- Creations content — one renderer for every format, routed by extension -->
     <div class="flex-1 overflow-y-auto">
-      {#if activeArtifact?.url}
+      {#if desktopOpen}
+        <DesktopView onclose={() => { desktopOpen = false; creationsOpen = false; workFull = false; }} onrecord={() => (teachActive ? stopTeach() : startTeach())} recording={teachActive} />
+      {:else if activeArtifact?.url}
         <!-- Key on documentId:version so a new version re-mounts the viewer in
              place (and the version-specific URL also defeats the browser cache). -->
         {#key `${activeArtifact.documentId}:${activeArtifact.version}:${viewSource}`}

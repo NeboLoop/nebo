@@ -22,13 +22,27 @@ use db;
 
 /// Validate the per-app auth token from the `Authorization: Bearer <token>` header.
 ///
-/// Returns Ok(()) if the token matches the running app's token.
+/// Returns Ok(()) if the token matches the running app's token, or if the
+/// request arrived through the bot's own tunnel (`X-Nebo-Tunnel-Auth` stamped
+/// by comm::tunnel with a per-boot process-local secret): the hub already
+/// owner-authenticated it, so an app UI opened at /t/<botID>/apps/… may invoke
+/// without holding the sidecar's NEBO_APP_TOKEN. A drive-by page can't forge
+/// the stamp — the secret never leaves this process, and the tunnel strips
+/// inbound copies.
 /// Returns 401 if the token is missing/invalid, or if the app has no running lifecycle.
 async fn validate_app_token(
     state: &AppState,
     agent_id: &str,
     headers: &axum::http::HeaderMap,
 ) -> Result<(), Response> {
+    if headers
+        .get("x-nebo-tunnel-auth")
+        .and_then(|v| v.to_str().ok())
+        == Some(comm::tunnel::tunnel_auth_secret())
+    {
+        return Ok(());
+    }
+
     let token = headers
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
@@ -206,6 +220,18 @@ async fn serve_app_ui_inner(state: &AppState, agent_id: &str, path: &str) -> Res
             let mime = mime_from_path(&target);
             let is_entry = matches!(target.file_name().and_then(|n| n.to_str()), Some("index.html" | "200.html"));
 
+            // Entry HTML gets the SDK's documented meta-tag escape hatches
+            // (nebo-app-id / nebo-base-url), mirroring Tauri's neboapp_bridge
+            // for the HTTP path. The prefix (e.g. /t/<botID> through the
+            // tunnel) is only knowable in the browser, so a head-first inline
+            // script derives both from location before the SDK loads. Apps
+            // that ship their own meta tags win — the script only fills gaps.
+            let contents = if is_entry {
+                inject_app_bridge(contents)
+            } else {
+                contents
+            };
+
             let mut response = Response::new(Body::from(contents));
             response.headers_mut().insert(
                 header::CONTENT_TYPE,
@@ -227,12 +253,41 @@ async fn serve_app_ui_inner(state: &AppState, agent_id: &str, path: &str) -> Res
     }
 }
 
+/// Prepend the app-bridge script to served entry HTML (after `<head>` when
+/// present, else at the top). It appends the SDK's `nebo-app-id` /
+/// `nebo-base-url` meta tags computed from the page's own location, which is
+/// the only place the public prefix (`/t/<botID>` through the tunnel, nothing
+/// on desktop) is knowable. Skips tags the app already declares.
+fn inject_app_bridge(contents: Vec<u8>) -> Vec<u8> {
+    const BRIDGE: &str = r#"<script data-nebo-bridge>(function(){var m=location.pathname.match(/^(.*?)\/apps\/([^/]+)\/ui(?:\/|$)/);if(!m)return;function add(n,c){if(document.querySelector('meta[name="'+n+'"]'))return;var e=document.createElement('meta');e.setAttribute('name',n);e.setAttribute('content',c);document.head.appendChild(e);}add('nebo-app-id',decodeURIComponent(m[2]));add('nebo-base-url',location.origin+m[1]);})();</script>"#;
+    let html = match String::from_utf8(contents) {
+        Ok(h) => h,
+        Err(e) => return e.into_bytes(), // non-UTF-8: serve verbatim
+    };
+    let lower = html.to_ascii_lowercase();
+    let out = if let Some(idx) = lower.find("<head>") {
+        let at = idx + "<head>".len();
+        format!("{}{}{}", &html[..at], BRIDGE, &html[at..])
+    } else {
+        format!("{}{}", BRIDGE, html)
+    };
+    out.into_bytes()
+}
+
 /// GET /sdk/nebo.global.js — serve the app SDK IIFE build for vanilla/HTMX apps.
 pub async fn serve_sdk_iife() -> Response {
+    // Dev freshness first (live node_modules on a source checkout), then the
+    // copy embedded with the SPA (app/static/sdk/ → build/sdk/) — the ONLY
+    // form that exists in the shipped image; the node_modules path 404'd on
+    // every cloud bot.
     let path =
         StdPath::new(env!("CARGO_MANIFEST_DIR")).join("../../app/node_modules/@neboai/app-sdk/dist/nebo.global.js");
-    match fs::read(&path).await {
-        Ok(contents) => {
+    let contents: Option<Vec<u8>> = match fs::read(&path).await {
+        Ok(c) => Some(c),
+        Err(_) => crate::spa::embedded_asset("sdk/nebo.global.js").map(|f| f.data.into_owned()),
+    };
+    match contents {
+        Some(contents) => {
             let mut response = Response::new(Body::from(contents));
             response.headers_mut().insert(
                 header::CONTENT_TYPE,
@@ -244,7 +299,7 @@ pub async fn serve_sdk_iife() -> Response {
             );
             response
         }
-        Err(_) => StatusCode::NOT_FOUND.into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
     }
 }
 

@@ -8,9 +8,25 @@ use crate::VERSION;
 #[folder = "../../app/build/"]
 struct Frontend;
 
+/// Raw embedded-asset lookup for handlers outside the SPA route (the app-SDK
+/// IIFE ships in build/sdk/ via app/static/).
+pub fn embedded_asset(path: &str) -> Option<rust_embed::EmbeddedFile> {
+    Frontend::get(path)
+}
+
 /// Serve SPA assets with fallback to index.html for client-side routing.
 pub async fn spa_handler(uri: Uri) -> Response {
     let path = uri.path().trim_start_matches('/');
+
+    // App windows opened at the trailing-slash form land here because the
+    // router can never match "/apps/{id}/ui/" (empty trailing segment) — and
+    // old client bundles keep opening exactly that URL long after the
+    // launcher was fixed. A RELATIVE redirect resolves correctly on desktop
+    // and under the tunnel's /t/<botID> prefix alike.
+    let segs: Vec<&str> = path.split('/').collect();
+    if segs.len() == 4 && segs[0] == "apps" && segs[2] == "ui" && segs[3].is_empty() {
+        return axum::response::Redirect::temporary("index.html").into_response();
+    }
 
     // Try exact file first
     if let Some(file) = Frontend::get(path) {

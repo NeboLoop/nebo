@@ -987,7 +987,13 @@ impl WorkflowManager for WorkflowManagerImpl {
         &'a self,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
         Box::pin(async move {
-            workflow_tuning_sweep(&self.store, &self.providers, (&self.tools, &self.hub)).await;
+            workflow_tuning_sweep(
+                &self.store,
+                &self.providers,
+                (&self.tools, &self.hub),
+                &self.config.neboai.api_url,
+            )
+            .await;
         })
     }
 
@@ -1233,6 +1239,7 @@ impl WorkflowManager for WorkflowManagerImpl {
             let event_bus = self.event_bus.clone();
             let skill_loader = self.skill_loader.clone();
             let failure_counts = self.failure_counts.clone();
+            let neboai_api_url = self.config.neboai.api_url.clone();
             let run_id_clone = run_id.clone();
             let agent_id_owned = agent_id.to_string();
             let trigger = trigger_type.to_string();
@@ -1517,6 +1524,7 @@ impl WorkflowManager for WorkflowManagerImpl {
                         notify_workflow_approval(
                             &store,
                             &hub,
+                            &neboai_api_url,
                             &agent_id_owned,
                             &run_id_clone,
                             &binding_name,
@@ -1717,6 +1725,7 @@ fn record_failure_should_notify(
 fn notify_workflow_approval(
     store: &db::Store,
     hub: &ClientHub,
+    api_url: &str,
     agent_id: &str,
     run_id: &str,
     binding_name: &str,
@@ -1748,6 +1757,30 @@ fn notify_workflow_approval(
                 "actionUrl": action_url,
                 "agentId": agent_id,
                 "readAt": null,
+            }),
+        );
+        // Mirror to the owner's unified inbox at neboai.com/app. The item is
+        // self-describing: the buttons carry tunnel-relative resolve calls, so
+        // the hub renders and proxies them without learning bot route shapes.
+        let approval_path = format!("/api/v1/agents/workflow-runs/{}/approval", run_id);
+        crate::codes::push_inbox_via(
+            store,
+            api_url,
+            serde_json::json!({
+                "id": notif_id,
+                "type": "approval",
+                "title": title,
+                "body": display,
+                "link": action_url,
+                "actions": {
+                    "buttons": [
+                        {"label": "Approve", "style": "primary", "method": "POST",
+                         "path": approval_path, "body": {"approved": true}},
+                        {"label": "Deny", "style": "danger", "method": "POST",
+                         "path": approval_path, "body": {"approved": false}},
+                    ],
+                    "status": {"method": "GET", "path": approval_path},
+                },
             }),
         );
     }
@@ -2416,6 +2449,7 @@ async fn workflow_tuning_sweep(
     store: &Arc<db::Store>,
     providers: &Arc<RwLock<Vec<Arc<dyn Provider>>>>,
     registry_hub: (&Arc<tools::Registry>, &Arc<ClientHub>),
+    neboai_api_url: &str,
 ) {
     let (_registry, hub) = registry_hub;
     const WEEK_SECS: i64 = 7 * 24 * 3600;
@@ -2597,9 +2631,18 @@ async fn workflow_tuning_sweep(
                         None,
                         Some(&agent.id),
                     );
+                    // Full payload — an {id}-only broadcast used to land as an
+                    // empty row in the Inbox store.
                     hub.broadcast(
                         "notification_created",
-                        serde_json::json!({ "id": format!("learn:{}", pending_id) }),
+                        serde_json::json!({
+                            "id": format!("learn:{}", pending_id),
+                            "type": "info",
+                            "title": format!("{} tuned its own workflow", agent.name),
+                            "body": gist,
+                            "agentId": agent.id,
+                            "readAt": null,
+                        }),
                     );
                     info!(agent = %agent.name, binding, "tuning pass applied edit (auto)");
                 }
@@ -2619,9 +2662,39 @@ async fn workflow_tuning_sweep(
                 None,
                 Some(&agent.id),
             );
+            // Full payload — an {id}-only broadcast used to land as an empty
+            // row in the Inbox store.
             hub.broadcast(
                 "notification_created",
-                serde_json::json!({ "id": format!("learn:{}", pending_id) }),
+                serde_json::json!({
+                    "id": format!("learn:{}", pending_id),
+                    "type": "approval",
+                    "title": format!("{} proposes a workflow change", agent.name),
+                    "body": gist,
+                    "agentId": agent.id,
+                    "readAt": null,
+                }),
+            );
+            // Mirror the staged proposal to the owner's web inbox with its
+            // self-describing resolve contract.
+            let resolve_path = format!("/api/v1/agents/learnings/{}/resolve", pending_id);
+            crate::codes::push_inbox_via(
+                store,
+                neboai_api_url,
+                serde_json::json!({
+                    "id": format!("learn:{}", pending_id),
+                    "type": "approval",
+                    "title": format!("{} proposes a workflow change", agent.name),
+                    "body": gist,
+                    "actions": {
+                        "buttons": [
+                            {"label": "Approve", "style": "primary", "method": "POST",
+                             "path": resolve_path, "body": {"approved": true}},
+                            {"label": "Reject", "style": "danger", "method": "POST",
+                             "path": resolve_path, "body": {"approved": false}},
+                        ],
+                    },
+                }),
             );
             info!(agent = %agent.name, binding, "tuning pass staged proposal to Inbox");
         }

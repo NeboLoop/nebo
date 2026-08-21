@@ -50,10 +50,19 @@ jobs:
       # by the timestamp — the same tag convention every other image in the
       # cluster uses. Never `:latest` (Flux can't order it and the deploy repo
       # never references it).
+      #
+      # Non-main refs get a `dev-` prefix that Flux and the cloud-bot
+      # reconciler both ignore: a branch build must NEVER become the fleet's
+      # "newest" image — auto-update bots would advance onto unmerged code.
+      # Dev tags are for hand-pinning a single test bot.
       - name: Compute image tag
         id: vars
         run: |
-          echo "tag=main-$(date +%s)-$(echo ${{ github.sha }} | cut -c1-7)" >> "$GITHUB_OUTPUT"
+          if [ "${{ github.ref }}" = "refs/heads/main" ] || [ "${{ github.ref_type }}" = "tag" ]; then
+            echo "tag=main-$(date +%s)-$(echo ${{ github.sha }} | cut -c1-7)" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=dev-$(date +%s)-$(echo ${{ github.sha }} | cut -c1-7)" >> "$GITHUB_OUTPUT"
+          fi
 
       # Layer cache lives in GHCR, not GHA: the Rust dep layer alone is >1GB
       # and the repo's whole GHA cache is capped at 10GB, so GHA evicted the

@@ -254,6 +254,40 @@ pub async fn serve_comm_file(
         .unwrap_or_default())
 }
 
+/// GET /api/v1/work/documents — the account-wide document index (container +
+/// latest version + owning chat), newest first. The Work panel stays a
+/// per-thread view; this is the cross-chat list the web Library pulls through
+/// the tunnel. `?limit=&offset=` paginate (default 100).
+pub async fn list_work_documents(
+    State(state): State<AppState>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> HandlerResult<serde_json::Value> {
+    // ?id= — the standalone /work/<id> viewer's single-document lookup.
+    if let Some(id) = params.get("id") {
+        let doc = state
+            .store
+            .get_work_document_listing(id)
+            .map_err(to_error_response)?;
+        let documents: Vec<_> = doc.into_iter().collect();
+        return Ok(Json(serde_json::json!({ "documents": documents })));
+    }
+    let limit = params
+        .get("limit")
+        .and_then(|v| v.parse::<i64>().ok())
+        .filter(|v| *v > 0 && *v <= 500)
+        .unwrap_or(100);
+    let offset = params
+        .get("offset")
+        .and_then(|v| v.parse::<i64>().ok())
+        .filter(|v| *v >= 0)
+        .unwrap_or(0);
+    let documents = state
+        .store
+        .list_work_documents(limit, offset)
+        .map_err(to_error_response)?;
+    Ok(Json(serde_json::json!({ "documents": documents })))
+}
+
 /// GET /api/v1/files/*path
 ///
 /// `?preview=pdf` on a presentation file serves an on-demand PDF rendering

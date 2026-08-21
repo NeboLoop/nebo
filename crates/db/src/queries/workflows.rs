@@ -646,6 +646,29 @@ impl Store {
         }
     }
 
+    /// All parked approvals: `(run_id, agent_id, binding_name, display)` per
+    /// suspension row. Powers reconcile-on-connect backfill of the owner's web
+    /// inbox (pushes are best-effort) and pending-approval listings without
+    /// the notification-prefix N+1.
+    pub fn list_workflow_suspensions(
+        &self,
+    ) -> Result<Vec<(String, String, String, String)>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT run_id, agent_id, binding_name, display
+                 FROM workflow_run_suspensions ORDER BY rowid DESC",
+            )
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
     /// Remove a suspension after resume or deny.
     pub fn delete_workflow_suspension(&self, run_id: &str) -> Result<(), NeboError> {
         let conn = self.conn()?;

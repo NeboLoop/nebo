@@ -1774,24 +1774,24 @@ async fn capture_screenshot(input: &serde_json::Value) -> ToolResult {
                         run_command("xdotool", &["search", "--name", app, "windowactivate"]).await;
                     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
                 }
-                tokio::process::Command::new("gnome-screenshot")
+                x11_command("gnome-screenshot")
                     .args(["-w", "-f", &tmp_path])
                     .output()
                     .await
             } else {
-                tokio::process::Command::new("gnome-screenshot")
+                x11_command("gnome-screenshot")
                     .args(["-f", &tmp_path])
                     .output()
                     .await
             }
         } else if which("scrot") {
             if !app.is_empty() {
-                tokio::process::Command::new("scrot")
+                x11_command("scrot")
                     .args(["-u", &tmp_path])
                     .output()
                     .await
             } else {
-                tokio::process::Command::new("scrot")
+                x11_command("scrot")
                     .args([&tmp_path])
                     .output()
                     .await
@@ -1800,12 +1800,12 @@ async fn capture_screenshot(input: &serde_json::Value) -> ToolResult {
             // Wayland
             if let Some(region) = region {
                 // Use slurp format
-                tokio::process::Command::new("grim")
+                x11_command("grim")
                     .args(["-g", region, &tmp_path])
                     .output()
                     .await
             } else {
-                tokio::process::Command::new("grim")
+                x11_command("grim")
                     .args([&tmp_path])
                     .output()
                     .await
@@ -3306,9 +3306,28 @@ fn key_name_to_code(key: &str) -> &str {
 
 // --- Cross-platform helpers ---
 
+/// Build the subprocess for an X11 helper. On a headless server with the
+/// on-demand desktop session live, inject its DISPLAY so xdotool/wmctrl/etc.
+/// target the session; on a real desktop the inherited environment wins.
+/// Never sets DISPLAY process-wide.
+fn x11_command(cmd: &str) -> tokio::process::Command {
+    let c = tokio::process::Command::new(cmd);
+    #[cfg(target_os = "linux")]
+    {
+        let mut c = c;
+        if let Some(display) = crate::desktop_session::display() {
+            crate::desktop_session::touch();
+            c.env("DISPLAY", display);
+        }
+        return c;
+    }
+    #[allow(unreachable_code)]
+    c
+}
+
 #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
 async fn run_command(cmd: &str, args: &[&str]) -> ToolResult {
-    match tokio::process::Command::new(cmd).args(args).output().await {
+    match x11_command(cmd).args(args).output().await {
         Ok(output) if output.status.success() => {
             let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
             ToolResult::ok(if text.is_empty() {
@@ -3336,7 +3355,7 @@ async fn run_command(cmd: &str, args: &[&str]) -> ToolResult {
 
 #[allow(dead_code)]
 async fn run_command_raw(cmd: &str, args: &[&str]) -> Result<String, String> {
-    let output = tokio::process::Command::new(cmd)
+    let output = x11_command(cmd)
         .args(args)
         .output()
         .await

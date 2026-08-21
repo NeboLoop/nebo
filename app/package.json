@@ -34,6 +34,7 @@
   "dependencies": {
     "@dagrejs/dagre": "^3.0.0",
     "@neboai/app-sdk": "^0.1.0",
+    "@novnc/novnc": "^1.7.0",
     "@tauri-apps/api": "~2.10.0",
     "@tauri-apps/plugin-notification": "^2.3.3",
     "@tiptap/core": "^3.22.5",

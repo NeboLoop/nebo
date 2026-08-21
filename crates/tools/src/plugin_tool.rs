@@ -1193,21 +1193,79 @@ impl PluginTool {
                             .into_iter()
                             .map(|p| p.account_label)
                             .collect();
-                        let msg = match (selected_account.as_deref(), connected.is_empty()) {
-                            (Some(label), false) => format!(
+                        if let (Some(label), false) = (selected_account.as_deref(), connected.is_empty()) {
+                            // Wrong label with accounts present: the model can
+                            // fix this itself, so it stays a plain error.
+                            return ToolResult::error(format!(
                                 "No {res} account named \"{label}\" for this agent. Connected \
                                  {res} accounts: {labels}. Retry with one of those exact labels \
                                  (or omit --account to use the primary).",
                                 res = pi.resource,
                                 labels = connected.join(", ")
-                            ),
-                            _ => format!(
-                                "No {res} account is connected for this agent. Connect one in \
-                                 this agent's Settings → Connected Accounts before using {res}.",
-                                res = pi.resource
-                            ),
+                            ));
+                        }
+                        let none_msg = format!(
+                            "No {res} account is connected for this agent. Connect one in \
+                             this agent's Settings → Connected Accounts before using {res}.",
+                            res = pi.resource
+                        );
+                        // Nothing connected. Interactive chat renders an inline
+                        // connect card via ask_user, which parks THIS tool call
+                        // until the account is connected — the run then resumes
+                        // at the same call. Unattended runs stop cleanly rather
+                        // than letting the model improvise around the failure.
+                        let interactive = crate::origin::ExecutionMode::from(ctx.origin)
+                            == crate::origin::ExecutionMode::Interactive
+                            && ctx.ask_channels.is_some();
+                        let Some(agent_id) = agent_id.as_deref() else {
+                            return ToolResult::error(none_msg);
                         };
-                        return ToolResult::error(msg);
+                        if !interactive {
+                            return ToolResult::terminal(none_msg);
+                        }
+                        let display_label = self
+                            .plugin_store
+                            .get_manifest(&pi.resource)
+                            .and_then(|m| m.auth)
+                            .map(|a| a.label)
+                            .filter(|l| !l.is_empty())
+                            .unwrap_or_else(|| pi.resource.clone());
+                        let answer = ctx
+                            .ask_user(
+                                &format!(
+                                    "I need a {display_label} account connected to continue. \
+                                     Connect one on the card and I'll pick up right where I \
+                                     left off."
+                                ),
+                                serde_json::json!([{
+                                    "type": "connect_account",
+                                    "plugin": pi.resource,
+                                    "agentId": agent_id,
+                                    "label": display_label,
+                                }]),
+                            )
+                            .await;
+                        if answer.as_deref() != Some("connected") {
+                            return ToolResult::error(none_msg);
+                        }
+                        match self
+                            .db_store
+                            .resolve_plugin_account_profile(
+                                agent_id,
+                                &pi.resource,
+                                selected_account.as_deref(),
+                            )
+                            .ok()
+                            .flatten()
+                        {
+                            Some(p) => Some((env_name, p.config_dir)),
+                            None => {
+                                return ToolResult::error(format!(
+                                    "The {res} account didn't finish connecting. {none_msg}",
+                                    res = pi.resource
+                                ));
+                            }
+                        }
                     }
                 }
             }

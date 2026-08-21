@@ -264,6 +264,48 @@ fn record_action_spiral(
     }
 }
 
+/// Cross-turn spiral memory. The per-turn counters reset every run, so a model
+/// that resumed the same doomed strategy after each user message ("Let me read
+/// the frames using sub-agents" x7, across turns, until the user gave up) never
+/// tripped the backstop. Keys that ended a turn hot are carried into the next
+/// turn at half strength: a resumed loop trips the nudge in half the calls, and
+/// a third resumption almost immediately. Success on a key clears it.
+static CROSS_TURN_SPIRAL: std::sync::Mutex<
+    Option<std::collections::HashMap<String, std::collections::HashMap<String, usize>>>,
+> = std::sync::Mutex::new(None);
+
+fn cross_turn_seed(session_id: &str) -> std::collections::HashMap<String, usize> {
+    let mut guard = CROSS_TURN_SPIRAL.lock().unwrap_or_else(|p| p.into_inner());
+    guard
+        .get_or_insert_with(Default::default)
+        .get(session_id)
+        .cloned()
+        .unwrap_or_default()
+}
+
+fn cross_turn_save(
+    session_id: &str,
+    counts: &std::collections::HashMap<String, usize>,
+    limit: usize,
+) {
+    let mut guard = CROSS_TURN_SPIRAL.lock().unwrap_or_else(|p| p.into_inner());
+    let map = guard.get_or_insert_with(Default::default);
+    // ponytail: unbounded-growth backstop — a rare full clear beats an LRU.
+    if map.len() > 512 {
+        map.clear();
+    }
+    let hot: std::collections::HashMap<String, usize> = counts
+        .iter()
+        .filter(|(_, c)| **c * 2 >= limit)
+        .map(|(k, c)| (k.clone(), c / 2))
+        .collect();
+    if hot.is_empty() {
+        map.remove(session_id);
+    } else {
+        map.insert(session_id.to_string(), hot);
+    }
+}
+
 fn extract_file_read_path(call: &ai::ToolCall) -> Option<String> {
     if call.name != "os" {
         return None;
@@ -1654,8 +1696,10 @@ async fn run_loop(
     // excluded (per-path read_failures covers them) so exploring N paths does not
     // trip os:read at 8. NOT a substitute for clear tool errors — a misleading
     // error is what STARTS the spiral.
+    // Seeded with half-strength carry-over from the previous turn's hot keys —
+    // the cross-turn strategy-loop breaker (see CROSS_TURN_SPIRAL).
     let mut action_call_counts: std::collections::HashMap<String, usize> =
-        std::collections::HashMap::new();
+        cross_turn_seed(session_id);
     // Loop-guardrail thresholds — Settings → Developer, loaded once per run.
     let guard_cfg = crate::guardrails::GuardrailConfig::from_json(
         &store.get_guardrails().unwrap_or_else(|_| "{}".into()),
@@ -5455,6 +5499,10 @@ async fn run_loop(
         "turn ended"
     );
 
+    // Carry hot spiral keys into the next turn at half strength so a strategy
+    // loop resumed across user messages still meets the backstop.
+    cross_turn_save(session_id, &action_call_counts, guard_cfg.same_action_limit);
+
     // Debounced memory extraction: only runs after 5s idle per session.
     // Extract from last exchange only (last user msg + assistant response + tool
     // calls) to avoid re-extracting facts from old messages and creating duplicates.
@@ -6648,5 +6696,29 @@ mod tests {
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].role, "user");
         assert_eq!(result[1].role, "assistant");
+    }
+}
+
+#[cfg(test)]
+mod cross_turn_spiral_tests {
+    use super::*;
+
+    // A strategy loop resumed across turns must trip the backstop faster each
+    // time: hot keys carry over at half strength, success clears them.
+    #[test]
+    fn hot_keys_carry_over_and_clear() {
+        let sid = format!("test-xturn-{}", uuid::Uuid::new_v4());
+        let mut counts = std::collections::HashMap::new();
+        counts.insert("agent:spawn_parallel".to_string(), 8usize);
+        counts.insert("os:read".to_string(), 1usize); // cold — must not carry
+        cross_turn_save(&sid, &counts, 8);
+
+        let seeded = cross_turn_seed(&sid);
+        assert_eq!(seeded.get("agent:spawn_parallel"), Some(&4));
+        assert!(!seeded.contains_key("os:read"));
+
+        // Next turn ends calm — the carry-over clears.
+        cross_turn_save(&sid, &std::collections::HashMap::new(), 8);
+        assert!(cross_turn_seed(&sid).is_empty());
     }
 }

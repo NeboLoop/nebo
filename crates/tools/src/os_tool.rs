@@ -743,18 +743,27 @@ impl DynTool for OsTool {
             // layer fail deep inside with a cryptic xdotool/Evolution error.
             // file/shell/web/search all work normally here, so only these are
             // gated.
-            if crate::server_mode()
-                && matches!(
+            //
+            // Exception: while the bot's on-demand desktop session is live
+            // (the "computer" — Xvfb + xfce in this pod), the X11-backed
+            // resources work against that display and are un-gated. Apps that
+            // simply aren't in the image (Mail/Calendar/tts…) stay gated even
+            // with a session up.
+            if crate::server_mode() {
+                let x11_backed = matches!(
                     resource.as_str(),
                     "window"
                         | "input"
                         | "clipboard"
                         | "capture"
-                        | "notification"
                         | "ui"
                         | "menu"
                         | "dialog"
                         | "space"
+                );
+                let never_in_cloud = matches!(
+                    resource.as_str(),
+                    "notification"
                         | "shortcut"
                         | "tts"
                         | "dock"
@@ -762,11 +771,12 @@ impl DynTool for OsTool {
                         | "contacts"
                         | "calendar"
                         | "reminders"
-                )
-            {
-                return ToolResult::error(format!(
-                    "os(resource: \"{resource}\") is not available in server mode — this Nebo runs in the cloud and has no screen, input devices, or desktop apps. File, shell, and web tools work normally."
-                ));
+                );
+                if never_in_cloud || (x11_backed && !crate::desktop_session::active()) {
+                    return ToolResult::error(format!(
+                        "os(resource: \"{resource}\") is not available in server mode — this Nebo runs in the cloud and has no screen, input devices, or desktop apps. File, shell, and web tools work normally."
+                    ));
+                }
             }
 
             match resource.as_str() {

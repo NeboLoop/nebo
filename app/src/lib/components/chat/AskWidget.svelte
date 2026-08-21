@@ -7,11 +7,14 @@
 
 	export interface AskWidgetDef {
 		/** 'options' is canonical; legacy single-choice shapes still render. */
-		type: 'options' | 'buttons' | 'confirm' | 'select' | 'radio' | 'checkbox';
+		type: 'options' | 'buttons' | 'confirm' | 'select' | 'radio' | 'checkbox' | 'connect_account';
 		label?: string;
 		options?: AskOption[];
 		multiSelect?: boolean;
 		default?: string;
+		/** connect_account: plugin slug + agent whose account list the OAuth targets. */
+		plugin?: string;
+		agentId?: string;
 	}
 
 	interface NormalizedOption {
@@ -40,6 +43,52 @@
 	}
 
 	let { requestId, prompt, widgets, response, disabled = false, onSubmit }: Props = $props();
+
+	import Plug from 'lucide-svelte/icons/plug';
+	import Check from 'lucide-svelte/icons/check';
+	import { getWebSocketClient } from '$lib/websocket/client';
+	import { startPluginAccountLogin } from '$lib/api/pluginAccounts';
+
+	// connect_account: run the same OAuth pathway as Settings → Connected
+	// Accounts, then answer the parked ask_request so the tool call resumes.
+	let connecting = $state(false);
+	let connectError = $state<string | null>(null);
+	let connectDone = $state(false);
+	let accountLabel = $state('Primary');
+
+	async function startConnect(w: AskWidgetDef) {
+		if (connecting || !w.plugin || !w.agentId) return;
+		connecting = true;
+		connectError = null;
+		try {
+			await startPluginAccountLogin(w.plugin, w.agentId, accountLabel.trim() || 'Primary');
+		} catch {
+			connecting = false;
+			connectError = $t('chat.connectFailed');
+		}
+	}
+
+	$effect(() => {
+		const w = widgets?.[0];
+		if (w?.type !== 'connect_account' || answered || disabled) return;
+		const ws = getWebSocketClient();
+		const unsubs = [
+			ws.on('plugin_auth_complete', (data: Record<string, unknown>) => {
+				if ((data.plugin as string) === w.plugin) {
+					connecting = false;
+					connectDone = true;
+					submit('connected');
+				}
+			}),
+			ws.on('plugin_auth_error', (data: Record<string, unknown>) => {
+				if ((data.plugin as string) === w.plugin) {
+					connecting = false;
+					connectError = (data.error as string) || $t('chat.connectFailed');
+				}
+			}),
+		];
+		return () => unsubs.forEach((fn) => fn());
+	});
 
 	// The prompt is agent/harness-authored text (e.g. the deep-research plan)
 	// and uses markdown like every other agent message — render it, don't show
@@ -100,6 +149,32 @@
 		{/if}
 	{:else if disabled}
 		<div class="badge badge-ghost badge-sm">{$t('common.skipped')}</div>
+	{:else if widget?.type === 'connect_account'}
+		<div class="flex items-center gap-3 rounded-lg border border-base-300 bg-base-100 px-3 py-2.5">
+			<div class="rounded-md bg-base-200 p-2">
+				{#if connectDone}<Check class="w-5 h-5 text-success" />{:else}<Plug class="w-5 h-5" />{/if}
+			</div>
+			<div class="flex-1 min-w-0">
+				<div class="text-sm font-medium truncate">{widget.label ?? widget.plugin}</div>
+				{#if connectError}
+					<div class="text-xs text-error">{connectError}</div>
+				{:else}
+					<div class="text-xs text-base-content/60">{$t('chat.connectAccountHint')}</div>
+				{/if}
+			</div>
+			<button
+				type="button"
+				class="btn btn-sm btn-primary"
+				disabled={connecting}
+				onclick={() => widget && startConnect(widget)}
+			>
+				{#if connecting}<span class="loading loading-spinner loading-xs"></span>{/if}
+				{connecting ? $t('chat.connecting') : $t('chat.connect')}
+			</button>
+		</div>
+		<div class="mt-2 flex">
+			<button type="button" class="text-xs text-base-content/40 hover:text-base-content/70 cursor-pointer bg-transparent border-none px-0 ml-auto" onclick={() => submit(SKIP_VALUE)}>{$t('common.skip')}</button>
+		</div>
 	{:else}
 		{#if widget?.label}
 			<p class="text-xs text-base-content/70 mb-1">{widget.label}</p>

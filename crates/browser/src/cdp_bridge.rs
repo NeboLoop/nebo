@@ -46,6 +46,10 @@ pub struct ObscuraConfig {
     /// Where to capture Obscura's own log (navigations + CDP errors) so a misbehaving
     /// tier-2 browse leaves a durable trail. None = discard. Appended to.
     pub log_path: Option<PathBuf>,
+    /// The binary is a stock Chromium rather than Obscura (cloud image, or a
+    /// desktop with Chrome but no bundled Obscura). Same CDP protocol, same
+    /// bridge — only the launch arguments differ.
+    pub chromium: bool,
 }
 
 /// The launched Obscura process + browser + its open pages. Recreated on demand
@@ -118,16 +122,33 @@ impl CdpBridge {
         info!(port, binary = %self.config.binary.display(), "launching Obscura (CDP tier-2)");
 
         let mut cmd = Command::new(&self.config.binary);
-        cmd.arg("serve")
-            .arg("--host")
-            .arg("127.0.0.1")
-            .arg("--port")
-            .arg(port.to_string());
-        if self.config.stealth {
-            cmd.arg("--stealth");
-        }
-        if let Some(dir) = &self.config.storage_dir {
-            cmd.arg("--storage-dir").arg(dir);
+        if self.config.chromium {
+            // Headless Chromium exposes the same CDP endpoint Obscura serves.
+            // --no-sandbox: in the cloud pod the Kata VM is the sandbox and the
+            // uid-1000 container has no user namespaces for Chromium's own.
+            cmd.arg("--headless=new")
+                .arg(format!("--remote-debugging-port={port}"))
+                .arg("--no-first-run")
+                .arg("--no-default-browser-check")
+                .arg("--disable-dev-shm-usage")
+                .arg("--disable-gpu")
+                .arg("--no-sandbox")
+                .arg("about:blank");
+            if let Some(dir) = &self.config.storage_dir {
+                cmd.arg(format!("--user-data-dir={}", dir.display()));
+            }
+        } else {
+            cmd.arg("serve")
+                .arg("--host")
+                .arg("127.0.0.1")
+                .arg("--port")
+                .arg(port.to_string());
+            if self.config.stealth {
+                cmd.arg("--stealth");
+            }
+            if let Some(dir) = &self.config.storage_dir {
+                cmd.arg("--storage-dir").arg(dir);
+            }
         }
         // Capture Obscura's own log (navigations + CDP errors) to a file so a
         // misbehaving tier-2 browse leaves a durable trail. `info` keeps it useful
@@ -490,6 +511,7 @@ mod tests {
             storage_dir: None,
             stealth: true,
             log_path: None,
+            chromium: false,
         }))
     }
 

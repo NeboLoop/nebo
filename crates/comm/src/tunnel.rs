@@ -189,20 +189,43 @@ async fn proxy_stream(stream: yamux::Stream, local_addr: &str) -> io::Result<()>
     Ok(())
 }
 
+/// Per-boot secret the tunnel stamps onto requests it forwards to the local
+/// server (`X-Nebo-Tunnel-Auth`). A request carrying it was owner-authenticated
+/// by the hub before entering the tunnel, so local handlers may treat it as the
+/// owner acting remotely (the app-UI invoke gate does). A drive-by web page can
+/// never learn the value — it exists only in this process — and any incoming
+/// copy of the header is stripped before the stamp, so it cannot be smuggled
+/// through the tunnel either.
+pub fn tunnel_auth_secret() -> &'static str {
+    static SECRET: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    SECRET.get_or_init(|| {
+        let mut bytes = [0u8; 32];
+        getrandom::getrandom(&mut bytes).expect("os rng");
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
+    })
+}
+
 /// Rewrite a request head so the local server closes after one response —
-/// replacing any `Connection:` header, or inserting one if absent.
+/// replacing any `Connection:` header, or inserting one if absent — and stamp
+/// the tunnel-auth secret (stripping any inbound copy first; see
+/// [`tunnel_auth_secret`]).
 fn force_connection_close(head: &str) -> String {
-    let mut out = String::with_capacity(head.len() + 20);
+    let mut out = String::with_capacity(head.len() + 80);
     let mut wrote_conn = false;
     for line in head.split_inclusive("\r\n") {
         let trimmed = line.trim_end_matches("\r\n");
-        if trimmed.to_ascii_lowercase().starts_with("connection:") {
+        let lower = trimmed.to_ascii_lowercase();
+        if lower.starts_with("x-nebo-tunnel-auth:") {
+            continue; // never trust an inbound copy
+        }
+        if lower.starts_with("connection:") {
             out.push_str("Connection: close\r\n");
             wrote_conn = true;
         } else if trimmed.is_empty() {
             if !wrote_conn {
                 out.push_str("Connection: close\r\n");
             }
+            out.push_str(&format!("X-Nebo-Tunnel-Auth: {}\r\n", tunnel_auth_secret()));
             out.push_str(line); // the terminating \r\n
         } else {
             out.push_str(line);
@@ -248,6 +271,20 @@ mod tests {
     }
 
     #[test]
+    fn stamps_tunnel_auth_and_strips_inbound_copies() {
+        let head = format!(
+            "POST /api/v1/apps/x/agents/invoke HTTP/1.1\r\nHost: h\r\nX-Nebo-Tunnel-Auth: forged\r\nConnection: keep-alive\r\n\r\n"
+        );
+        let out = force_connection_close(&head);
+        // The forged inbound copy is gone; exactly one stamp with OUR secret.
+        assert!(!out.contains("forged"));
+        assert_eq!(out.matches("X-Nebo-Tunnel-Auth:").count(), 1);
+        assert!(out.contains(&format!("X-Nebo-Tunnel-Auth: {}", tunnel_auth_secret())));
+        assert!(out.contains("Connection: close\r\n"));
+        assert!(out.ends_with("\r\n\r\n"));
+    }
+
+    #[test]
     fn requires_tls_hub_except_loopback() {
         assert!(verify_hub_url("wss://api.neboai.com/tunnel/connect").is_ok());
         assert!(verify_hub_url("ws://127.0.0.1:18899/tunnel/connect").is_ok());
@@ -264,10 +301,17 @@ mod tests {
         assert!(out.contains("Connection: close\r\n"));
         assert!(!out.to_ascii_lowercase().contains("keep-alive"));
         assert!(out.ends_with("\r\n\r\n"));
-        // Absent header is inserted before the blank line.
+        // Absent header is inserted before the blank line (plus the tunnel
+        // auth stamp — see stamps_tunnel_auth_and_strips_inbound_copies).
         let h2 = "GET /x HTTP/1.1\r\nHost: a\r\n\r\n";
         let out2 = force_connection_close(h2);
-        assert_eq!(out2, "GET /x HTTP/1.1\r\nHost: a\r\nConnection: close\r\n\r\n");
+        assert_eq!(
+            out2,
+            format!(
+                "GET /x HTTP/1.1\r\nHost: a\r\nConnection: close\r\nX-Nebo-Tunnel-Auth: {}\r\n\r\n",
+                tunnel_auth_secret()
+            )
+        );
     }
 
     /// A hub that goes silent must fail the read rather than hang forever —

@@ -422,6 +422,10 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
     // into the run closure as a plain Copy bool. Default off (safe).
     let full_access = resolve_full_access(state);
 
+    // For registering run-produced documents in the owner's web library
+    // (fire-and-forget push after versioning).
+    let neboai_api_url = state.config.neboai.api_url.clone();
+
     // Broadcast chat_created so frontend can track new conversations
     {
         let mut created_payload = serde_json::json!({
@@ -868,7 +872,16 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                             // reference by /api/v1/files/<name> — for the LOCAL app (always,
                             // rendered inline) and comm replies (when replying to a channel;
                             // resolve_comm_attachments maps the same /api/v1/files prefix).
-                            if event.error.is_none() {
+                            // Reading an EXISTING image file returns it inline for
+                            // the model, but it is not run-produced media — 34
+                            // frame reads once attached 34 (broken) tiles to one
+                            // message. Only captures/generated media attach.
+                            let is_file_read = event
+                                .tool_call
+                                .as_ref()
+                                .map(|tc| tc.input["action"].as_str() == Some("read"))
+                                .unwrap_or(false);
+                            if event.error.is_none() && !is_file_read {
                                 if let Some(url) = &event.image_url {
                                     if let Some(app_url) = to_app_artifact_url(url) {
                                         if !app_file_artifacts.contains(&app_url) {
@@ -1418,6 +1431,29 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                             .attach_artifacts_to_latest_assistant_message(chat_id, &chat_artifacts)
                         {
                             warn!(error = %e, chat_id = %chat_id, "failed to persist artifacts on message");
+                        }
+                    }
+                    // Register each versioned document in the owner's web
+                    // library (best-effort push; the hub row is a pointer —
+                    // content stays here and is opened through the tunnel).
+                    for a in &chat_artifacts {
+                        if let Some(doc_id) = a.get("documentId").and_then(|v| v.as_str()) {
+                            // openPath is the standalone viewer route (full
+                            // renderer matrix + source/download), not the raw
+                            // blob — a phone opening /t/<bot>/work/<id> gets a
+                            // rendered document, not text/markdown bytes. The
+                            // blob stays reachable via the viewer's Download.
+                            crate::codes::push_artifact_via(
+                                runner.store(),
+                                &neboai_api_url,
+                                serde_json::json!({
+                                    "id": doc_id,
+                                    "kind": a.get("kind").and_then(|v| v.as_str()).unwrap_or("document"),
+                                    "title": a.get("filename").and_then(|v| v.as_str()).unwrap_or("document"),
+                                    "openPath": format!("/work/{}", doc_id),
+                                    "version": a.get("version").and_then(|v| v.as_i64()).unwrap_or(1),
+                                }),
+                            );
                         }
                     }
                 }

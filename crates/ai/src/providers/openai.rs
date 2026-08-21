@@ -267,9 +267,44 @@ impl OpenAIProvider {
                                         content: ChatCompletionRequestToolMessageContent::Text(
                                             r.content,
                                         ),
-                                        tool_call_id: r.tool_call_id,
+                                        tool_call_id: r.tool_call_id.clone(),
                                     },
                                 ));
+                                // The OpenAI tool role is text-only, so a tool
+                                // result's screenshot rides a follow-up user
+                                // message — the standard OpenAI-compat pattern.
+                                // Without this, every screenshot on an
+                                // OpenAI-shaped provider (incl. Janus) was
+                                // silently dropped and the model went blind.
+                                if let Some(ref img) = r.image_url {
+                                    if let Some((media_type, data)) =
+                                        crate::types::image_source_to_base64(img)
+                                    {
+                                        let url =
+                                            format!("data:{};base64,{}", media_type, data);
+                                        messages.push(ChatCompletionRequestMessage::User(
+                                            ChatCompletionRequestUserMessage {
+                                                content:
+                                                    ChatCompletionRequestUserMessageContent::Array(vec![
+                                                        ChatCompletionRequestUserMessageContentPart::Text(
+                                                            ChatCompletionRequestMessageContentPartText {
+                                                                text: format!(
+                                                                    "[Image returned by tool call {}]",
+                                                                    r.tool_call_id
+                                                                ),
+                                                            },
+                                                        ),
+                                                        ChatCompletionRequestUserMessageContentPart::ImageUrl(
+                                                            ChatCompletionRequestMessageContentPartImage {
+                                                                image_url: ImageUrl { url, detail: None },
+                                                            },
+                                                        ),
+                                                    ]),
+                                                name: None,
+                                            },
+                                        ));
+                                    }
+                                }
                             }
                         }
                     }
@@ -607,6 +642,15 @@ impl Provider for OpenAIProvider {
     }
 
     fn supports_vision(&self) -> bool {
+        true
+    }
+
+    fn supports_tool_result_images(&self) -> bool {
+        // Tool-result screenshots ride a follow-up user message (the tool
+        // role is text-only in the OpenAI schema) — see convert_messages.
+        // Without this override every screenshot on an OpenAI-shaped
+        // provider (incl. Janus, i.e. every cloud bot) detoured to the
+        // blind sidecar.
         true
     }
 
