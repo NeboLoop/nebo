@@ -922,3 +922,66 @@ pub struct ArtifactUpdateHistoryEntry {
     pub detail: String,
     pub applied_at: i64,
 }
+
+// ── Run Usage ──
+// One completed run: what it cost, and what it achieved. See
+// docs/plans/per-run-cost-tracking.md.
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunUsage {
+    pub id: i64,
+    pub agent_id: String,
+    pub session_key: Option<String>,
+    /// Matches `workflow_runs.id` when this run was a workflow; None for a
+    /// chat turn, which has no workflow row to join to.
+    pub run_id: Option<String>,
+    pub run_type: String,
+    pub model_id: String,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub cache_read_tokens: i64,
+    pub cache_creation_tokens: i64,
+    pub cost_microcents: i64,
+    /// What the run achieved. `no_action` is a real outcome — a run that
+    /// checked and found nothing to do is healthy, not silent.
+    pub outcome: Option<String>,
+    pub created_at: i64,
+}
+
+/// What to record when a run finishes. Separated from `RunUsage` because the
+/// id and timestamp belong to the database, not the caller.
+#[derive(Debug, Clone, Default)]
+pub struct RunUsageEntry {
+    pub agent_id: String,
+    pub session_key: Option<String>,
+    pub run_id: Option<String>,
+    pub run_type: String,
+    pub model_id: String,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub cache_read_tokens: i64,
+    pub cache_creation_tokens: i64,
+    pub cost_microcents: i64,
+    pub outcome: Option<String>,
+}
+
+/// Cost rolled up over a window, for "what is this employee costing me".
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentUsageStats {
+    pub runs: i64,
+    pub cost_microcents: i64,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+}
+
+/// Outcomes counted for a period — the billable unit the managed-workforce
+/// proposal calls a "task".
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OutcomeCount {
+    pub outcome: String,
+    pub count: i64,
+    pub cost_microcents: i64,
+}

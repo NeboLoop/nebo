@@ -7,6 +7,7 @@ mod store;
 mod queries;
 
 pub use pool::create_pool;
+pub use queries::cost_microcents;
 pub use queries::LicenseKeyRow;
 pub use queries::PluginAccountProfile;
 pub use store::Store;
