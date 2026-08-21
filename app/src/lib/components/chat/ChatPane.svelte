@@ -141,7 +141,8 @@
         `The recording is in ${res.dir}: review the ${res.keyframes} keyframes in frames/ with your vision, ` +
         `read events.log for the exact clicks and keys, and study the sequence until you understand the task. ` +
         `Then save it as a learned skill with the skill tool — name it after the class of task, write out the ` +
-        `steps you'd follow to repeat it on your computer, and note which inputs varied. Reply with what you learned.`,
+        `steps you'd follow to repeat it on your computer, and note which inputs varied. Reply with what you ` +
+        `learned, then ask me whether you should run this on a schedule or only when I ask.`,
         []
       );
     } catch (e) {
