@@ -368,8 +368,145 @@ pub async fn stop_recording() -> Result<(String, std::path::PathBuf, usize), Str
     let count = std::fs::read_dir(inner.dir.join("frames"))
         .map(|d| d.count())
         .unwrap_or(0);
+
+    // Events-first distillation: the raw X11 dump carries most of the task's
+    // truth (the typed keys literally spell it out — proven in the field when
+    // a blind study still recovered the task from keystrokes alone). Parse it
+    // into a readable timeline so the study pass reads THIS first and uses
+    // vision to confirm, instead of grepping 400KB of protocol noise.
+    if let Ok(log) = std::fs::read_to_string(inner.dir.join("events.log")) {
+        let timeline = summarize_x11_events(&log);
+        let _ = std::fs::write(inner.dir.join("timeline.md"), timeline);
+    }
+
     info!(session = %inner.id, keyframes = count, "teach recording stopped");
     Ok((inner.id, inner.dir, count))
+}
+
+/// Turn an `xinput test-xi2` dump into a human/model-readable action timeline:
+/// clicks with coordinates, typed text reassembled from keycodes (US layout),
+/// special keys as tokens. Best-effort — unknown keycodes render as [#n].
+fn summarize_x11_events(log: &str) -> String {
+    #[derive(PartialEq)]
+    enum Pending {
+        None,
+        Click,
+        Key,
+    }
+    let keychar = |code: u32, shift: bool| -> Option<String> {
+        let unshifted = |c: char, s: char| if shift { s } else { c };
+        Some(match code {
+            10..=18 => {
+                let digits = ['1', '2', '3', '4', '5', '6', '7', '8', '9'];
+                let shifted = ['!', '@', '#', '$', '%', '^', '&', '*', '('];
+                let i = (code - 10) as usize;
+                unshifted(digits[i], shifted[i]).to_string()
+            }
+            19 => unshifted('0', ')').to_string(),
+            20 => unshifted('-', '_').to_string(),
+            21 => unshifted('=', '+').to_string(),
+            22 => "[Backspace]".into(),
+            23 => "[Tab]".into(),
+            24..=33 => {
+                let row = ['q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p'];
+                let c = row[(code - 24) as usize];
+                if shift { c.to_ascii_uppercase().to_string() } else { c.to_string() }
+            }
+            36 => "[Enter]".into(),
+            38..=46 => {
+                let row = ['a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l'];
+                let c = row[(code - 38) as usize];
+                if shift { c.to_ascii_uppercase().to_string() } else { c.to_string() }
+            }
+            47 => unshifted(';', ':').to_string(),
+            48 => unshifted('\'', '"').to_string(),
+            52..=58 => {
+                let row = ['z', 'x', 'c', 'v', 'b', 'n', 'm'];
+                let c = row[(code - 52) as usize];
+                if shift { c.to_ascii_uppercase().to_string() } else { c.to_string() }
+            }
+            59 => unshifted(',', '<').to_string(),
+            60 => unshifted('.', '>').to_string(),
+            61 => unshifted('/', '?').to_string(),
+            65 => " ".into(),
+            50 | 62 | 37 | 105 | 64 | 108 | 133 => return None, // bare modifiers
+            111 => "[Up]".into(),
+            113 => "[Left]".into(),
+            114 => "[Right]".into(),
+            116 => "[Down]".into(),
+            9 => "[Esc]".into(),
+            _ => format!("[#{code}]"),
+        })
+    };
+
+    let mut out = String::from(
+        "# Recorded action timeline
+
+Reconstructed from the input event log.          Typed text is reassembled from keycodes (US layout); clicks carry          screen coordinates on the 1280x800 display.
+
+",
+    );
+    let mut pending = Pending::None;
+    let mut detail: u32 = 0;
+    let mut typed = String::new();
+    let mut steps: Vec<String> = Vec::new();
+    let mut flush_typed = |typed: &mut String, steps: &mut Vec<String>| {
+        if !typed.is_empty() {
+            steps.push(format!("Typed: {typed}"));
+            typed.clear();
+        }
+    };
+    for line in log.lines() {
+        let t = line.trim();
+        if let Some(rest) = t.strip_prefix("EVENT type ") {
+            pending = if rest.starts_with("4 ") {
+                Pending::Click
+            } else if rest.starts_with("2 ") {
+                Pending::Key
+            } else {
+                Pending::None
+            };
+            detail = 0;
+        } else if let Some(d) = t.strip_prefix("detail: ") {
+            detail = d.trim().parse().unwrap_or(0);
+        } else if let Some(coords) = t.strip_prefix("root: ") {
+            if pending == Pending::Click {
+                let xy: Vec<&str> = coords.split('/').collect();
+                if xy.len() == 2 {
+                    flush_typed(&mut typed, &mut steps);
+                    let btn = match detail {
+                        1 => "Click",
+                        3 => "Right-click",
+                        4 | 5 => "Scroll",
+                        _ => "Click",
+                    };
+                    if btn != "Scroll" {
+                        let px = xy[0].trim().parse::<f64>().unwrap_or(0.0) as i64;
+                        let py = xy[1].trim().parse::<f64>().unwrap_or(0.0) as i64;
+                        steps.push(format!("{btn} at ({px}, {py})"));
+                    }
+                }
+                pending = Pending::None;
+            }
+        } else if t.starts_with("modifiers:") && pending == Pending::Key {
+            let shift = t.contains("effective: 1") || t.contains("effective: 0x1");
+            if let Some(ch) = keychar(detail, shift) {
+                if ch.starts_with('[') {
+                    flush_typed(&mut typed, &mut steps);
+                    steps.push(format!("Pressed {ch}"));
+                } else {
+                    typed.push_str(&ch);
+                }
+            }
+            pending = Pending::None;
+        }
+    }
+    flush_typed(&mut typed, &mut steps);
+    for (i, s) in steps.iter().enumerate() {
+        out.push_str(&format!("{}. {s}
+", i + 1));
+    }
+    out
 }
 
 /// Tear the desktop down. The workspace is untouched; a later
@@ -388,4 +525,38 @@ async fn stop_inner(mut inner: Inner) {
     let _ = inner.x11vnc.kill().await;
     let _ = inner.session.kill().await;
     let _ = inner.xvfb.kill().await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Real xinput test-xi2 shapes: a click at 386,300 then "re" typed —
+    // the opening of the field session that proved keystrokes carry the task.
+    #[test]
+    fn timeline_reassembles_clicks_and_text() {
+        let log = "\
+EVENT type 4 (ButtonPress)\n\
+    device: 4 (4)\n\
+    detail: 1\n\
+    root: 386.00/300.00\n\
+    event: 386.00/300.00\n\
+    modifiers: locked 0 latched 0 base 0 effective: 0\n\
+EVENT type 2 (KeyPress)\n\
+    detail: 27\n\
+    root: 390.00/328.00\n\
+    modifiers: locked 0 latched 0 base 0 effective: 0\n\
+EVENT type 2 (KeyPress)\n\
+    detail: 26\n\
+    root: 390.00/328.00\n\
+    modifiers: locked 0 latched 0 base 0 effective: 0\n\
+EVENT type 2 (KeyPress)\n\
+    detail: 36\n\
+    root: 390.00/328.00\n\
+    modifiers: locked 0 latched 0 base 0 effective: 0\n";
+        let t = summarize_x11_events(log);
+        assert!(t.contains("Click at (386, 300)"), "click missing: {t}");
+        assert!(t.contains("Typed: re"), "typed text missing: {t}");
+        assert!(t.contains("Pressed [Enter]"), "enter missing: {t}");
+    }
 }

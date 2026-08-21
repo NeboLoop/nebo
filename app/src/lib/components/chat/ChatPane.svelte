@@ -141,8 +141,9 @@
       const res = await teachStop();
       handleSend(
         `I just demonstrated a task for you on your computer (teach session ${res.sessionId}). ` +
-        `The recording is in ${res.dir}: review the ${res.keyframes} keyframes in frames/ with your vision, ` +
-        `read events.log for the exact clicks and keys, and study the sequence until you understand the task. ` +
+        `The recording is in ${res.dir}. Start with timeline.md — the reconstructed click-and-keystroke ` +
+        `timeline of exactly what I did — then confirm the visual context by viewing 5-6 spread keyframes ` +
+        `from frames/ (there are ${res.keyframes}; do NOT read them all, and do not use sub-agents). ` +
         `Then save it as a learned skill with the skill tool — name it after the class of task, write out the ` +
         `steps you'd follow to repeat it on your computer, and note which inputs varied. Reply with what you ` +
         `learned, then ask me whether you should run this on a schedule or only when I ask.`,
