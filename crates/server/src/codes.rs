@@ -2005,6 +2005,10 @@ pub async fn activate_neboai(state: &AppState) -> Result<(), NeboError> {
             // pushes are best-effort, so reconnect is the reconcile point. The
             // upsert is idempotent on the item id.
             reconcile_owner_inbox(&st);
+            // Same self-heal for the app mirror: covers apps that arrived
+            // outside the install-code path (hand-dropped dirs, restored
+            // volumes) — boot's field sync runs pre-AppState and can't push.
+            reconcile_app_fields(&st).await;
         });
     }
 
