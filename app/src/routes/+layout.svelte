@@ -92,6 +92,10 @@
 
   // Block browser right-click except in selectable areas and inputs
   function handleContextMenu(e: MouseEvent) {
+    // Never suppress the menu over an active selection — that is how people
+    // copy chat text (user-reported: "cannot copy highlighted text").
+    const sel = window.getSelection();
+    if (sel && !sel.isCollapsed) return;
     const target = e.target as HTMLElement;
     if (
       target.closest('[data-selectable]') ||

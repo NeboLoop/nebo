@@ -802,8 +802,12 @@
     lastScrollTop = scrollTop;
     showScrollButton = dist > NEAR_BOTTOM_PX;
 
-    // Touch scrolls are user intent by construction (finger on glass).
-    if (touchActive && scrolledUp && dist > NEAR_BOTTOM_PX) {
+    // Any non-programmatic upward scroll is user intent — touch AND wheel.
+    // Wheel-up used to leave follow engaged, so every stream chunk yanked
+    // the reader back to the bottom mid-scroll ("can't scroll up in an
+    // active run"). The programmatic-scroll guard keeps turn-positioning
+    // and prepend-anchoring from tripping this.
+    if ((touchActive || !isProgrammaticScroll()) && scrolledUp && dist > NEAR_BOTTOM_PX) {
       autoScrollEnabled = false;
     } else if (dist <= NEAR_BOTTOM_PX) {
       autoScrollEnabled = true;
