@@ -1437,10 +1437,12 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                     // library (best-effort push; the hub row is a pointer —
                     // content stays here and is opened through the tunnel).
                     for a in &chat_artifacts {
-                        if let (Some(doc_id), Some(url)) = (
-                            a.get("documentId").and_then(|v| v.as_str()),
-                            a.get("url").and_then(|v| v.as_str()),
-                        ) {
+                        if let Some(doc_id) = a.get("documentId").and_then(|v| v.as_str()) {
+                            // openPath is the standalone viewer route (full
+                            // renderer matrix + source/download), not the raw
+                            // blob — a phone opening /t/<bot>/work/<id> gets a
+                            // rendered document, not text/markdown bytes. The
+                            // blob stays reachable via the viewer's Download.
                             crate::codes::push_artifact_via(
                                 runner.store(),
                                 &neboai_api_url,
@@ -1448,7 +1450,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                     "id": doc_id,
                                     "kind": a.get("kind").and_then(|v| v.as_str()).unwrap_or("document"),
                                     "title": a.get("filename").and_then(|v| v.as_str()).unwrap_or("document"),
-                                    "openPath": url,
+                                    "openPath": format!("/work/{}", doc_id),
                                     "version": a.get("version").and_then(|v| v.as_i64()).unwrap_or(1),
                                 }),
                             );

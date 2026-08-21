@@ -276,6 +276,44 @@ impl Store {
             .map_err(|e| NeboError::Database(e.to_string()))
     }
 
+    /// One row of the document index by document id — the standalone /work
+    /// viewer's lookup (same JOIN as [`Self::list_work_documents`]).
+    pub fn get_work_document_listing(
+        &self,
+        id: &str,
+    ) -> Result<Option<WorkDocumentListing>, NeboError> {
+        let conn = self.conn()?;
+        conn.query_row(
+            "SELECT d.id, d.chat_id, d.filename, d.kind, d.latest_version,
+                    v.url, v.content_type,
+                    c.title AS chat_title, c.session_name,
+                    d.created_at, d.updated_at
+             FROM work_documents d
+             JOIN work_document_versions v
+               ON v.document_id = d.id AND v.version_number = d.latest_version
+             LEFT JOIN chats c ON c.id = d.chat_id
+             WHERE d.id = ?1",
+            params![id],
+            |row| {
+                Ok(WorkDocumentListing {
+                    id: row.get("id")?,
+                    chat_id: row.get("chat_id")?,
+                    filename: row.get("filename")?,
+                    kind: row.get("kind")?,
+                    latest_version: row.get("latest_version")?,
+                    url: row.get("url")?,
+                    content_type: row.get("content_type")?,
+                    chat_title: row.get("chat_title")?,
+                    session_name: row.get("session_name")?,
+                    created_at: row.get("created_at")?,
+                    updated_at: row.get("updated_at")?,
+                })
+            },
+        )
+        .optional()
+        .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
     /// Register a content-addressed blob (idempotent). The bytes themselves live
     /// on disk at <data_dir>/files/work/blobs/<hash>.<ext>; this is the registry
     /// many versions dedup against.

@@ -262,6 +262,15 @@ pub async fn list_work_documents(
     State(state): State<AppState>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> HandlerResult<serde_json::Value> {
+    // ?id= — the standalone /work/<id> viewer's single-document lookup.
+    if let Some(id) = params.get("id") {
+        let doc = state
+            .store
+            .get_work_document_listing(id)
+            .map_err(to_error_response)?;
+        let documents: Vec<_> = doc.into_iter().collect();
+        return Ok(Json(serde_json::json!({ "documents": documents })));
+    }
     let limit = params
         .get("limit")
         .and_then(|v| v.parse::<i64>().ok())

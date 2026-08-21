@@ -260,6 +260,7 @@
 		"restore": "Restore",
 		"makeVersionCurrent": "Make this version current",
 		"downloadFile": "Download {title}",
+		"documentNotFound": "This document is no longer available.",
 		"copyContent": "Copy",
 		"copyFailed": "Couldn't copy — try Download instead.",
 		"share": "Share…",
