@@ -1106,6 +1106,13 @@ async fn watch_loop(
     // failure is persistent — that is what actually needs a human.
     let mut consecutive_auth_failures: u32 = 0;
     const AUTH_PAUSE_THRESHOLD: u32 = 3;
+    // Past the threshold the watch never parks permanently: it keeps probing
+    // on this slow cadence. A provider outage can trip the threshold while
+    // auth is actually fine (observed live: a gmail token-refresh blip parked
+    // a customer's order intake for two days) — only a human reconnecting
+    // should be REQUIRED when auth is truly revoked, and reconnecting still
+    // resumes immediately via plugin_auth_complete.
+    const AUTH_PAUSED_RETRY_SECS: u64 = 900;
     let max_backoff_secs = 300; // 5 minutes
 
     // Clean stale dedup entries on (re)start
@@ -1455,7 +1462,14 @@ async fn watch_loop(
                     );
                 }
 
-                break; // Stop retrying — worker restarted via plugin_auth_complete
+                // Self-heal: never park permanently. Keep probing on the slow
+                // cadence — if the failure was a provider blip the next spawn
+                // succeeds and the counter resets below; if auth is truly
+                // revoked this costs one fast-failing spawn per interval and
+                // the notification (deduped by id) stands until the user
+                // reconnects, which still resumes immediately via
+                // plugin_auth_complete.
+                backoff_secs = AUTH_PAUSED_RETRY_SECS;
                 }
             } else {
                 consecutive_auth_failures = 0;
@@ -1791,6 +1805,12 @@ async fn channel_loop(
     let channel_name = plugin_slug.clone();
     let mut backoff_secs = channel_def.restart_delay_secs;
     let max_backoff_secs = 300;
+    // Same self-healing shape as the watch loop above: a few fast retries
+    // through auth-looking blips, then a slow probe cadence — never a
+    // permanent park (the July Slack outage parked channels exactly this way).
+    let mut consecutive_auth_failures: u32 = 0;
+    const AUTH_PAUSE_THRESHOLD: u32 = 3;
+    const AUTH_PAUSED_RETRY_SECS: u64 = 900;
 
     // Threads this bot has posted into — feeds the respond-scope check for
     // un-addressed thread replies. Outside the respawn loop so bridge
@@ -2483,11 +2503,23 @@ async fn channel_loop(
         {
             let stderr_text = stderr_collected.lock().await;
             if tools::plugin_tool::is_auth_error(&stderr_text) {
+                consecutive_auth_failures += 1;
+                if consecutive_auth_failures < AUTH_PAUSE_THRESHOLD {
+                    warn!(
+                        agent = %agent_id,
+                        channel = %channel_name,
+                        plugin = %plugin_slug,
+                        attempt = consecutive_auth_failures,
+                        "channel exited with an auth-looking error; retrying with backoff \
+                         (slowing only after {AUTH_PAUSE_THRESHOLD} consecutive auth failures)"
+                    );
+                    // fall through to the normal restart-with-backoff below
+                } else {
                 warn!(
                     agent = %agent_id,
                     channel = %channel_name,
                     plugin = %plugin_slug,
-                    "channel failed: plugin not authenticated, pausing until auth completes"
+                    "channel failed: plugin auth failing persistently, slowing to probe cadence until auth recovers"
                 );
 
                 let notif_id = format!("auth-required:{}:{}", agent_id, plugin_slug);
@@ -2522,7 +2554,13 @@ async fn channel_loop(
                     );
                 }
 
-                break;
+                // Self-heal: keep probing on the slow cadence instead of
+                // parking (see the watch loop for the rationale); a real
+                // reconnect still resumes immediately via plugin_auth_complete.
+                backoff_secs = AUTH_PAUSED_RETRY_SECS;
+                }
+            } else {
+                consecutive_auth_failures = 0;
             }
         }
 
@@ -2562,6 +2600,11 @@ async fn shared_channel_loop(
     let channel_name = plugin_slug.clone();
     let mut backoff_secs = channel_def.restart_delay_secs;
     let max_backoff_secs = 300;
+    // Same self-healing shape as the watch and dedicated-channel loops:
+    // fast retries through auth-looking blips, then a slow probe cadence.
+    let mut consecutive_auth_failures: u32 = 0;
+    const AUTH_PAUSE_THRESHOLD: u32 = 3;
+    const AUTH_PAUSED_RETRY_SECS: u64 = 900;
 
     // Threads any registered agent has replied into via this shared bridge —
     // feeds the respond-scope check, same as the per-agent loop.
@@ -2925,9 +2968,17 @@ async fn shared_channel_loop(
         {
             let stderr_text = stderr_collected.lock().await;
             if tools::plugin_tool::is_auth_error(&stderr_text) {
+                consecutive_auth_failures += 1;
+                if consecutive_auth_failures < AUTH_PAUSE_THRESHOLD {
+                    warn!(
+                        plugin = %plugin_slug,
+                        attempt = consecutive_auth_failures,
+                        "shared channel exited with an auth-looking error; retrying with backoff"
+                    );
+                } else {
                 warn!(
                     plugin = %plugin_slug,
-                    "shared channel failed: plugin not authenticated"
+                    "shared channel failed: plugin auth failing persistently, slowing to probe cadence until auth recovers"
                 );
 
                 if let Some(ref notify) = notify_fn {
@@ -2941,7 +2992,12 @@ async fn shared_channel_loop(
                         }),
                     );
                 }
-                break;
+                // Self-heal: keep probing on the slow cadence instead of
+                // parking; reconnecting still resumes via plugin_auth_complete.
+                backoff_secs = AUTH_PAUSED_RETRY_SECS;
+                }
+            } else {
+                consecutive_auth_failures = 0;
             }
         }
 
