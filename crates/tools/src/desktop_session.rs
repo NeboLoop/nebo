@@ -124,6 +124,18 @@ pub async fn ensure_started() -> Result<u16, String> {
         ACTIVE.store(false, Ordering::Relaxed);
     }
 
+    // A pod recreate leaves Chromium's profile lock pointing at the old
+    // hostname; Chromium then refuses to start from the dock ("profile in
+    // use on another computer"). Nothing else can hold the profile in a
+    // fresh session — clear the stale locks before the desktop comes up.
+    if let Ok(home) = std::env::var("HOME") {
+        for f in ["SingletonLock", "SingletonSocket", "SingletonCookie"] {
+            let _ = std::fs::remove_file(
+                std::path::Path::new(&home).join(".config/chromium").join(f),
+            );
+        }
+    }
+
     let xvfb = nice("Xvfb")
         .args([DISPLAY, "-screen", "0", "1280x800x24", "-nolisten", "tcp"])
         .stdin(std::process::Stdio::null())
@@ -161,7 +173,7 @@ pub async fn ensure_started() -> Result<u16, String> {
     // windows. Compositor off: no GPU under Xvfb, and x11vnc reads the
     // plain framebuffer anyway.
     let session = nice("dbus-run-session")
-        .args(["--", "sh", "-c", "xsetroot -solid '#101726' 2>/dev/null; xfwm4 --compositor=off & exec xfce4-panel"])
+        .args(["--", "sh", "-c", "xsetroot -solid '#101726' 2>/dev/null; xfwm4 --compositor=off & (sleep 1; chromium --no-first-run --start-maximized --disable-dev-shm-usage --disable-gpu >/dev/null 2>&1) & exec xfce4-panel"])
         .env("DISPLAY", DISPLAY)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())

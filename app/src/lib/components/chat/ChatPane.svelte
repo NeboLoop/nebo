@@ -1649,7 +1649,7 @@
     <!-- Creations content — one renderer for every format, routed by extension -->
     <div class="flex-1 overflow-y-auto">
       {#if desktopOpen}
-        <DesktopView onclose={() => { desktopOpen = false; creationsOpen = false; workFull = false; }} />
+        <DesktopView onclose={() => { desktopOpen = false; creationsOpen = false; workFull = false; }} onrecord={() => (teachActive ? stopTeach() : startTeach())} recording={teachActive} />
       {:else if activeArtifact?.url}
         <!-- Key on documentId:version so a new version re-mounts the viewer in
              place (and the version-specific URL also defeats the browser cache). -->

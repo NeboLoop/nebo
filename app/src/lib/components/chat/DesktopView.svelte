@@ -12,11 +12,14 @@
 	import RFB from '@novnc/novnc';
 	import { backendWsBase } from '$lib/api/base';
 
-	let { onclose }: { onclose?: () => void } = $props();
+	let {
+		onclose,
+		onrecord,
+		recording = false
+	}: { onclose?: () => void; onrecord?: () => void; recording?: boolean } = $props();
 
 	let container: HTMLDivElement | undefined = $state();
 	let status = $state<'connecting' | 'connected' | 'error'>('connecting');
-	let viewOnly = $state(false);
 	let rfb: RFB | null = null;
 	let closed = false;
 
@@ -27,7 +30,6 @@
 		const r = new RFB(container, `${backendWsBase()}/ws/desktop`, { shared: true });
 		r.scaleViewport = true;
 		r.resizeSession = false;
-		r.viewOnly = viewOnly;
 		r.addEventListener('connect', () => (status = 'connected'));
 		r.addEventListener('disconnect', () => {
 			rfb = null;
@@ -49,10 +51,6 @@
 		};
 	});
 
-	function toggleViewOnly() {
-		viewOnly = !viewOnly;
-		if (rfb) rfb.viewOnly = viewOnly;
-	}
 </script>
 
 <div class="flex flex-col h-full min-h-0">
@@ -66,14 +64,16 @@
 					? 'bg-warning animate-pulse'
 					: 'bg-error'}"
 		></span>
-		<button
-			type="button"
-			class="btn btn-ghost btn-xs ml-auto normal-case"
-			onclick={toggleViewOnly}
-			title={viewOnly ? $t('chat.takeControl') : $t('chat.watchOnly')}
-		>
-			{viewOnly ? $t('chat.watching') : $t('chat.driving')}
-		</button>
+		{#if onrecord}
+			<button
+				type="button"
+				class="btn btn-xs ml-auto normal-case {recording ? 'btn-error' : 'btn-ghost text-error'}"
+				onclick={onrecord}
+			>
+				<span class="w-2 h-2 rounded-full {recording ? 'bg-white animate-pulse' : 'bg-error'}"></span>
+				{recording ? $t('chat.recording') : $t('chat.recordTask')}
+			</button>
+		{/if}
 		{#if onclose}
 			<button
 				type="button"
