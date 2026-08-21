@@ -276,10 +276,18 @@ fn inject_app_bridge(contents: Vec<u8>) -> Vec<u8> {
 
 /// GET /sdk/nebo.global.js — serve the app SDK IIFE build for vanilla/HTMX apps.
 pub async fn serve_sdk_iife() -> Response {
+    // Dev freshness first (live node_modules on a source checkout), then the
+    // copy embedded with the SPA (app/static/sdk/ → build/sdk/) — the ONLY
+    // form that exists in the shipped image; the node_modules path 404'd on
+    // every cloud bot.
     let path =
         StdPath::new(env!("CARGO_MANIFEST_DIR")).join("../../app/node_modules/@neboai/app-sdk/dist/nebo.global.js");
-    match fs::read(&path).await {
-        Ok(contents) => {
+    let contents: Option<Vec<u8>> = match fs::read(&path).await {
+        Ok(c) => Some(c),
+        Err(_) => crate::spa::embedded_asset("sdk/nebo.global.js").map(|f| f.data.into_owned()),
+    };
+    match contents {
+        Some(contents) => {
             let mut response = Response::new(Body::from(contents));
             response.headers_mut().insert(
                 header::CONTENT_TYPE,
@@ -291,7 +299,7 @@ pub async fn serve_sdk_iife() -> Response {
             );
             response
         }
-        Err(_) => StatusCode::NOT_FOUND.into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
     }
 }
 

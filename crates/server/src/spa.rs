@@ -8,6 +8,12 @@ use crate::VERSION;
 #[folder = "../../app/build/"]
 struct Frontend;
 
+/// Raw embedded-asset lookup for handlers outside the SPA route (the app-SDK
+/// IIFE ships in build/sdk/ via app/static/).
+pub fn embedded_asset(path: &str) -> Option<rust_embed::EmbeddedFile> {
+    Frontend::get(path)
+}
+
 /// Serve SPA assets with fallback to index.html for client-side routing.
 pub async fn spa_handler(uri: Uri) -> Response {
     let path = uri.path().trim_start_matches('/');
