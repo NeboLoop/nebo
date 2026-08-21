@@ -27,7 +27,7 @@
   let failed = $state(false);
   let viewSource = $state(false);
 
-  const docId = $derived($page.params.documentId);
+  const docId = $derived($page.params.documentId ?? '');
   const canToggleSource = $derived(
     !!doc && ['html', 'md', 'markdown', 'txt'].includes((doc.filename.split('.').pop() || '').toLowerCase())
   );
