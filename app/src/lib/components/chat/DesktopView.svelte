@@ -44,8 +44,16 @@
 
 	onMount(() => {
 		connect();
+		// noVNC only rescales on window resize — a panel drag or the opening
+		// animation leaves the canvas frozen at its connect-moment size.
+		// Re-assigning scaleViewport forces a rescale to the current box.
+		const ro = new ResizeObserver(() => {
+			if (rfb) rfb.scaleViewport = true;
+		});
+		if (container) ro.observe(container);
 		return () => {
 			closed = true;
+			ro.disconnect();
 			rfb?.disconnect();
 			rfb = null;
 		};
