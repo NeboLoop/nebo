@@ -31,17 +31,17 @@
   <property name="plugins" type="empty">
     <property name="plugin-1" type="string" value="launcher">
       <property name="items" type="array">
-        <value type="string" value="/usr/share/applications/chromium.desktop"/>
+        <value type="string" value="chromium.desktop"/>
       </property>
     </property>
     <property name="plugin-2" type="string" value="launcher">
       <property name="items" type="array">
-        <value type="string" value="/usr/share/applications/xfce4-terminal.desktop"/>
+        <value type="string" value="xfce4-terminal.desktop"/>
       </property>
     </property>
     <property name="plugin-3" type="string" value="launcher">
       <property name="items" type="array">
-        <value type="string" value="/usr/share/applications/thunar.desktop"/>
+        <value type="string" value="thunar.desktop"/>
       </property>
     </property>
     <property name="plugin-4" type="string" value="separator">

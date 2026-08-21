@@ -82,6 +82,7 @@ COPY --from=build /src/target/server/nebo-cli /usr/local/bin/nebo-cli
 # panel default applies only until the user customizes (their config lands on
 # the persistent volume and wins).
 COPY assets/cloud-desktop/xfce4-panel.xml /etc/xdg/xfce4/xfconf/xfce-perchannel-xml/xfce4-panel.xml
+COPY assets/cloud-desktop/xfce4-panel.xml /etc/nebo/desktop-skel/xfce4-panel.xml
 COPY assets/cloud-desktop/zshrc /etc/nebo/zshrc
 # $HOME lives on the persistent /data volume so toolchains the agent installs
 # (rustup, Go, nvm, pip --user) survive restarts and consent-update rolls —
