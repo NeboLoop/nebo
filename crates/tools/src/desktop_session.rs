@@ -134,6 +134,38 @@ pub async fn ensure_started() -> Result<u16, String> {
                 std::path::Path::new(&home).join(".config/chromium").join(f),
             );
         }
+        // A pod roll is always an "unclean" Chromium exit; without this every
+        // session opens on a "Restore pages?" nag (the CLI flag no longer
+        // suppresses it). Rewriting the recorded exit state is the fix.
+        let prefs = std::path::Path::new(&home).join(".config/chromium/Default/Preferences");
+        if let Ok(txt) = std::fs::read_to_string(&prefs) {
+            let fixed = txt
+                .replace("\"exit_type\":\"Crashed\"", "\"exit_type\":\"Normal\"")
+                .replace("\"exited_cleanly\":false", "\"exited_cleanly\":true");
+            let _ = std::fs::write(&prefs, fixed);
+        }
+    }
+
+    // Seed the panel layout ONCE per home: xfconf system defaults don't carry
+    // the launcher item arrays, so the dock rendered placeholder gears. The
+    // panel's native form is per-launcher .desktop dirs in user config — seed
+    // them only when the user has no panel config, so customization survives.
+    if let Ok(home) = std::env::var("HOME") {
+        let user_panel = std::path::Path::new(&home)
+            .join(".config/xfce4/xfconf/xfce-perchannel-xml/xfce4-panel.xml");
+        if !user_panel.exists() {
+            let _ = std::fs::create_dir_all(user_panel.parent().unwrap());
+            let _ = std::fs::copy("/etc/nebo/desktop-skel/xfce4-panel.xml", &user_panel);
+            for (n, app) in [(1, "chromium"), (2, "xfce4-terminal"), (3, "thunar")] {
+                let dir = std::path::Path::new(&home)
+                    .join(format!(".config/xfce4/panel/launcher-{n}"));
+                let _ = std::fs::create_dir_all(&dir);
+                let _ = std::fs::copy(
+                    format!("/usr/share/applications/{app}.desktop"),
+                    dir.join(format!("{app}.desktop")),
+                );
+            }
+        }
     }
 
     let xvfb = nice("Xvfb")
@@ -173,7 +205,7 @@ pub async fn ensure_started() -> Result<u16, String> {
     // windows. Compositor off: no GPU under Xvfb, and x11vnc reads the
     // plain framebuffer anyway.
     let session = nice("dbus-run-session")
-        .args(["--", "sh", "-c", "xsetroot -solid '#101726' 2>/dev/null; xfwm4 --compositor=off & (sleep 1; chromium --no-first-run --start-maximized --disable-dev-shm-usage --disable-gpu >/dev/null 2>&1) & exec xfce4-panel"])
+        .args(["--", "sh", "-c", "xsetroot -solid '#101726' 2>/dev/null; xfwm4 --compositor=off & (sleep 1; chromium --no-first-run --hide-crash-restore-bubble --start-maximized --disable-dev-shm-usage --disable-gpu >/dev/null 2>&1) & exec xfce4-panel"])
         .env("DISPLAY", DISPLAY)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
