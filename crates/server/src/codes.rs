@@ -1408,7 +1408,9 @@ pub(crate) async fn reconcile_app_fields(state: &AppState) {
                 "kind": "app",
                 "title": title,
                 "description": loaded.agent_def.description,
-                "openPath": format!("/apps/{}/ui/", id),
+                // Explicit entry file: a bare trailing-slash path never
+                // matches the router and falls through to the SPA shell.
+                "openPath": format!("/apps/{}/ui/index.html", id),
             }),
         );
     }

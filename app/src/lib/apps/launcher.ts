@@ -82,5 +82,7 @@ export async function launchApp(
 	const features = `width=${cfg.width},height=${cfg.height},left=${left},top=${top},resizable=${cfg.resizable ? 'yes' : 'no'},scrollbars=yes`;
 	// window.open is a new browsing context — the beforeNavigate re-rooter
 	// doesn't apply, so carry the runtime base (tunnel prefix) explicitly.
-	window.open(withBase(`/apps/${agentId}/ui/`), `app-${agentId}`, features);
+	// Explicit entry file: a bare trailing-slash path never matches the
+	// server router and falls through to the SPA shell.
+	window.open(withBase(`/apps/${agentId}/ui/index.html`), `app-${agentId}`, features);
 }

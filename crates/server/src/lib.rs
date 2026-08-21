@@ -2405,11 +2405,11 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         .route("/ws/extension", axum::routing::get(handlers::ws::extension_ws_handler))
         .route("/ws/voice/conversation", axum::routing::get(handlers::voice::conversation_ws_handler))
         .route("/ws/desktop", axum::routing::get(handlers::desktop::desktop_ws_handler))
-        // Both the root (empty-path) and wildcard forms: axum's {*path}
-        // catch-all needs ≥1 char, so /apps/x/ui/ alone would fall through to
-        // the SPA shell and serve the wrong app. The /api/v1 router already
-        // registers both — this brings the browser-facing pair in line.
-        .route("/apps/{agent_id}/ui/", axum::routing::get(handlers::apps::serve_app_ui_root))
+        // Root + wildcard forms. The slashless /apps/x/ui is the matchable
+        // root — a TRAILING-slash route ("…/ui/") never matches in axum's
+        // router (empty trailing segment), silently falling through to the
+        // SPA shell; links must use /ui or /ui/index.html, never bare /ui/.
+        .route("/apps/{agent_id}/ui", axum::routing::get(handlers::apps::serve_app_ui_root))
         .route("/apps/{agent_id}/ui/{*path}", axum::routing::get(handlers::apps::serve_app_ui))
         .route("/sdk/nebo.global.js", axum::routing::get(handlers::apps::serve_sdk_iife))
         .merge(http_routes)
