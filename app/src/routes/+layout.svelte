@@ -4,8 +4,6 @@
   import { t } from 'svelte-i18n';
   import { page } from '$app/stores';
   import { goto, appPath } from '$lib/nav';
-  import { computerOpen } from '$lib/stores/computer';
-  import DesktopView from '$lib/components/chat/DesktopView.svelte';
   import { beforeNavigate } from '$app/navigation';
   import { base } from '$app/paths';
   import { mobileAgentsOpen } from '$lib/stores/mobileNav';
@@ -223,15 +221,6 @@
           {/each}
         </nav>
         <div class="flex-1"></div>
-        <!-- The bot's computer — installation-wide (one desktop per Nebo,
-             shared by every employee), so it lives up here, not in a chat. -->
-        <button
-          onclick={() => computerOpen.update((v) => !v)}
-          title={$t('chat.openComputer')}
-          class="flex items-center justify-center h-8 w-8 mr-1 md:mr-2 rounded-field cursor-pointer border border-base-300 bg-base-100 text-base-content/70 hover:text-base-content {$computerOpen ? 'text-primary border-primary/40' : ''}"
-        >
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
-        </button>
         <button
           onclick={() => (showCommandPalette = true)}
           data-tour="search"
@@ -259,20 +248,6 @@
        over any view; sends the decision back via `approval_response`. -->
   <ApprovalGate />
   <CommandPalette bind:show={showCommandPalette} />
-  <!-- The ONE computer drawer: the installation's shared desktop. -->
-  {#if $computerOpen}
-    <div class="fixed inset-0 z-40 flex justify-end">
-      <button
-        type="button"
-        class="absolute inset-0 bg-black/30 border-none cursor-default"
-        aria-label={$t('chat.closeComputer')}
-        onclick={() => computerOpen.set(false)}
-      ></button>
-      <div class="relative h-full w-full md:w-[70%] lg:w-[60%] bg-base-100 shadow-xl flex flex-col">
-        <DesktopView onclose={() => computerOpen.set(false)} />
-      </div>
-    </div>
-  {/if}
   <UpgradeSuccessModal
     bind:show={showUpgradeSuccess}
     plan={upgradedPlan}
