@@ -7,14 +7,19 @@
 
 	export interface AskWidgetDef {
 		/** 'options' is canonical; legacy single-choice shapes still render. */
-		type: 'options' | 'buttons' | 'confirm' | 'select' | 'radio' | 'checkbox' | 'connect_account';
+		type: 'options' | 'buttons' | 'confirm' | 'select' | 'radio' | 'checkbox' | 'connect_account' | 'install_plugin';
 		label?: string;
 		options?: AskOption[];
 		multiSelect?: boolean;
 		default?: string;
-		/** connect_account: plugin slug + agent whose account list the OAuth targets. */
+		/** connect_account: plugin slug + agent whose account list the OAuth targets.
+		 *  install_plugin: same `plugin` slug, plus the marketplace install code. */
 		plugin?: string;
 		agentId?: string;
+		/** install_plugin: PLUG-XXXX-XXXX code redeemed via the canonical POST /codes path. */
+		code?: string;
+		name?: string;
+		description?: string;
 	}
 
 	interface NormalizedOption {
@@ -46,8 +51,10 @@
 
 	import Plug from 'lucide-svelte/icons/plug';
 	import Check from 'lucide-svelte/icons/check';
+	import Download from 'lucide-svelte/icons/download';
 	import { getWebSocketClient } from '$lib/websocket/client';
 	import { startPluginAccountLogin } from '$lib/api/pluginAccounts';
+	import { submitCode } from '$lib/api/nebo';
 
 	// connect_account: run the same OAuth pathway as Settings → Connected
 	// Accounts, then answer the parked ask_request so the tool call resumes.
@@ -55,6 +62,28 @@
 	let connectError = $state<string | null>(null);
 	let connectDone = $state(false);
 	let accountLabel = $state('Primary');
+
+	// install_plugin: redeem the marketplace code through the ONE install
+	// pathway (POST /codes → codes::handle_code), then answer the parked
+	// ask_request so the discover call resumes.
+	let installing = $state(false);
+	let installError = $state<string | null>(null);
+	let installDone = $state(false);
+
+	async function startInstall(w: AskWidgetDef) {
+		if (installing || !w.code) return;
+		installing = true;
+		installError = null;
+		try {
+			await submitCode({ code: w.code });
+			installDone = true;
+			submit('installed');
+		} catch (e) {
+			installError = e instanceof Error ? e.message : $t('chat.installFailed');
+		} finally {
+			installing = false;
+		}
+	}
 
 	async function startConnect(w: AskWidgetDef) {
 		if (connecting || !w.plugin || !w.agentId) return;
@@ -149,6 +178,32 @@
 		{/if}
 	{:else if disabled}
 		<div class="badge badge-ghost badge-sm">{$t('common.skipped')}</div>
+	{:else if widget?.type === 'install_plugin'}
+		<div class="flex items-center gap-3 rounded-lg border border-base-300 bg-base-100 px-3 py-2.5">
+			<div class="rounded-md bg-base-200 p-2">
+				{#if installDone}<Check class="w-5 h-5 text-success" />{:else}<Download class="w-5 h-5" />{/if}
+			</div>
+			<div class="flex-1 min-w-0">
+				<div class="text-sm font-medium truncate">{widget.name ?? widget.plugin}</div>
+				{#if installError}
+					<div class="text-xs text-error">{installError}</div>
+				{:else if widget.description}
+					<div class="text-xs text-base-content/60 line-clamp-2">{widget.description}</div>
+				{/if}
+			</div>
+			<button
+				type="button"
+				class="btn btn-sm btn-primary"
+				disabled={installing}
+				onclick={() => widget && startInstall(widget)}
+			>
+				{#if installing}<span class="loading loading-spinner loading-xs"></span>{/if}
+				{installing ? $t('chat.installing') : $t('chat.install')}
+			</button>
+		</div>
+		<div class="mt-2 flex">
+			<button type="button" class="text-xs text-base-content/40 hover:text-base-content/70 cursor-pointer bg-transparent border-none px-0 ml-auto" onclick={() => submit(SKIP_VALUE)}>{$t('common.skip')}</button>
+		</div>
 	{:else if widget?.type === 'connect_account'}
 		<div class="flex items-center gap-3 rounded-lg border border-base-300 bg-base-100 px-3 py-2.5">
 			<div class="rounded-md bg-base-200 p-2">
