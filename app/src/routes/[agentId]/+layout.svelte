@@ -13,8 +13,8 @@
   import BrandMark from '$lib/components/BrandMark.svelte';
   import ShelfModal from '$lib/components/ui/ShelfModal.svelte';
   import InboxView from '$lib/components/inbox/InboxView.svelte';
+  import RunsPane from '$lib/components/flows/RunsPane.svelte';
   import AgentSettingsModal from '$lib/components/settings/agent/AgentSettingsModal.svelte';
-  import FlowModal from '$lib/components/flows/FlowModal.svelte';
   import { unreadCount } from '$lib/stores/notifications';
   import { commandPaletteOpen } from '$lib/stores/commandPalette';
 
@@ -47,9 +47,9 @@
     goto(url.pathname + url.search, { replaceState: replace, noScroll: true, keepFocus: true });
   }
   const settingsSection = $derived($page.url.searchParams.get('settings'));
-  const openFlowName = $derived($page.url.searchParams.get('flow'));
-  const openFlow = (n: string) => setParams((p) => p.set('flow', n));
-  const closeFlow = () => setParams((p) => p.delete('flow'));
+  const runsOpen = $derived($page.url.searchParams.has('runs'));
+  const openRuns = () => setParams((p) => p.set('runs', '1'));
+  const closeRuns = () => setParams((p) => p.delete('runs'));
   const openInbox = () => setParams((p) => p.set('inbox', '1'));
   const openSettings = () => setParams((p) => p.set('settings', 'general'));
   const closeSettings = () => setParams((p) => p.delete('settings'));
@@ -636,7 +636,7 @@
     get devMode() { return $devMode; },
     get agentStatuses() { return agentStatuses; },
     openWorkflow,
-    openFlow,
+    openRuns,
     askEmployee,
     openCanvas,
     triggerSummary,
@@ -936,13 +936,6 @@
 <!-- Columns 2+3: rendered by child routes -->
 {@render children()}
 
-<FlowModal
-  name={openFlowName}
-  onclose={closeFlow}
-  onask={(prompt) => { closeFlow(); askEmployee(prompt); }}
-  onopenrun={(id) => { closeFlow(); goto(`/${agentId}/runs/${id}`); }}
-/>
-
 <AgentSettingsModal
   open={settingsSection !== null}
   section={settingsSection ?? 'general'}
@@ -950,6 +943,10 @@
   onsection={selectSection}
   onclose={closeSettings}
 />
+
+<ShelfModal open={runsOpen} title={$t('nav.runs')} onclose={closeRuns}>
+  <RunsPane onopen={(id) => { closeRuns(); goto(`/${agentId}/runs/${id}`); }} />
+</ShelfModal>
 
 <ShelfModal open={inboxOpen} title={$t('nav.inbox')} onclose={closeInbox}>
   <InboxView

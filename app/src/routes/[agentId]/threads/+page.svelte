@@ -1,6 +1,5 @@
 <script lang="ts">
   import FlowsPane from '$lib/components/flows/FlowsPane.svelte';
-  import RunsPane from '$lib/components/flows/RunsPane.svelte';
   import { getContext, onDestroy, onMount } from 'svelte';
   import { t } from 'svelte-i18n';
   import { goto } from '$lib/nav';
@@ -85,6 +84,7 @@
   agentId={agentId}
   headerTitle={$t('chat.newThread')}
   headerRight={$t('chat.work')}
+  onopenruns={ctx.openRuns}
 
   placeholder={$t('chat.startNewThreadWith', { values: { name: agent?.name ?? '' } })}
   emptyTitle={greeting}
@@ -101,6 +101,5 @@
   chatError={chat.chatError}
   ondismisserror={() => chat.dismissError()}
 >
-  {#snippet flowsPane()}<FlowsPane onopen={ctx.openFlow} onask={ctx.askEmployee} />{/snippet}
-  {#snippet runsPane()}<RunsPane onopen={(id) => goto(`/${ctx.agentId}/runs/${id}`)} />{/snippet}
+  {#snippet flowsPane()}<FlowsPane onask={ctx.askEmployee} />{/snippet}
 </ChatPane>

@@ -74,13 +74,14 @@
 
   type AgentInfo = { id: string; name: string; color: string; initial: string; role: string; status: string; isApp?: boolean };
 
-  let { messages = [], agentName = 'Agent', agentId = '', threadId = '', sessionId = '', headerTitle = '', headerRight = '', placeholder = '', emptyIcon = '', emptyTitle = '', emptyDesc = '', allAgents = [], onteachsent, activityStatus = '', tokenUsage = null, quotaWarning = '', chatError = '', onsend, onstop, onedit, onredo, onasksubmit, onrestoreversion, ondismisswarning, ondismisserror, onloadmore, isLoading = false, isLoadingMore = false, hasMore = false, allowAttachments = true, flowsPane, runsPane }: {
+  let { messages = [], agentName = 'Agent', agentId = '', threadId = '', sessionId = '', headerTitle = '', headerRight = '', placeholder = '', emptyIcon = '', emptyTitle = '', emptyDesc = '', allAgents = [], onteachsent, activityStatus = '', tokenUsage = null, quotaWarning = '', chatError = '', onsend, onstop, onedit, onredo, onasksubmit, onrestoreversion, ondismisswarning, ondismisserror, onloadmore, isLoading = false, isLoadingMore = false, hasMore = false, allowAttachments = true, flowsPane, onopenruns }: {
     messages?: Message[];
     /** Employee-scoped views for the work pane. Omitted on chats with no
      *  employee behind them (channel setup help, the embed), and the matching
      *  header icon then doesn't render. */
     flowsPane?: Snippet;
-    runsPane?: Snippet;
+    /** Runs open as a modal over the workspace, not in the pane. */
+    onopenruns?: () => void;
     agentName?: string;
     agentId?: string;
     threadId?: string;
@@ -116,7 +117,7 @@
   let composerRef = $state<{ focus: () => void; focusAndInsert: (char: string) => void; addFiles: (files: File[]) => void } | null>(null);
   let creationsOpen = $state(false);
   // The bot's computer takes over the work panel while open.
-  type PaneView = 'work' | 'flows' | 'runs';
+  type PaneView = 'work' | 'flows';
   // Flows and runs belong to an employee, not to a chat, so they arrive as
   // props from the agent route. Surfaces without an employee (the channels
   // help chat, the embed) pass nothing and the icons don't render.
@@ -1026,8 +1027,8 @@
         {#if flowsPane}
           {@render headerIcon(creationsOpen && paneView === 'flows', $t('nav.flows'), () => togglePane('flows'), flowsIcon)}
         {/if}
-        {#if runsPane}
-          {@render headerIcon(creationsOpen && paneView === 'runs', $t('nav.runs'), () => togglePane('runs'), runsIcon)}
+        {#if onopenruns}
+          {@render headerIcon(false, $t('nav.runs'), onopenruns, runsIcon)}
         {/if}
         {#if headerRight}
           {@render headerIcon(creationsOpen && paneView === 'work', $t('chat.work'), () => togglePane('work'), workIcon)}
@@ -1642,7 +1643,9 @@
           </ul>
         </div>
       {:else}
-        <span class="text-sm font-semibold flex-1 truncate">{creationsTitle || $t('chat.work')}</span>
+        <span class="text-sm font-semibold flex-1 truncate">
+          {paneView === 'flows' ? $t('nav.flows') : creationsTitle || $t('chat.work')}
+        </span>
       {/if}
       {#if activeArtifact?.url && (activeArtifact.codeUrl || activeArtifact.url.endsWith('.html') || activeArtifact.url.endsWith('.md') || activeArtifact.url.endsWith('.txt'))}
         <div class="flex items-center rounded-md bg-base-200 p-0.5 shrink-0">
@@ -1713,8 +1716,6 @@
     <div class="flex-1 overflow-y-auto">
       {#if paneView === 'flows'}
         {#if flowsPane}{@render flowsPane()}{/if}
-      {:else if paneView === 'runs'}
-        {#if runsPane}{@render runsPane()}{/if}
       {:else if activeArtifact?.url}
         <!-- Key on documentId:version so a new version re-mounts the viewer in
              place (and the version-specific URL also defeats the browser cache). -->

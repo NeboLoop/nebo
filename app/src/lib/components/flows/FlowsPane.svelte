@@ -13,7 +13,9 @@
   import { getActivityType } from '$lib/utils/workflowTypes';
   import type { AgentPageContext, WorkflowConfig, WorkflowActivity } from '$lib/types/agentPage';
 
-  let { onopen, onask }: { onopen: (name: string) => void; onask: (prompt: string) => void } = $props();
+  // Clicking a flow opens the visual builder: seeing the chain of steps and
+  // the events between them is the whole point of having flows at all.
+  let { onask }: { onask: (prompt: string) => void } = $props();
 
   const ctx = getContext<AgentPageContext>('agentPage');
   const entries = $derived(ctx.workflowEntries);
@@ -78,7 +80,7 @@
               {#if wf.trigger?.type === 'schedule'}&#8635;{:else if wf.trigger?.type === 'event'}&#9889;{:else if wf.trigger?.type === 'watch'}&#128065;{:else if wf.trigger?.type === 'heartbeat'}&#10084;{:else}&#9654;{/if}
             </div>
 
-            <button class="flex-1 min-w-0 text-left cursor-pointer bg-transparent border-none p-0" onclick={() => onopen(name)}>
+            <button class="flex-1 min-w-0 text-left cursor-pointer bg-transparent border-none p-0" onclick={() => ctx.openWorkflow(name, wf)}>
               <div class="flex items-center gap-1.5 flex-wrap">
                 <span class="text-sm font-medium">{name}</span>
                 {#if purchased}
