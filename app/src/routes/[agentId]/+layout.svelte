@@ -14,6 +14,8 @@
   import ShelfModal from '$lib/components/ui/ShelfModal.svelte';
   import InboxView from '$lib/components/inbox/InboxView.svelte';
   import RunsPane from '$lib/components/flows/RunsPane.svelte';
+  import RunDetail from '$lib/components/runs/RunDetail.svelte';
+  import MarketplaceBrowse from '$lib/components/marketplace/MarketplaceBrowse.svelte';
   import AgentSettingsModal from '$lib/components/settings/agent/AgentSettingsModal.svelte';
   import { unreadCount } from '$lib/stores/notifications';
   import { commandPaletteOpen } from '$lib/stores/commandPalette';
@@ -48,6 +50,12 @@
   }
   const settingsSection = $derived($page.url.searchParams.get('settings'));
   const runsOpen = $derived($page.url.searchParams.has('runs'));
+  const openRunId = $derived($page.url.searchParams.get('run'));
+  const openRun = (id: string) => setParams((p) => { p.delete('runs'); p.set('run', id); });
+  const closeRun = () => setParams((p) => p.delete('run'));
+  const marketOpen = $derived($page.url.searchParams.has('market'));
+  const openMarket = () => setParams((p) => p.set('market', '1'));
+  const closeMarket = () => setParams((p) => p.delete('market'));
   const openRuns = () => setParams((p) => p.set('runs', '1'));
   const closeRuns = () => setParams((p) => p.delete('runs'));
   const openInbox = () => setParams((p) => p.set('inbox', '1'));
@@ -920,14 +928,15 @@
           {/if}
         {/if}
       </button>
-      <a
-        href="/marketplace"
-        class="flex items-center gap-2.5 py-2 {isRail ? 'justify-center px-0' : 'px-3.5'} hover:bg-base-100/70 transition-colors"
+      <button
+        type="button"
+        onclick={openMarket}
+        class="w-full flex items-center gap-2.5 py-2 {isRail ? 'justify-center px-0' : 'px-3.5'} hover:bg-base-100/70 transition-colors bg-transparent border-none cursor-pointer text-left"
         title={$t('nav.marketplace')}
       >
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="shrink-0"><path d="M3 9h18v11a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z"/><path d="M3 9 5 3h14l2 6"/><path d="M9 13h6"/></svg>
         {#if !isRail}<span class="text-sm">{$t('nav.marketplace')}</span>{/if}
-      </a>
+      </button>
     </div>
     <UserMenu collapsed={isRail} />
   {/snippet}
@@ -944,8 +953,20 @@
   onclose={closeSettings}
 />
 
+<ShelfModal open={openRunId !== null} title={$t('agentActivity.runDetail')} onclose={closeRun}>
+  <div class="flex-1 min-h-0 flex flex-col overflow-hidden">
+    {#if openRunId}<RunDetail runId={openRunId} onclose={closeRun} />{/if}
+  </div>
+</ShelfModal>
+
+<ShelfModal open={marketOpen} title={$t('nav.marketplace')} onclose={closeMarket}>
+  <div class="flex-1 min-h-0 overflow-y-auto">
+    <MarketplaceBrowse />
+  </div>
+</ShelfModal>
+
 <ShelfModal open={runsOpen} title={$t('nav.runs')} onclose={closeRuns}>
-  <RunsPane onopen={(id) => { closeRuns(); goto(`/${agentId}/runs/${id}`); }} />
+  <RunsPane onopen={openRun} />
 </ShelfModal>
 
 <ShelfModal open={inboxOpen} title={$t('nav.inbox')} onclose={closeInbox}>

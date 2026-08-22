@@ -79,7 +79,8 @@
 		"hide": "Hide",
 		"yearShort": "yr",
 		"monthShort": "mo",
-		"closeModal": "Close modal"
+		"closeModal": "Close modal",
+		"all": "All"
 	},
 	"time": {
 		"justNow": "just now",
@@ -2111,7 +2112,8 @@
 		"noActivityRecords": "No activity records for this run.",
 		"runAgain": "Run Again",
 		"runNotFound": "Run not found",
-		"backToRuns": "Back to runs"
+		"backToRuns": "Back to runs",
+		"runDetail": "Run"
 	},
 	"automations": {
 		"title": "Automations",
