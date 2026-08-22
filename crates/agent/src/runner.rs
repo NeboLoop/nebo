@@ -1001,10 +1001,25 @@ impl Runner {
                 (result.content, Some(meta_value.to_string()))
             } else {
                 // Normal-sized prompt — pass through as-is
-                let metadata = if !req.images.is_empty() {
-                    Some(serde_json::json!({"images": req.images}).to_string())
-                } else {
+                let mut meta = serde_json::Map::new();
+                if !req.images.is_empty() {
+                    meta.insert("images".into(), serde_json::json!(req.images));
+                }
+                // Synthetic auto-continuations are steering, not dialog: they
+                // must stay in history (the model needs them for coherent
+                // context) but carry a marker so no UI renders them as a user
+                // bubble (observed live 2026-08-22: judge messages showing as
+                // the user's own words in the transcript).
+                if crate::goals::is_continuation_prompt(&req.prompt) {
+                    // `hidden` is the frontend's existing steering convention —
+                    // history rendering skips these rows entirely.
+                    meta.insert("hidden".into(), serde_json::json!(true));
+                    meta.insert("steering".into(), serde_json::json!("auto_continue"));
+                }
+                let metadata = if meta.is_empty() {
                     None
+                } else {
+                    Some(serde_json::Value::Object(meta).to_string())
                 };
                 (req.prompt.clone(), metadata)
             };
