@@ -56,7 +56,13 @@ You judge whether an AI assistant finished its turn or left an explicit unfinish
 Respond with STRICT JSON only: {\"verdict\": \"continue\" | \"done\", \"reason\": \"...\"}\n\
 Verdict \"continue\" ONLY if the assistant's response contains an explicit unfinished commitment: \
 promised next steps (\"I'll now…\", \"next I will…\"), a partial enumeration it said it would \
-complete, or work it stated it would do but didn't show. If uncertain, the verdict is \"done\".";
+complete, or work it stated it would do but didn't show. If uncertain, the verdict is \"done\".\n\
+A response that ends by asking the user a question — offering options, requesting a decision, \
+or asking permission to proceed (\"Want me to…?\", \"Should we start with…?\") — is a COMPLETED \
+handoff: the question IS the finish. Verdict \"done\", always; an \"implicit commitment\" to act \
+on the user's future choice is NOT an unfinished commitment. Likewise an informational request \
+(a status check, a summary, \"how does X look?\") is done once the information is delivered — \
+starting the work it surfaced requires the user to ask.";
 
 /// Judge decision for a completed run.
 #[derive(Debug, Clone, PartialEq, Eq)]
