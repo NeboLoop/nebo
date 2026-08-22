@@ -392,6 +392,7 @@ impl Provider for CLIProvider {
                                             .unwrap_or(false);
                                         let _ = tx
                                             .send(StreamEvent { payload: None,
+                                                provenance: None,
                                                 event_type: StreamEventType::ToolResult,
                                                 text,
                                                 tool_call: Some(ToolCall {

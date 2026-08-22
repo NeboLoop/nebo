@@ -288,6 +288,7 @@ pub fn store_facts(
     user_id: &str,
     embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
     topics: &[MemoryTopic],
+    provenance: &[types::provenance::ProvenanceClass],
 ) {
     let entries = format_for_storage(facts, topics);
     let mut stored_keys: Vec<(String, String)> = Vec::new();
@@ -312,10 +313,16 @@ pub fn store_facts(
             serde_json::to_string(&entry.tags).ok()
         };
 
-        let metadata = serde_json::json!({
+        // Provenance rides the metadata annex (trust-boundaries design
+        // 2026-08-22): the classes of untrusted content the producing run
+        // touched. Absent key = owner/agent-authored (or pre-provenance).
+        let mut metadata = serde_json::json!({
             "confidence": entry.confidence,
-        })
-        .to_string();
+        });
+        if !provenance.is_empty() {
+            metadata["provenance"] = serde_json::json!(provenance);
+        }
+        let metadata = metadata.to_string();
 
         if let Err(e) = store.upsert_memory(
             &entry.namespace,
@@ -1471,7 +1478,7 @@ mod tests {
             }],
             ..Default::default()
         };
-        store_facts(&store, &facts, &scope.user_id, None, &[]);
+        store_facts(&store, &facts, &scope.user_id, None, &[], &[]);
 
         // Lands under the exact ctx scope…
         let stored = store

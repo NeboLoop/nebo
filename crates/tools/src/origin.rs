@@ -189,6 +189,17 @@ pub struct ToolContext {
     /// callers that don't run the approval gate (their OFF capabilities still
     /// hard-block, preserving enforcement).
     pub approved_categories: std::collections::HashSet<String>,
+    /// Engine-stamped provenance snapshot of the run at this iteration — the
+    /// classes of untrusted content the run has touched so far (accumulated by
+    /// the runner from the static tool→class table). Read-only for tools; the
+    /// coworker rail copies it onto outbound envelopes verbatim, and the
+    /// memory tool checks it against `memory_write_bar`.
+    pub run_taint: Vec<types::provenance::ProvenanceClass>,
+    /// Effective memory write bar for this run's scope (agent config
+    /// `memory.write_bar`, defaulted by the runner — `channel`+`phone` for
+    /// context-isolated scopes). A memory MUTATION whose run taint intersects
+    /// this set is refused at the store, never silently written.
+    pub memory_write_bar: Vec<types::provenance::ProvenanceClass>,
 }
 
 /// Canonical session key for an agent-bound workflow run: `agent:<id>:workflow:<run_id>`.

@@ -750,6 +750,7 @@ impl Orchestrator {
                     if let Some(p) = prog {
                         agent_metrics.insert(p.task_id.clone(), (p.tool_count, p.token_count));
                         let _ = progress_tx.send(StreamEvent { payload: None,
+                            provenance: None,
                             event_type: StreamEventType::SubagentProgress,
                             text: p.current_operation.clone(),
                             tool_call: None,

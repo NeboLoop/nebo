@@ -128,6 +128,14 @@ async fn send_coworker_message(
         from_name = from_name
     );
 
+    // Seed the target run with the REQUEST's provenance plus `coworker` —
+    // the inbound message is coworker content, and multi-hop chains carry the
+    // union by construction (trust-boundaries design 2026-08-22).
+    let mut seed_taint = msg.provenance.clone();
+    if !seed_taint.contains(&types::provenance::ProvenanceClass::Coworker) {
+        seed_taint.push(types::provenance::ProvenanceClass::Coworker);
+    }
+
     let entity_config = crate::entity_config::resolve_for_chat(&state.store, "agent", &to_id);
     let cancel_token = tokio_util::sync::CancellationToken::new();
     let config = ChatConfig {
@@ -150,6 +158,7 @@ async fn send_coworker_message(
         plan_mode: false,
         channel_ctx: None,
         handoff_depth: msg.handoff_depth + 1,
+        seed_taint,
     };
 
     let rx = run_chat_events(&state, config)
@@ -189,7 +198,7 @@ async fn send_coworker_message(
                 from_name: &from_name,
                 session_key: &thread_key,
             };
-            let reply = crate::channel_dispatch::collect_channel_reply(
+            let (reply, reply_provenance) = crate::channel_dispatch::collect_channel_reply(
                 rx,
                 &cancel_token,
                 &to_id,
@@ -197,6 +206,7 @@ async fn send_coworker_message(
                 Some(&owner),
             )
             .await;
+            let reply = label_tainted_reply(reply, &reply_provenance);
             record_reply(&state, mirror.as_deref(), &to_name, &reply);
             if let Err(reply) = done_tx.send(reply) {
                 if !reply.is_empty() {
@@ -393,6 +403,32 @@ fn coworker_thread_keys(
     (thread_key, mirror_key)
 }
 
+/// Prefix a reply whose producing run touched untrusted sources with an
+/// engine-written provenance label. The colleague's identity stays trusted;
+/// the content inherits the taint of its sources — a colleague relaying a
+/// webpage is still a webpage. The label is data-marking only; the
+/// data-not-instructions treatment is the engine's ONE `UntrustedContent`
+/// reminder, which fires on the recipient run's seeded taint.
+fn label_tainted_reply(
+    reply: String,
+    provenance: &[types::provenance::ProvenanceClass],
+) -> String {
+    let external: Vec<types::provenance::ProvenanceClass> = provenance
+        .iter()
+        .filter(|c| **c != types::provenance::ProvenanceClass::Coworker)
+        .copied()
+        .collect();
+    if reply.is_empty() || external.is_empty() {
+        return reply;
+    }
+    format!(
+        "[Contains content from: {}]
+{}",
+        types::provenance::label_classes(&external),
+        reply
+    )
+}
+
 /// Record the coworker's reply in the sender-side thread (best-effort — the
 /// reply already reached the sender via the tool result or session injection).
 fn record_reply(state: &AppState, mirror_sid: Option<&str>, to_name: &str, reply: &str) {
@@ -533,7 +569,26 @@ pub(crate) fn origin_matter_context(
 
 #[cfg(test)]
 mod tests {
-    use super::coworker_thread_keys;
+    use super::{coworker_thread_keys, label_tainted_reply};
+    use types::provenance::ProvenanceClass;
+
+    /// A tainted reply gets the engine-written provenance label; a clean reply
+    /// (coworker-only provenance) and an empty reply pass through untouched.
+    #[test]
+    fn tainted_replies_are_labeled() {
+        let labeled = label_tainted_reply(
+            "The Smith wire cleared.".into(),
+            &[ProvenanceClass::Coworker, ProvenanceClass::ExternalEmail],
+        );
+        assert!(labeled.starts_with("[Contains content from: external email]\n"));
+
+        let clean = label_tainted_reply("All set.".into(), &[ProvenanceClass::Coworker]);
+        assert_eq!(clean, "All set.");
+        assert_eq!(
+            label_tainted_reply(String::new(), &[ProvenanceClass::Web]),
+            ""
+        );
+    }
 
     /// The envelope's matter must round-trip into the target's isolation
     /// context via the runner's canonical `session_key_context` — this IS the

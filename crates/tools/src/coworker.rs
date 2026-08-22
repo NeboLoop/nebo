@@ -36,6 +36,10 @@ pub struct CoworkerMessage {
     /// enforces the chain cap so enlistment chains and A↔B cycles stay
     /// bounded.
     pub handoff_depth: u8,
+    /// Engine-stamped provenance of the SENDER's run at send time (copied
+    /// verbatim from `ToolContext.run_taint`). The rail seeds the target run
+    /// with it, so multi-hop chains carry the union by construction.
+    pub provenance: Vec<types::provenance::ProvenanceClass>,
     /// Wait for the coworker's reply (default). `false` = fire-and-forget:
     /// delivery is still acknowledged, and the reply is appended to the
     /// sender's session when it lands.

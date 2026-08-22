@@ -101,6 +101,9 @@ impl agent::ChannelDispatcher for ChannelDispatchImpl {
                 plan_mode: false,
                 channel_ctx: Some(channel_ctx),
                 handoff_depth: 0,
+                // Remote channel interlocutors (Slack/Discord) are untrusted
+                // input — seed the run's taint accordingly.
+                seed_taint: vec![types::provenance::ProvenanceClass::Channel],
             };
             let channel = channel_kind.as_str();
 
@@ -108,7 +111,9 @@ impl agent::ChannelDispatcher for ChannelDispatchImpl {
                 .await
                 .map_err(|e| format!("channel dispatch error: {}", e))?;
 
-            Ok(collect_channel_reply(rx, &cancel_token, agent_id, channel, None).await)
+            Ok(collect_channel_reply(rx, &cancel_token, agent_id, channel, None)
+                .await
+                .0)
         })
     }
 }
@@ -133,13 +138,16 @@ pub(crate) async fn collect_channel_reply(
     agent_id: &str,
     channel: &str,
     owner: Option<&crate::coworker::OwnerForward<'_>>,
-) -> String {
+) -> (String, Vec<types::provenance::ProvenanceClass>) {
     let mut full_response = String::new();
     // Channels have no status banner — the reply is the only surface. Keep the
     // last control-notice status line as a FALLBACK so a run that terminates
     // before producing any prose doesn't answer with silence (which reads as
     // the bot ignoring the user). It is used only when the reply is empty.
     let mut last_control_notice: Option<String> = None;
+    // Engine-stamped provenance of the run (Done events) — returned to the
+    // caller so the coworker rail can label tainted replies.
+    let mut reply_provenance: Vec<types::provenance::ProvenanceClass> = Vec::new();
     while let Some(event) = rx.recv().await {
         if let Some(frag) = crate::chat_dispatch::reply_fragment(&event) {
             // Skip orchestrator progress notifications — the
@@ -197,7 +205,12 @@ pub(crate) async fn collect_channel_reply(
                 // Remote channels: unchanged (asks are relayed by the comm
                 // pipeline where configured, not by this collector).
             }
-            _ => {} // ToolCall, ToolResult, Usage, Done — skip
+            StreamEventType::Done => {
+                if let Some(p) = &event.provenance {
+                    reply_provenance = p.clone();
+                }
+            }
+            _ => {} // ToolCall, ToolResult, Usage — skip
         }
     }
 
@@ -214,10 +227,10 @@ pub(crate) async fn collect_channel_reply(
     // silence. Real prose always wins — the notice never mixes into it.
     if reply.is_empty() {
         if let Some(notice) = last_control_notice {
-            return notice.trim().to_string();
+            return (notice.trim().to_string(), reply_provenance);
         }
     }
-    reply
+    (reply, reply_provenance)
 }
 
 #[cfg(test)]
@@ -246,7 +259,7 @@ mod tests {
         tx.send(ai::StreamEvent::done()).await.unwrap();
         drop(tx);
 
-        let reply = collect_channel_reply(rx, &cancel, "agent-1", "slack", None).await;
+        let (reply, _) = collect_channel_reply(rx, &cancel, "agent-1", "slack", None).await;
         assert_eq!(
             reply,
             "Here is what I found so far.\nTwo listings match your filters."
@@ -271,7 +284,7 @@ mod tests {
         tx.send(ai::StreamEvent::done()).await.unwrap();
         drop(tx);
 
-        let reply = collect_channel_reply(rx, &cancel, "agent-1", "slack", None).await;
+        let (reply, _) = collect_channel_reply(rx, &cancel, "agent-1", "slack", None).await;
         assert_eq!(
             reply,
             "I couldn't reach gws — reconnect this account in Settings, then ask me again."

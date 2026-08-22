@@ -308,6 +308,26 @@ impl AgentTool {
             );
         }
 
+        // Provenance write bar (trust-boundaries design 2026-08-22): a run
+        // whose engine-stamped taint intersects this scope's bar must not
+        // store — pollution stops at the store, not at the model's judgment.
+        if matches!(action, "store" | "save") {
+            let barred: Vec<_> = ctx
+                .run_taint
+                .iter()
+                .filter(|c| ctx.memory_write_bar.contains(c))
+                .copied()
+                .collect();
+            if !barred.is_empty() {
+                return ToolResult::error(format!(
+                    "Not saved: this memory scope refuses content from runs that touched {} \
+                     (scope write bar). Relay the information to the owner instead of storing \
+                     it. Do not retry.",
+                    types::provenance::label_classes(&barred)
+                ));
+            }
+        }
+
         match action {
             // "save" is the most common model misspelling of "store" — accept
             // it rather than burn a correction round-trip.
@@ -398,10 +418,19 @@ impl AgentTool {
                     "memory store attempt"
                 );
 
-                match self
-                    .store
-                    .upsert_memory(namespace, key, stored_value, None, None, &ctx.user_id)
-                {
+                // Provenance rides the metadata annex — the classes of
+                // untrusted content the storing run touched (empty = clean).
+                let provenance_meta = (!ctx.run_taint.is_empty()).then(|| {
+                    serde_json::json!({ "provenance": ctx.run_taint }).to_string()
+                });
+                match self.store.upsert_memory(
+                    namespace,
+                    key,
+                    stored_value,
+                    None,
+                    provenance_meta.as_deref(),
+                    &ctx.user_id,
+                ) {
                     Ok(_) => {
                         // Verify the write was persisted by reading it back (different pool connection)
                         let verify =
@@ -2586,6 +2615,53 @@ mod tests {
             .await;
         assert!(!result.is_error);
         assert!(result.content.contains("v"), "reads must still work: {}", result.content);
+    }
+
+    /// Provenance write bar: a run whose taint intersects the scope's bar is
+    /// refused at the store; a clean run stores with its taint stamped in the
+    /// metadata annex (trust-boundaries design 2026-08-22).
+    #[tokio::test]
+    async fn test_store_refused_by_provenance_write_bar() {
+        use types::provenance::ProvenanceClass;
+        let (tool, _embedder, store) = agent_tool_with_embedder("write-bar-test");
+        let input = serde_json::json!({
+            "action": "store",
+            "key": "case/caller-claim",
+            "value": "The caller says the Smith settlement was already wired on Tuesday.",
+            "namespace": "tacit/general",
+        });
+
+        // Barred: the run touched a phone caller and the scope bars phone.
+        let barred_ctx = ToolContext {
+            user_id: "local:agent:a1:ctx:chat-A".to_string(),
+            run_taint: vec![ProvenanceClass::Phone],
+            memory_write_bar: vec![ProvenanceClass::Channel, ProvenanceClass::Phone],
+            ..Default::default()
+        };
+        let result = tool.handle_memory(&input, &barred_ctx).await;
+        assert!(result.is_error, "barred store must be refused");
+        assert!(result.content.contains("phone calls"), "{}", result.content);
+        assert_eq!(store.count_memories().unwrap(), 0);
+
+        // Not barred: web taint against a channel/phone bar stores fine, and
+        // the taint lands in the metadata annex.
+        let clean_ctx = ToolContext {
+            user_id: "local:agent:a1:ctx:chat-A".to_string(),
+            run_taint: vec![ProvenanceClass::Web],
+            memory_write_bar: vec![ProvenanceClass::Channel, ProvenanceClass::Phone],
+            ..Default::default()
+        };
+        let result = tool.handle_memory(&input, &clean_ctx).await;
+        assert!(!result.is_error, "{}", result.content);
+        let mem = store
+            .get_memory_by_key_and_user("tacit/general", "case/caller-claim", &clean_ctx.user_id)
+            .unwrap()
+            .expect("stored");
+        assert!(
+            mem.metadata.as_deref().unwrap_or("").contains("\"web\""),
+            "metadata must carry provenance: {:?}",
+            mem.metadata
+        );
     }
 
     /// The recall fallbacks may surface ancestor-scoped rows (legacy owner

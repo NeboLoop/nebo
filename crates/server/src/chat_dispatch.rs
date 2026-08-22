@@ -251,6 +251,10 @@ pub struct ChatConfig {
     /// messages set it so enlistment chains and A↔B cycles stay bounded; runs
     /// with a `comm_reply` carry the depth there instead (it wins when set).
     pub handoff_depth: u8,
+    /// Provenance classes seeding the run's taint set — the taint of the
+    /// triggering input (remote channel message, coworker envelope). Empty for
+    /// owner-initiated runs.
+    pub seed_taint: Vec<types::provenance::ProvenanceClass>,
 }
 
 /// Configuration for sending a reply back through a communication channel.
@@ -415,6 +419,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
     let origin = config.origin;
     let comm_reply = config.comm_reply;
     let config_handoff_depth = config.handoff_depth;
+    let seed_taint = config.seed_taint.clone();
     let entity_cfg = config.entity_config;
     let images = config.images;
     let origin_agent_id = config.origin_agent_id;
@@ -518,6 +523,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                 .as_ref()
                 .map(|c| c.handoff_depth)
                 .unwrap_or(config_handoff_depth),
+            seed_taint: seed_taint.clone(),
             ..Default::default()
         };
 
@@ -1625,6 +1631,7 @@ fn maybe_auto_continue(
             plan_mode: false,
             channel_ctx: None,
             handoff_depth: 0,
+            seed_taint: vec![],
         };
         run_chat(&state, config).await;
     });
@@ -1695,6 +1702,7 @@ pub async fn run_chat_events(
         channel_ctx: config.channel_ctx,
         full_access,
         handoff_depth: config.handoff_depth,
+        seed_taint: config.seed_taint,
         ..Default::default()
     };
 
@@ -1719,6 +1727,7 @@ pub async fn run_chat_events(
             Err(e) => {
                 let _ = tx
                     .send(ai::StreamEvent { payload: None,
+                        provenance: None,
                         event_type: ai::StreamEventType::Error,
                         text: String::new(),
                         tool_call: None,

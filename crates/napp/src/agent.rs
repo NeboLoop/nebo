@@ -106,6 +106,14 @@ pub struct MemoryConfig {
     /// See docs/design/MEMORY_QUALITY.md.
     #[serde(default)]
     pub topics: Vec<MemoryTopic>,
+    /// Optional provenance write bar for this agent's memory scope, as
+    /// kebab-case class names ("web", "external-email", "channel", "document",
+    /// "phone", "coworker"). A memory write from a run whose taint intersects
+    /// the bar is refused at the store. `None` = engine default (channel+phone
+    /// when `context_isolated`, otherwise no bar); an explicit `[]` is a
+    /// deliberate opt-out.
+    #[serde(default)]
+    pub write_bar: Option<Vec<String>>,
 }
 
 /// One declared memory topic — `{ "slug": "lead", "description": "A prospective

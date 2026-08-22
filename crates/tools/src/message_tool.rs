@@ -81,6 +81,7 @@ impl MessageTool {
             // in agent::memory::resolve_memory_scope and the runner).
             requester_scope: ctx.user_id.clone(),
             handoff_depth: ctx.handoff_depth,
+            provenance: ctx.run_taint.clone(),
             wait: input["wait"].as_bool().unwrap_or(true),
         };
 
