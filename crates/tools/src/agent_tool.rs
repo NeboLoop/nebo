@@ -2561,19 +2561,7 @@ impl DynTool for PersonaTool {
                 },
                 "id": {
                     "type": "string",
-                    "description": "Agent ID (for delegate — alternative to name)"
-                },
-                "prompt": {
-                    "type": "string",
-                    "description": "Task prompt to delegate to the agent (for delegate)"
-                },
-                "wait": {
-                    "type": "boolean",
-                    "description": "Whether to wait for delegation result (default: true). Set false for background delegation."
-                },
-                "max_iterations": {
-                    "type": "integer",
-                    "description": "Maximum agentic loop iterations for the delegated agent (0 = default)"
+                    "description": "Agent ID (alternative to name)"
                 }
             },
             "required": ["action"]

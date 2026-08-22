@@ -4169,8 +4169,8 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
 
         // Coordination mode: when the user EXPLICITLY asks several addressed
         // agents to produce one joint result, route to a single lead (the
-        // first mentioned) that consults the others via `delegate` and writes
-        // one combined reply — instead of fanning out N independent answers.
+        // first mentioned) that consults the others via coworker messages and
+        // writes one combined reply — instead of fanning out N independent answers.
         // Conservative by design; independent fan-out is the default.
         let coordinate = mentioned_targets.len() > 1 && wants_coordination(&text);
         let coordinator_peers: Vec<String> = if coordinate {
@@ -4403,7 +4403,7 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
         };
 
         // In coordination mode, resolve the peer display names the lead will be
-        // told to consult via `delegate`.
+        // told to consult via coworker messages.
         let coordinator_peer_names: Vec<String> = if coordinate {
             let registry = state.agent_registry.read().await;
             coordinator_peers
