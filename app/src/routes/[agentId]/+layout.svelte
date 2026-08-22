@@ -10,6 +10,7 @@
   import { launchApp } from '$lib/apps/launcher.js';
   import { mobileAgentsOpen, mobileChatsOpen } from '$lib/stores/mobileNav';
   import CollapsibleRail from '$lib/components/ui/CollapsibleRail.svelte';
+  import BrandMark from '$lib/components/BrandMark.svelte';
   import ShelfModal from '$lib/components/ui/ShelfModal.svelte';
   import InboxView from '$lib/components/inbox/InboxView.svelte';
   import AgentSettingsModal from '$lib/components/settings/agent/AgentSettingsModal.svelte';
@@ -752,6 +753,12 @@
   mobileOpen={mobileAgentsOpen}
   tour="agents"
 >
+  {#snippet leading()}
+    <a href="/" class="shrink-0 flex items-center text-base-content" title="Nebo">
+      <BrandMark class="w-5 h-5" />
+    </a>
+  {/snippet}
+
   {#snippet headerActions()}
     <button
       class="w-7 h-7 rounded-md flex items-center justify-center hover:bg-base-100 cursor-pointer bg-transparent border-none shrink-0 text-base-content/60 hover:text-base-content"

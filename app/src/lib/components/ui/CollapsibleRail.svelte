@@ -20,6 +20,8 @@
     title?: string;
     /** Drawer open state below md. Omit for a rail with no mobile drawer. */
     mobileOpen?: Writable<boolean>;
+    /** Rendered at the far left of the header, in both states. */
+    leading?: Snippet;
     /** Extra header content, right of the title, left of the toggle. */
     headerActions?: Snippet;
     /** Body when expanded (and always, on mobile). */
@@ -35,6 +37,7 @@
     section,
     title,
     mobileOpen,
+    leading,
     headerActions,
     expanded,
     collapsed,
@@ -76,10 +79,11 @@
     : ''} border-r border-base-300 shadow-[2px_0_8px_-2px_rgba(0,0,0,0.08)] flex flex-col bg-base-200 shrink-0 transition-all duration-150"
 >
   <div
-    class="h-11 border-b border-base-300 flex items-center gap-1 shrink-0 {showRail
+    class="h-11 border-b border-base-300 flex items-center gap-2 shrink-0 {showRail
       ? 'justify-center'
       : 'px-3.5 justify-between'}"
   >
+    {#if leading && !showRail}{@render leading()}{/if}
     {#if !showRail && title}
       <span class="text-sm font-semibold flex-1 truncate">{title}</span>
     {/if}
