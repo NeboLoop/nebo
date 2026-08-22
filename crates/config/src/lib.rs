@@ -5,7 +5,7 @@ pub mod models;
 mod settings;
 
 pub use cli_detect::{AllCliStatuses, CliAvailability, CliStatus, detect_all_clis};
-pub use config::Config;
+pub use config::{memory_url, Config, DEFAULT_MEMORY_URL};
 pub use defaults::{
     appdata_dir, artifact_napp_path, bundled_napps_dir, data_dir, ensure_artifact_dirs,
     ensure_bot_id, ensure_data_dir, ensure_extension_secret, is_setup_complete, legacy_data_dir,

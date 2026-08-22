@@ -309,6 +309,37 @@ pub fn extract_discovered_deferred_tools(
 
 /// Detect active contexts based on conversation content.
 /// All tools are always included — contexts only control STRAP sub-doc injection.
+
+/// Remove company-Memory tools from a run's roster (the per-employee ethical
+/// wall). `memory_tool_names` is resolved by the caller from the MCP proxy →
+/// integration mapping, so this stays pure and testable.
+///
+/// Returns the surviving definitions and how many were withheld; also prunes
+/// `agent_tool_names`, or a withheld tool would still be callable by name.
+pub fn withhold_memory_tools(
+    all_tools: Vec<ToolDefinition>,
+    agent_tool_names: &mut HashSet<String>,
+    memory_tool_names: &HashSet<String>,
+) -> (Vec<ToolDefinition>, usize) {
+    if memory_tool_names.is_empty() {
+        return (all_tools, 0);
+    }
+    let mut withheld = 0usize;
+    let kept: Vec<ToolDefinition> = all_tools
+        .into_iter()
+        .filter(|d| {
+            if memory_tool_names.contains(&d.name) {
+                agent_tool_names.remove(&d.name);
+                withheld += 1;
+                false
+            } else {
+                true
+            }
+        })
+        .collect();
+    (kept, withheld)
+}
+
 pub fn filter_tools_with_context(
     all_tools: &[ToolDefinition],
     messages: &[ChatMessage],
@@ -610,5 +641,61 @@ mod tests {
         let evicted_messages: Vec<ChatMessage> = vec![make_msg("user", "hello")];
         let result = extract_discovered_deferred_tools(&evicted_messages, &deferred);
         assert!(result.is_empty(), "tool unloads when its discovery message is evicted");
+    }
+}
+
+#[cfg(test)]
+mod memory_wall_tests {
+    use super::*;
+
+    fn def(name: &str) -> ToolDefinition {
+        ToolDefinition {
+            name: name.to_string(),
+            description: String::new(),
+            input_schema: serde_json::json!({}),
+        }
+    }
+
+    /// The ethical wall: an isolated employee (a legal assistant sealed per
+    /// matter) must not receive company-Memory tools, because Memory is still
+    /// single-principal — it would hand over every client and every matter.
+    #[test]
+    fn isolated_employee_loses_memory_tools_only() {
+        let all = vec![
+            def("mcp__nebo-kb__memory_recall"),
+            def("mcp__nebo-kb__memory_remember"),
+            def("mcp__acme-kb__search"), // the customer's OWN kb — untouched
+            def("os"),
+            def("plugin"),
+        ];
+        let memory: HashSet<String> = ["mcp__nebo-kb__memory_recall", "mcp__nebo-kb__memory_remember"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let mut agent_names: HashSet<String> = all.iter().map(|d| d.name.clone()).collect();
+
+        let (kept, withheld) = withhold_memory_tools(all, &mut agent_names, &memory);
+
+        assert_eq!(withheld, 2);
+        let names: Vec<&str> = kept.iter().map(|d| d.name.as_str()).collect();
+        assert_eq!(names, vec!["mcp__acme-kb__search", "os", "plugin"]);
+        // A withheld tool must not remain callable by name either.
+        assert!(!agent_names.contains("mcp__nebo-kb__memory_recall"));
+        assert!(agent_names.contains("mcp__acme-kb__search"));
+    }
+
+    /// The same Nebo hosts a non-isolated employee (a receptionist). Nothing is
+    /// withheld for that run — isolation is per employee, not per bot.
+    #[test]
+    fn non_isolated_employee_keeps_everything() {
+        let all = vec![def("mcp__nebo-kb__memory_recall"), def("os")];
+        let mut agent_names: HashSet<String> = all.iter().map(|d| d.name.clone()).collect();
+
+        // Caller passes an empty set when the employee isn't isolated.
+        let (kept, withheld) = withhold_memory_tools(all, &mut agent_names, &HashSet::new());
+
+        assert_eq!(withheld, 0);
+        assert_eq!(kept.len(), 2);
+        assert!(agent_names.contains("mcp__nebo-kb__memory_recall"));
     }
 }
