@@ -2,7 +2,6 @@
   import { getContext } from 'svelte';
   import { t } from 'svelte-i18n';
   import { launchApp } from '$lib/apps/launcher';
-  import AgentTabBar from '$lib/components/AgentTabBar.svelte';
   import type { AgentPageContext } from '$lib/types/agentPage';
 
   const ctx = getContext<AgentPageContext>('agentPage');
@@ -10,20 +9,6 @@
   const agent = $derived(ctx.agent);
   const agentStatusVal = $derived(ctx.agentStatus(ctx.agentId));
 </script>
-
-<!-- Column 2: Overview nav -->
-<div class="w-[260px] min-w-[260px] border-r border-base-content/10 shadow-[2px_0_8px_-2px_rgba(0,0,0,0.06)] relative shrink-0 flex flex-col bg-base-200/50">
-  <AgentTabBar agentId={agentId} agentName={agent?.name ?? ''} agentInitial={agent?.initial ?? ''} status={agentStatusVal} isApp={true} />
-
-  <div class="flex-1 overflow-y-auto">
-    <div class="p-1.5 flex flex-col gap-0.5">
-      <a
-        href="/{agentId}/overview"
-        class="flex items-center w-full text-left py-1.5 px-2.5 rounded-md text-sm cursor-pointer bg-base-100 border border-base-300 shadow-sm font-medium no-underline text-base-content"
-      >{$t('agentActivity.overview')}</a>
-    </div>
-  </div>
-</div>
 
 <!-- Column 3: App landing -->
 <div class="flex-1 flex flex-col items-center justify-center bg-base-100 min-w-0 gap-4">

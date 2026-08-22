@@ -3,8 +3,6 @@
   import { goto } from '$lib/nav';
   import { t } from 'svelte-i18n';
   import { getContext } from 'svelte';
-  import AgentTabBar from '$lib/components/AgentTabBar.svelte';
-  import { mobileChatsOpen } from '$lib/stores/mobileNav';
   import type { AgentPageContext } from '$lib/types/agentPage';
   import { deleteChat, updateChat } from '$lib/api/nebo';
 

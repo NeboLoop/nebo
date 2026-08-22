@@ -18,4 +18,6 @@
   const publisher = $derived($page.url.searchParams.get('publisher') || '');
 </script>
 
+<svelte:head><title>Marketplace - Nebo</title></svelte:head>
+
 <MarketplaceBrowse {kind} {price} {category} {publisher} />

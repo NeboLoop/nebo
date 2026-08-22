@@ -369,7 +369,6 @@
 	 *  splices THAT edge rather than the node's first outgoing edge. */
 	let catalogInsertBeforeTarget = $state<string | null>(null);
 	/** Bumped by Tidy Up — tells the canvas to drop manual position overrides. */
-	let layoutEpoch = $state(0);
 
 	// ── Confirm modal
 	let confirmModal = $state<{
@@ -535,50 +534,6 @@
 		confirmModal = null;
 	}
 
-	function handleDuplicateNode(nodeId: string) {
-		if (nodeId === '__trigger__' || nodeId === '__emit__') return;
-
-		updateActiveWorkflow((wf) => {
-			const oldActivities = wf.activities || [];
-			const newActivities = duplicateActivityInWorkflow(oldActivities, nodeId).map(a => ({ ...a, type: a.type || 'custom' }));
-			wf.activities = newActivities;
-
-			const origIdx = newActivities.findIndex((a: WorkflowActivity) => a.id === nodeId);
-			if (origIdx >= 0 && origIdx + 1 < newActivities.length) {
-				const dupeId = newActivities[origIdx + 1].id;
-
-				if (wf.connections) {
-					const dupeType = newActivities[origIdx + 1].type || 'custom';
-					const out = wf.connections.find((c: WorkflowConnection) => c.from === nodeId);
-					if (out) {
-						// Splice the dupe into the first outgoing edge, keeping
-						// its branch label on both halves where label
-						// discipline requires it (branching nodes must label
-						// their outgoing edges).
-						const target = out.to;
-						const label = out.label;
-						const idx = wf.connections.indexOf(out);
-						wf.connections.splice(idx, 1, { from: nodeId, to: dupeId, ...(label ? { label } : {}) });
-						wf.connections.push({
-							from: dupeId,
-							to: target,
-							...(isBranchingType(dupeType) && label ? { label } : {}),
-						});
-					} else {
-						const origType = newActivities[origIdx].type || 'custom';
-						const firstLabel = isBranchingType(origType)
-							? getActivityType(origType).branchLabels?.[0]
-							: undefined;
-						wf.connections.push({ from: nodeId, to: dupeId, ...(firstLabel ? { label: firstLabel } : {}) });
-					}
-				}
-
-				selectedNodeId = dupeId;
-			}
-			return wf;
-		});
-	}
-
 	function handleUpdateActivity(activityId: string, field: keyof WorkflowActivity, value: unknown) {
 		updateActiveWorkflow((wf) => {
 			const act = wf.activities?.find((a: WorkflowActivity) => a.id === activityId);
@@ -652,34 +607,6 @@
 		catalogOpen = true;
 	}
 
-	function handleCreateConnection(fromId: string, toId: string) {
-		// Direction is engine-enforced: nothing enters the trigger, nothing
-		// leaves the emit bookend, and self-loops are meaningless.
-		if (toId === '__trigger__' || fromId === '__emit__' || fromId === toId) return;
-		updateActiveWorkflow((wf) => {
-			if (!wf.connections) {
-				wf.connections = generateLinearConnections(wf.activities || [], wf.emit);
-			}
-			const exists = wf.connections.some((c: WorkflowConnection) => c.from === fromId && c.to === toId);
-			if (!exists) {
-				wf.connections = [...wf.connections, { from: fromId, to: toId }];
-			}
-			return wf;
-		});
-	}
-
-	function handleRemoveConnection(fromId: string, toId: string) {
-		updateActiveWorkflow((wf) => {
-			if (!wf.connections) return wf;
-			wf.connections = removeConnection(wf.connections, fromId, toId);
-			return wf;
-		});
-	}
-
-	function handleDropNode(item: Record<string, unknown>, afterNodeId: string | null) {
-		handleAddNode(item, afterNodeId);
-	}
-
 	function handleNewWorkflow() {
 		const name = `workflow-${Object.keys(builderWorkflows).length + 1}`;
 		const newWf = {
@@ -692,11 +619,6 @@
 		pushUndoSnapshot();
 		activeWorkflowName = name;
 		selectedNodeId = null;
-	}
-
-	function handleTidyUp() {
-		// Drop manual node positions — the canvas re-runs dagre layout.
-		layoutEpoch++;
 	}
 
 	// ── Keyboard shortcuts

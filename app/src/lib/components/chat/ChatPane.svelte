@@ -17,6 +17,7 @@
   import Table from 'lucide-svelte/icons/table';
   import Presentation from 'lucide-svelte/icons/presentation';
   import type { UploadedAttachment } from '$lib/types/attachment';
+  import { mobileAgentsOpen } from '$lib/stores/mobileNav';
   import type { Snippet } from 'svelte';
   import { getAttachmentType, formatFileSize, attachmentMediaUrl } from '$lib/types/attachment';
   import { NEAR_BOTTOM_PX, distanceFromBottom } from '$lib/chat/scroll';
@@ -1000,6 +1001,15 @@
   <!-- Header -->
   {#if headerTitle}
     <div class="h-11 px-[18px] border-b border-base-content/10 flex items-center gap-2 shrink-0">
+      <!-- Below md the workspace list is an off-canvas drawer, and this is its
+           only opener — the top header that used to carry the hamburger is gone. -->
+      <button
+        class="md:hidden w-8 h-8 -ml-2 rounded-md flex items-center justify-center border-none bg-transparent cursor-pointer text-base-content/70 shrink-0"
+        aria-label="Employees"
+        onclick={() => mobileAgentsOpen.update((v) => !v)}
+      >
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+      </button>
       <span class="flex items-baseline gap-2 min-w-0">
         <span class="text-sm font-semibold truncate">{agentName}</span>
         {#if isolated}

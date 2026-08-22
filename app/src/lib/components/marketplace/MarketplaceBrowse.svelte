@@ -183,7 +183,6 @@
 	});
 </script>
 
-<svelte:head><title>Marketplace - Nebo</title></svelte:head>
 
 {#if loading}
 	<div class="flex justify-center py-16">

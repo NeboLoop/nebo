@@ -8,7 +8,7 @@
   import UserMenu from '$lib/components/UserMenu.svelte';
   import WorkflowBuilder from '$lib/components/workflow/WorkflowBuilder.svelte';
   import { launchApp } from '$lib/apps/launcher.js';
-  import { mobileAgentsOpen, mobileChatsOpen } from '$lib/stores/mobileNav';
+  import { mobileAgentsOpen } from '$lib/stores/mobileNav';
   import CollapsibleRail from '$lib/components/ui/CollapsibleRail.svelte';
   import BrandMark from '$lib/components/BrandMark.svelte';
   import ShelfModal from '$lib/components/ui/ShelfModal.svelte';
@@ -24,7 +24,6 @@
   $effect(() => {
     void $page.url.pathname;
     mobileAgentsOpen.set(false);
-    mobileChatsOpen.set(false);
   });
 
   // The list drills down; it does not expand. Inline expansion put an
@@ -151,17 +150,10 @@
           isApp: a.isApp ?? false,
           loopExposed: a.loopExposed ?? false,
           voice: a.voice || '',
-          // Isolation is what separate conversations MEAN: with it off an
-          // employee has one memory across every chat, so several chats would
-          // only look separate. Read from the frontmatter the roster already
-          // carries — no extra request.
-          isolated: (() => {
-            try {
-              return JSON.parse(a.frontmatter || '{}')?.memory?.context_isolated === true;
-            } catch {
-              return false;
-            }
-          })(),
+          // Isolation is learned lazily: the LIST endpoint carries no
+          // frontmatter, so it stays undefined until the first per-agent load
+          // (getAgent) fills it in. undefined = unknown, not false.
+          isolated: undefined,
         }));
         agentStatuses = Object.fromEntries(allAgents.map(a => [a.id, a.status]));
       }
@@ -397,6 +389,21 @@
       if (agentResp) {
         const ar = agentResp;
         apiSkills[id] = Array.isArray(ar.skills) ? ar.skills as string[] : [];
+        // Isolation lives in frontmatter, which only getAgent returns. Learn
+        // it here and patch the roster row; if we learn mid-view that the
+        // employee is isolated, show their matter list — that is what a row
+        // click would have done had we known.
+        try {
+          const fm = JSON.parse((ar.agent as Agent)?.frontmatter || '{}');
+          const iso = fm?.memory?.context_isolated === true;
+          const idx = allAgents.findIndex((x) => x.id === id);
+          if (idx !== -1 && allAgents[idx].isolated !== iso) {
+            const next = [...allAgents];
+            next[idx] = { ...next[idx], isolated: iso };
+            allAgents = next;
+            if (iso && $page.params.agentId === id) drilledAgentId = id;
+          }
+        } catch { /* malformed frontmatter — leave unknown */ }
         const persona = typeof ar.persona === 'string' ? (ar.persona as string) : '';
         const agentMd = (ar.agent as Agent)?.agentMd || '';
         const soul = (ar.agent as Agent)?.soul || '';
