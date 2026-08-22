@@ -595,22 +595,7 @@ async fn install_skill(
         }
     };
 
-    // Seed artifact update tracking for skills
-    if let Some(ref dir) = skill_dir {
-        let version = dir
-            .join("manifest.json")
-            .to_str()
-            .and_then(|p| std::fs::read_to_string(p).ok())
-            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-            .and_then(|v| v["version"].as_str().map(|s| s.to_string()))
-            .unwrap_or_else(|| "1.0.0".to_string());
-        let _ = state.store.upsert_artifact_update_pref(&artifact_id, "skill", &version);
-    }
-
-    // Reload skill loader so it appears immediately. Cold reload — load_all()'s
-    // warm path trusts the stale manifest and would miss the just-installed skill
-    // (see SkillLoader::reload_from_disk).
-    state.skill_loader.reload_from_disk().await;
+    crate::codes::finalize_skill_install(state, &artifact_id, skill_dir.as_deref()).await;
 
     // Extract child deps from the newly installed skill
     if let Some(skill_dir) = skill_dir {

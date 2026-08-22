@@ -338,26 +338,7 @@ async fn handle_skill_code(state: &AppState, code: &str) -> Result<CodeHandlerRe
         }
     };
 
-    // Seed artifact update tracking for skills
-    if let Some(ref dir) = skill_dir {
-        let version = dir
-            .join("manifest.json")
-            .to_str()
-            .and_then(|p| std::fs::read_to_string(p).ok())
-            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-            .and_then(|v| v["version"].as_str().map(|s| s.to_string()))
-            .unwrap_or_else(|| "1.0.0".to_string());
-        let _ = state.store.upsert_artifact_update_pref(&artifact_id, "skill", &version);
-        // Record the marketplace id in a controlled sidecar so uninstall can find
-        // it and clean the update-tracking row. The packaged manifest.json isn't
-        // guaranteed to carry the id (.napp packages don't), so we don't rely on it.
-        let _ = std::fs::write(dir.join(".artifact_id"), &artifact_id);
-    }
-
-    // Reload skill loader so skill appears in catalog immediately. Cold reload —
-    // load_all()'s warm path trusts the stale manifest and would miss the
-    // just-written skill (see SkillLoader::reload_from_disk).
-    state.skill_loader.reload_from_disk().await;
+    finalize_skill_install(state, &artifact_id, skill_dir.as_deref()).await;
 
     // Cascade: resolve skill deps (tools[], dependencies[])
     if let Some(skill_dir) = skill_dir {
@@ -698,6 +679,42 @@ async fn handle_connection_code(
 /// single-agent / `AGNT-` path, `deps::install_agent` for the collection
 /// cascade), so the cascade can't drift from the direct install. Divergence
 /// between the two paths was the root of the channel-auth, roster-refresh,
+
+/// The ONE post-persist routine for a skill install — the skill twin of
+/// [`finalize_agent_install`] (CODE_AUDITOR §8.1). Both entry points (single
+/// SKIL- code and the dependency cascade) MUST call this; they used to
+/// re-implement it and drifted: the cascade skipped the `.artifact_id`
+/// sidecar, so uninstall (which reads the sidecar to find the marketplace id)
+/// leaked the artifact_update_pref row forever and reinstall re-collided.
+pub(crate) async fn finalize_skill_install(
+    state: &AppState,
+    artifact_id: &str,
+    skill_dir: Option<&std::path::Path>,
+) {
+    if let Some(dir) = skill_dir {
+        // Seed artifact update tracking.
+        let version = dir
+            .join("manifest.json")
+            .to_str()
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+            .and_then(|v| v["version"].as_str().map(|s| s.to_string()))
+            .unwrap_or_else(|| "1.0.0".to_string());
+        let _ = state
+            .store
+            .upsert_artifact_update_pref(artifact_id, "skill", &version);
+        // Record the marketplace id in a controlled sidecar so uninstall can find
+        // it and clean the update-tracking row. The packaged manifest.json isn't
+        // guaranteed to carry the id (.napp packages don't), so we don't rely on it.
+        let _ = std::fs::write(dir.join(".artifact_id"), artifact_id);
+    }
+
+    // Reload skill loader so the skill appears in the catalog immediately. Cold
+    // reload — load_all()'s warm path trusts the stale manifest and would miss
+    // the just-written skill (see SkillLoader::reload_from_disk).
+    state.skill_loader.reload_from_disk().await;
+}
+
 /// workflows, and update-tracking bugs. Call only after a successful persist.
 pub(crate) async fn finalize_agent_install(state: &AppState, artifact_id: &str, name: &str) {
     // Reload the in-memory AgentLoader so list_agents() enumerates the new agent
