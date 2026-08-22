@@ -723,6 +723,45 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         }
     }
 
+    // ── Company Memory, wired automatically ───────────────────────────
+    // Memory is part of the platform, not an integration an owner installs on
+    // each bot. Any Nebo paired with NeboAI (cloud pod or desktop) gets the
+    // server registered here; authorization stays server-side — the shard asks
+    // NeboLoop whether this bot is allowed, so a revoked Nebo simply gets 401
+    // and the row sits harmless. auth_type "neboai" means the live rotating
+    // platform token is presented at every connect: nothing to store, nothing
+    // to expire.
+    //
+    // Idempotent by URL: an owner who removed it (or renamed it) is not
+    // second-guessed on the next boot.
+    if !cfg.neboai.memory_url.is_empty()
+        && !store
+            .list_all_active_auth_profiles_by_provider("neboai")
+            .unwrap_or_default()
+            .is_empty()
+    {
+        let already = store
+            .list_mcp_integrations()
+            .unwrap_or_default()
+            .into_iter()
+            .any(|i| i.server_url.as_deref() == Some(cfg.neboai.memory_url.as_str()));
+        if !already {
+            let id = uuid::Uuid::new_v4().to_string();
+            match store.create_mcp_integration(
+                &id,
+                "nebo-kb",
+                "http",
+                Some(&cfg.neboai.memory_url),
+                "neboai",
+                None,
+                None,
+            ) {
+                Ok(_) => info!(url = %cfg.neboai.memory_url, "wired company Memory automatically"),
+                Err(e) => warn!(error = %e, "failed to wire company Memory"),
+            }
+        }
+    }
+
     // NOTE: setup/onboarding completion is driven ONLY by the user finishing
     // the onboarding flow (POST /api/v1/setup/complete -> mark_setup_complete()).
     // We must NOT auto-mark it here just because a bot_id exists: bot_id is

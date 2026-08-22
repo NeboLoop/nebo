@@ -177,6 +177,11 @@ pub struct NeboAIConfig {
     pub comms_url: String,
     #[serde(rename = "TunnelURL")]
     pub tunnel_url: String,
+    /// Company Memory (nebo-kb) MCP endpoint. Every Nebo paired with NeboAI
+    /// gets this server wired up automatically — Memory is part of the
+    /// platform, not something an owner installs per bot.
+    #[serde(rename = "MemoryURL")]
+    pub memory_url: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -328,6 +333,7 @@ impl Default for NeboAIConfig {
             janus_url: "https://janus.neboai.com".into(),
             comms_url: "wss://comms.neboai.com/ws".into(),
             tunnel_url: "wss://api.neboai.com/tunnel/connect".into(),
+            memory_url: "https://kb.neboai.com/mcp".into(),
         }
     }
 }
@@ -405,6 +411,10 @@ impl Config {
         }
         if let Ok(v) = env::var("NEBOAI_TUNNEL_URL") {
             self.neboai.tunnel_url = v;
+        }
+        // Empty disables auto-wiring (self-hosted platforms, tests).
+        if let Ok(v) = env::var("NEBOAI_MEMORY_URL") {
+            self.neboai.memory_url = v;
         }
         // Bind overrides so the server can listen on 0.0.0.0 in a container.
         if let Ok(v) = env::var("NEBO_HOST") {
