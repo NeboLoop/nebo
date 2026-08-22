@@ -15,6 +15,7 @@ pub mod keyparser;
 pub mod lanes;
 pub mod large_input;
 pub mod memory;
+pub mod provenance;
 pub mod memory_debounce;
 pub mod memory_flush;
 pub mod orchestrator;

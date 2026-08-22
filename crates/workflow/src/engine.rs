@@ -1750,9 +1750,9 @@ fn typed_node_preamble(activity_type: &str) -> Option<&'static str> {
              parameters describe. Output ONLY the transformed data — no commentary.",
         ),
         "agent" => Some(
-            "This is a delegation activity: delegate the task to the agent named in the \
-             parameters via agent(resource: \"registry\", action: \"delegate\", ...) and \
-             relay its result.",
+            "This is a coworker activity: message the employee named in the parameters \
+             via message(resource: \"coworker\", action: \"send\", to: \"<name>\", \
+             text: \"<the task>\") and relay their reply.",
         ),
         "connector" => Some(
             "This is an MCP connector activity: call the configured server's tool \

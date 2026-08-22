@@ -98,11 +98,22 @@ pub struct StreamEvent {
     /// Structured rendering payload from ToolResult.payload (ToolResult events
     /// only) — forwarded to the app so known kinds render as rich cards.
     pub payload: Option<serde_json::Value>,
+    /// Engine-stamped provenance classes of the run (Done events only) — the
+    /// final taint set the runner accumulated. Consumed by the coworker rail
+    /// to stamp reply envelopes; never model-writable.
+    pub provenance: Option<Vec<types::provenance::ProvenanceClass>>,
 }
 
 impl StreamEvent {
+    /// Attach the run's final provenance classes (Done events).
+    pub fn with_provenance(mut self, classes: Vec<types::provenance::ProvenanceClass>) -> Self {
+        self.provenance = Some(classes);
+        self
+    }
+
     pub fn text(text: impl Into<String>) -> Self {
         Self { payload: None,
+            provenance: None,
             event_type: StreamEventType::Text,
             text: text.into(),
             tool_call: None,
@@ -118,6 +129,7 @@ impl StreamEvent {
 
     pub fn thinking(text: impl Into<String>) -> Self {
         Self { payload: None,
+            provenance: None,
             event_type: StreamEventType::Thinking,
             text: text.into(),
             tool_call: None,
@@ -137,6 +149,7 @@ impl StreamEvent {
     /// accumulators must ignore it by type.
     pub fn control_notice(text: impl Into<String>, stop_reason: impl Into<String>) -> Self {
         Self { payload: None,
+            provenance: None,
             event_type: StreamEventType::ControlNotice,
             text: text.into(),
             tool_call: None,
@@ -152,6 +165,7 @@ impl StreamEvent {
 
     pub fn tool_call(tc: ToolCall) -> Self {
         Self { payload: None,
+            provenance: None,
             event_type: StreamEventType::ToolCall,
             text: String::new(),
             tool_call: Some(tc),
@@ -167,6 +181,7 @@ impl StreamEvent {
 
     pub fn error(msg: impl Into<String>) -> Self {
         Self { payload: None,
+            provenance: None,
             event_type: StreamEventType::Error,
             text: String::new(),
             tool_call: None,
@@ -182,6 +197,7 @@ impl StreamEvent {
 
     pub fn done() -> Self {
         Self { payload: None,
+            provenance: None,
             event_type: StreamEventType::Done,
             text: String::new(),
             tool_call: None,
@@ -202,6 +218,7 @@ impl StreamEvent {
         let id = id.into();
         let description = description.into();
         Self { payload: None,
+            provenance: None,
             event_type: StreamEventType::SubagentStart,
             text: description.clone(),
             tool_call: None,
@@ -224,6 +241,7 @@ impl StreamEvent {
         let id = id.into();
         let description = description.into();
         Self { payload: None,
+            provenance: None,
             event_type: StreamEventType::SubagentComplete,
             text: description.clone(),
             tool_call: None,
@@ -241,6 +259,7 @@ impl StreamEvent {
 
     pub fn done_with_reason(reason: impl Into<String>) -> Self {
         Self { payload: None,
+            provenance: None,
             event_type: StreamEventType::Done,
             text: String::new(),
             tool_call: None,
@@ -256,6 +275,7 @@ impl StreamEvent {
 
     pub fn usage(info: UsageInfo) -> Self {
         Self { payload: None,
+            provenance: None,
             event_type: StreamEventType::Usage,
             text: String::new(),
             tool_call: None,
@@ -271,6 +291,7 @@ impl StreamEvent {
 
     pub fn rate_limit_info(meta: RateLimitMeta) -> Self {
         Self { payload: None,
+            provenance: None,
             event_type: StreamEventType::RateLimit,
             text: String::new(),
             tool_call: None,
@@ -286,6 +307,7 @@ impl StreamEvent {
 
     pub fn approval_request(tc: ToolCall) -> Self {
         Self { payload: None,
+            provenance: None,
             event_type: StreamEventType::ApprovalRequest,
             text: String::new(),
             tool_call: Some(tc),
@@ -301,6 +323,7 @@ impl StreamEvent {
 
     pub fn tool_summary(text: impl Into<String>) -> Self {
         Self { payload: None,
+            provenance: None,
             event_type: StreamEventType::ToolSummary,
             text: text.into(),
             tool_call: None,
@@ -320,6 +343,7 @@ impl StreamEvent {
         widgets: Option<serde_json::Value>,
     ) -> Self {
         Self { payload: None,
+            provenance: None,
             event_type: StreamEventType::AskRequest,
             text: prompt.into(),
             tool_call: None,
@@ -340,6 +364,7 @@ impl StreamEvent {
         tools: Vec<String>,
     ) -> Self {
         Self { payload: None,
+            provenance: None,
             event_type: StreamEventType::PlanApproval,
             text: plan.into(),
             tool_call: None,

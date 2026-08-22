@@ -128,7 +128,6 @@ pub struct PersonaTool {
     store: Arc<Store>,
     agent_registry: AgentRegistry,
     agent_loader: Arc<napp::AgentLoader>,
-    orchestrator: crate::orchestrator::OrchestratorHandle,
     /// Shared cell holding the canonical code installer (filled late by the server).
     code_installer: Arc<std::sync::RwLock<Option<Arc<dyn crate::bot_tool::CodeInstaller>>>>,
 }
@@ -138,13 +137,11 @@ impl PersonaTool {
         store: Arc<Store>,
         agent_registry: AgentRegistry,
         agent_loader: Arc<napp::AgentLoader>,
-        orchestrator: crate::orchestrator::OrchestratorHandle,
     ) -> Self {
         Self {
             store,
             agent_registry,
             agent_loader,
-            orchestrator,
             code_installer: Arc::new(std::sync::RwLock::new(None)),
         }
     }
@@ -178,7 +175,7 @@ impl PersonaTool {
             "stats" => self.handle_stats(input).await,
             "delegate" => self.handle_delegate(input, ctx).await,
             _ => ToolResult::error(format!(
-                "Unknown registry action '{}'. Available: list, activate, deactivate, info, create, update, delete, install, reload, repair, setup, stats, delegate",
+                "Unknown registry action '{}'. Available: list, activate, deactivate, info, create, update, delete, install, reload, repair, setup, stats",
                 action
             )),
         }
@@ -2281,179 +2278,27 @@ impl PersonaTool {
         ))
     }
 
-    async fn handle_delegate(&self, input: &serde_json::Value, ctx: &ToolContext) -> ToolResult {
-        let name = input["name"].as_str().unwrap_or("");
-        let id = input["id"].as_str().unwrap_or("");
-        let prompt = input["prompt"].as_str().unwrap_or("");
-
-        if prompt.is_empty() {
-            return ToolResult::error(crate::errors::missing_param(
-                "delegate",
-                "prompt",
-                "agent(resource: \"registry\", action: \"delegate\", name: \"chief-of-staff\", prompt: \"Check my email\")",
-            ));
-        }
-        if name.is_empty() && id.is_empty() {
-            return ToolResult::error(crate::errors::missing_param(
-                "delegate",
-                "name",
-                "agent(resource: \"registry\", action: \"delegate\", name: \"chief-of-staff\", prompt: \"Check my email\")",
-            ));
-        }
-
-        // Resolve agent_id from registry or loader
-        let resolved_id = if !id.is_empty() {
-            // Direct ID — verify it exists in registry or DB
-            let registry = self.agent_registry.read().await;
-            if registry.contains_key(id) {
-                id.to_string()
-            } else {
-                drop(registry);
-                // Try loading by ID
-                match self.store.list_agents(500, 0) {
-                    Ok(agents) => match agents.iter().find(|a| a.id == id) {
-                        Some(_) => id.to_string(),
-                        None => return ToolResult::error(format!("Agent id '{}' not found", id)),
-                    },
-                    Err(e) => return ToolResult::error(format!("Failed to query agents: {}", e)),
-                }
-            }
-        } else {
-            // Resolve by name — check registry first, then loader/DB
-            // Normalize slugs: "chief-of-staff" matches "Chief of Staff"
-            let registry = self.agent_registry.read().await;
-            let normalized = name.to_lowercase().replace(['-', '_'], " ");
-            let found = registry
-                .iter()
-                .find(|(_, v)| v.name.to_lowercase().replace(['-', '_'], " ") == normalized)
-                .map(|(k, _)| k.clone());
-            drop(registry);
-
-            match found {
-                Some(agent_id) => agent_id,
-                None => {
-                    // Try to find and activate
-                    match self.find_agent(name).await {
-                        Some(loaded) => {
-                            // Get or create DB ID
-                            let agent_id = match self.store.list_agents(500, 0) {
-                                Ok(agents) => {
-                                    let agent_name = &loaded.agent_def.name;
-                                    if let Some(db) = agents.iter().find(|r| r.name == *agent_name)
-                                    {
-                                        db.id.clone()
-                                    } else {
-                                        uuid::Uuid::new_v4().to_string()
-                                    }
-                                }
-                                Err(_) => uuid::Uuid::new_v4().to_string(),
-                            };
-
-                            // Insert into registry so runner can resolve it
-                            let active = ActiveAgent {
-                                agent_id: agent_id.clone(),
-                                name: loaded.agent_def.name.clone(),
-                                agent_md: loaded.agent_def.body.clone(),
-                                config: loaded.config.clone(),
-                                channel_id: None,
-                                degraded: None,
-                                soul: None,
-                                rules: None,
-                            };
-                            self.agent_registry
-                                .write()
-                                .await
-                                .insert(agent_id.clone(), active);
-                            agent_id
-                        }
-                        None => {
-                            return ToolResult::error(format!(
-                                "Agent '{}' not found. Use agent(resource: \"registry\", action: \"list\") to see available agents.",
-                                name
-                            ));
-                        }
-                    }
-                }
-            }
-        };
-
-        // Read agent config for plugins/skills
-        let registry = self.agent_registry.read().await;
-        let (plugins, skills) = match registry.get(&resolved_id) {
-            Some(agent) => {
-                let plugins = agent
-                    .config
-                    .as_ref()
-                    .map(|c| c.requires.plugins.clone())
-                    .unwrap_or_default();
-                let skills = agent
-                    .config
-                    .as_ref()
-                    .map(|c| c.skills.clone())
-                    .unwrap_or_default();
-                (plugins, skills)
-            }
-            None => (Vec::new(), Vec::new()),
-        };
-        let agent_name = registry
-            .get(&resolved_id)
-            .map(|a| a.name.clone())
-            .unwrap_or_default();
-        drop(registry);
-
-        let wait = input["wait"].as_bool().unwrap_or(true);
-        let max_iterations = input["max_iterations"].as_u64().unwrap_or(0) as usize;
-        let desc_prompt = if prompt.len() > 60 {
-            format!("{}...", crate::truncate_str(prompt, 60))
-        } else {
-            prompt.to_string()
-        };
-        let description = format!("Delegate to {}: {}", agent_name, desc_prompt);
-
-        let orch = match self.orchestrator.get() {
-            Some(o) => o,
-            None => return ToolResult::error(
-                "Sub-agent orchestrator not ready. The server may still be starting up. \
-                 Try again in a moment, or do the work directly instead of delegating.",
-            ),
-        };
-
-        let req = crate::orchestrator::SpawnRequest {
-            prompt: prompt.to_string(),
-            description,
-            agent_type: "general".to_string(),
-            model_override: String::new(),
-            parent_session_id: ctx.session_id.clone(),
-            parent_session_key: ctx.session_key.clone(),
-            user_id: ctx.user_id.clone(),
-            wait,
-            parent_cancel: Some(ctx.cancel_token.clone()),
-            max_iterations,
-            skills,
-            plugins,
-            tools: Vec::new(),
-            parent_stream_tx: ctx.stream_tx.clone(),
-            agent_id: resolved_id,
-        };
-
-        match orch.spawn(req).await {
-            Ok(result) => {
-                if result.success {
-                    ToolResult::ok(format!(
-                        "Delegation to {} [{}] completed:\n\n{}",
-                        agent_name, result.task_id, result.output
-                    ))
-                } else {
-                    ToolResult::error(format!(
-                        "Delegation to {} [{}] failed: {}",
-                        agent_name,
-                        result.task_id,
-                        result.error.unwrap_or_default()
-                    ))
-                }
-            }
-            Err(e) => ToolResult::error(format!("Failed to delegate to {}: {}", agent_name, e)),
-        }
+    /// `delegate` is REMOVED (coworkers PRD, 2026-08-22): naming an employee
+    /// used to spawn a disposable subagent WEARING the target's persona inside
+    /// the caller's context — nothing was ever delivered, no thread existed on
+    /// either side, and the caller's receipt absorbed the target's work.
+    /// Addressing determines mechanism: a NAME is always a message. This arm
+    /// stays only to teach the model the one canonical call.
+    async fn handle_delegate(&self, input: &serde_json::Value, _ctx: &ToolContext) -> ToolResult {
+        let target = input["name"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .or_else(|| input["id"].as_str().filter(|s| !s.is_empty()))
+            .unwrap_or("<employee>");
+        ToolResult::error(format!(
+            "delegate is removed — work for a named coworker is a MESSAGE, not a subagent. \
+             Send it: message(resource: \"coworker\", action: \"send\", to: \"{}\", text: \"<what you need>\"). \
+             The message runs in the coworker's own session (their memory, their accounts, their receipt) \
+             and the conversation is visible to the owner on both sides. \
+             For anonymous extra hands on YOUR OWN work, use agent(resource: \"task\", action: \"spawn\", \
+             prompt: ..., skills: [...]) — never an employee's name.",
+            target
+        ))
     }
 
     /// Find an agent by name across loader cache and DB.
@@ -2531,7 +2376,6 @@ impl DynTool for PersonaTool {
          - reload: re-read AGENT.md + agent.json from filesystem and sync to DB (use after editing files on disk)\n\
          - repair: fix invalid cron expressions, orphan cron jobs, and sync triggers (optional: name to target one agent)\n\
          - stats: show workflow run statistics for an agent (total/completed/failed runs, tokens, errors)\n\
-         - delegate: delegate a task to a named agent (loads full identity, plugins, skills, memory scoping)\n\n\
          AUTOMATIONS (for create and update):\n\
          Each automation needs: name, steps[], and ONE trigger pattern.\n\
          Trigger type is AUTO-INFERRED from fields — just include the right field:\n\n\
@@ -2603,7 +2447,7 @@ impl DynTool for PersonaTool {
                 "action": {
                     "type": "string",
                     "description": "Action to perform",
-                    "enum": ["list", "activate", "deactivate", "info", "create", "update", "delete", "install", "reload", "repair", "setup", "stats", "delegate"]
+                    "enum": ["list", "activate", "deactivate", "info", "create", "update", "delete", "install", "reload", "repair", "setup", "stats"]
                 },
                 "name": {
                     "type": "string",
@@ -2717,19 +2561,7 @@ impl DynTool for PersonaTool {
                 },
                 "id": {
                     "type": "string",
-                    "description": "Agent ID (for delegate — alternative to name)"
-                },
-                "prompt": {
-                    "type": "string",
-                    "description": "Task prompt to delegate to the agent (for delegate)"
-                },
-                "wait": {
-                    "type": "boolean",
-                    "description": "Whether to wait for delegation result (default: true). Set false for background delegation."
-                },
-                "max_iterations": {
-                    "type": "integer",
-                    "description": "Maximum agentic loop iterations for the delegated agent (0 = default)"
+                    "description": "Agent ID (alternative to name)"
                 }
             },
             "required": ["action"]
@@ -2782,7 +2614,7 @@ impl DynTool for PersonaTool {
                 "stats" => self.handle_stats(&input).await,
                 "delegate" => self.handle_delegate(&input, ctx).await,
                 _ => ToolResult::error(format!(
-                    "Unknown action '{}'. Available: list, activate, deactivate, info, create, update, delete, install, reload, repair, setup, stats, delegate",
+                    "Unknown action '{}'. Available: list, activate, deactivate, info, create, update, delete, install, reload, repair, setup, stats",
                     action
                 )),
             }

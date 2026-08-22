@@ -523,6 +523,17 @@ pub struct RunRequest {
     /// per-tool approval gate is bypassed entirely — the agent executes without
     /// asking. When false, an OFF capability prompts via the Approval Modal.
     pub full_access: bool,
+    /// Provenance classes seeding this run's taint set — the taint of the
+    /// TRIGGERING input (a coworker envelope's provenance, a remote channel
+    /// message). The runner unions tool-derived classes on top and stamps the
+    /// final set on the Done event.
+    pub seed_taint: Vec<types::provenance::ProvenanceClass>,
+    /// Recall-for-audience: the agent id this run is REPLYING TO (coworker
+    /// messages only). When set and not granted by the target's
+    /// `memory.share_with`, recall serves `tacit/` (working style) only and
+    /// the memory tool refuses non-tacit reads — matter/project facts never
+    /// surface in a reply to a non-granted colleague. `None` for owner runs.
+    pub audience: Option<String>,
 }
 
 /// Shared atomic counters for live run progress reporting.
@@ -1169,6 +1180,7 @@ impl Runner {
 
                     let fork_session_id = fs.id.clone();
                     let (sub_tx, mut sub_rx) = mpsc::channel::<StreamEvent>(256);
+                    let fork_taint = std::sync::Mutex::new(std::collections::BTreeSet::new());
 
                     let _fork_result = run_loop(
                         &session_mgr,
@@ -1219,6 +1231,8 @@ impl Runner {
                         None, // command forks are not review forks
                         req.tool_allowlist.as_ref(),
                         mcp_context.as_ref(),
+                        &fork_taint,
+                        None, // forks never reply to a coworker audience
                     )
                     .await;
 
@@ -1259,6 +1273,14 @@ impl Runner {
             }
 
             // ── Normal (non-forked) execution ────────────────────────
+            // The run's provenance accumulator (trust-boundaries design
+            // 2026-08-22): seeded with the triggering input's classes, grown
+            // by run_loop from the static tool→class table, stamped on Done.
+            // Shared mutex (never held across .await) so the final set is
+            // readable here even when run_loop exits early on error.
+            let run_taint: std::sync::Mutex<
+                std::collections::BTreeSet<types::provenance::ProvenanceClass>,
+            > = std::sync::Mutex::new(req.seed_taint.iter().copied().collect());
             let result = run_loop(
                 &session_mgr,
                 &tools,
@@ -1308,6 +1330,8 @@ impl Runner {
                 None, // top-level runs are never review forks
                 req.tool_allowlist.as_ref(),
                 mcp_context.as_ref(),
+                &run_taint,
+                req.audience.as_deref(),
             )
             .await;
 
@@ -1317,7 +1341,11 @@ impl Runner {
                     .send(StreamEvent::error(format!("Agent error: {}", e)))
                     .await;
             }
-            let _ = tx.send(StreamEvent::done()).await;
+            let final_taint: Vec<types::provenance::ProvenanceClass> =
+                run_taint.lock().unwrap().iter().copied().collect();
+            let _ = tx
+                .send(StreamEvent::done().with_provenance(final_taint))
+                .await;
 
             if !skip_memory {
                 // The ONE chat-title generator for every run path (CODE_AUDITOR Rule 8;
@@ -1439,6 +1467,7 @@ impl Runner {
                         let fork_cancel = CancellationToken::new();
                         let rfctx =
                             crate::review_fork::ReviewForkCtx::new(agent_id_rf.clone(), learning_staged);
+                        let fork_taint = std::sync::Mutex::new(std::collections::BTreeSet::new());
                         let fork_result = run_loop(
                             &session_mgr_rf,
                             &tools_rf,
@@ -1488,6 +1517,8 @@ impl Runner {
                             Some(rfctx),
                             None, // the review fork's whitelist rides ReviewForkCtx
                             None, // review forks never serve CLI-provider tools
+                            &fork_taint,
+                            None, // review forks never reply to a coworker audience
                         )
                         .await;
                         drop(sub_tx);
@@ -1646,6 +1677,8 @@ async fn run_loop(
     review_fork: Option<crate::review_fork::ReviewForkCtx>,
     tool_allowlist: Option<&std::collections::HashSet<String>>,
     mcp_context: Option<&Arc<tokio::sync::Mutex<ToolContext>>>,
+    run_taint: &std::sync::Mutex<std::collections::BTreeSet<types::provenance::ProvenanceClass>>,
+    audience: Option<&str>,
 ) -> Result<(), String> {
     let mut state = RunState::new();
     // Stream reminders are EPHEMERAL: queued here, injected into the NEXT
@@ -1817,6 +1850,51 @@ async fn run_loop(
     // Declared memory topics for this scope (agent.json memory.topics) —
     // threaded into extraction, the flush, and the memory tool's layer map.
     let memory_topics = memory_config.topics.clone();
+
+    // Effective provenance write bar for this scope (trust-boundaries design
+    // 2026-08-22): agent config `memory.write_bar` (kebab-case class names)
+    // when declared — explicit [] is a deliberate opt-out — else the engine
+    // default: context-isolated scopes refuse channel/phone content (untrusted
+    // interlocutors never write case files); non-isolated scopes have no bar.
+    let memory_write_bar: Vec<types::provenance::ProvenanceClass> = match &memory_config.write_bar
+    {
+        Some(names) => names
+            .iter()
+            .filter_map(|n| {
+                serde_json::from_value(serde_json::Value::String(n.clone()))
+                    .map_err(|_| {
+                        warn!(agent_id, class = %n, "unknown provenance class in memory.write_bar — ignored");
+                    })
+                    .ok()
+            })
+            .collect(),
+        None if memory_config.context_isolated => vec![
+            types::provenance::ProvenanceClass::Channel,
+            types::provenance::ProvenanceClass::Phone,
+        ],
+        None => Vec::new(),
+    };
+
+    // Recall-for-audience (trust-boundaries design 2026-08-22): replying to a
+    // coworker not granted by `memory.share_with` restricts recall to
+    // `tacit/` — matter/project facts never surface. Owner-set policy,
+    // default deny; never per-conversation model judgment.
+    let audience_restricted = audience
+        .map(|aud| !memory_config.share_with.iter().any(|g| g == aud || g == "*"))
+        .unwrap_or(false);
+    if audience_restricted {
+        info!(
+            session_id,
+            agent_id,
+            audience = audience.unwrap_or(""),
+            "recall restricted to tacit/ — audience not granted by memory.share_with"
+        );
+        pending_stream_reminders.push(steering::wrap_system_reminder(
+            "You are replying to a coworker who is NOT granted access to this scope's \
+             matter/project memory. It was not consulted and must not be shared — answer \
+             from working knowledge, or say the information isn't shared with their role.",
+        ));
+    }
 
     // Explicit isolation context from the session KEY, if the channel set one
     // ("agent:{agent_id}:{channel}:{context_id}"). `session_id` here is the
@@ -2090,6 +2168,7 @@ async fn run_loop(
             &memory_user_id,
             user_prompt,
             &existing_ids,
+            audience_restricted,
         )
         .await;
         recalled_ids = ids;
@@ -2645,7 +2724,18 @@ async fn run_loop(
         // the sliding window evicts them. Only fires when new compactions have
         // occurred and the conversation is large enough to warrant it.
         if !skip_memory {
-            if crate::memory_flush::should_run_memory_flush(
+            // Write bar: a run whose taint intersects the scope's bar must not
+            // flush facts into the scope (trust-boundaries design 2026-08-22).
+            let flush_taint: Vec<types::provenance::ProvenanceClass> =
+                run_taint.lock().unwrap().iter().copied().collect();
+            let barred = flush_taint.iter().any(|c| memory_write_bar.contains(c));
+            if barred {
+                info!(
+                    session_id,
+                    classes = %types::provenance::label_classes(&flush_taint),
+                    "memory flush barred by scope write bar"
+                );
+            } else if crate::memory_flush::should_run_memory_flush(
                 &store,
                 session_id,
                 thresholds.auto_compact,
@@ -2659,6 +2749,7 @@ async fn run_loop(
                         &memory_user_id,
                         &memory_topics,
                         embedding_provider.cloned(),
+                        &flush_taint,
                     )
                     .await;
                 }
@@ -3612,6 +3703,7 @@ async fn run_loop(
                                 state.quota_warning_sent = true;
                                 let _ = tx
                                     .send(StreamEvent { payload: None,
+                                        provenance: None,
                                         event_type: StreamEventType::RateLimit,
                                         text: warning_text,
                                         tool_call: None,
@@ -4019,6 +4111,9 @@ async fn run_loop(
                 model_preference: (!model_override.is_empty()).then(|| model_override.to_string()),
                 memory_topics: memory_topics.iter().map(|t| t.slug.clone()).collect(),
                 memory_writes_disabled,
+                run_taint: run_taint.lock().unwrap().iter().copied().collect(),
+                memory_write_bar: memory_write_bar.clone(),
+                audience_restricted,
                 memory_matter: memory_matter.clone(),
                 // Populated by the approval gate below, before tool execution.
                 approved_categories: std::collections::HashSet::new(),
@@ -4694,6 +4789,7 @@ async fn run_loop(
                 // Send tool result event immediately as each completes
                 let _ = tx
                     .send(StreamEvent { payload: result.payload.clone(),
+                        provenance: None,
                         event_type: StreamEventType::ToolResult,
                         text: result.content.clone(),
                         tool_call: Some(ai::ToolCall {
@@ -4752,6 +4848,7 @@ async fn run_loop(
                 info!(tool = %tc.name, id = %tc.id, is_error = result.is_error, result = %result_log, "tool result");
                 let _ = tx
                     .send(StreamEvent { payload: result.payload.clone(),
+                        provenance: None,
                         event_type: StreamEventType::ToolResult,
                         text: result.content.clone(),
                         tool_call: Some(ai::ToolCall {
@@ -4783,6 +4880,7 @@ async fn run_loop(
                 if let Some((tc, result)) = blocked {
                     let _ = tx
                         .send(StreamEvent { payload: None,
+                            provenance: None,
                             event_type: StreamEventType::ToolResult,
                             text: result.content.clone(),
                             tool_call: Some(ai::ToolCall {
@@ -5264,6 +5362,14 @@ async fn run_loop(
                     unproductive,
                 ));
                 recent_tool_names.push(tc.name.clone());
+                // Engine-stamped provenance: union this call's classes into
+                // the run's taint set (static table; model-invisible).
+                {
+                    let mut taint = run_taint.lock().unwrap();
+                    for class in crate::provenance::classify_tool(&tc.name, &tc.input) {
+                        taint.insert(class);
+                    }
+                }
                 // Keep last 10 for ping-pong detection
                 if recent_tool_result_hashes.len() > 10 {
                     recent_tool_result_hashes.remove(0);
@@ -5288,11 +5394,14 @@ async fn run_loop(
             {
                 let msgs = sessions.get_messages(session_id).unwrap_or_default();
                 let detected_mode = sessions.get_detected_mode(session_id);
+                let taint_snapshot: Vec<types::provenance::ProvenanceClass> =
+                    run_taint.lock().unwrap().iter().copied().collect();
                 let rctx = steering::ReminderContext {
                     iteration,
                     execution_mode,
                     messages: &msgs,
                     recent_tool_names: &recent_tool_names,
+                    run_taint: &taint_snapshot,
                     provider_id: selected_provider_id,
                     work_tasks: &work_tasks,
                     user_prompt,
@@ -5683,7 +5792,17 @@ async fn run_loop(
     // Extract from last exchange only (last user msg + assistant response + tool
     // calls) to avoid re-extracting facts from old messages and creating duplicates.
     let has_providers = !providers.read().await.is_empty();
-    if !skip_memory && has_providers {
+    let final_taint: Vec<types::provenance::ProvenanceClass> =
+        run_taint.lock().unwrap().iter().copied().collect();
+    let extraction_barred = final_taint.iter().any(|c| memory_write_bar.contains(c));
+    if extraction_barred {
+        info!(
+            session_id,
+            classes = %types::provenance::label_classes(&final_taint),
+            "memory extraction barred by scope write bar"
+        );
+    }
+    if !skip_memory && has_providers && !extraction_barred {
         let all_msgs = sessions.get_messages(session_id).unwrap_or_default();
         // Find the last user message and take everything from there onward.
         let last_exchange: Vec<_> = {
@@ -5705,6 +5824,7 @@ async fn run_loop(
             let session_id_owned = session_id.to_string();
             let embed_prov = embedding_provider.cloned();
             let topics = memory_topics.clone();
+            let taint = final_taint.clone();
 
             debouncer
                 .schedule(session_id, move || async move {
@@ -5724,7 +5844,9 @@ async fn run_loop(
                         )
                         .await
                         {
-                            memory::store_facts(&store, &facts, &mem_uid, embed_prov, &topics);
+                            memory::store_facts(
+                                &store, &facts, &mem_uid, embed_prov, &topics, &taint,
+                            );
                             debug!(
                                 session_id = session_id_owned,
                                 "extracted and stored memory facts"

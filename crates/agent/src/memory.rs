@@ -288,6 +288,7 @@ pub fn store_facts(
     user_id: &str,
     embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
     topics: &[MemoryTopic],
+    provenance: &[types::provenance::ProvenanceClass],
 ) {
     let entries = format_for_storage(facts, topics);
     let mut stored_keys: Vec<(String, String)> = Vec::new();
@@ -312,10 +313,16 @@ pub fn store_facts(
             serde_json::to_string(&entry.tags).ok()
         };
 
-        let metadata = serde_json::json!({
+        // Provenance rides the metadata annex (trust-boundaries design
+        // 2026-08-22): the classes of untrusted content the producing run
+        // touched. Absent key = owner/agent-authored (or pre-provenance).
+        let mut metadata = serde_json::json!({
             "confidence": entry.confidence,
-        })
-        .to_string();
+        });
+        if !provenance.is_empty() {
+            metadata["provenance"] = serde_json::json!(provenance);
+        }
+        let metadata = metadata.to_string();
 
         if let Err(e) = store.upsert_memory(
             &entry.namespace,
@@ -711,6 +718,15 @@ pub fn session_key_context(session_key: &str) -> Option<String> {
     } else {
         None
     }
+}
+
+/// The matter (isolation context) portion of a RESOLVED memory scope, if any —
+/// the read-side counterpart of the `:ctx:` suffix [`resolve_memory_scope`]
+/// appends. Used to carry a requester's matter on a coworker envelope
+/// (`ToolContext.user_id` → envelope → target session key) without any caller
+/// re-deriving scopes.
+pub fn scope_matter(user_id: &str) -> Option<&str> {
+    user_id.split_once(":ctx:").map(|(_, ctx)| ctx)
 }
 
 /// The memory scoping decision for one run — produced by
@@ -1336,6 +1352,20 @@ mod tests {
     }
 
     #[test]
+    fn test_scope_matter_round_trip() {
+        // The matter extracted from a resolved scope is exactly what
+        // resolve_memory_scope appended — envelope stamping must round-trip.
+        let s = resolve_memory_scope("local", "a1", true, Some("caseA"), None);
+        assert_eq!(scope_matter(&s.user_id), Some("caseA"));
+        // Matters may carry colons (channel-style ctx segments) — stay whole.
+        let s = resolve_memory_scope("local", "a1", true, Some("dm:123"), None);
+        assert_eq!(scope_matter(&s.user_id), Some("dm:123"));
+        // Un-isolated scopes carry no matter.
+        assert_eq!(scope_matter("local:agent:a1"), None);
+        assert_eq!(scope_matter("local"), None);
+    }
+
+    #[test]
     fn test_resolve_memory_scope_main_bot_and_plain_agent() {
         // Main bot: raw owner, contexts irrelevant.
         let s = resolve_memory_scope("local", "", true, Some("caseA"), None);
@@ -1448,7 +1478,7 @@ mod tests {
             }],
             ..Default::default()
         };
-        store_facts(&store, &facts, &scope.user_id, None, &[]);
+        store_facts(&store, &facts, &scope.user_id, None, &[], &[]);
 
         // Lands under the exact ctx scope…
         let stored = store

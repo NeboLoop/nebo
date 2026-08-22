@@ -233,6 +233,9 @@ async fn tick(state: &AppState, last_fired: &LastFired) -> Result<(), String> {
             mention_context: None,
             tool_scope: None, plan_mode: false,
             channel_ctx: None,
+            handoff_depth: 0,
+            seed_taint: vec![],
+            audience: None,
         };
 
         run_chat(state, config).await;

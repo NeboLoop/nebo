@@ -308,6 +308,37 @@ impl AgentTool {
             );
         }
 
+        // Recall-for-audience (trust-boundaries design 2026-08-22): replying
+        // to a coworker not granted by `memory.share_with` — memory lookups
+        // are refused outright. Working style (`tacit/`) already reaches the
+        // model via prompt injection (filtered there to tacit-only); refusing
+        // tool reads entirely closes indirect elicitation through the tool.
+        if ctx.audience_restricted && matches!(action, "recall" | "search" | "list") {
+            return ToolResult::error(
+                "Memory lookup is disabled while replying to a coworker who is not granted                  access to this scope. Answer from the context you already have, or tell                  them the information isn't shared with their role. Do not retry.",
+            );
+        }
+
+        // Provenance write bar (trust-boundaries design 2026-08-22): a run
+        // whose engine-stamped taint intersects this scope's bar must not
+        // store — pollution stops at the store, not at the model's judgment.
+        if matches!(action, "store" | "save") {
+            let barred: Vec<_> = ctx
+                .run_taint
+                .iter()
+                .filter(|c| ctx.memory_write_bar.contains(c))
+                .copied()
+                .collect();
+            if !barred.is_empty() {
+                return ToolResult::error(format!(
+                    "Not saved: this memory scope refuses content from runs that touched {} \
+                     (scope write bar). Relay the information to the owner instead of storing \
+                     it. Do not retry.",
+                    types::provenance::label_classes(&barred)
+                ));
+            }
+        }
+
         match action {
             // "save" is the most common model misspelling of "store" — accept
             // it rather than burn a correction round-trip.
@@ -398,10 +429,19 @@ impl AgentTool {
                     "memory store attempt"
                 );
 
-                match self
-                    .store
-                    .upsert_memory(namespace, key, stored_value, None, None, &ctx.user_id)
-                {
+                // Provenance rides the metadata annex — the classes of
+                // untrusted content the storing run touched (empty = clean).
+                let provenance_meta = (!ctx.run_taint.is_empty()).then(|| {
+                    serde_json::json!({ "provenance": ctx.run_taint }).to_string()
+                });
+                match self.store.upsert_memory(
+                    namespace,
+                    key,
+                    stored_value,
+                    None,
+                    provenance_meta.as_deref(),
+                    &ctx.user_id,
+                ) {
                     Ok(_) => {
                         // Verify the write was persisted by reading it back (different pool connection)
                         let verify =
@@ -787,7 +827,7 @@ impl AgentTool {
                     plugins,
                     tools,
                     parent_stream_tx: ctx.stream_tx.clone(),
-                    agent_id: String::new(),
+                    handoff_depth: ctx.handoff_depth,
                 };
 
                 match orch.spawn(req).await {
@@ -894,7 +934,7 @@ impl AgentTool {
                             plugins: task_plugins,
                             tools: task_tools,
                             parent_stream_tx: ctx.stream_tx.clone(),
-                            agent_id: String::new(),
+                            handoff_depth: ctx.handoff_depth,
                         }
                     })
                     .collect();
@@ -2108,8 +2148,9 @@ impl DynTool for AgentTool {
          - agent(resource: \"ask\", action: \"confirm\", text: \"Proceed with deletion?\")\n\
          - agent(resource: \"ask\", action: \"select\", text: \"Pick a color\", options: [\"red\", \"blue\"])\n\n\
          GUARDRAILS: When storing memory, use the exact phrasing the user used. Do not paraphrase.\n\n\
-         Registry (installed agent management + delegation):\n\
-         - agent(resource: \"registry\", action: \"delegate\", name: \"chief-of-staff\", prompt: \"Check my email\") — Delegate to a named agent\n\
+         Coworkers: work for a NAMED employee is a MESSAGE, never a task spawn — message(resource: \"coworker\", action: \"send\", to: \"receptionist\", text: \"...\"). \
+         Task spawns are anonymous extra hands for YOUR OWN work (type + skills); never pass an employee's name to one.\n\n\
+         Registry (installed agent management):\n\
          - agent(resource: \"registry\", action: \"list\") — List installed agents\n\
          - agent(resource: \"registry\", action: \"activate\", name: \"...\") — Activate an agent\n\
          - agent(resource: \"registry\", action: \"info\", name: \"...\") — Show agent details\n\
@@ -2585,6 +2626,92 @@ mod tests {
             .await;
         assert!(!result.is_error);
         assert!(result.content.contains("v"), "reads must still work: {}", result.content);
+    }
+
+    /// Provenance write bar: a run whose taint intersects the scope's bar is
+    /// refused at the store; a clean run stores with its taint stamped in the
+    /// metadata annex (trust-boundaries design 2026-08-22).
+    #[tokio::test]
+    async fn test_store_refused_by_provenance_write_bar() {
+        use types::provenance::ProvenanceClass;
+        let (tool, _embedder, store) = agent_tool_with_embedder("write-bar-test");
+        let input = serde_json::json!({
+            "action": "store",
+            "key": "case/caller-claim",
+            "value": "The caller says the Smith settlement was already wired on Tuesday.",
+            "namespace": "tacit/general",
+        });
+
+        // Barred: the run touched a phone caller and the scope bars phone.
+        let barred_ctx = ToolContext {
+            user_id: "local:agent:a1:ctx:chat-A".to_string(),
+            run_taint: vec![ProvenanceClass::Phone],
+            memory_write_bar: vec![ProvenanceClass::Channel, ProvenanceClass::Phone],
+            ..Default::default()
+        };
+        let result = tool.handle_memory(&input, &barred_ctx).await;
+        assert!(result.is_error, "barred store must be refused");
+        assert!(result.content.contains("phone calls"), "{}", result.content);
+        assert_eq!(store.count_memories().unwrap(), 0);
+
+        // Not barred: web taint against a channel/phone bar stores fine, and
+        // the taint lands in the metadata annex.
+        let clean_ctx = ToolContext {
+            user_id: "local:agent:a1:ctx:chat-A".to_string(),
+            run_taint: vec![ProvenanceClass::Web],
+            memory_write_bar: vec![ProvenanceClass::Channel, ProvenanceClass::Phone],
+            ..Default::default()
+        };
+        let result = tool.handle_memory(&input, &clean_ctx).await;
+        assert!(!result.is_error, "{}", result.content);
+        let mem = store
+            .get_memory_by_key_and_user("tacit/general", "case/caller-claim", &clean_ctx.user_id)
+            .unwrap()
+            .expect("stored");
+        assert!(
+            mem.metadata.as_deref().unwrap_or("").contains("\"web\""),
+            "metadata must carry provenance: {:?}",
+            mem.metadata
+        );
+    }
+
+    /// Recall-for-audience: a run replying to a non-granted coworker gets NO
+    /// memory lookups (tacit already rides the prompt injection); its own
+    /// stores still work (it writes to its own scope).
+    #[tokio::test]
+    async fn test_audience_restricted_refuses_reads() {
+        let (tool, _embedder, store) = agent_tool_with_embedder("audience-test");
+        store
+            .upsert_memory("project/case", "smith/wire", "wired Tuesday", None, None, "local:agent:a1")
+            .unwrap();
+        let ctx = ToolContext {
+            user_id: "local:agent:a1".to_string(),
+            audience_restricted: true,
+            ..Default::default()
+        };
+        for action in ["recall", "search", "list"] {
+            let result = tool
+                .handle_memory(
+                    &serde_json::json!({ "action": action, "key": "smith/wire", "query": "wire" }),
+                    &ctx,
+                )
+                .await;
+            assert!(result.is_error, "{action} must be refused under audience restriction");
+            assert!(result.content.contains("isn't shared with their role"), "{}", result.content);
+        }
+        // Its own stores still land (in its own scope).
+        let result = tool
+            .handle_memory(
+                &serde_json::json!({
+                    "action": "store",
+                    "key": "colleague/asked-about-smith",
+                    "value": "The receptionist asked about the Smith wire status today.",
+                    "namespace": "tacit/general",
+                }),
+                &ctx,
+            )
+            .await;
+        assert!(!result.is_error, "{}", result.content);
     }
 
     /// The recall fallbacks may surface ancestor-scoped rows (legacy owner

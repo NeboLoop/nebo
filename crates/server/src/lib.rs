@@ -5,6 +5,7 @@ mod artifact_updates;
 mod channel_dispatch;
 pub mod chat_dispatch;
 pub mod codes;
+pub mod coworker;
 pub mod deps;
 pub mod entity_config;
 pub mod handlers;
@@ -58,6 +59,12 @@ use types::api::HealthResponse;
 pub use state::AppState as ServerState;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Cap on agent-to-agent hop chains — shared by the loop-channel mention path
+/// and the coworker message rail so enlistment chains and A↔B cycles stay
+/// bounded regardless of which rail carries them. A human message resets the
+/// chain.
+pub(crate) const MAX_HANDOFF_DEPTH: u8 = 3;
 
 /// Matches a web-composer mention chip `<@id>` where id is a bot_id or a loop
 /// agent UUID. Captures the inner id. Used by the loop channel branch to route
@@ -1970,6 +1977,13 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
             state.clone(),
         )));
 
+    // Wire the coworker message rail (late, like the installer above — it needs
+    // `AppState`). With this set, message(resource: "coworker") delivers real
+    // agent→agent messages through the ONE chat pipeline.
+    state
+        .tools
+        .set_coworker_rail(Arc::new(coworker::CoworkerRailImpl::new(state.clone())));
+
     // Restart workers that have DB channel bindings (they were started before the
     // channel dispatcher was wired, so channels didn't start).
     {
@@ -3484,6 +3498,9 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
             mention_context: None,
             tool_scope: None, plan_mode: false,
             channel_ctx: None,
+            handoff_depth: 0,
+            seed_taint: vec![],
+            audience: None,
         };
 
         chat_dispatch::run_chat(&state, config).await;
@@ -3618,6 +3635,9 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
             tool_scope: None,
             plan_mode: false,
             channel_ctx: None,
+            handoff_depth: 0,
+            seed_taint: vec![],
+            audience: None,
         };
 
         chat_dispatch::run_chat(&state, config).await;
@@ -3876,6 +3896,9 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
                 mention_context: None,
                 tool_scope: None, plan_mode: false,
                 channel_ctx: None,
+                handoff_depth: 0,
+                seed_taint: vec![],
+                audience: None,
             };
 
             chat_dispatch::run_chat(&state, config).await;
@@ -3974,6 +3997,9 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
             mention_context: None,
             tool_scope: None, plan_mode: false,
             channel_ctx: None,
+            handoff_depth: 0,
+            seed_taint: vec![],
+            audience: None,
         };
 
         chat_dispatch::run_chat(&state, config).await;
@@ -4114,7 +4140,6 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
             .get("handoffDepth")
             .and_then(|v| v.parse().ok())
             .unwrap_or(if sender_is_agent { 1 } else { 0 });
-        const MAX_HANDOFF_DEPTH: u8 = 3;
         if sender_is_agent && mentioned && handoff_depth_in >= MAX_HANDOFF_DEPTH {
             tracing::info!(
                 conv_id = %msg.conversation_id,
@@ -4152,8 +4177,8 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
 
         // Coordination mode: when the user EXPLICITLY asks several addressed
         // agents to produce one joint result, route to a single lead (the
-        // first mentioned) that consults the others via `delegate` and writes
-        // one combined reply — instead of fanning out N independent answers.
+        // first mentioned) that consults the others via coworker messages and
+        // writes one combined reply — instead of fanning out N independent answers.
         // Conservative by design; independent fan-out is the default.
         let coordinate = mentioned_targets.len() > 1 && wants_coordination(&text);
         let coordinator_peers: Vec<String> = if coordinate {
@@ -4386,7 +4411,7 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
         };
 
         // In coordination mode, resolve the peer display names the lead will be
-        // told to consult via `delegate`.
+        // told to consult via coworker messages.
         let coordinator_peer_names: Vec<String> = if coordinate {
             let registry = state.agent_registry.read().await;
             coordinator_peers
@@ -4445,15 +4470,15 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
             };
 
             // Coordination framing: the lead is told to consult the named peers
-            // via `delegate` (bounded by the sub-agent depth cap) and write one
-            // combined answer — the peers do not reply here on their own.
+            // via real coworker messages (bounded by the handoff depth cap) and
+            // write one combined answer — the peers do not reply here on their own.
             let mention_context = if coordinate {
                 Some(format!(
                     "You are the lead for this request. The user asked you to work together with \
                      {peers} to produce ONE combined result. They are NOT replying here on their \
-                     own — consult a peer when you need their expertise by calling \
-                     agent(resource: \"registry\", action: \"delegate\", name: \"{first}\", \
-                     prompt: \"<what you need from them>\") — then write a single integrated \
+                     own — consult a peer when you need their expertise by messaging them: \
+                     message(resource: \"coworker\", action: \"send\", to: \"{first}\", \
+                     text: \"<what you need from them>\") — then write a single integrated \
                      answer yourself.",
                     peers = coordinator_peer_names.join(", "),
                     first = coordinator_peer_names.first().map(|s| s.as_str()).unwrap_or("the peer"),
@@ -4504,6 +4529,11 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
                 tool_scope: None,
                 plan_mode: false,
                 channel_ctx: None,
+                handoff_depth: 0,
+                // Loop-channel members (other bots / remote agents) are
+                // untrusted input — seed the run's taint accordingly.
+                seed_taint: vec![types::provenance::ProvenanceClass::Channel],
+                audience: None,
             };
 
             chat_dispatch::run_chat(&state, config).await;

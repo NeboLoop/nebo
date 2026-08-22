@@ -1002,6 +1002,7 @@ fn emit_panel(tx: &ProgressTx, panel: &PanelState) {
         if let Ok(mut v) = serde_json::to_value(panel) {
             v["kind"] = serde_json::Value::String("research_progress".into());
             let _ = tx.try_send(ai::StreamEvent { payload: Some(v),
+                provenance: None,
                 event_type: ai::StreamEventType::SubagentProgress,
                 text: String::new(),
                 tool_call: None,
@@ -1020,6 +1021,7 @@ fn emit_panel(tx: &ProgressTx, panel: &PanelState) {
 fn emit_progress(tx: &ProgressTx, text: impl Into<String>) {
     if let Some(tx) = tx {
         let _ = tx.try_send(ai::StreamEvent { payload: None,
+            provenance: None,
             event_type: ai::StreamEventType::SubagentProgress,
             text: text.into(),
             tool_call: None,

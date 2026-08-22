@@ -36,10 +36,9 @@ pub struct SpawnRequest {
     /// Parent's stream sender — forwarded to sub-agents so that `AskRequest`
     /// events reach the user's WebSocket (permission forwarding).
     pub parent_stream_tx: Option<mpsc::Sender<ai::StreamEvent>>,
-    /// When set, the sub-agent runs as this agent identity. The runner
-    /// loads the agent's AGENT.md, soul, plugins, skills, and memory
-    /// scoping automatically from the AgentRegistry.
-    pub agent_id: String,
+    /// Parent run's agent-to-agent hop count — inherited so a sub-agent cannot
+    /// restart the coworker chain cap at zero.
+    pub handoff_depth: u8,
 }
 
 /// Result from a sub-agent or DAG execution.

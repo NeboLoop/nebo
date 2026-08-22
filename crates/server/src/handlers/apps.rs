@@ -721,6 +721,9 @@ async fn start_app_agent_run(
             mention_context,
             tool_scope: None, plan_mode: false,
             channel_ctx: None,
+            handoff_depth: 0,
+            seed_taint: vec![],
+            audience: None,
         },
     )
     .await

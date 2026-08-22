@@ -73,6 +73,7 @@ struct PendingFlush {
     session_id: String,
     user_id: String,
     topics: Vec<napp::agent::MemoryTopic>,
+    provenance: Vec<types::provenance::ProvenanceClass>,
     embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
 }
 
@@ -137,6 +138,7 @@ pub async fn run_memory_flush(
     user_id: &str,
     topics: &[napp::agent::MemoryTopic],
     embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
+    provenance: &[types::provenance::ProvenanceClass],
 ) {
     // Check if an extraction is already in progress.
     if FLUSH_IN_PROGRESS.load(std::sync::atomic::Ordering::Acquire) {
@@ -146,6 +148,7 @@ pub async fn run_memory_flush(
             session_id: session_id.to_string(),
             user_id: user_id.to_string(),
             topics: topics.to_vec(),
+            provenance: provenance.to_vec(),
             embedding_provider,
         });
         debug!(session_id, "memory flush already in progress — stashed as pending");
@@ -162,6 +165,7 @@ pub async fn run_memory_flush(
         user_id,
         topics,
         embedding_provider,
+        provenance,
     )
     .await;
 
@@ -187,6 +191,7 @@ pub async fn run_memory_flush(
             &ctx.user_id,
             &ctx.topics,
             ctx.embedding_provider,
+            &ctx.provenance,
         )
         .await;
         FLUSH_IN_PROGRESS.store(false, std::sync::atomic::Ordering::Release);
@@ -201,6 +206,7 @@ async fn run_flush_inner(
     user_id: &str,
     topics: &[napp::agent::MemoryTopic],
     embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
+    provenance: &[types::provenance::ProvenanceClass],
 ) {
     let messages = match store.get_chat_messages(session_id) {
         Ok(msgs) => msgs,
@@ -224,7 +230,7 @@ async fn run_flush_inner(
     if let Some(facts) =
         memory::extract_facts(provider, &messages, Some(store), Some(user_id), topics, "").await
     {
-        memory::store_facts(store, &facts, user_id, embedding_provider, topics);
+        memory::store_facts(store, &facts, user_id, embedding_provider, topics, provenance);
         debug!(session_id, "memory flush extraction complete");
     }
 
