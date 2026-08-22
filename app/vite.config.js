@@ -19,11 +19,11 @@ function webkitNodeDedupe() {
 	return {
 		name: 'nebo-webkit-node-dedupe',
 		apply: 'serve',
-		transform(code, id) {
+		transform(/** @type {string} */ code, /** @type {string} */ id) {
 			if (!id.replace(/\\/g, '/').endsWith('.svelte-kit/generated/client/app.js')) return null;
 			const wrapped = code.replace(
 				/\(\)\s*=>\s*import\('(\.\/nodes\/\d+)'\)/g,
-				(_, spec) => `__nebo_once(() => import('${spec}'))`
+				(/** @type {string} */ _, /** @type {string} */ spec) => `__nebo_once(() => import('${spec}'))`
 			);
 			if (wrapped === code) return null;
 			return {
