@@ -110,7 +110,7 @@
 {#if $mobileChatsOpen}
   <div class="fixed inset-0 z-30 bg-black/40 md:hidden" onclick={() => mobileChatsOpen.set(false)} role="presentation"></div>
 {/if}
-<div class="md:w-[260px] md:min-w-[260px] max-md:fixed max-md:inset-y-0 max-md:left-0 max-md:z-40 max-md:w-[280px] max-md:transition-transform {$mobileChatsOpen ? 'max-md:translate-x-0 max-md:shadow-2xl' : 'max-md:-translate-x-full'} border-r border-base-content/10 shadow-[2px_0_8px_-2px_rgba(0,0,0,0.06)] relative shrink-0 flex flex-col bg-base-200/50 max-md:bg-base-200">
+<div class="md:w-[260px] md:min-w-[260px] max-md:fixed max-md:inset-y-0 max-md:left-0 max-md:z-40 max-md:w-[280px] max-md:transition-[transform,visibility] {$mobileChatsOpen ? 'max-md:translate-x-0 max-md:shadow-2xl' : 'max-md:-translate-x-full max-md:invisible'} border-r border-base-content/10 shadow-[2px_0_8px_-2px_rgba(0,0,0,0.06)] relative shrink-0 flex flex-col bg-base-200/50 max-md:bg-base-200">
   <AgentTabBar agentId={agentId} agentName={agent?.name ?? ''} agentInitial={agent?.initial ?? ''} status={agentStatus} isApp={ctx.isApp} />
 
   <div class="flex-1 overflow-y-auto">

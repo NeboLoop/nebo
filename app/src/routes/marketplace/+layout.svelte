@@ -241,7 +241,7 @@
 {#if mobileFiltersOpen}
   <div class="fixed inset-0 z-30 bg-black/40 md:hidden" onclick={() => (mobileFiltersOpen = false)} role="presentation"></div>
 {/if}
-<div class="{$sidebarCollapsed ? 'md:w-12 md:min-w-12' : 'md:w-[220px] md:min-w-[220px]'} max-md:fixed max-md:inset-y-0 max-md:left-0 max-md:z-40 max-md:w-[280px] max-md:transition-transform {mobileFiltersOpen ? 'max-md:translate-x-0 max-md:shadow-2xl' : 'max-md:-translate-x-full'} border-r border-base-300 flex flex-col bg-base-200 shrink-0 transition-all duration-150">
+<div class="{$sidebarCollapsed ? 'md:w-12 md:min-w-12' : 'md:w-[220px] md:min-w-[220px]'} max-md:fixed max-md:inset-y-0 max-md:left-0 max-md:z-40 max-md:w-[280px] max-md:transition-[transform,visibility] {mobileFiltersOpen ? 'max-md:translate-x-0 max-md:shadow-2xl' : 'max-md:-translate-x-full max-md:invisible'} border-r border-base-300 flex flex-col bg-base-200 shrink-0 transition-all duration-150">
   <div class="h-11 border-b border-base-300 flex items-center shrink-0 {$sidebarCollapsed && !mobileFiltersOpen ? 'md:justify-center px-3.5 max-md:justify-between' : 'px-3.5 justify-between'}">
     {#if !$sidebarCollapsed || mobileFiltersOpen}
       <span class="text-sm font-semibold flex-1">{$t('marketplace.title')}</span>
