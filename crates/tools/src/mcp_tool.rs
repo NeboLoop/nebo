@@ -331,10 +331,22 @@ pub async fn call_mcp_tool(
     tool_name: &str,
     input: serde_json::Value,
 ) -> ToolResult {
+    call_mcp_tool_scoped(store, bridge, integration_id, tool_name, input, None).await
+}
+
+/// As `call_mcp_tool`, carrying the run's confidentiality scope.
+pub async fn call_mcp_tool_scoped(
+    store: &db::Store,
+    bridge: &mcp::Bridge,
+    integration_id: &str,
+    tool_name: &str,
+    input: serde_json::Value,
+    matter: Option<&str>,
+) -> ToolResult {
     // Proactive refresh: if the token is expired, refresh before calling.
     maybe_refresh_token(store, bridge, integration_id).await;
 
-    match bridge.call_tool(integration_id, tool_name, input.clone()).await {
+    match bridge.call_tool_scoped(integration_id, tool_name, input.clone(), matter).await {
         Ok(result) => {
             if result.is_error {
                 ToolResult::error(result.content)
@@ -574,5 +586,25 @@ mod coerce_tests {
         let before = input.clone();
         coerce_schema_types(&mut input, &schema);
         assert_eq!(input, before);
+    }
+}
+
+#[cfg(test)]
+mod matter_scope_tests {
+    use crate::origin::{Origin, ToolContext};
+
+    /// The confidentiality scope must ride on the ToolContext — the run's
+    /// property, not an argument the model authors. A model that could name
+    /// its own matter could name another client's.
+    #[test]
+    fn matter_lives_on_the_context_not_the_arguments() {
+        let plain = ToolContext::new(Origin::Workflow);
+        assert!(plain.memory_matter.is_none(), "a normal employee is unscoped");
+
+        let sealed = ToolContext {
+            memory_matter: Some("matter/acme-v-smith".into()),
+            ..ToolContext::new(Origin::Workflow)
+        };
+        assert_eq!(sealed.memory_matter.as_deref(), Some("matter/acme-v-smith"));
     }
 }

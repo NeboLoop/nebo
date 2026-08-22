@@ -195,6 +195,22 @@ impl McpClient {
         tool_name: &str,
         input: serde_json::Value,
     ) -> Result<McpToolResult, McpError> {
+        self.call_tool_scoped(integration_id, tool_name, input, None).await
+    }
+
+    /// Call a tool inside a confidentiality scope (a client matter).
+    ///
+    /// The scope travels as a HEADER, never as a tool argument: an argument is
+    /// something the model authors, and a model that can name its own matter
+    /// can name somebody else's. The server treats the header as the authority
+    /// and refuses anything outside it.
+    pub async fn call_tool_scoped(
+        &self,
+        integration_id: &str,
+        tool_name: &str,
+        input: serde_json::Value,
+        matter: Option<&str>,
+    ) -> Result<McpToolResult, McpError> {
         // Stdio servers route over their live child process.
         if let Some(session) = self.stdio_sessions.read().await.get(integration_id).cloned() {
             return session.call_tool(tool_name, input).await;
@@ -223,6 +239,9 @@ impl McpClient {
 
         if let Some(ref tokens) = session.tokens {
             req = req.bearer_auth(&tokens.access_token);
+        }
+        if let Some(m) = matter {
+            req = req.header("X-Nebo-Memory-Domain", m);
         }
 
         let resp = req.send().await?;

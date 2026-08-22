@@ -1032,7 +1032,7 @@ impl DynTool for McpProxyTool {
 
     fn execute_dyn<'a>(
         &'a self,
-        _ctx: &'a crate::origin::ToolContext,
+        ctx: &'a crate::origin::ToolContext,
         mut input: serde_json::Value,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send + 'a>> {
         // Repair model-stringified object/array args against the server's real
@@ -1040,13 +1040,17 @@ impl DynTool for McpProxyTool {
         if let Some(schema) = &self.tool_schema {
             crate::mcp_tool::coerce_schema_types(&mut input, schema);
         }
+        // The run's confidentiality scope rides along as a header, so a sealed
+        // employee reaches only its own matter on the server side.
+        let matter = ctx.memory_matter.clone();
         Box::pin(async move {
-            crate::mcp_tool::call_mcp_tool(
+            crate::mcp_tool::call_mcp_tool_scoped(
                 &self.store,
                 &self.bridge,
                 &self.integration_id,
                 &self.original_name,
                 input,
+                matter.as_deref(),
             )
             .await
         })

@@ -1910,6 +1910,33 @@ async fn run_loop(
         ctx.memory_writes_disabled = memory_writes_disabled;
     }
 
+    // Company Memory's confidentiality scope for this run. An isolated
+    // employee is sealed to ONE matter — the same context its own memory is
+    // scoped by — so it can remember its client without ever reaching another.
+    // The value is the platform's; it travels as a header the model can't set.
+    //
+    // Sub-agents inherit it. A spawn carries an empty agent_id, so the
+    // context_isolated check below sees a default config and would hand the
+    // child UNSCOPED Memory — the company-Memory twin of isolation-audit
+    // leak #3. The parent's resolved scope arrives as the request user_id and
+    // ends in ":ctx:<id>" when the parent was sealed, so read the matter back
+    // out of it rather than trusting the child's own (absent) config.
+    let memory_matter: Option<String> = if session_key.starts_with("subagent:") {
+        user_id
+            .rsplit_once(":ctx:")
+            .map(|(_, ctx)| format!("matter/{ctx}"))
+    } else if memory_config.context_isolated {
+        explicit_ctx
+            .as_deref()
+            .or(chat_ctx.as_deref())
+            .map(|c| format!("matter/{c}"))
+    } else {
+        None
+    };
+    // A sealed parent's child is sealed too, even though its own config says
+    // nothing: no matter derivable means no company Memory at all.
+    let inherits_isolation = session_key.starts_with("subagent:") && user_id.contains(":ctx:");
+
     // Build the inheritance chain for READ access: agent tacit/ (context-
     // isolated runs only) + owner identity prefixes. Sibling ctx scopes are
     // never in the chain.
@@ -2799,12 +2826,17 @@ async fn run_loop(
         // own memory is sealed per matter would break the promise its setting
         // makes — one case, client, or matter never bleeding into another.
         // Until Memory is matter-scoped, isolated employees simply don't get it.
-        let isolated_employee = active_agent_entry
-            .as_ref()
-            .and_then(|e| e.config.as_ref())
-            .map(|c| c.memory.context_isolated)
-            .unwrap_or(false);
-        if isolated_employee {
+        // An isolated employee with a derivable matter gets MATTER-SCOPED
+        // Memory (the header on every call confines it server-side). Only when
+        // no matter can be derived does the blunt wall apply: unscoped access
+        // to a single-principal graph is exactly what isolation forbids.
+        let isolated_employee = inherits_isolation
+            || active_agent_entry
+                .as_ref()
+                .and_then(|e| e.config.as_ref())
+                .map(|c| c.memory.context_isolated)
+                .unwrap_or(false);
+        if isolated_employee && memory_matter.is_none() {
             // Exact URL match, not a substring guess: a customer's own KB at
             // some other host is their business and must not be withheld.
             let memory_url = config::memory_url();
@@ -3987,6 +4019,7 @@ async fn run_loop(
                 model_preference: (!model_override.is_empty()).then(|| model_override.to_string()),
                 memory_topics: memory_topics.iter().map(|t| t.slug.clone()).collect(),
                 memory_writes_disabled,
+                memory_matter: memory_matter.clone(),
                 // Populated by the approval gate below, before tool execution.
                 approved_categories: std::collections::HashSet::new(),
                 // Restricted-run allowlist: the review fork's whitelist, or
