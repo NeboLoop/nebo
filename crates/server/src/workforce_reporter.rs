@@ -66,6 +66,10 @@ pub fn spawn(state: AppState) {
                 if send_roster {
                     body["duties"] = json!(duties);
                 }
+                // The review queue: runs parked waiting on a human. Sent with
+                // every report (small, replace-on-arrival) so the console's
+                // "waiting on you" is never stale by more than a drain.
+                body["suspensions"] = json!(collect_suspensions(&state));
                 match api.report_workforce(&body).await {
                     Ok(()) => {
                         if send_roster {
@@ -120,6 +124,11 @@ fn collect_duties(state: &AppState) -> Vec<serde_json::Value> {
                 "agentId": agent.id,
                 "agentName": agent.name,
                 "workflowName": b.binding_name,
+                // The owner-facing name and the sentence saying what the duty
+                // does. binding_name is developer vocabulary ("chase") and
+                // must never be the word a customer reads.
+                "displayName": humanize(&b.binding_name),
+                "description": b.description.clone().unwrap_or_default(),
                 "triggerType": trigger_type,
                 "cron": if b.trigger_type == "schedule" { b.trigger_config.clone() } else { String::new() },
                 "periodHours": period_hours,
@@ -224,5 +233,64 @@ mod tests {
         assert!((0.49..=0.51).contains(&heartbeat_period_hours("30m|9-17")));
         assert!((1.9..=2.1).contains(&heartbeat_period_hours("2h")));
         assert_eq!(heartbeat_period_hours(""), 24.0);
+    }
+}
+
+/// Open suspensions — the §07 review queue's raw material. Each is a run
+/// parked on a question only the owner can answer; the bot must NEVER
+/// self-answer one, which is why they are reported rather than healed.
+fn collect_suspensions(state: &AppState) -> Vec<serde_json::Value> {
+    let rows = state.store.list_workflow_suspensions().unwrap_or_default();
+    rows.into_iter()
+        .map(|(run_id, agent_id, binding_name, display, created_at)| {
+            let agent_name = state
+                .store
+                .get_agent(&agent_id)
+                .ok()
+                .flatten()
+                .map(|a| a.name)
+                .unwrap_or_default();
+            json!({
+                "runId": run_id,
+                "agentId": agent_id,
+                "agentName": agent_name,
+                "workflowName": binding_name,
+                "displayName": humanize(&binding_name),
+                "question": display,
+                "since": chrono::DateTime::from_timestamp(created_at, 0),
+            })
+        })
+        .collect()
+}
+
+/// humanize turns a developer binding name into words an owner reads:
+/// "chase-overdue_invoices" → "Chase overdue invoices". Deliberately dumb —
+/// a wrong-but-readable name beats a correct slug.
+fn humanize(binding: &str) -> String {
+    let words = binding.replace(['-', '_'], " ");
+    let trimmed = words.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let mut c = trimmed.chars();
+    let first = match c.next() {
+        Some(ch) => ch.to_uppercase().collect::<String>(),
+        None => return String::new(),
+    };
+    first + c.as_str()
+}
+
+#[cfg(test)]
+mod humanize_tests {
+    use super::humanize;
+
+    // This string is what a customer reads on their NOC and in their daily
+    // report — the whole point is that developer slugs never surface.
+    #[test]
+    fn humanize_makes_owner_words() {
+        assert_eq!(humanize("chase-overdue_invoices"), "Chase overdue invoices");
+        assert_eq!(humanize("inbox"), "Inbox");
+        assert_eq!(humanize(""), "");
+        assert_eq!(humanize("_-_"), "");
     }
 }

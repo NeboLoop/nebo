@@ -652,17 +652,23 @@ impl Store {
     /// the notification-prefix N+1.
     pub fn list_workflow_suspensions(
         &self,
-    ) -> Result<Vec<(String, String, String, String)>, NeboError> {
+    ) -> Result<Vec<(String, String, String, String, i64)>, NeboError> {
         let conn = self.conn()?;
         let mut stmt = conn
             .prepare(
-                "SELECT run_id, agent_id, binding_name, display
+                "SELECT run_id, agent_id, binding_name, display, created_at
                  FROM workflow_run_suspensions ORDER BY rowid DESC",
             )
             .map_err(|e| NeboError::Database(e.to_string()))?;
         let rows = stmt
             .query_map([], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
             })
             .map_err(|e| NeboError::Database(e.to_string()))?;
         rows.collect::<Result<Vec<_>, _>>()
