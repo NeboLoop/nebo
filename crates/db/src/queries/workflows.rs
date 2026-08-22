@@ -762,3 +762,45 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 }
+
+impl Store {
+    /// Terminal runs the reporter has not yet pushed, oldest first. The limit
+    /// bounds a single report; the cursor is the row's own reported_at.
+    pub fn list_unreported_runs(&self, limit: i64) -> Result<Vec<WorkflowRun>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, workflow_id, trigger_type, trigger_detail, status, inputs,
+                        current_activity, total_tokens_used, error, error_activity,
+                        session_key, started_at, completed_at
+                 FROM workflow_runs
+                 WHERE status IN ('completed', 'failed') AND reported_at IS NULL
+                 ORDER BY completed_at ASC LIMIT ?1",
+            )
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map(rusqlite::params![limit], row_to_workflow_run)
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
+    /// Marks runs as pushed. Only called after the platform accepted the
+    /// batch — an unacked run stays in the outbox and is re-sent, which is
+    /// safe because ingest dedups on (bot_id, run_id).
+    pub fn mark_runs_reported(&self, ids: &[String]) -> Result<(), NeboError> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let conn = self.conn()?;
+        let placeholders = vec!["?"; ids.len()].join(",");
+        let sql = format!(
+            "UPDATE workflow_runs SET reported_at = unixepoch() WHERE id IN ({placeholders})"
+        );
+        let params: Vec<&dyn rusqlite::ToSql> =
+            ids.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
+        conn.execute(&sql, params.as_slice())
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
+}
