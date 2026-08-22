@@ -283,10 +283,13 @@ impl PluginTool {
         ))
     }
 
-    /// Search the NeboAI marketplace for plugins. Returns names + install codes so the
-    /// agent can offer to install one (install is HIL — the user pastes/approves the code,
-    /// which installs via the canonical code path).
-    async fn handle_discover(&self, query: &str) -> ToolResult {
+    /// Search the NeboAI marketplace for plugins. In interactive chat the top
+    /// match renders as an inline INSTALL CARD (ask_user widget) that parks
+    /// this call — the button redeems the install code through the canonical
+    /// `POST /codes` pathway, so there is still exactly one install path and
+    /// the user approves by tapping, not by reading a code out of prose.
+    /// Unattended runs (and a skipped card) fall back to the text listing.
+    async fn handle_discover(&self, query: &str, ctx: &crate::ToolContext) -> ToolResult {
         let api = match crate::build_neboai_api(&self.db_store) {
             Ok(a) => a,
             Err(e) => return ToolResult::error(format!("marketplace unavailable: {}", e)),
@@ -318,11 +321,63 @@ impl PluginTool {
                                 it.get("description").and_then(|x| x.as_str()).unwrap_or("");
                             lines.push(format!("- {} ({}) — {} [{}]", name, slug, desc, code));
                         }
-                        ToolResult::ok(format!(
-                            "Found {} plugin(s):\n{}\n\nTo install one, share its PLUG-XXXX-XXXX \
-                             code with the user to approve (installs via the marketplace code path).",
+                        let listing = format!(
+                            "Found {} plugin(s):\n{}",
                             lines.len(),
                             lines.join("\n")
+                        );
+
+                        // Interactive chat: park on an install card for the top
+                        // match instead of narrating a code. The card's button
+                        // redeems the code via POST /codes (the one install
+                        // pathway); "installed" resumes this call.
+                        let interactive = crate::origin::ExecutionMode::from(ctx.origin)
+                            == crate::origin::ExecutionMode::Interactive
+                            && ctx.ask_channels.is_some();
+                        let top = &arr[0];
+                        let top_code = top.get("code").and_then(|x| x.as_str()).unwrap_or("");
+                        if interactive && !top_code.is_empty() {
+                            let top_name =
+                                top.get("name").and_then(|x| x.as_str()).unwrap_or("plugin");
+                            let top_slug = top.get("slug").and_then(|x| x.as_str()).unwrap_or("");
+                            let top_desc = top
+                                .get("description")
+                                .and_then(|x| x.as_str())
+                                .unwrap_or("");
+                            let answer = ctx
+                                .ask_user(
+                                    &format!(
+                                        "**{top_name}** can do this. Install it on the card and \
+                                         I'll pick up right where I left off."
+                                    ),
+                                    serde_json::json!([{
+                                        "type": "install_plugin",
+                                        "code": top_code,
+                                        "name": top_name,
+                                        "plugin": top_slug,
+                                        "description": top_desc,
+                                    }]),
+                                )
+                                .await;
+                            if answer.as_deref() == Some("installed") {
+                                return ToolResult::ok(format!(
+                                    "{top_name} is installed. Use it via plugin(resource: \
+                                     \"{top_slug}\", ...). If it needs an account, the connect \
+                                     card will appear on first use — no setup narration needed."
+                                ));
+                            }
+                            // Skipped/declined: fall through to the listing so the
+                            // conversation can continue (other options, questions).
+                            return ToolResult::ok(format!(
+                                "{listing}\n\nThe user declined the install card for {top_name}. \
+                                 Discuss alternatives or answer questions — do NOT paste install \
+                                 codes into chat; if they change their mind, call discover again \
+                                 to re-offer the card."
+                            ));
+                        }
+                        ToolResult::ok(format!(
+                            "{listing}\n\nTo install one, share its PLUG-XXXX-XXXX \
+                             code with the user to approve (installs via the marketplace code path)."
                         ))
                     }
                     _ => ToolResult::ok("No plugins found in the marketplace for that query."),
@@ -725,7 +780,7 @@ impl DynTool for PluginTool {
             // `list` and `discover` don't need a plugin slug; `exec`/`events` do.
             match pi.action.as_str() {
                 "list" => self.handle_list(),
-                "discover" => self.handle_discover(&pi.query).await,
+                "discover" => self.handle_discover(&pi.query, ctx).await,
                 "exec" | "" => {
                     if pi.resource.is_empty() {
                         return ToolResult::error(
