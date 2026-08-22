@@ -268,7 +268,7 @@ pub async fn list_work_documents(
             .store
             .get_work_document_listing(id)
             .map_err(to_error_response)?;
-        let documents: Vec<_> = doc.into_iter().collect();
+        let documents: Vec<db::WorkDocumentListing> = doc.into_iter().collect();
         return Ok(Json(serde_json::json!({ "documents": documents })));
     }
     let limit = params

@@ -455,6 +455,11 @@ async fn run_delegated_task(
         origin: tools::Origin::User,
         channel: "voice".into(),
         cancel_token: tokio_util::sync::CancellationToken::new(),
+        // The runner scopes memory by req.agent_id — the session key alone
+        // does not set it. Owner voice sessions target an employee via
+        // "agent:{id}:…" keys; leaving this empty resolved every owner voice
+        // run to the raw owner memory scope (isolation audit 2026-08-22).
+        agent_id: agent::keyparser::extract_agent_id(session_key),
         ..Default::default()
     };
     if let Some(c) = caller {
@@ -1121,6 +1126,27 @@ async fn handle_conversation_session(
         chat_id.as_deref().unwrap_or_default()
     );
     ctx.session_id = ctx.session_key.clone();
+    // Memory scope for the improvised direct-execute fallback (delegated runs
+    // scope themselves in the Runner). A bare user_id put every voice tool
+    // call — including untrusted phone-caller content — in the global unowned
+    // "" scope. Same canonical derivation as the Runner; telephony sessions
+    // additionally never write memory (caller speech is untrusted), and a
+    // not-yet-created chat fails closed via resolve_memory_scope.
+    {
+        let voice_agent_id = q.agent_id.as_deref().unwrap_or_default();
+        let owner = state.store.ensure_local_user_id().unwrap_or_default();
+        let isolated =
+            crate::workflow_manager::agent_context_isolated(&state.store, voice_agent_id);
+        let scope = agent::memory::resolve_memory_scope(
+            &owner,
+            voice_agent_id,
+            isolated,
+            None,
+            chat_id.as_deref().filter(|c| !c.is_empty()),
+        );
+        ctx.user_id = scope.user_id;
+        ctx.memory_writes_disabled = scope.writes_disabled || caller_ctx.is_some();
+    }
     let ctx = std::sync::Arc::new(ctx);
 
     // Turn accumulation for transcript persistence: the user transcript is

@@ -745,9 +745,13 @@ impl WorkflowManager for WorkflowManagerImpl {
                 // Deferred tool names (MCP proxies etc.): activities only get
                 // their schemas when they declare or reference them.
                 let deferred_names = tools_registry.get_deferred_names().await;
+                let (wf_memory_user_id, wf_memory_writes_disabled) =
+                    workflow_memory_scope(&store, "");
                 match workflow::engine::execute_workflow(
                     &def,
                     "", // standalone workflow run — not bound to an agent
+                    &wf_memory_user_id,
+                    wf_memory_writes_disabled,
                     inputs,
                     &trigger,
                     None,
@@ -1446,9 +1450,13 @@ impl WorkflowManager for WorkflowManagerImpl {
                 // Deferred tool names (MCP proxies etc.): activities only get
                 // their schemas when they declare or reference them.
                 let deferred_names = tools_registry.get_deferred_names().await;
+                let (wf_memory_user_id, wf_memory_writes_disabled) =
+                    workflow_memory_scope(&store, &agent_id_owned);
                 match workflow::engine::execute_workflow(
                     &def,
                     &agent_id_owned,
+                    &wf_memory_user_id,
+                    wf_memory_writes_disabled,
                     inputs,
                     &trigger,
                     None,
@@ -1856,6 +1864,39 @@ fn learning_mode_for(store: &db::Store, agent_id: &str) -> String {
 /// slice, which is what makes dedup ("already published today") and error
 /// avoidance possible. Honors learning modes: written for auto and staged,
 /// skipped for off — an agent set to Off does not accumulate anything.
+/// Fail-closed read of an agent's `memory.context_isolated` flag: an empty
+/// frontmatter is a legitimate default (not isolated), but config that exists
+/// and cannot be parsed — or an agent row that cannot be read — counts as
+/// isolated. "Couldn't read the isolation flag" must never mean "not isolated"
+/// (isolation audit 2026-08-22, fail-open class).
+pub(crate) fn agent_context_isolated(store: &db::Store, agent_id: &str) -> bool {
+    if agent_id.is_empty() {
+        return false;
+    }
+    match store.get_agent(agent_id) {
+        Ok(Some(a)) if a.frontmatter.is_empty() => false,
+        Ok(Some(a)) => napp::agent::parse_agent_config(&a.frontmatter)
+            .map(|c| c.memory.context_isolated)
+            .unwrap_or(true),
+        _ => true,
+    }
+}
+
+/// Memory scope a workflow run executes tools under. Workflow runs have no
+/// matter/chat context, so for context-isolated agents the scope stays the
+/// agent base and WRITES ARE DISABLED (fail closed) — reads still serve the
+/// agent scope.
+fn workflow_memory_scope(store: &db::Store, agent_id: &str) -> (String, bool) {
+    let owner = store.ensure_local_user_id().unwrap_or_default();
+    if agent_id.is_empty() {
+        return (owner, false);
+    }
+    (
+        agent::memory::agent_memory_scope(&owner, agent_id),
+        agent_context_isolated(store, agent_id),
+    )
+}
+
 fn record_run_outcome(store: &db::Store, agent_id: &str, binding: &str, status: &str, detail: &str) {
     let learning_mode = learning_mode_for(store, agent_id);
     if learning_mode != "auto" && learning_mode != "staged" {
@@ -1871,13 +1912,7 @@ fn record_run_outcome(store: &db::Store, agent_id: &str, binding: &str, status: 
     // Context-isolated agents keep case/matter data sealed per context. The
     // outcome row lives in the SHARED agent scope, so for isolated agents it
     // carries status only — run output could name a client or matter.
-    let context_isolated = store
-        .get_agent(agent_id)
-        .ok()
-        .flatten()
-        .and_then(|a| napp::agent::parse_agent_config(&a.frontmatter).ok())
-        .map(|c| c.memory.context_isolated)
-        .unwrap_or(false);
+    let context_isolated = agent_context_isolated(store, agent_id);
     let detail: &str = if context_isolated { "" } else { detail };
 
     let date = chrono::Utc::now().format("%Y-%m-%d %H:%M UTC");

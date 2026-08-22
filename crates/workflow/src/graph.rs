@@ -69,6 +69,9 @@ struct GraphCtx<'a> {
     run_id: String,
     /// Owning agent for usage attribution; "" for standalone workflow runs.
     agent_id: String,
+    /// Caller-resolved memory scope for tool execution (see execute_workflow).
+    memory_user_id: String,
+    memory_writes_disabled: bool,
     by_id: HashMap<String, &'a Activity>,
     index_of: HashMap<String, usize>,
     outgoing: HashMap<String, Vec<Edge>>,
@@ -107,6 +110,8 @@ struct WalkScope {
 pub(crate) async fn execute_graph(
     def: &WorkflowDef,
     agent_id: &str,
+    memory_user_id: &str,
+    memory_writes_disabled: bool,
     inputs: &serde_json::Value,
     store: &Arc<Store>,
     provider: &dyn ai::Provider,
@@ -125,6 +130,8 @@ pub(crate) async fn execute_graph(
     let ctx = build_ctx(
         def,
         agent_id,
+        memory_user_id,
+        memory_writes_disabled,
         inputs,
         store,
         provider,
@@ -217,6 +224,8 @@ pub(crate) async fn execute_graph(
 fn build_ctx<'a>(
     def: &'a WorkflowDef,
     agent_id: &str,
+    memory_user_id: &str,
+    memory_writes_disabled: bool,
     inputs: &'a serde_json::Value,
     store: &'a Arc<Store>,
     provider: &'a dyn ai::Provider,
@@ -306,6 +315,8 @@ fn build_ctx<'a>(
         resume,
         run_id: run_id.to_string(),
         agent_id: agent_id.to_string(),
+        memory_user_id: memory_user_id.to_string(),
+        memory_writes_disabled,
         by_id,
         index_of,
         outgoing,
@@ -540,10 +551,13 @@ async fn run_command<'a>(
         "command": command,
         "raw": true,
     });
-    let tool_ctx = tools::ToolContext::new(tools::Origin::Workflow).with_session(
+    let mut tool_ctx = tools::ToolContext::new(tools::Origin::Workflow).with_session(
         tools::workflow_session_key(&ctx.agent_id, &ctx.run_id),
         ctx.run_id.clone(),
     );
+    tool_ctx.user_id = ctx.memory_user_id.clone();
+    tool_ctx.memory_writes_disabled = ctx.memory_writes_disabled;
+    let tool_ctx = tool_ctx;
     let result = os_tool.execute_dyn(&tool_ctx, input).await;
     if result.is_error {
         return fail(result.content);
@@ -705,10 +719,13 @@ async fn run_http<'a>(
         "body": param_str(activity, "body"),
     });
 
-    let tool_ctx = tools::ToolContext::new(tools::Origin::Workflow).with_session(
+    let mut tool_ctx = tools::ToolContext::new(tools::Origin::Workflow).with_session(
         tools::workflow_session_key(&ctx.agent_id, &ctx.run_id),
         ctx.run_id.clone(),
     );
+    tool_ctx.user_id = ctx.memory_user_id.clone();
+    tool_ctx.memory_writes_disabled = ctx.memory_writes_disabled;
+    let tool_ctx = tool_ctx;
     let result = web_tool.execute_dyn(&tool_ctx, input).await;
     if result.is_error {
         return fail(result.content);
@@ -939,6 +956,8 @@ async fn run_llm_activity<'a>(
     match execute_activity_with_retry(
         activity,
         &prior_context,
+        &ctx.memory_user_id,
+        ctx.memory_writes_disabled,
         ctx.inputs,
         ctx.provider,
         &activity_tools,
@@ -1345,6 +1364,8 @@ mod walk_tests {
         let result = execute_graph(
             &def,
             "",
+            "test-owner",
+            false,
             &inputs,
             &store,
             provider,
@@ -1598,6 +1619,8 @@ mod walk_tests {
             execute_graph(
                 &def,
                 "",
+                "test-owner",
+                false,
                 &serde_json::json!({}),
                 &store,
                 &provider,

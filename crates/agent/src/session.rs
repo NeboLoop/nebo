@@ -285,6 +285,20 @@ impl SessionManager {
 
     /// Switch the active chat for a session (updates DB and in-memory cache).
     pub fn set_active_chat(&self, session_id: &str, chat_id: &str) -> Result<(), NeboError> {
+        // Switching conversations resets the session's rolling state (summary,
+        // active task, compaction counters) exactly like rotate_chat does: the
+        // active chat is the isolation context under context_isolated, and a
+        // summary of matter A injected into matter B's prompt is a cross-matter
+        // leak (isolation audit 2026-08-22, leak #4 — session state crosses
+        // the ctx boundary).
+        let changed = self
+            .store
+            .get_session(session_id)?
+            .and_then(|s| s.active_chat_id)
+            .is_none_or(|current| current != chat_id);
+        if changed {
+            self.store.reset_session_counters(session_id)?;
+        }
         self.store.set_session_active_chat_id(session_id, chat_id)?;
         if let Ok(mut cache) = self.chat_ids.write() {
             cache.insert(session_id.to_string(), chat_id.to_string());
@@ -454,4 +468,44 @@ fn sanitize_messages(messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
             true
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_manager() -> SessionManager {
+        let path = std::env::temp_dir().join(format!("nebo-session-test-{}.db", uuid::Uuid::new_v4()));
+        let store = Arc::new(Store::new(path.to_str().unwrap()).expect("test store"));
+        SessionManager::new(store)
+    }
+
+    /// Switching the active chat is a matter switch under context isolation:
+    /// the rolling summary (and task state) of the old conversation must not
+    /// be injected into the new one.
+    #[test]
+    fn test_set_active_chat_resets_rolling_state_on_switch() {
+        let mgr = test_manager();
+        let session = mgr.get_or_create("agent:a1:web", "").expect("session");
+
+        mgr.update_summary(&session.id, "matter A summary").expect("summary");
+        let current = mgr
+            .store
+            .get_session(&session.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(current.summary.as_deref(), Some("matter A summary"));
+        let current_chat = current.active_chat_id.clone().unwrap_or_default();
+
+        // Re-activating the SAME chat keeps the summary.
+        mgr.set_active_chat(&session.id, &current_chat).expect("same chat");
+        let same = mgr.store.get_session(&session.id).unwrap().unwrap();
+        assert_eq!(same.summary.as_deref(), Some("matter A summary"));
+
+        // Switching to a DIFFERENT chat clears it.
+        mgr.set_active_chat(&session.id, "chat-matter-b").expect("switch");
+        let switched = mgr.store.get_session(&session.id).unwrap().unwrap();
+        assert_eq!(switched.summary, None);
+        assert_eq!(switched.active_chat_id.as_deref(), Some("chat-matter-b"));
+    }
 }
