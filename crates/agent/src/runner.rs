@@ -4006,6 +4006,7 @@ async fn run_loop(
                 session_key: resolved_key,
                 session_id: session_id.to_string(),
                 user_id: memory_user_id.clone(),
+                trusted_plugin_env: false,
                 handoff_depth,
                 entity_permissions: entity_permissions.cloned(),
                 operation_policy: operation_policy.cloned(),

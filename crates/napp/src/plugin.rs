@@ -1969,6 +1969,27 @@ impl PluginStore {
         result
     }
 
+    /// Union of every installed plugin's resolved auth env (manifest defaults
+    /// overlaid with stored settings). For workflow command nodes ONLY — see
+    /// `ToolContext::trusted_plugin_env`. Env keys are plugin-prefixed by
+    /// convention (ODOO_URL, GWS_CLIENT_ID…); on a collision the last slug
+    /// wins, matching build_env_map's first-per-slug version pick.
+    pub fn build_auth_env_map(&self) -> Vec<(String, String)> {
+        let installed = self.list_installed();
+        let mut seen = std::collections::HashSet::new();
+        let mut result = Vec::new();
+        for (slug, _version, _path, _source) in installed {
+            if seen.insert(slug.clone()) {
+                for (k, v) in self.resolved_auth_env(&slug) {
+                    if !v.is_empty() {
+                        result.push((k, v));
+                    }
+                }
+            }
+        }
+        result
+    }
+
     /// Build a PATH string that prepends all installed plugin directories
     /// to the system PATH. This ensures plugin binaries can find themselves
     /// and sibling binaries when spawned as subprocesses.
