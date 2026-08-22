@@ -171,9 +171,7 @@ fn heartbeat_period_hours(config: &str) -> f64 {
 /// "agent:{id}" convention list_agent_runs already relies on); cost and
 /// outcome join from run_usage when the receipt exists.
 fn run_report(state: &AppState, run: &db::models::WorkflowRun) -> serde_json::Value {
-    let agent_id = run
-        .workflow_id
-        .strip_prefix("agent:")
+    let agent_id = types::keyparser::agent_id_from_workflow_id(&run.workflow_id)
         .unwrap_or("")
         .to_string();
     let agent_name = if agent_id.is_empty() {

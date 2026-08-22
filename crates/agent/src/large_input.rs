@@ -21,7 +21,6 @@ const SUMMARIZE_CONTENT_CAP: usize = 100_000;
 const STORAGE_SUBDIR: &str = "large_inputs";
 
 /// Rough chars-per-token conversion factor (matches pruning.rs / session.rs).
-const CHARS_PER_TOKEN: usize = 4;
 
 // ── Public result type ───────────────────────────────────────────────
 
@@ -231,8 +230,8 @@ pub fn build_replacement(
     content_type: &str,
 ) -> LargeInputResult {
     let original_chars = original.len();
-    let original_tokens_est = original_chars / CHARS_PER_TOKEN;
-    let summary_tokens_est = summary.len() / CHARS_PER_TOKEN;
+    let original_tokens_est = original_chars / crate::CHARS_PER_TOKEN;
+    let summary_tokens_est = summary.len() / crate::CHARS_PER_TOKEN;
 
     let content = format!(
         "[This message contained a large {content_type} document ({original_chars} characters, \

@@ -2315,11 +2315,14 @@ impl PersonaTool {
             }
         }
 
-        // Fallback: check DB (agents created via REST API or marketplace install)
+        // Fallback: check DB (agents created via REST API or marketplace install).
+        // Matching uses the ONE normalizer (comm::handle::slugify) so a name
+        // resolves to the same agent on every rail — the loader probes above
+        // keep their space-form because that is the loader's own key format.
+        let slug = comm::handle::slugify(name);
         if let Ok(db_agents) = self.store.list_agents(500, 0) {
             for r in db_agents {
-                let r_normalized = r.name.to_lowercase().replace(['-', '_'], " ");
-                if r_normalized == normalized || r.id == name {
+                if comm::handle::slugify(&r.name) == slug || r.id == name {
                     let agent_def = napp::agent::AgentDef {
                         id: r.id.clone(),
                         name: r.name.clone(),

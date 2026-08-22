@@ -459,7 +459,7 @@ async fn run_delegated_task(
         // does not set it. Owner voice sessions target an employee via
         // "agent:{id}:…" keys; leaving this empty resolved every owner voice
         // run to the raw owner memory scope (isolation audit 2026-08-22).
-        agent_id: agent::keyparser::extract_agent_id(session_key),
+        agent_id: types::keyparser::extract_agent_id(session_key),
         ..Default::default()
     };
     if let Some(c) = caller {
@@ -569,23 +569,22 @@ fn resolve_local_agent_id(state: &AppState, given: &str) -> String {
                 return a.id.clone();
             }
         }
-        // Secondary bot-scoped handle: bot_<id8>_<slug> — match the slug tail
-        // against each agent's handle tail or slugified name.
-        if let Some(rest) = given.strip_prefix("bot_")
-            && let Some((_, slug)) = rest.split_once('_')
-        {
+        // Secondary bot-scoped handle (bot_<id8>_<slug>) — canonical splitter,
+        // canonical slugify (the inline copy normalized `' '/'_'`→`-` but left
+        // `-` and punctuation alone, so "Q&A Bot" resolved differently here
+        // than everywhere else; CODE_AUDITOR Rule 8).
+        if let Some(slug) = comm::handle::secondary_agent_slug(given) {
             for a in &agents {
-                let name_slug = a.name.to_lowercase().replace([' ', '_'], "-");
-                if a.handle.as_deref().is_some_and(|h| h.ends_with(slug)) || name_slug == slug {
+                if a.handle.as_deref().is_some_and(|h| h.ends_with(slug))
+                    || comm::handle::slugify(&a.name) == slug
+                {
                     return a.id.clone();
                 }
             }
         }
     }
-    // Primary bot handle (bot_<id8>, no agent suffix) → the default agent.
-    if let Some(rest) = given.strip_prefix("bot_")
-        && !rest.contains('_')
-    {
+    // Primary bot handle (bot_<id8> or a custom bot handle) → the default agent.
+    if comm::handle::is_primary_handle(given) {
         return "assistant".to_string();
     }
     given.to_string()

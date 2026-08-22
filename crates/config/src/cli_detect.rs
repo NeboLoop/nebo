@@ -155,8 +155,7 @@ fn check_cli_status(command: &str) -> CliStatus {
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
+        cmd.creation_flags(types::constants::CREATE_NO_WINDOW);
     }
 
     if let Ok(output) = cmd.spawn().and_then(|child| {

@@ -411,7 +411,7 @@ impl Store {
     /// Aggregate stats for all workflow runs belonging to an agent.
     pub fn agent_workflow_stats(&self, agent_id: &str) -> Result<AgentWorkflowStats, NeboError> {
         let conn = self.conn()?;
-        let wf_id = format!("agent:{}", agent_id);
+        let wf_id = types::keyparser::agent_workflow_id(agent_id);
         conn.query_row(
             "SELECT
                 COUNT(*) AS total_runs,
@@ -454,7 +454,7 @@ impl Store {
         limit: i64,
     ) -> Result<Vec<WorkflowRunError>, NeboError> {
         let conn = self.conn()?;
-        let wf_id = format!("agent:{}", agent_id);
+        let wf_id = types::keyparser::agent_workflow_id(agent_id);
         let mut stmt = conn
             .prepare(
                 "SELECT id, error, error_activity, started_at

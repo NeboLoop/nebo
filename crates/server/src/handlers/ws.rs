@@ -251,7 +251,7 @@ async fn handle_app_ws_message(state: &AppState, agent_id: &str, text: &str) {
                 }
 
                 // Fall through to LLM — same pattern as client WS handler
-                let session_key = agent::keyparser::build_agent_session_key(&agent_id, "app");
+                let session_key = types::keyparser::build_agent_session_key(&agent_id, "app");
 
                 let prompt = if context.is_null() || context == serde_json::json!({}) {
                     format!(
@@ -879,7 +879,7 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState) {
                                         }
 
                                         // Fall through to LLM: build ChatConfig and run_chat
-                                        let session_key = agent::keyparser::build_agent_session_key(&agent_id, "web");
+                                        let session_key = types::keyparser::build_agent_session_key(&agent_id, "web");
 
                                         let prompt = if context.is_null() || context == serde_json::json!({}) {
                                             format!(
@@ -1065,7 +1065,7 @@ async fn handle_builtin_slash(
         "/new" => {
             // Rotate session → new conversation, old history preserved in DB.
             let session_key = if !agent_id.is_empty() {
-                agent::keyparser::build_agent_session_key(agent_id, channel)
+                types::keyparser::build_agent_session_key(agent_id, channel)
             } else {
                 session_id.to_string()
             };
@@ -1093,7 +1093,7 @@ async fn handle_builtin_slash(
         "/clear" => {
             // Clear messages in the current conversation (stay in same session).
             let session_key = if !agent_id.is_empty() {
-                agent::keyparser::build_agent_session_key(agent_id, channel)
+                types::keyparser::build_agent_session_key(agent_id, channel)
             } else {
                 session_id.to_string()
             };
@@ -1136,7 +1136,7 @@ async fn handle_builtin_slash(
             drop(registry);
 
             let session_key = if !agent_id.is_empty() {
-                agent::keyparser::build_agent_session_key(agent_id, channel)
+                types::keyparser::build_agent_session_key(agent_id, channel)
             } else {
                 session_id.to_string()
             };
@@ -1173,7 +1173,7 @@ async fn handle_builtin_slash(
         "/compact" => {
             // Trigger session compaction using the existing session_compact pipeline.
             let session_key = if !agent_id.is_empty() {
-                agent::keyparser::build_agent_session_key(agent_id, channel)
+                types::keyparser::build_agent_session_key(agent_id, channel)
             } else {
                 session_id.to_string()
             };
@@ -1469,41 +1469,11 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value) {
 
     // Auto-activate paused agents so their persona is loaded into the prompt.
     // Without this, a paused agent's chat works but has no personality.
+    // The ONE activation routine (registry + enable + worker + roster
+    // broadcast) — this block was a hand copy that had drifted.
     if !agent_id.is_empty() {
-        let needs_activation = !state.agent_registry.read().await.contains_key(&agent_id);
-        if needs_activation {
-            if let Ok(Some(agent)) = state.store.get_agent(&agent_id) {
-                let config = if !agent.frontmatter.is_empty() {
-                    napp::agent::parse_agent_config(&agent.frontmatter).ok()
-                } else {
-                    None
-                };
-                let active = tools::ActiveAgent {
-                    agent_id: agent.id.clone(),
-                    name: agent.name.clone(),
-                    agent_md: agent.agent_md.clone(),
-                    config,
-                    channel_id: None,
-                    degraded: None,
-                    soul: agent.soul.clone(),
-                    rules: agent.rules.clone(),
-                };
-                state
-                    .agent_registry
-                    .write()
-                    .await
-                    .insert(agent.id.clone(), active);
-                state.store.set_agent_enabled(&agent_id, true).ok();
-                state
-                    .agent_workers
-                    .start_agent(&agent_id, &agent.name, None)
-                    .await;
-                state.hub.broadcast(
-                    "agent_activated",
-                    serde_json::json!({ "agentId": &agent_id, "name": &agent.name }),
-                );
-                info!(agent_id = %agent_id, name = %agent.name, "auto-activated paused agent for chat");
-            }
+        if let Err(e) = crate::coworker::ensure_agent_active(&state, &agent_id).await {
+            warn!(agent_id = %agent_id, error = %e, "auto-activation failed");
         }
     }
 
@@ -1511,14 +1481,14 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value) {
     // (e.g. "agent:brief:app:doc123" for document-scoped sessions).
     // Otherwise, build one from agent_id + channel.
     let expected_prefix = if !agent_id.is_empty() {
-        format!("agent:{}:", agent_id)
+        types::keyparser::agent_session_prefix(&agent_id)
     } else {
         String::new()
     };
     let session_key = if !expected_prefix.is_empty() && session_id.starts_with(&expected_prefix) {
         session_id
     } else if !agent_id.is_empty() {
-        agent::keyparser::build_agent_session_key(&agent_id, &channel)
+        types::keyparser::build_agent_session_key(&agent_id, &channel)
     } else {
         session_id
     };
@@ -1703,34 +1673,13 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value) {
     }
 }
 
-/// Extract unique agent IDs from `<@agent-id>` tokens in the prompt.
-/// Deduplicates and excludes `exclude_agent_id` (the primary agent).
+/// Unique agent IDs mentioned in the prompt, excluding the thread's own
+/// agent. Delegates to the ONE mention grammar in `comm::handle`.
 fn parse_mention_tokens(prompt: &str, exclude_agent_id: &str) -> Vec<String> {
-    let mut seen = std::collections::HashSet::new();
-    let mut ids = Vec::new();
-    let bytes = prompt.as_bytes();
-    let mut i = 0;
-    while i + 2 < bytes.len() {
-        if bytes[i] == b'<' && bytes[i + 1] == b'@' {
-            let start = i + 2;
-            if let Some(end) = prompt[start..].find('>') {
-                let id = &prompt[start..start + end];
-                if !id.is_empty()
-                    && id != exclude_agent_id
-                    && id
-                        .chars()
-                        .all(|c| c.is_alphanumeric() || c == '.' || c == '_' || c == '-')
-                    && seen.insert(id.to_string())
-                {
-                    ids.push(id.to_string());
-                }
-                i = start + end + 1;
-                continue;
-            }
-        }
-        i += 1;
-    }
-    ids
+    comm::handle::parse_mention_tokens(prompt)
+        .into_iter()
+        .filter(|id| id != exclude_agent_id)
+        .collect()
 }
 
 /// Dispatch an async chat to a mentioned agent.
@@ -1758,7 +1707,7 @@ async fn fork_mention_chat(
     // The originating thread's matter becomes the deliberate 4th key segment
     // (`agent:{id}:{channel}:{ctx}`), so a context-isolated mentioned agent
     // scopes this exchange per-matter via the runner's canonical derivation.
-    let base_key = agent::keyparser::build_agent_session_key(mentioned_id, channel);
+    let base_key = types::keyparser::build_agent_session_key(mentioned_id, channel);
     let session_key = match origin_matter {
         Some(m) if !channel.is_empty() => format!("{}:{}", base_key, m),
         _ => base_key,
@@ -1853,7 +1802,7 @@ fn inject_delegate_response(
         .unwrap_or_else(|| mentioned_id.to_string());
 
     // Build the primary agent's session key
-    let primary_session_key = agent::keyparser::build_agent_session_key(origin_agent_id, channel);
+    let primary_session_key = types::keyparser::build_agent_session_key(origin_agent_id, channel);
 
     // Inject as a system-context message in the primary agent's session
     let injection = format!(

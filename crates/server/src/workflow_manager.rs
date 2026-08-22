@@ -368,7 +368,7 @@ impl WorkflowManagerImpl {
             serde_json::json!({
                 "note": "manual invocation — there is no triggering event, so no event payload is available"
             }),
-            &format!("agent:{}", agent_id),
+            &types::keyparser::agent_workflow_id(agent_id),
         );
 
         let emit_source = binding.emit.as_ref().map(|emit_name| {
@@ -873,7 +873,7 @@ impl WorkflowManager for WorkflowManagerImpl {
             // with the binding name (or "binding:event.source") in
             // trigger_detail — fetch the agent's runs and filter down.
             if let Some((agent_id, binding_name)) = split_binding_id(workflow_id) {
-                let parent = format!("agent:{}", agent_id);
+                let parent = types::keyparser::agent_workflow_id(agent_id);
                 return match self.store.list_workflow_runs(&parent, 200, 0) {
                     Ok(runs) => runs
                         .iter()
@@ -1210,7 +1210,7 @@ impl WorkflowManager for WorkflowManagerImpl {
                 self.store
                     .create_workflow_run(
                         &run_id,
-                        &format!("agent:{}", agent_id),
+                        &types::keyparser::agent_workflow_id(agent_id),
                         trigger_type,
                         trigger_detail.as_deref(),
                         Some(&inputs.to_string()),
@@ -1795,56 +1795,43 @@ fn notify_workflow_approval(
     let notif_id = format!("wf-approval:{}", run_id);
     let title = format!("{} needs your approval", binding_name);
     let action_url = format!("/{}/runs/{}", agent_id, run_id);
-    let user_id = store.ensure_local_user_id().unwrap_or_default();
-    if let Err(e) = store.create_notification(
-        &notif_id,
-        &user_id,
-        "approval",
-        &title,
-        Some(display),
-        Some(&action_url),
-        None,
-        Some(agent_id),
-    ) {
-        warn!(run_id = %run_id, error = %e, "failed to create workflow approval notification");
-    } else {
-        hub.broadcast(
-            "notification_created",
-            serde_json::json!({
-                "id": notif_id,
-                "type": "approval",
-                "title": title,
-                "body": display,
-                "actionUrl": action_url,
-                "agentId": agent_id,
-                "readAt": null,
-            }),
-        );
-        // Mirror to the owner's unified inbox at neboai.com/app. The item is
-        // self-describing: the buttons carry tunnel-relative resolve calls, so
-        // the hub renders and proxies them without learning bot route shapes.
-        let approval_path = format!("/api/v1/agents/workflow-runs/{}/approval", run_id);
-        crate::codes::push_inbox_via(
-            store,
-            api_url,
-            serde_json::json!({
-                "id": notif_id,
-                "type": "approval",
-                "title": title,
-                "body": display,
-                "link": action_url,
-                "actions": {
-                    "buttons": [
-                        {"label": "Approve", "style": "primary", "method": "POST",
-                         "path": approval_path, "body": {"approved": true}},
-                        {"label": "Deny", "style": "danger", "method": "POST",
-                         "path": approval_path, "body": {"approved": false}},
-                    ],
-                    "status": {"method": "GET", "path": approval_path},
-                },
-            }),
-        );
-    }
+    tools::owner_notify::emit(
+        store,
+        Some(&|ev, payload| hub.broadcast(ev, payload)),
+        &tools::owner_notify::OwnerNotification {
+            id: &notif_id,
+            kind: "approval",
+            title: &title,
+            body: Some(display),
+            action_url: Some(&action_url),
+            agent_id: Some(agent_id),
+            loud: false,
+        },
+    );
+    // Mirror to the owner's unified inbox at neboai.com/app. The item is
+    // self-describing: the buttons carry tunnel-relative resolve calls, so
+    // the hub renders and proxies them without learning bot route shapes.
+    let approval_path = format!("/api/v1/agents/workflow-runs/{}/approval", run_id);
+    crate::codes::push_inbox_via(
+        store,
+        api_url,
+        serde_json::json!({
+            "id": notif_id,
+            "type": "approval",
+            "title": title,
+            "body": display,
+            "link": action_url,
+            "actions": {
+                "buttons": [
+                    {"label": "Approve", "style": "primary", "method": "POST",
+                     "path": approval_path, "body": {"approved": true}},
+                    {"label": "Deny", "style": "danger", "method": "POST",
+                     "path": approval_path, "body": {"approved": false}},
+                ],
+                "status": {"method": "GET", "path": approval_path},
+            },
+        }),
+    );
 }
 
 fn notify_workflow_failure(
@@ -1865,36 +1852,19 @@ fn notify_workflow_failure(
     };
     let action_url = format!("/{}/runs/{}", agent_id, run_id);
 
-    let user_id = store.ensure_local_user_id().unwrap_or_default();
-    if let Err(e) = store.create_notification(
-        &notif_id,
-        &user_id,
-        "error",
-        &title,
-        Some(body),
-        Some(&action_url),
-        None,
-        Some(agent_id),
-    ) {
-        warn!(run_id = %run_id, error = %e, "failed to create workflow failure notification");
-    } else {
-        hub.broadcast(
-            "notification_created",
-            serde_json::json!({
-                "id": notif_id,
-                "type": "error",
-                "title": title,
-                "body": body,
-                "actionUrl": action_url,
-                "agentId": agent_id,
-                "readAt": null,
-                "createdAt": std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs(),
-            }),
-        );
-    }
+    tools::owner_notify::emit(
+        store,
+        Some(&|ev, payload| hub.broadcast(ev, payload)),
+        &tools::owner_notify::OwnerNotification {
+            id: &notif_id,
+            kind: "error",
+            title: &title,
+            body: Some(body),
+            action_url: Some(&action_url),
+            agent_id: Some(agent_id),
+            loud: false,
+        },
+    );
 }
 
 /// Post an automation lifecycle message to an agent's chat session.
@@ -2704,33 +2674,22 @@ async fn workflow_tuning_sweep(
             continue;
         }
 
-        let user_id = store.ensure_local_user_id().unwrap_or_default();
         if mode == "auto" {
             match apply_workflow_binding(store, &agent.id, binding, workflow_val) {
                 Ok(()) => {
                     let _ = store.resolve_pending_write(&pending_id, "approved");
-                    let _ = store.create_notification_if_not_exists(
-                        &format!("learn:{}", pending_id),
-                        &user_id,
-                        "info",
-                        &format!("{} tuned its own workflow", agent.name),
-                        Some(&gist),
-                        None,
-                        None,
-                        Some(&agent.id),
-                    );
-                    // Full payload — an {id}-only broadcast used to land as an
-                    // empty row in the Inbox store.
-                    hub.broadcast(
-                        "notification_created",
-                        serde_json::json!({
-                            "id": format!("learn:{}", pending_id),
-                            "type": "info",
-                            "title": format!("{} tuned its own workflow", agent.name),
-                            "body": gist,
-                            "agentId": agent.id,
-                            "readAt": null,
-                        }),
+                    tools::owner_notify::emit(
+                        store,
+                        Some(&|ev, payload| hub.broadcast(ev, payload)),
+                        &tools::owner_notify::OwnerNotification {
+                            id: &format!("learn:{}", pending_id),
+                            kind: "info",
+                            title: &format!("{} tuned its own workflow", agent.name),
+                            body: Some(&gist),
+                            action_url: None,
+                            agent_id: Some(&agent.id),
+                            loud: false,
+                        },
                     );
                     info!(agent = %agent.name, binding, "tuning pass applied edit (auto)");
                 }
@@ -2740,28 +2699,18 @@ async fn workflow_tuning_sweep(
                 }
             }
         } else {
-            let _ = store.create_notification_if_not_exists(
-                &format!("learn:{}", pending_id),
-                &user_id,
-                "approval",
-                &format!("{} proposes a workflow change", agent.name),
-                Some(&gist),
-                None,
-                None,
-                Some(&agent.id),
-            );
-            // Full payload — an {id}-only broadcast used to land as an empty
-            // row in the Inbox store.
-            hub.broadcast(
-                "notification_created",
-                serde_json::json!({
-                    "id": format!("learn:{}", pending_id),
-                    "type": "approval",
-                    "title": format!("{} proposes a workflow change", agent.name),
-                    "body": gist,
-                    "agentId": agent.id,
-                    "readAt": null,
-                }),
+            tools::owner_notify::emit(
+                store,
+                Some(&|ev, payload| hub.broadcast(ev, payload)),
+                &tools::owner_notify::OwnerNotification {
+                    id: &format!("learn:{}", pending_id),
+                    kind: "approval",
+                    title: &format!("{} proposes a workflow change", agent.name),
+                    body: Some(&gist),
+                    action_url: None,
+                    agent_id: Some(&agent.id),
+                    loud: false,
+                },
             );
             // Mirror the staged proposal to the owner's web inbox with its
             // self-describing resolve contract.

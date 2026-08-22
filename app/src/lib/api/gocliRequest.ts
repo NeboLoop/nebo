@@ -227,15 +227,21 @@ export const webapi = {
 		return p;
 	},
 	delete<T>(url: string, params?: any, req?: any): Promise<T> {
-		return api<T>(
-			'delete',
-			url,
-			{
-				...(params || {}),
-				...(req || {})
-			},
-			req
-		) as Promise<T>;
+		// DELETE carries no body — params must travel in the query string (same
+		// as get) so they reach the backend's Query extractor.
+		if (params) {
+			const searchParams = new URLSearchParams();
+			Object.entries(params).forEach(([key, value]) => {
+				if (value !== undefined && value !== null) {
+					searchParams.append(key, String(value));
+				}
+			});
+			const queryString = searchParams.toString();
+			if (queryString) {
+				url += (url.includes('?') ? '&' : '?') + queryString;
+			}
+		}
+		return api<T>('delete', url, undefined, req) as Promise<T>;
 	},
 	put<T>(url: string, params?: any, req?: any): Promise<T> {
 		return api<T>(

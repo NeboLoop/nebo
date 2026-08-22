@@ -9,6 +9,7 @@
  */
 
 import { installFlow } from '$lib/stores/installFlow';
+import { getWebSocketClient } from '$lib/websocket/client';
 
 /** PREFIX-XXXX-XXXX (Crockford Base32). Covers every install-code family. */
 export const CODE_RE = /^(NEBO|SKIL|WORK|AGNT|LOOP|PLUG|APPS|COLL|CONN)-[0-9A-Z]{4}-[0-9A-Z]{4}$/i;
@@ -61,5 +62,37 @@ export function dispatchInstallStart(text: string): boolean {
     // User-initiated from the desktop UI — the modal stays open until dismissed.
     interactive: true,
   });
+  return true;
+}
+
+/**
+ * The ONE way to submit an install code: open the install modal instantly
+ * (dispatchInstallStart) and deliver the code to the backend — over the
+ * WebSocket when connected, over HTTP (chatWithAgent) when not, never a
+ * silent drop. The chat "working" spinner is never engaged: the install
+ * modal owns all feedback and no agent reply streams back.
+ *
+ * Returns false (and does nothing) when `text` isn't an install code.
+ */
+export function sendInstallCode(text: string, agentId: string, sessionId?: string): boolean {
+  if (!dispatchInstallStart(text)) return false;
+  const prompt = text.trim();
+  void (async () => {
+    try {
+      const ws = getWebSocketClient();
+      if (ws.isConnected()) {
+        ws.send('chat', {
+          prompt,
+          agent_id: agentId,
+          ...(sessionId ? { session_id: sessionId } : {}),
+        });
+      } else {
+        const api = await import('$lib/api/nebo');
+        await api.chatWithAgent(agentId, { prompt });
+      }
+    } catch (e) {
+      console.warn('[nebo] Failed to submit install code', e);
+    }
+  })();
   return true;
 }

@@ -54,9 +54,14 @@ fn oauth_redirect_uri(headers: &HeaderMap, port: u16) -> String {
     format!("{base}/api/v1/integrations/oauth/callback")
 }
 
-/// Slugify an integration name for use in tool naming.
-/// e.g. "monument.sh" → "monument_sh", "My GitHub" → "my_github"
-fn slugify_name(name: &str) -> String {
+/// MCP tool-name prefix for an integration — e.g. "monument.sh" →
+/// "monument_sh", "My GitHub" → "my_github".
+///
+/// DELIBERATELY not `comm::handle::slugify` (the routing-handle slugifier):
+/// the underscore alphabet here is load-bearing — these prefixes are baked
+/// into stored MCP tool names, so the mapping must stay byte-stable even
+/// though it doesn't collapse runs the way handle slugs do.
+fn tool_name_prefix(name: &str) -> String {
     name.to_lowercase()
         .chars()
         .map(|c| if c.is_alphanumeric() { c } else { '_' })
@@ -373,7 +378,7 @@ pub(crate) async fn sync_bridge(state: &AppState) {
                 continue;
             }
         };
-        let tool_prefix = slugify_name(&i.name);
+        let tool_prefix = tool_name_prefix(&i.name);
         match state
             .bridge
             .connect(
@@ -779,7 +784,7 @@ pub async fn test_integration(
         }
     };
 
-    let tool_prefix = slugify_name(&integration.name);
+    let tool_prefix = tool_name_prefix(&integration.name);
     let (success, message) = match state
         .bridge
         .connect(
@@ -851,7 +856,7 @@ pub async fn connect_integration(
 
     // Use integration name (slugified) as server_type for tool naming
     // e.g. "monument.sh" → "monument_sh" → tools named mcp__monument_sh__comment
-    let tool_prefix = slugify_name(&integration.name);
+    let tool_prefix = tool_name_prefix(&integration.name);
 
     // Try to connect and list tools
     match state
@@ -1335,7 +1340,7 @@ pub async fn oauth_callback(
 
     // 6. Connect immediately with the new token
     let server_url = integration.server_url.as_deref().unwrap_or("");
-    let tool_prefix = slugify_name(&integration.name);
+    let tool_prefix = tool_name_prefix(&integration.name);
     if !server_url.is_empty() {
         match state
             .bridge
@@ -1530,7 +1535,7 @@ async fn tool_permissions_view(
     integration: &db::models::McpIntegration,
     perms: &tools::policy::McpServerPermissions,
 ) -> serde_json::Value {
-    let slug = slugify_name(&integration.name);
+    let slug = tool_name_prefix(&integration.name);
     let mut rows = Vec::with_capacity(perms.known.len());
     for tool in &perms.known {
         // Description comes from the live registry (registered at connect);

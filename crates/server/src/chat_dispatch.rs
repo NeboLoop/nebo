@@ -2337,9 +2337,8 @@ impl agent::ChatTitleSink for TitleBroadcaster {
             // local_agent_id is the `agent:<id>:` segment of the session key
             // ("assistant" for the primary companion). No-op for non-agent
             // sessions or agents not registered on the loop.
-            if let Some(local_agent_id) = session_key
-                .strip_prefix("agent:")
-                .and_then(|s| s.split(':').next())
+            if let Some(local_agent_id) =
+                Some(types::keyparser::extract_agent_id(&session_key)).filter(|s| !s.is_empty()).as_deref()
             {
                 crate::codes::push_chat_title_to_loop(&state, local_agent_id, &chat_id, &title)
                     .await;

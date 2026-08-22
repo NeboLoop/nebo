@@ -168,11 +168,8 @@ impl DynTool for EventTool {
                     // thread). agent_id is parsed from session_key, channel
                     // is read from ctx.channel — both NULL when the task was
                     // created outside an agent-bound channel conversation.
-                    let agent_id = if ctx.session_key.starts_with("agent:") {
-                        ctx.session_key.split(':').nth(1).map(|s| s.to_string())
-                    } else {
-                        None
-                    };
+                    let agent_id = Some(types::keyparser::extract_agent_id(&ctx.session_key))
+                        .filter(|id| !id.is_empty());
                     let channel_ctx_json = ctx.channel.as_ref().map(|ch| {
                         serde_json::json!({
                             "kind": ch.kind,

@@ -1,12 +1,15 @@
 <script lang="ts">
-  import { getContext, onMount } from 'svelte';
+  import { getContext, onDestroy, onMount } from 'svelte';
   import { t } from 'svelte-i18n';
-  import { onWsEvent } from '$lib/websocket/subscribe';
   import { goto } from '$lib/nav';
   import ChatPane from '$lib/components/chat/ChatPane.svelte';
   import type { AgentPageContext } from '$lib/types/agentPage';
+  import type { Agent } from '$lib/api/neboComponents';
   import { currentUser } from '$lib/stores/auth';
-  import { dispatchInstallStart } from '$lib/marketplace/installCodes';
+  import { sendInstallCode } from '$lib/marketplace/installCodes';
+  import { createChatController } from '$lib/chat/controller.svelte';
+  import { toMentionAgent } from '$lib/chat/roster';
+  import { threadIdFromKey, threadKey } from '$lib/chat/sessionKey';
 
   const ctx = getContext<AgentPageContext>('agentPage');
   const agentId = $derived(ctx.agentId);
@@ -25,35 +28,21 @@
     ? $t('chat.greetingWithName', { values: { greeting: $t(getGreeting()), name: firstName } })
     : $t(getGreeting()));
 
-  let messages = $state<any[]>([]);
-  let isLoading = $state(false);
-  let allAgents = $state<{ id: string; name: string; role: string; initial: string; status: string; color: string }[]>([]);
-  let quotaWarning = $state<string | undefined>(undefined);
-
-  let chatError = $state<string | undefined>(undefined);
-
-  // Quota warnings: idiomatic WS subscription, auto-cleaned up on destroy.
-  onWsEvent<{ text?: string }>('quota_warning', (d) => {
-    if (d?.text) quotaWarning = d.text;
-  });
-
-  onWsEvent<{ error?: string }>('chat_error', (d) => {
-    if (d?.error) { chatError = d.error; isLoading = false; }
-  });
+  // New-thread page: the controller owns chat state + WS wiring (quota warnings,
+  // chat errors, roster). The run itself starts on the thread page after
+  // navigation (see handleSend's pending-send stash), so no real session exists
+  // yet — the placeholder thread key keeps session-tagged streams from this
+  // agent's OTHER threads off the empty page, while untagged quota warnings and
+  // errors still surface.
+  const chat = createChatController({ agentId: ctx.agentId, sessionKey: threadKey(ctx.agentId, 'pending') });
+  onDestroy(() => chat.destroy());
 
   onMount(async () => {
     try {
       const api = await import('$lib/api/nebo');
       const resp = await api.listAgents();
       if (resp?.agents?.length) {
-        allAgents = resp.agents.map((a: any) => ({
-          id: a.id,
-          name: a.name,
-          role: a.description || '',
-          initial: a.name.charAt(0).toUpperCase(),
-          status: a.isEnabled ? 'online' : 'paused',
-          color: 'teal',
-        }));
+        chat.setAllAgents((resp.agents as Agent[]).map(toMentionAgent));
       }
     } catch { /* keep empty */ }
   });
@@ -61,25 +50,15 @@
   async function handleSend(text: string) {
     // Detect marketplace code — the install modal owns all feedback, so open it
     // immediately and skip the chat "working" spinner (no agent reply is coming).
-    if (dispatchInstallStart(text)) {
-      const { getWebSocketClient } = await import('$lib/websocket/client');
-      const ws = getWebSocketClient();
-      if (ws.isConnected()) {
-        ws.send('chat', { prompt: text.trim(), agent_id: agentId });
-      } else {
-        const api = await import('$lib/api/nebo');
-        await api.chatWithAgent(agentId, { prompt: text.trim() });
-      }
-      return;
-    }
+    if (sendInstallCode(text, agentId)) return;
 
-    isLoading = true;
+    chat.isLoading = true;
     try {
       const api = await import('$lib/api/nebo');
       const resp = await api.createNewAgentChat(agentId);
       const newChatId = (resp as Record<string, any>)?.chat?.id;
       if (!newChatId) {
-        isLoading = false;
+        chat.isLoading = false;
         return;
       }
 
@@ -93,13 +72,13 @@
       goto(`/${agentId}/threads/${newChatId}?active=1`);
     } catch (e) {
       console.warn('[nebo] Failed to create thread', e);
-      isLoading = false;
+      chat.isLoading = false;
     }
   }
 </script>
 
 <ChatPane
-  {messages}
+  messages={chat.messages}
   agentName={agent?.name ?? $t('common.agent')}
   agentId={agentId}
   headerTitle={$t('chat.newThread')}
@@ -107,15 +86,15 @@
   placeholder={$t('chat.startNewThreadWith', { values: { name: agent?.name ?? '' } })}
   emptyTitle={greeting}
   emptyDesc={$t('chat.newThreadEmptyDesc', { values: { name: agent?.name ?? $t('chat.yourEmployee') } })}
-  {allAgents}
+  allAgents={chat.allAgents}
   onsend={handleSend}
   onteachsent={(_message, sessionKey) => {
-    const chatId = sessionKey.split(':thread:')[1];
+    const chatId = threadIdFromKey(sessionKey);
     if (chatId) goto(`/${agentId}/threads/${chatId}?active=1`);
   }}
-  {isLoading}
-  {quotaWarning}
-  ondismisswarning={() => quotaWarning = undefined}
-  {chatError}
-  ondismisserror={() => chatError = undefined}
+  isLoading={chat.isLoading}
+  quotaWarning={chat.quotaWarning}
+  ondismisswarning={() => chat.dismissWarning()}
+  chatError={chat.chatError}
+  ondismisserror={() => chat.dismissError()}
 />

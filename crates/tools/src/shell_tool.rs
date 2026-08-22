@@ -298,8 +298,7 @@ impl ShellTool {
                 }
 
                 // Truncate very long output (char-boundary safe)
-                const MAX_OUTPUT: usize = 50000;
-                if result.len() > MAX_OUTPUT {
+                if result.len() > crate::MAX_SUBPROCESS_OUTPUT {
                     let total_len = result.len();
                     let total_lines = result.lines().count();
 
@@ -313,7 +312,7 @@ impl ShellTool {
                     let persisted = std::fs::write(&output_path, &result).is_ok();
 
                     // Truncate for inline result
-                    types::strutil::safe_truncate(&mut result, MAX_OUTPUT);
+                    types::strutil::safe_truncate(&mut result, crate::MAX_SUBPROCESS_OUTPUT);
 
                     if persisted {
                         result.push_str(&format!(
@@ -323,7 +322,7 @@ impl ShellTool {
                             output_path.display(), output_path.display(),
                         ));
                     } else {
-                        let removed_kb = (total_len - MAX_OUTPUT) / 1024;
+                        let removed_kb = (total_len - crate::MAX_SUBPROCESS_OUTPUT) / 1024;
                         result.push_str(&format!(
                             "\n... [output truncated — showing first 50000 of {} chars, {}KB removed. \
                              Use grep to search for specific content, or pipe through head/tail.]",

@@ -53,8 +53,7 @@
 	import Check from 'lucide-svelte/icons/check';
 	import Download from 'lucide-svelte/icons/download';
 	import { getWebSocketClient } from '$lib/websocket/client';
-	import { startPluginAccountLogin } from '$lib/api/pluginAccounts';
-	import { submitCode } from '$lib/api/nebo';
+	import { authLoginAccount, submitCode } from '$lib/api/nebo';
 
 	// connect_account: run the same OAuth pathway as Settings → Connected
 	// Accounts, then answer the parked ask_request so the tool call resumes.
@@ -90,7 +89,11 @@
 		connecting = true;
 		connectError = null;
 		try {
-			await startPluginAccountLogin(w.plugin, w.agentId, accountLabel.trim() || 'Primary');
+			await authLoginAccount(w.plugin, {
+				agentId: w.agentId,
+				accountLabel: accountLabel.trim() || 'Primary',
+				accountNumber: ''
+			});
 		} catch {
 			connecting = false;
 			connectError = $t('chat.connectFailed');

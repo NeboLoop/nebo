@@ -75,6 +75,77 @@ pub fn secondary_agent_slug(slug: &str) -> Option<&str> {
     Some(&rest[idx + 1..])
 }
 
+
+// ---------------------------------------------------------------------------
+// Mention-token grammar — the ONE parser for `<@id>` chips.
+//
+// Two parsers used to exist with INCOMPATIBLE grammars (audit 2026-08-22): a
+// hand scanner accepting alphanumerics + `._-`, and a hex-only regex that
+// silently dropped handle-form chips (`<@bot_nebo>`, `<@assistant>`) — so a
+// mention of a handle left the raw token in text and `/stop` after it failed.
+// The grammar lives HERE, beside the handle grammar the ids must match.
+// ---------------------------------------------------------------------------
+
+fn is_mention_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '.' || c == '_' || c == '-'
+}
+
+/// Walk every `<@id>` token in `text`, calling `f(id, whole_token)`.
+fn for_each_mention_token(text: &str, mut f: impl FnMut(&str, &str)) {
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i + 2 < bytes.len() {
+        if bytes[i] == b'<' && bytes[i + 1] == b'@' {
+            let start = i + 2;
+            if let Some(end) = text[start..].find('>') {
+                let id = &text[start..start + end];
+                if !id.is_empty() && id.chars().all(is_mention_char) {
+                    f(id, &text[i..start + end + 1]);
+                }
+                i = start + end + 1;
+                continue;
+            }
+        }
+        i += 1;
+    }
+}
+
+/// Unique mention ids in `text`, in order of first appearance.
+pub fn parse_mention_tokens(text: &str) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut ids = Vec::new();
+    for_each_mention_token(text, |id, _| {
+        if seen.insert(id.to_string()) {
+            ids.push(id.to_string());
+        }
+    });
+    ids
+}
+
+/// `text` with every mention token replaced by `f(id)` (`None` keeps the
+/// token verbatim). `strip` behaviour: `|_| Some(String::new())`.
+pub fn replace_mention_tokens(text: &str, f: impl Fn(&str) -> Option<String>) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut last = 0;
+    let base = text.as_ptr() as usize;
+    for_each_mention_token(text, |id, token| {
+        let start = token.as_ptr() as usize - base;
+        out.push_str(&text[last..start]);
+        match f(id) {
+            Some(repl) => out.push_str(&repl),
+            None => out.push_str(token),
+        }
+        last = start + token.len();
+    });
+    out.push_str(&text[last..]);
+    out
+}
+
+/// `text` with every mention token removed.
+pub fn strip_mention_tokens(text: &str) -> String {
+    replace_mention_tokens(text, |_| Some(String::new()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -117,5 +188,29 @@ mod tests {
     fn blank_handle_falls_back_to_id() {
         assert_eq!(default_bot_handle("d486d161-180f", "   "), "bot_d486d161");
         assert_eq!(default_bot_handle("d486d161-180f", "!!!"), "bot_d486d161");
+    }
+
+    #[test]
+    fn mention_tokens_accept_uuids_handles_and_slugs() {
+        let text = "hi <@d486d161-180f-4dc7-9b2a-000000000000> and <@bot_nebo> and <@assistant> again <@bot_nebo>";
+        assert_eq!(
+            parse_mention_tokens(text),
+            vec![
+                "d486d161-180f-4dc7-9b2a-000000000000".to_string(),
+                "bot_nebo".to_string(),
+                "assistant".to_string(),
+            ]
+        );
+        // Strip removes EVERY token — handle-form included (the old hex-only
+        // regex left `<@bot_nebo>` behind and broke slash-command dispatch).
+        let stripped = strip_mention_tokens(text);
+        assert!(!stripped.contains('<'), "{stripped}");
+        // Replacement maps known ids, keeps unknown tokens verbatim.
+        let replaced = replace_mention_tokens("a <@x1> b <@y.z> c", |id| {
+            (id == "x1").then(|| "@Xena".to_string())
+        });
+        assert_eq!(replaced, "a @Xena b <@y.z> c");
+        // Malformed / empty tokens are not tokens.
+        assert!(parse_mention_tokens("<@> <@ spaced> <@unclosed").is_empty());
     }
 }

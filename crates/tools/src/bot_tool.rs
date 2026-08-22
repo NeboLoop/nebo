@@ -1164,7 +1164,7 @@ impl AgentTool {
                         "agent(resource: \"task\", action: \"get\", task_id: \"1\")",
                     ));
                 }
-                match self.store.get_task_item(task_id) {
+                match self.store.get_pending_task(task_id) {
                     Ok(Some(t)) => {
                         let desc = t.description.as_deref().unwrap_or(&t.prompt);
                         let mut result = format!("Task {}: {}\nStatus: {}\n", t.id, desc, t.status);
@@ -1579,14 +1579,9 @@ impl AgentTool {
         // Derive caller's entity_id from session_key.
         // Format: "agent:<uuid>:<channel>" → entity is the uuid.
         // Anything else (e.g., "default", "main") → "main" (primary agent).
-        let caller_entity_id = if ctx.session_key.starts_with("agent:") {
-            ctx.session_key
-                .split(':')
-                .nth(1)
-                .unwrap_or("main")
-                .to_string()
-        } else {
-            "main".to_string()
+        let caller_entity_id = {
+            let id = types::keyparser::extract_agent_id(&ctx.session_key);
+            if id.is_empty() { "main".to_string() } else { id }
         };
 
         match action {
@@ -1709,13 +1704,10 @@ impl AgentTool {
                 // shows: agent_profile said 'Javis' while the roster still
                 // said 'Nebo'. Reuses the same store.update_agent the
                 // updateAgent handler uses (one canonical write path).
-                let agent_id = ctx
-                    .session_key
-                    .strip_prefix("agent:")
-                    .and_then(|rest| rest.split(':').next())
-                    .filter(|s| !s.is_empty())
-                    .unwrap_or("assistant")
-                    .to_string();
+                let agent_id = {
+                    let id = types::keyparser::extract_agent_id(&ctx.session_key);
+                    if id.is_empty() { "assistant".to_string() } else { id }
+                };
                 match self.store.get_agent(&agent_id) {
                     Ok(Some(existing)) => {
                         let new_name = if name.is_empty() {

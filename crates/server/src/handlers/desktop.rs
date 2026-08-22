@@ -69,7 +69,7 @@ pub async fn teach_stop(
     // otherwise start a fresh thread so the exchange has a home.
     let requested = body["sessionKey"].as_str().unwrap_or("");
     let session_key = if !requested.is_empty()
-        && requested.starts_with(&format!("agent:{}:", agent_id))
+        && requested.starts_with(&types::keyparser::agent_session_prefix(agent_id))
     {
         requested.to_string()
     } else {

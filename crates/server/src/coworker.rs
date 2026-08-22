@@ -346,31 +346,19 @@ impl OwnerForward<'_> {
     /// isn't looking at the target agent's thread — same Inbox pathway as
     /// workflow approval notifications.
     fn notify_owner(&self, id: &str, kind: &str, title: &str, body: &str) {
-        let user_id = self.state.store.ensure_local_user_id().unwrap_or_default();
         let action_url = format!("/{}", self.agent_id);
-        if let Err(e) = self.state.store.create_notification_if_not_exists(
-            id,
-            &user_id,
-            kind,
-            title,
-            Some(body),
-            Some(&action_url),
-            None,
-            Some(self.agent_id),
-        ) {
-            tracing::warn!(error = %e, "coworker: could not persist owner notification");
-        }
-        self.state.hub.broadcast(
-            "notification_created",
-            serde_json::json!({
-                "id": id,
-                "type": kind,
-                "title": title,
-                "body": body,
-                "actionUrl": action_url,
-                "agentId": self.agent_id,
-                "readAt": null,
-            }),
+        tools::owner_notify::emit(
+            &self.state.store,
+            Some(&|ev, payload| self.state.hub.broadcast(ev, payload)),
+            &tools::owner_notify::OwnerNotification {
+                id,
+                kind,
+                title,
+                body: Some(body),
+                action_url: Some(&action_url),
+                agent_id: Some(self.agent_id),
+                loud: false,
+            },
         );
     }
 }
@@ -485,12 +473,14 @@ async fn resolve_coworker(state: &AppState, to: &str) -> Result<(String, String)
     if let Ok(Some(a)) = state.store.get_agent(to) {
         return Ok((a.id, a.name));
     }
-    // By name, slug-normalized ("chief-of-staff" matches "Chief of Staff").
-    let normalized = to.to_lowercase().replace(['-', '_'], " ");
+    // By name — the ONE normalizer (comm::handle::slugify), so "Q&A Bot" is
+    // addressable by the same key on every rail (the old per-site rules
+    // produced three different keys for one agent; audit finding 7).
+    let normalized = comm::handle::slugify(to);
     if let Ok(agents) = state.store.list_agents(500, 0) {
         if let Some(a) = agents
             .iter()
-            .find(|a| a.name.to_lowercase().replace(['-', '_'], " ") == normalized)
+            .find(|a| comm::handle::slugify(&a.name) == normalized)
         {
             return Ok((a.id.clone(), a.name.clone()));
         }
@@ -536,7 +526,14 @@ pub(crate) async fn ensure_agent_active(state: &AppState, agent_id: &str) -> Res
                 .agent_workers
                 .start_agent(agent_id, &agent.name, None)
                 .await;
-            info!(agent_id, "auto-activated agent for message routing");
+            // Same roster broadcast the WS chat path always sent — without it,
+            // rail-activated agents never refreshed the sidebar (audit
+            // finding 2: the sequences had drifted copy by copy).
+            state.hub.broadcast(
+                "agent_activated",
+                serde_json::json!({ "agentId": agent_id, "name": &agent.name }),
+            );
+            info!(agent_id, "auto-activated agent");
             Ok(())
         }
         Ok(None) => Err(format!("Agent '{}' is not installed.", agent_id)),

@@ -85,18 +85,10 @@ impl Store {
         filename: &str,
         kind: &str,
     ) -> Result<WorkDocument, NeboError> {
-        let conn = self.conn()?;
-        if let Some(doc) = conn
-            .query_row(
-                "SELECT * FROM work_documents WHERE chat_id = ?1 AND filename = ?2",
-                params![chat_id, filename],
-                row_to_document,
-            )
-            .optional()
-            .map_err(|e| NeboError::Database(e.to_string()))?
-        {
+        if let Some(doc) = self.work_document_for(chat_id, filename)? {
             return Ok(doc);
         }
+        let conn = self.conn()?;
         let id = uuid::Uuid::new_v4().to_string();
         conn.query_row(
             "INSERT INTO work_documents

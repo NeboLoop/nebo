@@ -1467,7 +1467,7 @@ pub async fn start_help_chat(
     // Don't rotate — the default chat (keyed by session name) is used for
     // both storage and retrieval, keeping get_session_messages compatible.
     let session_key =
-        agent::keyparser::build_agent_session_key(&agent_id, &format!("help:{slug}"));
+        types::keyparser::build_agent_session_key(&agent_id, &format!("help:{slug}"));
 
     let session = state
         .runner

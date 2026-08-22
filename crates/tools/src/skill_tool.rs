@@ -72,7 +72,6 @@ impl SkillTool {
         ) {
             return ToolResult::error(format!("Failed to stage write: {}. Do not retry — this is a database error.", e));
         }
-        let user_id = store.ensure_local_user_id().unwrap_or_default();
         let agent_name = store
             .get_agent(agent_id)
             .ok()
@@ -81,32 +80,19 @@ impl SkillTool {
             .unwrap_or_else(|| "An employee".to_string());
         let notif_id = format!("learn:{}", pending_id);
         let title = format!("{} wants to learn something new", agent_name);
-        if let Err(e) = store.create_notification_if_not_exists(
-            &notif_id,
-            &user_id,
-            "approval",
-            &title,
-            Some(gist),
-            Some("/inbox"),
-            None,
-            Some(agent_id),
-        ) {
-            tracing::warn!(error = %e, "staged learned write: could not persist notification");
-        }
         let notify = self.notify_fn.read().ok().and_then(|g| g.clone());
-        if let Some(notify) = notify {
-            notify(
-                "notification_created",
-                serde_json::json!({
-                    "id": notif_id,
-                    "type": "approval",
-                    "title": title,
-                    "body": gist,
-                    "actionUrl": "/inbox",
-                    "agentId": agent_id,
-                    "readAt": null,
-                }),
-            );
+        let n = crate::owner_notify::OwnerNotification {
+            id: &notif_id,
+            kind: "approval",
+            title: &title,
+            body: Some(gist),
+            action_url: Some("/inbox"),
+            agent_id: Some(agent_id),
+            loud: false,
+        };
+        match &notify {
+            Some(f) => crate::owner_notify::emit(store, Some(&|ev, payload| f(ev, payload)), &n),
+            None => crate::owner_notify::emit(store, None, &n),
         }
         ToolResult::ok(format!(
             "Staged for the owner's approval: {}. NOTHING has been saved yet — the owner reviews this from their Inbox. Report it as 'staged for approval', never as 'saved'.",
@@ -312,12 +298,8 @@ impl DynTool for SkillTool {
 
             // Per-employee skill scope: runs bound to an agent (session key
             // "agent:<id>:...") also see that agent's Learned skills.
-            let agent_scope = ctx
-                .session_key
-                .strip_prefix("agent:")
-                .and_then(|rest| rest.split(':').next())
-                .filter(|id| !id.is_empty())
-                .map(String::from);
+            let agent_scope =
+                Some(types::keyparser::extract_agent_id(&ctx.session_key)).filter(|id| !id.is_empty());
             // Review-fork marker: when set, create/update/delete target the
             // learned tree of this agent (with read-before-write) instead of
             // user/skills/. The owner is also the read scope.

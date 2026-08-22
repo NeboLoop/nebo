@@ -6,7 +6,7 @@
   import { completeOnboarding } from '$lib/stores/onboarding';
   import { logger } from '$lib/monitoring';
   import * as api from '$lib/api/nebo';
-  import { neboAIOAuthStartWithJanus, neboAIOAuthStatus } from '$lib/api/index';
+  import { neboAIOauthStart, neboAIOauthStatus } from '$lib/api/index';
   import Check from 'lucide-svelte/icons/check';
   import ArrowRight from 'lucide-svelte/icons/arrow-right';
   import ArrowLeft from 'lucide-svelte/icons/arrow-left';
@@ -226,7 +226,7 @@
 
     try {
       // Start OAuth — backend opens browser with OAuth URL
-      const result = await neboAIOAuthStartWithJanus(true);
+      const result = await neboAIOauthStart('true');
       neboAIPendingState = result.state;
 
       // Headless server (Android/remote) can't open a browser — open it here.
@@ -245,7 +245,7 @@
       // Poll every 2 seconds for completion
       neboAIPollInterval = setInterval(async () => {
         try {
-          const status = await neboAIOAuthStatus(neboAIPendingState);
+          const status = await neboAIOauthStatus(neboAIPendingState);
           if (status?.status === 'complete') {
             cleanupNeboAIOAuth();
             neboAIConnected = true;

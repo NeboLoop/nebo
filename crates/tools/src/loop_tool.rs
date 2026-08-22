@@ -167,9 +167,7 @@ impl LoopTool {
                 // (its row has the bare `bot_<id8>` slug and no loop_agent_id on
                 // the receiving side) — mention it as <@bot_id>, matching what
                 // the web picker emits. Named secondaries use <@loop_agent_id>.
-                let bot_id_hex = a.bot_id.replace('-', "");
-                let is_primary = bot_id_hex.len() >= 8
-                    && a.slug == format!("bot_{}", &bot_id_hex[..8]);
+                let is_primary = comm::handle::is_primary_handle(&a.slug);
                 let token = if is_primary {
                     format!("<@{}>", a.bot_id)
                 } else {

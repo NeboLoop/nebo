@@ -2,6 +2,7 @@
 	import { t } from 'svelte-i18n';
 	import { Bug, Lightbulb, HelpCircle } from 'lucide-svelte';
 	import { getStoreProductFeedback, submitStoreProductFeedback } from '$lib/api/nebo';
+	import { formatRelative } from '$lib/time';
 
 	interface FeedbackItem {
 		id: string;
@@ -58,18 +59,6 @@
 		closed: 'badge-neutral'
 	};
 
-	function timeAgo(dateStr: string) {
-		if (!dateStr) return '';
-		const diff = Date.now() - new Date(dateStr).getTime();
-		const mins = Math.floor(diff / 60000);
-		if (mins < 60) return $t('time.minutesAgo', { values: { n: mins } });
-		const hours = Math.floor(mins / 60);
-		if (hours < 24) return $t('time.hoursAgo', { values: { n: hours } });
-		const days = Math.floor(hours / 24);
-		if (days < 30) return $t('time.daysAgo', { values: { n: days } });
-		return $t('time.monthsAgo', { values: { n: Math.floor(days / 30) } });
-	}
-
 	async function submitFeedback() {
 		if (!fbTitle.trim()) return;
 		submitting = true;
@@ -111,7 +100,7 @@
 							<div class="flex items-center gap-2 mt-1.5 text-xs text-base-content/50">
 								<span>{fb.userName ?? fb.user_name ?? $t('marketplace.feedback.user')}</span>
 								<span>·</span>
-								<span>{timeAgo(fb.createdAt ?? fb.created_at ?? '')}</span>
+								<span>{formatRelative(fb.createdAt ?? fb.created_at ?? '')}</span>
 							</div>
 						</div>
 					</div>

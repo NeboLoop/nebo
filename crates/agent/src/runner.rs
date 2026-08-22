@@ -17,7 +17,7 @@ use tools::{Origin, Registry, ToolContext, ToolResult};
 use crate::concurrency::ConcurrencyController;
 use crate::db_context;
 use crate::dedupe::{self, DedupeCache};
-use crate::keyparser;
+use types::keyparser;
 use crate::memory;
 use crate::prompt;
 use crate::pruning::{self, ContextThresholds};

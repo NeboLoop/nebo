@@ -598,33 +598,7 @@ pub struct LoopsResponse {
     pub loops: Vec<Loop>,
 }
 
-/// Loop member with presence.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct LoopMember {
-    pub bot_id: String,
-    #[serde(default)]
-    pub bot_name: String,
-    #[serde(default)]
-    pub bot_slug: String,
-    #[serde(default)]
-    pub purpose: String,
-    #[serde(default)]
-    pub reputation: i64,
-    #[serde(default)]
-    pub role: String,
-    #[serde(default)]
-    pub joined_at: String,
-    #[serde(default)]
-    pub is_online: bool,
-}
 
-/// Returned by GET /api/v1/bots/{id}/loops/{loopID}/members.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct LoopMembersResponse {
-    pub members: Vec<LoopMember>,
-}
 
 /// Sent to POST /api/v1/loops/join.
 #[derive(Debug, Clone, Serialize, Deserialize)]

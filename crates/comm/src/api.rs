@@ -859,17 +859,6 @@ impl NeboAIApi {
         .await
     }
 
-    /// List members of a loop with online presence.
-    pub async fn list_loop_members(&self, loop_id: &str) -> Result<Vec<LoopMember>, CommError> {
-        let resp: LoopMembersResponse = self
-            .do_json(
-                reqwest::Method::GET,
-                &format!("/api/v1/bots/{}/loops/{}/members", self.bot_id, loop_id),
-                None::<&()>,
-            )
-            .await?;
-        Ok(resp.members)
-    }
 
     // ── Agents ──────────────────────────────────────────────────────
 

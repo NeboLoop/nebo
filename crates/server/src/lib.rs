@@ -66,11 +66,6 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// chain.
 pub(crate) const MAX_HANDOFF_DEPTH: u8 = 3;
 
-/// Matches a web-composer mention chip `<@id>` where id is a bot_id or a loop
-/// agent UUID. Captures the inner id. Used by the loop channel branch to route
-/// a mention to the specific exposed agent it addresses.
-static MENTION_TOKEN_RE: std::sync::LazyLock<regex::Regex> =
-    std::sync::LazyLock::new(|| regex::Regex::new(r"<@([0-9a-fA-F._-]+)>").unwrap());
 
 /// Conservative detection of an explicit "produce one joint result together"
 /// ask. Used by the loop channel branch to choose coordination mode (one lead
@@ -2934,7 +2929,6 @@ fn notify_skipped_workflows(
     agent_name: &str,
     skipped: &[(String, String)],
 ) {
-    let user_id = store.ensure_local_user_id().unwrap_or_default();
     for (binding, error) in skipped {
         let notif_id = format!("wf-invalid:{}:{}", agent_id, binding);
         let title = format!("{}: workflow '{}' is invalid and will not run", agent_name, binding);
@@ -2944,32 +2938,19 @@ fn notify_skipped_workflows(
             error
         );
         let action_url = format!("/{}/settings/workflows", agent_id);
-        if store
-            .create_notification_if_not_exists(
-                &notif_id,
-                &user_id,
-                "workflow_invalid",
-                &title,
-                Some(&body),
-                Some(&action_url),
-                None,
-                Some(agent_id),
-            )
-            .is_ok()
-        {
-            hub.broadcast(
-                "notification_created",
-                serde_json::json!({
-                    "id": notif_id,
-                    "type": "workflow_invalid",
-                    "title": title,
-                    "body": body,
-                    "actionUrl": action_url,
-                    "agentId": agent_id,
-                    "readAt": null,
-                }),
-            );
-        }
+        tools::owner_notify::emit(
+            store,
+            Some(&|ev, payload| hub.broadcast(ev, payload)),
+            &tools::owner_notify::OwnerNotification {
+                id: &notif_id,
+                kind: "workflow_invalid",
+                title: &title,
+                body: Some(&body),
+                action_url: Some(&action_url),
+                agent_id: Some(agent_id),
+                loud: false,
+            },
+        );
     }
 }
 
@@ -3135,7 +3116,7 @@ async fn try_handle_channel_control(
     }
     // No pending controls — still honor an explicit stop.
     if metadata.get("kind").map(String::as_str) == Some("stop") {
-        let key = agent::keyparser::build_session_key("neboai", "channel", conversation_id);
+        let key = types::keyparser::build_session_key("neboai", "channel", conversation_id);
         return try_handle_comm_control(state, &key, answer, metadata).await;
     }
     false
@@ -3372,10 +3353,10 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
             resolve_companion_session_key(&state)
         } else if is_personal {
             // Custom agent: use agent-scoped session key (matches frontend's agent:{id}:web)
-            agent::keyparser::build_agent_session_key(&agent_id, "web")
+            types::keyparser::build_agent_session_key(&agent_id, "web")
         } else {
             // External loop: separate session
-            agent::keyparser::build_session_key(
+            types::keyparser::build_session_key(
                 "neboai",
                 "agent_space",
                 &format!("{}:{}", agent_slug, msg.conversation_id),
@@ -3537,8 +3518,8 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
         // but honor an explicit `<@id>` mention chip (like the channel branch).
         let bot_id = config::read_bot_id().unwrap_or_default();
         let mut agent_id = String::new();
-        for cap in MENTION_TOKEN_RE.captures_iter(&text) {
-            let id = cap.get(1).map(|m| m.as_str()).unwrap_or("");
+        for id in comm::handle::parse_mention_tokens(&text) {
+            let id = id.as_str();
             if !bot_id.is_empty() && id == bot_id {
                 break; // primary bot — keep agent_id empty
             }
@@ -3551,7 +3532,7 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
         }
 
         let session_key =
-            agent::keyparser::build_session_key("neboai", "embed", &msg.conversation_id);
+            types::keyparser::build_session_key("neboai", "embed", &msg.conversation_id);
 
         if handle_comm_slash_command(&state, &text, &session_key, "embed", &msg.conversation_id)
             .await
@@ -3762,7 +3743,7 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
                         .session_name
                         .filter(|s| !s.is_empty())
                         .unwrap_or_else(|| {
-                            agent::keyparser::build_agent_session_key(
+                            types::keyparser::build_agent_session_key(
                                 row_id,
                                 &format!("thread:{}", chat_id),
                             )
@@ -3771,7 +3752,7 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
                         // Loop-created chat the desktop hasn't materialized yet —
                         // create it as a thread of this agent (the same shape the
                         // desktop Threads tab creates).
-                        let key = agent::keyparser::build_agent_session_key(
+                        let key = types::keyparser::build_agent_session_key(
                             row_id,
                             &format!("thread:{}", chat_id),
                         );
@@ -3797,7 +3778,7 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
             } else if is_personal {
                 resolve_agent_session_key(&state, &agent_id)
             } else {
-                agent::keyparser::build_session_key(
+                types::keyparser::build_session_key(
                     "neboai",
                     "agent_space",
                     &format!("{}:{}", agent_slug, msg.conversation_id),
@@ -3934,7 +3915,7 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
         notify_crate::send(&format!("Message from {}", msg.from), &preview);
 
         let session_key =
-            agent::keyparser::build_session_key("neboai", &msg.topic, &msg.conversation_id);
+            types::keyparser::build_session_key("neboai", &msg.topic, &msg.conversation_id);
 
         if handle_comm_slash_command(
             &state,
@@ -4091,8 +4072,8 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
         // appearance. This is the fan-out target set: each addressed agent runs
         // and replies for itself.
         let mut mentioned_targets: Vec<String> = Vec::new();
-        for cap in MENTION_TOKEN_RE.captures_iter(&text) {
-            let id = cap.get(1).map(|m| m.as_str()).unwrap_or("");
+        for id in comm::handle::parse_mention_tokens(&text) {
+            let id = id.as_str();
             let local_id = if !bot_id.is_empty() && id == bot_id {
                 Some(String::new()) // primary bot
             } else {
@@ -4280,10 +4261,10 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
         // Strip mention tokens so the command resolves, then handle it instead of
         // dispatching an agent run. Single canonical stop/new/clear path for channels
         // (previously these only worked in DMs/agent_spaces).
-        let command_text = MENTION_TOKEN_RE.replace_all(&text, "").trim().to_string();
+        let command_text = comm::handle::strip_mention_tokens(&text).trim().to_string();
         if command_text.starts_with('/') {
             let session_key =
-                agent::keyparser::build_session_key("neboai", "channel", &msg.conversation_id);
+                types::keyparser::build_session_key("neboai", "channel", &msg.conversation_id);
             if handle_comm_slash_command(
                 &state,
                 &command_text,
@@ -4320,9 +4301,9 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
         {
             let registry = state.agent_registry.read().await;
             for line in std::iter::once(&text).chain(buffered.iter().map(|m| &m.text)) {
-                for cap in MENTION_TOKEN_RE.captures_iter(line) {
-                    let id = cap.get(1).map(|m| m.as_str()).unwrap_or("");
-                    if id.is_empty() || mention_names.contains_key(id) {
+                for id in comm::handle::parse_mention_tokens(line) {
+                    let id = id.as_str();
+                    if mention_names.contains_key(id) {
                         continue;
                     }
                     if !bot_id.is_empty() && id == bot_id {
@@ -4342,15 +4323,9 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
             }
         }
         let replace_mentions = |line: &str| -> String {
-            MENTION_TOKEN_RE
-                .replace_all(line, |cap: &regex::Captures| {
-                    let id = cap.get(1).map(|m| m.as_str()).unwrap_or("");
-                    match mention_names.get(id) {
-                        Some(name) => format!("@{}", name),
-                        None => cap.get(0).map(|m| m.as_str()).unwrap_or("").to_string(),
-                    }
-                })
-                .into_owned()
+            comm::handle::replace_mention_tokens(line, |id| {
+                mention_names.get(id).map(|name| format!("@{}", name))
+            })
         };
 
         // Build an attributed transcript as a single user turn.
@@ -4450,9 +4425,9 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
         // enqueues async on the COMM lane, so these runs proceed concurrently.
         for (agent_id, agent_name) in dispatch {
             let session_key = if agent_id.is_empty() {
-                agent::keyparser::build_session_key("neboai", "channel", &msg.conversation_id)
+                types::keyparser::build_session_key("neboai", "channel", &msg.conversation_id)
             } else {
-                agent::keyparser::build_session_key(
+                types::keyparser::build_session_key(
                     "neboai",
                     "channel",
                     &format!("{}:{}", msg.conversation_id, agent_id),
@@ -4608,11 +4583,11 @@ fn resolve_agent_session_key(state: &AppState, agent_id: &str) -> String {
             let key = chat
                 .session_name
                 .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| agent::keyparser::build_agent_session_key(agent_id, "web"));
+                .unwrap_or_else(|| types::keyparser::build_agent_session_key(agent_id, "web"));
             tracing::debug!(session_key = %key, agent_id = %agent_id, "resolved agent session key for NeboAI unification");
             key
         }
-        _ => agent::keyparser::build_agent_session_key(agent_id, "web"),
+        _ => types::keyparser::build_agent_session_key(agent_id, "web"),
     }
 }
 

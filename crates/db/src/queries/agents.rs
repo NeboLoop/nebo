@@ -596,7 +596,7 @@ impl Store {
     /// Activity results cascade-delete via FK.
     pub fn delete_agent_workflow_runs(&self, agent_id: &str) -> Result<usize, NeboError> {
         let conn = self.conn()?;
-        let wf_id = format!("agent:{}", agent_id);
+        let wf_id = types::keyparser::agent_workflow_id(agent_id);
         conn.execute(
             "DELETE FROM workflow_runs WHERE workflow_id = ?1",
             params![wf_id],
