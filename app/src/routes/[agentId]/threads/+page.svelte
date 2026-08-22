@@ -83,6 +83,10 @@
   agentId={agentId}
   headerTitle={$t('chat.newThread')}
   headerRight={$t('chat.work')}
+  flows={ctx.workflowEntries}
+  runs={ctx.runs}
+  onopenflow={(name) => ctx.openWorkflow(name, ctx.config.workflows?.[name])}
+  onopenrun={(id) => goto(`/${ctx.agentId}/runs/${id}`)}
   placeholder={$t('chat.startNewThreadWith', { values: { name: agent?.name ?? '' } })}
   emptyTitle={greeting}
   emptyDesc={$t('chat.newThreadEmptyDesc', { values: { name: agent?.name ?? $t('chat.yourEmployee') } })}

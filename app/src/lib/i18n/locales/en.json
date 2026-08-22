@@ -139,6 +139,8 @@
 		"collapseSidebar": "Collapse sidebar",
 		"agents": "Employees",
 		"inbox": "Inbox",
+		"flows": "Flows",
+		"runs": "Runs",
 		"schedule": "Schedule",
 		"searchOrRun": "Search or run..."
 	},
@@ -1888,7 +1890,8 @@
 		"appOwnWindow": "This app opens in its own window.",
 		"newChatDesc": "Clean context. {name} knows who you are but nothing about previous chats.",
 		"threadOptions": "Chat options",
-		"noChatsYet": "No chats yet. Start a new one."
+		"noChatsYet": "No chats yet. Start a new one.",
+		"noRunsYet": "No runs yet"
 	},
 	"agentLearning": {
 		"title": "Self-improvement",
@@ -2708,5 +2711,8 @@
 		"consentAccept": "Enable voice",
 		"consentDecline": "Not now",
 		"cloudIndicator": "Audio is streaming to xAI"
+	},
+	"flows": {
+		"none": "No flows yet"
 	}
 }

@@ -17,6 +17,8 @@
   import Table from 'lucide-svelte/icons/table';
   import Presentation from 'lucide-svelte/icons/presentation';
   import type { UploadedAttachment } from '$lib/types/attachment';
+  import type { Snippet } from 'svelte';
+  import type { WorkflowConfig, AgentRun } from '$lib/types/agentPage';
   import { getAttachmentType, formatFileSize, attachmentMediaUrl } from '$lib/types/attachment';
   import { NEAR_BOTTOM_PX, distanceFromBottom } from '$lib/chat/scroll';
   import { threadKey } from '$lib/chat/sessionKey';
@@ -73,8 +75,14 @@
 
   type AgentInfo = { id: string; name: string; color: string; initial: string; role: string; status: string; isApp?: boolean };
 
-  let { messages = [], agentName = 'Agent', agentId = '', threadId = '', sessionId = '', headerTitle = '', headerRight = '', placeholder = '', emptyIcon = '', emptyTitle = '', emptyDesc = '', allAgents = [], onteachsent, activityStatus = '', tokenUsage = null, quotaWarning = '', chatError = '', onsend, onstop, onedit, onredo, onasksubmit, onrestoreversion, ondismisswarning, ondismisserror, onloadmore, isLoading = false, isLoadingMore = false, hasMore = false, allowAttachments = true }: {
+  let { messages = [], agentName = 'Agent', agentId = '', threadId = '', sessionId = '', headerTitle = '', headerRight = '', placeholder = '', emptyIcon = '', emptyTitle = '', emptyDesc = '', allAgents = [], onteachsent, activityStatus = '', tokenUsage = null, quotaWarning = '', chatError = '', onsend, onstop, onedit, onredo, onasksubmit, onrestoreversion, ondismisswarning, ondismisserror, onloadmore, isLoading = false, isLoadingMore = false, hasMore = false, allowAttachments = true, flows, runs, onopenflow, onopenrun }: {
     messages?: Message[];
+    /** Employee-scoped surfaces for the work pane. Omitted on chats that have
+     *  no employee behind them (channel setup help, the embed). */
+    flows?: [string, WorkflowConfig][];
+    runs?: AgentRun[];
+    onopenflow?: (name: string) => void;
+    onopenrun?: (id: string) => void;
     agentName?: string;
     agentId?: string;
     threadId?: string;
@@ -110,7 +118,11 @@
   let composerRef = $state<{ focus: () => void; focusAndInsert: (char: string) => void; addFiles: (files: File[]) => void } | null>(null);
   let creationsOpen = $state(false);
   // The bot's computer takes over the work panel while open.
-  let desktopOpen = $state(false);
+  type PaneView = 'work' | 'flows' | 'runs';
+  // Flows and runs belong to an employee, not to a chat, so they arrive as
+  // props from the agent route. Surfaces without an employee (the channels
+  // help chat, the embed) pass nothing and the icons don't render.
+  let paneView = $state<PaneView>('work');
 
   // Teach-a-task: record a demonstration on the bot's computer, then hand
   // the artifacts to the agent to study (the normal run does the learning —
@@ -129,7 +141,7 @@
       teachError = e instanceof Error ? e.message : String(e);
       return;
     }
-    openPane('computer');
+    computerFull = true;
     teachActive = true;
     teachSeconds = 0;
     teachTimer = setInterval(() => (teachSeconds += 1), 1000);
@@ -391,8 +403,8 @@
   // width this session; always resizable after.
   // containerEl wraps the chat column AND the pane, so its width doesn't change
   // when the pane opens — half of it is half either way.
-  function openPane(view: 'work' | 'computer') {
-    desktopOpen = view === 'computer';
+  function openPane(view: PaneView) {
+    paneView = view;
     creationsOpen = true;
     // Opening Work with nothing selected shows the artifact list — never
     // auto-pick a file the user didn't ask for.
@@ -408,9 +420,19 @@
 
   function closePane() {
     creationsOpen = false;
-    desktopOpen = false;
     workFull = false;
   }
+
+  /** Toggle a pane view from the header: same view closes, different switches. */
+  function togglePane(view: PaneView) {
+    if (creationsOpen && paneView === view) closePane();
+    else openPane(view);
+  }
+
+  // The computer takes the whole window rather than a 450px rail. It is the one
+  // surface you drive rather than refer to, and a remote desktop scaled into a
+  // side panel is unusable.
+  let computerFull = $state(false);
 
   function startResize(e: MouseEvent) {
     e.preventDefault();
@@ -977,28 +999,42 @@
   {#if headerTitle}
     <div class="h-11 px-[18px] border-b border-base-content/10 flex items-center gap-2 shrink-0">
       <span class="text-sm font-semibold truncate min-w-0">{headerTitle}</span>
-      <button
-        class="text-sm ml-auto shrink-0 cursor-pointer bg-transparent border-none text-base-content/70 hover:text-base-content transition-colors flex items-center"
-        onclick={() => (desktopOpen && creationsOpen ? closePane() : openPane('computer'))}
-        title={$t('chat.openComputer')}
-      >
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="{desktopOpen && creationsOpen ? 'text-primary' : ''}">
-          <rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>
-        </svg>
-      </button>
-      {#if headerRight}
-        <button
-          data-tour="work"
-          class="text-sm shrink-0 whitespace-nowrap cursor-pointer bg-transparent border-none text-base-content/70 hover:text-base-content transition-colors flex items-center gap-1.5"
-          onclick={() => (creationsOpen && !desktopOpen ? closePane() : openPane('work'))}
-          title={creationsOpen ? $t('chat.closeWorkPanel') : $t('chat.openWorkPanel')}
-        >
-          {headerRight}
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="{creationsOpen ? 'text-primary' : ''}">
-            <rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/><path d="M14 9l3 3-3 3"/>
-          </svg>
-        </button>
-      {/if}
+      <div class="ml-auto flex items-center gap-0.5 shrink-0">
+        {#snippet headerIcon(active: boolean, label: string, onclick: () => void, icon: Snippet)}
+          <button
+            class="w-7 h-7 rounded-md flex items-center justify-center cursor-pointer bg-transparent border-none transition-colors {active
+              ? 'text-primary bg-primary/10'
+              : 'text-base-content/60 hover:text-base-content hover:bg-base-200'}"
+            {onclick}
+            title={label}
+            aria-label={label}
+          >{@render icon()}</button>
+        {/snippet}
+
+        {#snippet computerIcon()}
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+        {/snippet}
+        {#snippet flowsIcon()}
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="6" height="6" rx="1.5"/><rect x="15" y="15" width="6" height="6" rx="1.5"/><path d="M9 6h4a2 2 0 0 1 2 2v10"/></svg>
+        {/snippet}
+        {#snippet runsIcon()}
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"/><polyline points="3 3 3 8 8 8"/><polyline points="12 8 12 12 15 14"/></svg>
+        {/snippet}
+        {#snippet workIcon()}
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/><path d="M14 9l3 3-3 3"/></svg>
+        {/snippet}
+
+        {@render headerIcon(computerFull, $t('chat.botComputer'), () => (computerFull = true), computerIcon)}
+        {#if flows}
+          {@render headerIcon(creationsOpen && paneView === 'flows', $t('nav.flows'), () => togglePane('flows'), flowsIcon)}
+        {/if}
+        {#if runs}
+          {@render headerIcon(creationsOpen && paneView === 'runs', $t('nav.runs'), () => togglePane('runs'), runsIcon)}
+        {/if}
+        {#if headerRight}
+          {@render headerIcon(creationsOpen && paneView === 'work', $t('chat.work'), () => togglePane('work'), workIcon)}
+        {/if}
+      </div>
     </div>
   {/if}
 
@@ -1516,6 +1552,18 @@
 </div>
 
 <!-- Resize handle + Creations panel -->
+{#if computerFull}
+  <!-- The computer takes the window. A remote desktop scaled into a side rail
+       is unusable, and this is the one surface you drive rather than refer to. -->
+  <div class="fixed inset-0 z-[70] bg-neutral flex flex-col">
+    <DesktopView
+      onclose={() => (computerFull = false)}
+      onrecord={() => (teachActive ? stopTeach() : startTeach())}
+      recording={teachActive}
+    />
+  </div>
+{/if}
+
 {#if creationsOpen}
   <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
   <div
@@ -1665,8 +1713,46 @@
     </div>
     <!-- Creations content — one renderer for every format, routed by extension -->
     <div class="flex-1 overflow-y-auto">
-      {#if desktopOpen}
-        <DesktopView onclose={closePane} onrecord={() => (teachActive ? stopTeach() : startTeach())} recording={teachActive} />
+      {#if paneView === 'flows'}
+        {#if (flows ?? []).length === 0}
+          <p class="p-6 text-center text-sm text-base-content/50">{$t('flows.none')}</p>
+        {:else}
+          {#each flows ?? [] as [name, wf] (name)}
+            <button
+              type="button"
+              class="w-full text-left flex items-start gap-2.5 py-2.5 px-4 border-b border-base-content/8 bg-transparent cursor-pointer hover:bg-base-200/60 transition-colors"
+              onclick={() => onopenflow?.(name)}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="mt-0.5 shrink-0 {wf.isActive === false ? 'text-base-content/30' : 'text-base-content/60'}"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/></svg>
+              <span class="flex-1 min-w-0">
+                <span class="block text-sm font-medium truncate">{name}</span>
+                <span class="block text-xs text-base-content/55 truncate">{wf.schedule || wf.description || ''}</span>
+              </span>
+              {#if wf.isActive === false}
+                <span class="text-[10px] uppercase tracking-wide text-base-content/40 shrink-0 mt-1">{$t('common.paused')}</span>
+              {/if}
+            </button>
+          {/each}
+        {/if}
+      {:else if paneView === 'runs'}
+        {#if (runs ?? []).length === 0}
+          <p class="p-6 text-center text-sm text-base-content/50">{$t('agent.noRunsYet')}</p>
+        {:else}
+          {#each runs ?? [] as r (r.id)}
+            <button
+              type="button"
+              class="w-full text-left flex items-center gap-2.5 py-2.5 px-4 border-b border-base-content/8 bg-transparent cursor-pointer hover:bg-base-200/60 transition-colors"
+              onclick={() => onopenrun?.(r.id)}
+            >
+              <span class="w-2 h-2 rounded-full shrink-0 {r.status === 'success' ? 'bg-success' : r.status === 'running' ? 'bg-warning animate-pulse' : r.status === 'failed' ? 'bg-error' : 'bg-base-content/30'}"></span>
+              <span class="flex-1 min-w-0">
+                <span class="block text-sm truncate">{r.workflowName}</span>
+                <span class="block text-xs text-base-content/50 font-mono">{r.dateGroup} · {r.time}</span>
+              </span>
+              <span class="text-xs text-base-content/50 font-mono shrink-0">{r.duration}</span>
+            </button>
+          {/each}
+        {/if}
       {:else if activeArtifact?.url}
         <!-- Key on documentId:version so a new version re-mounts the viewer in
              place (and the version-specific URL also defeats the browser cache). -->

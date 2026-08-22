@@ -67,6 +67,13 @@
 		connect();
 	}
 
+	function onkeydown(e: KeyboardEvent) {
+		if (e.key === 'Escape' && onclose) {
+			e.preventDefault();
+			onclose();
+		}
+	}
+
 	onMount(() => {
 		connect();
 		// noVNC only rescales on window resize — a panel drag or the opening
@@ -86,10 +93,15 @@
 
 </script>
 
+<svelte:window {onkeydown} />
+
 <div class="flex flex-col h-full min-h-0">
-	<div class="flex items-center gap-2 px-3 py-1.5 border-b border-base-content/10 shrink-0">
-		<Monitor class="w-3.5 h-3.5 text-base-content/60" />
-		<span class="text-xs font-medium text-base-content/80">{$t('chat.botComputer')}</span>
+	<!-- This bar sits on the full-window dark ground, so it carries its own
+	     palette: base-content here would be dark text on a dark background, which
+	     is exactly how the close button went missing. -->
+	<div class="flex items-center gap-2 px-3 h-11 bg-neutral text-neutral-content border-b border-white/10 shrink-0">
+		<Monitor class="w-4 h-4 opacity-70" />
+		<span class="text-sm font-medium">{$t('chat.botComputer')}</span>
 		<span
 			class="w-1.5 h-1.5 rounded-full {status === 'connected'
 				? 'bg-success'
@@ -97,10 +109,11 @@
 					? 'bg-warning animate-pulse'
 					: 'bg-error'}"
 		></span>
+		<div class="flex-1"></div>
 		{#if onrecord}
 			<button
 				type="button"
-				class="btn btn-xs ml-auto normal-case {recording ? 'btn-error' : 'btn-ghost text-error'}"
+				class="btn btn-sm normal-case gap-1.5 {recording ? 'btn-error' : 'btn-ghost text-neutral-content hover:bg-white/10'}"
 				onclick={onrecord}
 			>
 				<span class="w-2 h-2 rounded-full {recording ? 'bg-white animate-pulse' : 'bg-error'}"></span>
@@ -110,11 +123,12 @@
 		{#if onclose}
 			<button
 				type="button"
-				class="btn btn-ghost btn-xs"
+				class="btn btn-sm normal-case gap-1.5 bg-white/15 hover:bg-white/25 border-none text-neutral-content"
 				onclick={onclose}
-				title={$t('chat.closeComputer')}
+				title="{$t('chat.closeComputer')} (Esc)"
 			>
-				<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+				<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+				{$t('common.close')}
 			</button>
 		{/if}
 	</div>
