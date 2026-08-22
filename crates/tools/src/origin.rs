@@ -178,6 +178,11 @@ pub struct ToolContext {
     /// agent scope. Reads still serve the inherited chain. `false` for every
     /// normal run.
     pub memory_writes_disabled: bool,
+    /// Confidentiality scope for this run: the client matter an isolated
+    /// employee is sealed to (`memory.context_isolated` + the derived
+    /// context). Forwarded to platform Memory as a header so the shard can
+    /// enforce the wall server-side. `None` for a normal employee.
+    pub memory_matter: Option<String>,
     /// Capability categories the runner has cleared for execution this turn —
     /// pre-granted (capability ON), covered by Full Access, matched by the
     /// per-command allowlist, or user-approved via the ApprovalModal. In

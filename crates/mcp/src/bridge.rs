@@ -230,8 +230,19 @@ impl Bridge {
         tool_name: &str,
         input: serde_json::Value,
     ) -> Result<McpToolResult, McpError> {
+        self.call_tool_scoped(integration_id, tool_name, input, None).await
+    }
+
+    /// Call inside a confidentiality scope; see `McpClient::call_tool_scoped`.
+    pub async fn call_tool_scoped(
+        &self,
+        integration_id: &str,
+        tool_name: &str,
+        input: serde_json::Value,
+        matter: Option<&str>,
+    ) -> Result<McpToolResult, McpError> {
         self.client
-            .call_tool(integration_id, tool_name, input)
+            .call_tool_scoped(integration_id, tool_name, input, matter)
             .await
     }
 
