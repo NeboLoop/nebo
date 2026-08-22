@@ -1835,7 +1835,6 @@ pub fn notify_plugin_needs_reauth(
     broadcast: impl Fn(&str, serde_json::Value),
     p: &db::PluginAccountProfile,
 ) {
-    let user_id = store.ensure_local_user_id().unwrap_or_default();
     // Fresh id per occurrence: the `reauth_notified` flag (reset on recovery) is
     // the once-per-spell guard, so a unique id lets a *future* expiry notify again
     // rather than being suppressed by a stale, already-read notification.
@@ -1846,33 +1845,18 @@ pub fn notify_plugin_needs_reauth(
         p.account_label, p.plugin_slug
     );
     let action_url = format!("/{}/settings/accounts", p.agent_id);
-    if let Err(e) = store.create_notification(
-        &notif_id,
-        &user_id,
-        "warning",
-        &title,
-        Some(&body),
-        Some(&action_url),
-        None,
-        Some(p.agent_id.as_ref()),
-    ) {
-        warn!(error = %e, "failed to create plugin reauth notification");
-        return;
-    }
-    broadcast(
-        "notification_created",
-        serde_json::json!({
-            "id": notif_id,
-            "type": "warning",
-            "title": title,
-            "body": body,
-            "actionUrl": action_url,
-            "readAt": null,
-            "createdAt": std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs(),
-        }),
+    crate::owner_notify::emit(
+        store,
+        Some(&|ev, payload| broadcast(ev, payload)),
+        &crate::owner_notify::OwnerNotification {
+            id: &notif_id,
+            kind: "warning",
+            title: &title,
+            body: Some(&body),
+            action_url: Some(&action_url),
+            agent_id: Some(p.agent_id.as_ref()),
+            loud: false,
+        },
     );
 }
 

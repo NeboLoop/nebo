@@ -331,12 +331,11 @@ fn has_newer_version(local: &str, remote: &str) -> bool {
 
 /// Create a persistent, deduped "update available" notification for each pending
 /// update the user must approve (i.e. NOT auto-update). The bell + toast come
-/// from the canonical `create_notification_if_not_exists` + broadcast pathway;
+/// from the canonical `owner_notify::emit` persist+broadcast pathway;
 /// the deterministic id keyed on the target version means a given pending update
 /// notifies once, not every check.
 fn notify_updates_available(state: &AppState) {
     let pending = state.store.list_artifacts_with_updates().unwrap_or_default();
-    let user_id = state.store.ensure_local_user_id().unwrap_or_default();
     for a in &pending {
         if a.auto_update != 0 {
             continue; // applied silently — no approval nudge
@@ -354,45 +353,32 @@ fn notify_updates_available(state: &AppState) {
             display, a.local_version, a.remote_version
         );
         let action_url = "/settings/updates".to_string();
-        if state
-            .store
-            .create_notification_if_not_exists(
-                &notif_id,
-                &user_id,
-                "info",
-                &title,
-                Some(&body),
-                Some(&action_url),
-                None,
-                None,
-            )
-            .is_ok()
-        {
-            state.hub.broadcast(
-                "notification_created",
-                serde_json::json!({
-                    "id": notif_id,
-                    "type": "info",
-                    "title": title,
-                    "body": body,
-                    "actionUrl": action_url,
-                    "readAt": null,
-                }),
-            );
-            // Mirror to the owner's web inbox (informational — no action
-            // buttons; applying an update stays a bot-UI decision). The hub
-            // upsert on the id keeps the every-check re-push idempotent.
-            crate::codes::push_inbox(
-                state,
-                serde_json::json!({
-                    "id": notif_id,
-                    "type": "info",
-                    "title": title,
-                    "body": body,
-                    "link": action_url,
-                }),
-            );
-        }
+        tools::owner_notify::emit(
+            &state.store,
+            Some(&|ev, payload| state.hub.broadcast(ev, payload)),
+            &tools::owner_notify::OwnerNotification {
+                id: &notif_id,
+                kind: "info",
+                title: &title,
+                body: Some(&body),
+                action_url: Some(&action_url),
+                agent_id: None,
+                loud: false,
+            },
+        );
+        // Mirror to the owner's web inbox (informational — no action
+        // buttons; applying an update stays a bot-UI decision). The hub
+        // upsert on the id keeps the every-check re-push idempotent.
+        crate::codes::push_inbox(
+            state,
+            serde_json::json!({
+                "id": notif_id,
+                "type": "info",
+                "title": title,
+                "body": body,
+                "link": action_url,
+            }),
+        );
     }
 }
 

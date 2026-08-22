@@ -256,24 +256,21 @@ async fn handle_notify(store: &Store, notify_fn: Option<&NotifyFn>, action: &str
             }
 
             let id = uuid::Uuid::new_v4().to_string();
-            // notifications FK to users(id); resolve the real local user ("" violates it).
-            let user_id = store.ensure_local_user_id().unwrap_or_default();
-            match store.create_notification(
-                &id,
-                &user_id,
-                "info",
-                title,
-                Some(text),
+            crate::owner_notify::emit(
+                store,
                 None,
-                None,
-                agent_id,
-            ) {
-                Ok(_) => {
-                    notify_crate::send(title, text);
-                    ToolResult::ok(format!("Notification sent: {}", text))
-                }
-                Err(e) => ToolResult::error(format!("Failed to send notification: {}. Do not retry — this is a database error.", e)),
-            }
+                &crate::owner_notify::OwnerNotification {
+                    id: &id,
+                    kind: "info",
+                    title,
+                    body: Some(text),
+                    action_url: None,
+                    agent_id,
+                    loud: false,
+                },
+            );
+            notify_crate::send(title, text);
+            ToolResult::ok(format!("Notification sent: {}", text))
         }
         "alert" => {
             let text = input["text"].as_str().unwrap_or("");
@@ -308,36 +305,18 @@ async fn handle_notify(store: &Store, notify_fn: Option<&NotifyFn>, action: &str
 /// (headless / no frontend) — never a modal.
 async fn handle_alert(store: &Store, notify_fn: Option<&NotifyFn>, title: &str, text: &str, agent_id: Option<&str>) -> ToolResult {
     let id = uuid::Uuid::new_v4().to_string();
-    // Notifications FK to users(id); resolve the real local user (same canonical
-    // resolver the proactive-update notifications use) — "" would violate the FK.
-    let user_id = store.ensure_local_user_id().unwrap_or_default();
-    // Persistence (the bell) is best-effort: the live broadcast below is what surfaces
-    // the HUD, so don't fail the alert if the row can't be written — mirrors agent_worker.
-    if let Err(e) = store.create_notification_if_not_exists(
-        &id,
-        &user_id,
-        "warning",
+    let n = crate::owner_notify::OwnerNotification {
+        id: &id,
+        kind: "warning",
         title,
-        Some(text),
-        None,
-        None,
+        body: Some(text),
+        action_url: None,
         agent_id,
-    ) {
-        tracing::warn!(error = %e, "alert: could not persist notification row; broadcasting anyway");
-    }
-
-    if let Some(notify) = notify_fn {
-        notify(
-            "notification",
-            serde_json::json!({
-                "id": id,
-                "type": "warning",
-                "kind": "alert",
-                "title": title,
-                "body": text,
-                "agentId": agent_id,
-            }),
-        );
+        loud: true,
+    };
+    match notify_fn {
+        Some(f) => crate::owner_notify::emit(store, Some(&|ev, payload| f(ev, payload)), &n),
+        None => crate::owner_notify::emit(store, None, &n),
     }
 
     ToolResult::ok(format!("Alerted the owner: {}", title))

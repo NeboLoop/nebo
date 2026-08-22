@@ -37,6 +37,7 @@ pub mod orchestrator;
 mod organizer;
 pub mod origin;
 pub mod os_tool;
+pub mod owner_notify;
 pub mod plugin_tool;
 pub mod policy;
 pub mod process;

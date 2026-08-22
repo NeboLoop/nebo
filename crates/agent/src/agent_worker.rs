@@ -1428,36 +1428,28 @@ async fn watch_loop(
                 );
 
                 let notif_id = format!("auth-required:{}:{}", agent_id, cfg.plugin);
-                // notifications FK to users(id); resolve the real local user ("" violates it).
-                let user_id = store.ensure_local_user_id().unwrap_or_default();
-                if let Err(e) = store.create_notification_if_not_exists(
-                    &notif_id,
-                    &user_id,
-                    "warning",
-                    &format!("{} needs authentication", cfg.plugin),
-                    Some(&format!(
-                        "Connect your {} account to enable automated workflows. Go to Settings → Plugins.",
-                        cfg.plugin
-                    )),
-                    Some("/settings/plugins"),
-                    None,
-                    Some(agent_id.as_ref()),
-                ) {
-                    warn!(error = %e, "failed to create auth notification");
-                }
-
+                let title = format!("{} needs authentication", cfg.plugin);
+                let body = format!(
+                    "Connect your {} account to enable automated workflows. Go to Settings → Plugins.",
+                    cfg.plugin
+                );
+                let n = tools::owner_notify::OwnerNotification {
+                    id: &notif_id,
+                    kind: "warning",
+                    title: &title,
+                    body: Some(&body),
+                    action_url: Some("/settings/plugins"),
+                    agent_id: Some(agent_id.as_ref()),
+                    loud: true,
+                };
                 // Broadcast so notification bell updates in real-time
-                if let Some(ref notify) = notify_fn {
-                    notify(
-                        "notification",
-                        serde_json::json!({
-                            "id": notif_id,
-                            "type": "warning",
-                            "title": format!("{} needs authentication", cfg.plugin),
-                            "body": format!("Connect your {} account to enable automated workflows.", cfg.plugin),
-                            "link": "/settings/plugins",
-                        }),
-                    );
+                match &notify_fn {
+                    Some(f) => tools::owner_notify::emit(
+                        &store,
+                        Some(&|ev, payload| f(ev, payload)),
+                        &n,
+                    ),
+                    None => tools::owner_notify::emit(&store, None, &n),
                 }
 
                 // Self-heal: never park permanently. Keep probing on the slow
@@ -2519,35 +2511,27 @@ async fn channel_loop(
                 );
 
                 let notif_id = format!("auth-required:{}:{}", agent_id, plugin_slug);
-                // notifications FK to users(id); resolve the real local user ("" violates it).
-                let user_id = store.ensure_local_user_id().unwrap_or_default();
-                if let Err(e) = store.create_notification_if_not_exists(
-                    &notif_id,
-                    &user_id,
-                    "warning",
-                    &format!("{} needs authentication", plugin_slug),
-                    Some(&format!(
-                        "Connect your {} account to enable the {} channel. Go to Settings → Plugins.",
-                        plugin_slug, channel_name
-                    )),
-                    Some("/settings/plugins"),
-                    None,
-                    Some(agent_id.as_ref()),
-                ) {
-                    warn!(error = %e, "failed to create auth notification");
-                }
-
-                if let Some(ref notify) = notify_fn {
-                    notify(
-                        "notification",
-                        serde_json::json!({
-                            "id": notif_id,
-                            "type": "warning",
-                            "title": format!("{} needs authentication", plugin_slug),
-                            "body": format!("Connect your {} account to enable the {} channel.", plugin_slug, channel_name),
-                            "link": "/settings/plugins",
-                        }),
-                    );
+                let title = format!("{} needs authentication", plugin_slug);
+                let body = format!(
+                    "Connect your {} account to enable the {} channel. Go to Settings → Plugins.",
+                    plugin_slug, channel_name
+                );
+                let n = tools::owner_notify::OwnerNotification {
+                    id: &notif_id,
+                    kind: "warning",
+                    title: &title,
+                    body: Some(&body),
+                    action_url: Some("/settings/plugins"),
+                    agent_id: Some(agent_id.as_ref()),
+                    loud: true,
+                };
+                match &notify_fn {
+                    Some(f) => tools::owner_notify::emit(
+                        &store,
+                        Some(&|ev, payload| f(ev, payload)),
+                        &n,
+                    ),
+                    None => tools::owner_notify::emit(&store, None, &n),
                 }
 
                 // Self-heal: keep probing on the slow cadence instead of
