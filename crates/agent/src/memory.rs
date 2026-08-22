@@ -713,6 +713,15 @@ pub fn session_key_context(session_key: &str) -> Option<String> {
     }
 }
 
+/// The matter (isolation context) portion of a RESOLVED memory scope, if any —
+/// the read-side counterpart of the `:ctx:` suffix [`resolve_memory_scope`]
+/// appends. Used to carry a requester's matter on a coworker envelope
+/// (`ToolContext.user_id` → envelope → target session key) without any caller
+/// re-deriving scopes.
+pub fn scope_matter(user_id: &str) -> Option<&str> {
+    user_id.split_once(":ctx:").map(|(_, ctx)| ctx)
+}
+
 /// The memory scoping decision for one run — produced by
 /// [`resolve_memory_scope`], the ONE derivation the runner threads into every
 /// read and write path (extraction, flush, transcript indexing, the memory
@@ -1333,6 +1342,20 @@ mod tests {
         assert_eq!(session_key_context("acp:xyz"), None);
         assert_eq!(session_key_context("subagent:parent:child"), None);
         assert_eq!(session_key_context("slack:group:C123:extra"), None);
+    }
+
+    #[test]
+    fn test_scope_matter_round_trip() {
+        // The matter extracted from a resolved scope is exactly what
+        // resolve_memory_scope appended — envelope stamping must round-trip.
+        let s = resolve_memory_scope("local", "a1", true, Some("caseA"), None);
+        assert_eq!(scope_matter(&s.user_id), Some("caseA"));
+        // Matters may carry colons (channel-style ctx segments) — stay whole.
+        let s = resolve_memory_scope("local", "a1", true, Some("dm:123"), None);
+        assert_eq!(scope_matter(&s.user_id), Some("dm:123"));
+        // Un-isolated scopes carry no matter.
+        assert_eq!(scope_matter("local:agent:a1"), None);
+        assert_eq!(scope_matter("local"), None);
     }
 
     #[test]

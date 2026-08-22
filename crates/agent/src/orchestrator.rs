@@ -285,7 +285,6 @@ impl Orchestrator {
                     &user_id,
                     &cancel,
                     max_iterations,
-                    &spawn_req.agent_id,
                 );
                 apply_spawn_context(&mut run_req, &spawn_req);
 
@@ -342,7 +341,6 @@ impl Orchestrator {
             user_id,
             &cancel,
             max_iterations,
-            &spawn_req.agent_id,
         );
         apply_spawn_context(&mut req, spawn_req);
         run_and_collect(&self.runner, req, cancel, None, parent_stream_tx, None).await
@@ -379,7 +377,7 @@ impl Orchestrator {
                 plugins: Vec::new(),
                 tools: Vec::new(),
                 parent_stream_tx: None,
-                agent_id: String::new(),
+                handoff_depth: 0,
             };
             return self.spawn_internal(req).await;
         }
@@ -473,7 +471,6 @@ impl Orchestrator {
                         &user_id,
                         &cancel,
                         0,
-                        "",
                     );
 
                     let result = run_and_collect(&runner, req, cancel, None, None, None).await;
@@ -707,7 +704,6 @@ impl Orchestrator {
                 &req.user_id,
                 &cancel,
                 req.max_iterations,
-                &req.agent_id,
             );
             apply_spawn_context(&mut run_req, &req);
 
@@ -977,14 +973,12 @@ fn build_subagent_request(
     user_id: &str,
     cancel: &CancellationToken,
     max_iterations: usize,
-    agent_id: &str,
 ) -> RunRequest {
     RunRequest {
         session_key: session_key.to_string(),
         prompt: prompt.to_string(),
         model_override: model_override.to_string(),
         user_id: user_id.to_string(),
-        agent_id: agent_id.to_string(),
         skip_memory_extract: true,
         origin: tools::Origin::System,
         channel: "subagent".to_string(),
@@ -997,6 +991,9 @@ fn build_subagent_request(
 
 /// Apply SpawnRequest's skills/plugins/tools onto an already-built RunRequest.
 fn apply_spawn_context(run_req: &mut RunRequest, spawn_req: &SpawnRequest) {
+    // A sub-agent stays at the parent's hop depth — a spawn must not restart
+    // the coworker chain cap at zero.
+    run_req.handoff_depth = spawn_req.handoff_depth;
     if !spawn_req.skills.is_empty() {
         run_req.preload_skills = spawn_req.skills.clone();
     }

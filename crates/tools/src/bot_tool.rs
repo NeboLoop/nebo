@@ -787,7 +787,7 @@ impl AgentTool {
                     plugins,
                     tools,
                     parent_stream_tx: ctx.stream_tx.clone(),
-                    agent_id: String::new(),
+                    handoff_depth: ctx.handoff_depth,
                 };
 
                 match orch.spawn(req).await {
@@ -894,7 +894,7 @@ impl AgentTool {
                             plugins: task_plugins,
                             tools: task_tools,
                             parent_stream_tx: ctx.stream_tx.clone(),
-                            agent_id: String::new(),
+                            handoff_depth: ctx.handoff_depth,
                         }
                     })
                     .collect();
@@ -2108,8 +2108,9 @@ impl DynTool for AgentTool {
          - agent(resource: \"ask\", action: \"confirm\", text: \"Proceed with deletion?\")\n\
          - agent(resource: \"ask\", action: \"select\", text: \"Pick a color\", options: [\"red\", \"blue\"])\n\n\
          GUARDRAILS: When storing memory, use the exact phrasing the user used. Do not paraphrase.\n\n\
-         Registry (installed agent management + delegation):\n\
-         - agent(resource: \"registry\", action: \"delegate\", name: \"chief-of-staff\", prompt: \"Check my email\") — Delegate to a named agent\n\
+         Coworkers: work for a NAMED employee is a MESSAGE, never a task spawn — message(resource: \"coworker\", action: \"send\", to: \"receptionist\", text: \"...\"). \
+         Task spawns are anonymous extra hands for YOUR OWN work (type + skills); never pass an employee's name to one.\n\n\
+         Registry (installed agent management):\n\
          - agent(resource: \"registry\", action: \"list\") — List installed agents\n\
          - agent(resource: \"registry\", action: \"activate\", name: \"...\") — Activate an agent\n\
          - agent(resource: \"registry\", action: \"info\", name: \"...\") — Show agent details\n\

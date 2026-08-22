@@ -2454,6 +2454,7 @@ pub async fn chat_with_agent(
         mention_context: None,
         tool_scope: None, plan_mode: false,
         channel_ctx: None,
+        handoff_depth: 0,
     };
 
     crate::chat_dispatch::run_chat(&state, config).await;

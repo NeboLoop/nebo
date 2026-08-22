@@ -234,6 +234,9 @@ pub struct Registry {
     /// so owner alerts reach the frontend bell + desktop HUD. Filled LATE like
     /// `code_installer` (registration runs before `AppState`/hub exist).
     notify_fn: Arc<std::sync::RwLock<Option<crate::message_tool::NotifyFn>>>,
+    /// Coworker message rail (server-implemented dispatch of agent→agent
+    /// messages), shared with MessageTool. Filled LATE like `notify_fn`.
+    coworker_rail: crate::coworker::CoworkerRailCell,
     resource_permits: ResourcePermits,
 }
 
@@ -253,6 +256,7 @@ impl Registry {
             browser_manager: std::sync::RwLock::new(None),
             code_installer: Arc::new(std::sync::RwLock::new(None)),
             notify_fn: Arc::new(std::sync::RwLock::new(None)),
+            coworker_rail: crate::coworker::new_rail_cell(),
             resource_permits: ResourcePermits::new(),
         }
     }
@@ -296,6 +300,12 @@ impl Registry {
     /// alerts to the frontend (bell + desktop HUD).
     pub fn set_notify_fn(&self, f: crate::message_tool::NotifyFn) {
         *self.notify_fn.write().unwrap() = Some(f);
+    }
+
+    /// Set the coworker message rail. Called LATE by the server once `AppState`
+    /// exists; MessageTool shares the cell and reads it at execution time.
+    pub fn set_coworker_rail(&self, rail: Arc<dyn crate::coworker::CoworkerRail>) {
+        *self.coworker_rail.write().unwrap() = Some(rail);
     }
 
     /// Set the agent loader for PersonaTool filesystem access.
@@ -882,13 +892,9 @@ impl Registry {
                         data.join("user").join("agents"),
                     ))
                 });
-            let persona = crate::agent_tool::PersonaTool::new(
-                store.clone(),
-                agent_reg,
-                agent_loader,
-                orchestrator.clone(),
-            )
-            .with_code_installer(self.code_installer.clone());
+            let persona =
+                crate::agent_tool::PersonaTool::new(store.clone(), agent_reg, agent_loader)
+                    .with_code_installer(self.code_installer.clone());
             agent_tool = agent_tool.with_persona(persona);
         }
 
@@ -942,10 +948,11 @@ impl Registry {
             self.register_deferred(Box::new(execute_tool)).await;
         }
 
-        // Message tool (owner notifications) — always registered (core)
+        // Message tool (owner notifications + coworker messages) — always registered (core)
         self.register(Box::new(crate::message_tool::MessageTool::new(
             store.clone(),
             self.notify_fn.clone(),
+            self.coworker_rail.clone(),
         )))
         .await;
 

@@ -288,6 +288,7 @@ async fn handle_app_ws_message(state: &AppState, agent_id: &str, text: &str) {
                     tool_scope: None,
                     plan_mode: false,
                     channel_ctx: None,
+                    handoff_depth: 0,
                 };
 
                 run_chat(&state_clone, config).await;
@@ -912,6 +913,7 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState) {
                                             mention_context: None,
                                             tool_scope: None, plan_mode: false,
                                             channel_ctx: None,
+                                            handoff_depth: 0,
                                         };
 
                                         run_chat(&state_clone, config).await;
@@ -1667,15 +1669,29 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value) {
             tool_scope: if scope.is_empty() { None } else { Some(scope) },
             plan_mode: false,
             channel_ctx: None,
+            handoff_depth: 0,
         };
         run_chat(state, config).await;
     } else {
         // Route only to the mentioned agent(s). Each runs in its own session and
-        // broadcasts back into this thread (origin_agent_id).
+        // broadcasts back into this thread (origin_agent_id). The originating
+        // thread's matter (context-isolated origin only) rides along so the
+        // mentioned agent's session keys per-matter instead of pooling every
+        // matter into its default context (isolation audit 2026-08-22, leak #6).
+        let origin_matter = crate::coworker::origin_matter_context(state, &agent_id, &session_key);
         let state = state.clone();
         tokio::spawn(async move {
             for mid in mentioned {
-                fork_mention_chat(&state, &mid, &prompt, &user_id, &channel, &agent_id).await;
+                fork_mention_chat(
+                    &state,
+                    &mid,
+                    &prompt,
+                    &user_id,
+                    &channel,
+                    &agent_id,
+                    origin_matter.as_deref(),
+                )
+                .await;
             }
         });
     }
@@ -1722,49 +1738,25 @@ async fn fork_mention_chat(
     user_id: &str,
     channel: &str,
     origin_agent_id: &str,
+    origin_matter: Option<&str>,
 ) {
     use crate::chat_dispatch::{ChatConfig, run_chat};
 
-    // Auto-activate the mentioned agent if needed
-    let needs_activation = !state.agent_registry.read().await.contains_key(mentioned_id);
-    if needs_activation {
-        match state.store.get_agent(mentioned_id) {
-            Ok(Some(agent)) => {
-                let config = if !agent.frontmatter.is_empty() {
-                    napp::agent::parse_agent_config(&agent.frontmatter).ok()
-                } else {
-                    None
-                };
-                let active = tools::ActiveAgent {
-                    agent_id: agent.id.clone(),
-                    name: agent.name.clone(),
-                    agent_md: agent.agent_md.clone(),
-                    config,
-                    channel_id: None,
-                    degraded: None,
-                    soul: agent.soul.clone(),
-                    rules: agent.rules.clone(),
-                };
-                state
-                    .agent_registry
-                    .write()
-                    .await
-                    .insert(agent.id.clone(), active);
-                state.store.set_agent_enabled(mentioned_id, true).ok();
-                state
-                    .agent_workers
-                    .start_agent(mentioned_id, &agent.name, None)
-                    .await;
-                info!(agent_id = %mentioned_id, "auto-activated mentioned agent for @mention");
-            }
-            _ => {
-                warn!(agent_id = %mentioned_id, "mentioned agent not found, skipping");
-                return;
-            }
-        }
+    // Auto-activate the mentioned agent if needed (the ONE activation routine,
+    // shared with the coworker rail).
+    if let Err(e) = crate::coworker::ensure_agent_active(state, mentioned_id).await {
+        warn!(agent_id = %mentioned_id, error = %e, "mentioned agent not found, skipping");
+        return;
     }
 
-    let session_key = agent::keyparser::build_agent_session_key(mentioned_id, channel);
+    // The originating thread's matter becomes the deliberate 4th key segment
+    // (`agent:{id}:{channel}:{ctx}`), so a context-isolated mentioned agent
+    // scopes this exchange per-matter via the runner's canonical derivation.
+    let base_key = agent::keyparser::build_agent_session_key(mentioned_id, channel);
+    let session_key = match origin_matter {
+        Some(m) if !channel.is_empty() => format!("{}:{}", base_key, m),
+        _ => base_key,
+    };
     let entity_config = crate::entity_config::resolve_for_chat(&state.store, "agent", mentioned_id);
 
     let contextualized = format!(
@@ -1791,6 +1783,7 @@ async fn fork_mention_chat(
         mention_context: None,
         tool_scope: None, plan_mode: false,
         channel_ctx: None,
+        handoff_depth: 0,
     };
 
     run_chat(state, chat_config).await;

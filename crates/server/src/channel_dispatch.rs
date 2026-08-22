@@ -100,6 +100,7 @@ impl agent::ChannelDispatcher for ChannelDispatchImpl {
                 tool_scope: None,
                 plan_mode: false,
                 channel_ctx: Some(channel_ctx),
+                handoff_depth: 0,
             };
             let channel = channel_kind.as_str();
 

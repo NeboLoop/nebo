@@ -6,6 +6,7 @@ pub mod app_tool;
 pub mod bot_tool;
 pub mod capabilities;
 pub mod channel_bridge;
+pub mod coworker;
 pub mod deep_research;
 pub mod desktop_daemon;
 pub mod desktop_session;
@@ -98,6 +99,7 @@ pub use channel_bridge::{
     ChannelBridgeHandle, ChannelBridgeRegistry, OpResult, PendingOps, channel_bridge_key,
     channel_bridges, new_channel_bridge_registry, new_pending_ops, set_channel_bridges,
 };
+pub use coworker::{CoworkerDelivery, CoworkerMessage, CoworkerRail, CoworkerRailCell};
 pub use domain::*;
 pub use emit_tool::EmitTool;
 pub use event_tool::EventTool;

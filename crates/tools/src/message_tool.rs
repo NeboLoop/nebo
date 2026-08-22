@@ -12,17 +12,28 @@ use db::Store;
 /// pattern the agent worker uses (`agent::agent_worker::NotifyFn`).
 pub type NotifyFn = Arc<dyn Fn(&str, serde_json::Value) + Send + Sync>;
 
-/// MessageTool handles outbound delivery to the owner (notifications, companion chat, SMS, TTS).
+/// MessageTool handles outbound delivery to the owner (notifications, companion chat, SMS, TTS)
+/// and to coworkers (named AI employees on this bot).
 pub struct MessageTool {
     store: Arc<Store>,
     /// Shared cell (NOT a snapshot): the server late-wires the broadcaster after the
     /// hub exists, so we read it at execution time — same pattern as `code_installer`.
     notify_fn: Arc<std::sync::RwLock<Option<NotifyFn>>>,
+    /// Coworker message rail (server-implemented). Late-wired like `notify_fn`.
+    coworker_rail: crate::coworker::CoworkerRailCell,
 }
 
 impl MessageTool {
-    pub fn new(store: Arc<Store>, notify_fn: Arc<std::sync::RwLock<Option<NotifyFn>>>) -> Self {
-        Self { store, notify_fn }
+    pub fn new(
+        store: Arc<Store>,
+        notify_fn: Arc<std::sync::RwLock<Option<NotifyFn>>>,
+        coworker_rail: crate::coworker::CoworkerRailCell,
+    ) -> Self {
+        Self {
+            store,
+            notify_fn,
+            coworker_rail,
+        }
     }
 
     fn infer_resource(&self, action: &str) -> &str {
@@ -33,6 +44,62 @@ impl MessageTool {
             _ => "",
         }
     }
+
+    async fn handle_coworker(&self, ctx: &ToolContext, input: &serde_json::Value) -> ToolResult {
+        let to = input["to"].as_str().unwrap_or("");
+        let text = input["text"].as_str().unwrap_or("");
+        if to.is_empty() {
+            return ToolResult::error(errors::missing_param(
+                "send",
+                "to",
+                "message(resource: \"coworker\", action: \"send\", to: \"receptionist\", text: \"...\")",
+            ));
+        }
+        if text.is_empty() {
+            return ToolResult::error(errors::missing_param(
+                "send",
+                "text",
+                "message(resource: \"coworker\", action: \"send\", to: \"receptionist\", text: \"...\")",
+            ));
+        }
+
+        let rail = self.coworker_rail.read().unwrap().clone();
+        let Some(rail) = rail else {
+            return ToolResult::error(
+                "Coworker messaging is not available in this environment. Do not retry.",
+            );
+        };
+
+        let msg = crate::coworker::CoworkerMessage {
+            from_agent_id: crate::plugin_tool::agent_id_from_session_key(&ctx.session_key)
+                .unwrap_or_default(),
+            sender_session_key: ctx.session_key.clone(),
+            to: to.to_string(),
+            text: text.to_string(),
+            // Verbatim resolved scope — the rail derives the matter from it;
+            // the tool never re-derives scopes (the canonical derivation lives
+            // in agent::memory::resolve_memory_scope and the runner).
+            requester_scope: ctx.user_id.clone(),
+            handoff_depth: ctx.handoff_depth,
+            wait: input["wait"].as_bool().unwrap_or(true),
+        };
+
+        match rail.send(msg).await {
+            Ok(delivery) => match delivery.reply {
+                Some(reply) => ToolResult::ok(format!(
+                    "Message delivered to {}. Their reply:\n\n{}",
+                    delivery.to_name, reply
+                )),
+                None => ToolResult::ok(format!(
+                    "Message delivered to {} — they are handling it in their own session; \
+                     their reply will be added to your context when it arrives. \
+                     Report this as \"asked {} — waiting\", never as done.",
+                    delivery.to_name, delivery.to_name
+                )),
+            },
+            Err(e) => ToolResult::error(e),
+        }
+    }
 }
 
 impl DynTool for MessageTool {
@@ -41,8 +108,14 @@ impl DynTool for MessageTool {
     }
 
     fn description(&self) -> String {
-        "Outbound delivery — send notifications, alerts, and SMS to the owner.\n\
-         USE THIS when: user wants to send a text, notification, or alert to someone outside NeboAI.\n\n\
+        "Outbound delivery — message coworkers (named AI employees), and send notifications, alerts, and SMS to the owner.\n\
+         USE THIS when: handing work to a named coworker, or when the user wants to send a text, notification, or alert to someone outside NeboAI.\n\n\
+         Coworkers (named employees on this bot):\n\
+         - message(resource: \"coworker\", action: \"send\", to: \"receptionist\", text: \"Can you confirm tomorrow's 2pm?\") — Message a coworker and wait for their reply\n\
+         - message(resource: \"coworker\", action: \"send\", to: \"receptionist\", text: \"FYI: the Smith file moved.\", wait: false) — Fire-and-forget (delivery is acknowledged; their reply arrives later)\n\
+         The message is delivered into the coworker's own session — their persona, their memory, their connected accounts, their receipt — and the conversation is visible to the owner on both sides. \
+         Work for a coworker? Message them by name. Extra hands for your own work? Spawn a task: agent(resource: \"task\", action: \"spawn\", ...).\n\
+         Never claim a coworker's work is done — report \"asked X — waiting\" or relay their actual reply.\n\n\
          - message(resource: \"owner\", action: \"notify\", text: \"Task complete!\") — Notify the owner via companion chat\n\
          - message(resource: \"sms\", action: \"send\", phone: \"+15551234567\", text: \"Hello!\") — Send SMS (macOS)\n\
          - message(resource: \"sms\", action: \"conversations\") — List SMS conversations\n\
@@ -63,7 +136,7 @@ impl DynTool for MessageTool {
                 "resource": {
                     "type": "string",
                     "description": "REQUIRED. The messaging resource category — determines which actions are available.",
-                    "enum": ["owner", "notify", "sms"]
+                    "enum": ["coworker", "owner", "notify", "sms"]
                 },
                 "action": {
                     "type": "string",
@@ -71,6 +144,8 @@ impl DynTool for MessageTool {
                     "enum": ["notify", "send", "alert", "dnd_status", "conversations", "read", "search"]
                 },
                 "text": { "type": "string", "description": "Message text" },
+                "to": { "type": "string", "description": "Coworker to message — an installed employee's name (e.g. \"receptionist\") or id" },
+                "wait": { "type": "boolean", "description": "Coworker send: wait for their reply (default true). false = fire-and-forget; delivery is still acknowledged.", "default": true },
                 "title": { "type": "string", "description": "Notification or alert title" },
                 "phone": { "type": "string", "description": "Phone number or contact for SMS" },
                 "query": { "type": "string", "description": "Search query for SMS search" },
@@ -102,7 +177,7 @@ impl DynTool for MessageTool {
                 let corrected = crate::domain::auto_correct_resource(
                     &domain_input,
                     &mut input,
-                    &["owner", "sms", "notify"],
+                    &["coworker", "owner", "sms", "notify"],
                 );
                 if corrected.is_empty() {
                     self.infer_resource(&domain_input.action).to_string()
@@ -112,6 +187,13 @@ impl DynTool for MessageTool {
             };
 
             match resource.as_str() {
+                "coworker" => match domain_input.action.as_str() {
+                    "send" => self.handle_coworker(ctx, &input).await,
+                    other => ToolResult::error(format!(
+                        "Unknown action '{}' for coworker resource. Available: send",
+                        other
+                    )),
+                },
                 "owner" => {
                     let text = input["text"].as_str().unwrap_or("");
                     if text.is_empty() {
@@ -150,7 +232,7 @@ impl DynTool for MessageTool {
                 }
                 "sms" => handle_sms(&domain_input.action, &input).await,
                 other => ToolResult::error(format!(
-                    "Resource {:?} not available. Available: owner, notify, sms",
+                    "Resource {:?} not available. Available: coworker, owner, notify, sms",
                     other
                 )),
             }

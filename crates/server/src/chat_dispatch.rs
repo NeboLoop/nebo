@@ -247,6 +247,10 @@ pub struct ChatConfig {
     /// inbound channel message. Propagated to `ToolContext.channel` so plugin
     /// uploads target the right destination. None for web UI / scheduled runs.
     pub channel_ctx: Option<tools::ChannelContext>,
+    /// Agent-to-agent hop count for this run (0 = human-initiated). Coworker
+    /// messages set it so enlistment chains and A↔B cycles stay bounded; runs
+    /// with a `comm_reply` carry the depth there instead (it wins when set).
+    pub handoff_depth: u8,
 }
 
 /// Configuration for sending a reply back through a communication channel.
@@ -410,6 +414,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
     let channel = config.channel;
     let origin = config.origin;
     let comm_reply = config.comm_reply;
+    let config_handoff_depth = config.handoff_depth;
     let entity_cfg = config.entity_config;
     let images = config.images;
     let origin_agent_id = config.origin_agent_id;
@@ -509,7 +514,10 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
             plan_mode,
             full_access,
             approval_relay: comm_reply.as_ref().map(|c| c.approval_relay).unwrap_or(false),
-            handoff_depth: comm_reply.as_ref().map(|c| c.handoff_depth).unwrap_or(0),
+            handoff_depth: comm_reply
+                .as_ref()
+                .map(|c| c.handoff_depth)
+                .unwrap_or(config_handoff_depth),
             ..Default::default()
         };
 
@@ -1616,6 +1624,7 @@ fn maybe_auto_continue(
             // Never re-trigger plan approval on an auto-continuation.
             plan_mode: false,
             channel_ctx: None,
+            handoff_depth: 0,
         };
         run_chat(&state, config).await;
     });
@@ -1685,6 +1694,7 @@ pub async fn run_chat_events(
         tool_scope: config.tool_scope,
         channel_ctx: config.channel_ctx,
         full_access,
+        handoff_depth: config.handoff_depth,
         ..Default::default()
     };
 
