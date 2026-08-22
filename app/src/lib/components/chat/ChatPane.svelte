@@ -3,7 +3,7 @@
   import ChatComposer from './ChatComposer.svelte';
   import WorkViewer from './WorkViewer.svelte';
   import DesktopView from './DesktopView.svelte';
-  import { teachStart, teachStop } from '$lib/api/desktop';
+  import { teachStart, teachStop } from '$lib/api/nebo';
   import ShareArtifactModal from './ShareArtifactModal.svelte';
   import AskWidget from './AskWidget.svelte';
   import type { AskWidgetDef } from './AskWidget.svelte';
@@ -72,7 +72,7 @@
 
   type AgentInfo = { id: string; name: string; color: string; initial: string; role: string; status: string; isApp?: boolean };
 
-  let { messages = [], agentName = 'Agent', agentId = '', threadId = '', sessionId = '', headerTitle = '', headerRight = '', placeholder = '', emptyIcon = '', emptyTitle = '', emptyDesc = '', allAgents = [], activityStatus = '', tokenUsage = null, quotaWarning = '', chatError = '', onsend, onstop, onedit, onredo, onasksubmit, onrestoreversion, ondismisswarning, ondismisserror, onloadmore, isLoading = false, isLoadingMore = false, hasMore = false, allowAttachments = true }: {
+  let { messages = [], agentName = 'Agent', agentId = '', threadId = '', sessionId = '', headerTitle = '', headerRight = '', placeholder = '', emptyIcon = '', emptyTitle = '', emptyDesc = '', allAgents = [], onteachsent, activityStatus = '', tokenUsage = null, quotaWarning = '', chatError = '', onsend, onstop, onedit, onredo, onasksubmit, onrestoreversion, ondismisswarning, ondismisserror, onloadmore, isLoading = false, isLoadingMore = false, hasMore = false, allowAttachments = true }: {
     messages?: Message[];
     agentName?: string;
     agentId?: string;
@@ -90,6 +90,7 @@
     quotaWarning?: string;
     chatError?: string;
     onsend?: (text: string, files: { file: File; id: string; previewUrl: string | null; isImage: boolean }[]) => void;
+    onteachsent?: (message: string, sessionKey: string) => void;
     onstop?: () => void;
     onedit?: (msgIndex: number, newContent: string) => void;
     onredo?: (msgIndex: number) => void;
@@ -138,17 +139,15 @@
     if (teachTimer) { clearInterval(teachTimer); teachTimer = null; }
     teachActive = false;
     try {
-      const res = await teachStop();
-      handleSend(
-        `I just demonstrated a task for you on your computer (teach session ${res.sessionId}). ` +
-        `The recording is in ${res.dir}. Start with timeline.md — the reconstructed click-and-keystroke ` +
-        `timeline of exactly what I did — then confirm the visual context by viewing 5-6 spread keyframes ` +
-        `from frames/ (there are ${res.keyframes}; do NOT read them all, and do not use sub-agents). ` +
-        `Then save it as a learned skill with the skill tool — name it after the class of task, write out the ` +
-        `steps you'd follow to repeat it on your computer, and note which inputs varied. Reply with what you ` +
-        `learned, then ask me whether you should run this on a schedule or only when I ask.`,
-        []
-      );
+      // The display layer only reports the event (who + where). The backend
+      // owns the visible message AND the steering briefing (mention_context
+      // system-reminder) and dispatches the learning run itself; it returns
+      // the persisted message text so we can echo it without a second copy.
+      const res = await teachStop({
+        agentId,
+        sessionKey: sessionId || (threadId ? `agent:${agentId}:thread:${threadId}` : ''),
+      });
+      onteachsent?.(res.message ?? '', res.sessionKey ?? '');
     } catch (e) {
       teachError = e instanceof Error ? e.message : String(e);
     }

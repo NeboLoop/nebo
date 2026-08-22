@@ -407,6 +407,16 @@
   agentName={agent?.name ?? $t('common.agent')}
   agentId={agentId}
   {threadId}
+  onteachsent={(message) => {
+    if (!message) return;
+    chat.setMessages([...chat.messages, {
+      id: 'msg-' + Date.now(),
+      type: 'user',
+      content: message,
+      time: formatTime(Date.now()),
+    }]);
+    chat.isLoading = true;
+  }}
   headerTitle={thread?.name ?? $t('chat.thread')}
   headerRight={$t('chat.work')}
   allAgents={chat.allAgents}
