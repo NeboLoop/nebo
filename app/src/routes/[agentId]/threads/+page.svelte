@@ -85,6 +85,8 @@
   headerTitle={$t('chat.newThread')}
   headerRight={$t('chat.work')}
   onopenruns={ctx.openRuns}
+  onsettings={ctx.openSettings}
+  isolated={ctx.agent?.isolated ?? false}
 
   placeholder={$t('chat.startNewThreadWith', { values: { name: agent?.name ?? '' } })}
   emptyTitle={greeting}

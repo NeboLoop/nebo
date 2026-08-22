@@ -33,9 +33,18 @@
   // roster or ONE employee's conversations, with a way back.
   let drilledAgentId = $state<string | null>(null);
 
-  /** Row click goes to the employee. The chevron drills into their list. */
+  /**
+   * What a row click does is decided by memory isolation, because that is what
+   * separate conversations MEAN.
+   *
+   * Isolation on — each conversation keeps its own sealed memory, so the list
+   * is a list of matters and you pick one. Isolation off — one memory across
+   * every chat, so there is one continuous conversation and we open it.
+   */
   function openAgentRow(id: string) {
+    const a = allAgents.find((x) => x.id === id);
     selectAgent(id);
+    if (a?.isolated) drilledAgentId = id;
   }
 
   // Shelf surfaces open over the workspace rather than navigating away from
@@ -142,6 +151,17 @@
           isApp: a.isApp ?? false,
           loopExposed: a.loopExposed ?? false,
           voice: a.voice || '',
+          // Isolation is what separate conversations MEAN: with it off an
+          // employee has one memory across every chat, so several chats would
+          // only look separate. Read from the frontmatter the roster already
+          // carries — no extra request.
+          isolated: (() => {
+            try {
+              return JSON.parse(a.frontmatter || '{}')?.memory?.context_isolated === true;
+            } catch {
+              return false;
+            }
+          })(),
         }));
         agentStatuses = Object.fromEntries(allAgents.map(a => [a.id, a.status]));
       }
@@ -645,6 +665,7 @@
     get agentStatuses() { return agentStatuses; },
     openWorkflow,
     openRuns,
+    openSettings,
     askEmployee,
     openCanvas,
     triggerSummary,
@@ -814,6 +835,15 @@
         <span class="font-medium truncate">{drilledAgent.name}</span>
       </button>
       <div class="h-px bg-base-content/8 mx-3 mb-1"></div>
+      <!-- Isolation means each conversation is its own sealed matter, so
+           starting a new one has to be reachable from the list of them. -->
+      <a
+        href={`/${drilledAgent.id}/threads`}
+        class="flex items-center gap-2 py-2 px-2.5 mx-1.5 mb-1 rounded-box border border-dashed border-base-300 text-primary hover:bg-base-100/70 transition-colors"
+      >
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><line x1="8" y1="3" x2="8" y2="13"/><line x1="3" y1="8" x2="13" y2="8"/></svg>
+        <span class="text-sm font-medium">{$t('agent.newChat')}</span>
+      </a>
       {#each apiThreads[drilledAgent.id] ?? [] as c (c.id)}
         <a
           href={`/${drilledAgent.id}/threads/${c.id}`}
@@ -867,25 +897,6 @@
               <div class="text-xs text-base-content/60 truncate">{latest?.preview || a.role}</div>
             </div>
           </button>
-          <button
-            class="w-5 h-5 rounded flex items-center justify-center shrink-0 bg-transparent border-none cursor-pointer text-base-content/40 hover:text-base-content hover:bg-base-200 opacity-0 group-hover/agent:opacity-100 focus:opacity-100 transition-opacity"
-            onclick={(e) => { e.stopPropagation(); selectAgent(a.id); openSettings(); }}
-            title={$t('settings.title')}
-          >
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-          </button>
-          <!-- Only when there is more than one conversation to choose between.
-               With memory isolation off an employee has one continuous thread,
-               so there is nothing to drill into. -->
-          {#if chats.length > 1}
-            <button
-              class="w-5 h-5 rounded flex items-center justify-center shrink-0 bg-transparent border-none cursor-pointer text-base-content/40 hover:text-base-content hover:bg-base-200"
-              onclick={(e) => { e.stopPropagation(); drilledAgentId = a.id; }}
-              title={$t('components.agentTabBar.chats')}
-            >
-              <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 3 11 8 6 13"/></svg>
-            </button>
-          {/if}
         </div>
       {/each}
     {/if}

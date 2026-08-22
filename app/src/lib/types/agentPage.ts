@@ -100,6 +100,8 @@ export interface AgentRun {
 
 /** Local agent display object (derived from API Agent). */
 export interface AgentDisplay {
+	/** memory.context_isolated — each conversation keeps its own sealed memory. */
+	isolated?: boolean
 	id: string
 	name: string
 	role: string
@@ -140,6 +142,8 @@ export interface AgentPageContext {
 	openWorkflow: (name: string, wf: WorkflowConfig) => void
 	/** Open the runs modal. */
 	openRuns: () => void
+	/** Open this employee's settings modal. */
+	openSettings: () => void
 	/** Drop a starter prompt into this employee's composer. */
 	askEmployee: (prompt: string) => void
 	openCanvas: () => void

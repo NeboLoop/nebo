@@ -417,6 +417,8 @@
   headerTitle={thread?.name ?? $t('chat.thread')}
   headerRight={$t('chat.work')}
   onopenruns={ctx.openRuns}
+  onsettings={ctx.openSettings}
+  isolated={ctx.agent?.isolated ?? false}
 
   allAgents={chat.allAgents}
   tokenUsage={chat.tokenUsage}

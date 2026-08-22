@@ -74,7 +74,7 @@
 
   type AgentInfo = { id: string; name: string; color: string; initial: string; role: string; status: string; isApp?: boolean };
 
-  let { messages = [], agentName = 'Agent', agentId = '', threadId = '', sessionId = '', headerTitle = '', headerRight = '', placeholder = '', emptyIcon = '', emptyTitle = '', emptyDesc = '', allAgents = [], onteachsent, activityStatus = '', tokenUsage = null, quotaWarning = '', chatError = '', onsend, onstop, onedit, onredo, onasksubmit, onrestoreversion, ondismisswarning, ondismisserror, onloadmore, isLoading = false, isLoadingMore = false, hasMore = false, allowAttachments = true, flowsPane, onopenruns }: {
+  let { messages = [], agentName = 'Agent', agentId = '', threadId = '', sessionId = '', headerTitle = '', headerRight = '', placeholder = '', emptyIcon = '', emptyTitle = '', emptyDesc = '', allAgents = [], onteachsent, activityStatus = '', tokenUsage = null, quotaWarning = '', chatError = '', onsend, onstop, onedit, onredo, onasksubmit, onrestoreversion, ondismisswarning, ondismisserror, onloadmore, isLoading = false, isLoadingMore = false, hasMore = false, allowAttachments = true, flowsPane, onopenruns, onsettings, isolated = false }: {
     messages?: Message[];
     /** Employee-scoped views for the work pane. Omitted on chats with no
      *  employee behind them (channel setup help, the embed), and the matching
@@ -82,6 +82,9 @@
     flowsPane?: Snippet;
     /** Runs open as a modal over the workspace, not in the pane. */
     onopenruns?: () => void;
+    onsettings?: () => void;
+    /** memory.context_isolated — this employee's conversations are sealed. */
+    isolated?: boolean;
     agentName?: string;
     agentId?: string;
     threadId?: string;
@@ -997,7 +1000,23 @@
   <!-- Header -->
   {#if headerTitle}
     <div class="h-11 px-[18px] border-b border-base-content/10 flex items-center gap-2 shrink-0">
-      <span class="text-sm font-semibold truncate min-w-0">{headerTitle}</span>
+      <span class="flex items-baseline gap-2 min-w-0">
+        <span class="text-sm font-semibold truncate">{agentName}</span>
+        {#if isolated}
+          <!-- Separate conversations only mean something when memory is sealed
+               between them; say so where the conversations are. -->
+          <span
+            class="inline-flex items-center gap-1 text-[10px] uppercase tracking-wide px-1.5 py-px rounded bg-warning/15 text-warning shrink-0"
+            title={$t('agentIsolation.isolatedHint')}
+          >
+            <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+            {$t('agentIsolation.isolated')}
+          </span>
+        {/if}
+        {#if headerTitle && headerTitle !== agentName}
+          <span class="text-sm text-base-content/50 truncate">{headerTitle}</span>
+        {/if}
+      </span>
       <div class="ml-auto flex items-center gap-0.5 shrink-0">
         {#snippet headerIcon(active: boolean, label: string, onclick: () => void, icon: Snippet)}
           <button
@@ -1019,6 +1038,10 @@
         {#snippet runsIcon()}
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"/><polyline points="3 3 3 8 8 8"/><polyline points="12 8 12 12 15 14"/></svg>
         {/snippet}
+        {#snippet settingsIcon()}
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        {/snippet}
+
         {#snippet workIcon()}
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/><path d="M14 9l3 3-3 3"/></svg>
         {/snippet}
@@ -1032,6 +1055,9 @@
         {/if}
         {#if headerRight}
           {@render headerIcon(creationsOpen && paneView === 'work', $t('chat.work'), () => togglePane('work'), workIcon)}
+        {/if}
+        {#if onsettings}
+          {@render headerIcon(false, $t('settings.title'), onsettings, settingsIcon)}
         {/if}
       </div>
     </div>
