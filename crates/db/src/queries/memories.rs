@@ -396,6 +396,46 @@ impl Store {
             .map_err(|e| NeboError::Database(e.to_string()))
     }
 
+    /// Text search scoped to one agent's memories — same `:agent:<id>` /
+    /// `:ctx:` suffix semantics as `list_memories_for_agent`, so the
+    /// per-agent Memory view's search can never surface another agent's
+    /// scopes (isolation audit 2026-08-22).
+    pub fn search_memories_for_agent(
+        &self,
+        agent_id: &str,
+        query: &str,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<Memory>, NeboError> {
+        let conn = self.conn()?;
+        const COLS: &str = "id, namespace, key, value, tags, metadata, created_at, updated_at, accessed_at, access_count, user_id";
+        let pattern = format!("%{query}%");
+        let rows = if agent_id.is_empty() {
+            let sql = format!(
+                "SELECT {COLS} FROM memories WHERE user_id NOT LIKE '%:agent:%' \
+                 AND (namespace LIKE ?1 OR key LIKE ?1 OR value LIKE ?1 OR tags LIKE ?1) \
+                 ORDER BY access_count DESC LIMIT ?2 OFFSET ?3"
+            );
+            let mut stmt = conn.prepare(&sql).map_err(|e| NeboError::Database(e.to_string()))?;
+            stmt.query_map(params![pattern, limit, offset], row_to_memory)
+                .map_err(|e| NeboError::Database(e.to_string()))?
+                .collect::<Result<Vec<_>, _>>()
+        } else {
+            let exact = format!("%:agent:{}", agent_id);
+            let ctx = format!("%:agent:{}:ctx:%", agent_id);
+            let sql = format!(
+                "SELECT {COLS} FROM memories WHERE (user_id LIKE ?1 OR user_id LIKE ?2) \
+                 AND (namespace LIKE ?3 OR key LIKE ?3 OR value LIKE ?3 OR tags LIKE ?3) \
+                 ORDER BY access_count DESC LIMIT ?4 OFFSET ?5"
+            );
+            let mut stmt = conn.prepare(&sql).map_err(|e| NeboError::Database(e.to_string()))?;
+            stmt.query_map(params![exact, ctx, pattern, limit, offset], row_to_memory)
+                .map_err(|e| NeboError::Database(e.to_string()))?
+                .collect::<Result<Vec<_>, _>>()
+        };
+        rows.map_err(|e| NeboError::Database(e.to_string()))
+    }
+
     pub fn search_memories_by_user(
         &self,
         user_id: &str,

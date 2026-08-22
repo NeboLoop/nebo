@@ -1112,17 +1112,24 @@ impl Runner {
         let preactivate_tools = req.preactivate_tools.clone();
         let channel_ctx = req.channel_ctx.clone();
 
-        // Set MCP context so CLI providers can access tools with the right session info
+        // Set MCP context so CLI providers can access tools with the right session info.
+        // user_id is NOT stamped here: the raw request user_id must never reach
+        // memory (see the memory-owner derivation in run_loop). run_loop stamps
+        // the RESOLVED memory scope once it exists; until then the context is
+        // fail-closed so an external /mcp call between runs can't write memory
+        // under a stale or caller-chosen scope.
         if let Some(ref mcp_ctx) = self.mcp_context {
             let mut ctx = mcp_ctx.lock().await;
             ctx.session_key = session_key.clone();
             ctx.session_id = session_id.clone();
             ctx.origin = req.origin;
-            ctx.user_id = req.user_id.clone();
+            ctx.user_id = String::new();
+            ctx.memory_writes_disabled = true;
             // Sub-agents spawned from this run inherit its model unless
             // explicitly overridden.
             ctx.model_preference = (!model_override.is_empty()).then(|| model_override.clone());
         }
+        let mcp_context = self.mcp_context.clone();
 
         tokio::spawn(async move {
             // Sub-agent runs close their own browser tab/page when the run ends
@@ -1211,6 +1218,7 @@ impl Runner {
                         None, // forks carry no mention context
                         None, // command forks are not review forks
                         req.tool_allowlist.as_ref(),
+                        mcp_context.as_ref(),
                     )
                     .await;
 
@@ -1299,6 +1307,7 @@ impl Runner {
                 mention_context.as_deref(),
                 None, // top-level runs are never review forks
                 req.tool_allowlist.as_ref(),
+                mcp_context.as_ref(),
             )
             .await;
 
@@ -1478,6 +1487,7 @@ impl Runner {
                             None,
                             Some(rfctx),
                             None, // the review fork's whitelist rides ReviewForkCtx
+                            None, // review forks never serve CLI-provider tools
                         )
                         .await;
                         drop(sub_tx);
@@ -1635,6 +1645,7 @@ async fn run_loop(
     mention_context: Option<&str>,
     review_fork: Option<crate::review_fork::ReviewForkCtx>,
     tool_allowlist: Option<&std::collections::HashSet<String>>,
+    mcp_context: Option<&Arc<tokio::sync::Mutex<ToolContext>>>,
 ) -> Result<(), String> {
     let mut state = RunState::new();
     // Stream reminders are EPHEMERAL: queued here, injected into the NEXT
@@ -1763,21 +1774,59 @@ async fn run_loop(
         None
     };
 
-    // Resolve memory config from agent entry
+    // Resolve memory config from agent entry. Registry entries can carry
+    // `config: None` (agent duplication, a frontmatter parse failure at
+    // activation) — that must NOT default to "not isolated", or a copied
+    // isolated employee silently runs unisolated (isolation audit 2026-08-22,
+    // fail-open class). Fail closed: re-read the store row; empty frontmatter
+    // is the legitimate default, unparseable frontmatter counts as isolated.
     let memory_config = active_agent_entry
         .as_ref()
         .and_then(|e| e.config.as_ref())
-        .map(|c| &c.memory)
-        .cloned()
-        .unwrap_or_default();
+        .map(|c| c.memory.clone())
+        .unwrap_or_else(|| {
+            if agent_id.is_empty() {
+                return Default::default();
+            }
+            match store.get_agent(agent_id) {
+                Ok(Some(a)) if a.frontmatter.is_empty() => Default::default(),
+                Ok(Some(a)) => match napp::agent::parse_agent_config(&a.frontmatter) {
+                    Ok(c) => c.memory,
+                    Err(e) => {
+                        warn!(
+                            agent_id,
+                            error = %e,
+                            "agent config unparseable — treating as context_isolated (fail closed)"
+                        );
+                        napp::agent::MemoryConfig {
+                            context_isolated: true,
+                            ..Default::default()
+                        }
+                    }
+                },
+                // No row (deleted agent): nothing to isolate. Read error:
+                // fail closed like an unparseable config.
+                Ok(None) => Default::default(),
+                Err(_) => napp::agent::MemoryConfig {
+                    context_isolated: true,
+                    ..Default::default()
+                },
+            }
+        });
 
     // Declared memory topics for this scope (agent.json memory.topics) —
     // threaded into extraction, the flush, and the memory tool's layer map.
     let memory_topics = memory_config.topics.clone();
 
-    // Explicit isolation context from the session key, if the channel set one
-    // ("agent:{agent_id}:{channel}:{context_id}").
-    let explicit_ctx = crate::memory::session_key_context(session_id);
+    // Explicit isolation context from the session KEY, if the channel set one
+    // ("agent:{agent_id}:{channel}:{context_id}"). `session_id` here is the
+    // session ROW UUID — it never matches the key grammar, so the key must be
+    // resolved first or the explicit-ctx design is dead code and every run
+    // falls through to the chat derivation below.
+    let session_key = sessions
+        .resolve_session_key(session_id)
+        .unwrap_or_default();
+    let explicit_ctx = crate::memory::session_key_context(&session_key);
 
     // Context-isolated agents whose session key carries NO explicit segment
     // (desktop chat threads) derive the context from the session's ACTIVE
@@ -1831,6 +1880,35 @@ async fn run_loop(
         skip_memory = true;
     }
     let memory_user_id = memory_scope.user_id;
+
+    // ── Sub-agent scope inheritance ────────────────────────────────────
+    // Sub-agent runs (anonymous task spawns and persona delegations) execute
+    // inside the CALLER's task: they read under the parent run's already-
+    // resolved scope — the orchestrator forwards it as the request user_id —
+    // and NEVER write. Without this, a spawn carries an empty agent_id, the
+    // derivation above short-circuits to the raw owner scope with writes
+    // enabled, and one task-spawn exfiltrates an isolated matter's data into
+    // the scope every agent inherits (isolation audit 2026-08-22, leak #3).
+    let (memory_user_id, memory_writes_disabled) = if session_key.starts_with("subagent:") {
+        skip_memory = true;
+        let parent_scope = if user_id.is_empty() {
+            memory_user_id
+        } else {
+            user_id.to_string()
+        };
+        (parent_scope, true)
+    } else {
+        (memory_user_id, memory_writes_disabled)
+    };
+
+    // CLI providers execute tools out-of-band through the shared MCP context;
+    // stamp it with the RESOLVED scope (never the raw request user_id) so
+    // memory reads/writes on that path land exactly where this run's do.
+    if let Some(mcp_ctx) = mcp_context {
+        let mut ctx = mcp_ctx.lock().await;
+        ctx.user_id = memory_user_id.clone();
+        ctx.memory_writes_disabled = memory_writes_disabled;
+    }
 
     // Build the inheritance chain for READ access: agent tacit/ (context-
     // isolated runs only) + owner identity prefixes. Sibling ctx scopes are

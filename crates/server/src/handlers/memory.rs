@@ -74,10 +74,26 @@ pub async fn search_memories(
     State(state): State<AppState>,
     Query(q): Query<SearchQuery>,
 ) -> HandlerResult<serde_json::Value> {
-    let memories = state
-        .store
-        .search_memories(&q.q, q.limit, q.offset)
-        .map_err(to_error_response)?;
+    // agent_id scoping mirrors list_memories: the per-agent Memory view's
+    // search must never surface another agent's scopes. Without it this was
+    // the one unscoped read in the memory surface (isolation audit
+    // 2026-08-22). No agent_id = the global owner memory manager.
+    let memories = if let Some(ref aid) = q.agent_id {
+        let aid = if aid == "assistant" || aid == "main" {
+            ""
+        } else {
+            aid.as_str()
+        };
+        state
+            .store
+            .search_memories_for_agent(aid, &q.q, q.limit, q.offset)
+            .map_err(to_error_response)?
+    } else {
+        state
+            .store
+            .search_memories(&q.q, q.limit, q.offset)
+            .map_err(to_error_response)?
+    };
     Ok(Json(serde_json::json!({"memories": memories})))
 }
 
@@ -89,6 +105,8 @@ pub struct SearchQuery {
     pub limit: i64,
     #[serde(default)]
     pub offset: i64,
+    #[serde(default, rename = "agentId")]
+    pub agent_id: Option<String>,
 }
 
 /// GET /api/v1/memories/stats
@@ -151,6 +169,28 @@ pub async fn update_memory(
         .map_err(to_error_response)?;
 
     let mem = state.store.get_memory(id).map_err(to_error_response)?;
+
+    // Re-embed on edit: without this, the OLD text keeps serving through
+    // vector recall until restart — an edited-out (possibly redacted) value
+    // stayed searchable (isolation audit 2026-08-22). embed_memories deletes
+    // the stale chunks first and invalidates the FTS index; with no embedding
+    // provider, drop the stale chunks and invalidate directly.
+    if body["value"].as_str().is_some() {
+        if let Some(ref m) = mem {
+            match state.embedding_provider {
+                Some(ref ep) => agent::memory::embed_memories_async(
+                    state.store.clone(),
+                    ep.clone(),
+                    vec![(m.namespace.clone(), m.key.clone())],
+                    m.user_id.clone(),
+                ),
+                None => {
+                    let _ = state.store.delete_chunks_for_memory(id);
+                    agent::search_adapter::invalidate_index(&m.user_id);
+                }
+            }
+        }
+    }
     Ok(Json(serde_json::json!({"memory": mem})))
 }
 
@@ -159,6 +199,14 @@ pub async fn delete_memory(
     State(state): State<AppState>,
     Path(id): Path<i64>,
 ) -> HandlerResult<serde_json::Value> {
+    // Capture the row before deleting so its chunks/embeddings and search
+    // index entry go with it — a deleted memory must stop serving through
+    // vector recall immediately, not at next restart.
+    let mem = state.store.get_memory(id).map_err(to_error_response)?;
     state.store.delete_memory(id).map_err(to_error_response)?;
+    let _ = state.store.delete_chunks_for_memory(id);
+    if let Some(m) = mem {
+        agent::search_adapter::invalidate_index(&m.user_id);
+    }
     Ok(Json(serde_json::json!({"success": true})))
 }

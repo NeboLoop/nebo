@@ -89,6 +89,13 @@ export interface AgentProfile {
 	quietHoursEnd: string
 }
 
+export interface AgentUsageStats {
+	runs: number
+	costMicrocents: number
+	inputTokens: number
+	outputTokens: number
+}
+
 export interface AgentWorkflow {
 	id: number
 	agentId: string
@@ -508,6 +515,12 @@ export interface OauthConnection {
 	updated_at: number
 }
 
+export interface OutcomeCount {
+	outcome: string
+	count: number
+	costMicrocents: number
+}
+
 export interface PaymentMethodInfo {
 	id?: string
 	type?: string
@@ -616,6 +629,22 @@ export interface RefreshToken {
 	userId: string
 	tokenHash: string
 	expiresAt: number
+	createdAt: number
+}
+
+export interface RunUsage {
+	id: number
+	agentId: string
+	sessionKey?: string
+	runId?: string
+	runType: string
+	modelId: string
+	inputTokens: number
+	outputTokens: number
+	cacheReadTokens: number
+	cacheCreationTokens: number
+	costMicrocents: number
+	outcome?: string
 	createdAt: number
 }
 
@@ -1392,6 +1421,10 @@ export interface ListUpdatesResponse {
 	updates: ArtifactUpdatePref[]
 }
 
+export interface ListWorkDocumentsResponse {
+	documents: _[]
+}
+
 export interface ListWorkflowsResponse {
 	workflows: Workflow[]
 	total: number
@@ -1473,6 +1506,10 @@ export interface NeboAIShareArtifactResponse {
 export interface OauthRelayResponse {
 	status: string
 	message: string
+}
+
+export interface OauthTokenResponse {
+	error: string
 }
 
 export interface PickFilesResponse {
@@ -1598,6 +1635,17 @@ export interface StartWorkflowChatResponse {
 
 export interface StatusResponse {
 	setupComplete: unknown
+}
+
+export interface TeachStartResponse {
+	sessionId: string
+	dir: unknown
+}
+
+export interface TeachStopResponse {
+	sessionId: string
+	dir: unknown
+	keyframes: unknown
 }
 
 export interface TestIntegrationResponse {

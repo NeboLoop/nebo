@@ -261,6 +261,14 @@ pub struct ResumeState {
 pub async fn execute_workflow(
     def: &WorkflowDef,
     agent_id: &str,
+    // Resolved memory scope for tool execution, provided by the caller (the
+    // server layer owns the scope derivation — see agent::memory). A bare
+    // user_id made every workflow run read/write the global unowned "" scope
+    // shared across all agents (isolation audit 2026-08-22, leak class 1).
+    // For context-isolated agents a workflow run has no matter, so callers
+    // pass writes_disabled=true — fail closed, reads still serve the scope.
+    memory_user_id: &str,
+    memory_writes_disabled: bool,
     inputs: serde_json::Value,
     trigger_type: &str,
     trigger_detail: Option<&str>,
@@ -314,6 +322,8 @@ pub async fn execute_workflow(
         return crate::graph::execute_graph(
             def,
             agent_id,
+            memory_user_id,
+            memory_writes_disabled,
             &inputs,
             store,
             provider,
@@ -415,6 +425,8 @@ pub async fn execute_workflow(
         match execute_activity_with_retry(
             activity,
             &prior_context,
+            memory_user_id,
+            memory_writes_disabled,
             &inputs,
             provider,
             &activity_tools,
@@ -635,6 +647,8 @@ pub async fn execute_workflow(
 pub(crate) async fn execute_activity_with_retry(
     activity: &Activity,
     prior_context: &str,
+    memory_user_id: &str,
+    memory_writes_disabled: bool,
     inputs: &serde_json::Value,
     provider: &dyn ai::Provider,
     tools: &[&Box<dyn DynTool>],
@@ -675,6 +689,8 @@ pub(crate) async fn execute_activity_with_retry(
         match execute_activity(
             activity,
             prior_context,
+            memory_user_id,
+            memory_writes_disabled,
             inputs,
             provider,
             tools,
@@ -729,6 +745,8 @@ pub(crate) async fn execute_activity_with_retry(
 pub async fn execute_activity(
     activity: &Activity,
     prior_context: &str,
+    memory_user_id: &str,
+    memory_writes_disabled: bool,
     inputs: &serde_json::Value,
     provider: &dyn ai::Provider,
     tools: &[&Box<dyn DynTool>],
@@ -806,7 +824,7 @@ pub async fn execute_activity(
             Some(r) => (r.messages.clone(), Some(r.pending.clone())),
             None => (messages, None),
         };
-        return run_llm_loop(activity, provider, tools, roster, &tool_defs, &system, messages, spent, spent_output, make_trace(String::new()), store, checkpoint, pending, iteration).await;
+        return run_llm_loop(activity, memory_user_id, memory_writes_disabled, provider, tools, roster, &tool_defs, &system, messages, spent, spent_output, make_trace(String::new()), store, checkpoint, pending, iteration).await;
     }
 
     // --- Per-step execution ---
@@ -877,6 +895,8 @@ pub async fn execute_activity(
         // Run LLM loop for this step
         let (step_result, step_tokens) = run_llm_loop(
             activity,
+            memory_user_id,
+            memory_writes_disabled,
             provider,
             tools,
             roster,
@@ -1215,6 +1235,8 @@ fn resolve_tool_call<'a>(
 #[allow(clippy::too_many_arguments)]
 async fn run_llm_loop(
     activity: &Activity,
+    memory_user_id: &str,
+    memory_writes_disabled: bool,
     provider: &dyn ai::Provider,
     tools: &[&Box<dyn DynTool>],
     roster: &[Box<dyn DynTool>],
@@ -1257,10 +1279,15 @@ async fn run_llm_loop(
     // a UI prompt. Carry the run's agent identity in the session key so tools
     // resolve per-agent state (plugin account profiles, memory scope) — a bare
     // context made every workflow run account-less and scope-less.
-    let ctx = tools::ToolContext::new(tools::Origin::Workflow).with_session(
+    let mut ctx = tools::ToolContext::new(tools::Origin::Workflow).with_session(
         tools::workflow_session_key(&trace.agent_id, &trace.run_id),
         trace.run_id.clone(),
     );
+    // Caller-resolved memory scope: without it every workflow activity ran
+    // tools against the global unowned "" scope (see execute_workflow docs).
+    ctx.user_id = memory_user_id.to_string();
+    ctx.memory_writes_disabled = memory_writes_disabled;
+    let ctx = ctx;
 
     // ── Durable resume entry ──────────────────────────────────────────
     // The restored conversation ends at the assistant message whose gated

@@ -129,7 +129,11 @@ pub trait MemoryEmbedder: Send + Sync {
 }
 
 /// Keychain service name for credential-routed memories (Phase 1 of
-/// docs/plans/memory-rock-solid.md). Account = the memory key.
+/// docs/plans/memory-rock-solid.md). Account = "{memory scope}/{key}" — the
+/// scope prefix keeps the secret store as isolated as the memory row that
+/// points at it: with a bare key, matter B storing the same key silently
+/// overwrote matter A's secret and any scope could read it back (isolation
+/// audit 2026-08-22, leak #7).
 const MEMORY_KEYCHAIN_SERVICE: &str = "nebo-memory";
 
 /// OS keychain writer for credential routing on explicit memory stores.
@@ -342,7 +346,11 @@ impl AgentTool {
                         Some(kind) => {
                             if let Err(e) = self
                                 .keychain
-                                .store(MEMORY_KEYCHAIN_SERVICE, key, value)
+                                .store(
+                                    MEMORY_KEYCHAIN_SERVICE,
+                                    &format!("{}/{}", ctx.user_id, key),
+                                    value,
+                                )
                                 .await
                             {
                                 warn!(kind = kind, key = key, error = %e, "credential routing: keychain write failed");
@@ -357,7 +365,8 @@ impl AgentTool {
                             }
                             (
                                 format!(
-                                    "(stored in system keychain: {MEMORY_KEYCHAIN_SERVICE}/{key})"
+                                    "(stored in system keychain: {MEMORY_KEYCHAIN_SERVICE}, account {}/{key})",
+                                    ctx.user_id
                                 ),
                                 Some(kind),
                             )
@@ -437,9 +446,10 @@ impl AgentTool {
                             Some(kind) => ToolResult::ok(format!(
                                 "Stored memory: [{namespace}] {key} = {stored_value}. The value was \
                                  credential-shaped ({kind}), so the secret was saved to the OS keychain \
-                                 (service \"{MEMORY_KEYCHAIN_SERVICE}\", account \"{key}\") — not plaintext \
+                                 (service \"{MEMORY_KEYCHAIN_SERVICE}\", account \"{account}\") — not plaintext \
                                  in memory. Tell the user where it lives. Retrieve later with \
-                                 os(resource: \"keychain\", action: \"get\", service: \"{MEMORY_KEYCHAIN_SERVICE}\", account: \"{key}\")."
+                                 os(resource: \"keychain\", action: \"get\", service: \"{MEMORY_KEYCHAIN_SERVICE}\", account: \"{account}\").",
+                                account = format_args!("{}/{}", ctx.user_id, key)
                             )),
                             None => ToolResult::ok(format!(
                                 "Stored memory: [{}] {} = {}",
@@ -2392,8 +2402,8 @@ mod tests {
     }
 
     /// Explicit store of a credential-shaped value routes the secret to the
-    /// keychain (service nebo-memory, account = memory key) and persists a
-    /// pointer row — never the plaintext (memory-rock-solid Phase 1).
+    /// keychain (service nebo-memory, account = "{scope}/{memory key}") and
+    /// persists a pointer row — never the plaintext (memory-rock-solid Phase 1).
     #[tokio::test]
     async fn test_credential_store_routes_to_keychain() {
         let (tool, _embedder, store) = agent_tool_with_embedder("keychain-route-test");
@@ -2417,13 +2427,15 @@ mod tests {
             result.content
         );
 
-        // Keychain got exactly one write with the canonical service/account.
+        // Keychain got exactly one write with the canonical service/account —
+        // the account carries the memory scope so the secret store is exactly
+        // as isolated as the pointer row.
         let calls = keychain.calls.lock().unwrap();
         assert_eq!(
             calls.as_slice(),
             &[(
                 "nebo-memory".to_string(),
-                "openai/api-key".to_string(),
+                "user-1/openai/api-key".to_string(),
                 secret.to_string()
             )]
         );
@@ -2433,7 +2445,10 @@ mod tests {
             .get_memory_by_key_and_user("tacit/general", "openai/api-key", "user-1")
             .unwrap()
             .expect("pointer row must be stored");
-        assert_eq!(row.value, "(stored in system keychain: nebo-memory/openai/api-key)");
+        assert_eq!(
+            row.value,
+            "(stored in system keychain: nebo-memory, account user-1/openai/api-key)"
+        );
         assert!(!row.value.contains(secret));
 
         // Recall returns the pointer text only — no auto-dereference.

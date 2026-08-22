@@ -734,6 +734,20 @@ export function approveDeps(req: Record<string, unknown> = {}) {
 }
 
 /**
+ * @description "Teach start"
+ */
+export function teachStart(req: Record<string, unknown> = {}) {
+	return webapi.post<components.TeachStartResponse>(`/api/v1/desktop/teach/start`, req)
+}
+
+/**
+ * @description "Teach stop"
+ */
+export function teachStop(req: Record<string, unknown> = {}) {
+	return webapi.post<components.TeachStopResponse>(`/api/v1/desktop/teach/stop`, req)
+}
+
+/**
  * @description "Get entity config"
  */
 export function getEntityConfig(entityType: string, entityId: string) {
@@ -932,8 +946,8 @@ export function listMemories(limit?: number, offset?: number, namespace?: string
 /**
  * @description "Search memories"
  */
-export function searchMemories(q?: string, limit?: number, offset?: number) {
-	return webapi.get<components.SearchMemoriesResponse>(`/api/v1/memories/search`, { q, limit, offset })
+export function searchMemories(q?: string, limit?: number, offset?: number, agentId?: string) {
+	return webapi.get<components.SearchMemoriesResponse>(`/api/v1/memories/search`, { q, limit, offset, agentId })
 }
 
 /**
@@ -1270,6 +1284,13 @@ export function listAllPluginEvents() {
  */
 export function oauthRelay() {
 	return webapi.get<components.OauthRelayResponse>(`/api/v1/plugins/oauth/relay`)
+}
+
+/**
+ * @description "Oauth token"
+ */
+export function oauthToken(req: Record<string, unknown> = {}) {
+	return webapi.post<components.OauthTokenResponse>(`/api/v1/plugins/oauth/token`, req)
 }
 
 /**
@@ -1851,6 +1872,13 @@ export function userGetProfile() {
  */
 export function userUpdateProfile(req: Record<string, unknown> = {}) {
 	return webapi.put<components.UserUpdateProfileResponse>(`/api/v1/user/me/profile`, req)
+}
+
+/**
+ * @description "List work documents"
+ */
+export function listWorkDocuments() {
+	return webapi.get<components.ListWorkDocumentsResponse>(`/api/v1/work/documents`)
 }
 
 /**
