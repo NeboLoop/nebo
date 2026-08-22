@@ -138,6 +138,10 @@ export interface AgentPageContext {
 	readonly devMode: boolean
 	readonly agentStatuses: Record<string, string>
 	openWorkflow: (name: string, wf: WorkflowConfig) => void
+	/** Open a flow's configuration modal. */
+	openFlow: (name: string) => void
+	/** Drop a starter prompt into this employee's composer. */
+	askEmployee: (prompt: string) => void
 	openCanvas: () => void
 	triggerSummary: (wf: WorkflowConfig) => string
 	persistWorkflows: (wfs: Record<string, WorkflowConfig>) => Promise<void>
