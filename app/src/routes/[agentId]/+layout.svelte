@@ -10,6 +10,9 @@
   import { launchApp } from '$lib/apps/launcher.js';
   import { mobileAgentsOpen, mobileChatsOpen } from '$lib/stores/mobileNav';
   import CollapsibleRail from '$lib/components/ui/CollapsibleRail.svelte';
+  import ShelfModal from '$lib/components/ui/ShelfModal.svelte';
+  import InboxView from '$lib/components/inbox/InboxView.svelte';
+  import AgentSettingsModal from '$lib/components/settings/agent/AgentSettingsModal.svelte';
   import { unreadCount } from '$lib/stores/notifications';
   import { commandPaletteOpen } from '$lib/stores/commandPalette';
 
@@ -20,15 +23,37 @@
     mobileChatsOpen.set(false);
   });
 
-  // Workspace list state: a local filter, and which employee's chats are open.
-  let listQuery = $state('');
-  let expandedAgentId = $state<string | null>(null);
+  // The list drills down; it does not expand. Inline expansion put an
+  // 8,000px chat list inside the column and shoved every employee below it off
+  // the screen — unusable at 168 conversations. So the column shows either the
+  // roster or ONE employee's conversations, with a way back.
+  let drilledAgentId = $state<string | null>(null);
 
-  /** Clicking an employee opens them and their chats together. */
+  /** Row click goes to the employee. The chevron drills into their list. */
   function openAgentRow(id: string) {
-    expandedAgentId = expandedAgentId === id ? null : id;
     selectAgent(id);
   }
+
+  // Shelf surfaces open over the workspace rather than navigating away from
+  // it. State is in the URL so each one deep-links and the back button works.
+  const inboxOpen = $derived($page.url.searchParams.has('inbox'));
+  const inboxSelected = $derived($page.url.searchParams.get('m'));
+
+  function setParams(mut: (p: URLSearchParams) => void, replace = false) {
+    const url = new URL($page.url);
+    mut(url.searchParams);
+    goto(url.pathname + url.search, { replaceState: replace, noScroll: true, keepFocus: true });
+  }
+  const settingsSection = $derived($page.url.searchParams.get('settings'));
+  const openInbox = () => setParams((p) => p.set('inbox', '1'));
+  const openSettings = () => setParams((p) => p.set('settings', 'general'));
+  const closeSettings = () => setParams((p) => p.delete('settings'));
+  // Section-to-section is not a history step; Escape should close the modal,
+  // not walk back through eleven sections.
+  const selectSection = (id: string) => setParams((p) => p.set('settings', id), true);
+  const closeInbox = () => setParams((p) => { p.delete('inbox'); p.delete('m'); });
+  const selectInboxItem = (id: string | null) =>
+    setParams((p) => (id ? p.set('m', id) : p.delete('m')), true);
 
   /** Mail-client recency: time today, weekday this week, date beyond. */
   function dayLabel(epochSecs: number): string {
@@ -408,19 +433,9 @@
     return allAgents.filter(a => a.isApp).sort((a, b) => a.name.localeCompare(b.name));
   });
 
-  // One list — employees then apps — filtered by the search field. Matching a
-  // chat surfaces its employee too, so search finds conversations, not just people.
-  const listedAgents = $derived.by(() => {
-    const all = [...sortedAgents, ...sortedAppAgents];
-    const q = listQuery.trim().toLowerCase();
-    if (!q) return all;
-    return all.filter((a) => {
-      if (a.name.toLowerCase().includes(q) || a.role.toLowerCase().includes(q)) return true;
-      return (apiThreads[a.id] ?? []).some(
-        (c) => (c.title || c.name || '').toLowerCase().includes(q) || (c.preview || '').toLowerCase().includes(q)
-      );
-    });
-  });
+  // One list: employees, then apps.
+  const listedAgents = $derived([...sortedAgents, ...sortedAppAgents]);
+  const drilledAgent = $derived(drilledAgentId ? allAgents.find(a => a.id === drilledAgentId) ?? null : null);
 
   const agentId = $derived($page.params.agentId ?? '');
   const agent = $derived(allAgents.find(a => a.id === agentId));
@@ -721,6 +736,13 @@
 >
   {#snippet headerActions()}
     <button
+      class="w-7 h-7 rounded-md flex items-center justify-center hover:bg-base-100 cursor-pointer bg-transparent border-none shrink-0 text-base-content/60 hover:text-base-content"
+      onclick={() => commandPaletteOpen.set(true)}
+      title="{$t('nav.searchOrRun')} (⌘K)"
+    >
+      <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="7" cy="7" r="4.5"/><line x1="10.5" y1="10.5" x2="14" y2="14" stroke-linecap="round"/></svg>
+    </button>
+    <button
       class="w-7 h-7 rounded-md flex items-center justify-center hover:bg-base-100 cursor-pointer bg-transparent border-none shrink-0"
       onclick={() => agentId && goto(`/${agentId}/threads`)}
       title={$t('chat.newChat')}
@@ -730,24 +752,32 @@
   {/snippet}
 
   {#snippet expanded()}
-    <div class="px-2.5 pt-2.5 pb-1.5">
-      <div class="relative">
-        <svg class="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-base-content/40 pointer-events-none" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="7" cy="7" r="4.5"/><line x1="10.5" y1="10.5" x2="14" y2="14" stroke-linecap="round"/></svg>
-        <input
-          type="text"
-          bind:value={listQuery}
-          placeholder={$t('common.search')}
-          class="w-full h-8 pl-8 pr-11 rounded-field bg-base-100 border border-base-300 text-sm outline-none focus:border-base-content/30 placeholder:text-base-content/40"
-        />
-        <button
-          class="absolute right-1.5 top-1/2 -translate-y-1/2 px-1.5 h-5 rounded border border-base-300 bg-base-200 text-[10px] font-medium text-base-content/50 hover:text-base-content hover:border-base-content/30 cursor-pointer"
-          onclick={() => commandPaletteOpen.set(true)}
-          title={$t('commandPalette.title')}
-        >⌘K</button>
-      </div>
-    </div>
-
-    {#if agentsLoading && sortedAgents.length === 0}
+    {#if drilledAgent}
+      <!-- One employee's conversations. -->
+      <button
+        type="button"
+        class="w-full flex items-center gap-2 px-3 py-2 text-sm bg-transparent border-none cursor-pointer hover:bg-base-100/70 text-left"
+        onclick={() => (drilledAgentId = null)}
+      >
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="10 3 5 8 10 13"/></svg>
+        <span class="font-medium truncate">{drilledAgent.name}</span>
+      </button>
+      <div class="h-px bg-base-content/8 mx-3 mb-1"></div>
+      {#each apiThreads[drilledAgent.id] ?? [] as c (c.id)}
+        <a
+          href={`/${drilledAgent.id}/threads/${c.id}`}
+          class="block py-2 px-2.5 mx-1.5 rounded-box transition-colors {$page.params.threadId === c.id
+            ? 'bg-base-100 border border-base-300 shadow-sm'
+            : 'border border-transparent hover:bg-base-100/70'}"
+        >
+          <div class="flex items-baseline gap-2">
+            <span class="text-sm truncate flex-1 min-w-0">{c.title || c.name}</span>
+            <span class="text-xs text-base-content/45 shrink-0">{dayLabel(c.updatedAtEpoch)}</span>
+          </div>
+          <div class="text-xs text-base-content/55 truncate">{c.preview}</div>
+        </a>
+      {/each}
+    {:else if agentsLoading && sortedAgents.length === 0}
       <div class="py-6 flex items-center justify-center">
         <span class="loading loading-spinner loading-sm"></span>
       </div>
@@ -757,7 +787,6 @@
         {@const ac = AGENT_COLORS_MAP[a.color] ?? AGENT_COLORS_MAP['teal']}
         {@const chats = apiThreads[a.id] ?? []}
         {@const latest = chats[0]}
-        {@const isOpen = expandedAgentId === a.id}
         <div
           class="group/agent flex items-center gap-2.5 py-2 px-2.5 mx-1.5 cursor-pointer transition-colors text-left {agentId === a.id
             ? 'rounded-box border border-base-300 bg-base-100 shadow-sm'
@@ -787,37 +816,27 @@
               <div class="text-xs text-base-content/60 truncate">{latest?.preview || a.role}</div>
             </div>
           </button>
-          {#if chats.length > 0}
+          <button
+            class="w-5 h-5 rounded flex items-center justify-center shrink-0 bg-transparent border-none cursor-pointer text-base-content/40 hover:text-base-content hover:bg-base-200 opacity-0 group-hover/agent:opacity-100 focus:opacity-100 transition-opacity"
+            onclick={(e) => { e.stopPropagation(); selectAgent(a.id); openSettings(); }}
+            title={$t('settings.title')}
+          >
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+          </button>
+          <!-- Only when there is more than one conversation to choose between.
+               With memory isolation off an employee has one continuous thread,
+               so there is nothing to drill into. -->
+          {#if chats.length > 1}
             <button
               class="w-5 h-5 rounded flex items-center justify-center shrink-0 bg-transparent border-none cursor-pointer text-base-content/40 hover:text-base-content hover:bg-base-200"
-              onclick={(e) => { e.stopPropagation(); expandedAgentId = isOpen ? null : a.id; }}
-              title={isOpen ? $t('nav.collapseSidebar') : $t('nav.expandSidebar')}
+              onclick={(e) => { e.stopPropagation(); drilledAgentId = a.id; }}
+              title={$t('components.agentTabBar.chats')}
             >
-              <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" class="transition-transform {isOpen ? 'rotate-90' : ''}"><polyline points="6 3 11 8 6 13"/></svg>
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 3 11 8 6 13"/></svg>
             </button>
           {/if}
         </div>
-
-        {#if isOpen}
-          <div class="ml-[26px] mr-1.5 mb-1 border-l border-base-content/10 pl-2">
-            {#each chats as c (c.id)}
-              <a
-                href={`/${a.id}/threads/${c.id}`}
-                class="block py-1.5 px-2 rounded-field transition-colors {$page.params.threadId === c.id
-                  ? 'bg-base-100 shadow-sm'
-                  : 'hover:bg-base-100/70'}"
-              >
-                <div class="text-[13px] truncate {$page.params.threadId === c.id ? 'font-medium' : ''}">{c.title || c.name}</div>
-                <div class="text-[11px] text-base-content/50 truncate">{c.preview}</div>
-              </a>
-            {/each}
-          </div>
-        {/if}
       {/each}
-
-      {#if listedAgents.length === 0}
-        <p class="px-3.5 py-6 text-center text-xs text-base-content/50">{$t('common.noResults')}</p>
-      {/if}
     {/if}
   {/snippet}
 
@@ -842,9 +861,10 @@
 
   {#snippet footer(isRail)}
     <div class="border-t border-base-300 shrink-0">
-      <a
-        href="/inbox"
-        class="relative flex items-center gap-2.5 py-2 {isRail ? 'justify-center px-0' : 'px-3.5'} hover:bg-base-100/70 transition-colors {$page.url.pathname === '/inbox' ? 'text-base-content' : ''}"
+      <button
+        type="button"
+        onclick={openInbox}
+        class="relative w-full flex items-center gap-2.5 py-2 {isRail ? 'justify-center px-0' : 'px-3.5'} hover:bg-base-100/70 transition-colors bg-transparent border-none cursor-pointer text-left {inboxOpen ? 'text-base-content' : ''}"
         title={$t('nav.inbox')}
       >
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="shrink-0"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg>
@@ -856,7 +876,7 @@
             <span class="badge badge-error badge-xs text-error-content font-semibold shrink-0">{$unreadCount > 9 ? '9+' : $unreadCount}</span>
           {/if}
         {/if}
-      </a>
+      </button>
       <a
         href="/marketplace"
         class="flex items-center gap-2.5 py-2 {isRail ? 'justify-center px-0' : 'px-3.5'} hover:bg-base-100/70 transition-colors"
@@ -872,3 +892,20 @@
 
 <!-- Columns 2+3: rendered by child routes -->
 {@render children()}
+
+<AgentSettingsModal
+  open={settingsSection !== null}
+  section={settingsSection ?? 'general'}
+  agentName={agent?.name ?? ''}
+  onsection={selectSection}
+  onclose={closeSettings}
+/>
+
+<ShelfModal open={inboxOpen} title={$t('nav.inbox')} onclose={closeInbox}>
+  <InboxView
+    embedded
+    selectedId={inboxSelected}
+    onselect={selectInboxItem}
+    onnavigate={(link) => { closeInbox(); goto(link); }}
+  />
+</ShelfModal>
