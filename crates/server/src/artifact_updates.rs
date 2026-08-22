@@ -498,6 +498,24 @@ pub(crate) async fn apply_agent_update_pub(
     // Reload agent loader to pick up new version from filesystem
     state.agent_loader.load_all().await;
 
+    // Rematerialize agent_workflows from the freshly persisted frontmatter.
+    // The workflow_manager fires bindings from these ROWS, not the agent
+    // config — without this, an agent update ships new workflow definitions
+    // that never run until someone hand-upserts the rows (nebo #57; bit every
+    // single Vivid deploy).
+    if let Ok(Some(updated)) = state.store.get_agent(agent_id) {
+        if !updated.frontmatter.is_empty() {
+            match napp::agent::parse_agent_config(&updated.frontmatter) {
+                Ok(config) => crate::sync_agent_workflows(&state.store, agent_id, &config),
+                Err(e) => tracing::warn!(
+                    agent_id,
+                    error = %e,
+                    "agent update applied but frontmatter unparseable — workflows NOT rematerialized"
+                ),
+            }
+        }
+    }
+
     // App sidecars: the version dir just changed. Refresh the app's DB paths from the
     // freshly-loaded filesystem (reconcile_app_fields), then stop + relaunch a running
     // sidecar so it runs the NEW binary rather than the swapped-out old one.
