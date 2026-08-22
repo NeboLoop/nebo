@@ -109,6 +109,10 @@
   emptyDesc={$t('chat.newThreadEmptyDesc', { values: { name: agent?.name ?? $t('chat.yourEmployee') } })}
   {allAgents}
   onsend={handleSend}
+  onteachsent={(_message, sessionKey) => {
+    const chatId = sessionKey.split(':thread:')[1];
+    if (chatId) goto(`/${agentId}/threads/${chatId}?active=1`);
+  }}
   {isLoading}
   {quotaWarning}
   ondismisswarning={() => quotaWarning = undefined}

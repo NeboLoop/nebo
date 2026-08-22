@@ -3239,21 +3239,7 @@ pub async fn create_new_agent_chat(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> HandlerResult<serde_json::Value> {
-    let new_chat_id = uuid::Uuid::new_v4().to_string();
-    let session_key = format!("agent:{}:thread:{}", id, new_chat_id);
-
-    // Creates a new session with active_chat_id = new_chat_id (via extract_chat_id_from_key).
-    let _session = state
-        .runner
-        .sessions()
-        .get_or_create(&session_key, "")
-        .map_err(to_error_response)?;
-
-    // Create the chat row linked to this session.
-    let chat = state
-        .store
-        .create_chat_for_session(&new_chat_id, &session_key, "New Chat", None)
-        .map_err(to_error_response)?;
+    let (chat, session_key) = create_agent_thread(&state, &id).map_err(to_error_response)?;
 
     Ok(Json(serde_json::json!({
         "chat": chat,
@@ -3261,6 +3247,26 @@ pub async fn create_new_agent_chat(
         "totalMessages": 0,
         "sessionKey": session_key,
     })))
+}
+
+/// Create a fresh thread (session + chat row) for an agent — the ONE routine
+/// behind POST /agents/{id}/chats and backend-initiated thread starts (the
+/// teach-a-task handoff), so the session/chat wiring can never drift per path.
+pub(crate) fn create_agent_thread(
+    state: &AppState,
+    agent_id: &str,
+) -> Result<(db::models::Chat, String), types::NeboError> {
+    let new_chat_id = uuid::Uuid::new_v4().to_string();
+    let session_key = format!("agent:{}:thread:{}", agent_id, new_chat_id);
+
+    // Creates a new session with active_chat_id = new_chat_id (via extract_chat_id_from_key).
+    state.runner.sessions().get_or_create(&session_key, "")?;
+
+    // Create the chat row linked to this session.
+    let chat = state
+        .store
+        .create_chat_for_session(&new_chat_id, &session_key, "New Chat", None)?;
+    Ok((chat, session_key))
 }
 
 /// POST /api/v1/agents/{id}/chats/{chat_id}/activate — switch to an existing chat.

@@ -998,7 +998,7 @@ export interface CreateIntegrationResponse {
 }
 
 export interface CreateNewAgentChatResponse {
-	chat: Chat
+	chat: unknown
 	messages: unknown[]
 	totalMessages: number
 	sessionKey: string
@@ -1682,6 +1682,8 @@ export interface TeachStopResponse {
 	sessionId: string
 	dir: unknown
 	keyframes: unknown
+	message: string
+	sessionKey: string
 }
 
 export interface TestIntegrationResponse {

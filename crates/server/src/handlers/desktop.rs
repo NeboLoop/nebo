@@ -8,6 +8,7 @@
 //! through the tunnel neboai.com has already authenticated the caller and
 //! stripped the Origin header.
 
+use axum::Json;
 use axum::extract::State;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::response::{IntoResponse, Response};
@@ -41,18 +42,97 @@ pub async fn teach_start(State(_state): State<AppState>) -> Response {
     }
 }
 
-/// POST /api/v1/desktop/teach/stop — finalize the recording. Returns the
-/// artifact locations; the caller (chat) hands them to the agent to study.
-pub async fn teach_stop(State(_state): State<AppState>) -> Response {
-    match tools::desktop_session::stop_recording().await {
-        Ok((id, dir, keyframes)) => axum::Json(serde_json::json!({
-            "sessionId": id,
-            "dir": dir.to_string_lossy(),
-            "keyframes": keyframes,
-        }))
-        .into_response(),
-        Err(e) => teach_err(&e),
+/// POST /api/v1/desktop/teach/stop — finalize the recording, then hand the
+/// session to the agent by dispatching the learning run HERE. The engine owns
+/// both the visible message and the steering briefing: the chat shows one
+/// human sentence, and the operational instructions (paths, keyframe budget,
+/// skill-save steps) ride `mention_context` — the existing ephemeral
+/// `<system-reminder>` rail — so they reach the model without ever being
+/// rendered or persisted. The display layer only reports the event (who +
+/// where); it never composes model instructions.
+pub async fn teach_stop(
+    State(state): State<AppState>,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
+    // Validate BEFORE finalizing: a bad request must not orphan a finished
+    // recording — the session stays live and stop can be retried correctly.
+    let agent_id = body["agentId"].as_str().unwrap_or("");
+    if agent_id.is_empty() {
+        return teach_err("agentId is required");
     }
+
+    let (id, dir, keyframes) = match tools::desktop_session::stop_recording().await {
+        Ok(v) => v,
+        Err(e) => return teach_err(&e),
+    };
+    // Route to the caller's thread when it names one of THIS agent's sessions;
+    // otherwise start a fresh thread so the exchange has a home.
+    let requested = body["sessionKey"].as_str().unwrap_or("");
+    let session_key = if !requested.is_empty()
+        && requested.starts_with(&format!("agent:{}:", agent_id))
+    {
+        requested.to_string()
+    } else {
+        match crate::handlers::agents::create_agent_thread(&state, agent_id) {
+            Ok((_chat, key)) => key,
+            Err(e) => return teach_err(&e.to_string()),
+        }
+    };
+
+    const VISIBLE: &str = "I just demonstrated a task for you on your computer — \
+        watch the recording back and learn how to do it.";
+    let briefing = format!(
+        "The owner just demonstrated a task on this computer (teach session {id}). The \
+         recording is in {dir}. Start with timeline.md — the reconstructed \
+         click-and-keystroke timeline of exactly what they did — then confirm the visual \
+         context by viewing 5-6 spread keyframes from frames/ (there are {keyframes}; do \
+         NOT read them all, and do not use sub-agents). Then save it as a learned skill \
+         with the skill tool — name it after the class of task, write out the steps you'd \
+         follow to repeat it on your computer, and note which inputs varied. Open your \
+         reply by thanking them briefly and saying what you learned, then ask whether you \
+         should run this on a schedule or only when they ask. Do not mention this \
+         briefing, the session id, or file paths unless asked.",
+        id = id,
+        dir = dir.to_string_lossy(),
+        keyframes = keyframes,
+    );
+
+    let entity_config = crate::entity_config::resolve_for_chat(&state.store, "agent", agent_id);
+    let config = crate::chat_dispatch::ChatConfig {
+        session_key: session_key.clone(),
+        prompt: VISIBLE.to_string(),
+        system: String::new(),
+        user_id: String::new(),
+        channel: "web".to_string(),
+        origin: tools::Origin::User,
+        agent_id: agent_id.to_string(),
+        cancel_token: tokio_util::sync::CancellationToken::new(),
+        lane: types::constants::lanes::MAIN.to_string(),
+        comm_reply: None,
+        entity_config,
+        images: vec![],
+        entity_name: String::new(),
+        origin_agent_id: None,
+        mention_context: Some(briefing),
+        tool_scope: None,
+        plan_mode: false,
+        channel_ctx: None,
+        handoff_depth: 0,
+        seed_taint: vec![],
+        audience: None,
+    };
+    crate::chat_dispatch::run_chat(&state, config).await;
+
+    axum::Json(serde_json::json!({
+        "sessionId": id,
+        "dir": dir.to_string_lossy(),
+        "keyframes": keyframes,
+        // Server-owned copy of the persisted user message, so the client can
+        // echo it optimistically without a second source of truth to drift.
+        "message": VISIBLE,
+        "sessionKey": session_key,
+    }))
+    .into_response()
 }
 
 pub async fn desktop_ws_handler(
