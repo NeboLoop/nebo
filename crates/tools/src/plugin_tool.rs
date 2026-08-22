@@ -729,7 +729,12 @@ impl DynTool for PluginTool {
             .get("action")
             .and_then(|v| v.as_str())
             .unwrap_or("exec");
-        matches!(action, "list" | "discover" | "events" | "help")
+        // `discover` is read-only but can PARK on the inline install card
+        // (ask_user). A concurrently-executed tool races the model turn's
+        // stream teardown: the ask_request lands in a dropped channel and the
+        // oneshot waits forever (observed live on the first card test,
+        // 2026-08-22). Anything that may ask must run sequentially.
+        matches!(action, "list" | "events" | "help")
     }
 
     fn execute_dyn<'a>(
