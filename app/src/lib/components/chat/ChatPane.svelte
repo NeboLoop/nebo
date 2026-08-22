@@ -18,7 +18,6 @@
   import Presentation from 'lucide-svelte/icons/presentation';
   import type { UploadedAttachment } from '$lib/types/attachment';
   import type { Snippet } from 'svelte';
-  import type { WorkflowConfig, AgentRun } from '$lib/types/agentPage';
   import { getAttachmentType, formatFileSize, attachmentMediaUrl } from '$lib/types/attachment';
   import { NEAR_BOTTOM_PX, distanceFromBottom } from '$lib/chat/scroll';
   import { threadKey } from '$lib/chat/sessionKey';
@@ -75,14 +74,13 @@
 
   type AgentInfo = { id: string; name: string; color: string; initial: string; role: string; status: string; isApp?: boolean };
 
-  let { messages = [], agentName = 'Agent', agentId = '', threadId = '', sessionId = '', headerTitle = '', headerRight = '', placeholder = '', emptyIcon = '', emptyTitle = '', emptyDesc = '', allAgents = [], onteachsent, activityStatus = '', tokenUsage = null, quotaWarning = '', chatError = '', onsend, onstop, onedit, onredo, onasksubmit, onrestoreversion, ondismisswarning, ondismisserror, onloadmore, isLoading = false, isLoadingMore = false, hasMore = false, allowAttachments = true, flows, runs, onopenflow, onopenrun }: {
+  let { messages = [], agentName = 'Agent', agentId = '', threadId = '', sessionId = '', headerTitle = '', headerRight = '', placeholder = '', emptyIcon = '', emptyTitle = '', emptyDesc = '', allAgents = [], onteachsent, activityStatus = '', tokenUsage = null, quotaWarning = '', chatError = '', onsend, onstop, onedit, onredo, onasksubmit, onrestoreversion, ondismisswarning, ondismisserror, onloadmore, isLoading = false, isLoadingMore = false, hasMore = false, allowAttachments = true, flowsPane, runsPane }: {
     messages?: Message[];
-    /** Employee-scoped surfaces for the work pane. Omitted on chats that have
-     *  no employee behind them (channel setup help, the embed). */
-    flows?: [string, WorkflowConfig][];
-    runs?: AgentRun[];
-    onopenflow?: (name: string) => void;
-    onopenrun?: (id: string) => void;
+    /** Employee-scoped views for the work pane. Omitted on chats with no
+     *  employee behind them (channel setup help, the embed), and the matching
+     *  header icon then doesn't render. */
+    flowsPane?: Snippet;
+    runsPane?: Snippet;
     agentName?: string;
     agentId?: string;
     threadId?: string;
@@ -1025,10 +1023,10 @@
         {/snippet}
 
         {@render headerIcon(computerFull, $t('chat.botComputer'), () => (computerFull = true), computerIcon)}
-        {#if flows}
+        {#if flowsPane}
           {@render headerIcon(creationsOpen && paneView === 'flows', $t('nav.flows'), () => togglePane('flows'), flowsIcon)}
         {/if}
-        {#if runs}
+        {#if runsPane}
           {@render headerIcon(creationsOpen && paneView === 'runs', $t('nav.runs'), () => togglePane('runs'), runsIcon)}
         {/if}
         {#if headerRight}
@@ -1714,45 +1712,9 @@
     <!-- Creations content — one renderer for every format, routed by extension -->
     <div class="flex-1 overflow-y-auto">
       {#if paneView === 'flows'}
-        {#if (flows ?? []).length === 0}
-          <p class="p-6 text-center text-sm text-base-content/50">{$t('flows.none')}</p>
-        {:else}
-          {#each flows ?? [] as [name, wf] (name)}
-            <button
-              type="button"
-              class="w-full text-left flex items-start gap-2.5 py-2.5 px-4 border-b border-base-content/8 bg-transparent cursor-pointer hover:bg-base-200/60 transition-colors"
-              onclick={() => onopenflow?.(name)}
-            >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="mt-0.5 shrink-0 {wf.isActive === false ? 'text-base-content/30' : 'text-base-content/60'}"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/></svg>
-              <span class="flex-1 min-w-0">
-                <span class="block text-sm font-medium truncate">{name}</span>
-                <span class="block text-xs text-base-content/55 truncate">{wf.schedule || wf.description || ''}</span>
-              </span>
-              {#if wf.isActive === false}
-                <span class="text-[10px] uppercase tracking-wide text-base-content/40 shrink-0 mt-1">{$t('common.paused')}</span>
-              {/if}
-            </button>
-          {/each}
-        {/if}
+        {#if flowsPane}{@render flowsPane()}{/if}
       {:else if paneView === 'runs'}
-        {#if (runs ?? []).length === 0}
-          <p class="p-6 text-center text-sm text-base-content/50">{$t('agent.noRunsYet')}</p>
-        {:else}
-          {#each runs ?? [] as r (r.id)}
-            <button
-              type="button"
-              class="w-full text-left flex items-center gap-2.5 py-2.5 px-4 border-b border-base-content/8 bg-transparent cursor-pointer hover:bg-base-200/60 transition-colors"
-              onclick={() => onopenrun?.(r.id)}
-            >
-              <span class="w-2 h-2 rounded-full shrink-0 {r.status === 'success' ? 'bg-success' : r.status === 'running' ? 'bg-warning animate-pulse' : r.status === 'failed' ? 'bg-error' : 'bg-base-content/30'}"></span>
-              <span class="flex-1 min-w-0">
-                <span class="block text-sm truncate">{r.workflowName}</span>
-                <span class="block text-xs text-base-content/50 font-mono">{r.dateGroup} · {r.time}</span>
-              </span>
-              <span class="text-xs text-base-content/50 font-mono shrink-0">{r.duration}</span>
-            </button>
-          {/each}
-        {/if}
+        {#if runsPane}{@render runsPane()}{/if}
       {:else if activeArtifact?.url}
         <!-- Key on documentId:version so a new version re-mounts the viewer in
              place (and the version-specific URL also defeats the browser cache). -->

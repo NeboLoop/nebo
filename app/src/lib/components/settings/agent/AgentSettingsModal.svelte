@@ -39,7 +39,6 @@
     { id: 'soul', label: 'settings.navItems.soul' },
     { id: 'rules', label: 'settings.navItems.rules' },
     { id: 'configure', label: 'agent.configure' },
-    { id: 'workflows', label: 'marketplace.workflows' },
     { id: 'skills', label: 'settings.navItems.skills' },
     { id: 'channels', label: 'agentSettings.channels' },
     { id: 'accounts', label: 'agentSettings.connectedAccounts' },
