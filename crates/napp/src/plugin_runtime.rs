@@ -325,7 +325,7 @@ impl PluginRuntime {
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
 
-        let child = cmd.spawn().map_err(LaunchError::Spawn)?;
+        let child = spawn_with_etxtbsy_retry(&mut cmd).await?;
         let pid = child.id();
         if let Some(p) = pid {
             crate::child_guard::register_child(p);
@@ -356,7 +356,7 @@ impl PluginRuntime {
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
 
-        let child = cmd.spawn().map_err(LaunchError::Spawn)?;
+        let child = spawn_with_etxtbsy_retry_blocking(&mut cmd)?;
         if let Some(p) = child.id() {
             crate::child_guard::register_child(p);
         }
@@ -376,4 +376,50 @@ impl PluginRuntime {
             .unwrap_or(300);
         requested.min(Duration::from_secs(max))
     }
+}
+
+/// Spawn with a brief retry on ETXTBSY ("Text file busy").
+///
+/// The classic Unix fork/exec race: any other thread's fork (a parallel
+/// plugin spawn, an install writing a different binary) briefly inherits
+/// this binary's write-fd between its fork and exec — Rust opens files
+/// CLOEXEC, so the window is real but milliseconds wide. Exec'ing inside
+/// that window fails ETXTBSY even though nothing is actually writing the
+/// file. Retrying for a moment is the standard remedy; failing a plugin
+/// launch over a fd inherited for a millisecond is not.
+async fn spawn_with_etxtbsy_retry(
+    cmd: &mut tokio::process::Command,
+) -> Result<tokio::process::Child, LaunchError> {
+    let mut delay = std::time::Duration::from_millis(10);
+    for _ in 0..6 {
+        match cmd.spawn() {
+            Ok(child) => return Ok(child),
+            Err(e) if e.raw_os_error() == Some(26) => {
+                tokio::time::sleep(delay).await;
+                delay *= 2; // 10..320ms, ~630ms total
+            }
+            Err(e) => return Err(LaunchError::Spawn(e)),
+        }
+    }
+    cmd.spawn().map_err(LaunchError::Spawn)
+}
+
+/// The sync twin for `spawn_streaming`, whose callers are not async. The
+/// blocking sleeps are bounded (~630ms worst case) and only ever taken while
+/// the fork/exec race is actually in progress — the common path is one spawn.
+fn spawn_with_etxtbsy_retry_blocking(
+    cmd: &mut tokio::process::Command,
+) -> Result<tokio::process::Child, LaunchError> {
+    let mut delay = std::time::Duration::from_millis(10);
+    for _ in 0..6 {
+        match cmd.spawn() {
+            Ok(child) => return Ok(child),
+            Err(e) if e.raw_os_error() == Some(26) => {
+                std::thread::sleep(delay);
+                delay *= 2;
+            }
+            Err(e) => return Err(LaunchError::Spawn(e)),
+        }
+    }
+    cmd.spawn().map_err(LaunchError::Spawn)
 }
