@@ -22,6 +22,14 @@ use tools::coworker::{CoworkerDelivery, CoworkerMessage, CoworkerRail};
 /// `session_key_context` picks up.
 pub(crate) const COWORKER_CHANNEL: &str = "coworker";
 
+/// How long a `wait: true` send blocks on the coworker's reply before
+/// degrading to the fire-and-forget shape (honest "asked — waiting" tool
+/// result now, reply injected into the sender's session when it lands).
+/// Coworker runs are full agent runs — research and tool use at minutes
+/// scale is normal — so this is a park-expiry backstop against a wedged
+/// sender, not an expectation of reply latency.
+const REPLY_WAIT_SLA: std::time::Duration = std::time::Duration::from_secs(600);
+
 /// Server-side implementation of [`tools::coworker::CoworkerRail`] — dispatches
 /// through the ONE chat pipeline (`run_chat_events`) on the comm lane.
 pub struct CoworkerRailImpl {
@@ -157,69 +165,200 @@ async fn send_coworker_message(
         "coworker message delivered"
     );
 
-    if msg.wait {
-        let reply = crate::channel_dispatch::collect_channel_reply(
-            rx,
-            &cancel_token,
-            &to_id,
-            COWORKER_CHANNEL,
-        )
-        .await;
-        record_reply(&state, mirror.as_deref(), &to_name, &reply);
-        Ok(CoworkerDelivery {
-            to_agent_id: to_id,
-            to_name,
-            thread_key,
-            reply: Some(reply),
-        })
-    } else {
-        // Fire-and-forget: collect in the background, then record the reply in
-        // the sender's coworker thread and append it to the sender's session so
-        // it reaches their context next turn (same convention as the mention
-        // rail's inject_delegate_response).
-        let state_bg = state.clone();
-        let to_id_bg = to_id.clone();
-        let to_name_bg = to_name.clone();
+    // ONE completion path for both wait modes: the collector task drains B's
+    // run (forwarding approval/ask requests to the owner's frontend), records
+    // the reply in the sender-side thread, then hands the reply to whoever is
+    // waiting. If nobody is — fire-and-forget, or the reply SLA expired — the
+    // failed oneshot send returns the reply and it is injected into the
+    // sender's session instead. The reply reaches the sender exactly once.
+    let (done_tx, done_rx) = tokio::sync::oneshot::channel::<String>();
+    {
+        let state = state.clone();
+        let to_id = to_id.clone();
+        let to_name = to_name.clone();
+        let from_name = from_name.clone();
+        let thread_key = thread_key.clone();
+        let mirror = mirror.clone();
         let sender_session_key = msg.sender_session_key.clone();
-        let mirror_bg = mirror.clone();
+        let cancel_token = cancel_token.clone();
         tokio::spawn(async move {
+            let owner = OwnerForward {
+                state: &state,
+                agent_id: &to_id,
+                agent_name: &to_name,
+                from_name: &from_name,
+                session_key: &thread_key,
+            };
             let reply = crate::channel_dispatch::collect_channel_reply(
                 rx,
                 &cancel_token,
-                &to_id_bg,
+                &to_id,
                 COWORKER_CHANNEL,
+                Some(&owner),
             )
             .await;
-            record_reply(&state_bg, mirror_bg.as_deref(), &to_name_bg, &reply);
-            if reply.is_empty() {
-                return;
-            }
-            let injection = format!("[Reply from {}]\n{}", to_name_bg, reply);
-            match state_bg
-                .runner
-                .sessions()
-                .resolve_session_id_by_key(&sender_session_key)
-            {
-                Ok(sid) => {
-                    if let Err(e) = state_bg
-                        .runner
-                        .sessions()
-                        .append_message(&sid, "system", &injection, None, None, None)
-                    {
-                        tracing::warn!(error = %e, "coworker: failed to inject reply into sender session");
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, sender = %sender_session_key, "coworker: sender session not found for reply injection");
+            record_reply(&state, mirror.as_deref(), &to_name, &reply);
+            if let Err(reply) = done_tx.send(reply) {
+                if !reply.is_empty() {
+                    inject_reply_into_sender(&state, &sender_session_key, &to_name, &reply);
                 }
             }
         });
-        Ok(CoworkerDelivery {
-            to_agent_id: to_id,
-            to_name,
-            thread_key,
-            reply: None,
-        })
+    }
+
+    let reply = if msg.wait {
+        let mut done_rx = done_rx;
+        match tokio::time::timeout(REPLY_WAIT_SLA, &mut done_rx).await {
+            Ok(Ok(reply)) => Some(reply),
+            Ok(Err(_)) => {
+                // done_tx dropped without a value — the collector task died.
+                // The message was delivered; the target thread is the record.
+                tracing::warn!(to = %to_id, "coworker: collector task ended without a reply");
+                None
+            }
+            Err(_elapsed) => {
+                // Reply SLA expired: the sender resumes with honest "asked —
+                // waiting" narration and the reply arrives by session
+                // injection. try_recv closes the race where the reply landed
+                // exactly at the deadline.
+                match done_rx.try_recv() {
+                    Ok(reply) => Some(reply),
+                    Err(_) => {
+                        drop(done_rx);
+                        None
+                    }
+                }
+            }
+        }
+    } else {
+        drop(done_rx);
+        None
+    };
+
+    Ok(CoworkerDelivery {
+        to_agent_id: to_id,
+        to_name,
+        thread_key,
+        reply,
+    })
+}
+
+/// Append a coworker's reply into the sender's session as a system message
+/// (same convention as the mention rail's `inject_delegate_response`) so it
+/// reaches the sender's context next turn.
+fn inject_reply_into_sender(
+    state: &AppState,
+    sender_session_key: &str,
+    to_name: &str,
+    reply: &str,
+) {
+    let injection = format!("[Reply from {}]\n{}", to_name, reply);
+    match state
+        .runner
+        .sessions()
+        .resolve_session_id_by_key(sender_session_key)
+    {
+        Ok(sid) => {
+            if let Err(e) = state
+                .runner
+                .sessions()
+                .append_message(&sid, "system", &injection, None, None, None)
+            {
+                tracing::warn!(error = %e, "coworker: failed to inject reply into sender session");
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, sender = %sender_session_key, "coworker: sender session not found for reply injection");
+        }
+    }
+}
+
+/// Forwarding surface handed to `collect_channel_reply` for runs that happen
+/// locally for the local owner (coworker messages): approval and ask requests
+/// park the run on its existing oneshots (`state.approval_channels` /
+/// `state.ask_channels`, registered where the events are emitted) and are
+/// surfaced to the owner through the SAME broadcasts `run_chat` emits — the
+/// frontend's one approval/ask surface — plus a bell notification naming who
+/// is asking and on whose behalf.
+pub(crate) struct OwnerForward<'a> {
+    pub state: &'a AppState,
+    pub agent_id: &'a str,
+    pub agent_name: &'a str,
+    pub from_name: &'a str,
+    pub session_key: &'a str,
+}
+
+impl OwnerForward<'_> {
+    pub(crate) fn forward_approval(&self, tc: &ai::ToolCall) {
+        self.state.hub.broadcast(
+            "approval_request",
+            serde_json::json!({
+                "session_id": self.session_key,
+                "request_id": tc.id,
+                "tool": tc.name,
+                "input": tc.input,
+            }),
+        );
+        self.notify_owner(
+            &format!("coworker-approval:{}", tc.id),
+            "approval",
+            &format!("{} needs your approval", self.agent_name),
+            &format!(
+                "While handling a message from {}: wants to run `{}`.",
+                self.from_name, tc.name
+            ),
+        );
+    }
+
+    pub(crate) fn forward_ask(&self, event: &ai::StreamEvent) {
+        let request_id = event.error.as_deref().unwrap_or("");
+        let mut payload = serde_json::json!({
+            "session_id": self.session_key,
+            "request_id": request_id,
+            "prompt": event.text,
+        });
+        if let Some(widgets) = &event.widgets {
+            payload["widgets"] = widgets.clone();
+        }
+        self.state.hub.broadcast("ask_request", payload);
+        self.notify_owner(
+            &format!("coworker-ask:{}", request_id),
+            "info",
+            &format!("{} has a question", self.agent_name),
+            &event.text,
+        );
+    }
+
+    /// Bell + broadcast so the parked run is discoverable even when the owner
+    /// isn't looking at the target agent's thread — same Inbox pathway as
+    /// workflow approval notifications.
+    fn notify_owner(&self, id: &str, kind: &str, title: &str, body: &str) {
+        let user_id = self.state.store.ensure_local_user_id().unwrap_or_default();
+        let action_url = format!("/{}", self.agent_id);
+        if let Err(e) = self.state.store.create_notification_if_not_exists(
+            id,
+            &user_id,
+            kind,
+            title,
+            Some(body),
+            Some(&action_url),
+            None,
+            Some(self.agent_id),
+        ) {
+            tracing::warn!(error = %e, "coworker: could not persist owner notification");
+        }
+        self.state.hub.broadcast(
+            "notification_created",
+            serde_json::json!({
+                "id": id,
+                "type": kind,
+                "title": title,
+                "body": body,
+                "actionUrl": action_url,
+                "agentId": self.agent_id,
+                "readAt": null,
+            }),
+        );
     }
 }
 
