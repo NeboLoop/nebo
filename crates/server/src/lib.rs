@@ -3135,7 +3135,7 @@ async fn try_handle_channel_control(
     }
     // No pending controls — still honor an explicit stop.
     if metadata.get("kind").map(String::as_str) == Some("stop") {
-        let key = agent::keyparser::build_session_key("neboai", "channel", conversation_id);
+        let key = types::keyparser::build_session_key("neboai", "channel", conversation_id);
         return try_handle_comm_control(state, &key, answer, metadata).await;
     }
     false
@@ -3372,10 +3372,10 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
             resolve_companion_session_key(&state)
         } else if is_personal {
             // Custom agent: use agent-scoped session key (matches frontend's agent:{id}:web)
-            agent::keyparser::build_agent_session_key(&agent_id, "web")
+            types::keyparser::build_agent_session_key(&agent_id, "web")
         } else {
             // External loop: separate session
-            agent::keyparser::build_session_key(
+            types::keyparser::build_session_key(
                 "neboai",
                 "agent_space",
                 &format!("{}:{}", agent_slug, msg.conversation_id),
@@ -3551,7 +3551,7 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
         }
 
         let session_key =
-            agent::keyparser::build_session_key("neboai", "embed", &msg.conversation_id);
+            types::keyparser::build_session_key("neboai", "embed", &msg.conversation_id);
 
         if handle_comm_slash_command(&state, &text, &session_key, "embed", &msg.conversation_id)
             .await
@@ -3762,7 +3762,7 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
                         .session_name
                         .filter(|s| !s.is_empty())
                         .unwrap_or_else(|| {
-                            agent::keyparser::build_agent_session_key(
+                            types::keyparser::build_agent_session_key(
                                 row_id,
                                 &format!("thread:{}", chat_id),
                             )
@@ -3771,7 +3771,7 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
                         // Loop-created chat the desktop hasn't materialized yet —
                         // create it as a thread of this agent (the same shape the
                         // desktop Threads tab creates).
-                        let key = agent::keyparser::build_agent_session_key(
+                        let key = types::keyparser::build_agent_session_key(
                             row_id,
                             &format!("thread:{}", chat_id),
                         );
@@ -3797,7 +3797,7 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
             } else if is_personal {
                 resolve_agent_session_key(&state, &agent_id)
             } else {
-                agent::keyparser::build_session_key(
+                types::keyparser::build_session_key(
                     "neboai",
                     "agent_space",
                     &format!("{}:{}", agent_slug, msg.conversation_id),
@@ -3934,7 +3934,7 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
         notify_crate::send(&format!("Message from {}", msg.from), &preview);
 
         let session_key =
-            agent::keyparser::build_session_key("neboai", &msg.topic, &msg.conversation_id);
+            types::keyparser::build_session_key("neboai", &msg.topic, &msg.conversation_id);
 
         if handle_comm_slash_command(
             &state,
@@ -4283,7 +4283,7 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
         let command_text = MENTION_TOKEN_RE.replace_all(&text, "").trim().to_string();
         if command_text.starts_with('/') {
             let session_key =
-                agent::keyparser::build_session_key("neboai", "channel", &msg.conversation_id);
+                types::keyparser::build_session_key("neboai", "channel", &msg.conversation_id);
             if handle_comm_slash_command(
                 &state,
                 &command_text,
@@ -4450,9 +4450,9 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
         // enqueues async on the COMM lane, so these runs proceed concurrently.
         for (agent_id, agent_name) in dispatch {
             let session_key = if agent_id.is_empty() {
-                agent::keyparser::build_session_key("neboai", "channel", &msg.conversation_id)
+                types::keyparser::build_session_key("neboai", "channel", &msg.conversation_id)
             } else {
-                agent::keyparser::build_session_key(
+                types::keyparser::build_session_key(
                     "neboai",
                     "channel",
                     &format!("{}:{}", msg.conversation_id, agent_id),
@@ -4608,11 +4608,11 @@ fn resolve_agent_session_key(state: &AppState, agent_id: &str) -> String {
             let key = chat
                 .session_name
                 .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| agent::keyparser::build_agent_session_key(agent_id, "web"));
+                .unwrap_or_else(|| types::keyparser::build_agent_session_key(agent_id, "web"));
             tracing::debug!(session_key = %key, agent_id = %agent_id, "resolved agent session key for NeboAI unification");
             key
         }
-        _ => agent::keyparser::build_agent_session_key(agent_id, "web"),
+        _ => types::keyparser::build_agent_session_key(agent_id, "web"),
     }
 }
 

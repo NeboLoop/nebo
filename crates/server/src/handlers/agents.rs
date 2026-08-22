@@ -1835,7 +1835,7 @@ pub async fn list_agent_runs(
         .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
     let t_agent = t0.elapsed();
 
-    let wf_id = format!("agent:{}", id);
+    let wf_id = types::keyparser::agent_workflow_id(&id);
     let runs = state
         .store
         .list_workflow_runs(&wf_id, q.limit, q.offset)
@@ -2432,7 +2432,7 @@ pub async fn chat_with_agent(
         }
     }
 
-    let session_key = agent::keyparser::build_agent_session_key(&id, "web");
+    let session_key = types::keyparser::build_agent_session_key(&id, "web");
 
     let entity_config = crate::entity_config::resolve_for_chat(&state.store, "agent", &id);
 
@@ -3122,10 +3122,10 @@ pub async fn list_agent_chats(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> HandlerResult<serde_json::Value> {
-    let session_prefix = format!("agent:{}:", id);
+    let session_prefix = types::keyparser::agent_session_prefix(&id);
 
     // Resolve active chat_id from the legacy web session (if it exists).
-    let legacy_session_key = agent::keyparser::build_agent_session_key(&id, "web");
+    let legacy_session_key = types::keyparser::build_agent_session_key(&id, "web");
     let active_chat_id = state
         .runner
         .sessions()
@@ -3274,7 +3274,7 @@ pub async fn activate_agent_chat(
     State(state): State<AppState>,
     Path((id, chat_id)): Path<(String, String)>,
 ) -> HandlerResult<serde_json::Value> {
-    let session_key = agent::keyparser::build_agent_session_key(&id, "web");
+    let session_key = types::keyparser::build_agent_session_key(&id, "web");
 
     let session_id = state
         .runner
@@ -3629,7 +3629,7 @@ pub async fn start_workflow_chat(
 
     // Create a dedicated help session scoped to this agent + workflow builder
     let session_key =
-        agent::keyparser::build_agent_session_key(&id, "help:workflow");
+        types::keyparser::build_agent_session_key(&id, "help:workflow");
 
     let session = state
         .runner

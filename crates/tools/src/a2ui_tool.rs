@@ -277,23 +277,16 @@ impl DynTool for A2UIDomainTool {
 impl A2UIDomainTool {
     /// Resolve agent_id: use explicit param if provided, otherwise derive from
     /// ToolContext.session_key (format "agent:{id}:{channel}").
-    fn resolve_agent_id<'a>(params: &'a serde_json::Value, ctx: &'a ToolContext) -> &'a str {
+    fn resolve_agent_id(params: &serde_json::Value, ctx: &ToolContext) -> String {
         let explicit = params
             .get("agent_id")
             .and_then(|v| v.as_str())
             .unwrap_or("");
         if !explicit.is_empty() {
-            return explicit;
+            return explicit.to_string();
         }
-        // Derive from session key: "agent:{id}:{channel}"
-        if ctx.session_key.starts_with("agent:") {
-            if let Some(id) = ctx.session_key.split(':').nth(1) {
-                if !id.is_empty() {
-                    return id;
-                }
-            }
-        }
-        ""
+        // Canonical, subagent-aware extraction (CODE_AUDITOR Rule 8).
+        types::keyparser::extract_agent_id(&ctx.session_key)
     }
 
     async fn handle_surface(
@@ -304,7 +297,8 @@ impl A2UIDomainTool {
     ) -> ToolResult {
         match action {
             "create" => {
-                let agent_id = Self::resolve_agent_id(params, ctx);
+                let agent_id_owned = Self::resolve_agent_id(params, ctx);
+                let agent_id = agent_id_owned.as_str();
                 let view_id = params
                     .get("view_id")
                     .and_then(|v| v.as_str())
@@ -399,7 +393,8 @@ impl A2UIDomainTool {
                     .get("surface_id")
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
-                let agent_id_param = Self::resolve_agent_id(params, ctx);
+                let agent_id_param_owned = Self::resolve_agent_id(params, ctx);
+                let agent_id_param = agent_id_param_owned.as_str();
                 let target_view = match params.get("target_view").and_then(|v| v.as_str()) {
                     Some(v) => v,
                     None => return ToolResult::error(crate::errors::missing_param(
@@ -476,7 +471,8 @@ impl A2UIDomainTool {
             }
 
             "list" => {
-                let agent_id = Self::resolve_agent_id(params, ctx);
+                let agent_id_owned = Self::resolve_agent_id(params, ctx);
+                let agent_id = agent_id_owned.as_str();
                 if agent_id.is_empty() {
                     return ToolResult::error(
                         "agent_id is required (pass it explicitly or ensure session is agent-scoped)",

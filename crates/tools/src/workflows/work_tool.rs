@@ -48,15 +48,9 @@ impl WorkTool {
     /// Derive the calling agent's id from the session key ("agent:{id}:{channel}").
     /// Workflows are agent-owned, so creation/listing is always scoped to the
     /// agent whose session invoked the tool.
-    fn calling_agent_id(ctx: &ToolContext) -> &str {
-        if ctx.session_key.starts_with("agent:") {
-            if let Some(id) = ctx.session_key.split(':').nth(1) {
-                if !id.is_empty() {
-                    return id;
-                }
-            }
-        }
-        ""
+    fn calling_agent_id(ctx: &ToolContext) -> String {
+        // Canonical, subagent-aware extraction (CODE_AUDITOR Rule 8).
+        types::keyparser::extract_agent_id(&ctx.session_key)
     }
 
     async fn execute_inner(&self, ctx: &ToolContext, input: serde_json::Value) -> ToolResult {
@@ -70,18 +64,15 @@ impl WorkTool {
         // call — resolved strictly, so a typo'd name errors instead of
         // silently self-scoping (which is how weekend workflows once landed on
         // the assistant instead of the employee they were meant for).
-        let resolved;
         let agent_id = if parsed.agent.is_empty() {
             Self::calling_agent_id(ctx)
         } else {
             match self.manager.resolve_agent(&parsed.agent).await {
-                Ok(id) => {
-                    resolved = id;
-                    &resolved
-                }
+                Ok(id) => id,
                 Err(e) => return ToolResult::error(e),
             }
         };
+        let agent_id = agent_id.as_str();
 
         // If resource is set, dispatch to that workflow
         if !parsed.resource.is_empty() {

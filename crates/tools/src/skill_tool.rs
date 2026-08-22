@@ -312,12 +312,8 @@ impl DynTool for SkillTool {
 
             // Per-employee skill scope: runs bound to an agent (session key
             // "agent:<id>:...") also see that agent's Learned skills.
-            let agent_scope = ctx
-                .session_key
-                .strip_prefix("agent:")
-                .and_then(|rest| rest.split(':').next())
-                .filter(|id| !id.is_empty())
-                .map(String::from);
+            let agent_scope =
+                Some(types::keyparser::extract_agent_id(&ctx.session_key)).filter(|id| !id.is_empty());
             // Review-fork marker: when set, create/update/delete target the
             // learned tree of this agent (with read-before-write) instead of
             // user/skills/. The owner is also the read scope.

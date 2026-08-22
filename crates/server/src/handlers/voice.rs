@@ -459,7 +459,7 @@ async fn run_delegated_task(
         // does not set it. Owner voice sessions target an employee via
         // "agent:{id}:…" keys; leaving this empty resolved every owner voice
         // run to the raw owner memory scope (isolation audit 2026-08-22).
-        agent_id: agent::keyparser::extract_agent_id(session_key),
+        agent_id: types::keyparser::extract_agent_id(session_key),
         ..Default::default()
     };
     if let Some(c) = caller {

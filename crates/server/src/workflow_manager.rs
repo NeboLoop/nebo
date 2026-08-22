@@ -368,7 +368,7 @@ impl WorkflowManagerImpl {
             serde_json::json!({
                 "note": "manual invocation — there is no triggering event, so no event payload is available"
             }),
-            &format!("agent:{}", agent_id),
+            &types::keyparser::agent_workflow_id(agent_id),
         );
 
         let emit_source = binding.emit.as_ref().map(|emit_name| {
@@ -873,7 +873,7 @@ impl WorkflowManager for WorkflowManagerImpl {
             // with the binding name (or "binding:event.source") in
             // trigger_detail — fetch the agent's runs and filter down.
             if let Some((agent_id, binding_name)) = split_binding_id(workflow_id) {
-                let parent = format!("agent:{}", agent_id);
+                let parent = types::keyparser::agent_workflow_id(agent_id);
                 return match self.store.list_workflow_runs(&parent, 200, 0) {
                     Ok(runs) => runs
                         .iter()
@@ -1210,7 +1210,7 @@ impl WorkflowManager for WorkflowManagerImpl {
                 self.store
                     .create_workflow_run(
                         &run_id,
-                        &format!("agent:{}", agent_id),
+                        &types::keyparser::agent_workflow_id(agent_id),
                         trigger_type,
                         trigger_detail.as_deref(),
                         Some(&inputs.to_string()),

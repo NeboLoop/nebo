@@ -157,9 +157,21 @@ pub fn is_agent_key(key: &str) -> bool {
     key.starts_with("agent:")
 }
 
-/// Extract the agent ID from an agent-scoped session key.
+/// Extract the agent ID from an agent-scoped session key — the ONE extractor
+/// (CODE_AUDITOR Rule 8; audit 2026-08-22 found 12 inline `split(':')` copies
+/// that returned the literal "agent" on subagent keys).
+///
+/// Subagent runs nest the parent's FULL key (`subagent:<parent_key>:<task_id>`)
+/// and the parent is itself `agent:<id>:…` — a naive split silently scopes
+/// per-agent state (plugin account profiles, learned skills, event
+/// attribution) to a bogus entity, falling back to global credentials. Strip
+/// any number of `subagent:` wrappers first. Returns "" for non-agent keys.
 pub fn extract_agent_id(key: &str) -> String {
-    parse_session_key(key).agent_id
+    let mut inner = key;
+    while let Some(rest) = inner.strip_prefix("subagent:") {
+        inner = rest;
+    }
+    parse_session_key(inner).agent_id
 }
 
 /// Resolve the parent session key for a thread/topic session.
@@ -191,6 +203,26 @@ pub fn build_agent_session_key(agent_id: &str, channel: &str) -> String {
     format!("agent:{}:{}", agent_id, channel)
 }
 
+/// Prefix that matches every session belonging to an agent (`agent:<id>:`).
+/// The ONE builder for prefix checks — hand-built copies had drifted into
+/// authorization checks and list queries (audit 2026-08-22).
+pub fn agent_session_prefix(agent_id: &str) -> String {
+    format!("agent:{}:", agent_id)
+}
+
+/// The workflow-id namespace for an agent's inline workflow bindings.
+/// DELIBERATELY a separate helper even though the literal shape (`agent:<id>`)
+/// collides with a channel-less agent session key: a workflow id is NOT a
+/// session key — never feed one to the session-key parsers.
+pub fn agent_workflow_id(agent_id: &str) -> String {
+    format!("agent:{}", agent_id)
+}
+
+/// Inverse of [`agent_workflow_id`]. `None` when the id is not agent-scoped.
+pub fn agent_id_from_workflow_id(workflow_id: &str) -> Option<&str> {
+    workflow_id.strip_prefix("agent:").filter(|s| !s.is_empty())
+}
+
 /// Build a subagent session key.
 pub fn build_subagent_session_key(parent_id: &str, subagent_id: &str) -> String {
     if parent_id.is_empty() {
@@ -212,6 +244,24 @@ pub fn build_topic_session_key(parent_key: &str, topic_id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Subagent keys must resolve to the PARENT's agent id, however deeply
+    /// nested — the naive split returned "agent" and misattributed state.
+    #[test]
+    fn extract_agent_id_pierces_subagent_wrappers() {
+        assert_eq!(extract_agent_id("agent:abc-123:web"), "abc-123");
+        assert_eq!(
+            extract_agent_id("subagent:agent:abc-123:thread:t1:task-9"),
+            "abc-123"
+        );
+        assert_eq!(
+            extract_agent_id("subagent:subagent:agent:abc-123:web:sa-1:sa-2"),
+            "abc-123"
+        );
+        assert_eq!(extract_agent_id("agent:cos-uuid:workflow:run-42"), "cos-uuid");
+        assert_eq!(extract_agent_id("main"), "");
+        assert_eq!(extract_agent_id("acp:xyz"), "");
+    }
 
     #[test]
     fn test_parse_agent_key() {

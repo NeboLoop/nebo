@@ -184,7 +184,7 @@ impl AgentWorker {
                         let mut interval = tokio::time::interval(duration);
                         interval.tick().await; // skip first immediate tick
 
-                        let wf_id = format!("agent:{}", agent);
+                        let wf_id = types::keyparser::agent_workflow_id(&agent);
 
                         loop {
                             tokio::select! {

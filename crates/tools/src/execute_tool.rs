@@ -453,12 +453,8 @@ impl DynTool for ExecuteTool {
         Box::pin(async move {
             // Same per-employee scope rule as the skill tool: agent-bound runs
             // may execute their own Learned skills.
-            let agent_scope = ctx
-                .session_key
-                .strip_prefix("agent:")
-                .and_then(|rest| rest.split(':').next())
-                .filter(|id| !id.is_empty())
-                .map(String::from);
+            let agent_scope =
+                Some(types::keyparser::extract_agent_id(&ctx.session_key)).filter(|id| !id.is_empty());
             let skill_name = match input["skill"].as_str() {
                 Some(s) if !s.is_empty() => s,
                 _ => return ToolResult::error(crate::errors::missing_param(

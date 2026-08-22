@@ -983,7 +983,9 @@ impl PluginTool {
                             shlex::split(&pi.command)
                                 .and_then(|mut a| extract_and_strip_flag(&mut a, "account"))
                         });
-                        agent_id_from_session_key(&ctx.session_key).and_then(|agent_id| {
+                        Some(types::keyparser::extract_agent_id(&ctx.session_key))
+                            .filter(|id| !id.is_empty())
+                            .and_then(|agent_id| {
                             self.db_store
                                 .resolve_plugin_account_profile(
                                     &agent_id,
@@ -1222,7 +1224,9 @@ impl PluginTool {
             .and_then(|a| a.profile_dir_env)
         {
             Some(env_name) => {
-                let agent_id = agent_id_from_session_key(&ctx.session_key);
+                let agent_id =
+                    Some(types::keyparser::extract_agent_id(&ctx.session_key))
+                        .filter(|id| !id.is_empty());
                 let profile = agent_id.as_deref().and_then(|agent_id| {
                     self.db_store
                         .resolve_plugin_account_profile(
@@ -1353,8 +1357,9 @@ impl PluginTool {
         for (key, value) in napp::plugin::plugin_base_env() {
             runtime = runtime.with_env(key, value);
         }
-        if let Some(agent_id) = agent_id_from_session_key(&ctx.session_key) {
-            runtime = runtime.with_env("NEBO_AGENT_ID", agent_id);
+        let key_agent_id = types::keyparser::extract_agent_id(&ctx.session_key);
+        if !key_agent_id.is_empty() {
+            runtime = runtime.with_env("NEBO_AGENT_ID", key_agent_id);
         }
 
         // Channel context so channel-plugin subcommands (e.g. `slack upload`)
@@ -1453,9 +1458,9 @@ impl PluginTool {
         // channel and chat runs. For non-agent runs (cron without channel
         // context, system tasks) there's no agent to look up a bridge for.
         let agent_id = if ctx.session_key.starts_with("agent:") {
-            ctx.session_key
-                .split(':')
-                .nth(1)
+            Some(types::keyparser::extract_agent_id(&ctx.session_key))
+                .filter(|s| !s.is_empty())
+                .as_deref()
                 .unwrap_or("")
                 .to_string()
         } else {
@@ -1872,25 +1877,6 @@ pub fn notify_plugin_needs_reauth(
     );
 }
 
-pub(crate) fn agent_id_from_session_key(key: &str) -> Option<String> {
-    // Delegated (subagent) runs nest the parent's FULL session key:
-    //   subagent:<parent_session_key>:<task_id>
-    // and <parent_session_key> is itself `agent:<id>:…`. So a naive split on a
-    // subagent key returns the literal token "agent" instead of the id, which
-    // means a delegated agent's per-account plugin calls resolve to no profile
-    // and fall back to the plugin's global credentials (e.g. a duplicated agent
-    // reading the original account's inbox). Strip any number of leading
-    // `subagent:` wrappers, then read the id out of the inner `agent:<id>:…` key.
-    let mut inner = key;
-    while let Some(rest) = inner.strip_prefix("subagent:") {
-        inner = rest;
-    }
-    let mut parts = inner.splitn(3, ':');
-    match parts.next()? {
-        "agent" => parts.next().map(|s| s.to_string()),
-        _ => None,
-    }
-}
 
 /// Find `--<name> <value>` in an arg vector, remove both tokens, and return
 /// the value. Used to consume Nebo-level selectors (e.g. `--account`) that
@@ -2151,35 +2137,6 @@ mod tests {
         assert_eq!(port_department("mail.message.send"), None);
     }
 
-    #[test]
-    fn test_agent_id_from_session_key_resolves_nested_subagent() {
-        // Direct agent chat.
-        assert_eq!(
-            agent_id_from_session_key("agent:abc-123:thread:t1").as_deref(),
-            Some("abc-123")
-        );
-        assert_eq!(agent_id_from_session_key("agent:abc-123").as_deref(), Some("abc-123"));
-        // Delegated run: the orchestrator nests the parent's full session key as
-        // `subagent:<parent_session_key>:<task_id>`. Must recover the agent id,
-        // NOT the literal "agent" token (the bug that made a duplicated agent
-        // read the original account's inbox).
-        assert_eq!(
-            agent_id_from_session_key("subagent:agent:abc-123:thread:t1:task-9").as_deref(),
-            Some("abc-123")
-        );
-        // Doubly-nested delegation.
-        assert_eq!(
-            agent_id_from_session_key("subagent:subagent:agent:abc-123:thread:t1:task-9:task-10")
-                .as_deref(),
-            Some("abc-123")
-        );
-        assert_eq!(agent_id_from_session_key("acp:xyz"), None);
-        // Agent-bound workflow runs — plugin tool must resolve credentials here.
-        assert_eq!(
-            agent_id_from_session_key("agent:cos-uuid:workflow:run-42").as_deref(),
-            Some("cos-uuid")
-        );
-    }
 
     #[test]
     fn test_workflow_session_key_round_trips_to_agent_id() {
@@ -2188,10 +2145,10 @@ mod tests {
         // (The old dash format `agent-<id>-<run>` parsed to None — every
         // workflow run lost its account.)
         let key = crate::origin::workflow_session_key("abc-123", "run-9");
-        assert_eq!(agent_id_from_session_key(&key).as_deref(), Some("abc-123"));
+        assert_eq!(types::keyparser::extract_agent_id(&key), "abc-123");
         // Standalone (non-agent) runs carry no identity by design.
         assert_eq!(crate::origin::workflow_session_key("", "run-9"), "");
-        assert_eq!(agent_id_from_session_key(""), None);
+        assert_eq!(types::keyparser::extract_agent_id(""), "");
     }
 
     #[test]

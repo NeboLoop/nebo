@@ -2239,7 +2239,7 @@ async fn reconcile_agents(state: &AppState) -> Result<(), NeboError> {
     // chat gets its own loop conversation (the remote emulates the local
     // Threads tab). Additive server-side — loop-created chats are untouched.
     for (local_id, loop_agent_id) in &chat_sync_targets {
-        let prefix = format!("agent:{}:", local_id);
+        let prefix = types::keyparser::agent_session_prefix(local_id);
         let chats = match state.store.list_chats_by_session_enriched(&prefix) {
             Ok(rows) => rows
                 .into_iter()

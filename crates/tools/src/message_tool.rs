@@ -71,8 +71,7 @@ impl MessageTool {
         };
 
         let msg = crate::coworker::CoworkerMessage {
-            from_agent_id: crate::plugin_tool::agent_id_from_session_key(&ctx.session_key)
-                .unwrap_or_default(),
+            from_agent_id: types::keyparser::extract_agent_id(&ctx.session_key),
             sender_session_key: ctx.session_key.clone(),
             to: to.to_string(),
             text: text.to_string(),
@@ -167,7 +166,8 @@ impl DynTool for MessageTool {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send + 'a>> {
         Box::pin(async move {
             // Attribute persisted notifications to the calling AI employee.
-            let agent_id = crate::plugin_tool::agent_id_from_session_key(&ctx.session_key);
+            let agent_id =
+                Some(types::keyparser::extract_agent_id(&ctx.session_key)).filter(|s| !s.is_empty());
             let domain_input: DomainInput = match serde_json::from_value(input.clone()) {
                 Ok(v) => v,
                 Err(e) => return ToolResult::error(format!("Failed to parse input: {}. Do not retry — this is a schema error.", e)),

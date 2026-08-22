@@ -11,7 +11,6 @@ pub mod fuzzy;
 pub mod goals;
 pub mod guardrails;
 pub mod hooks;
-pub mod keyparser;
 pub mod lanes;
 pub mod large_input;
 pub mod memory;

@@ -31,7 +31,7 @@ use std::time::Duration;
 use ai::{ChatRequest, Message, Provider, StreamEventType};
 use tracing::debug;
 
-use crate::keyparser;
+use types::keyparser;
 use crate::runner::{prefer_non_gateway, truncate_str};
 
 /// Max auto-continuations per real user message.
