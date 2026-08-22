@@ -773,6 +773,42 @@ export interface UserProfile {
 	approvedCommands?: string
 }
 
+export interface WorkDocument {
+	id: string
+	chatId: string
+	filename: string
+	kind: string
+	latestVersion: number
+	createdAt: number
+	updatedAt: number
+}
+
+export interface WorkDocumentListing {
+	id: string
+	chatId: string
+	filename: string
+	kind: string
+	latestVersion: number
+	url: string
+	contentType?: string
+	chatTitle?: string
+	sessionName?: string
+	createdAt: number
+	updatedAt: number
+}
+
+export interface WorkDocumentVersion {
+	id: string
+	documentId: string
+	versionNumber: number
+	parentVersionId?: string
+	url: string
+	contentHash?: string
+	contentType?: string
+	messageId?: string
+	createdAt: number
+}
+
 export interface Workflow {
 	id: string
 	code?: string
@@ -1422,7 +1458,7 @@ export interface ListUpdatesResponse {
 }
 
 export interface ListWorkDocumentsResponse {
-	documents: _[]
+	documents: WorkDocumentListing[]
 }
 
 export interface ListWorkflowsResponse {
