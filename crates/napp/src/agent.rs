@@ -412,6 +412,22 @@ pub struct AgentActivity {
     pub token_budget: AgentTokenBudget,
     #[serde(default)]
     pub on_error: AgentOnError,
+    /// Explicit tool allowlist — mirrors `workflow::parser::Activity::tools`.
+    /// This struct is the wire between agent.json and the engine
+    /// (`to_workflow_json` serializes `self.activities` verbatim): any engine
+    /// field missing HERE is silently dropped from every agent-bound workflow.
+    /// That is exactly how the declared-tools scoping shipped in the engine
+    /// yet never reached it (Vivid resolve-and-record kept the full roster),
+    /// and the same silent-drop class as the ballast interfaceBindings
+    /// incident.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tools: Vec<String>,
+    /// Mirrors `Activity::requires_tools` (both spellings, like the engine).
+    #[serde(default, alias = "requiresTools", skip_serializing_if = "Vec::is_empty")]
+    pub requires_tools: Vec<String>,
+    /// Mirrors `Activity::min_iterations`.
+    #[serde(default)]
+    pub min_iterations: u32,
 }
 
 /// A declared branch on a branching activity (condition/loop).
@@ -1336,5 +1352,28 @@ mod tests {
         assert_eq!(binding.activities[0].id, "step1");
         assert_eq!(binding.activities[0].intent, "Do something");
         assert_eq!(binding.budget.total_per_run, 3000);
+    }
+}
+
+#[cfg(test)]
+mod activity_field_parity_tests {
+    use super::*;
+
+    /// Every engine-honored activity field must survive the agent.json →
+    /// to_workflow_json round trip — a field absent from AgentActivity is
+    /// silently dropped from every agent-bound workflow.
+    #[test]
+    fn test_tools_and_requires_tools_survive_round_trip() {
+        let json = r#"{"workflows":{"wf":{"trigger":{"type":"manual"},"activities":[
+            {"id":"a","intent":"do it","tools":["odoo","os"],
+             "requires_tools":["message"],"min_iterations":2}]}}}"#;
+        let config: AgentConfig = serde_json::from_str(json).expect("parse");
+        let wf = config.workflows.get("wf").expect("binding");
+        let def = wf.to_workflow_json("wf");
+        let v: serde_json::Value = serde_json::from_str(&def).expect("json");
+        let act = &v["activities"][0];
+        assert_eq!(act["tools"], serde_json::json!(["odoo", "os"]));
+        assert_eq!(act["requires_tools"], serde_json::json!(["message"]));
+        assert_eq!(act["min_iterations"], serde_json::json!(2));
     }
 }
