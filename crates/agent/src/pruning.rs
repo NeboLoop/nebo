@@ -2,8 +2,6 @@ use ai::{ChatRequest, Message, Provider, StreamEventType};
 use db::models::ChatMessage;
 use tracing::debug;
 
-/// Approximate chars per token.
-const CHARS_PER_TOKEN: usize = 4;
 /// Chars estimate for a base64 image.
 const IMAGE_CHAR_ESTIMATE: usize = 8000;
 /// Minimum token savings to bother micro-compacting.
@@ -84,7 +82,7 @@ pub fn estimate_message_tokens(msg: &ChatMessage) -> usize {
     if msg.content.contains("data:image/") {
         chars += IMAGE_CHAR_ESTIMATE;
     }
-    chars / CHARS_PER_TOKEN
+    chars / crate::CHARS_PER_TOKEN
 }
 
 /// Estimate total tokens for all messages.
@@ -282,7 +280,7 @@ pub fn micro_compact(
 
         // Read-type results keep a bounded slice of real content, so their
         // new size varies; estimate from the trimmed length rather than a flat 10.
-        let new_tokens = (trimmed_content.len() / CHARS_PER_TOKEN).max(10);
+        let new_tokens = (trimmed_content.len() / crate::CHARS_PER_TOKEN).max(10);
         result[*idx] = ChatMessage {
             id: msg.id.clone(),
             chat_id: msg.chat_id.clone(),
@@ -422,7 +420,7 @@ pub fn time_based_micro_compact(
             None
         };
 
-        let new_tokens = (cleared.len() / CHARS_PER_TOKEN).max(2);
+        let new_tokens = (cleared.len() / crate::CHARS_PER_TOKEN).max(2);
         result[idx] = ChatMessage {
             id: msg.id.clone(),
             chat_id: msg.chat_id.clone(),

@@ -19,7 +19,6 @@
   import IsolationControls from '$lib/components/settings/IsolationControls.svelte';
   import type { AgentInputField } from '$lib/types/agentPage';
   import { installFlow } from '$lib/stores/installFlow';
-  import type { PluginAccount } from '$lib/api/pluginAccounts';
 
   const ctx = getContext<AgentPageContext>('agentPage');
   const agentId = $derived(ctx.agentId);
@@ -533,6 +532,11 @@
   // plugins list does not expose the multi-account flag, so we list the
   // agent's auth-capable plugins and, for each, fetch its connected accounts.
   // A plugin appears here when it already has >=1 account OR the user adds one.
+  // The generated ListPluginAccountsResponse types `accounts` as unknown[];
+  // this is the concrete shape the backend returns. `needsReauth` means the
+  // account's OAuth token expired and can't be refreshed — the user must
+  // reconnect it (surfaced as a "Reconnect" badge).
+  type PluginAccount = { accountLabel: string; isPrimary: boolean; needsReauth?: boolean };
   type AccountPlugin = { slug: string; name: string; description: string; accounts: PluginAccount[] };
   let accountPlugins = $state<AccountPlugin[]>([]);
   let accountsLoading = $state(false);
@@ -542,7 +546,9 @@
   let addAccountError = $state<string | null>(null);
   // Phone-line picker state: which owned number this account attaches.
   let addAccountNumber = $state('');
-  let claimableNumbers = $state<import('$lib/api/pluginAccounts').ClaimablePhoneNumber[]>([]);
+  // Concrete shape of neboAIPhoneClaimable()'s `numbers` (generated type is unknown).
+  type ClaimablePhoneNumber = { number: string; label?: string; status: string };
+  let claimableNumbers = $state<ClaimablePhoneNumber[]>([]);
   let claimableLoading = $state(false);
 
   $effect(() => { if (section === 'accounts') loadAccounts(); });
@@ -579,7 +585,6 @@
     accountsLoading = true;
     try {
       const api = await import('$lib/api/nebo');
-      const accountsApi = await import('$lib/api/pluginAccounts');
       const resp = await api.listPlugins() as { plugins: { slug: string; name?: string; description?: string; hasAuth?: boolean; multiAccount?: boolean }[] };
       // Only plugins that declare profile_dir_env support multiple accounts
       // per agent (the "resource" model, e.g. gws). Identity-model plugins
@@ -588,8 +593,8 @@
       const loaded = await Promise.all(candidates.map(async (p) => {
         let accounts: PluginAccount[] = [];
         try {
-          const r = await accountsApi.listPluginAccounts(p.slug, agentId);
-          accounts = r.accounts ?? [];
+          const r = await api.listPluginAccounts(p.slug, agentId);
+          accounts = (r.accounts ?? []) as PluginAccount[];
         } catch { /* plugin may not support multi-account */ }
         return { slug: p.slug, name: p.name || p.slug, description: p.description || '', accounts };
       }));
@@ -602,10 +607,10 @@
 
   async function refreshPluginAccounts(slug: string) {
     try {
-      const accountsApi = await import('$lib/api/pluginAccounts');
-      const r = await accountsApi.listPluginAccounts(slug, agentId);
+      const api = await import('$lib/api/nebo');
+      const r = await api.listPluginAccounts(slug, agentId);
       accountPlugins = accountPlugins.map(p =>
-        p.slug === slug ? { ...p, accounts: r.accounts ?? [] } : p
+        p.slug === slug ? { ...p, accounts: (r.accounts ?? []) as PluginAccount[] } : p
       );
     } catch { /* silent */ }
   }
@@ -622,10 +627,10 @@
     // a second plugin needs a resource picker.
     if (p.slug === 'phonecall') {
       claimableLoading = true;
-      import('$lib/api/pluginAccounts')
-        .then((api) => api.listClaimablePhoneNumbers())
+      import('$lib/api/nebo')
+        .then((api) => api.neboAIPhoneClaimable())
         .then((res) => {
-          claimableNumbers = res.numbers ?? [];
+          claimableNumbers = (res as { numbers?: ClaimablePhoneNumber[] })?.numbers ?? [];
           if (claimableNumbers.length === 1) addAccountNumber = claimableNumbers[0].number;
         })
         .catch(() => { claimableNumbers = []; })
@@ -650,8 +655,8 @@
     if (addAccountConnectingSlug) return;
     addAccountConnectingSlug = slug;
     try {
-      const accountsApi = await import('$lib/api/pluginAccounts');
-      await accountsApi.startPluginAccountLogin(slug, agentId, label);
+      const api = await import('$lib/api/nebo');
+      await api.authLoginAccount(slug, { agentId, accountLabel: label, accountNumber: '' });
     } catch {
       addAccountConnectingSlug = null;
     }
@@ -660,8 +665,8 @@
   // Disconnect one account from this agent: removes the mapping + its credentials.
   async function disconnectAccount(slug: string, label: string) {
     try {
-      const accountsApi = await import('$lib/api/pluginAccounts');
-      await accountsApi.disconnectPluginAccount(slug, agentId, label);
+      const api = await import('$lib/api/nebo');
+      await api.disconnectPluginAccount(slug, agentId, label);
       // Optimistically drop it from the list; refreshPluginAccounts also re-syncs.
       accountPlugins = accountPlugins.map(p =>
         p.slug === slug ? { ...p, accounts: p.accounts.filter(a => a.accountLabel !== label) } : p
@@ -681,8 +686,8 @@
     addAccountConnectingSlug = p.slug;
     addAccountError = null;
     try {
-      const accountsApi = await import('$lib/api/pluginAccounts');
-      await accountsApi.startPluginAccountLogin(p.slug, agentId, label, addAccountNumber);
+      const api = await import('$lib/api/nebo');
+      await api.authLoginAccount(p.slug, { agentId, accountLabel: label, accountNumber: addAccountNumber });
       // Login runs in the background; completion arrives via WS.
     } catch (e) {
       addAccountConnectingSlug = null;

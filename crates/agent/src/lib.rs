@@ -15,6 +15,11 @@ pub mod lanes;
 pub mod large_input;
 pub mod memory;
 pub mod provenance;
+
+/// Approximate chars per token — the ONE token-estimate heuristic (was
+/// defined identically in pruning, memory_flush, and large_input; a budget
+/// change had to land three times).
+pub const CHARS_PER_TOKEN: usize = 4;
 pub mod memory_debounce;
 pub mod memory_flush;
 pub mod orchestrator;

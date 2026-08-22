@@ -16,6 +16,17 @@ pub struct ChatSearchHit {
     pub created_at: i64,
 }
 
+/// created_at of a message row — the shared cursor lookup for paginated
+/// history queries (was inlined twice; CODE_AUDITOR Rule 8).
+fn message_created_at(conn: &rusqlite::Connection, id: &str) -> Result<i64, NeboError> {
+    conn.query_row(
+        "SELECT created_at FROM chat_messages WHERE id = ?1",
+        params![id],
+        |row| row.get(0),
+    )
+    .map_err(|e| NeboError::Database(e.to_string()))
+}
+
 impl Store {
     pub fn create_chat(&self, id: &str, title: &str) -> Result<Chat, NeboError> {
         let conn = self.conn()?;
@@ -155,13 +166,7 @@ impl Store {
         let conn = self.conn()?;
         let messages = if let Some(before_id) = before {
             // Get the created_at of the cursor message
-            let cursor_ts: i64 = conn
-                .query_row(
-                    "SELECT created_at FROM chat_messages WHERE id = ?1",
-                    params![before_id],
-                    |row| row.get(0),
-                )
-                .map_err(|e| NeboError::Database(e.to_string()))?;
+            let cursor_ts: i64 = message_created_at(&conn, before_id)?;
 
             let mut stmt = conn
                 .prepare(
@@ -218,13 +223,7 @@ impl Store {
         // chats short, so this only matters for tool-heavy ones.
         let batch_limit: i64 = 250;
         let mut msgs: Vec<ChatMessage> = if let Some(before_id) = before {
-            let cursor_ts: i64 = conn
-                .query_row(
-                    "SELECT created_at FROM chat_messages WHERE id = ?1",
-                    params![before_id],
-                    |row| row.get(0),
-                )
-                .map_err(|e| NeboError::Database(e.to_string()))?;
+            let cursor_ts: i64 = message_created_at(&conn, before_id)?;
             // Use composite cursor (created_at, id) to avoid skipping messages
             // created in the same second as the cursor message.
             let mut stmt = conn

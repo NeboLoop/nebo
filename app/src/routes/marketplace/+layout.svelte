@@ -6,8 +6,7 @@
   import { t } from 'svelte-i18n';
   import { listStoreProducts, listStoreCategories } from '$lib/api/nebo';
   import { installItem } from '$lib/stores/marketplace.js';
-  import { getWebSocketClient } from '$lib/websocket/client';
-  import { dispatchInstallStart } from '$lib/marketplace/installCodes';
+  import { sendInstallCode } from '$lib/marketplace/installCodes';
   import UserMenu from '$lib/components/UserMenu.svelte';
   import { sidebarCollapsedFor } from '$lib/stores/sidebar.js';
   import { slugify } from '$lib/data/categories';
@@ -181,18 +180,13 @@
   let codeMessage = $state('');
   function redeemCode() {
     const code = codeInput.trim().toUpperCase();
-    // dispatchInstallStart opens the modal instantly AND validates the format.
-    if (!dispatchInstallStart(code)) {
+    // sendInstallCode opens the modal instantly, validates the format, and
+    // delivers the code (WS when connected, HTTP fallback when not).
+    if (!sendInstallCode(code, 'assistant')) {
       codeStatus = 'error';
       codeMessage = $t('marketplace.invalidCodeFormat');
       setTimeout(() => { codeStatus = 'idle'; codeMessage = ''; }, 2500);
       return;
-    }
-
-    // Send via WebSocket — backend intercepts and handles
-    const ws = getWebSocketClient();
-    if (ws.isConnected()) {
-      ws.send('chat', { prompt: code, agent_id: 'assistant' });
     }
 
     codeInput = '';

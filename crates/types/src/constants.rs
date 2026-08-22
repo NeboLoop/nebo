@@ -68,3 +68,9 @@ pub mod files {
     pub const MODELS_YAML: &str = "models.yaml";
     pub const CONFIG_YAML: &str = "config.yaml";
 }
+
+/// Windows `CREATE_NO_WINDOW` process-creation flag — spawn subprocesses
+/// without flashing a console window. ONE definition for every crate that
+/// already depends on `types` (was copied in 6 places; `updater` and the vm
+/// wire crates keep locals deliberately — they carry no `types` edge).
+pub const CREATE_NO_WINDOW: u32 = 0x0800_0000;

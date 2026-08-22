@@ -6,7 +6,8 @@
 
   $effect(() => {
     if (agentId) {
-      goto(`/${agentId}/threads`, { replaceState: true });
+      // /[agentId]/+page.svelte owns the app-vs-agent branching (overview vs threads).
+      goto(`/${agentId}`, { replaceState: true });
     }
   });
 </script>

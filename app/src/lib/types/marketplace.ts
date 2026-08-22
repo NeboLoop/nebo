@@ -79,3 +79,19 @@ export function toAppItem(raw: any, i: number): AppItem {
 		priceCents: priceCents || 0
 	};
 }
+
+// Marketplace subscription shape returned by the neboAIMarketplace* endpoints.
+// The generated client types those responses as `unknown`; callers cast to
+// this interface once at the fetch site.
+export interface MarketplaceSubscriptionInfo {
+	id: string;
+	targetId: string;
+	targetType: string;
+	artifactName?: string;
+	tierName?: string;
+	priceCents?: number;
+	billingInterval?: string;
+	status: string;
+	currentPeriodEnd?: string;
+	cancelledAt?: string;
+}

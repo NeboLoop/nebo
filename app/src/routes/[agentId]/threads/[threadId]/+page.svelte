@@ -4,8 +4,11 @@
   import { page } from '$app/stores';
   import ChatPane from '$lib/components/chat/ChatPane.svelte';
   import type { AgentPageContext, EnrichedChat } from '$lib/types/agentPage';
-  import { createChatController, toolDisplayName, formatTime, artifactsToWorkItems, artifactsToAttachments } from '$lib/chat/controller.svelte';
+  import { createChatController, toolDisplayName, artifactsToWorkItems, artifactsToAttachments } from '$lib/chat/controller.svelte';
   import type { ChatMessage } from '$lib/chat/controller.svelte';
+  import { toMentionAgent } from '$lib/chat/roster';
+  import { threadKey } from '$lib/chat/sessionKey';
+  import { formatTime } from '$lib/time';
   import { getWebSocketClient } from '$lib/websocket/client';
   import type { Agent, ChatMessage as ApiChatMessage } from '$lib/api/neboComponents';
   import { uploadFiles } from '$lib/api/upload';
@@ -51,7 +54,7 @@
 
   const initialAgentId = $page.params.agentId ?? '';
   const initialThreadId = $page.params.threadId ?? '';
-  const chat = createChatController({ agentId: initialAgentId, sessionKey: `agent:${initialAgentId}:thread:${initialThreadId}` });
+  const chat = createChatController({ agentId: initialAgentId, sessionKey: threadKey(initialAgentId, initialThreadId) });
 
   // When navigated from a fresh send, the run is started on THIS page (after
   // subscribe). Settle listeners clear the pending-send stash and strip ?active=1
@@ -89,7 +92,7 @@
   }
 
   function isFirstRunEvent(data: { agentId?: string; session_id?: string }) {
-    const sk = `agent:${initialAgentId}:thread:${initialThreadId}`;
+    const sk = threadKey(initialAgentId, initialThreadId);
     if (data.session_id && data.session_id !== sk) return false;
     if (data.agentId && data.agentId !== initialAgentId) return false;
     return true;
@@ -136,15 +139,7 @@
       const api = await import('$lib/api/nebo');
       const resp = await api.listAgents();
       if (resp?.agents?.length) {
-        chat.setAllAgents((resp.agents as Agent[]).map((a) => ({
-          id: a.id,
-          name: a.name,
-          role: a.description || '',
-          initial: a.name.charAt(0).toUpperCase(),
-          status: a.isEnabled ? 'online' : 'paused',
-          color: a.color || 'teal',
-          isApp: a.isApp ?? false,
-        })));
+        chat.setAllAgents((resp.agents as Agent[]).map(toMentionAgent));
       }
     } catch { /* keep empty */ }
   });
@@ -174,7 +169,7 @@
       // send happened in.
       if (lastThreadId && threadId !== lastThreadId) pendingSendStarted = false;
       lastThreadId = threadId;
-      const sk = `agent:${agentId}:thread:${threadId}`;
+      const sk = threadKey(agentId, threadId);
       chat.setSessionKey(sk);
 
       // Restore a chat_error stashed when the first-send page instance was torn

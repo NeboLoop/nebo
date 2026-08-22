@@ -10,7 +10,6 @@ use tracing::{debug, info, warn};
 use crate::memory;
 
 /// Estimated token-to-character ratio.
-const CHARS_PER_TOKEN: usize = 4;
 
 /// How long `drain_extractions` waits for in-flight tasks before giving up.
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
@@ -120,7 +119,7 @@ pub fn should_run_memory_flush(
     };
 
     let total_chars: usize = messages.iter().map(|m| m.content.len()).sum();
-    let estimated_tokens = total_chars / CHARS_PER_TOKEN;
+    let estimated_tokens = total_chars / crate::CHARS_PER_TOKEN;
     let threshold = (auto_compact_tokens as f64 * 0.75) as usize;
 
     estimated_tokens >= threshold
@@ -252,7 +251,7 @@ mod tests {
 
     #[test]
     fn test_chars_per_token() {
-        assert_eq!(CHARS_PER_TOKEN, 4);
+        assert_eq!(crate::CHARS_PER_TOKEN, 4);
     }
 
     #[test]
@@ -265,7 +264,7 @@ mod tests {
     #[test]
     fn test_token_estimation() {
         let text = "Hello world, this is a test message for token estimation.";
-        let estimated_tokens = text.len() / CHARS_PER_TOKEN;
+        let estimated_tokens = text.len() / crate::CHARS_PER_TOKEN;
         // 58 chars / 4 = 14 tokens
         assert_eq!(estimated_tokens, 14);
     }

@@ -1164,7 +1164,7 @@ impl AgentTool {
                         "agent(resource: \"task\", action: \"get\", task_id: \"1\")",
                     ));
                 }
-                match self.store.get_task_item(task_id) {
+                match self.store.get_pending_task(task_id) {
                     Ok(Some(t)) => {
                         let desc = t.description.as_deref().unwrap_or(&t.prompt);
                         let mut result = format!("Task {}: {}\nStatus: {}\n", t.id, desc, t.status);

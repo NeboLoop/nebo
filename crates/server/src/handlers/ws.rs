@@ -1703,34 +1703,13 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value) {
     }
 }
 
-/// Extract unique agent IDs from `<@agent-id>` tokens in the prompt.
-/// Deduplicates and excludes `exclude_agent_id` (the primary agent).
+/// Unique agent IDs mentioned in the prompt, excluding the thread's own
+/// agent. Delegates to the ONE mention grammar in `comm::handle`.
 fn parse_mention_tokens(prompt: &str, exclude_agent_id: &str) -> Vec<String> {
-    let mut seen = std::collections::HashSet::new();
-    let mut ids = Vec::new();
-    let bytes = prompt.as_bytes();
-    let mut i = 0;
-    while i + 2 < bytes.len() {
-        if bytes[i] == b'<' && bytes[i + 1] == b'@' {
-            let start = i + 2;
-            if let Some(end) = prompt[start..].find('>') {
-                let id = &prompt[start..start + end];
-                if !id.is_empty()
-                    && id != exclude_agent_id
-                    && id
-                        .chars()
-                        .all(|c| c.is_alphanumeric() || c == '.' || c == '_' || c == '-')
-                    && seen.insert(id.to_string())
-                {
-                    ids.push(id.to_string());
-                }
-                i = start + end + 1;
-                continue;
-            }
-        }
-        i += 1;
-    }
-    ids
+    comm::handle::parse_mention_tokens(prompt)
+        .into_iter()
+        .filter(|id| id != exclude_agent_id)
+        .collect()
 }
 
 /// Dispatch an async chat to a mentioned agent.

@@ -53,6 +53,8 @@ export async function uploadFile(
 		file = await convertHeicToJpeg(file);
 	}
 	return new Promise((resolve, reject) => {
+		// XMLHttpRequest on purpose: fetch exposes no upload-progress events, and
+		// onProgress drives the composer's progress UI. Don't "modernize" to fetch.
 		const xhr = new XMLHttpRequest();
 		const formData = new FormData();
 		formData.append('file', file);

@@ -7,6 +7,10 @@ pub mod bot_tool;
 pub mod capabilities;
 pub mod channel_bridge;
 pub mod coworker;
+
+/// Cap on raw subprocess/tool output surfaced into context (chars). ONE
+/// definition — shell and plugin execution truncate identically.
+pub(crate) const MAX_SUBPROCESS_OUTPUT: usize = 50000;
 pub mod deep_research;
 pub mod desktop_daemon;
 pub mod desktop_session;

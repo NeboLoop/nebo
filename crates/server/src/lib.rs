@@ -66,11 +66,6 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// chain.
 pub(crate) const MAX_HANDOFF_DEPTH: u8 = 3;
 
-/// Matches a web-composer mention chip `<@id>` where id is a bot_id or a loop
-/// agent UUID. Captures the inner id. Used by the loop channel branch to route
-/// a mention to the specific exposed agent it addresses.
-static MENTION_TOKEN_RE: std::sync::LazyLock<regex::Regex> =
-    std::sync::LazyLock::new(|| regex::Regex::new(r"<@([0-9a-fA-F._-]+)>").unwrap());
 
 /// Conservative detection of an explicit "produce one joint result together"
 /// ask. Used by the loop channel branch to choose coordination mode (one lead
@@ -3537,8 +3532,8 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
         // but honor an explicit `<@id>` mention chip (like the channel branch).
         let bot_id = config::read_bot_id().unwrap_or_default();
         let mut agent_id = String::new();
-        for cap in MENTION_TOKEN_RE.captures_iter(&text) {
-            let id = cap.get(1).map(|m| m.as_str()).unwrap_or("");
+        for id in comm::handle::parse_mention_tokens(&text) {
+            let id = id.as_str();
             if !bot_id.is_empty() && id == bot_id {
                 break; // primary bot — keep agent_id empty
             }
@@ -4091,8 +4086,8 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
         // appearance. This is the fan-out target set: each addressed agent runs
         // and replies for itself.
         let mut mentioned_targets: Vec<String> = Vec::new();
-        for cap in MENTION_TOKEN_RE.captures_iter(&text) {
-            let id = cap.get(1).map(|m| m.as_str()).unwrap_or("");
+        for id in comm::handle::parse_mention_tokens(&text) {
+            let id = id.as_str();
             let local_id = if !bot_id.is_empty() && id == bot_id {
                 Some(String::new()) // primary bot
             } else {
@@ -4280,7 +4275,7 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
         // Strip mention tokens so the command resolves, then handle it instead of
         // dispatching an agent run. Single canonical stop/new/clear path for channels
         // (previously these only worked in DMs/agent_spaces).
-        let command_text = MENTION_TOKEN_RE.replace_all(&text, "").trim().to_string();
+        let command_text = comm::handle::strip_mention_tokens(&text).trim().to_string();
         if command_text.starts_with('/') {
             let session_key =
                 types::keyparser::build_session_key("neboai", "channel", &msg.conversation_id);
@@ -4320,9 +4315,9 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
         {
             let registry = state.agent_registry.read().await;
             for line in std::iter::once(&text).chain(buffered.iter().map(|m| &m.text)) {
-                for cap in MENTION_TOKEN_RE.captures_iter(line) {
-                    let id = cap.get(1).map(|m| m.as_str()).unwrap_or("");
-                    if id.is_empty() || mention_names.contains_key(id) {
+                for id in comm::handle::parse_mention_tokens(line) {
+                    let id = id.as_str();
+                    if mention_names.contains_key(id) {
                         continue;
                     }
                     if !bot_id.is_empty() && id == bot_id {
@@ -4342,15 +4337,9 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
             }
         }
         let replace_mentions = |line: &str| -> String {
-            MENTION_TOKEN_RE
-                .replace_all(line, |cap: &regex::Captures| {
-                    let id = cap.get(1).map(|m| m.as_str()).unwrap_or("");
-                    match mention_names.get(id) {
-                        Some(name) => format!("@{}", name),
-                        None => cap.get(0).map(|m| m.as_str()).unwrap_or("").to_string(),
-                    }
-                })
-                .into_owned()
+            comm::handle::replace_mention_tokens(line, |id| {
+                mention_names.get(id).map(|name| format!("@{}", name))
+            })
         };
 
         // Build an attributed transcript as a single user turn.

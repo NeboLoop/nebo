@@ -53,6 +53,12 @@ pub trait ChannelDispatcher: Send + Sync {
 }
 
 /// A single autonomous agent worker. Owns all trigger tasks for one agent.
+/// Consecutive auth failures before a worker's channel loop pauses, and how
+/// long a paused loop waits before retrying. ONE pair — three function-local
+/// copies used to exist and could drift independently.
+const AUTH_PAUSE_THRESHOLD: u32 = 3;
+const AUTH_PAUSED_RETRY_SECS: u64 = 900;
+
 pub struct AgentWorker {
     pub agent_id: String,
     pub name: String,
@@ -1105,14 +1111,6 @@ async fn watch_loop(
     // trigger — nebo#69). Retry through blips; pause + notify only when the
     // failure is persistent — that is what actually needs a human.
     let mut consecutive_auth_failures: u32 = 0;
-    const AUTH_PAUSE_THRESHOLD: u32 = 3;
-    // Past the threshold the watch never parks permanently: it keeps probing
-    // on this slow cadence. A provider outage can trip the threshold while
-    // auth is actually fine (observed live: a gmail token-refresh blip parked
-    // a customer's order intake for two days) — only a human reconnecting
-    // should be REQUIRED when auth is truly revoked, and reconnecting still
-    // resumes immediately via plugin_auth_complete.
-    const AUTH_PAUSED_RETRY_SECS: u64 = 900;
     let max_backoff_secs = 300; // 5 minutes
 
     // Clean stale dedup entries on (re)start
@@ -1809,8 +1807,6 @@ async fn channel_loop(
     // through auth-looking blips, then a slow probe cadence — never a
     // permanent park (the July Slack outage parked channels exactly this way).
     let mut consecutive_auth_failures: u32 = 0;
-    const AUTH_PAUSE_THRESHOLD: u32 = 3;
-    const AUTH_PAUSED_RETRY_SECS: u64 = 900;
 
     // Threads this bot has posted into — feeds the respond-scope check for
     // un-addressed thread replies. Outside the respawn loop so bridge
@@ -2603,8 +2599,6 @@ async fn shared_channel_loop(
     // Same self-healing shape as the watch and dedicated-channel loops:
     // fast retries through auth-looking blips, then a slow probe cadence.
     let mut consecutive_auth_failures: u32 = 0;
-    const AUTH_PAUSE_THRESHOLD: u32 = 3;
-    const AUTH_PAUSED_RETRY_SECS: u64 = 900;
 
     // Threads any registered agent has replied into via this shared bridge —
     // feeds the respond-scope check, same as the per-agent loop.

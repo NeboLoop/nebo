@@ -2,7 +2,7 @@
   import SettingsHeader from '$lib/components/settings/SettingsHeader.svelte';
   import { onMount, onDestroy } from 'svelte';
   import { t } from 'svelte-i18n';
-  import { neboAIOAuthStartWithJanus, neboAIOAuthStatus } from '$lib/api/index';
+  import { neboAIOauthStart, neboAIOauthStatus } from '$lib/api/index';
 
   let user = $state({ name: '', email: '', displayName: '' });
   let connected = $state(true);
@@ -55,7 +55,7 @@
     reconnectError = '';
     authUrl = '';
     try {
-      const result = await neboAIOAuthStartWithJanus(false);
+      const result = await neboAIOauthStart();
       const pendingState = result.state;
 
       // Headless server (Android/remote) can't open a browser — open it here.
@@ -72,7 +72,7 @@
 
       oauthPollInterval = setInterval(async () => {
         try {
-          const status = await neboAIOAuthStatus(pendingState);
+          const status = await neboAIOauthStatus(pendingState);
           if (status?.status === 'complete') {
             if (oauthPollInterval) { clearInterval(oauthPollInterval); oauthPollInterval = null; }
             if (oauthTimeout) { clearTimeout(oauthTimeout); oauthTimeout = null; }

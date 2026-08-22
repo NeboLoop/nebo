@@ -1,5 +1,6 @@
 import { writable, derived, get } from 'svelte/store';
 import { logger } from '$lib/monitoring';
+import { formatRelative } from '$lib/time';
 
 export type NotificationType = 'agent' | 'system' | 'warning' | 'error';
 
@@ -36,7 +37,7 @@ async function fetchPage(offset: number): Promise<void> {
     type: (n.type as NotificationType) || 'system',
     title: n.title,
     message: n.body || '',
-    time: n.createdAt ? formatRelativeTime(n.createdAt * 1000) : 'just now',
+    time: formatRelative(n.createdAt ? n.createdAt * 1000 : Date.now()),
     createdAt: n.createdAt ? n.createdAt * 1000 : Date.now(),
     read: !!n.readAt,
     link: n.actionUrl || undefined,
@@ -95,7 +96,7 @@ export function pushNotification(data: {
     type: (data.type as NotificationType) || 'system',
     title: data.title,
     message: data.body || '',
-    time: data.createdAt ? formatRelativeTime(data.createdAt * 1000) : 'just now',
+    time: formatRelative(data.createdAt ? data.createdAt * 1000 : Date.now()),
     createdAt: data.createdAt ? data.createdAt * 1000 : Date.now(),
     read: !!data.readAt,
     link: data.actionUrl || undefined,
@@ -127,19 +128,3 @@ export function removeNotification(id: string) {
   import('$lib/api/nebo').then(api => api.deleteNotification(id)).catch(() => {});
 }
 
-function formatRelativeTime(isoDate: string | number): string {
-  try {
-    const date = new Date(isoDate);
-    const now = Date.now();
-    const diffMs = now - date.getTime();
-    const diffMin = Math.floor(diffMs / 60_000);
-    if (diffMin < 1) return 'just now';
-    if (diffMin < 60) return `${diffMin} minute${diffMin > 1 ? 's' : ''} ago`;
-    const diffHr = Math.floor(diffMin / 60);
-    if (diffHr < 24) return `${diffHr} hour${diffHr > 1 ? 's' : ''} ago`;
-    const diffDay = Math.floor(diffHr / 24);
-    return `${diffDay} day${diffDay > 1 ? 's' : ''} ago`;
-  } catch {
-    return String(isoDate);
-  }
-}

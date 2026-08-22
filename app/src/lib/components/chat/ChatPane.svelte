@@ -19,6 +19,7 @@
   import type { UploadedAttachment } from '$lib/types/attachment';
   import { getAttachmentType, formatFileSize, attachmentMediaUrl } from '$lib/types/attachment';
   import { NEAR_BOTTOM_PX, distanceFromBottom } from '$lib/chat/scroll';
+  import { threadKey } from '$lib/chat/sessionKey';
 
   interface Artifact {
     /** Stable container id — same across every version of this document. */
@@ -145,7 +146,7 @@
       // the persisted message text so we can echo it without a second copy.
       const res = await teachStop({
         agentId,
-        sessionKey: sessionId || (threadId ? `agent:${agentId}:thread:${threadId}` : ''),
+        sessionKey: sessionId || (threadId ? threadKey(agentId, threadId) : ''),
       });
       onteachsent?.(res.message ?? '', res.sessionKey ?? '');
     } catch (e) {

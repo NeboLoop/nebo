@@ -1420,9 +1420,8 @@ impl PluginTool {
                 }
 
                 // Truncate very long output (char-boundary safe)
-                const MAX_OUTPUT: usize = 50000;
-                if text.len() > MAX_OUTPUT {
-                    types::strutil::safe_truncate(&mut text, MAX_OUTPUT);
+                if text.len() > crate::MAX_SUBPROCESS_OUTPUT {
+                    types::strutil::safe_truncate(&mut text, crate::MAX_SUBPROCESS_OUTPUT);
                     text.push_str("\n... (output truncated)");
                 }
 

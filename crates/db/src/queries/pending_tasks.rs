@@ -307,17 +307,6 @@ impl Store {
             .map_err(|e| NeboError::Database(e.to_string()))
     }
 
-    /// Get a single tracking task by ID.
-    pub fn get_task_item(&self, id: &str) -> Result<Option<PendingTask>, NeboError> {
-        let conn = self.conn()?;
-        conn.query_row(
-            "SELECT * FROM pending_tasks WHERE id = ?1",
-            params![id],
-            row_to_pending_task,
-        )
-        .optional()
-        .map_err(|e| NeboError::Database(e.to_string()))
-    }
 
     /// Delete tracking task lists completed more than N days ago.
     pub fn cleanup_old_task_lists(&self, days: i64) -> Result<(), NeboError> {

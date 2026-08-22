@@ -5,6 +5,8 @@
   import ChatPane from '$lib/components/chat/ChatPane.svelte';
   import { getWebSocketClient } from '$lib/websocket/client';
   import { createChatController, artifactsToWorkItems, artifactsToAttachments } from '$lib/chat/controller.svelte';
+  import { toMentionAgent } from '$lib/chat/roster';
+  import { appKey } from '$lib/chat/sessionKey';
   import type { Agent, ChatMessage as ApiChatMessage } from '$lib/api/neboComponents';
   import { uploadFiles } from '$lib/api/upload';
   import type { UploadedAttachment } from '$lib/types/attachment';
@@ -34,11 +36,11 @@
     }
   });
 
-  const sessionKey = $derived(`agent:${agentId}:app${paramCtx ? ':' + paramCtx : ''}`);
+  const sessionKey = $derived(appKey(agentId, paramCtx || undefined));
 
   // Capture current values — embed agentId is stable (route doesn't change without full reload)
   const initialAgentId = $page.params.agentId ?? '';
-  const initialSessionKey = `agent:${initialAgentId}:app${$page.url.searchParams.get('ctx') ? ':' + $page.url.searchParams.get('ctx') : ''}`;
+  const initialSessionKey = appKey(initialAgentId, $page.url.searchParams.get('ctx') || undefined);
 
   const chat = createChatController({
     agentId: initialAgentId,
@@ -88,15 +90,7 @@
     try {
       const resp = await api.listAgents();
       if (resp?.agents?.length) {
-        chat.setAllAgents((resp.agents as Agent[]).map((a) => ({
-          id: a.id,
-          name: a.name,
-          role: a.description || '',
-          initial: a.name.charAt(0).toUpperCase(),
-          status: a.isEnabled ? 'online' : 'paused',
-          color: a.color || 'teal',
-          isApp: a.isApp ?? false,
-        })));
+        chat.setAllAgents((resp.agents as Agent[]).map(toMentionAgent));
       }
     } catch (e) {
       console.warn('[chat-embed] Failed to load agents for @mentions:', e);

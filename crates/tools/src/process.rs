@@ -371,12 +371,11 @@ pub fn clean_powershell_stderr(stderr: &str) -> String {
 /// Configure a Command to not flash a console window on Windows.
 ///
 /// On Windows, subprocess spawning creates a visible console window by default.
-/// This sets the CREATE_NO_WINDOW creation flag to suppress it.
+/// This sets the types::constants::CREATE_NO_WINDOW creation flag to suppress it.
 /// No-op on non-Windows platforms.
 #[cfg(target_os = "windows")]
 pub fn hide_window(cmd: &mut tokio::process::Command) {
-    const CREATE_NO_WINDOW: u32 = 0x08000000;
-    cmd.creation_flags(CREATE_NO_WINDOW);
+    cmd.creation_flags(types::constants::CREATE_NO_WINDOW);
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -388,8 +387,7 @@ pub fn hide_window(_cmd: &mut tokio::process::Command) {
 #[cfg(target_os = "windows")]
 pub fn hide_window_std(cmd: &mut std::process::Command) {
     use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x08000000;
-    cmd.creation_flags(CREATE_NO_WINDOW);
+    cmd.creation_flags(types::constants::CREATE_NO_WINDOW);
 }
 
 #[cfg(not(target_os = "windows"))]

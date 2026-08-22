@@ -13,7 +13,8 @@
 import { getWebSocketClient } from '$lib/websocket/client';
 import type { AskWidgetDef } from '$lib/components/chat/AskWidget.svelte';
 import type { UploadedAttachment } from '$lib/types/attachment';
-import { dispatchInstallStart } from '$lib/marketplace/installCodes';
+import { sendInstallCode } from '$lib/marketplace/installCodes';
+import { formatTime } from '$lib/time';
 
 export interface TokenUsage {
   input: number;
@@ -222,18 +223,6 @@ export function artifactsToWorkItems(artifacts: unknown): WorkItem[] {
   return docs
     .filter((d) => !pairedUrls.has(d.url))
     .map((d) => ({ ...d, codeUrl: fileExt(d.title) === 'html' ? sourceFor(d)?.url : undefined }));
-}
-
-/** Format a timestamp for display. */
-export function formatTime(ts: string | number): string {
-  try {
-    const n = typeof ts === 'number' ? ts : Number(ts);
-    const date = !isNaN(n) && n > 0
-      ? new Date(n < 1e12 ? n * 1000 : n)
-      : new Date(String(ts));
-    if (isNaN(date.getTime())) return '';
-    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  } catch { return ''; }
 }
 
 export function createChatController(config: ChatControllerConfig) {
@@ -698,14 +687,10 @@ export function createChatController(config: ChatControllerConfig) {
       }];
     }
 
-    // Marketplace install code: the install modal owns all feedback. Open it
-    // immediately and send the code to the backend, but DON'T engage the chat
-    // "working" spinner — no agent reply streams back, so the spinner would hang
-    // for the entire install and never clear.
-    if (dispatchInstallStart(text)) {
-      ws.send('chat', { prompt: text.trim(), agent_id: agentId, ...(activeSessionKey ? { session_id: activeSessionKey } : {}) });
-      return;
-    }
+    // Marketplace install code: sendInstallCode opens the modal (which owns all
+    // feedback) and delivers the code; DON'T engage the chat "working" spinner —
+    // no agent reply streams back, so the spinner would hang and never clear.
+    if (sendInstallCode(text, agentId, activeSessionKey)) return;
 
     isLoading = true;
     phaseStartTime = Date.now();

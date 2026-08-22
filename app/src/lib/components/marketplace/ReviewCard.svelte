@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { t } from 'svelte-i18n';
 	import { Star } from 'lucide-svelte';
+	import { formatRelative } from '$lib/time';
 
 	interface Review {
 		id?: string;
@@ -33,23 +34,12 @@
 	const reviewerName = $derived(review.authorName ?? review.reviewer_name ?? $t('marketplace.detail.anonymous'));
 	const createdAt = $derived(review.createdAt ?? review.created_at ?? '');
 
-	function timeAgo(dateStr: string) {
-		if (!dateStr) return '';
-		const diff = Date.now() - new Date(dateStr).getTime();
-		const mins = Math.floor(diff / 60000);
-		if (mins < 60) return $t('time.minutesAgo', { values: { n: mins } });
-		const hours = Math.floor(mins / 60);
-		if (hours < 24) return $t('time.hoursAgo', { values: { n: hours } });
-		const days = Math.floor(hours / 24);
-		if (days < 30) return $t('time.daysAgo', { values: { n: days } });
-		return $t('time.monthsAgo', { values: { n: Math.floor(days / 30) } });
-	}
 </script>
 
 <div class="shrink-0 w-72 rounded-2xl bg-base-content/[0.04] p-4 flex flex-col">
 	<div class="flex items-center justify-between mb-2">
 		<span class="text-base font-semibold truncate">{reviewerName}</span>
-		<span class="text-sm text-base-content/40 shrink-0 ml-2">{timeAgo(createdAt)}</span>
+		<span class="text-sm text-base-content/40 shrink-0 ml-2">{formatRelative(createdAt)}</span>
 	</div>
 	<div class="flex items-center gap-0.5 mb-2">
 		{#each Array.from({ length: 5 }, (_, i) => i < review.rating) as filled}

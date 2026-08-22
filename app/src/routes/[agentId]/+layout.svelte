@@ -355,10 +355,8 @@
     if (current >= total) return;
     apiRunsLoading[id] = true;
     try {
-      const { default: webapi } = await import('$lib/api/gocliRequest');
-      const resp = await webapi.get<import('$lib/api/neboComponents').ListAgentRunsResponse>(
-        `/api/v1/agents/${id}/runs`, { limit: 20, offset: current }
-      );
+      const api = await import('$lib/api/nebo');
+      const resp = await api.listAgentRuns(id, 20, current);
       if (resp?.runs) {
         const newRaw = resp.runs as RawRunRecord[];
         apiRawRuns[id] = [...(apiRawRuns[id] || []), ...newRaw];

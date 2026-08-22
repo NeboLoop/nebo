@@ -9,7 +9,7 @@
   import ExternalLink from 'lucide-svelte/icons/external-link';
   import TriangleAlert from 'lucide-svelte/icons/triangle-alert';
   import * as api from '$lib/api/nebo';
-  import { listMarketplaceSubscriptions, cancelMarketplaceSubscription, type MarketplaceSubscriptionInfo } from '$lib/api/index';
+  import type { MarketplaceSubscriptionInfo } from '$lib/types/marketplace';
   import type {
     AccountStatusResponse,
     NeboAIBillingSubscriptionResponse,
@@ -47,12 +47,14 @@
             api.neboAIBillingSubscription(),
             api.neboAIBillingPaymentMethods(),
             api.neboAIBillingInvoices(),
-            listMarketplaceSubscriptions()
+            api.neboAIMarketplaceListSubscriptions()
           ]);
           if (subResp.status === 'fulfilled') subscription = subResp.value;
           if (pmResp.status === 'fulfilled') paymentMethods = pmResp.value?.methods || [];
           if (invResp.status === 'fulfilled') invoices = invResp.value?.invoices || [];
-          if (mktResp.status === 'fulfilled') marketplaceSubs = mktResp.value?.subscriptions || [];
+          if (mktResp.status === 'fulfilled')
+            marketplaceSubs =
+              (mktResp.value as { subscriptions?: MarketplaceSubscriptionInfo[] })?.subscriptions || [];
         }
       } catch {
         status = null;
@@ -352,7 +354,7 @@
                       onclick={async () => {
                         actionLoading = `cancel-mkt-${sub.id}`;
                         try {
-                          await cancelMarketplaceSubscription(sub.id);
+                          await api.neboAIMarketplaceCancelSubscription(sub.id);
                           marketplaceSubs = marketplaceSubs.map(s => s.id === sub.id ? { ...s, status: 'cancelled' } : s);
                           cancellingSubId = '';
                         } catch (e) {

@@ -34,8 +34,8 @@
     updateAgentInputs,
     listAgentWorkflows,
     updateAgentWorkflow,
+    neboAIMarketplaceCreateSubscription,
   } from '$lib/api/nebo';
-  import { createMarketplaceSubscription } from '$lib/api/index';
   import type { PaymentMethodInfo, AgentWorkflow } from '$lib/api/neboComponents';
   import type { AgentInputField } from '$lib/types/agentPage';
   import AgentInputForm from '$lib/components/agent/AgentInputForm.svelte';
@@ -628,11 +628,11 @@
   async function confirmPurchase() {
     confirmLoading = true;
     try {
-      const resp = await createMarketplaceSubscription({
+      const resp = (await neboAIMarketplaceCreateSubscription({
         targetId: artifactId,
         targetType: artifactType || codeType,
         botCount: 1,
-      });
+      })) as { checkoutUrl?: string; subscriptionId?: string };
       if (resp.checkoutUrl) {
         window.open(resp.checkoutUrl, '_blank');
         phase = 'processing';

@@ -7,6 +7,7 @@
   import { getScheduleAgents, runsPerWeek as storeRunsPerWeek, userScheduleItems } from '$lib/stores/schedule.js';
   import MiniMonth from './MiniMonth.svelte';
   import type { Agent, Chat } from '$lib/api/neboComponents';
+  import { formatRelative } from '$lib/time';
 
   let { activePage = 'home', activeChat = '', enabled = null, onToggleAgent = null, marketplaceTab = '' } = $props();
   let collapsed = $state(false);
@@ -51,7 +52,7 @@
           title: c.title,
           agent: '',
           agentColor: 'teal',
-          updatedAt: formatRelativeTime(new Date(c.updatedAt * 1000).toISOString()),
+          updatedAt: formatRelative(c.updatedAt * 1000, 'short'),
         }));
         // Group chats by recency
         try {
@@ -68,18 +69,6 @@
       // Keep mock data
     }
   });
-
-  function formatRelativeTime(iso: string): string {
-    try {
-      const diffMin = Math.floor((Date.now() - new Date(iso).getTime()) / 60_000);
-      if (diffMin < 1) return $t('time.now');
-      if (diffMin < 60) return $t('time.minutesShort', { values: { n: diffMin } });
-      const diffHr = Math.floor(diffMin / 60);
-      if (diffHr < 24) return $t('time.hoursShort', { values: { n: diffHr } });
-      const diffDay = Math.floor(diffHr / 24);
-      return $t('time.daysShort', { values: { n: diffDay } });
-    } catch { return iso; }
-  }
 
   const isSchedule = $derived(activePage === 'schedule');
   const isMarketplace = $derived(activePage === 'marketplace');
