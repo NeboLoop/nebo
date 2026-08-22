@@ -1,5 +1,6 @@
 <script lang="ts">
 	import BuilderCanvas from './BuilderCanvas.svelte';
+	import FlowChain from './FlowChain.svelte';
 	import NodeConfigPanel from './NodeConfigPanel.svelte';
 	import NodeCatalog from './NodeCatalog.svelte';
 	import { storage } from '$lib/storage';
@@ -219,6 +220,8 @@
 
 	// ── Selection
 	let selectedNodeId = $state<string | null>(null);
+	/** Reading a flow is the default; the canvas is for laying one out. */
+	let chainView = $state(true);
 	// The builder IS the editor — a View mode here was vestigial (read-only
 	// canvases live on the runs/schedule pages) and, because the Architect
 	// panel only rendered in edit mode, the View/Edit toggle looked identical
@@ -642,6 +645,29 @@
 					<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.13-9.36L23 10"/></svg>
 				</button>
 
+				<!-- Read the flow top-to-bottom, or lay it out freely. Reading is
+				     the default: a chain auto-fit onto a canvas is unreadable at
+				     any real length, and a loop drawn as a back-edge is the
+				     hardest thing in a node graph to follow. -->
+				<div class="join">
+					<button
+						class="btn btn-sm join-item gap-1.5 {chainView ? 'btn-neutral' : 'btn-ghost'}"
+						onclick={() => (chainView = true)}
+						title="Read as a chain"
+					>
+						<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="6" y="3" width="12" height="5" rx="1.5"/><rect x="6" y="16" width="12" height="5" rx="1.5"/><line x1="12" y1="8" x2="12" y2="16"/></svg>
+						<span class="text-xs">Chain</span>
+					</button>
+					<button
+						class="btn btn-sm join-item gap-1.5 {chainView ? 'btn-ghost' : 'btn-neutral'}"
+						onclick={() => (chainView = false)}
+						title="Lay out on a canvas"
+					>
+						<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="8" y="14" width="7" height="7" rx="1"/></svg>
+						<span class="text-xs">Canvas</span>
+					</button>
+				</div>
+
 				<div class="w-px h-5 bg-base-content/10"></div>
 
 				<!-- Add node -->
@@ -707,6 +733,15 @@
 		<!-- Canvas -->
 		<div class="flex-1 min-h-0 relative">
 			{#if activeWorkflow}
+				{#if chainView}
+					<div class="h-full overflow-y-auto">
+						<FlowChain
+							workflow={activeWorkflow}
+							selectedId={selectedNodeId}
+							onselect={handleSelectNode}
+						/>
+					</div>
+				{:else}
 				<BuilderCanvas
 					workflow={activeWorkflow}
 					workflowName={activeWorkflowName}
@@ -723,6 +758,7 @@
 					onremoveConnection={handleRemoveConnection}
 					ondropNode={handleDropNode}
 				/>
+				{/if}
 			{:else}
 				<div class="flex h-full items-center justify-center flex-col gap-3">
 					<div class="text-3xl text-base-content/20">+</div>
