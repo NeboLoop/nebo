@@ -1,6 +1,4 @@
 <script lang="ts">
-  import FlowsPane from '$lib/components/flows/FlowsPane.svelte';
-  import RunsPane from '$lib/components/flows/RunsPane.svelte';
   import { goto } from '$lib/nav';
   import { getContext, onMount, onDestroy } from 'svelte';
   import { t } from 'svelte-i18n';
@@ -417,7 +415,10 @@
   }}
   headerTitle={thread?.name ?? $t('chat.thread')}
   headerRight={$t('chat.work')}
-
+  flows={ctx.workflowEntries}
+  runs={ctx.runs}
+  onopenflow={(name) => ctx.openWorkflow(name, ctx.config.workflows?.[name])}
+  onopenrun={(id) => goto(`/${ctx.agentId}/runs/${id}`)}
   allAgents={chat.allAgents}
   tokenUsage={chat.tokenUsage}
   quotaWarning={chat.quotaWarning}
@@ -458,7 +459,4 @@
     chat.dismissError();
   }}
   isLoading={chat.isLoading}
->
-  {#snippet flowsPane()}<FlowsPane onopen={ctx.openFlow} onask={ctx.askEmployee} />{/snippet}
-  {#snippet runsPane()}<RunsPane onopen={(id) => goto(`/${ctx.agentId}/runs/${id}`)} />{/snippet}
-</ChatPane>
+/>

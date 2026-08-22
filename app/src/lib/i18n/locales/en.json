@@ -2713,7 +2713,6 @@
 		"cloudIndicator": "Audio is streaming to xAI"
 	},
 	"flows": {
-		"none": "No flows yet",
-		"newCallTree": "New call tree — design what a phone line handles"
+		"none": "No flows yet"
 	}
 }
