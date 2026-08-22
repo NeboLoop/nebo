@@ -2028,7 +2028,7 @@ pub(crate) fn reconcile_owner_inbox(state: &AppState) {
             return;
         }
     };
-    for (run_id, agent_id, binding_name, display) in suspensions {
+    for (run_id, agent_id, binding_name, display, _created_at) in suspensions {
         let approval_path = format!("/api/v1/agents/workflow-runs/{}/approval", run_id);
         push_inbox(
             state,

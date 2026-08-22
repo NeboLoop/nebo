@@ -26,9 +26,10 @@ mod sessions;
 mod settings;
 mod user_profile;
 mod users;
-mod work;
+pub(crate) mod work;
 mod workflows;
 
 pub use run_usage::cost_microcents;
 pub use license_keys::LicenseKeyRow;
 pub use plugin_account_profiles::PluginAccountProfile;
+pub use work::WorkDocumentListing;

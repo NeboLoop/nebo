@@ -28,6 +28,10 @@ func main() {
 	// Directories to scan for Rust structs.
 	structDirs := []string{
 		filepath.Join(root, "crates/db/src"),
+		// Row types returned straight from store methods live next to their
+		// queries (e.g. WorkDocumentListing) — without this dir their
+		// interfaces are referenced but never emitted.
+		filepath.Join(root, "crates/db/src/queries"),
 		filepath.Join(root, "crates/types/src"),
 		filepath.Join(root, "crates/server/src/handlers"),
 	}
