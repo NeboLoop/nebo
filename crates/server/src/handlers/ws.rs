@@ -290,6 +290,7 @@ async fn handle_app_ws_message(state: &AppState, agent_id: &str, text: &str) {
                     channel_ctx: None,
                     handoff_depth: 0,
                     seed_taint: vec![],
+                    audience: None,
                 };
 
                 run_chat(&state_clone, config).await;
@@ -916,6 +917,7 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState) {
                                             channel_ctx: None,
                                             handoff_depth: 0,
                                             seed_taint: vec![],
+                                            audience: None,
                                         };
 
                                         run_chat(&state_clone, config).await;
@@ -1673,6 +1675,7 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value) {
             channel_ctx: None,
             handoff_depth: 0,
             seed_taint: vec![],
+            audience: None,
         };
         run_chat(state, config).await;
     } else {
@@ -1788,6 +1791,7 @@ async fn fork_mention_chat(
         channel_ctx: None,
         handoff_depth: 0,
         seed_taint: vec![],
+        audience: None,
     };
 
     run_chat(state, chat_config).await;

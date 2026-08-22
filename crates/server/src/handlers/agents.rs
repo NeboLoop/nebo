@@ -2456,6 +2456,7 @@ pub async fn chat_with_agent(
         channel_ctx: None,
         handoff_depth: 0,
         seed_taint: vec![],
+        audience: None,
     };
 
     crate::chat_dispatch::run_chat(&state, config).await;

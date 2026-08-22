@@ -308,6 +308,17 @@ impl AgentTool {
             );
         }
 
+        // Recall-for-audience (trust-boundaries design 2026-08-22): replying
+        // to a coworker not granted by `memory.share_with` — memory lookups
+        // are refused outright. Working style (`tacit/`) already reaches the
+        // model via prompt injection (filtered there to tacit-only); refusing
+        // tool reads entirely closes indirect elicitation through the tool.
+        if ctx.audience_restricted && matches!(action, "recall" | "search" | "list") {
+            return ToolResult::error(
+                "Memory lookup is disabled while replying to a coworker who is not granted                  access to this scope. Answer from the context you already have, or tell                  them the information isn't shared with their role. Do not retry.",
+            );
+        }
+
         // Provenance write bar (trust-boundaries design 2026-08-22): a run
         // whose engine-stamped taint intersects this scope's bar must not
         // store — pollution stops at the store, not at the model's judgment.
@@ -2662,6 +2673,45 @@ mod tests {
             "metadata must carry provenance: {:?}",
             mem.metadata
         );
+    }
+
+    /// Recall-for-audience: a run replying to a non-granted coworker gets NO
+    /// memory lookups (tacit already rides the prompt injection); its own
+    /// stores still work (it writes to its own scope).
+    #[tokio::test]
+    async fn test_audience_restricted_refuses_reads() {
+        let (tool, _embedder, store) = agent_tool_with_embedder("audience-test");
+        store
+            .upsert_memory("project/case", "smith/wire", "wired Tuesday", None, None, "local:agent:a1")
+            .unwrap();
+        let ctx = ToolContext {
+            user_id: "local:agent:a1".to_string(),
+            audience_restricted: true,
+            ..Default::default()
+        };
+        for action in ["recall", "search", "list"] {
+            let result = tool
+                .handle_memory(
+                    &serde_json::json!({ "action": action, "key": "smith/wire", "query": "wire" }),
+                    &ctx,
+                )
+                .await;
+            assert!(result.is_error, "{action} must be refused under audience restriction");
+            assert!(result.content.contains("isn't shared with their role"), "{}", result.content);
+        }
+        // Its own stores still land (in its own scope).
+        let result = tool
+            .handle_memory(
+                &serde_json::json!({
+                    "action": "store",
+                    "key": "colleague/asked-about-smith",
+                    "value": "The receptionist asked about the Smith wire status today.",
+                    "namespace": "tacit/general",
+                }),
+                &ctx,
+            )
+            .await;
+        assert!(!result.is_error, "{}", result.content);
     }
 
     /// The recall fallbacks may surface ancestor-scoped rows (legacy owner

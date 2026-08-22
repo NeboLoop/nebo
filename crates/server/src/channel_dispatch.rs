@@ -104,6 +104,7 @@ impl agent::ChannelDispatcher for ChannelDispatchImpl {
                 // Remote channel interlocutors (Slack/Discord) are untrusted
                 // input — seed the run's taint accordingly.
                 seed_taint: vec![types::provenance::ProvenanceClass::Channel],
+                audience: None,
             };
             let channel = channel_kind.as_str();
 

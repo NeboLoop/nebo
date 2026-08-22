@@ -255,6 +255,9 @@ pub struct ChatConfig {
     /// triggering input (remote channel message, coworker envelope). Empty for
     /// owner-initiated runs.
     pub seed_taint: Vec<types::provenance::ProvenanceClass>,
+    /// Recall-for-audience: the agent id this run replies to (coworker rail
+    /// only). `None` for owner-initiated runs.
+    pub audience: Option<String>,
 }
 
 /// Configuration for sending a reply back through a communication channel.
@@ -420,6 +423,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
     let comm_reply = config.comm_reply;
     let config_handoff_depth = config.handoff_depth;
     let seed_taint = config.seed_taint.clone();
+    let audience = config.audience.clone();
     let entity_cfg = config.entity_config;
     let images = config.images;
     let origin_agent_id = config.origin_agent_id;
@@ -524,6 +528,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                 .map(|c| c.handoff_depth)
                 .unwrap_or(config_handoff_depth),
             seed_taint: seed_taint.clone(),
+            audience: audience.clone(),
             ..Default::default()
         };
 
@@ -1632,6 +1637,7 @@ fn maybe_auto_continue(
             channel_ctx: None,
             handoff_depth: 0,
             seed_taint: vec![],
+            audience: None,
         };
         run_chat(&state, config).await;
     });
@@ -1703,6 +1709,7 @@ pub async fn run_chat_events(
         full_access,
         handoff_depth: config.handoff_depth,
         seed_taint: config.seed_taint,
+        audience: config.audience,
         ..Default::default()
     };
 

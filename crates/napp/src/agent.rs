@@ -114,6 +114,14 @@ pub struct MemoryConfig {
     /// deliberate opt-out.
     #[serde(default)]
     pub write_bar: Option<Vec<String>>,
+    /// Owner-set recall-for-audience grants: agent ids (or "*") allowed to
+    /// receive this agent's non-`tacit/` memory in coworker replies. Default
+    /// DENY — an empty list means matter/project memory never surfaces in a
+    /// reply to another agent; "it isn't shared with your role" is the
+    /// correct answer. Same policy shape as operation gates: owner-set,
+    /// never per-conversation model judgment.
+    #[serde(default)]
+    pub share_with: Vec<String>,
 }
 
 /// One declared memory topic — `{ "slug": "lead", "description": "A prospective

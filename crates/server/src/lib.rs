@@ -3500,6 +3500,7 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
             channel_ctx: None,
             handoff_depth: 0,
             seed_taint: vec![],
+            audience: None,
         };
 
         chat_dispatch::run_chat(&state, config).await;
@@ -3636,6 +3637,7 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
             channel_ctx: None,
             handoff_depth: 0,
             seed_taint: vec![],
+            audience: None,
         };
 
         chat_dispatch::run_chat(&state, config).await;
@@ -3896,6 +3898,7 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
                 channel_ctx: None,
                 handoff_depth: 0,
                 seed_taint: vec![],
+                audience: None,
             };
 
             chat_dispatch::run_chat(&state, config).await;
@@ -3996,6 +3999,7 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
             channel_ctx: None,
             handoff_depth: 0,
             seed_taint: vec![],
+            audience: None,
         };
 
         chat_dispatch::run_chat(&state, config).await;
@@ -4529,6 +4533,7 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
                 // Loop-channel members (other bots / remote agents) are
                 // untrusted input — seed the run's taint accordingly.
                 seed_taint: vec![types::provenance::ProvenanceClass::Channel],
+                audience: None,
             };
 
             chat_dispatch::run_chat(&state, config).await;

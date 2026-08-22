@@ -366,6 +366,7 @@ pub async fn join_prompt_recall(
     user_id: &str,
     prompt: &str,
     existing_memory_ids: &HashSet<i64>,
+    tacit_only: bool,
 ) -> (String, Vec<i64>) {
     let t_join = std::time::Instant::now();
     match tokio::time::timeout(
@@ -379,7 +380,7 @@ pub async fn join_prompt_recall(
                 net_ms = net.as_millis() as u64,
                 "hybrid recall completed within budget"
             );
-            format_prompt_relevant_memories(results, existing_memory_ids)
+            format_prompt_relevant_memories(results, existing_memory_ids, tacit_only)
         }
         // Spawned search panicked — no recall this turn.
         Ok(Err(_)) => (String::new(), Vec::new()),
@@ -410,7 +411,7 @@ pub async fn join_prompt_recall(
                     })
                 })
                 .collect();
-            format_prompt_relevant_memories(results, existing_memory_ids)
+            format_prompt_relevant_memories(results, existing_memory_ids, tacit_only)
         }
     }
 }
@@ -431,6 +432,7 @@ pub async fn join_prompt_recall(
 pub fn format_prompt_relevant_memories(
     results: Vec<tools::HybridSearchResult>,
     existing_memory_ids: &HashSet<i64>,
+    tacit_only: bool,
 ) -> (String, Vec<i64>) {
     let mut lines = Vec::new();
     let mut injected_ids: Vec<i64> = Vec::new();
@@ -439,6 +441,12 @@ pub fn format_prompt_relevant_memories(
         // Session chunks with no parent memory are transcript fragments, not
         // durable facts — skip them for prompt injection.
         let Some(mem_id) = r.memory_id else { continue };
+        // Recall-for-audience: replying to a non-granted coworker serves
+        // working style only — matter/project facts never surface (default
+        // deny; trust-boundaries design 2026-08-22).
+        if tacit_only && !r.namespace.starts_with("tacit/") {
+            continue;
+        }
         if existing_memory_ids.contains(&mem_id) || injected_ids.contains(&mem_id) {
             continue;
         }
@@ -662,7 +670,17 @@ mod tests {
                 Some(0.0),
             )
             .await;
-        let (text, ids) = format_prompt_relevant_memories(results.clone(), &HashSet::new());
+        let (text, ids) = format_prompt_relevant_memories(results.clone(), &HashSet::new(), false);
+        let _ = (&text, &ids);
+        // Audience-restricted recall serves tacit/ only — matter/project
+        // facts never surface in a reply to a non-granted coworker.
+        let (t2, i2) = format_prompt_relevant_memories(results.clone(), &HashSet::new(), true);
+        for r in &results {
+            if !r.namespace.starts_with("tacit/") {
+                assert!(!t2.contains(&r.value), "non-tacit leaked: {}", r.value);
+            }
+        }
+        assert!(i2.len() <= ids.len());
         assert!(
             text.contains("Alice leads the migration project"),
             "FTS-only recall should still inject: {text:?}"
@@ -671,7 +689,7 @@ mod tests {
 
         // Memories already in the identity slice are deduped out.
         let existing: HashSet<i64> = ids.iter().copied().collect();
-        let (text, ids) = format_prompt_relevant_memories(results, &existing);
+        let (text, ids) = format_prompt_relevant_memories(results, &existing, false);
         assert!(text.is_empty());
         assert!(ids.is_empty());
 
@@ -703,7 +721,7 @@ mod tests {
         let results = adapter
             .search("zebra", "u1", PROMPT_MEMORY_CANDIDATES, Some(0.0))
             .await;
-        let (text, ids) = format_prompt_relevant_memories(results, &HashSet::new());
+        let (text, ids) = format_prompt_relevant_memories(results, &HashSet::new(), false);
         assert!(!ids.is_empty(), "at least one line always fits");
         // Each line is ~425 chars, so the 1,200-char budget admits at most 3.
         assert!(
@@ -736,7 +754,7 @@ mod tests {
         });
 
         let (text, ids) =
-            join_prompt_recall(task, &store, "u-join-fast", "anything", &HashSet::new()).await;
+            join_prompt_recall(task, &store, "u-join-fast", "anything", &HashSet::new(), false).await;
         assert!(
             text.contains("vector-only recall content"),
             "hybrid results must flow unchanged: {text:?}"
@@ -777,7 +795,7 @@ mod tests {
         });
 
         let (text, ids) =
-            join_prompt_recall(task, &store, "u-join-slow", "keyword", &HashSet::new()).await;
+            join_prompt_recall(task, &store, "u-join-slow", "keyword", &HashSet::new(), false).await;
         assert!(
             text.contains("keyword fallback content"),
             "FTS tier must serve the turn when the vector leg exceeds budget: {text:?}"

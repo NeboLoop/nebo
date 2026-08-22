@@ -528,6 +528,12 @@ pub struct RunRequest {
     /// message). The runner unions tool-derived classes on top and stamps the
     /// final set on the Done event.
     pub seed_taint: Vec<types::provenance::ProvenanceClass>,
+    /// Recall-for-audience: the agent id this run is REPLYING TO (coworker
+    /// messages only). When set and not granted by the target's
+    /// `memory.share_with`, recall serves `tacit/` (working style) only and
+    /// the memory tool refuses non-tacit reads — matter/project facts never
+    /// surface in a reply to a non-granted colleague. `None` for owner runs.
+    pub audience: Option<String>,
 }
 
 /// Shared atomic counters for live run progress reporting.
@@ -1226,6 +1232,7 @@ impl Runner {
                         req.tool_allowlist.as_ref(),
                         mcp_context.as_ref(),
                         &fork_taint,
+                        None, // forks never reply to a coworker audience
                     )
                     .await;
 
@@ -1324,6 +1331,7 @@ impl Runner {
                 req.tool_allowlist.as_ref(),
                 mcp_context.as_ref(),
                 &run_taint,
+                req.audience.as_deref(),
             )
             .await;
 
@@ -1510,6 +1518,7 @@ impl Runner {
                             None, // the review fork's whitelist rides ReviewForkCtx
                             None, // review forks never serve CLI-provider tools
                             &fork_taint,
+                            None, // review forks never reply to a coworker audience
                         )
                         .await;
                         drop(sub_tx);
@@ -1669,6 +1678,7 @@ async fn run_loop(
     tool_allowlist: Option<&std::collections::HashSet<String>>,
     mcp_context: Option<&Arc<tokio::sync::Mutex<ToolContext>>>,
     run_taint: &std::sync::Mutex<std::collections::BTreeSet<types::provenance::ProvenanceClass>>,
+    audience: Option<&str>,
 ) -> Result<(), String> {
     let mut state = RunState::new();
     // Stream reminders are EPHEMERAL: queued here, injected into the NEXT
@@ -1864,6 +1874,27 @@ async fn run_loop(
         ],
         None => Vec::new(),
     };
+
+    // Recall-for-audience (trust-boundaries design 2026-08-22): replying to a
+    // coworker not granted by `memory.share_with` restricts recall to
+    // `tacit/` — matter/project facts never surface. Owner-set policy,
+    // default deny; never per-conversation model judgment.
+    let audience_restricted = audience
+        .map(|aud| !memory_config.share_with.iter().any(|g| g == aud || g == "*"))
+        .unwrap_or(false);
+    if audience_restricted {
+        info!(
+            session_id,
+            agent_id,
+            audience = audience.unwrap_or(""),
+            "recall restricted to tacit/ — audience not granted by memory.share_with"
+        );
+        pending_stream_reminders.push(steering::wrap_system_reminder(
+            "You are replying to a coworker who is NOT granted access to this scope's \
+             matter/project memory. It was not consulted and must not be shared — answer \
+             from working knowledge, or say the information isn't shared with their role.",
+        ));
+    }
 
     // Explicit isolation context from the session KEY, if the channel set one
     // ("agent:{agent_id}:{channel}:{context_id}"). `session_id` here is the
@@ -2110,6 +2141,7 @@ async fn run_loop(
             &memory_user_id,
             user_prompt,
             &existing_ids,
+            audience_restricted,
         )
         .await;
         recalled_ids = ids;
@@ -4049,6 +4081,7 @@ async fn run_loop(
                 memory_writes_disabled,
                 run_taint: run_taint.lock().unwrap().iter().copied().collect(),
                 memory_write_bar: memory_write_bar.clone(),
+                audience_restricted,
                 // Populated by the approval gate below, before tool execution.
                 approved_categories: std::collections::HashSet::new(),
                 // Restricted-run allowlist: the review fork's whitelist, or
