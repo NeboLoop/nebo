@@ -747,25 +747,6 @@
       </div>
     </div>
 
-    <!-- Inbox sits above the roster: it is the only row that means "something
-         needs you", so it should never be scrolled past. -->
-    <a
-      href="/inbox"
-      class="flex items-center gap-2.5 py-2 px-2.5 mx-1.5 mb-1 rounded-box transition-colors {$page.url.pathname === '/inbox'
-        ? 'border border-base-300 bg-base-100 shadow-sm'
-        : 'border border-transparent hover:bg-base-100/70'}"
-    >
-      <div class="w-8 h-8 rounded-field flex items-center justify-center shrink-0 bg-base-100 border border-base-300">
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg>
-      </div>
-      <span class="text-sm font-medium flex-1 min-w-0 truncate">{$t('nav.inbox')}</span>
-      {#if $unreadCount > 0}
-        <span class="badge badge-error badge-xs text-error-content font-semibold shrink-0">{$unreadCount > 9 ? '9+' : $unreadCount}</span>
-      {/if}
-    </a>
-
-    <div class="h-px bg-base-content/8 mx-3 mb-1"></div>
-
     {#if agentsLoading && sortedAgents.length === 0}
       <div class="py-6 flex items-center justify-center">
         <span class="loading loading-spinner loading-sm"></span>
@@ -842,13 +823,6 @@
 
   {#snippet collapsed()}
     <div class="flex flex-col items-center gap-1 py-2">
-      <a href="/inbox" class="relative w-8 h-8 rounded-field flex items-center justify-center bg-base-100 border border-base-300" title={$t('nav.inbox')}>
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg>
-        {#if $unreadCount > 0}
-          <span class="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-error border-2 border-base-200"></span>
-        {/if}
-      </a>
-      <div class="h-px bg-base-content/10 w-6 my-1"></div>
       {#each sortedAgents.concat(sortedAppAgents) as a (a.id)}
         {@const st = agentStatus(a.id)}
         {@const ac = AGENT_COLORS_MAP[a.color] ?? AGENT_COLORS_MAP['teal']}
@@ -868,6 +842,21 @@
 
   {#snippet footer(isRail)}
     <div class="border-t border-base-300 shrink-0">
+      <a
+        href="/inbox"
+        class="relative flex items-center gap-2.5 py-2 {isRail ? 'justify-center px-0' : 'px-3.5'} hover:bg-base-100/70 transition-colors {$page.url.pathname === '/inbox' ? 'text-base-content' : ''}"
+        title={$t('nav.inbox')}
+      >
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="shrink-0"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg>
+        {#if !isRail}<span class="text-sm flex-1">{$t('nav.inbox')}</span>{/if}
+        {#if $unreadCount > 0}
+          {#if isRail}
+            <span class="absolute top-1.5 right-3 w-2 h-2 rounded-full bg-error"></span>
+          {:else}
+            <span class="badge badge-error badge-xs text-error-content font-semibold shrink-0">{$unreadCount > 9 ? '9+' : $unreadCount}</span>
+          {/if}
+        {/if}
+      </a>
       <a
         href="/marketplace"
         class="flex items-center gap-2.5 py-2 {isRail ? 'justify-center px-0' : 'px-3.5'} hover:bg-base-100/70 transition-colors"

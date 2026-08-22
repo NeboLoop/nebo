@@ -129,8 +129,7 @@
       teachError = e instanceof Error ? e.message : String(e);
       return;
     }
-    desktopOpen = true;
-    creationsOpen = true;
+    openPane('computer');
     teachActive = true;
     teachSeconds = 0;
     teachTimer = setInterval(() => (teachSeconds += 1), 1000);
@@ -334,11 +333,12 @@
   }
 
   function openArtifact(id: string) {
-    desktopOpen = false;
+    // Open first: openPane clears a selection left over from another thread,
+    // so setting the new id afterwards can't be undone by it.
+    openPane('work');
     activeArtifactId = id;
     activeVersion = null; // follow latest; the version dropdown pins an older one
     viewSource = false;
-    openWorkPanel();
     const a = artifacts.find(x => x.documentId === id);
     if (a) creationsTitle = a.title;
     // WorkViewer owns fetching + rendering (text/binary/media per format).
@@ -384,21 +384,32 @@
     return () => ro.disconnect();
   });
 
-  // Open the panel at HALF the chat area (Claude-style) unless the user has
-  // dragged it to their own width this session; always resizable after.
-  // Opening with nothing selected shows the artifact list in the panel —
-  // never auto-pick a file the user didn't ask for.
-  function openWorkPanel() {
+  // The ONE way the pane opens. Every caller goes through here — Work, Computer
+  // and teach-a-task all used to set the flags themselves, so two of the three
+  // opened at whatever stale width was left over instead of sizing themselves.
+  // Default is half the chat area, unless the user has dragged it to their own
+  // width this session; always resizable after.
+  // containerEl wraps the chat column AND the pane, so its width doesn't change
+  // when the pane opens — half of it is half either way.
+  function openPane(view: 'work' | 'computer') {
+    desktopOpen = view === 'computer';
     creationsOpen = true;
-    if (activeArtifactId && !documentVersions.has(activeArtifactId)) {
+    // Opening Work with nothing selected shows the artifact list — never
+    // auto-pick a file the user didn't ask for.
+    if (view === 'work' && activeArtifactId && !documentVersions.has(activeArtifactId)) {
       activeArtifactId = null; // stale selection from another thread
       activeVersion = null;
     }
     if (!userResized && containerEl) {
       creationsFraction = 0.5;
-      const w = containerEl.getBoundingClientRect().width;
-      creationsWidth = clampPanelWidth(Math.max(360, w * creationsFraction));
+      creationsWidth = clampPanelWidth(containerEl.getBoundingClientRect().width * creationsFraction);
     }
+  }
+
+  function closePane() {
+    creationsOpen = false;
+    desktopOpen = false;
+    workFull = false;
   }
 
   function startResize(e: MouseEvent) {
@@ -573,11 +584,11 @@
 
   export function showCreations(title = '') {
     creationsTitle = title;
-    openWorkPanel();
+    openPane('work');
   }
 
   export function hideCreations() {
-    creationsOpen = false;
+    closePane();
   }
 
   const hasMessages = $derived(messages.length > 0);
@@ -968,7 +979,7 @@
       <span class="text-sm font-semibold truncate min-w-0">{headerTitle}</span>
       <button
         class="text-sm ml-auto shrink-0 cursor-pointer bg-transparent border-none text-base-content/70 hover:text-base-content transition-colors flex items-center"
-        onclick={() => { if (desktopOpen && creationsOpen) { desktopOpen = false; creationsOpen = false; } else { desktopOpen = true; creationsOpen = true; } }}
+        onclick={() => (desktopOpen && creationsOpen ? closePane() : openPane('computer'))}
         title={$t('chat.openComputer')}
       >
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="{desktopOpen && creationsOpen ? 'text-primary' : ''}">
@@ -979,7 +990,7 @@
         <button
           data-tour="work"
           class="text-sm shrink-0 whitespace-nowrap cursor-pointer bg-transparent border-none text-base-content/70 hover:text-base-content transition-colors flex items-center gap-1.5"
-          onclick={() => { if (creationsOpen && !desktopOpen) { creationsOpen = false; } else { desktopOpen = false; openWorkPanel(); } }}
+          onclick={() => (creationsOpen && !desktopOpen ? closePane() : openPane('work'))}
           title={creationsOpen ? $t('chat.closeWorkPanel') : $t('chat.openWorkPanel')}
         >
           {headerRight}
@@ -1646,7 +1657,7 @@
       </button>
       <button
         class="w-7 h-7 rounded-md flex items-center justify-center hover:bg-base-200 cursor-pointer bg-transparent border-none text-base-content/70 hover:text-base-content transition-colors shrink-0"
-        onclick={() => { creationsOpen = false; workFull = false; desktopOpen = false; }}
+        onclick={closePane}
         title={$t('chat.closeWorkPanel')}
       >
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
@@ -1655,7 +1666,7 @@
     <!-- Creations content — one renderer for every format, routed by extension -->
     <div class="flex-1 overflow-y-auto">
       {#if desktopOpen}
-        <DesktopView onclose={() => { desktopOpen = false; creationsOpen = false; workFull = false; }} onrecord={() => (teachActive ? stopTeach() : startTeach())} recording={teachActive} />
+        <DesktopView onclose={closePane} onrecord={() => (teachActive ? stopTeach() : startTeach())} recording={teachActive} />
       {:else if activeArtifact?.url}
         <!-- Key on documentId:version so a new version re-mounts the viewer in
              place (and the version-specific URL also defeats the browser cache). -->

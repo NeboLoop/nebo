@@ -221,6 +221,8 @@
 		"driving": "Driving",
 		"startingComputer": "Starting the computer…",
 		"computerReconnecting": "Reconnecting…",
+		"computerUnavailable": "No computer on this machine",
+		"computerUnavailableHint": "The employee's computer runs on Linux installs and cloud employees.",
 		"watchingAndLearning": "{name} is watching and learning",
 		"stopRecording": "Stop recording",
 		"recordTask": "Record task",
