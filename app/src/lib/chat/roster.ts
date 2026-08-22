@@ -1,4 +1,5 @@
 import type { Agent } from '$lib/api/neboComponents';
+import { agentColorName } from '$lib/tokens';
 import type { AgentInfo } from '$lib/chat/controller.svelte';
 
 /**
@@ -13,7 +14,7 @@ export function toMentionAgent(a: Agent): AgentInfo {
 		role: a.description || '',
 		initial: a.name.charAt(0).toUpperCase(),
 		status: a.isEnabled ? 'online' : 'paused',
-		color: a.color || 'teal',
+		color: agentColorName(a.id, a.color),
 		isApp: a.isApp ?? false
 	};
 }

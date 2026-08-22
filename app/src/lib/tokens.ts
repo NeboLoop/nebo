@@ -78,6 +78,72 @@ export const AGENT_COLORS_MAP: Record<string, { bgClass: string; inkClass: strin
   teal:   { bgClass: 'bg-primary/15',               inkClass: 'text-primary',                   borderClass: 'border-primary' },
 };
 
+/**
+ * The ONE place an employee's colour is decided.
+ *
+ * A stored colour always wins. Employees created without one — marketplace
+ * installs don't set it — used to fall back to `teal`, which is `bg-primary`,
+ * so a roster of five colourless employees rendered as five identical
+ * lavender avatars and threw away the only signal you can read at a glance in
+ * a 48px rail. They now get a stable colour derived from their id: same
+ * employee, same colour, on every surface and across reloads.
+ *
+ * `teal` is the brand colour and stays reserved for the primary employee.
+ */
+const FALLBACK_PALETTE = ['violet', 'green', 'sky', 'amber', 'rose', 'mint', 'slate', 'peach', 'lilac'];
+
+export function agentColorName(agentId: string, stored?: string | null): string {
+  if (stored && AGENT_COLORS_MAP[stored]) return stored;
+  if (agentId === 'assistant') return 'teal';
+  let h = 0;
+  for (let i = 0; i < agentId.length; i++) h = (h * 31 + agentId.charCodeAt(i)) >>> 0;
+  return FALLBACK_PALETTE[h % FALLBACK_PALETTE.length];
+}
+
+/**
+ * Colours for a whole roster, coordinated so no two employees collide while
+ * any hue is still free. The per-id hash alone is stable but collision-blind:
+ * a roster with a stored `peach` and a second employee hashing to peach gives
+ * you two identical avatars, which is exactly the confusion colour is meant to
+ * remove. Stored colours claim their hue first; everyone else takes the next
+ * free one from their own stable starting point.
+ */
+export function assignAgentColors(
+  agents: Array<{ id: string; color?: string | null }>
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  const taken = new Set<string>();
+  for (const a of agents) {
+    if (a.color && AGENT_COLORS_MAP[a.color]) {
+      out[a.id] = a.color;
+      taken.add(a.color);
+    } else if (a.id === 'assistant') {
+      out[a.id] = 'teal';
+      taken.add('teal');
+    }
+  }
+  // Sorted so the assignment doesn't shuffle when the roster arrives in a
+  // different order.
+  for (const a of [...agents].sort((x, y) => x.id.localeCompare(y.id))) {
+    if (out[a.id]) continue;
+    let pick = agentColorName(a.id, null);
+    if (taken.size < FALLBACK_PALETTE.length) {
+      let i = FALLBACK_PALETTE.indexOf(pick);
+      while (taken.has(pick)) {
+        i = (i + 1) % FALLBACK_PALETTE.length;
+        pick = FALLBACK_PALETTE[i];
+      }
+    }
+    out[a.id] = pick;
+    taken.add(pick);
+  }
+  return out;
+}
+
+export function agentColors(agentId: string, stored?: string | null) {
+  return AGENT_COLORS_MAP[agentColorName(agentId, stored)];
+}
+
 // Advisor role colors
 export const ADVISOR_ROLE_COLORS: Record<string, { barClass: string; textClass: string }> = {
   critic:          { barClass: 'bg-error',            textClass: 'text-error' },

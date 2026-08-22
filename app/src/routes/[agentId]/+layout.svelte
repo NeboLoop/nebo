@@ -4,7 +4,7 @@
   import { t } from 'svelte-i18n';
   import { setContext, onMount } from 'svelte';
   import { getWebSocketClient } from '$lib/websocket/client';
-  import { AGENT_COLORS_MAP } from '$lib/tokens.js';
+  import { AGENT_COLORS_MAP, assignAgentColors } from '$lib/tokens.js';
   import UserMenu from '$lib/components/UserMenu.svelte';
   import WorkflowBuilder from '$lib/components/workflow/WorkflowBuilder.svelte';
   import { launchApp } from '$lib/apps/launcher.js';
@@ -104,13 +104,14 @@
       );
       if (agentsResp?.agents?.length) {
         const agents = agentsResp.agents as Agent[];
+        const colors = assignAgentColors(agents);
         allAgents = agents.map(a => ({
           id: a.id,
           name: a.name,
           role: a.description || '',
           initial: a.name.charAt(0).toUpperCase(),
           status: activeIds.has(a.id) ? 'online' : 'paused',
-          color: a.color || 'teal',
+          color: colors[a.id],
           handle: a.handle,
           editable: !a.nappPath,
           isApp: a.isApp ?? false,
