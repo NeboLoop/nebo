@@ -8,8 +8,10 @@
   import UserMenu from '$lib/components/UserMenu.svelte';
   import WorkflowBuilder from '$lib/components/workflow/WorkflowBuilder.svelte';
   import { launchApp } from '$lib/apps/launcher.js';
-  import { sidebarCollapsedFor } from '$lib/stores/sidebar.js';
   import { mobileAgentsOpen, mobileChatsOpen } from '$lib/stores/mobileNav';
+  import CollapsibleRail from '$lib/components/ui/CollapsibleRail.svelte';
+  import { unreadCount } from '$lib/stores/notifications';
+  import { commandPaletteOpen } from '$lib/stores/commandPalette';
 
   // Mobile drawers close on any navigation (open → pick → see content).
   $effect(() => {
@@ -17,18 +19,25 @@
     mobileAgentsOpen.set(false);
     mobileChatsOpen.set(false);
   });
-  const sidebarCollapsed = sidebarCollapsedFor('agents');
 
-  // The panel button means different things by breakpoint. On md+ the pane is a
-  // fixed column, so it collapses to the rail. Below md the pane IS the drawer —
-  // collapsing it to a rail leaves the overlay covering the screen, so the only
-  // sensible action is to close it. 768px is Tailwind's `md`.
-  function toggleAgentsPane() {
-    if (window.matchMedia('(min-width: 768px)').matches) {
-      $sidebarCollapsed = !$sidebarCollapsed;
-    } else {
-      mobileAgentsOpen.set(false);
-    }
+  // Workspace list state: a local filter, and which employee's chats are open.
+  let listQuery = $state('');
+  let expandedAgentId = $state<string | null>(null);
+
+  /** Clicking an employee opens them and their chats together. */
+  function openAgentRow(id: string) {
+    expandedAgentId = expandedAgentId === id ? null : id;
+    selectAgent(id);
+  }
+
+  /** Mail-client recency: time today, weekday this week, date beyond. */
+  function dayLabel(epochSecs: number): string {
+    if (!epochSecs) return '';
+    const d = new Date(epochSecs * 1000);
+    const days = (Date.now() - d.getTime()) / 86_400_000;
+    if (days < 1) return d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+    if (days < 7) return d.toLocaleDateString(undefined, { weekday: 'long' });
+    return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
   }
   import { devMode } from '$lib/stores/devmode.js';
   import type { AgentDisplay, EnrichedChat, AgentRun, WorkflowStatsLocal, WorkflowConfig } from '$lib/types/agentPage';
@@ -399,6 +408,20 @@
     return allAgents.filter(a => a.isApp).sort((a, b) => a.name.localeCompare(b.name));
   });
 
+  // One list — employees then apps — filtered by the search field. Matching a
+  // chat surfaces its employee too, so search finds conversations, not just people.
+  const listedAgents = $derived.by(() => {
+    const all = [...sortedAgents, ...sortedAppAgents];
+    const q = listQuery.trim().toLowerCase();
+    if (!q) return all;
+    return all.filter((a) => {
+      if (a.name.toLowerCase().includes(q) || a.role.toLowerCase().includes(q)) return true;
+      return (apiThreads[a.id] ?? []).some(
+        (c) => (c.title || c.name || '').toLowerCase().includes(q) || (c.preview || '').toLowerCase().includes(q)
+      );
+    });
+  });
+
   const agentId = $derived($page.params.agentId ?? '');
   const agent = $derived(allAgents.find(a => a.id === agentId));
   const agentColor = $derived(agent ? AGENT_COLORS_MAP[agent.color] : null);
@@ -688,64 +711,72 @@
   </div>
 {/if}
 
-<!-- Column 1: Agent roster -->
-{#if $mobileAgentsOpen}
-  <!-- Mobile drawer backdrop -->
-  <div class="fixed inset-0 z-30 bg-black/40 md:hidden" onclick={() => mobileAgentsOpen.set(false)} role="presentation"></div>
-{/if}
-<div data-tour="agents" class="{$sidebarCollapsed ? 'md:w-12 md:min-w-12' : 'md:w-[260px] md:min-w-[260px]'} max-md:fixed max-md:inset-y-0 max-md:left-0 max-md:z-40 max-md:w-[280px] max-md:transition-[transform,visibility] {$mobileAgentsOpen ? 'max-md:translate-x-0 max-md:shadow-2xl' : 'max-md:-translate-x-full max-md:invisible'} border-r border-base-300 shadow-[2px_0_8px_-2px_rgba(0,0,0,0.08)] flex flex-col bg-base-200 shrink-0 transition-all duration-150">
-  <div class="h-11 border-b border-base-300 flex items-center shrink-0 {$sidebarCollapsed ? 'justify-center' : 'px-3.5 justify-between'}">
-    {#if !$sidebarCollapsed}
-      <span class="text-sm font-semibold flex-1">{$t('sidebar.agents')}</span>
-    {/if}
-    <button class="w-7 h-7 rounded-md flex items-center justify-center hover:bg-base-200 cursor-pointer bg-transparent border-none shrink-0" onclick={toggleAgentsPane} title={$sidebarCollapsed ? $t('nav.expandSidebar') : $t('nav.collapseSidebar')}>
-      <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5" stroke="currentColor" stroke-width="1.2"/><line x1="5.5" y1="3" x2="5.5" y2="13" stroke="currentColor" stroke-width="1.2"/></svg>
+<!-- The workspace list: Inbox, then the roster, each employee expanding to
+     their chats. This is the app's only navigation. -->
+<CollapsibleRail
+  section="workspace"
+  title="Nebo"
+  mobileOpen={mobileAgentsOpen}
+  tour="agents"
+>
+  {#snippet headerActions()}
+    <button
+      class="w-7 h-7 rounded-md flex items-center justify-center hover:bg-base-100 cursor-pointer bg-transparent border-none shrink-0"
+      onclick={() => agentId && goto(`/${agentId}/threads`)}
+      title={$t('chat.newChat')}
+    >
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><line x1="8" y1="3" x2="8" y2="13"/><line x1="3" y1="8" x2="13" y2="8"/></svg>
     </button>
-  </div>
-  <div class="flex-1 overflow-y-auto overflow-x-hidden py-1">
+  {/snippet}
+
+  {#snippet expanded()}
+    <div class="px-2.5 pt-2.5 pb-1.5">
+      <div class="relative">
+        <svg class="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-base-content/40 pointer-events-none" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="7" cy="7" r="4.5"/><line x1="10.5" y1="10.5" x2="14" y2="14" stroke-linecap="round"/></svg>
+        <input
+          type="text"
+          bind:value={listQuery}
+          placeholder={$t('common.search')}
+          class="w-full h-8 pl-8 pr-11 rounded-field bg-base-100 border border-base-300 text-sm outline-none focus:border-base-content/30 placeholder:text-base-content/40"
+        />
+        <button
+          class="absolute right-1.5 top-1/2 -translate-y-1/2 px-1.5 h-5 rounded border border-base-300 bg-base-200 text-[10px] font-medium text-base-content/50 hover:text-base-content hover:border-base-content/30 cursor-pointer"
+          onclick={() => commandPaletteOpen.set(true)}
+          title={$t('commandPalette.title')}
+        >⌘K</button>
+      </div>
+    </div>
+
+    <!-- Inbox sits above the roster: it is the only row that means "something
+         needs you", so it should never be scrolled past. -->
+    <a
+      href="/inbox"
+      class="flex items-center gap-2.5 py-2 px-2.5 mx-1.5 mb-1 rounded-box transition-colors {$page.url.pathname === '/inbox'
+        ? 'border border-base-300 bg-base-100 shadow-sm'
+        : 'border border-transparent hover:bg-base-100/70'}"
+    >
+      <div class="w-8 h-8 rounded-field flex items-center justify-center shrink-0 bg-base-100 border border-base-300">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg>
+      </div>
+      <span class="text-sm font-medium flex-1 min-w-0 truncate">{$t('nav.inbox')}</span>
+      {#if $unreadCount > 0}
+        <span class="badge badge-error badge-xs text-error-content font-semibold shrink-0">{$unreadCount > 9 ? '9+' : $unreadCount}</span>
+      {/if}
+    </a>
+
+    <div class="h-px bg-base-content/8 mx-3 mb-1"></div>
+
     {#if agentsLoading && sortedAgents.length === 0}
-      <div class="flex-1 flex items-center justify-center">
+      <div class="py-6 flex items-center justify-center">
         <span class="loading loading-spinner loading-sm"></span>
       </div>
-    {:else if $sidebarCollapsed}
-      <div class="flex flex-col items-center gap-1 py-1">
-        {#each sortedAgents as a}
-          {@const st = agentStatus(a.id)}
-          {@const ac = AGENT_COLORS_MAP[a.color] ?? AGENT_COLORS_MAP['teal']}
-          <div class="relative">
-            <button
-              class="w-8 h-8 rounded-field flex items-center justify-center font-mono text-sm font-semibold shrink-0 cursor-pointer transition-colors border-none {ac.bgClass} {ac.inkClass} {agentId === a.id
-                ? 'ring-2 ring-base-content/40'
-                : ''} {st === 'paused' ? 'opacity-50' : ''}"
-              onclick={() => selectAgent(a.id)}
-              oncontextmenu={(e) => handleAgentContext(e, a.id)}
-              data-context-menu
-              title="{a.name} — {$t(statusLabel(st))}"
-            >{a.initial}</button>
-            <div class="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-base-200 {st === 'running' ? 'bg-warning animate-pulse' : st === 'paused' ? 'bg-base-content/30' : 'bg-success'}"></div>
-          </div>
-        {/each}
-        {#if sortedAppAgents.length > 0}
-          <div class="h-px bg-base-content/10 mx-2 my-1.5"></div>
-          {#each sortedAppAgents as a}
-            <button
-              class="w-8 h-8 rounded-field flex items-center justify-center shrink-0 cursor-pointer transition-colors {agentId === a.id
-                ? 'bg-primary text-primary-content border-none'
-                : 'border border-base-300 bg-base-100'}"
-              onclick={() => selectAgent(a.id)}
-              oncontextmenu={(e) => handleAgentContext(e, a.id)}
-              data-context-menu
-              title={a.name}
-            >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M10 4v4"/><path d="M2 8h20"/><path d="M6 4v4"/></svg>
-            </button>
-          {/each}
-        {/if}
-      </div>
     {:else}
-      {#each sortedAgents as a}
+      {#each listedAgents as a (a.id)}
         {@const st = agentStatus(a.id)}
         {@const ac = AGENT_COLORS_MAP[a.color] ?? AGENT_COLORS_MAP['teal']}
+        {@const chats = apiThreads[a.id] ?? []}
+        {@const latest = chats[0]}
+        {@const isOpen = expandedAgentId === a.id}
         <div
           class="group/agent flex items-center gap-2.5 py-2 px-2.5 mx-1.5 cursor-pointer transition-colors text-left {agentId === a.id
             ? 'rounded-box border border-base-300 bg-base-100 shadow-sm'
@@ -753,73 +784,102 @@
         >
           <button
             class="flex items-center gap-2.5 flex-1 min-w-0 bg-transparent border-none cursor-pointer p-0 text-left"
-            onclick={() => selectAgent(a.id)}
+            onclick={() => openAgentRow(a.id)}
             oncontextmenu={(e) => handleAgentContext(e, a.id)}
             data-context-menu
           >
-            <div class="w-8 h-8 rounded-field flex items-center justify-center font-mono text-sm font-semibold shrink-0 {ac.bgClass} {ac.inkClass} {agentId === a.id
-              ? 'ring-2 ring-base-content/40'
-              : ''}">{a.initial}</div>
+            <div class="relative shrink-0">
+              <div class="w-8 h-8 rounded-field flex items-center justify-center font-mono text-sm font-semibold {ac.bgClass} {ac.inkClass} {st === 'paused' ? 'opacity-50' : ''}">
+                {#if a.isApp}
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M10 4v4"/><path d="M2 8h20"/><path d="M6 4v4"/></svg>
+                {:else}{a.initial}{/if}
+              </div>
+              <div class="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-base-200 {st === 'running' ? 'bg-warning animate-pulse' : st === 'paused' ? 'bg-base-content/30' : 'bg-success'}"></div>
+            </div>
             <div class="flex-1 min-w-0">
-              <div class="text-sm font-medium truncate">{a.name}</div>
-              <div class="text-xs text-base-content/70 truncate">{a.role}</div>
+              <div class="flex items-baseline gap-2">
+                <span class="text-sm font-medium truncate flex-1 min-w-0">{a.name}</span>
+                {#if latest}
+                  <span class="text-xs text-base-content/45 shrink-0">{dayLabel(latest.updatedAtEpoch)}</span>
+                {/if}
+              </div>
+              <div class="text-xs text-base-content/60 truncate">{latest?.preview || a.role}</div>
             </div>
           </button>
-          <!-- Status toggle (not for primary agent) -->
-          {#if a.id !== 'assistant'}
-            <div class="relative shrink-0">
-              <input type="checkbox" class="toggle toggle-xs {st === 'running' ? 'toggle-warning' : 'toggle-success'}" checked={st !== 'paused'}
-                onchange={(e) => { e.stopPropagation(); toggleAgentStatus(a.id); }}
-              />
-              {#if st === 'running'}
-                <div class="absolute top-0.5 right-0.5 w-1.5 h-1.5 rounded-full bg-warning animate-pulse pointer-events-none"></div>
-              {/if}
-            </div>
+          {#if chats.length > 0}
+            <button
+              class="w-5 h-5 rounded flex items-center justify-center shrink-0 bg-transparent border-none cursor-pointer text-base-content/40 hover:text-base-content hover:bg-base-200"
+              onclick={(e) => { e.stopPropagation(); expandedAgentId = isOpen ? null : a.id; }}
+              title={isOpen ? $t('nav.collapseSidebar') : $t('nav.expandSidebar')}
+            >
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" class="transition-transform {isOpen ? 'rotate-90' : ''}"><polyline points="6 3 11 8 6 13"/></svg>
+            </button>
           {/if}
         </div>
-      {/each}
-      {#if sortedAppAgents.length > 0}
-        <div class="px-3.5 pt-3 pb-1">
-          <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('agent.agentApps')}</div>
-        </div>
-        {#each sortedAppAgents as a}
-          {@const st = agentStatus(a.id)}
-          <div
-            class="group/agent flex items-center gap-2.5 py-2 px-2.5 mx-1.5 cursor-pointer transition-colors text-left {agentId === a.id
-              ? 'rounded-box border border-base-300 bg-base-100 shadow-sm'
-              : 'rounded-box border border-transparent hover:bg-base-100/70'}"
-          >
-            <button
-              class="flex items-center gap-2.5 flex-1 min-w-0 bg-transparent border-none cursor-pointer p-0 text-left"
-              onclick={() => selectAgent(a.id)}
-              oncontextmenu={(e) => handleAgentContext(e, a.id)}
-              data-context-menu
-            >
-              <div class="w-8 h-8 rounded-field flex items-center justify-center shrink-0 {agentId === a.id
-                ? 'bg-primary text-primary-content'
-                : 'border border-base-300 bg-base-100'}">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M10 4v4"/><path d="M2 8h20"/><path d="M6 4v4"/></svg>
-              </div>
-              <div class="flex-1 min-w-0">
-                <div class="text-sm font-medium truncate">{a.name}</div>
-                <div class="text-xs text-base-content/70 truncate">{a.role}</div>
-              </div>
-            </button>
-            <div class="relative shrink-0">
-              <input type="checkbox" class="toggle toggle-xs {st === 'running' ? 'toggle-warning' : 'toggle-success'}" checked={st !== 'paused'}
-                onchange={(e) => { e.stopPropagation(); toggleAgentStatus(a.id); }}
-              />
-              {#if st === 'running'}
-                <div class="absolute top-0.5 right-0.5 w-1.5 h-1.5 rounded-full bg-warning animate-pulse pointer-events-none"></div>
-              {/if}
-            </div>
+
+        {#if isOpen}
+          <div class="ml-[26px] mr-1.5 mb-1 border-l border-base-content/10 pl-2">
+            {#each chats as c (c.id)}
+              <a
+                href={`/${a.id}/threads/${c.id}`}
+                class="block py-1.5 px-2 rounded-field transition-colors {$page.params.threadId === c.id
+                  ? 'bg-base-100 shadow-sm'
+                  : 'hover:bg-base-100/70'}"
+              >
+                <div class="text-[13px] truncate {$page.params.threadId === c.id ? 'font-medium' : ''}">{c.title || c.name}</div>
+                <div class="text-[11px] text-base-content/50 truncate">{c.preview}</div>
+              </a>
+            {/each}
           </div>
-        {/each}
+        {/if}
+      {/each}
+
+      {#if listedAgents.length === 0}
+        <p class="px-3.5 py-6 text-center text-xs text-base-content/50">{$t('common.noResults')}</p>
       {/if}
     {/if}
-  </div>
-  <UserMenu collapsed={$sidebarCollapsed} />
-</div>
+  {/snippet}
+
+  {#snippet collapsed()}
+    <div class="flex flex-col items-center gap-1 py-2">
+      <a href="/inbox" class="relative w-8 h-8 rounded-field flex items-center justify-center bg-base-100 border border-base-300" title={$t('nav.inbox')}>
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg>
+        {#if $unreadCount > 0}
+          <span class="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-error border-2 border-base-200"></span>
+        {/if}
+      </a>
+      <div class="h-px bg-base-content/10 w-6 my-1"></div>
+      {#each sortedAgents.concat(sortedAppAgents) as a (a.id)}
+        {@const st = agentStatus(a.id)}
+        {@const ac = AGENT_COLORS_MAP[a.color] ?? AGENT_COLORS_MAP['teal']}
+        <div class="relative">
+          <button
+            class="w-8 h-8 rounded-field flex items-center justify-center font-mono text-sm font-semibold shrink-0 cursor-pointer transition-colors border-none {ac.bgClass} {ac.inkClass} {agentId === a.id ? 'ring-2 ring-base-content/40' : ''} {st === 'paused' ? 'opacity-50' : ''}"
+            onclick={() => selectAgent(a.id)}
+            oncontextmenu={(e) => handleAgentContext(e, a.id)}
+            data-context-menu
+            title="{a.name} — {$t(statusLabel(st))}"
+          >{a.initial}</button>
+          <div class="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-base-200 {st === 'running' ? 'bg-warning animate-pulse' : st === 'paused' ? 'bg-base-content/30' : 'bg-success'}"></div>
+        </div>
+      {/each}
+    </div>
+  {/snippet}
+
+  {#snippet footer(isRail)}
+    <div class="border-t border-base-300 shrink-0">
+      <a
+        href="/marketplace"
+        class="flex items-center gap-2.5 py-2 {isRail ? 'justify-center px-0' : 'px-3.5'} hover:bg-base-100/70 transition-colors"
+        title={$t('nav.marketplace')}
+      >
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="shrink-0"><path d="M3 9h18v11a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z"/><path d="M3 9 5 3h14l2 6"/><path d="M9 13h6"/></svg>
+        {#if !isRail}<span class="text-sm">{$t('nav.marketplace')}</span>{/if}
+      </a>
+    </div>
+    <UserMenu collapsed={isRail} />
+  {/snippet}
+</CollapsibleRail>
 
 <!-- Columns 2+3: rendered by child routes -->
 {@render children()}

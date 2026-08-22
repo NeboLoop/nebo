@@ -88,7 +88,6 @@
 
   const navLinks = [
     { href: '/marketplace', page: 'marketplace', icon: '◈', label: 'nav.marketplace' },
-    { href: '/schedule', page: 'schedule', icon: '▦', label: 'sidebar.schedule' },
     { href: '/settings/skills', page: 'skills', icon: '⚡', label: 'settings.navItems.skills' },
   ];
 

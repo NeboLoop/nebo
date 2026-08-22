@@ -49,7 +49,9 @@ export default defineConfig({
 		hmr: {
 			protocol: 'ws',
 			host: 'localhost',
-			port: 5173,
+			// Follows the dev port so a second dev server (e.g. a worktree preview
+			// on 5174) doesn't point its HMR socket at the first one's.
+			port: Number(process.env.VITE_DEV_PORT ?? 5173),
 		},
 		proxy: {
 			'/api': {
