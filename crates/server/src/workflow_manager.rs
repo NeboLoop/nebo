@@ -1333,7 +1333,60 @@ impl WorkflowManager for WorkflowManagerImpl {
                     }
                 };
 
-                let tool_defs = tools_registry.list().await;
+                let mut tool_defs = tools_registry.list().await;
+
+                // The ethical wall reaches WORKFLOW runs too. The chat runner
+                // withholds company Memory from a context_isolated employee,
+                // but a workflow builds its own roster here — and an employee
+                // like an intake coordinator runs entirely through workflows,
+                // so a wall that covered only chat would cover nothing that
+                // matters. Memory is single-principal: unscoped access hands a
+                // sealed employee the whole company graph.
+                let isolated_employee = store
+                    .get_agent(&agent_id_owned)
+                    .ok()
+                    .flatten()
+                    .and_then(|a| napp::agent::parse_agent_config(&a.frontmatter).ok())
+                    .map(|c| c.memory.context_isolated)
+                    .unwrap_or(false);
+                if isolated_employee {
+                    let memory_url = config::memory_url();
+                    let memory_ids: std::collections::HashSet<String> = if memory_url.is_empty() {
+                        std::collections::HashSet::new()
+                    } else {
+                        store
+                            .list_mcp_integrations()
+                            .unwrap_or_default()
+                            .into_iter()
+                            .filter(|i| i.server_url.as_deref() == Some(memory_url.as_str()))
+                            .map(|i| i.id)
+                            .collect()
+                    };
+                    if !memory_ids.is_empty() {
+                        let mut withheld = 0usize;
+                        let mut keep = Vec::with_capacity(tool_defs.len());
+                        for td in tool_defs {
+                            let is_memory = match tools_registry.mcp_proxy_info(&td.name).await {
+                                Some((integration_id, _)) => memory_ids.contains(&integration_id),
+                                None => false,
+                            };
+                            if is_memory {
+                                withheld += 1;
+                            } else {
+                                keep.push(td);
+                            }
+                        }
+                        tool_defs = keep;
+                        if withheld > 0 {
+                            info!(
+                                role = %agent_id_owned,
+                                withheld,
+                                "context_isolated employee: company Memory withheld from workflow run"
+                            );
+                        }
+                    }
+                }
+
                 let resolved_tools: Vec<Box<dyn tools::registry::DynTool>> = tool_defs
                     .iter()
                     .map(|td| {
