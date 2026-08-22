@@ -126,6 +126,43 @@ impl Store {
 
     /// Recent runs for an agent, newest first — the raw material for a daily
     /// report and for the reporter that ships these upstream.
+    /// The receipt for one run, by the run id shared with workflow_runs —
+    /// the join the reporter uses to ship cost and outcome with the run.
+    pub fn usage_for_run(&self, run_id: &str) -> Result<Option<RunUsage>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, agent_id, session_key, run_id, run_type, model_id,
+                        input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+                        cost_microcents, outcome, created_at
+                 FROM run_usage WHERE run_id = ?1 ORDER BY id DESC LIMIT 1",
+            )
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        let mut rows = stmt
+            .query_map(params![run_id], |row| {
+                Ok(RunUsage {
+                    id: row.get(0)?,
+                    agent_id: row.get(1)?,
+                    session_key: row.get(2)?,
+                    run_id: row.get(3)?,
+                    run_type: row.get(4)?,
+                    model_id: row.get(5)?,
+                    input_tokens: row.get(6)?,
+                    output_tokens: row.get(7)?,
+                    cache_read_tokens: row.get(8)?,
+                    cache_creation_tokens: row.get(9)?,
+                    cost_microcents: row.get(10)?,
+                    outcome: row.get(11)?,
+                    created_at: row.get(12)?,
+                })
+            })
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        match rows.next() {
+            Some(r) => Ok(Some(r.map_err(|e| NeboError::Database(e.to_string()))?)),
+            None => Ok(None),
+        }
+    }
+
     pub fn list_run_usage(
         &self,
         agent_id: &str,

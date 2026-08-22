@@ -255,6 +255,18 @@ impl NeboAIApi {
     /// Get the curated marketplace reorganization map — the Employees/Tools/
     /// Collections placement keyed by artifact Code, generated from one source
     /// on NeboAI. Returns `{ departments, toolCategories, entries, responsibilities }`.
+    /// Push the workforce report — the bot telling the platform what it must
+    /// do and what it just did (accountability W2, bot half). The ingest is
+    /// idempotent on (bot, run_id); resending an unacked batch is safe.
+    pub async fn report_workforce(&self, body: &serde_json::Value) -> Result<(), CommError> {
+        self.do_void(
+            reqwest::Method::POST,
+            "/api/v1/bots/workforce/report",
+            Some(body),
+        )
+        .await
+    }
+
     pub async fn get_marketplace_map(&self) -> Result<serde_json::Value, CommError> {
         self.do_json(reqwest::Method::GET, "/api/v1/marketplace/map", None::<&()>)
             .await

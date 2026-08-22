@@ -9,6 +9,7 @@ pub mod deps;
 pub mod entity_config;
 pub mod handlers;
 mod heartbeat;
+mod workforce_reporter;
 pub mod import;
 pub mod middleware;
 mod migration;
@@ -2393,6 +2394,10 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
 
     // Spawn heartbeat scheduler for per-entity heartbeats
     heartbeat::spawn(state.clone());
+    // The workforce reporter: runs and duties pushed to the platform as they
+    // happen, so an owner hears about a failure from us in seconds instead of
+    // when they next open the console (accountability W2, bot half).
+    workforce_reporter::spawn(state.clone());
 
     // Spawn marketplace artifact update checker (6h default, staggered API calls)
     artifact_updates::spawn(state.clone());
