@@ -512,9 +512,26 @@
   }
 
 
-  function selectAgent(id: string) {
+  async function selectAgent(id: string) {
     const a = allAgents.find(ag => ag.id === id);
-    goto(a?.isApp ? `/${id}/overview` : `/${id}/threads`);
+    if (a?.isApp) { goto(`/${id}/overview`); return; }
+    // Open the employee's most recent conversation, not a blank new chat.
+    // /threads is the NEW-chat page: with the chat list drilled away, sending
+    // a row click there stranded every employee who had exactly one
+    // conversation — no drill chevron, and their chat unreachable.
+    // The `+` button is what creates a new one.
+    let latest = apiThreads[id]?.[0];
+    if (!latest) {
+      // Never visited, so we have no preview for them yet. One request, which
+      // also fills in their row's preview.
+      const api = await import('$lib/api/nebo');
+      const r = await api.listAgentChats(id).catch(() => null);
+      if (r?.chats?.length) {
+        apiThreads[id] = r.chats as EnrichedChat[];
+        latest = apiThreads[id][0];
+      }
+    }
+    goto(latest ? `/${id}/threads/${latest.id}` : `/${id}/threads`);
   }
 
   // Returns an i18n key — translate with $t at the call site.
