@@ -183,6 +183,13 @@ pub struct ToolContext {
     /// context). Forwarded to platform Memory as a header so the shard can
     /// enforce the wall server-side. `None` for a normal employee.
     pub memory_matter: Option<String>,
+    /// Engine-set ONLY (workflow command nodes — owner-authored deterministic
+    /// steps): shell exec additionally injects each installed plugin's
+    /// resolved auth env, so `${plugin.X_BIN}` invocations of env-auth
+    /// plugins (e.g. odoo) work in command nodes. NEVER set for model-driven
+    /// shell — that would hand every plugin credential to the model. Not
+    /// forgeable from tool input: it lives on the context, not the payload.
+    pub trusted_plugin_env: bool,
     /// Capability categories the runner has cleared for execution this turn —
     /// pre-granted (capability ON), covered by Full Access, matched by the
     /// per-command allowlist, or user-approved via the ApprovalModal. In

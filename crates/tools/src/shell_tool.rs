@@ -63,7 +63,7 @@ impl ShellTool {
         "shell"
     }
 
-    pub async fn execute(&self, _ctx: &ToolContext, input: serde_json::Value) -> ToolResult {
+    pub async fn execute(&self, ctx: &ToolContext, input: serde_json::Value) -> ToolResult {
         let mut si: ShellInput = match serde_json::from_value(input) {
             Ok(v) => v,
             Err(e) => return ToolResult::error(format!("invalid input: {}", e)),
@@ -89,7 +89,7 @@ impl ShellTool {
         }
 
         match si.resource.as_str() {
-            "bash" | "shell" => self.handle_bash(&si).await,
+            "bash" | "shell" => self.handle_bash(&si, ctx.trusted_plugin_env).await,
             "process" => self.handle_process(&si).await,
             "session" => self.handle_session(&si).await,
             other => ToolResult::error(format!(
@@ -99,7 +99,7 @@ impl ShellTool {
         }
     }
 
-    async fn handle_bash(&self, input: &ShellInput) -> ToolResult {
+    async fn handle_bash(&self, input: &ShellInput, trusted_plugin_env: bool) -> ToolResult {
         if input.command.is_empty() {
             return ToolResult::error(errors::missing_param(
                 "exec",
@@ -188,6 +188,15 @@ impl ShellTool {
                 cmd.env(k, v);
             }
             cmd.env("PATH", ps.path_with_plugins());
+            // Workflow command nodes (and ONLY them) also get plugin auth env,
+            // so `${plugin.X_BIN}` invocations of env-auth plugins work — the
+            // gap that made `odoo doctor` read writes_enabled=false inside
+            // commit-state and wrongfully demote real writes.
+            if trusted_plugin_env {
+                for (k, v) in ps.build_auth_env_map() {
+                    cmd.env(k, v);
+                }
+            }
         }
 
         let started = std::time::SystemTime::now();

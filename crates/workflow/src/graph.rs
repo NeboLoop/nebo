@@ -557,6 +557,9 @@ async fn run_command<'a>(
     );
     tool_ctx.user_id = ctx.memory_user_id.clone();
     tool_ctx.memory_writes_disabled = ctx.memory_writes_disabled;
+    // Owner-authored deterministic step: plugin auth env rides along so
+    // env-auth plugin binaries work in command nodes (see ToolContext docs).
+    tool_ctx.trusted_plugin_env = true;
     let tool_ctx = tool_ctx;
     let result = os_tool.execute_dyn(&tool_ctx, input).await;
     if result.is_error {

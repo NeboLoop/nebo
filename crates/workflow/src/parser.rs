@@ -105,6 +105,16 @@ pub struct Activity {
     /// worse than none (the ballast interfaceBindings incident).
     #[serde(default, alias = "requiresTools")]
     pub requires_tools: Vec<String>,
+    /// Explicit tool allowlist for this activity. When non-empty it REPLACES
+    /// the referenced-in-text detection in `scoped_activity_tools`: only the
+    /// named tools (exact name, or a prefix — `"odoo"` covers every
+    /// `odoo.*` tool) plus the always-on `message` tool ship their schemas.
+    /// The text sniffing keys on `name(` patterns, so skills that write
+    /// dotted tool names in prose silently fall back to the FULL roster —
+    /// tens of KB of schemas resent every turn (a 13-chunk Vivid run paid
+    /// ~18M input tokens for it). Declaring is deterministic and auditable.
+    #[serde(default)]
+    pub tools: Vec<String>,
 }
 
 /// Token budget for an activity.
@@ -823,5 +833,22 @@ mod requires_tools_tests {
         let without: Activity =
             serde_json::from_str(r#"{"id":"converse","intent":"think"}"#).expect("parse bare");
         assert!(without.requires_tools.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod declared_tools_tests {
+    use super::*;
+
+    #[test]
+    fn parses_declared_tools_and_defaults_empty() {
+        let a: Activity =
+            serde_json::from_str(r#"{"id":"resolve","intent":"match rows","tools":["odoo","os"]}"#)
+                .expect("parse with tools");
+        assert_eq!(a.tools, vec!["odoo".to_string(), "os".to_string()]);
+
+        let b: Activity = serde_json::from_str(r#"{"id":"resolve","intent":"match rows"}"#)
+            .expect("parse without tools");
+        assert!(b.tools.is_empty());
     }
 }

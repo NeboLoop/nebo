@@ -128,6 +128,28 @@ pub(crate) fn scoped_activity_tools<'a>(
     skill_content: Option<&HashMap<String, String>>,
     deferred: Option<&HashSet<String>>,
 ) -> Vec<&'a Box<dyn DynTool>> {
+    // Explicit declaration wins outright: deterministic, auditable, immune to
+    // the text-sniffing gap below (dotted tool names in prose never match
+    // `name(` and silently fall back to the full roster).
+    if !activity.tools.is_empty() {
+        let declared: Vec<&'a Box<dyn DynTool>> = resolved_tools
+            .iter()
+            .filter(|t| {
+                let n = t.name();
+                n == "message"
+                    || activity.tools.iter().any(|d| {
+                        n == d || n.strip_prefix(d.as_str()).is_some_and(|r| r.starts_with('.'))
+                    })
+            })
+            .collect();
+        info!(
+            activity = activity.id.as_str(),
+            tools = declared.len(),
+            "scoped activity toolset to declared tools"
+        );
+        return declared;
+    }
+
     let mut text = activity.intent.clone();
     for s in &activity.steps {
         text.push_str(s);
