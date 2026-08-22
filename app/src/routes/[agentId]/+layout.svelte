@@ -785,6 +785,7 @@
           agentName={agent?.name ?? $t('common.agent')}
           focusWorkflow={canvasFocusWorkflow}
           onclose={() => { showCanvasModal = false; canvasFocusWorkflow = null; }}
+          onopensettings={(section) => setParams((p) => p.set('settings', section))}
           onsave={(wfs) => { showCanvasModal = false; canvasFocusWorkflow = null; persistWorkflows(wfs).catch((e) => console.error('[nebo] failed to save workflows', e)); }}
         />
       </div>
