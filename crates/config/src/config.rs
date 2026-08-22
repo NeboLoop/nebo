@@ -164,6 +164,18 @@ pub struct FeaturesConfig {
     pub oauth_enabled: String,
 }
 
+/// Company Memory's MCP endpoint. One definition: the config default, the
+/// env override, and the runner's ethical-wall check all resolve through
+/// `memory_url()` so they can never drift into disagreeing about which server
+/// is Memory.
+pub const DEFAULT_MEMORY_URL: &str = "https://kb.neboai.com/mcp";
+
+/// The Memory endpoint in force, honouring the NEBOAI_MEMORY_URL override
+/// (empty disables Memory entirely for self-hosted platforms and tests).
+pub fn memory_url() -> String {
+    std::env::var("NEBOAI_MEMORY_URL").unwrap_or_else(|_| DEFAULT_MEMORY_URL.to_string())
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct NeboAIConfig {
@@ -333,7 +345,7 @@ impl Default for NeboAIConfig {
             janus_url: "https://janus.neboai.com".into(),
             comms_url: "wss://comms.neboai.com/ws".into(),
             tunnel_url: "wss://api.neboai.com/tunnel/connect".into(),
-            memory_url: "https://kb.neboai.com/mcp".into(),
+            memory_url: DEFAULT_MEMORY_URL.into(),
         }
     }
 }

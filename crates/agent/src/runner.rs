@@ -2690,7 +2690,7 @@ async fn run_loop(
         }
 
         // Get tool definitions: active (non-deferred + active deferred) tools get full schemas
-        let all_tool_defs = tools.list_active(&active_deferred).await;
+        let mut all_tool_defs = tools.list_active(&active_deferred).await;
         let mut agent_tool_names = tools.agent_tool_names(agent_id).await;
 
         // Scope filtering: restrict sidecar tools to those listed in the active scope
@@ -2705,6 +2705,63 @@ async fn run_loop(
                             debug!(scope = %scope_name, tools = ?agent_tool_names, "scoped agent tools");
                         }
                     }
+                }
+            }
+        }
+
+        // ── Ethical wall: an isolated employee gets no company Memory ──
+        // memory.context_isolated is per EMPLOYEE, while an MCP integration is
+        // bot-wide — one Nebo can host an isolated legal assistant alongside a
+        // receptionist that should see everything. So the wall lives here, in
+        // this run's toolset, not in whether the server is installed.
+        //
+        // Company Memory is currently single-principal: any caller sees the
+        // whole graph, unprojected (DESIGN §11's domain ∩ sensitivity
+        // projection is designed, not built). Handing that to an employee whose
+        // own memory is sealed per matter would break the promise its setting
+        // makes — one case, client, or matter never bleeding into another.
+        // Until Memory is matter-scoped, isolated employees simply don't get it.
+        let isolated_employee = active_agent_entry
+            .as_ref()
+            .and_then(|e| e.config.as_ref())
+            .map(|c| c.memory.context_isolated)
+            .unwrap_or(false);
+        if isolated_employee {
+            // Exact URL match, not a substring guess: a customer's own KB at
+            // some other host is their business and must not be withheld.
+            let memory_url = config::memory_url();
+            let memory_integration_ids: HashSet<String> = if memory_url.is_empty() {
+                HashSet::new()
+            } else {
+                store
+                    .list_mcp_integrations()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|i| i.server_url.as_deref() == Some(memory_url.as_str()))
+                    .map(|i| i.id)
+                    .collect()
+            };
+            if !memory_integration_ids.is_empty() {
+                let mut memory_tool_names: HashSet<String> = HashSet::new();
+                for def in &all_tool_defs {
+                    if let Some((integration_id, _)) = tools.mcp_proxy_info(&def.name).await {
+                        if memory_integration_ids.contains(&integration_id) {
+                            memory_tool_names.insert(def.name.clone());
+                        }
+                    }
+                }
+                let (kept, withheld) = tool_filter::withhold_memory_tools(
+                    all_tool_defs,
+                    &mut agent_tool_names,
+                    &memory_tool_names,
+                );
+                all_tool_defs = kept;
+                if withheld > 0 {
+                    debug!(
+                        agent = %agent_id,
+                        withheld,
+                        "context_isolated employee: company Memory withheld (no matter scoping yet)"
+                    );
                 }
             }
         }
