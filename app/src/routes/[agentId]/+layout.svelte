@@ -15,6 +15,7 @@
   import RunsPane from '$lib/components/flows/RunsPane.svelte';
   import RunDetail from '$lib/components/runs/RunDetail.svelte';
   import MarketplaceBrowse from '$lib/components/marketplace/MarketplaceBrowse.svelte';
+  import CategoryRail, { hasCategoryRail } from '$lib/components/marketplace/CategoryRail.svelte';
   import ProductDetail from '$lib/components/marketplace/ProductDetail.svelte';
   import CoworkerThreadView from '$lib/components/chat/CoworkerThreadView.svelte';
   import WorkroomView from '$lib/components/workrooms/WorkroomView.svelte';
@@ -1275,22 +1276,31 @@
       {/each}
     </div>
     <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
-    <div class="flex-1 min-h-0 overflow-y-auto" onclickcapture={interceptMarketClick}>
-      {#if marketDetail}
-        {#key marketDetail.id}
-          <ProductDetail itemId={marketDetail.id} artifactType={marketDetail.type} />
-        {/key}
-      {:else}
-        {#key `${market.kind}|${market.category}|${market.publisher}|${market.price}|${market.filter}`}
-          <MarketplaceBrowse
-            kind={market.kind}
-            price={market.price}
-            category={market.category}
-            publisher={market.publisher}
-            filter={market.filter}
-          />
-        {/key}
+    <div class="flex-1 min-h-0 flex" onclickcapture={interceptMarketClick}>
+      <!-- Same category rail as the /marketplace page — its plain /marketplace
+           hrefs are rerouted into modal state by the capture handler above. -->
+      {#if !marketDetail && market.kind !== 'collections' && hasCategoryRail(market.kind)}
+        <div class="hidden md:block w-52 shrink-0 border-r border-base-300 bg-base-200 overflow-y-auto">
+          <CategoryRail kind={market.kind} activeFilter={market.filter} />
+        </div>
       {/if}
+      <div class="flex-1 min-w-0 overflow-y-auto">
+        {#if marketDetail}
+          {#key marketDetail.id}
+            <ProductDetail itemId={marketDetail.id} artifactType={marketDetail.type} />
+          {/key}
+        {:else}
+          {#key `${market.kind}|${market.category}|${market.publisher}|${market.price}|${market.filter}`}
+            <MarketplaceBrowse
+              kind={market.kind}
+              price={market.price}
+              category={market.category}
+              publisher={market.publisher}
+              filter={market.filter}
+            />
+          {/key}
+        {/if}
+      </div>
     </div>
   </div>
 </ShelfModal>

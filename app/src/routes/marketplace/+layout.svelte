@@ -10,7 +10,7 @@
   import UserMenu from '$lib/components/UserMenu.svelte';
   import { sidebarCollapsedFor } from '$lib/stores/sidebar.js';
   import { slugify } from '$lib/data/categories';
-  import { loadMarketplaceMap, mapSlugify, type MarketplaceMap } from '$lib/data/marketplaceMap';
+  import CategoryRail, { hasCategoryRail } from '$lib/components/marketplace/CategoryRail.svelte';
   const sidebarCollapsed = sidebarCollapsedFor('marketplace');
   import Search from 'lucide-svelte/icons/search';
   import X from 'lucide-svelte/icons/x';
@@ -128,13 +128,6 @@
       ($page.url.searchParams.get('category') || $page.url.searchParams.get('publisher') ? 'all' : 'employees')
   );
   const activeFilter = $derived($page.url.searchParams.get('filter') || '');
-  // Curated map drives the sidebar per tab, same single source as the website:
-  // employee-type tabs filter by department, tool-type tabs (incl. collections,
-  // which the website filters by tool category too) by tool category.
-  let mktMap: MarketplaceMap | null = $state(null);
-  onMount(() => { loadMarketplaceMap().then((m) => (mktMap = m)); });
-  const DEPT_KINDS = ['employees'];
-  const TC_KINDS = ['tools', 'collections'];
   const activePrice = $derived($page.url.searchParams.get('price') || 'all');
   const activeCategory = $derived($page.url.searchParams.get('category') || '');
   // Detail pages (/marketplace/<type>/<id>) shouldn't show the kind filter bar.
@@ -294,52 +287,10 @@
     </div>
 
     <div class="flex-1 overflow-y-auto">
-      {#if DEPT_KINDS.includes(activeKind) && mktMap}
-        <!-- Departments — the website's employees nav -->
-        <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 px-3.5 pt-3 pb-1">{$t('marketplace.departments')}</div>
-        <div class="px-1.5">
-          <a
-            href="/marketplace?kind={activeKind}"
-            class="flex items-center gap-1.5 py-1 px-2.5 rounded-md text-sm transition-colors border {!activeFilter
-              ? 'bg-base-100 border-base-300 shadow-sm font-medium'
-              : 'border-transparent hover:bg-base-100/70'}"
-          >
-            <span class="flex-1 truncate">{$t('marketplace.allDepartments')}</span>
-          </a>
-          {#each mktMap.departments as d}
-            <a
-              href="/marketplace?kind={activeKind}&filter={mapSlugify(d)}"
-              class="flex items-center gap-1.5 py-1 px-2.5 rounded-md text-sm transition-colors border {activeFilter === mapSlugify(d)
-                ? 'bg-base-100 border-base-300 shadow-sm font-medium'
-                : 'border-transparent hover:bg-base-100/70'}"
-            >
-              <span class="flex-1 truncate">{d}</span>
-            </a>
-          {/each}
-        </div>
-      {:else if TC_KINDS.includes(activeKind) && mktMap}
-        <!-- Tool categories — the website's tools/collections nav -->
-        <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 px-3.5 pt-3 pb-1">{$t('marketplace.toolCategories')}</div>
-        <div class="px-1.5">
-          <a
-            href="/marketplace?kind={activeKind}"
-            class="flex items-center gap-1.5 py-1 px-2.5 rounded-md text-sm transition-colors border {!activeFilter
-              ? 'bg-base-100 border-base-300 shadow-sm font-medium'
-              : 'border-transparent hover:bg-base-100/70'}"
-          >
-            <span class="flex-1 truncate">{$t('marketplace.allToolCategories')}</span>
-          </a>
-          {#each mktMap.toolCategories as c}
-            <a
-              href="/marketplace?kind={activeKind}&filter={mapSlugify(c)}"
-              class="flex items-center gap-1.5 py-1 px-2.5 rounded-md text-sm transition-colors border {activeFilter === mapSlugify(c)
-                ? 'bg-base-100 border-base-300 shadow-sm font-medium'
-                : 'border-transparent hover:bg-base-100/70'}"
-            >
-              <span class="flex-1 truncate">{c}</span>
-            </a>
-          {/each}
-        </div>
+      {#if hasCategoryRail(activeKind)}
+        <!-- Departments / tool categories — the website's nav, shared with the
+             in-app marketplace modal -->
+        <CategoryRail kind={activeKind} {activeFilter} />
       {:else}
       <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 px-3.5 pt-3 pb-1">{$t('marketplace.detail.category')}</div>
       <div class="px-1.5">
