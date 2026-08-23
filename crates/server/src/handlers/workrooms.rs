@@ -106,6 +106,24 @@ pub async fn send_workroom_message(
         return Err(to_error_response(types::NeboError::NotFound));
     }
 
+    // The standard composer serializes mentions as <@localAgentId>. The hub's
+    // grammar wants <@loop_agent_id> (or a plain @Name for agents that have
+    // no hub identity). Rewrite here — clients never learn the hub's scheme.
+    let mut content = text.to_string();
+    if content.contains("<@") {
+        for a in state.store.list_agents(500, 0).unwrap_or_default() {
+            let token = format!("<@{}>", a.id);
+            if !content.contains(&token) {
+                continue;
+            }
+            let replacement = match a.loop_agent_id.as_deref().filter(|s| !s.is_empty()) {
+                Some(loop_id) => format!("<@{loop_id}>"),
+                None => format!("@{}", a.name),
+            };
+            content = content.replace(&token, &replacement);
+        }
+    }
+
     let msg = comm::CommMessage {
         id: uuid::Uuid::new_v4().to_string(),
         from: String::new(),
@@ -113,7 +131,7 @@ pub async fn send_workroom_message(
         topic: channel_id.clone(),
         conversation_id: channel_id.clone(),
         msg_type: comm::CommMessageType::LoopChannel,
-        content: text.to_string(),
+        content,
         metadata: std::collections::HashMap::new(),
         timestamp: 0,
         human_injected: true,
