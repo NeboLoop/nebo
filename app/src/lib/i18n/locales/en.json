@@ -1913,6 +1913,7 @@
 	},
 	"workrooms": {
 		"section": "Workrooms",
+		"emptyRoster": "When your employees team up on a task, their rooms appear here.",
 		"membersCount": "{count} employees",
 		"emptyTitle": "The room is open.",
 		"emptyHint": "@-name an employee to put them to work.",

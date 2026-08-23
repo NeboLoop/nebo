@@ -14,6 +14,7 @@
   import { getSessionMessages } from '$lib/api/nebo';
   import type { ChatMessage } from '$lib/api/neboComponents';
   import { parseMarkdown } from '$lib/markdown';
+  import TranscriptMessage from '$lib/components/chat/TranscriptMessage.svelte';
 
   let {
     threadKey,
@@ -68,17 +69,12 @@
     {:else}
       <div class="max-w-2xl mx-auto flex flex-col gap-4" data-selectable>
         {#each messages as m (m.id)}
-          <div class="flex flex-col {m.role === 'assistant' ? 'items-start' : 'items-end'}">
-            <div class="flex items-baseline gap-2 mb-1 {m.role === 'assistant' ? '' : 'flex-row-reverse'}">
-              <span class="text-xs font-medium text-base-content/70">{nameFor(m.role)}</span>
-              <span class="text-xs text-base-content/40">{timeLabel(m.createdAt)}</span>
-            </div>
-            <div class="max-w-[85%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed prose prose-sm {m.role === 'assistant'
-              ? 'bg-base-200 rounded-tl-sm'
-              : 'bg-primary/10 rounded-tr-sm'}">
-              {@html parseMarkdown(m.content)}
-            </div>
-          </div>
+          <TranscriptMessage
+            name={nameFor(m.role)}
+            time={timeLabel(m.createdAt)}
+            mine={m.role !== 'assistant'}
+            html={parseMarkdown(m.content)}
+          />
         {/each}
       </div>
     {/if}

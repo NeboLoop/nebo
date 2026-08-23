@@ -1138,10 +1138,10 @@
              a form: whichever employee owns a task creates the room and brings
              coworkers in. So the empty state is NOTHING — the section exists
              the day work starts happening in one. -->
+        <div class="flex items-center gap-2 mt-4 mb-1 mx-4">
+          <span class="text-[10px] font-semibold uppercase tracking-wider text-base-content/45">{$t('workrooms.section')}</span>
+        </div>
         {#if sortedWorkrooms.length > 0}
-          <div class="flex items-center gap-2 mt-4 mb-1 mx-4">
-            <span class="text-[10px] font-semibold uppercase tracking-wider text-base-content/45">{$t('workrooms.section')}</span>
-          </div>
           {#each sortedWorkrooms as room (room.channelId)}
             {@const initials = roomInitials(room)}
             <button
@@ -1172,6 +1172,10 @@
               </div>
             </button>
           {/each}
+        {:else}
+          <!-- The section teaches what rooms ARE before the first one exists —
+               the owner shouldn't have to ask "how do I see the rooms". -->
+          <p class="text-xs text-base-content/45 mx-4 mb-1 leading-relaxed">{$t('workrooms.emptyRoster')}</p>
         {/if}
       {/if}
     {/if}
@@ -1294,7 +1298,10 @@
 <ShelfModal open={openRoomObj !== null} title={openRoomObj?.name ?? ''} onclose={closeRoom}>
   {#if openRoomObj}
     {#key openRoomObj.channelId}
-      <WorkroomView room={openRoomObj} />
+      <WorkroomView
+        room={openRoomObj}
+        roster={allAgents.map((a) => ({ id: a.id, name: a.name, initial: a.initial }))}
+      />
     {/key}
   {/if}
 </ShelfModal>

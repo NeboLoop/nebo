@@ -16,8 +16,16 @@
   import type { Workroom, WorkroomMessage } from '$lib/api/neboComponents';
   import { getWebSocketClient } from '$lib/websocket/client';
   import { parseMarkdown } from '$lib/markdown';
+  import TranscriptMessage from '$lib/components/chat/TranscriptMessage.svelte';
 
-  let { room }: { room: Workroom } = $props();
+  let {
+    room,
+    roster = [],
+  }: {
+    room: Workroom;
+    /** The employee roster, for member chips and sender-name resolution. */
+    roster?: { id: string; name: string; initial: string }[];
+  } = $props();
 
   type RoomMsg = {
     id: string;
@@ -32,11 +40,28 @@
   let sending = $state(false);
   let scroller = $state<HTMLDivElement | null>(null);
 
+  // Who is in the room — resolved against the roster; unknown ids (a cloud
+  // coworker, a departed employee) keep their raw label rather than vanishing.
+  const members = $derived(
+    room.memberAgentIds.map(
+      (id) =>
+        roster.find((a) => a.id === id) ?? {
+          id,
+          name: id,
+          initial: (id[0] ?? '?').toUpperCase(),
+        }
+    )
+  );
+
+  // The hub speaks in ids; the owner reads names.
+  const nameFor = (from: string) =>
+    roster.find((a) => a.id === from || a.name === from)?.name ?? from;
+
   // The hub's history rows carry `role` for human-injected legs; live WS
   // events carry senderName. Both normalize to the same shape.
   const fromRest = (m: WorkroomMessage): RoomMsg => ({
     id: m.id,
-    from: m.from,
+    from: nameFor(m.from),
     content: m.content,
     mine: m.role === 'user',
   });
@@ -69,7 +94,7 @@
         ...messages,
         {
           id: crypto.randomUUID(),
-          from: data.senderName || data.from || '',
+          from: data.senderName || nameFor(data.fromAgentId || data.from || ''),
           content: text,
           mine: false,
         },
@@ -104,11 +129,20 @@
 </script>
 
 <div class="flex-1 min-w-0 min-h-0 flex flex-col">
-  {#if room.mission}
-    <div class="shrink-0 px-5 py-2 border-b border-base-300 text-xs text-base-content/60 truncate">
-      {room.mission}
+  <!-- Who's in the room + what it's for. -->
+  <div class="shrink-0 px-5 py-2.5 border-b border-base-300 flex items-center gap-3 min-w-0">
+    <div class="flex items-center gap-1.5 shrink-0">
+      {#each members as m (m.id)}
+        <span class="inline-flex items-center gap-1.5 pl-1 pr-2.5 py-0.5 rounded-full bg-base-200 text-xs">
+          <span class="w-5 h-5 rounded-full bg-primary/10 text-primary flex items-center justify-center font-mono text-[10px] font-semibold">{m.initial}</span>
+          {m.name}
+        </span>
+      {/each}
     </div>
-  {/if}
+    {#if room.mission}
+      <span class="text-xs text-base-content/60 truncate">{room.mission}</span>
+    {/if}
+  </div>
 
   <div bind:this={scroller} class="flex-1 min-h-0 overflow-y-auto px-5 py-4">
     {#if loading}
@@ -123,18 +157,11 @@
     {:else}
       <div class="max-w-2xl mx-auto flex flex-col gap-4" data-selectable>
         {#each messages as m (m.id)}
-          <div class="flex flex-col {m.mine ? 'items-end' : 'items-start'}">
-            <div class="flex items-baseline gap-2 mb-1 {m.mine ? 'flex-row-reverse' : ''}">
-              <span class="text-xs font-medium text-base-content/70">
-                {m.mine ? $t('workrooms.you') : m.from}
-              </span>
-            </div>
-            <div class="max-w-[85%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed prose prose-sm {m.mine
-              ? 'bg-primary/10 rounded-tr-sm'
-              : 'bg-base-200 rounded-tl-sm'}">
-              {@html parseMarkdown(m.content)}
-            </div>
-          </div>
+          <TranscriptMessage
+            name={m.mine ? $t('workrooms.you') : m.from}
+            mine={m.mine}
+            html={parseMarkdown(m.content)}
+          />
         {/each}
       </div>
     {/if}
