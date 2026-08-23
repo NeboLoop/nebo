@@ -10,11 +10,24 @@
     time = '',
     mine = false,
     html,
-  }: { name: string; time?: string; mine?: boolean; html: string } = $props();
+    initial = '',
+    avatarClass = '',
+  }: {
+    name: string;
+    time?: string;
+    mine?: boolean;
+    html: string;
+    /** Optional colored avatar beside the name (multi-party rooms). */
+    initial?: string;
+    avatarClass?: string;
+  } = $props();
 </script>
 
 <div class="flex flex-col {mine ? 'items-end' : 'items-start'}">
-  <div class="flex items-baseline gap-2 mb-1 {mine ? 'flex-row-reverse' : ''}">
+  <div class="flex items-center gap-2 mb-1 {mine ? 'flex-row-reverse' : ''}">
+    {#if initial}
+      <span class="w-5 h-5 rounded-full flex items-center justify-center font-mono text-[10px] font-semibold shrink-0 {avatarClass || 'bg-base-200'}">{initial}</span>
+    {/if}
     <span class="text-xs font-medium text-base-content/70">{name}</span>
     {#if time}<span class="text-xs text-base-content/40">{time}</span>{/if}
   </div>

@@ -1300,7 +1300,7 @@
     {#key openRoomObj.channelId}
       <WorkroomView
         room={openRoomObj}
-        roster={allAgents.map((a) => ({ id: a.id, name: a.name, initial: a.initial }))}
+        roster={allAgents.map((a) => ({ id: a.id, name: a.name, initial: a.initial, color: a.color }))}
       />
     {/key}
   {/if}

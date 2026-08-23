@@ -17,6 +17,7 @@
   import { getWebSocketClient } from '$lib/websocket/client';
   import { parseMarkdown } from '$lib/markdown';
   import TranscriptMessage from '$lib/components/chat/TranscriptMessage.svelte';
+  import { AGENT_COLORS_MAP } from '$lib/tokens.js';
 
   let {
     room,
@@ -24,7 +25,7 @@
   }: {
     room: Workroom;
     /** The employee roster, for member chips and sender-name resolution. */
-    roster?: { id: string; name: string; initial: string }[];
+    roster?: { id: string; name: string; initial: string; color?: string }[];
   } = $props();
 
   type RoomMsg = {
@@ -33,6 +34,15 @@
     content: string;
     mine: boolean;
   };
+
+  // Each employee keeps its roster color in the room, so the owner can tell
+  // who's who at a glance — same palette as the sidebar avatars.
+  const colorClass = (color?: string) => {
+    const ac = AGENT_COLORS_MAP[color ?? ''] ?? AGENT_COLORS_MAP['teal'];
+    return `${ac.bgClass} ${ac.inkClass}`;
+  };
+  const rosterFor = (label: string) =>
+    roster.find((a) => a.id === label || a.name === label);
 
   let messages: RoomMsg[] = $state([]);
   let loading = $state(true);
@@ -134,7 +144,7 @@
     <div class="flex items-center gap-1.5 shrink-0">
       {#each members as m (m.id)}
         <span class="inline-flex items-center gap-1.5 pl-1 pr-2.5 py-0.5 rounded-full bg-base-200 text-xs">
-          <span class="w-5 h-5 rounded-full bg-primary/10 text-primary flex items-center justify-center font-mono text-[10px] font-semibold">{m.initial}</span>
+          <span class="w-5 h-5 rounded-full flex items-center justify-center font-mono text-[10px] font-semibold {colorClass(rosterFor(m.id)?.color)}">{m.initial}</span>
           {m.name}
         </span>
       {/each}
@@ -157,9 +167,12 @@
     {:else}
       <div class="max-w-2xl mx-auto flex flex-col gap-4" data-selectable>
         {#each messages as m (m.id)}
+          {@const sender = m.mine ? undefined : rosterFor(m.from)}
           <TranscriptMessage
             name={m.mine ? $t('workrooms.you') : m.from}
             mine={m.mine}
+            initial={sender?.initial ?? ''}
+            avatarClass={sender ? colorClass(sender.color) : ''}
             html={parseMarkdown(m.content)}
           />
         {/each}
