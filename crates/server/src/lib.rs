@@ -3256,6 +3256,17 @@ async fn run_webhook_workflow(
     }
 }
 
+/// Spawn a comm message back through the ONE inbound pathway from inside a
+/// chat run. Plain-fn + spawn indirection — the same shape as the
+/// auto-continue hook — so run_chat's future never contains
+/// handle_comm_message's future type (run_chat → loopback → run_chat would
+/// otherwise be an infinite type and the spawn couldn't prove Send).
+pub(crate) fn spawn_comm_loopback(state: AppState, msg: comm::CommMessage) {
+    tokio::spawn(async move {
+        handle_comm_message(state, msg).await;
+    });
+}
+
 pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
     tracing::info!(
         target: "neboai_identity",
@@ -4117,6 +4128,13 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
             .ok()
             .and_then(|v| v["senderName"].as_str().map(|s| s.to_string()))
             .filter(|s| !s.is_empty())
+            // Looped-back agent replies carry the name in metadata, not content.
+            .or_else(|| {
+                msg.metadata
+                    .get("senderName")
+                    .cloned()
+                    .filter(|s| !s.is_empty())
+            })
             .unwrap_or_else(|| {
                 if msg.from.is_empty() {
                     "Someone".to_string()
@@ -4255,26 +4273,39 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
             .get("handoffDepth")
             .and_then(|v| v.parse().ok())
             .unwrap_or(if sender_is_agent { 1 } else { 0 });
-        if sender_is_agent && mentioned && handoff_depth_in >= MAX_HANDOFF_DEPTH {
+        // Deterministic chain caps. A registered workroom is a budgeted
+        // mission surface — organizer → expert → organizer → expert is FOUR
+        // hops before anything integrates, so the ambient caps (3 deep,
+        // 6/5min) would strangle a two-expert mission. Rooms get room-sized
+        // caps; the caps stay deterministic (industry floor — the governance
+        // ladder's tripwire/moderator sits ABOVE these, never instead).
+        let (depth_cap, rate_cap) = if workroom.is_some() {
+            (12u8, 30usize)
+        } else {
+            (MAX_HANDOFF_DEPTH, 6usize)
+        };
+        if sender_is_agent && mentioned && handoff_depth_in >= depth_cap {
             tracing::info!(
                 conv_id = %msg.conversation_id,
                 depth = handoff_depth_in,
+                cap = depth_cap,
                 "agent handoff depth cap reached — buffering without dispatch (a human mention resets the chain)"
             );
             return;
         }
         if sender_is_agent && mentioned {
-            // Rate limit: at most 6 agent-triggered dispatches per channel per
-            // 5 minutes, even if depth metadata was stripped somewhere.
+            // Rate limit per channel per 5 minutes, even if depth metadata was
+            // stripped somewhere.
             let mut triggers = state.channel_agent_triggers.lock().await;
             let entry = triggers.entry(msg.conversation_id.clone()).or_default();
             let cutoff = std::time::Instant::now() - std::time::Duration::from_secs(300);
             while entry.front().map(|t| *t < cutoff).unwrap_or(false) {
                 entry.pop_front();
             }
-            if entry.len() >= 6 {
+            if entry.len() >= rate_cap {
                 tracing::warn!(
                     conv_id = %msg.conversation_id,
+                    cap = rate_cap,
                     "agent-trigger rate limit hit for channel — skipping dispatch"
                 );
                 return;
@@ -4557,6 +4588,32 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
         // session within the channel (so histories don't collide) and replies
         // for itself via the existing per-reply senderName attribution. run_chat
         // enqueues async on the COMM lane, so these runs proceed concurrently.
+        // Workroom roster for the briefing below: name + mention token + ROLE
+        // per member. An organizer who brings a team together already knows
+        // who's who — delegation is by expertise, and the expertise is each
+        // member's role description, not a guess from their name. (Tokens are
+        // the only mention grammar; the UI renders them back as @Name.)
+        let room_roster: Vec<(String, String, String)> = workroom
+            .as_ref()
+            .map(|room| {
+                room.member_agent_ids
+                    .iter()
+                    .filter_map(|id| {
+                        let agent = state.store.get_agent(id).ok().flatten()?;
+                        // First sentence of the description = the job title line.
+                        let role = agent
+                            .description
+                            .split('.')
+                            .next()
+                            .unwrap_or("")
+                            .trim()
+                            .to_string();
+                        Some((agent.name, format!("<@{id}>"), role))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
         for (agent_id, agent_name) in dispatch {
             let session_key = if agent_id.is_empty() {
                 types::keyparser::build_session_key("neboai", "channel", &msg.conversation_id)
@@ -4578,10 +4635,81 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
                 entity_config::resolve_for_chat(&state.store, "main", "main")
             };
 
-            // Coordination framing: the lead is told to consult the named peers
-            // via real coworker messages (bounded by the handoff depth cap) and
-            // write one combined answer — the peers do not reply here on their own.
-            let mention_context = if coordinate {
+            // Workroom briefing: a room is where delegation happens, not a
+            // discussion. The addressed employee learns the mission, who is in
+            // the room, and how to hand the next step on — all on the hidden
+            // rail, never rendered.
+            let mention_context = if let Some(ref room) = workroom {
+                let coworkers: Vec<String> = room_roster
+                    .iter()
+                    .filter(|(n, _, _)| n != &agent_name)
+                    .map(|(n, t, role)| {
+                        if role.is_empty() {
+                            format!("{n} = {t}")
+                        } else {
+                            format!("{n} = {t} — {role}")
+                        }
+                    })
+                    .collect();
+                let coworkers = if coworkers.is_empty() {
+                    "none (you are alone in this room)".to_string()
+                } else {
+                    coworkers.join(", ")
+                };
+                let mission = if room.mission.is_empty() {
+                    String::new()
+                } else {
+                    format!(" Mission: {}.", room.mission)
+                };
+                // The room's first member is its ORGANIZER (the creation core
+                // writes the creator first). The organizer coordinates and
+                // integrates; everyone else is an expert who does their part
+                // and returns it to the organizer.
+                let organizer = room.member_agent_ids.first().cloned().unwrap_or_default();
+                let is_organizer = organizer == agent_id
+                    || (agent_id.is_empty() && organizer == "assistant");
+                let organizer_label = room_roster
+                    .first()
+                    .map(|(n, t, _)| format!("{n} ({t})"))
+                    .unwrap_or_else(|| "the organizer".to_string());
+                let common = format!(
+                    "You are {name}, in the workroom \"{room_name}\".{mission} A workroom is \
+                     where work gets DONE, not discussed. Coworkers here: {coworkers}. Your \
+                     reply posts to the room — report concrete results: artifact, status, \
+                     blockers, next action, nothing else. Coworkers are PERSISTENT EXPERTS \
+                     with their own workflows, instructions, and access — this is NOT the \
+                     sub-agent system, and you must never spawn sub-agents to do a room \
+                     member's job. To make a coworker act, address them in your reply with \
+                     their token and a specific ask (an addressed coworker runs; an \
+                     unaddressed reply ends the chain).",
+                    name = agent_name,
+                    room_name = room.name,
+                    mission = mission,
+                    coworkers = coworkers,
+                );
+                if is_organizer {
+                    Some(format!(
+                        "{common}\n\
+                         You are the ORGANIZER of this room. Coordinate — do not perform an \
+                         expert's work yourself, even if you could: each expert holds the \
+                         workflows, instructions, and access for their own domain. Break the \
+                         mission into steps, delegate each step to the member whose role owns \
+                         it (one addressed coworker per reply, with a specific ask), and when \
+                         results return, integrate them. When the mission is complete, deliver \
+                         the combined result plainly and address no one."
+                    ))
+                } else {
+                    Some(format!(
+                        "{common}\n\
+                         You are an EXPERT in this room. Do the part your role owns NOW, in \
+                         this run, with your own tools and workflows — never promise later \
+                         work. When your step is done, RETURN it: address {organizer_label} \
+                         in your reply with your result so they can continue coordinating. \
+                         Only address a different coworker if your step genuinely requires \
+                         their action first."
+                    ))
+                }
+            } else if coordinate {
                 Some(format!(
                     "You are the lead for this request. The user asked you to work together with \
                      {peers} to produce ONE combined result. They are NOT replying here on their \

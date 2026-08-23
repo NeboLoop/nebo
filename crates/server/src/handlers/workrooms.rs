@@ -188,10 +188,7 @@ pub async fn send_workroom_message(
             error: None,
             attachments: Vec::new(),
         };
-        let st = state.clone();
-        tokio::spawn(async move {
-            crate::handle_comm_message(st, inbound).await;
-        });
+        crate::spawn_comm_loopback(state.clone(), inbound);
     }
 
     Ok(Json(serde_json::json!({ "message": "Sent" })))

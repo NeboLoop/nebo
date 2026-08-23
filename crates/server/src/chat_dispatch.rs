@@ -416,6 +416,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
 
     let hub = state.hub.clone();
     let workroom_store = state.store.clone();
+    let loopback_state = state.clone();
     let runner = state.runner.clone();
     let janus_usage = state.janus_usage.clone();
     let presence_tracker = state.presence.clone();
@@ -1357,10 +1358,16 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                             error: None,
                             attachments: reply_attachments,
                         };
-                        // Our own outbound never echoes back from the hub, so a
-                        // reply into a registered workroom must broadcast the
-                        // live event itself — otherwise the owner's open room
-                        // only learns of the employee's answer on reload.
+                        // Our own outbound never echoes back from the hub. For a
+                        // reply into a registered workroom that silence would
+                        // break BOTH halves of delegation: the owner's open room
+                        // wouldn't see the answer live, and a delegation the
+                        // reply carries (<@member> + ask) would never dispatch
+                        // the addressed expert. Loop the reply through the ONE
+                        // inbound pathway — it broadcasts the room event and
+                        // resolves mentions exactly as a hub delivery would.
+                        // reply_meta already carries senderKind=agent (+ depth),
+                        // so chain caps and rate limits apply unchanged.
                         let workroom_reply = reply.clone();
                         if let Err(e) = send_to_channel(
                             &reply_config.provider,
@@ -1380,17 +1387,15 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                 None => None,
                             };
                             if let Some(channel_id) = channel_id {
-                                if let Ok(Some(room)) = workroom_store.get_workroom(&channel_id) {
-                                    hub.broadcast(
-                                        "workroom_message",
-                                        serde_json::json!({
-                                            "channelId": room.channel_id,
-                                            "conversationId": workroom_reply.conversation_id,
-                                            "from": agent_display_name.clone(),
-                                            "senderName": agent_display_name.clone(),
-                                            "text": workroom_reply.content,
-                                        }),
-                                    );
+                                if workroom_store
+                                    .get_workroom(&channel_id)
+                                    .ok()
+                                    .flatten()
+                                    .is_some()
+                                {
+                                    let mut inbound = workroom_reply;
+                                    inbound.topic = "channel".to_string();
+                                    crate::spawn_comm_loopback(loopback_state.clone(), inbound);
                                 }
                             }
                         }
