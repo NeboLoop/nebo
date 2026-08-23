@@ -1607,7 +1607,7 @@
 {#if computerFull}
   <!-- The computer takes the window. A remote desktop scaled into a side rail
        is unusable, and this is the one surface you drive rather than refer to. -->
-  <div class="fixed inset-0 z-[70] bg-neutral flex flex-col">
+  <div class="fixed inset-0 z-[80] bg-neutral flex flex-col">
     <DesktopView
       onclose={() => (computerFull = false)}
       onrecord={() => (teachActive ? stopTeach() : startTeach())}
@@ -1638,7 +1638,7 @@
   </div>
   <!-- Creations panel. pointer-events-none while dragging the divider: the
        viewer iframe otherwise swallows mousemove and the resize stalls. -->
-  <div class="flex flex-col bg-base-100 min-h-0 min-w-0 overflow-hidden shrink-0 border-l border-base-300 max-md:fixed max-md:inset-0 max-md:z-[70] max-md:!w-full max-md:border-l-0 {workFull ? 'fixed inset-0 z-[70] !w-full border-l-0' : ''} {resizing ? 'pointer-events-none' : ''}" style="width: {creationsWidth}px">
+  <div class="flex flex-col bg-base-100 min-h-0 min-w-0 overflow-hidden shrink-0 border-l border-base-300 max-md:fixed max-md:inset-0 max-md:z-[60] max-md:!w-full max-md:border-l-0 {workFull ? 'fixed inset-0 z-[65] !w-full border-l-0' : ''} {resizing ? 'pointer-events-none' : ''}" style="width: {creationsWidth}px">
     <!-- Creations header -->
     <div class="h-11 px-4 border-b border-base-content/10 flex items-center gap-2 shrink-0">
       {#if activeArtifact}
@@ -1818,7 +1818,7 @@
 {#if lightboxUrl}
   <button
     type="button"
-    class="fixed inset-0 z-[80] flex items-center justify-center bg-black/80 p-6 border-0 cursor-zoom-out"
+    class="fixed inset-0 z-[90] flex items-center justify-center bg-black/80 p-6 border-0 cursor-zoom-out"
     onclick={() => (lightboxUrl = null)}
     aria-label={$t('chat.closeImage')}
   >

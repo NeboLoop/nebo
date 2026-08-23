@@ -131,8 +131,10 @@
   /* Shell widths. Every column in the app measures itself from these — don't
      reintroduce arbitrary px values in individual layouts.
      Layer order, so overlays stop colliding by accident:
-       30 drawer backdrop · 40 drawer · 50 context menus · 60 pane sheet
-       60 workflow canvas · 70 run modal · 70 full window · 80 lightbox */
+       30 drawer backdrop · 40 workspace drawer · 50 context menus
+       60 pane sheet (mobile work pane) · 65 workFull expand
+       70 shelf drawers/modals · 75 workflow builder (opens FROM the pane)
+       80 computer full window · 90 lightbox */
   --spacing-rail: 280px;
   --spacing-rail-collapsed: 48px;
   --spacing-pane: 450px;

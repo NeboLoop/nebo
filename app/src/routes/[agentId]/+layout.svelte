@@ -786,7 +786,7 @@
 <!-- Workflow editor modal -->
 <!-- Workflow canvas builder — full-screen overlay -->
 {#if showCanvasModal}
-  <div class="fixed inset-0 z-[60] flex flex-col" data-modal-open>
+  <div class="fixed inset-0 z-[75] flex flex-col" data-modal-open>
     <div class="absolute inset-0 bg-black/40" role="presentation"></div>
     <div class="relative flex flex-col flex-1 m-4 rounded-2xl bg-base-100 border border-base-300 shadow-2xl z-10 overflow-hidden">
       <div class="flex items-center justify-between px-5 py-3 border-b border-base-content/10 shrink-0">
