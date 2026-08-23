@@ -64,12 +64,16 @@ pub async fn get_session_messages(
         })));
     };
 
-    // Messages are stored under session.name (the session_key / chat_id).
-    // Fall back to scope_id, then session id for legacy data.
+    // Sessions are decoupled from chats: the current conversation lives at
+    // session.active_chat_id (rotate_chat mints a new one). Legacy sessions
+    // backfill active_chat_id = session.name, so preferring it is correct for
+    // both generations — reading only session.name returned EMPTY history for
+    // any post-decoupling session (found via coworker threads, 2026-08-23).
     let chat_id = session
-        .name
+        .active_chat_id
         .as_deref()
         .filter(|n| !n.is_empty())
+        .or_else(|| session.name.as_deref().filter(|n| !n.is_empty()))
         .or(session.scope_id.as_deref())
         .unwrap_or(&id);
 
