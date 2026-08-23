@@ -195,6 +195,7 @@
 		"roleSuggestion1": "What can you help me with?",
 		"roleSuggestion2": "Give me a brief introduction",
 		"messageChannel": "Message #{channel}...",
+		"messagedCoworker": "Messaged",
 		"disclaimer": "Nebo can make mistakes. Verify important information.",
 		"goodMorning": "Good morning",
 		"goodAfternoon": "Good afternoon",
@@ -1904,6 +1905,11 @@
 		"stagedHint": "New lessons wait in your Inbox until you approve them",
 		"off": "Off",
 		"offHint": "This employee does not learn from conversations"
+	},
+	"coworkerThread": {
+		"open": "See what was said",
+		"empty": "No messages between these employees yet.",
+		"viewOnly": "This conversation is view-only — employees talk here, you steer them in their own chats"
 	},
 	"agentIsolation": {
 		"title": "Memory isolation",

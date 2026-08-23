@@ -312,7 +312,7 @@ export async function loadScheduleFromAPI(): Promise<void> {
     const agentsResp = await api.listAgents().catch(() => null);
     const agentIds: string[] = [];
     if (agentsResp?.agents?.length) {
-      const agents = agentsResp.agents as Agent[];
+      const agents = agentsResp.agents;
       for (const a of agents) {
         if (!a.isEnabled) continue;
         const shortId = ensureAgent(a.id, a.name, a.description);

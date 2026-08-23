@@ -33,7 +33,10 @@
 
 	type ArtifactType = 'skill' | 'agent' | 'plugin' | 'connector' | 'app' | 'collection';
 
-	let { artifactType = 'skill' }: { artifactType?: ArtifactType } = $props();
+	// itemId prop: the marketplace MODAL renders this component outside the
+	// /marketplace/<plural>/[id] routes, so the id can't always come from the
+	// URL. Route pages pass nothing and keep reading $page.params.
+	let { artifactType = 'skill', itemId: itemIdProp = '' }: { artifactType?: ArtifactType; itemId?: string } = $props();
 
 	// Customer-facing label per type. Note "Connection" not "Connector" on the
 	// buyer-facing surface — the founder's rule, mirrored from neboai.com.
@@ -71,7 +74,7 @@
 	let confirmUninstall = $state(false);
 	let uninstalling = $state(false);
 
-	const itemId = $derived($page.params.id ?? '');
+	const itemId = $derived(itemIdProp || ($page.params.id ?? ''));
 	const installed = $derived(Boolean(skill?.installed) || installedLocal);
 
 	const authorName = $derived(skill?.authorName || skill?.author?.name || '');

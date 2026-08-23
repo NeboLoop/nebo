@@ -15,9 +15,20 @@
   import RunsPane from '$lib/components/flows/RunsPane.svelte';
   import RunDetail from '$lib/components/runs/RunDetail.svelte';
   import MarketplaceBrowse from '$lib/components/marketplace/MarketplaceBrowse.svelte';
+  import ProductDetail from '$lib/components/marketplace/ProductDetail.svelte';
+  import CoworkerThreadView from '$lib/components/chat/CoworkerThreadView.svelte';
   import AgentSettingsModal from '$lib/components/settings/agent/AgentSettingsModal.svelte';
   import { unreadCount } from '$lib/stores/notifications';
   import { commandPaletteOpen } from '$lib/stores/commandPalette';
+  import { slide } from 'svelte/transition';
+  import { logger } from '$lib/monitoring';
+  import MessageSquareLock from 'lucide-svelte/icons/message-square-lock';
+
+  // Sidebar drill choreography: siblings collapse, the clicked row rides to
+  // the top, conversations expand under it. Zero-duration under
+  // prefers-reduced-motion.
+  const motionMs = (ms: number) =>
+    typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : ms;
 
   // The list is URL state — SvelteKit-standard, not a side store. `?list=1`
   // is the roster, `?list=<agentId>` is that employee's matter list, absent
@@ -27,7 +38,6 @@
   // list without changing the URL, then browser-back navigated somewhere
   // stale underneath it.)
   const listParam = $derived($page.url.searchParams.get('list'));
-  const drilledAgentId = $derived(listParam && listParam !== '1' ? listParam : null);
 
   function listUrl(value: string | null): string {
     const url = new URL($page.url);
@@ -82,6 +92,21 @@
     mut(url.searchParams);
     goto(url.pathname + url.search, { replaceState: replace, noScroll: true, keepFocus: true });
   }
+  // The view-only employee↔employee transcript (WS5 audit surface). URL
+  // param carries the coworker thread's session key:
+  // agent:{target}:coworker:{sender}[:{matter}].
+  const cwKey = $derived($page.url.searchParams.get('cw'));
+  const closeCoworkerThread = () => setParams((p) => p.delete('cw'));
+  const cwNames = $derived.by(() => {
+    if (!cwKey) return null;
+    const parts = cwKey.split(':');
+    const nameOf = (id: string) =>
+      !id || id === 'main' || id === 'assistant'
+        ? 'Nebo'
+        : (allAgents.find((a) => a.id === id)?.name ?? id);
+    return { target: nameOf(parts[1] ?? ''), sender: nameOf(parts[3] ?? '') };
+  });
+
   const settingsSection = $derived($page.url.searchParams.get('settings'));
   const runsOpen = $derived($page.url.searchParams.has('runs'));
   const openRunId = $derived($page.url.searchParams.get('run'));
@@ -90,6 +115,46 @@
   const marketOpen = $derived($page.url.searchParams.has('market'));
   const openMarket = () => setParams((p) => p.set('market', '1'));
   const closeMarket = () => setParams((p) => p.delete('market'));
+
+  // The marketplace modal is a full storefront, not a teaser: it browses every
+  // kind and opens product detail IN PLACE. Card components keep their plain
+  // /marketplace/... hrefs (the route tree still serves deep links); one
+  // capture-phase handler on the modal body reroutes those clicks to modal
+  // state instead of navigating the workspace away.
+  const MARKET_KINDS = [
+    { id: 'employees', labelKey: 'marketplace.nav.employees' },
+    { id: 'tools', labelKey: 'marketplace.nav.tools' },
+    { id: 'collections', labelKey: 'marketplace.nav.collections' },
+  ];
+  const MARKET_PLURAL_TO_TYPE: Record<string, 'agent' | 'app' | 'skill' | 'plugin' | 'connector' | 'collection'> = {
+    agents: 'agent', apps: 'app', skills: 'skill', plugins: 'plugin', connectors: 'connector', collections: 'collection',
+  };
+  let marketKind = $state('employees');
+  let marketDetail = $state<{ id: string; type: 'agent' | 'app' | 'skill' | 'plugin' | 'connector' | 'collection' } | null>(null);
+  // Reopening the modal starts at browse, not wherever it was left.
+  $effect(() => { if (!marketOpen) marketDetail = null; });
+
+  function interceptMarketClick(e: MouseEvent) {
+    const a = (e.target as HTMLElement).closest('a[href]');
+    if (!a) return;
+    const href = a.getAttribute('href') ?? '';
+    const detail = href.match(/^\/marketplace\/([a-z]+)\/([^/?#]+)/);
+    if (detail && MARKET_PLURAL_TO_TYPE[detail[1]]) {
+      e.preventDefault();
+      e.stopPropagation();
+      marketDetail = { id: decodeURIComponent(detail[2]), type: MARKET_PLURAL_TO_TYPE[detail[1]] };
+      return;
+    }
+    const root = href.match(/^\/marketplace\/?(?:\?kind=([a-z]+))?$/);
+    if (root) {
+      e.preventDefault();
+      e.stopPropagation();
+      marketDetail = null;
+      marketKind = root[1] ?? 'employees';
+    }
+    // Anything else (/marketplace/shared, search, …) navigates for real —
+    // those screens still live on the route tree.
+  }
   const openRuns = () => setParams((p) => p.set('runs', '1'));
   const closeRuns = () => setParams((p) => p.delete('runs'));
   const openInbox = () => setParams((p) => p.set('inbox', '1'));
@@ -162,7 +227,7 @@
         activeAgents.map((a) => a.id || a.agentId)
       );
       if (agentsResp?.agents?.length) {
-        const agents = agentsResp.agents as Agent[];
+        const agents = agentsResp.agents;
         const colors = assignAgentColors(agents);
         allAgents = agents.map(a => ({
           id: a.id,
@@ -176,10 +241,9 @@
           isApp: a.isApp ?? false,
           loopExposed: a.loopExposed ?? false,
           voice: a.voice || '',
-          // Isolation is learned lazily: the LIST endpoint carries no
-          // frontmatter, so it stays undefined until the first per-agent load
-          // (getAgent) fills it in. undefined = unknown, not false.
-          isolated: undefined,
+          // The list endpoint reports isolation directly (the roster lock
+          // needs it for every row).
+          isolated: a.isolated,
         }));
         agentStatuses = Object.fromEntries(allAgents.map(a => [a.id, a.status]));
       }
@@ -386,13 +450,13 @@
     try {
       const t0 = performance.now();
       const api = await import('$lib/api/nebo');
-      console.log(`[nebo] import api: ${(performance.now() - t0).toFixed(0)}ms`);
+      logger.debug(`[nebo] import api: ${(performance.now() - t0).toFixed(0)}ms`);
       // Fire all requests in parallel but resolve threads first to unblock the UI
-      const chatsPromise = api.listAgentChats(id).then(r => { console.log(`[nebo] chats: ${(performance.now() - t0).toFixed(0)}ms`); return r; }).catch((e: unknown) => { console.warn('[nebo] listAgentChats failed for', id, e); return null; });
-      const runsPromise = api.listAgentRuns(id).then(r => { console.log(`[nebo] runs: ${(performance.now() - t0).toFixed(0)}ms`); return r; }).catch((e: unknown) => { console.warn('[nebo] listAgentRuns failed for', id, e); return null; });
-      const statsPromise = api.agentStats(id).then(r => { console.log(`[nebo] stats: ${(performance.now() - t0).toFixed(0)}ms`); return r; }).catch((e: unknown) => { console.warn('[nebo] agentStats failed for', id, e); return null; });
-      const agentPromise = api.getAgent(id).then(r => { console.log(`[nebo] agent: ${(performance.now() - t0).toFixed(0)}ms`); return r; }).catch((e: unknown) => { console.warn('[nebo] getAgent failed for', id, e); return null; });
-      const workflowsPromise = api.listAgentWorkflows(id).then(r => { console.log(`[nebo] workflows: ${(performance.now() - t0).toFixed(0)}ms`); return r; }).catch((e: unknown) => { console.warn('[nebo] listAgentWorkflows failed for', id, e); return null; });
+      const chatsPromise = api.listAgentChats(id).then(r => { logger.debug(`[nebo] chats: ${(performance.now() - t0).toFixed(0)}ms`); return r; }).catch((e: unknown) => { console.warn('[nebo] listAgentChats failed for', id, e); return null; });
+      const runsPromise = api.listAgentRuns(id).then(r => { logger.debug(`[nebo] runs: ${(performance.now() - t0).toFixed(0)}ms`); return r; }).catch((e: unknown) => { console.warn('[nebo] listAgentRuns failed for', id, e); return null; });
+      const statsPromise = api.agentStats(id).then(r => { logger.debug(`[nebo] stats: ${(performance.now() - t0).toFixed(0)}ms`); return r; }).catch((e: unknown) => { console.warn('[nebo] agentStats failed for', id, e); return null; });
+      const agentPromise = api.getAgent(id).then(r => { logger.debug(`[nebo] agent: ${(performance.now() - t0).toFixed(0)}ms`); return r; }).catch((e: unknown) => { console.warn('[nebo] getAgent failed for', id, e); return null; });
+      const workflowsPromise = api.listAgentWorkflows(id).then(r => { logger.debug(`[nebo] workflows: ${(performance.now() - t0).toFixed(0)}ms`); return r; }).catch((e: unknown) => { console.warn('[nebo] listAgentWorkflows failed for', id, e); return null; });
 
       // Unblock thread list as soon as chats arrive
       const chatsResp = await chatsPromise;
@@ -527,10 +591,25 @@
 
   // One list: employees, then apps.
   const listedAgents = $derived([...sortedAgents, ...sortedAppAgents]);
-  const drilledAgent = $derived(drilledAgentId ? allAgents.find(a => a.id === drilledAgentId) ?? null : null);
 
   const agentId = $derived($page.params.agentId ?? '');
   const agent = $derived(allAgents.find(a => a.id === agentId));
+  // A stale deep link — the employee was reinstalled (new id) or deleted from
+  // another surface — must not strand the owner on a half-broken page fanning
+  // 404s. Once the roster is authoritative and the id isn't in it, go home.
+  $effect(() => {
+    if (!agentsLoading && allAgents.length > 0 && agentId && !allAgents.some((a) => a.id === agentId)) {
+      goto('/');
+    }
+  });
+  // For an ISOLATED employee, no list param keeps their matter list in the
+  // column: clicking a matter navigates to the thread (dropping the param,
+  // which is what closes the phone drawer) and the column must NOT snap back
+  // to the roster. `list=1` stays the explicit way out to the roster.
+  const drilledAgentId = $derived(
+    listParam && listParam !== '1' ? listParam : !listParam && agent?.isolated ? agentId : null
+  );
+  const drilledAgent = $derived(drilledAgentId ? allAgents.find(a => a.id === drilledAgentId) ?? null : null);
   const agentColor = $derived(agent ? AGENT_COLORS_MAP[agent.color] : null);
   const threads = $derived(agentId ? (apiThreads[agentId] || []) : []);
   const isThreadsLoading = $derived(agentId ? (threadsLoading[agentId] ?? true) : true);
@@ -869,67 +948,41 @@
     <button
       class="w-7 h-7 rounded-md flex items-center justify-center hover:bg-base-100 cursor-pointer bg-transparent border-none shrink-0"
       onclick={() => agentId && goto(`/${agentId}/threads`)}
-      title={$t('chat.newChat')}
+      title={$t('agent.newChat')}
     >
       <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><line x1="8" y1="3" x2="8" y2="13"/><line x1="3" y1="8" x2="13" y2="8"/></svg>
     </button>
   {/snippet}
 
   {#snippet expanded()}
-    {#if drilledAgent}
-      <!-- One employee's conversations. -->
-      <!-- A link, because it is one: the router intercepts it natively. -->
-      <a
-        href={listUrl('1')}
-        class="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-base-100/70 text-left"
-      >
-        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="10 3 5 8 10 13"/></svg>
-        <span class="font-medium truncate">{drilledAgent.name}</span>
-      </a>
-      <div class="h-px bg-base-content/8 mx-3 mb-1"></div>
-      <!-- Isolation means each conversation is its own sealed matter, so
-           starting a new one has to be reachable from the list of them. -->
-      <a
-        href={`/${drilledAgent.id}/threads`}
-        class="flex items-center gap-2 py-2 px-2.5 mx-1.5 mb-1 rounded-box border border-dashed border-base-300 text-primary hover:bg-base-100/70 transition-colors"
-      >
-        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><line x1="8" y1="3" x2="8" y2="13"/><line x1="3" y1="8" x2="13" y2="8"/></svg>
-        <span class="text-sm font-medium">{$t('agent.newChat')}</span>
-      </a>
-      {#each apiThreads[drilledAgent.id] ?? [] as c (c.id)}
-        <a
-          href={`/${drilledAgent.id}/threads/${c.id}`}
-          class="block py-2 px-2.5 mx-1.5 rounded-box transition-colors {$page.params.threadId === c.id
-            ? 'bg-base-100 border border-base-300 shadow-sm'
-            : 'border border-transparent hover:bg-base-100/70'}"
-        >
-          <div class="flex items-baseline gap-2">
-            <span class="text-sm truncate flex-1 min-w-0">{c.title || c.name}</span>
-            <span class="text-xs text-base-content/45 shrink-0">{dayLabel(c.updatedAtEpoch)}</span>
-          </div>
-          <div class="text-xs text-base-content/55 truncate">{c.preview}</div>
-        </a>
-      {/each}
-    {:else if agentsLoading && sortedAgents.length === 0}
+    {#if agentsLoading && sortedAgents.length === 0}
       <div class="py-6 flex items-center justify-center">
         <span class="loading loading-spinner loading-sm"></span>
       </div>
     {:else}
-      {#each listedAgents as a (a.id)}
+      <!-- ONE keyed list for both states. Drilling filters it to the clicked
+           employee, so that row's DOM node survives and rides to the top as
+           the siblings collapse (transition:slide) — the container-transform
+           feel: the row you clicked BECOMES the header, nothing teleports.
+           Clicking the pinned row slides everyone back. -->
+      {#each (drilledAgent ? [drilledAgent] : listedAgents) as a (a.id)}
         {@const st = agentStatus(a.id)}
         {@const ac = AGENT_COLORS_MAP[a.color] ?? AGENT_COLORS_MAP['teal']}
         {@const chats = apiThreads[a.id] ?? []}
         {@const latest = chats[0]}
+        {@const isPinned = drilledAgent?.id === a.id}
         <div
-          class="group/agent flex items-center gap-2.5 py-2 px-2.5 mx-1.5 cursor-pointer transition-colors text-left {agentId === a.id
-            ? 'rounded-box border border-base-300 bg-base-100 shadow-sm'
+          transition:slide={{ duration: motionMs(200) }}
+          class="group/agent flex items-center gap-2.5 py-2 px-2.5 mx-1.5 cursor-pointer transition-colors text-left {!isPinned && agentId === a.id
+            ? 'rounded-box border border-primary/30 bg-primary/10 shadow-sm'
             : 'rounded-box border border-transparent hover:bg-base-100/70'}"
         >
           <button
             class="flex items-center gap-2.5 flex-1 min-w-0 bg-transparent border-none cursor-pointer p-0 text-left"
-            onclick={() => openAgentRow(a.id)}
+            onclick={() => (isPinned ? showList('1') : openAgentRow(a.id))}
             oncontextmenu={(e) => handleAgentContext(e, a.id)}
             data-context-menu
+            title={isPinned ? $t('common.back') : undefined}
           >
             <div class="relative shrink-0">
               <div class="w-8 h-8 rounded-field flex items-center justify-center font-mono text-sm font-semibold {ac.bgClass} {ac.inkClass} {st === 'paused' ? 'opacity-50' : ''}">
@@ -942,19 +995,63 @@
             <div class="flex-1 min-w-0">
               <div class="flex items-baseline gap-2">
                 <span class="text-sm font-medium truncate min-w-0">{a.name}</span>
+                {#if a.isolated}
+                  <!-- Sealed-conversations employee: the same glyph the chat
+                       header shows (MessageSquareLock, not the Settings Lock). -->
+                  <span class="self-center text-warning/70 shrink-0 tooltip tooltip-right" data-tip={$t('agentIsolation.isolated')}>
+                    <MessageSquareLock class="w-2.5 h-2.5" />
+                  </span>
+                {/if}
                 {#if a.isApp}
                   <span class="text-[9px] uppercase tracking-wider px-1 py-px rounded bg-info/15 text-info font-semibold shrink-0">{$t('agent.appBadge')}</span>
                 {/if}
                 <span class="flex-1"></span>
-                {#if latest}
-                  <span class="text-xs text-base-content/45 shrink-0">{dayLabel(latest.updatedAtEpoch)}</span>
+                {#if isPinned}
+                  <!-- Open-disclosure chevron: this row is the way back. -->
+                  <svg class="self-center text-base-content/50" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 8 11 13 6"/></svg>
                 {/if}
+                <!-- No per-row time here: employees without chats have none,
+                     and a column where only some rows carry a time reads as
+                     noise. Times live on the conversations themselves. -->
               </div>
               <div class="text-xs text-base-content/60 truncate">{latest?.preview || a.role}</div>
             </div>
           </button>
         </div>
       {/each}
+      {#if drilledAgent}
+        <!-- The pinned employee's conversations, expanding beneath their row.
+             In waits for the sibling rows to finish collapsing. -->
+        <div
+          in:slide={{ duration: motionMs(220), delay: motionMs(140) }}
+          out:slide={{ duration: motionMs(150) }}
+        >
+          <div class="h-px bg-base-content/8 mx-3 mb-1"></div>
+          <!-- Isolation means each conversation is its own sealed matter, so
+               starting a new one has to be reachable from the list of them. -->
+          <a
+            href={`/${drilledAgent.id}/threads`}
+            class="flex items-center gap-2 py-2 px-2.5 mx-1.5 mb-1 rounded-box border border-dashed border-base-300 text-primary hover:bg-base-100/70 transition-colors"
+          >
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><line x1="8" y1="3" x2="8" y2="13"/><line x1="3" y1="8" x2="13" y2="8"/></svg>
+            <span class="text-sm font-medium">{$t('agent.newChat')}</span>
+          </a>
+          {#each apiThreads[drilledAgent.id] ?? [] as c (c.id)}
+            <a
+              href={`/${drilledAgent.id}/threads/${c.id}`}
+              class="block py-2 px-2.5 mx-1.5 rounded-box transition-colors {$page.params.threadId === c.id
+                ? 'bg-primary/10 border border-primary/30 shadow-sm'
+                : 'border border-transparent hover:bg-base-100/70'}"
+            >
+              <div class="flex items-baseline gap-2">
+                <span class="text-sm truncate flex-1 min-w-0">{c.title || c.name}</span>
+                <span class="text-xs text-base-content/45 shrink-0">{dayLabel(c.updatedAtEpoch)}</span>
+              </div>
+              <div class="text-xs text-base-content/55 truncate">{c.preview}</div>
+            </a>
+          {/each}
+        </div>
+      {/if}
     {/if}
   {/snippet}
 
@@ -1027,13 +1124,55 @@
 </ShelfModal>
 
 <ShelfModal open={marketOpen} title={$t('nav.marketplace')} onclose={closeMarket}>
-  <div class="flex-1 min-h-0 overflow-y-auto">
-    <MarketplaceBrowse />
+  {#if !marketDetail}
+    <!-- The same top-level sections the /marketplace page offers. -->
+    <div class="flex items-center gap-1 px-4 pt-2 shrink-0">
+      {#each MARKET_KINDS as k (k.id)}
+        <button
+          class="px-3 py-1.5 rounded-field text-sm cursor-pointer border transition-colors {marketKind === k.id
+            ? 'bg-primary/10 border-primary/30 text-base-content font-medium'
+            : 'bg-transparent border-transparent text-base-content/60 hover:bg-base-100/70 hover:text-base-content'}"
+          onclick={() => (marketKind = k.id)}
+        >
+          {$t(k.labelKey)}
+        </button>
+      {/each}
+    </div>
+  {/if}
+  <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
+  <div class="flex-1 min-h-0 overflow-y-auto" onclickcapture={interceptMarketClick}>
+    {#if marketDetail}
+      {#key marketDetail.id}
+        <ProductDetail itemId={marketDetail.id} artifactType={marketDetail.type} />
+      {/key}
+    {:else}
+      {#key marketKind}
+        <MarketplaceBrowse kind={marketKind} />
+      {/key}
+    {/if}
   </div>
 </ShelfModal>
 
 <ShelfModal open={runsOpen} title={$t('nav.runs')} onclose={closeRuns}>
   <RunsPane onopen={openRun} />
+</ShelfModal>
+
+<!-- View-only coworker transcript: what one employee told another, verbatim.
+     The owner reads; steering happens in the employee's own chat. -->
+<ShelfModal
+  open={cwKey !== null}
+  title={cwNames ? `${cwNames.sender} ⇄ ${cwNames.target}` : ''}
+  onclose={closeCoworkerThread}
+>
+  {#if cwKey}
+    {#key cwKey}
+      <CoworkerThreadView
+        threadKey={cwKey}
+        senderName={cwNames?.sender ?? ''}
+        targetName={cwNames?.target ?? ''}
+      />
+    {/key}
+  {/if}
 </ShelfModal>
 
 <ShelfModal open={inboxOpen} title={$t('nav.inbox')} onclose={closeInbox}>

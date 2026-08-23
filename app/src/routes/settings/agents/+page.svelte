@@ -1,7 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { t } from 'svelte-i18n';
-  import type { Agent } from '$lib/api/nebo';
   import SettingsHeader from '$lib/components/settings/SettingsHeader.svelte';
   import StatCard from '$lib/components/settings/StatCard.svelte';
   import SettingsRow from '$lib/components/settings/SettingsRow.svelte';
@@ -29,7 +28,7 @@
       const api = await import('$lib/api/nebo');
       const resp = await api.listAgents();
       if (resp?.agents?.length) {
-        agents = (resp.agents as Agent[]).map((a) => ({
+        agents = (resp.agents).map((a) => ({
           id: a.id,
           name: a.name,
           role: a.description || '',

@@ -13,6 +13,8 @@
   import { addToast } from '$lib/stores/toast';
   import { parseMarkdown } from '$lib/markdown';
   import FileText from 'lucide-svelte/icons/file-text';
+  import MessageSquareLock from 'lucide-svelte/icons/message-square-lock';
+  import { page } from '$app/stores';
   import Code from 'lucide-svelte/icons/code';
   import Table from 'lucide-svelte/icons/table';
   import Presentation from 'lucide-svelte/icons/presentation';
@@ -550,6 +552,32 @@
       : null;
   }
 
+  // Coworker sends are events the owner reads ("Messaged Search Analyst"),
+  // never plumbing inside the collapsed tool group.
+  interface CoworkerEventPayload {
+    kind: 'coworker_message';
+    to?: string;
+    toAgentId?: string;
+    threadKey?: string;
+    text?: string;
+    reply?: string | null;
+    [k: string]: unknown;
+  }
+  function coworkerEvents(tools: ToolMsg[] | undefined): CoworkerEventPayload[] {
+    return (tools ?? [])
+      .flatMap((t) => (t.payload?.kind === 'coworker_message' ? [t.payload as CoworkerEventPayload] : []));
+  }
+  function nonCoworkerTools(tools: ToolMsg[] | undefined): ToolMsg[] {
+    return (tools ?? []).filter((t) => t.payload?.kind !== 'coworker_message');
+  }
+  // The event chip deep-links to the view-only employee↔employee transcript
+  // (?cw=<threadKey> — URL state, same as every other shell surface).
+  function cwHref(key: string): string {
+    const url = new URL($page.url);
+    url.searchParams.set('cw', key);
+    return url.pathname + url.search;
+  }
+
   function startEdit(idx: number, content: string) {
     editingIdx = idx;
     editText = content;
@@ -1052,20 +1080,21 @@
         {/if}
         {#if isolated}
           <!-- Separate conversations only mean something when memory is sealed
-               between them; say so where the conversations are. -->
+               between them. MessageSquareLock = "this conversation is sealed";
+               the plain Lock stays on the Settings toggle — that distinction
+               is deliberate. Words live in the tooltip. -->
           <span
-            class="inline-flex items-center gap-1 text-[10px] uppercase tracking-wide px-1.5 py-px rounded bg-warning/15 text-warning shrink-0"
-            title={$t('agentIsolation.isolatedHint')}
+            class="self-center text-warning/80 shrink-0 tooltip tooltip-bottom"
+            data-tip={$t('agentIsolation.isolated')}
           >
-            <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-            {$t('agentIsolation.isolated')}
+            <MessageSquareLock class="w-3 h-3" />
           </span>
         {/if}
         {#if headerTitle && headerTitle !== agentName}
           <span class="text-sm text-base-content/50 truncate">{headerTitle}</span>
         {/if}
       </span>
-      <div class="ml-auto max-md:hidden flex items-center gap-0.5 shrink-0">
+      <div class="ml-auto max-lg:hidden flex items-center gap-0.5 shrink-0">
 
 
 
@@ -1093,9 +1122,9 @@
         {/if}
       </div>
 
-      <!-- Phone: the icon row collapses into one labeled menu — five icons ate
-           the title's room at 390px. -->
-      <div class="md:hidden ml-auto shrink-0 flex items-center gap-1">
+      <!-- Narrow widths: the icon row collapses into one labeled menu — five
+           icons ate the title's room anywhere under lg, not just on phones. -->
+      <div class="lg:hidden ml-auto shrink-0 flex items-center gap-1">
         {#if isApp && onopenapp}
           <button class="btn btn-primary btn-sm gap-1" onclick={onopenapp}>
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
@@ -1464,10 +1493,22 @@
           <div class="text-sm leading-relaxed prose prose-sm max-w-none" onclick={handleWorkMentionClick}>
             {@html linkWorkMentions(renderMarkdown(msg.content), (msg as any).workItems)}
           </div>
-          <!-- Tools this reply ran, on the message itself — never a detached sibling. -->
-          {#if msg.tools?.length}
-            {@render toolTimeline(msg.tools, msg.id ?? `m${origIdx}`)}
+          <!-- Tools this reply ran, on the message itself — never a detached sibling.
+               Coworker sends are pulled OUT of the group and shown as events. -->
+          {#if nonCoworkerTools(msg.tools).length}
+            {@render toolTimeline(nonCoworkerTools(msg.tools), msg.id ?? `m${origIdx}`)}
           {/if}
+          {#each coworkerEvents(msg.tools) as ev, evIdx (evIdx)}
+            <a
+              href={ev.threadKey ? cwHref(ev.threadKey) : undefined}
+              class="flex items-center justify-center gap-1.5 my-2.5 text-xs text-base-content/60 no-underline {ev.threadKey ? 'hover:text-base-content transition-colors' : ''}"
+              title={ev.threadKey ? $t('coworkerThread.open') : undefined}
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="shrink-0"><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4Z"/></svg>
+              <span>{$t('chat.messagedCoworker')}</span>
+              <span class="font-medium text-base-content/80">{ev.to}</span>
+            </a>
+          {/each}
           {#if msg.attachments?.length}
             <div class="flex flex-wrap gap-2 mt-2">
               {#each msg.attachments as att}
