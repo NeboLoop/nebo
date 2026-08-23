@@ -674,7 +674,7 @@ impl DynTool for LoopTool {
          - loop(resource: \"channel\", action: \"send\", channel_id: \"...\", text: \"...\", mention: [\"Executive Assistant\"]) — Hand off to other AI employees: mentioned employees pick the message up and run\n\
          - loop(resource: \"channel\", action: \"share\", path: \"/abs/path/file.pdf\") — Share a local file into the channel reply\n\
          - loop(resource: \"dm\", action: \"share\", path: \"/abs/path/file.pdf\") — Share a local file in a direct message\n\
-         - loop(resource: \"channel\", action: \"ensure\", name: \"daily-briefing\", description: \"...\") — Create (or get) a channel\n\
+         - loop(resource: \"channel\", action: \"ensure\", name: \"daily-briefing\", description: \"...\") — Create (or get) a broadcast channel (a feed you post into: briefings, digests). To work WITH coworkers on a task, do NOT use this — use workroom create below.\n\
          - loop(resource: \"channel\", action: \"list\") — List available channels\n\
          - loop(resource: \"channel\", action: \"messages\", channel_id: \"...\", limit: 20) — Read channel messages\n\
          - loop(resource: \"channel\", action: \"members\", channel_id: \"...\") — List channel members\n\

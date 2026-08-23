@@ -782,7 +782,132 @@
 
 ---
 
-## Section 8: Cleanup
+## Section 8: Workrooms (WR)
+
+### WR-01: List Workrooms (REST)
+
+| Check | Expected | Result | Notes |
+|-------|----------|--------|-------|
+| GET /workrooms | 200, `{workrooms, total}` | | |
+
+### WR-02: Agent Opens a Room
+
+| Check | Expected | Result | Notes |
+|-------|----------|--------|-------|
+| First tool call is workroom.create (no hunting) | | | |
+| Sidebar row appears live (workroom_created, no reload) | | | |
+| Members = creator + named coworker | | | |
+| Organizer crown on creator | | | |
+| No channel_id/UUID in reply prose | | | |
+
+### WR-03: Solo Room Refused
+
+| Check | Expected | Result | Notes |
+|-------|----------|--------|-------|
+| 1-member create errors ("at least two employees") | | | |
+
+### WR-04: Reuse Refused, No Clobber
+
+| Check | Expected | Result | Notes |
+|-------|----------|--------|-------|
+| Repeat name errors, names existing room | | | |
+| Existing room mission/members unchanged | | | |
+
+### WR-05: Transcript Names
+
+| Check | Expected | Result | Notes |
+|-------|----------|--------|-------|
+| No UUID senders in GET /messages | | | |
+
+### WR-06: Mention Grammar Rewrite
+
+| Check | Expected | Result | Notes |
+|-------|----------|--------|-------|
+| `<@localId>` in send → hub grammar on the wire | | | |
+
+### WR-07: Live Events (no polling)
+
+| Check | Expected | Result | Notes |
+|-------|----------|--------|-------|
+| workroom_message appends open transcript | | | |
+| Sidebar recency bumps | | | |
+| Zero polling while idle | | | |
+
+### WR-08: Mention → Coworker Answers ⚠ KNOWN OPEN
+
+| Check | Expected | Result | Notes |
+|-------|----------|--------|-------|
+| Named coworker replies IN room, attributed | | | |
+
+### WR-09: Room UI (Playwright)
+
+| Check | Expected | Result | Notes |
+|-------|----------|--------|-------|
+| Desktop vertical member rail + crown | | | |
+| Mission well fixed 3 lines, scrolls inside | | | |
+| Mobile members drawer toggle | | | |
+| Standard ChatComposer with @-autocomplete | | | |
+| Empty state: header + teaching line, no create UI | | | |
+
+### WR-10: Delete Registration
+
+| Check | Expected | Result | Notes |
+|-------|----------|--------|-------|
+| DELETE 200; sidebar clears; hub history survives | | | |
+
+---
+
+## Section 9: Conversation Register & Governance (CG)
+
+### CG-01: Blocking Question Ends the Turn
+
+| Check | Expected | Result | Notes |
+|-------|----------|--------|-------|
+| Zero auto-continues after a question to the user | | | |
+
+### CG-02: Repeat Guard (unit)
+
+| Check | Expected | Result | Notes |
+|-------|----------|--------|-------|
+| `cargo test -p nebo-agent goals` all pass | | | |
+
+### CG-03: Steering Invisible
+
+| Check | Expected | Result | Notes |
+|-------|----------|--------|-------|
+| No "Continue —" rows in GET messages; totalMessages honest | | | |
+
+### CG-04: Working Always Visible
+
+| Check | Expected | Result | Notes |
+|-------|----------|--------|-------|
+| Work line continuous during live run, no flicker | | | |
+
+### CG-05: Telemetry Is Dev-Mode
+
+| Check | Expected | Result | Notes |
+|-------|----------|--------|-------|
+| Dev off: no finished tool lines/signatures | | | |
+| Dev off: coworker chips still visible | | | |
+| Dev on: full timeline | | | |
+
+### CG-06: Register
+
+| Check | Expected | Result | Notes |
+|-------|----------|--------|-------|
+| No "Let me try…" narration between calls | | | |
+| No machine currency in prose | | | |
+
+### CG-07: Composer Links
+
+| Check | Expected | Result | Notes |
+|-------|----------|--------|-------|
+| Typed/pasted URLs stay plain text | | | |
+| Rendered links open new window | | | |
+
+---
+
+## Section 10: Cleanup
 
 | Artifact | Cleanup Action | Done | Notes |
 |----------|----------------|------|-------|
@@ -804,6 +929,7 @@
 | **WORK-SW4Z-5XKN** workflow | Uninstall installed workflow from `nebo/workflows/` | | |
 | **AGNT-KG82-KM2G** agent | Uninstall installed agent from `nebo/agents/` | | |
 | httpbin browser tab | Close tab (X-10) | | |
+| `WR Test *` workrooms | DELETE /workrooms/{channelId} | | |
 
 ---
 
@@ -819,7 +945,9 @@
 | Agents (A) | 15 | | | | |
 | Plugins (P) | 4 | | | | |
 | Cross-Cutting (X) | 10 | | | | |
-| **Total** | **81** | | | | |
+| Workrooms (WR) | 10 | | | | |
+| Register & Governance (CG) | 7 | | | | |
+| **Total** | **98** | | | | |
 
 ## Regressions from Previous Run
 

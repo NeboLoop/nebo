@@ -27,6 +27,8 @@ CRITICAL — DO NOT SKIP TESTS:
 - Section 4 (Workflows) tests W-01 through W-10 are SEPARATE from AT-22. Execute ALL of them.
 - Section 5 (Roles) tests R-01 through R-09 are SEPARATE from AT-20/AT-21. Execute ALL of them.
 - Section 3 (Tools) T-01 and T-02 are REST API calls to /integrations/tools — execute both.
+- Section 7 (Workrooms) WR-01 through WR-10: execute ALL. WR-08 is a KNOWN OPEN — document the failure precisely, do not fix. Timestamp room names ("WR Test {YYYYMMDD-HHMM}") so runs never collide with the never-reuse policy.
+- Section 8 (Register & Governance) CG-01 through CG-07: execute ALL. These are observation tests — watch the live UI/transcript and record verbatim what renders.
 - If a test has both "Agent tool" and "REST API" methods, execute BOTH.
 - For marketplace installs (S-10, W-09, R-07): use `curl -X POST http://localhost:27895/api/v1/codes -H "Content-Type: application/json" -d '{"code": "CODE-HERE"}'`
 - The ONLY valid SKIP reasons are: "no test binary compiled", "requires hardware not available" (e.g., external display), or "would cause destructive system change" (e.g., toggling DND).

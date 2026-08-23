@@ -1802,7 +1802,215 @@ DELETE http://localhost:27895/api/v1/roles/{cascade-test-id}
 
 ---
 
-## Section 7: Cleanup
+## Section 7: Workrooms
+
+Workrooms are mission rooms where the owner and several employees share one
+conversation. A room IS a loop channel; the hub owns the history. Rooms are
+**agent-created only** — whichever employee owns a task opens the room
+(`loop(resource: "workroom", action: "create", ...)`). There is ONE creation
+core (`tools::workroom::create`) behind both doors (loop tool + REST); the
+policies below are enforced there, so tool and API results must never diverge.
+
+Policies under test: a room takes **at least two employees** (organizer +
+named coworkers); a room name is **never reused** (a taken name errors and
+points at the existing room — never an overwrite).
+
+### WR-01: List Workrooms (REST)
+
+```
+curl http://localhost:27895/api/v1/workrooms
+```
+
+| Check | Expected | Result |
+|-------|----------|--------|
+| Status | 200 | |
+| Shape | `{workrooms: [...], total: N}` | |
+
+### WR-02: Agent Opens a Room (the ONE agent pathway)
+
+Via chat to the primary employee:
+
+```
+Open a workroom called "WR Test {YYYYMMDD-HHMM}" with Search Analyst.
+Mission: integration test. Then post the mission in the room and mention
+Search Analyst.
+```
+
+| Check | Expected | Result |
+|-------|----------|--------|
+| First tool call | `loop workroom.create` — no discover/MCP hunting first (FC check) | |
+| Room appears in sidebar | Live via `workroom_created` broadcast, NO reload | |
+| Members | Creator + Search Analyst (2) | |
+| Organizer crown | On the creating employee (first member) | |
+| No machine leak in prose | Reply does not print channel_id/UUIDs | |
+
+### WR-03: Solo Room Refused
+
+```
+curl -X POST http://localhost:27895/api/v1/workrooms \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"Solo test","mission":"x","agentIds":["assistant"]}'
+```
+
+| Check | Expected | Result |
+|-------|----------|--------|
+| Status | Error (500) | |
+| Message | "at least two employees… name the coworkers" | |
+| Same via tool | Agent asked to open a room alone gets the same refusal | |
+
+### WR-04: Room Reuse Refused (no clobber)
+
+Re-POST the WR-02 room's exact name with valid members.
+
+| Check | Expected | Result |
+|-------|----------|--------|
+| Status | Error naming the existing room + channel_id | |
+| Existing room intact | GET /workrooms: mission + members UNCHANGED | |
+
+### WR-05: Transcript Speaks Names, Never Hub IDs
+
+```
+curl http://localhost:27895/api/v1/workrooms/{channelId}/messages
+```
+
+| Check | Expected | Result |
+|-------|----------|--------|
+| Every `from` | Employee name (or "You"-role rows) — NEVER a UUID | |
+| Resolution order | stamped name → channel members → own bot id → registry | |
+
+### WR-06: Owner Send + Mention Grammar Rewrite
+
+```
+curl -X POST .../workrooms/{channelId}/send \
+  -d '{"text":"<@{localAgentId}> please ack"}'
+```
+
+| Check | Expected | Result |
+|-------|----------|--------|
+| Status | 200 | |
+| Wire copy | `<@localId>` rewritten to `<@loop_agent_id>` (or `@Name`) — clients never learn hub ids | |
+
+### WR-07: Live Room Events (no polling)
+
+With the room open in the UI, post into the channel from the agent side.
+
+| Check | Expected | Result |
+|-------|----------|--------|
+| Transcript | Appends via `workroom_message` WS event, no refetch loop | |
+| Sidebar row | Recency bumps; room rises within the section | |
+| Network tab | ZERO polling requests while idle | |
+
+### WR-08: Mention → Coworker Answers in the Room ⚠ KNOWN OPEN
+
+The first-light gate. As of 2026-08-23 this FAILS (mentions don't resolve in
+the room channel; the creating agent flailed through name formats). Observe
+and document — do not fix mid-run.
+
+| Check | Expected | Result |
+|-------|----------|--------|
+| Mentioned coworker replies IN the room | Reply attributed with name + color | |
+| Reply latency | Documented (even if it fails) | |
+
+### WR-09: Room UI Surfaces (Playwright, :5174 worktree)
+
+| Check | Expected | Result |
+|-------|----------|--------|
+| Desktop member rail | Vertical "In this room" list, colored avatars, crown on organizer | |
+| Mission well | Fixed 3-line height, scrolls inside, never pushes members down | |
+| Mobile members | Behind header toggle (stacked faces + count + chevron), slides open | |
+| Composer | The standard ChatComposer (mention autocomplete works) | |
+| Empty state | No rooms → section header + one teaching line, NO create UI anywhere | |
+| Scrollbars | No permanent scrollbar thumbs; visible only under the pointer | |
+
+### WR-10: Delete Room Registration
+
+```
+curl -X DELETE http://localhost:27895/api/v1/workrooms/{channelId}
+```
+
+| Check | Expected | Result |
+|-------|----------|--------|
+| Status | 200 | |
+| Sidebar | Room gone after reload | |
+| Hub conversation | Survives (records are never destroyed) | |
+
+---
+
+## Section 8: Conversation Register & Governance
+
+New behaviors shipped 2026-08-23: judge-gated auto-continuation with a
+blocking-question rule and a no-progress stop; hidden system steering
+(`isMeta`); dev-mode-gated tool telemetry; composer link handling.
+
+### CG-01: Blocking Question Ends the Turn
+
+Ask an employee something that requires information only you have (e.g. the
+GBP template prompt with placeholder values). Wait 3+ minutes.
+
+| Check | Expected | Result |
+|-------|----------|--------|
+| Auto-continues | ZERO "Continue —" nudges after a turn that asks the user a question | |
+| Transcript | The question stands as the final message; no repeats | |
+
+### CG-02: Repeat Guard (unit)
+
+```
+cargo test -p nebo-agent goals
+```
+
+| Check | Expected | Result |
+|-------|----------|--------|
+| All goals tests pass | incl. `a_repeated_answer_stops_the_loop` | |
+
+### CG-03: Steering Is Invisible
+
+```
+curl http://localhost:27895/api/v1/chats/{id}/messages
+```
+
+on a chat that historically contains auto-continuations.
+
+| Check | Expected | Result |
+|-------|----------|--------|
+| `Continue — your previous response…` rows | ZERO in the response | |
+| totalMessages | Matches what renders (isMeta rows excluded from count) | |
+
+### CG-04: Working Is Always Visible
+
+Start a long multi-tool run and watch the whole time.
+
+| Check | Expected | Result |
+|-------|----------|--------|
+| Work line | Visible CONTINUOUSLY while the run is live — no flicker between tool calls | |
+| Run-wide pulse | "Working…"/activity status present for the whole run | |
+
+### CG-05: Tool Telemetry Is Developer Furniture
+
+| Check | Expected | Result |
+|-------|----------|--------|
+| Dev mode OFF, finished run | No "used N tools" line, no machine signatures (`channel: send`) | |
+| Dev mode OFF, coworker events | "Messaged {name}" chips STILL visible (trust surface) | |
+| Dev mode ON | Full timeline + signatures return | |
+
+### CG-06: Register — No Narrated Retries, No Machine Currency
+
+Observe any multi-step run.
+
+| Check | Expected | Result |
+|-------|----------|--------|
+| Narration | No "Let me try…"/"Let me check…" between tool calls | |
+| Prose | No channel_ids, UUIDs, install codes, plugin/connector vocabulary | |
+
+### CG-07: Composer Link Handling
+
+| Check | Expected | Result |
+|-------|----------|--------|
+| Type/paste a URL in the composer | Stays plain text — no underline, no swallowed words | |
+| Link in a rendered reply | Opens in a NEW window (`target=_blank`, `noopener`) | |
+
+---
+
+## Section 9: Cleanup
 
 After all tests, remove test artifacts:
 
@@ -1836,6 +2044,8 @@ After all tests, remove test artifacts:
 | `event-trigger-test` role | `DELETE /roles/{id}` | |
 | `version-test` skill | `skill(action: "delete", name: "version-test")` | |
 | `cascade-test` role | `DELETE /roles/{id}` | |
+| `WR Test *` workrooms | `curl -X DELETE http://localhost:27895/api/v1/workrooms/{channelId}` | |
+| `Solo test` room (should not exist — WR-03 refused) | Verify absent in GET /workrooms | |
 
 ---
 
