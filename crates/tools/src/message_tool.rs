@@ -85,18 +85,34 @@ impl MessageTool {
         };
 
         match rail.send(msg).await {
-            Ok(delivery) => match delivery.reply {
-                Some(reply) => ToolResult::ok(format!(
-                    "Message delivered to {}. Their reply:\n\n{}",
-                    delivery.to_name, reply
-                )),
-                None => ToolResult::ok(format!(
-                    "Message delivered to {} — they are handling it in their own session; \
-                     their reply will be added to your context when it arrives. \
-                     Report this as \"asked {} — waiting\", never as done.",
-                    delivery.to_name, delivery.to_name
-                )),
-            },
+            Ok(delivery) => {
+                // Structured payload → the chat renders a first-class
+                // "Messaged {name}" event (clickable through to the coworker
+                // thread) instead of a bare tool chip. threadKey identifies
+                // the delivered-into thread for the view-only transcript.
+                let payload = serde_json::json!({
+                    "kind": "coworker_message",
+                    "to": delivery.to_name,
+                    "toAgentId": delivery.to_agent_id,
+                    "threadKey": delivery.thread_key,
+                    "text": text,
+                    "reply": delivery.reply.clone(),
+                });
+                match delivery.reply {
+                    Some(ref reply) => ToolResult::ok(format!(
+                        "Message delivered to {}. Their reply:\n\n{}",
+                        delivery.to_name, reply
+                    ))
+                    .with_payload(payload),
+                    None => ToolResult::ok(format!(
+                        "Message delivered to {} — they are handling it in their own session; \
+                         their reply will be added to your context when it arrives. \
+                         Report this as \"asked {} — waiting\", never as done.",
+                        delivery.to_name, delivery.to_name
+                    ))
+                    .with_payload(payload),
+                }
+            }
             Err(e) => ToolResult::error(e),
         }
     }
