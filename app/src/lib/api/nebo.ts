@@ -1965,3 +1965,38 @@ export function toggleWorkflow(id: string, req: Record<string, unknown> = {}) {
 	return webapi.post<components.ToggleWorkflowResponse>(`/api/v1/workflows/${id}/toggle`, req)
 }
 
+/**
+ * @description "List workrooms"
+ */
+export function listWorkrooms() {
+	return webapi.get<components.ListWorkroomsResponse>(`/api/v1/workrooms`)
+}
+
+/**
+ * @description "Create workroom"
+ */
+export function createWorkroom(req: Record<string, unknown> = {}) {
+	return webapi.post<components.CreateWorkroomResponse>(`/api/v1/workrooms`, req)
+}
+
+/**
+ * @description "Delete workroom"
+ */
+export function deleteWorkroom(channelId: string) {
+	return webapi.delete<components.DeleteWorkroomResponse>(`/api/v1/workrooms/${channelId}`)
+}
+
+/**
+ * @description "Get workroom messages"
+ */
+export function getWorkroomMessages(channelId: string) {
+	return webapi.get<components.GetWorkroomMessagesResponse>(`/api/v1/workrooms/${channelId}/messages`)
+}
+
+/**
+ * @description "Send workroom message"
+ */
+export function sendWorkroomMessage(channelId: string, req: Record<string, unknown> = {}) {
+	return webapi.post<components.SendWorkroomMessageResponse>(`/api/v1/workrooms/${channelId}/send`, req)
+}
+
