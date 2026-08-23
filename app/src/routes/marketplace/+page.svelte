@@ -16,8 +16,9 @@
   const price = $derived($page.url.searchParams.get('price') || 'all');
   const category = $derived($page.url.searchParams.get('category') || '');
   const publisher = $derived($page.url.searchParams.get('publisher') || '');
+  const filter = $derived($page.url.searchParams.get('filter') || '');
 </script>
 
 <svelte:head><title>Marketplace - Nebo</title></svelte:head>
 
-<MarketplaceBrowse {kind} {price} {category} {publisher} />
+<MarketplaceBrowse {kind} {price} {category} {publisher} {filter} />

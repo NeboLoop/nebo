@@ -138,31 +138,54 @@
   const MARKET_PLURAL_TO_TYPE: Record<string, 'agent' | 'app' | 'skill' | 'plugin' | 'connector' | 'collection'> = {
     agents: 'agent', apps: 'app', skills: 'skill', plugins: 'plugin', connectors: 'connector', collections: 'collection',
   };
-  let marketKind = $state('employees');
+  // Where in the storefront the modal is standing. Same shape the /marketplace
+  // route reads out of its URL, so both mounts feed MarketplaceBrowse the same
+  // way — the modal just keeps it in state instead of the address bar.
+  type MarketLoc = { kind: string; price: string; category: string; publisher: string; filter: string };
+  const MARKET_HOME: MarketLoc = { kind: 'employees', price: 'all', category: '', publisher: '', filter: '' };
+  let market = $state<MarketLoc>({ ...MARKET_HOME });
   let marketDetail = $state<{ id: string; type: 'agent' | 'app' | 'skill' | 'plugin' | 'connector' | 'collection' } | null>(null);
   // Reopening the modal starts at browse, not wherever it was left.
-  $effect(() => { if (!marketOpen) marketDetail = null; });
+  $effect(() => { if (!marketOpen) { marketDetail = null; market = { ...MARKET_HOME }; } });
+
+  function marketLocFrom(url: URL): MarketLoc {
+    const p = url.searchParams;
+    const category = p.get('category') ?? '';
+    const publisher = p.get('publisher') ?? '';
+    return {
+      kind: p.get('kind') || (category || publisher ? 'all' : 'employees'),
+      price: p.get('price') || 'all',
+      category,
+      publisher,
+      filter: p.get('filter') ?? '',
+    };
+  }
 
   function interceptMarketClick(e: MouseEvent) {
     const a = (e.target as HTMLElement).closest('a[href]');
     if (!a) return;
     const href = a.getAttribute('href') ?? '';
-    const detail = href.match(/^\/marketplace\/([a-z]+)\/([^/?#]+)/);
-    if (detail && MARKET_PLURAL_TO_TYPE[detail[1]]) {
-      e.preventDefault();
-      e.stopPropagation();
+    if (!href.startsWith('/marketplace')) return;
+    const url = new URL(href, location.origin);
+    const detail = url.pathname.match(/^\/marketplace\/([a-z]+)\/([^/]+)\/?$/);
+    const isStorefront = url.pathname.replace(/\/$/, '') === '/marketplace';
+    // Detail pages and the storefront (with any of its filters) are what the
+    // modal renders. Other screens — /marketplace/installed, /marketplace/shared
+    // — still live on the route tree and navigate for real.
+    if (!isStorefront && !(detail && MARKET_PLURAL_TO_TYPE[detail[1]])) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (detail) {
       marketDetail = { id: decodeURIComponent(detail[2]), type: MARKET_PLURAL_TO_TYPE[detail[1]] };
       return;
     }
-    const root = href.match(/^\/marketplace\/?(?:\?kind=([a-z]+))?$/);
-    if (root) {
-      e.preventDefault();
-      e.stopPropagation();
-      marketDetail = null;
-      marketKind = root[1] ?? 'employees';
-    }
-    // Anything else (/marketplace/shared, search, …) navigates for real —
-    // those screens still live on the route tree.
+    marketDetail = null;
+    market = marketLocFrom(url);
+  }
+
+  function selectMarketKind(kind: string) {
+    marketDetail = null;
+    market = { ...MARKET_HOME, kind };
   }
   const openRuns = () => setParams((p) => p.set('runs', '1'));
   const closeRuns = () => setParams((p) => p.delete('runs'));
@@ -1132,33 +1155,44 @@
   </div>
 </ShelfModal>
 
+<!-- The shelf lays its children out in a row (settings puts its nav beside its
+     content); the storefront stacks, so it owns its own column. -->
 <ShelfModal open={marketOpen} title={$t('nav.marketplace')} onclose={closeMarket}>
-  {#if !marketDetail}
-    <!-- The same top-level sections the /marketplace page offers. -->
-    <div class="flex items-center gap-1 px-4 pt-2 shrink-0">
+  <div class="flex-1 min-w-0 min-h-0 flex flex-col">
+    <!-- The same top-level sections the /marketplace page offers. They stay put
+         over product detail too — a section is always one tap away, and tapping
+         one is the way back out of a product. -->
+    <div class="flex items-center gap-1 px-4 pt-2 shrink-0 overflow-x-auto">
       {#each MARKET_KINDS as k (k.id)}
         <button
-          class="px-3 py-1.5 rounded-field text-sm cursor-pointer border transition-colors {marketKind === k.id
+          class="px-3 py-1.5 rounded-field text-sm cursor-pointer border transition-colors whitespace-nowrap {!marketDetail &&
+          market.kind === k.id
             ? 'bg-primary/10 border-primary/30 text-base-content font-medium'
             : 'bg-transparent border-transparent text-base-content/60 hover:bg-base-100/70 hover:text-base-content'}"
-          onclick={() => (marketKind = k.id)}
+          onclick={() => selectMarketKind(k.id)}
         >
           {$t(k.labelKey)}
         </button>
       {/each}
     </div>
-  {/if}
-  <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
-  <div class="flex-1 min-h-0 overflow-y-auto" onclickcapture={interceptMarketClick}>
-    {#if marketDetail}
-      {#key marketDetail.id}
-        <ProductDetail itemId={marketDetail.id} artifactType={marketDetail.type} />
-      {/key}
-    {:else}
-      {#key marketKind}
-        <MarketplaceBrowse kind={marketKind} />
-      {/key}
-    {/if}
+    <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
+    <div class="flex-1 min-h-0 overflow-y-auto" onclickcapture={interceptMarketClick}>
+      {#if marketDetail}
+        {#key marketDetail.id}
+          <ProductDetail itemId={marketDetail.id} artifactType={marketDetail.type} />
+        {/key}
+      {:else}
+        {#key `${market.kind}|${market.category}|${market.publisher}|${market.price}|${market.filter}`}
+          <MarketplaceBrowse
+            kind={market.kind}
+            price={market.price}
+            category={market.category}
+            publisher={market.publisher}
+            filter={market.filter}
+          />
+        {/key}
+      {/if}
+    </div>
   </div>
 </ShelfModal>
 

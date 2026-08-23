@@ -1,5 +1,4 @@
 <script lang="ts">
-	import { page } from '$app/stores';
 	import { onMount } from 'svelte';
 	import { t } from 'svelte-i18n';
 	import Search from 'lucide-svelte/icons/search';
@@ -34,8 +33,10 @@
 		kind = 'employees',
 		price = 'all',
 		category = '',
-		publisher = ''
-	}: { kind?: string; price?: string; category?: string; publisher?: string } = $props();
+		publisher = '',
+		filter = ''
+	}: { kind?: string; price?: string; category?: string; publisher?: string; filter?: string } =
+		$props();
 	const kindType = $derived(KIND_TYPE[kind] ?? '');
 	const isFiltering = $derived(kind !== 'all' || price !== 'all' || category !== '' || publisher !== '');
 
@@ -135,9 +136,8 @@
 	// Browse views render the server-ranked page; the map only decorates
 	// (dept grouping, role titles, responsibilities) — it no longer filters.
 	const employees = $derived(kind === 'employees' ? browseItems : []);
-	const filterSlug = $derived($page.url.searchParams.get('filter') || '');
-	const deptFilter = $derived(mktMap && filterSlug ? deptFromSlug(mktMap, filterSlug) : '');
-	const tcFilter = $derived(mktMap && filterSlug ? toolCatFromSlug(mktMap, filterSlug) : '');
+	const deptFilter = $derived(mktMap && filter ? deptFromSlug(mktMap, filter) : '');
+	const tcFilter = $derived(mktMap && filter ? toolCatFromSlug(mktMap, filter) : '');
 	const employeesByDept = $derived.by(() => {
 		if (!mktMap) return [] as { name: string; roles: AppItem[] }[];
 		const depts = deptFilter ? [deptFilter] : mktMap.departments;

@@ -49,7 +49,7 @@
   }
 </script>
 
-<div class="flex flex-col h-full min-h-0">
+<div class="flex-1 min-w-0 flex flex-col h-full min-h-0">
   {#if runs.length > 0}
     <div class="px-3 py-2 border-b border-base-content/8 flex items-center gap-1 shrink-0">
       {#each filters as f (f.id)}
