@@ -8,6 +8,7 @@
   import { base } from '$app/paths';
   import { storage } from '$lib/storage';
   import { onMount } from 'svelte';
+  import { get } from 'svelte/store';
   import BrandMark from '$lib/components/BrandMark.svelte';
 
   // Under the tunnel base (/t/<botID>/), goto() is base-aware via $lib/nav but
@@ -46,7 +47,19 @@
 
   // Check onboarding status and initialize WebSocket on mount
   onMount(() => {
+    // Booted successfully — reset the deploy-window boot-retry counter (app.html).
+    sessionStorage.removeItem('nebo:boot-retries');
     checkOnboardingStatus();
+
+    // Self-healing splash. Two ways a phone gets a forever-spinner with no
+    // error to catch: (1) iOS restores a snapshot of a dead page — no JS
+    // re-runs, so pageshow(persisted) is the only signal; (2) the status
+    // fetch hangs without rejecting. Re-check until the splash resolves —
+    // customers must never be told to reload (owner rule).
+    const recheck = () => { if (!get(onboardingChecked)) checkOnboardingStatus(); };
+    const onPageShow = (e: PageTransitionEvent) => { if (e.persisted) recheck(); };
+    window.addEventListener('pageshow', onPageShow);
+    const splashWatchdog = setInterval(recheck, 15000);
     // Load notifications once so the Inbox badge is populated app-wide (idempotent).
     loadNotifications();
 
@@ -75,6 +88,8 @@
 
     return () => {
       unsub();
+      window.removeEventListener('pageshow', onPageShow);
+      clearInterval(splashWatchdog);
       delete (window as any).__NEBO_CHECK_UPDATE__;
       import('$lib/websocket/listeners').then(({ detachWebSocketListeners }) => {
         detachWebSocketListeners();
