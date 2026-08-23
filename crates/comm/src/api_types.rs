@@ -694,6 +694,7 @@ impl ChannelMessagesResponse {
                     content: String::new(),
                     created_at: raw.created_at.clone(),
                     role: None,
+                    sender_name: None,
                     attachments: vec![],
                 };
                 // Parse nested payload JSON
@@ -702,6 +703,9 @@ impl ChannelMessagesResponse {
                     item.attachments = p.content.attachments;
                     if !p.metadata.role.is_empty() {
                         item.role = Some(p.metadata.role);
+                    }
+                    if !p.metadata.from_agent_name.is_empty() {
+                        item.sender_name = Some(p.metadata.from_agent_name);
                     }
                 }
                 item
@@ -720,6 +724,9 @@ pub struct NormalizedChannelMessage {
     pub created_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
+    /// Employee display name from the sender's stamped metadata, when present.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sender_name: Option<String>,
     /// File/image/video attachments.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<crate::wire::Attachment>,
@@ -746,6 +753,9 @@ struct ChannelContent {
 struct ChannelMetadata {
     #[serde(default)]
     role: String,
+    /// Sender employee identity, stamped by the sending bot (WS6 wire leg).
+    #[serde(default, rename = "fromAgentName")]
+    from_agent_name: String,
 }
 
 // ── Chat Message Types ───────────────────────────────────────────────

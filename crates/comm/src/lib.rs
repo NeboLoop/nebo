@@ -82,6 +82,12 @@ pub trait CommPlugin: Send + Sync {
         Err(CommError::Other("not supported".into()))
     }
 
+    /// This install's own hub bot id (empty when unknown/not applicable).
+    /// Lets readers attribute the bot's own unstamped messages to a name.
+    async fn bot_id(&self) -> String {
+        String::new()
+    }
+
     /// List members of a channel.
     /// List every agent (AI employee) in a loop — ALL bots' agents, not just
     /// this bot's. Used to resolve outbound @mentions by name/slug.

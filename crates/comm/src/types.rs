@@ -187,6 +187,9 @@ pub struct ChannelMessageItem {
     pub created_at: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
+    /// Employee display name from the sender's stamped metadata, when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sender_name: Option<String>,
     /// File/image/video attachments.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<crate::wire::Attachment>,

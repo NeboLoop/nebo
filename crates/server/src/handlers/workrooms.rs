@@ -152,6 +152,46 @@ pub async fn get_workroom_messages(
     {
         return Err(to_error_response(types::NeboError::NotFound));
     }
+    // The hub speaks in bot ids; the owner reads names. Precedence: the
+    // sender-stamped employee name (WS6 wire metadata) → the hub's channel
+    // member roster (bot_id → bot_name) → the local agent registry → the raw
+    // id. Resolved here so the contract carries names — no client has to
+    // know the hub's id scheme.
+    let mut name_of: std::collections::HashMap<String, String> = state
+        .store
+        .list_agents(500, 0)
+        .unwrap_or_default()
+        .into_iter()
+        .flat_map(|a| {
+            let mut keys = vec![(a.id.clone(), a.name.clone())];
+            if let Some(loop_id) = a.loop_agent_id {
+                keys.push((loop_id, a.name));
+            }
+            keys
+        })
+        .collect();
+    if let Ok(members) = state.comm_manager.list_channel_members(&channel_id).await {
+        for m in members {
+            if !m.bot_name.is_empty() {
+                name_of.entry(m.bot_id).or_insert(m.bot_name);
+            }
+        }
+    }
+    // This install's own unstamped messages carry its hub bot id — attribute
+    // them to the primary employee rather than printing a UUID.
+    if let Some(plugin) = state.comm_manager.active_plugin().await {
+        let own_bot_id = plugin.bot_id().await;
+        if !own_bot_id.is_empty() {
+            let primary = state
+                .store
+                .get_agent("assistant")
+                .ok()
+                .flatten()
+                .map(|a| a.name)
+                .unwrap_or_else(|| "Nebo".to_string());
+            name_of.entry(own_bot_id).or_insert(primary);
+        }
+    }
     let messages: Vec<WorkroomMessage> = state
         .comm_manager
         .list_channel_messages(&channel_id, 200)
@@ -164,7 +204,11 @@ pub async fn get_workroom_messages(
         .into_iter()
         .map(|m| WorkroomMessage {
             id: m.id,
-            from: m.from,
+            from: m
+                .sender_name
+                .filter(|s| !s.is_empty())
+                .or_else(|| name_of.get(&m.from).cloned())
+                .unwrap_or(m.from),
             content: m.content,
             created_at: m.created_at,
             role: m.role,

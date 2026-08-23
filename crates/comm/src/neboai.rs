@@ -909,6 +909,10 @@ impl CommPlugin for NeboAIPlugin {
         })
     }
 
+    async fn bot_id(&self) -> String {
+        self.bot_id.read().await.clone()
+    }
+
     async fn list_channel_messages(
         &self,
         channel_id: &str,
@@ -933,6 +937,7 @@ impl CommPlugin for NeboAIPlugin {
                 content: m.content,
                 created_at: m.created_at,
                 role: m.role,
+                sender_name: m.sender_name,
                 attachments: m.attachments,
             })
             .collect())
