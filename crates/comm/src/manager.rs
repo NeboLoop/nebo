@@ -89,6 +89,13 @@ impl PluginManager {
         inner.active.as_ref().map(|p| p.name().to_string())
     }
 
+    /// Handle to the active plugin itself (for callers that share plugin-level
+    /// helpers with the tool layer, e.g. workroom creation).
+    pub async fn active_plugin(&self) -> Option<Arc<dyn CommPlugin>> {
+        let inner = self.inner.read().await;
+        inner.active.clone()
+    }
+
     /// Send a message through the active plugin.
     pub async fn send(&self, msg: CommMessage) -> Result<(), CommError> {
         let inner = self.inner.read().await;
@@ -153,21 +160,6 @@ impl PluginManager {
             return Err(CommError::NotConnected);
         }
         active.list_channel_messages(channel_id, limit).await
-    }
-
-    /// Find-or-create a channel by name (active plugin); returns its
-    /// channel_id. Idempotent — the provider matches by sanitized name.
-    pub async fn ensure_channel(
-        &self,
-        name: &str,
-        description: Option<&str>,
-    ) -> Result<String, CommError> {
-        let inner = self.inner.read().await;
-        let active = inner.active.as_ref().ok_or(CommError::NoActivePlugin)?;
-        if !active.is_connected() {
-            return Err(CommError::NotConnected);
-        }
-        active.ensure_channel(name, description).await
     }
 
     /// List loops this bot belongs to (active plugin).

@@ -32,14 +32,26 @@ fn mime_for_path(p: &std::path::Path) -> &'static str {
 }
 
 /// LoopTool provides NeboAI communication capabilities.
-/// Resources: dm, channel, loop, topic.
+/// Resources: dm, channel, loop, topic, workroom.
 pub struct LoopTool {
     comm: Arc<dyn CommPlugin>,
+    /// Workroom registry (rooms are agent-created; the registry is local).
+    store: Option<Arc<db::Store>>,
+    /// ClientHub broadcast — the sidebar learns about a new room live.
+    broadcast: Option<crate::web_tool::Broadcaster>,
 }
 
 impl LoopTool {
-    pub fn new(comm: Arc<dyn CommPlugin>) -> Self {
-        Self { comm }
+    pub fn new(
+        comm: Arc<dyn CommPlugin>,
+        store: Option<Arc<db::Store>>,
+        broadcast: Option<crate::web_tool::Broadcaster>,
+    ) -> Self {
+        Self {
+            comm,
+            store,
+            broadcast,
+        }
     }
 
     fn infer_resource(&self, action: &str) -> &str {
@@ -47,6 +59,7 @@ impl LoopTool {
             "send" => "dm",
             "messages" | "members" => "channel",
             "subscribe" | "unsubscribe" => "topic",
+            "create" => "workroom",
             _ => "",
         }
     }
@@ -268,6 +281,79 @@ impl LoopTool {
                 "Unknown dm action: {}. Available: send, share",
                 action
             )),
+        }
+    }
+
+    /// Workrooms are opened by the employee that owns a task — never by a
+    /// human clicking a form. Create registers the room (channel + registry)
+    /// and tells the caller how to bring coworkers in: posting into the
+    /// channel with mentions IS the invitation, because channel dispatch is
+    /// mention-driven.
+    async fn handle_workroom(&self, input: &serde_json::Value, ctx: &ToolContext) -> ToolResult {
+        let action = input["action"].as_str().unwrap_or("");
+        if action != "create" {
+            return ToolResult::error(format!(
+                "Action {:?} not available on workroom. Available: create. \
+                 To talk in a room, use loop(resource: \"channel\", action: \"send\", \
+                 channel_id: \"...\", text: \"...\", mention: [\"Coworker Name\"]).",
+                action
+            ));
+        }
+        let Some(store) = self.store.as_ref() else {
+            return ToolResult::error("Workrooms are not available on this install.");
+        };
+        let name = input["name"].as_str().unwrap_or("");
+        if name.is_empty() {
+            return ToolResult::error(errors::missing_param(
+                "workroom create",
+                "name",
+                "loop(resource: \"workroom\", action: \"create\", name: \"Website launch\", \
+                 mission: \"Ship the new site\", agents: [\"Writer\", \"Reviewer\"])",
+            ));
+        }
+        let mission = input["mission"].as_str().unwrap_or("");
+
+        // Members: the caller plus whoever it names (names or local ids).
+        let mut member_ids: Vec<String> = Vec::new();
+        let own_id = types::keyparser::extract_agent_id(&ctx.session_key);
+        if !own_id.is_empty() {
+            member_ids.push(own_id);
+        }
+        if let Some(agents) = input["agents"].as_array() {
+            for a in agents {
+                let Some(label) = a.as_str().map(str::trim).filter(|s| !s.is_empty()) else {
+                    continue;
+                };
+                let resolved = store
+                    .get_agent_by_name(label)
+                    .ok()
+                    .flatten()
+                    .map(|ag| ag.id)
+                    .unwrap_or_else(|| label.to_string());
+                if !member_ids.contains(&resolved) {
+                    member_ids.push(resolved);
+                }
+            }
+        }
+
+        match crate::workroom::create(&self.comm, store, name, mission, &member_ids).await {
+            Ok(room) => {
+                if let Some(bc) = self.broadcast.as_ref() {
+                    bc(
+                        crate::workroom::WORKROOM_CREATED_EVENT,
+                        serde_json::json!({ "workroom": room }),
+                    );
+                }
+                ToolResult::ok(format!(
+                    "Workroom \"{}\" is open (channel_id: {}). Start the work by posting the \
+                     mission and mentioning the coworkers who should act: \
+                     loop(resource: \"channel\", action: \"send\", channel_id: \"{}\", \
+                     text: \"...\", mention: [\"Coworker Name\"]). Coworkers answer when \
+                     mentioned; the owner sees the whole room.",
+                    room.name, room.channel_id, room.channel_id
+                ))
+            }
+            Err(e) => ToolResult::error(format!("Failed to create workroom \"{name}\": {e}")),
         }
     }
 
@@ -592,7 +678,8 @@ impl DynTool for LoopTool {
          - loop(resource: \"channel\", action: \"list\") — List available channels\n\
          - loop(resource: \"channel\", action: \"messages\", channel_id: \"...\", limit: 20) — Read channel messages\n\
          - loop(resource: \"channel\", action: \"members\", channel_id: \"...\") — List channel members\n\
-         - loop(resource: \"topic\", action: \"subscribe\", topic: \"news\") / unsubscribe / status\n\n\
+         - loop(resource: \"topic\", action: \"subscribe\", topic: \"news\") / unsubscribe / status\n\
+         - loop(resource: \"workroom\", action: \"create\", name: \"Website launch\", mission: \"...\", agents: [\"Writer\", \"Reviewer\"]) — Open a mission room with coworkers. When a task needs several coworkers on one shared outcome, open a workroom and post the mission with mentions; mentioned coworkers respond in the room.\n\n\
          Use loop for bot-to-bot communication and NeboAI infrastructure."
             .to_string()
     }
@@ -604,12 +691,19 @@ impl DynTool for LoopTool {
                 "resource": {
                     "type": "string",
                     "description": "REQUIRED. The communication resource category — determines which actions are available.",
-                    "enum": ["dm", "channel", "loop", "topic"]
+                    "enum": ["dm", "channel", "loop", "topic", "workroom"]
                 },
                 "action": {
                     "type": "string",
                     "description": "The operation to perform on the selected resource. Never put a resource name here.",
-                    "enum": ["send", "share", "ensure", "messages", "members", "list", "get", "subscribe", "unsubscribe", "status"]
+                    "enum": ["send", "share", "ensure", "messages", "members", "list", "get", "subscribe", "unsubscribe", "status", "create"]
+                },
+                "name": { "type": "string", "description": "Workroom name (workroom create)" },
+                "mission": { "type": "string", "description": "What the room exists to accomplish (workroom create)" },
+                "agents": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Coworker names to bring into the workroom (workroom create). The creating employee is always a member."
                 },
                 "text": { "type": "string", "description": "Message text" },
                 "path": { "type": "string", "description": "Absolute path of a local file to share (for channel/dm share)" },
@@ -648,7 +742,7 @@ impl DynTool for LoopTool {
                 let corrected = crate::domain::auto_correct_resource(
                     &domain_input,
                     &mut input,
-                    &["dm", "channel", "loop", "topic"],
+                    &["dm", "channel", "loop", "topic", "workroom"],
                 );
                 if corrected.is_empty() {
                     self.infer_resource(&domain_input.action).to_string()
@@ -659,7 +753,7 @@ impl DynTool for LoopTool {
 
             if resource.is_empty() {
                 return ToolResult::error(
-                    "Resource is required. Available: dm, channel, loop, topic",
+                    "Resource is required. Available: dm, channel, loop, topic, workroom",
                 );
             }
 
@@ -686,8 +780,9 @@ impl DynTool for LoopTool {
                      this agent belongs to (or get / members with loop_id).",
                 ),
                 "topic" => self.handle_topic(&input).await,
+                "workroom" => self.handle_workroom(&input, ctx).await,
                 other => ToolResult::error(format!(
-                    "Resource {:?} not available. Available: dm, channel, loop, topic",
+                    "Resource {:?} not available. Available: dm, channel, loop, topic, workroom",
                     other
                 )),
             }

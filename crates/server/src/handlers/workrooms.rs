@@ -21,38 +21,32 @@ pub struct CreateWorkroomRequest {
     pub agent_ids: Vec<String>,
 }
 
-/// POST /workrooms — create the channel on the hub (find-or-create by name,
-/// idempotent) and register it as a room with its member employees.
+/// POST /workrooms — the platform API over the ONE creation core
+/// (`tools::workroom::create`, shared with the loop tool's `workroom`
+/// resource — rooms are normally opened by the employee that owns the task).
 pub async fn create_workroom(
     State(state): State<AppState>,
     Json(body): Json<CreateWorkroomRequest>,
 ) -> HandlerResult<serde_json::Value> {
-    let name = body.name.trim();
-    if name.is_empty() {
-        return Err(to_error_response(types::NeboError::Validation(
-            "workroom name required".into(),
-        )));
-    }
+    let comm = state.comm_manager.active_plugin().await.ok_or_else(|| {
+        to_error_response(types::NeboError::Internal(
+            "no active NeboLoop connection".into(),
+        ))
+    })?;
+    let room = tools::workroom::create(
+        &comm,
+        &state.store,
+        &body.name,
+        &body.mission,
+        &body.agent_ids,
+    )
+    .await
+    .map_err(|e| to_error_response(types::NeboError::Internal(e)))?;
 
-    let channel_id = state
-        .comm_manager
-        .ensure_channel(name, (!body.mission.is_empty()).then_some(body.mission.as_str()))
-        .await
-        .map_err(|e| {
-            to_error_response(types::NeboError::Internal(format!(
-                "create workroom channel: {e}"
-            )))
-        })?;
-
-    state
-        .store
-        .create_workroom(&channel_id, name, &body.mission, &body.agent_ids)
-        .map_err(to_error_response)?;
-
-    let room = state
-        .store
-        .get_workroom(&channel_id)
-        .map_err(to_error_response)?;
+    state.hub.broadcast(
+        tools::workroom::WORKROOM_CREATED_EVENT,
+        serde_json::json!({ "workroom": room }),
+    );
 
     Ok(Json(serde_json::json!({ "workroom": room })))
 }

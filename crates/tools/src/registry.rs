@@ -1008,8 +1008,12 @@ impl Registry {
         // registered when the handle is available (even before NeboAI connects).
         if allowed("loop") {
             if let Some(ref comm) = comm_plugin {
-                self.register(Box::new(crate::loop_tool::LoopTool::new(comm.clone())))
-                    .await;
+                self.register(Box::new(crate::loop_tool::LoopTool::new(
+                    comm.clone(),
+                    Some(store.clone()),
+                    broadcaster.clone(),
+                )))
+                .await;
             }
         }
     }

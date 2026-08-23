@@ -56,6 +56,7 @@ pub mod spotlight_tool;
 pub mod tool_search;
 pub mod vm_tool;
 pub mod web_tool;
+pub mod workroom;
 pub mod workflows;
 
 /// True when this Nebo runs as a cloud/container server rather than on a user's
