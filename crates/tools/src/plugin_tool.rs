@@ -299,7 +299,11 @@ impl PluginTool {
         } else {
             Some(query.trim())
         };
-        match api.list_products(Some("plugin"), q, None, None, Some(20)).await {
+        // No type straitjacket: the standalone services (Gmail, Drive, …) are
+        // `connector`-typed in the catalog, so a plugin-only search made them
+        // INVISIBLE to discover — the user asked for Gmail and could never get
+        // it. Search untyped, then keep the installable capability types.
+        match api.list_products(None, q, None, None, Some(20)).await {
             Ok(v) => {
                 // Canonical envelope is ListProductsResponse: { "products": [...] }.
                 // A missing array is a contract break, NOT zero results — say so.
@@ -310,8 +314,26 @@ impl PluginTool {
                         crate::truncate_str(&v.to_string(), 200)
                     ));
                 }
-                match items {
-                    Some(arr) if !arr.is_empty() => {
+                let installable: Vec<serde_json::Value> = items
+                    .into_iter()
+                    .flatten()
+                    .filter(|it| {
+                        matches!(
+                            it.get("type").and_then(|x| x.as_str()),
+                            Some("plugin") | Some("connector") | None
+                        )
+                    })
+                    .cloned()
+                    .collect();
+                let arr = &installable;
+                if !arr.is_empty() {
+                    {
+                        // Interactive listings carry NO install codes — codes in
+                        // chat prose are the failure mode this flow replaces.
+                        // Unattended runs keep them (codes are that pathway).
+                        let interactive = crate::origin::ExecutionMode::from(ctx.origin)
+                            == crate::origin::ExecutionMode::Interactive
+                            && ctx.ask_channels.is_some();
                         let mut lines = Vec::new();
                         for it in arr {
                             let name = it.get("name").and_then(|x| x.as_str()).unwrap_or("?");
@@ -319,7 +341,11 @@ impl PluginTool {
                             let code = it.get("code").and_then(|x| x.as_str()).unwrap_or("");
                             let desc =
                                 it.get("description").and_then(|x| x.as_str()).unwrap_or("");
-                            lines.push(format!("- {} ({}) — {} [{}]", name, slug, desc, code));
+                            if interactive {
+                                lines.push(format!("- {} ({}) — {}", name, slug, desc));
+                            } else {
+                                lines.push(format!("- {} ({}) — {} [{}]", name, slug, desc, code));
+                            }
                         }
                         let listing = format!(
                             "Found {} plugin(s):\n{}",
@@ -327,14 +353,31 @@ impl PluginTool {
                             lines.join("\n")
                         );
 
-                        // Interactive chat: park on an install card for the top
+                        // Interactive chat: park on an install card for the best
                         // match instead of narrating a code. The card's button
                         // redeems the code via POST /codes (the one install
                         // pathway); "installed" resumes this call.
-                        let interactive = crate::origin::ExecutionMode::from(ctx.origin)
-                            == crate::origin::ExecutionMode::Interactive
-                            && ctx.ask_channels.is_some();
-                        let top = &arr[0];
+                        //
+                        // Best match, not arr[0]: the marketplace ranks by
+                        // relevance, but a query that IS a product's name must
+                        // beat a bundle that merely mentions it — "gmail" kept
+                        // carding the deprecated Google Workspace bundle and the
+                        // user could never install the thing they named.
+                        let q = query.trim().to_lowercase();
+                        let field = |it: &serde_json::Value, k: &str| {
+                            it.get(k).and_then(|x| x.as_str()).unwrap_or("").to_lowercase()
+                        };
+                        let top = arr
+                            .iter()
+                            .find(|it| !q.is_empty() && (field(it, "name") == q || field(it, "slug") == q))
+                            .or_else(|| {
+                                arr.iter().find(|it| {
+                                    !q.is_empty()
+                                        && (field(it, "name").starts_with(&q)
+                                            || field(it, "slug").starts_with(&q))
+                                })
+                            })
+                            .unwrap_or(&arr[0]);
                         let top_code = top.get("code").and_then(|x| x.as_str()).unwrap_or("");
                         if interactive && !top_code.is_empty() {
                             let top_name =
@@ -375,12 +418,23 @@ impl PluginTool {
                                  to re-offer the card."
                             ));
                         }
-                        ToolResult::ok(format!(
-                            "{listing}\n\nTo install one, share its PLUG-XXXX-XXXX \
-                             code with the user to approve (installs via the marketplace code path)."
-                        ))
+                        if interactive {
+                            // Interactive but no usable card (top match had no
+                            // code): never fall back to narrating codes.
+                            ToolResult::ok(format!(
+                                "{listing}\n\nAsk the user which one they want, then call \
+                                 discover again with its exact name to offer the install card. \
+                                 Do NOT paste install codes into chat."
+                            ))
+                        } else {
+                            ToolResult::ok(format!(
+                                "{listing}\n\nTo install one, share its PLUG-XXXX-XXXX \
+                                 code with the user to approve (installs via the marketplace code path)."
+                            ))
+                        }
                     }
-                    _ => ToolResult::ok("No plugins found in the marketplace for that query."),
+                } else {
+                    ToolResult::ok("No plugins found in the marketplace for that query.")
                 }
             }
             Err(e) => ToolResult::error(format!("marketplace search failed: {}", e)),
