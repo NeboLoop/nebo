@@ -21,6 +21,7 @@
 -->
 <script lang="ts">
   import { getActivityType } from '$lib/utils/workflowTypes';
+  import { describeSchedule } from '$lib/utils/schedule';
   import type { WorkflowConfig, WorkflowActivity } from '$lib/types/agentPage';
 
   const TRIGGER_NODE = '__trigger__';
@@ -151,7 +152,10 @@
   function triggerLine(): string {
     const tr = workflow.trigger;
     if (!tr || tr.type === 'manual') return 'Runs when you start it';
-    if (tr.type === 'schedule') return workflow.schedule || 'On a schedule';
+    if (tr.type === 'schedule') {
+      const raw = workflow.schedule || tr.cron || '';
+      return raw ? describeSchedule(raw).text : 'On a schedule';
+    }
     if (tr.type === 'event') return `When ${tr.sources?.join(', ') || tr.event || 'an event'} fires`;
     if (tr.type === 'watch') return `Watching ${tr.event || tr.plugin || 'a plugin'}`;
     if (tr.type === 'heartbeat') return `Every ${tr.interval || '?'}`;

@@ -2722,6 +2722,9 @@
 	"flows": {
 		"none": "No flows yet",
 		"newCallTree": "New call tree — design what a phone line handles",
-		"reminders": "Reminders & scheduled tasks"
+		"reminders": "Reminders & scheduled tasks",
+		"runNow": "Run now",
+		"deleteReminderTitle": "Delete \"{name}\"?",
+		"deleteReminderBody": "This scheduled task stops running and is removed. Past runs stay in the run history."
 	}
 }

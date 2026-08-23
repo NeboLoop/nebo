@@ -27,23 +27,59 @@
   // here are the primary employee's own reminders, matched by agentId.
   import * as api from '$lib/api/nebo';
   import type { CronJob } from '$lib/api/neboComponents';
+  import { describeSchedule } from '$lib/utils/schedule';
+  import ConfirmModal from '$lib/components/settings/ConfirmModal.svelte';
+
   let reminders = $state<CronJob[]>([]);
-  $effect(() => {
+  let reminderBusy = $state<string | null>(null);
+  let deleteReminder = $state<CronJob | null>(null);
+
+  async function loadReminders() {
     const id = ctx.agentId;
     if (!id) return;
-    api.listTasks(200, 0).then((r) => {
+    try {
+      const r = await api.listTasks(200, 0);
       reminders = (r.tasks ?? []).filter(
         (t) => (t.agentId ?? '') === id || (id === 'assistant' && !t.agentId)
       );
-    }).catch(() => { reminders = []; });
-  });
+    } catch { reminders = []; }
+  }
+  $effect(() => { void ctx.agentId; loadReminders(); });
+
+  async function toggleReminder(t: CronJob) {
+    if (reminderBusy) return;
+    reminderBusy = t.name;
+    try { await api.toggleTask(t.name, { enabled: t.enabled === false }); await loadReminders(); }
+    catch { /* row keeps prior state */ }
+    reminderBusy = null;
+  }
+
+  async function runReminder(t: CronJob) {
+    if (reminderBusy) return;
+    reminderBusy = t.name;
+    try { await api.runTask(t.name); } catch { /* surfaced by run history */ }
+    reminderBusy = null;
+  }
+
+  async function confirmDeleteReminder() {
+    const t = deleteReminder;
+    if (!t) return;
+    reminderBusy = t.name;
+    try { await api.deleteTask(t.name); await loadReminders(); }
+    catch { /* keep the row */ }
+    reminderBusy = null;
+    deleteReminder = null;
+  }
   const entries = $derived(ctx.workflowEntries);
   const stats = $derived(ctx.workflowStats);
 
   // Verbatim from the settings section this replaced — a move should not
   // quietly change what the rows say.
   function triggerSummary(wf: WorkflowConfig): string {
-    if (wf.trigger?.type === 'schedule') return wf.schedule || 'Scheduled';
+    if (wf.trigger?.type === 'schedule') {
+      const raw = wf.schedule || wf.trigger.cron || '';
+      return raw ? describeSchedule(raw).text : 'Scheduled';
+    }
     if (wf.trigger?.type === 'event') return `On ${wf.trigger.event || 'event'}`;
     if (wf.trigger?.type === 'watch') return `Watch: ${wf.trigger.event || wf.trigger.plugin || 'plugin'}`;
     if (wf.trigger?.type === 'heartbeat') return `Every ${wf.trigger.interval || '?'}`;
@@ -145,6 +181,7 @@
         <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1.5">{$t('flows.reminders')}</div>
         <div class="flex flex-col gap-2">
           {#each reminders as r (r.id)}
+            {@const sched = describeSchedule(r.schedule)}
             <div class="rounded-lg border border-base-300 bg-base-100 p-3 flex items-start gap-2.5">
               <div class="w-[22px] h-[22px] rounded flex items-center justify-center text-sm shrink-0 mt-0.5 {r.enabled !== false ? 'bg-primary/10 text-primary' : 'bg-base-200 text-base-content/40'}">&#8986;</div>
               <div class="flex-1 min-w-0">
@@ -158,7 +195,7 @@
                   <div class="text-xs text-base-content/70 mt-0.5 line-clamp-2">{r.instructions || r.message || r.command}</div>
                 {/if}
                 <div class="flex items-center gap-1.5 mt-1.5 flex-wrap">
-                  <span class="text-xs text-base-content/50 font-mono">{r.schedule}</span>
+                  <span class="text-xs text-base-content/50 {sched.isCron ? 'font-mono' : ''}">{sched.text}</span>
                   {#if r.lastRun}
                     <span class="text-xs text-base-content/30">&middot;</span>
                     <span class="text-xs text-base-content/50 font-mono">{r.lastRun}</span>
@@ -167,7 +204,20 @@
                     <span class="text-xs text-error font-mono truncate">{r.lastError}</span>
                   {/if}
                 </div>
+                <div class="flex items-center gap-2 mt-2">
+                  <button class="btn btn-ghost btn-xs" disabled={reminderBusy === r.name} onclick={() => runReminder(r)}>{$t('flows.runNow')}</button>
+                  <button class="btn btn-ghost btn-xs text-error ml-auto" disabled={reminderBusy === r.name} onclick={() => (deleteReminder = r)}>{$t('common.delete')}</button>
+                </div>
               </div>
+              <input
+                type="checkbox"
+                class="toggle toggle-sm toggle-primary shrink-0 mt-1"
+                checked={r.enabled !== false}
+                disabled={reminderBusy === r.name}
+                role="switch"
+                aria-checked={r.enabled !== false}
+                onchange={() => toggleReminder(r)}
+              />
             </div>
           {/each}
         </div>
@@ -180,3 +230,14 @@
     >Ask {ctx.agent?.name ?? 'your employee'} to set one up</button>
   </div>
 </div>
+
+{#if deleteReminder}
+  <ConfirmModal
+    title={$t('flows.deleteReminderTitle', { values: { name: deleteReminder.name } })}
+    message={$t('flows.deleteReminderBody')}
+    confirmLabel={$t('common.delete')}
+    busy={reminderBusy === deleteReminder.name}
+    onConfirm={confirmDeleteReminder}
+    onCancel={() => (deleteReminder = null)}
+  />
+{/if}
