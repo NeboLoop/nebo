@@ -251,8 +251,7 @@ impl PluginTool {
         if installed.is_empty() {
             return ToolResult::ok(
                 "No plugins installed. Use plugin(action: \"discover\", query: \"<keyword>\") to \
-                 find plugins in the marketplace; install one with its PLUG-XXXX-XXXX code (this \
-                 requires your approval).",
+                 find plugins in the marketplace; installing offers the user a card to approve.",
             );
         }
         let mut seen = std::collections::HashSet::new();
@@ -328,9 +327,10 @@ impl PluginTool {
                 let arr = &installable;
                 if !arr.is_empty() {
                     {
-                        // Interactive listings carry NO install codes — codes in
-                        // chat prose are the failure mode this flow replaces.
-                        // Unattended runs keep them (codes are that pathway).
+                        // Listings NEVER carry install codes — codes are machine
+                        // currency (the card button redeems them; the marketplace
+                        // shows them to humans). A code in model-visible text is
+                        // one hop from a code pasted into chat.
                         let interactive = crate::origin::ExecutionMode::from(ctx.origin)
                             == crate::origin::ExecutionMode::Interactive
                             && ctx.ask_channels.is_some();
@@ -338,14 +338,9 @@ impl PluginTool {
                         for it in arr {
                             let name = it.get("name").and_then(|x| x.as_str()).unwrap_or("?");
                             let slug = it.get("slug").and_then(|x| x.as_str()).unwrap_or("");
-                            let code = it.get("code").and_then(|x| x.as_str()).unwrap_or("");
                             let desc =
                                 it.get("description").and_then(|x| x.as_str()).unwrap_or("");
-                            if interactive {
-                                lines.push(format!("- {} ({}) — {}", name, slug, desc));
-                            } else {
-                                lines.push(format!("- {} ({}) — {} [{}]", name, slug, desc, code));
-                            }
+                            lines.push(format!("- {} ({}) — {}", name, slug, desc));
                         }
                         let listing = format!(
                             "Found {} plugin(s):\n{}",
@@ -427,9 +422,12 @@ impl PluginTool {
                                  Do NOT paste install codes into chat."
                             ))
                         } else {
+                            // Unattended runs can't approve an install card —
+                            // recommend, never transact.
                             ToolResult::ok(format!(
-                                "{listing}\n\nTo install one, share its PLUG-XXXX-XXXX \
-                                 code with the user to approve (installs via the marketplace code path)."
+                                "{listing}\n\nInstalling needs the owner's approval in the \
+                                 app — report which one fits and why. Never include install \
+                                 codes in any message."
                             ))
                         }
                     }
@@ -568,8 +566,8 @@ impl DynTool for PluginTool {
         if slugs.is_empty() {
             return "Run installed plugin binaries. No plugins are installed yet — use \
                     plugin(action: \"list\") to confirm, and plugin(action: \"discover\", \
-                    query: \"<keyword>\") to find plugins in the marketplace (install requires \
-                    the user's approval via the plugin's PLUG-XXXX-XXXX code)."
+                    query: \"<keyword>\") to find plugins in the marketplace (installing \
+                    offers the user a card to approve)."
                 .to_string();
         }
 

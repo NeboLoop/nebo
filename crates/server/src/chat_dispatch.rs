@@ -84,6 +84,22 @@ fn humanize_tool_name(tool_name: &str) -> (String, String) {
     (format!("using {n}"), format!("Used {n}"))
 }
 
+/// "google-search-console" → "Google Search Console" — service slugs render
+/// as the service's own name (the only vocabulary the owner should see).
+fn humanize_slug(slug: &str) -> String {
+    slug.split(['-', '_'])
+        .filter(|w| !w.is_empty())
+        .map(|w| {
+            let mut c = w.chars();
+            match c.next() {
+                Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// Verb forms for STRAP actions: (gerund for the live activity label,
 /// past tense for the outcome label).
 fn strap_verb(action: &str) -> Option<(&'static str, &'static str)> {
@@ -102,6 +118,7 @@ fn strap_verb(action: &str) -> Option<(&'static str, &'static str)> {
         "open" | "launch" | "start" => ("opening", "Opened"),
         "stop" | "close" | "kill" => ("stopping", "Stopped"),
         "check" | "status" | "verify" => ("checking", "Checked"),
+        "notify" | "alert" => ("notifying", "Notified"),
         _ => return None,
     })
 }
@@ -150,6 +167,29 @@ fn humanize_tool_call(tool_name: &str, input: &serde_json::Value) -> (String, St
             }
         };
         return (gerund, past);
+    }
+    // Plugin calls: the chip must say the SERVICE ("using Gmail"), never the
+    // word "plugin" — the register the whole install flow protects. Exec
+    // calls carry the service slug as `resource` with CLI args (no action),
+    // so the generic STRAP branch never fired and these fell to the raw
+    // tool-name fallback ("using plugin").
+    if tool_name == "plugin" {
+        if matches!(action, Some("discover")) {
+            return (
+                "browsing the marketplace".to_string(),
+                "Browsed the marketplace".to_string(),
+            );
+        }
+        if matches!(action, Some("list")) {
+            return (
+                "checking available tools".to_string(),
+                "Checked available tools".to_string(),
+            );
+        }
+        if let Some(slug) = resource {
+            let svc = humanize_slug(slug);
+            return (format!("using {svc}"), format!("Used {svc}"));
+        }
     }
     if let (Some(resource), Some(action)) = (resource, action) {
         let noun = resource.replace('_', " ");
