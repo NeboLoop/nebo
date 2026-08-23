@@ -1003,12 +1003,14 @@
     <div class="h-11 px-[18px] border-b border-base-content/10 flex items-center gap-2 shrink-0">
       <!-- Below md the workspace list is an off-canvas drawer, and this is its
            only opener — the top header that used to carry the hamburger is gone. -->
+      <!-- Mobile is list-first: this is "back to your team", so it reads as a
+           back chevron, not a hamburger. -->
       <button
-        class="md:hidden w-8 h-8 -ml-2 rounded-md flex items-center justify-center border-none bg-transparent cursor-pointer text-base-content/70 shrink-0"
+        class="md:hidden w-10 h-10 -ml-2.5 rounded-md flex items-center justify-center border-none bg-transparent cursor-pointer text-base-content/70 shrink-0"
         aria-label="Employees"
         onclick={() => mobileAgentsOpen.update((v) => !v)}
       >
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
       </button>
       <span class="flex items-baseline gap-2 min-w-0">
         <span class="text-sm font-semibold truncate">{agentName}</span>
@@ -1030,7 +1032,7 @@
       <div class="ml-auto flex items-center gap-0.5 shrink-0">
         {#snippet headerIcon(active: boolean, label: string, onclick: () => void, icon: Snippet)}
           <button
-            class="w-7 h-7 rounded-md flex items-center justify-center cursor-pointer bg-transparent border-none transition-colors {active
+            class="w-7 h-7 max-md:w-10 max-md:h-10 rounded-md flex items-center justify-center cursor-pointer bg-transparent border-none transition-colors {active
               ? 'text-primary bg-primary/10'
               : 'text-base-content/60 hover:text-base-content hover:bg-base-200'}"
             {onclick}
@@ -1567,8 +1569,8 @@
     </div>
   {/if}
 
-  <!-- Composer -->
-  <div class="max-w-3xl mx-auto w-full shrink-0">
+  <!-- Composer — sits on the home-indicator edge on phones. -->
+  <div class="max-w-3xl mx-auto w-full shrink-0 max-md:pb-[env(safe-area-inset-bottom)]">
     <ChatComposer
       {agentName}
       {agentId}

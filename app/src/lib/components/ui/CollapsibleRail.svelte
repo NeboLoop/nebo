@@ -73,7 +73,7 @@
   class="{$isCollapsed
     ? 'md:w-rail-collapsed md:min-w-rail-collapsed'
     : 'md:w-rail md:min-w-rail'} {mobileOpen
-    ? `max-md:fixed max-md:inset-y-0 max-md:left-0 max-md:z-40 max-md:w-rail max-md:transition-[transform,visibility] ${
+    ? `max-md:fixed max-md:inset-y-0 max-md:left-0 max-md:z-40 max-md:w-full max-md:transition-[transform,visibility] ${
         drawerOpen ? 'max-md:translate-x-0 max-md:shadow-2xl' : 'max-md:-translate-x-full max-md:invisible'
       }`
     : ''} border-r border-base-300 shadow-[2px_0_8px_-2px_rgba(0,0,0,0.08)] flex flex-col bg-base-200 shrink-0 transition-all duration-150"
@@ -91,7 +91,7 @@
       {@render headerActions()}
     {/if}
     <button
-      class="w-7 h-7 rounded-md flex items-center justify-center hover:bg-base-100 cursor-pointer bg-transparent border-none shrink-0"
+      class="w-7 h-7 max-md:w-10 max-md:h-10 rounded-md flex items-center justify-center hover:bg-base-100 cursor-pointer bg-transparent border-none shrink-0"
       onclick={toggle}
       title={$isCollapsed ? $t('nav.expandSidebar') : $t('nav.collapseSidebar')}
     >
@@ -111,6 +111,8 @@
   </div>
 
   {#if footer}
-    {@render footer(showRail)}
+    <div class="shrink-0 max-md:pb-[env(safe-area-inset-bottom)]">
+      {@render footer(showRail)}
+    </div>
   {/if}
 </div>

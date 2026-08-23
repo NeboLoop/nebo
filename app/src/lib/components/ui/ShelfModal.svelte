@@ -34,14 +34,14 @@
 <svelte:window {onkeydown} />
 
 {#if open}
-  <div class="fixed inset-0 z-[70] flex items-center justify-center p-4 md:p-8">
+  <div class="fixed inset-0 z-[70] flex items-center justify-center max-md:p-0 p-4 md:p-8">
     <div
       class="absolute inset-0 bg-black/40"
       onclick={onclose}
       role="presentation"
     ></div>
     <div
-      class="relative flex flex-col w-[min(96vw,72rem)] h-[min(90vh,48rem)] max-md:w-full max-md:h-full rounded-2xl max-md:rounded-none bg-base-100 border border-base-300 shadow-2xl overflow-hidden"
+      class="relative flex flex-col w-[min(96vw,72rem)] h-[min(90vh,48rem)] max-md:w-full max-md:h-full rounded-2xl max-md:rounded-none max-md:pb-[env(safe-area-inset-bottom)] bg-base-100 border border-base-300 max-md:border-0 shadow-2xl overflow-hidden"
       role="dialog"
       aria-modal="true"
       aria-label={title}

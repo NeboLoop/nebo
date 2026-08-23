@@ -268,6 +268,18 @@
     // Initial roster load
     loadAgentRoster();
 
+    // Phones start on the team list. Landing cold on a specific conversation
+    // (a shared link, a notification) keeps that conversation — the list is
+    // one back-chevron away — but the bare new-chat landing shows the list,
+    // because that is the decision the user is actually making.
+    if (
+      typeof window !== 'undefined' &&
+      !window.matchMedia('(min-width: 768px)').matches &&
+      !$page.params.threadId
+    ) {
+      mobileAgentsOpen.set(true);
+    }
+
     // --- WebSocket event listeners (event-driven, no polling) ---
 
     // Agent lifecycle → refresh roster
