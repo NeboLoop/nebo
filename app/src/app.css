@@ -211,6 +211,32 @@
     -moz-osx-font-smoothing: grayscale;
   }
 
+  /* Scroll handles earn their pixels: invisible until the pointer is over
+     the scroller — never a permanent gray bar beside every fixed-height
+     well. (Explicit .scrollbar-slim / .scrollbar-hide opt-outs still win.) */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: transparent transparent;
+  }
+  *:hover {
+    scrollbar-color: color-mix(in srgb, var(--color-base-content) 25%, transparent) transparent;
+  }
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+    background: transparent;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: transparent;
+    border-radius: 9999px;
+  }
+  *:hover::-webkit-scrollbar-thumb {
+    background: color-mix(in srgb, var(--color-base-content) 22%, transparent);
+  }
+
   html {
     overscroll-behavior: none;
     /* Whole-UI zoom: 100% = browser/OS default, scaled by the user's font-size
