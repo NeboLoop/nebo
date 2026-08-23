@@ -27,7 +27,7 @@
   // here are the primary employee's own reminders, matched by agentId.
   import * as api from '$lib/api/nebo';
   import type { CronJob } from '$lib/api/neboComponents';
-  import { describeSchedule } from '$lib/utils/schedule';
+  import { describeSchedule, parseSimple, buildSimple, type SimpleSchedule } from '$lib/utils/schedule';
   import ConfirmModal from '$lib/components/settings/ConfirmModal.svelte';
 
   let reminders = $state<CronJob[]>([]);
@@ -58,6 +58,55 @@
     if (reminderBusy) return;
     reminderBusy = t.name;
     try { await api.runTask(t.name); } catch { /* surfaced by run history */ }
+    reminderBusy = null;
+  }
+
+  // Inline schedule editor: two dropdowns, only for schedules the simple
+  // shapes can hold. Anything else stays read-only — never rewrite a
+  // schedule into something it never said. Draft state is flat (freq + n +
+  // time) and only becomes a SimpleSchedule at save.
+  let editingSchedule = $state<string | null>(null); // reminder name
+  let draftFreq = $state('daily');
+  let draftN = $state(4);
+  let draftHour = $state(9); // 0-23
+  let draftMinute = $state(0);
+
+  const DOW_LABELS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+  function startEditSchedule(t: CronJob) {
+    const p = parseSimple(t.schedule);
+    if (!p) return;
+    if (p.kind === 'hours' || p.kind === 'minutes') {
+      draftFreq = p.kind;
+      draftN = p.n;
+      draftHour = 9; draftMinute = 0;
+    } else if (p.kind === 'weekly') {
+      draftFreq = `dow${p.dow}`;
+      draftHour = p.hour; draftMinute = p.minute;
+      draftN = 4;
+    } else {
+      draftFreq = p.kind;
+      draftHour = p.hour; draftMinute = p.minute;
+      draftN = 4;
+    }
+    editingSchedule = t.name;
+  }
+
+  function draftToSimple(): SimpleSchedule {
+    if (draftFreq === 'hours') return { kind: 'hours', n: draftN };
+    if (draftFreq === 'minutes') return { kind: 'minutes', n: draftN };
+    if (draftFreq.startsWith('dow')) return { kind: 'weekly', dow: +draftFreq.slice(3), hour: draftHour, minute: draftMinute };
+    return { kind: draftFreq as 'daily' | 'weekdays' | 'weekends', hour: draftHour, minute: draftMinute };
+  }
+
+  async function saveSchedule(t: CronJob) {
+    if (reminderBusy) return;
+    reminderBusy = t.name;
+    try {
+      await api.updateTask(t.name, { schedule: buildSimple(draftToSimple()) });
+      await loadReminders();
+      editingSchedule = null;
+    } catch { /* keep the editor open so nothing is silently lost */ }
     reminderBusy = null;
   }
 
@@ -195,7 +244,15 @@
                   <div class="text-xs text-base-content/70 mt-0.5 line-clamp-2">{r.instructions || r.message || r.command}</div>
                 {/if}
                 <div class="flex items-center gap-1.5 mt-1.5 flex-wrap">
-                  <span class="text-xs text-base-content/50 {sched.isCron ? 'font-mono' : ''}">{sched.text}</span>
+                  {#if parseSimple(r.schedule)}
+                    <button
+                      type="button"
+                      class="text-xs text-base-content/60 underline decoration-dotted underline-offset-2 bg-transparent border-none p-0 cursor-pointer hover:text-primary"
+                      onclick={() => (editingSchedule === r.name ? (editingSchedule = null) : startEditSchedule(r))}
+                    >{sched.text}</button>
+                  {:else}
+                    <span class="text-xs text-base-content/50 {sched.isCron ? 'font-mono' : ''}" title="This schedule is more specific than the simple editor can hold">{sched.text}</span>
+                  {/if}
                   {#if r.lastRun}
                     <span class="text-xs text-base-content/30">&middot;</span>
                     <span class="text-xs text-base-content/50 font-mono">{r.lastRun}</span>
@@ -204,6 +261,39 @@
                     <span class="text-xs text-error font-mono truncate">{r.lastError}</span>
                   {/if}
                 </div>
+                {#if editingSchedule === r.name}
+                  <div class="flex items-center gap-1.5 mt-2 flex-wrap">
+                    <select class="select select-xs bg-base-100 border-base-300" bind:value={draftFreq}>
+                      <option value="daily">Every day</option>
+                      <option value="weekdays">Weekdays</option>
+                      <option value="weekends">Weekends</option>
+                      {#each DOW_LABELS as d, i (i)}
+                        <option value={`dow${i}`}>{d}s</option>
+                      {/each}
+                      <option value="hours">Every N hours</option>
+                      <option value="minutes">Every N minutes</option>
+                    </select>
+                    {#if draftFreq === 'hours' || draftFreq === 'minutes'}
+                      <input type="number" min="1" max={draftFreq === 'hours' ? 23 : 59} class="input input-xs w-16 bg-base-100 border-base-300" bind:value={draftN} />
+                    {:else}
+                      <select class="select select-xs bg-base-100 border-base-300"
+                        value={String(draftHour % 12 === 0 ? 12 : draftHour % 12)}
+                        onchange={(e) => { const h12 = +e.currentTarget.value; draftHour = (h12 % 12) + (draftHour >= 12 ? 12 : 0); }}>
+                        {#each Array.from({ length: 12 }, (_, i) => i + 1) as h (h)}<option value={String(h)}>{h}</option>{/each}
+                      </select>
+                      <select class="select select-xs bg-base-100 border-base-300" bind:value={draftMinute}>
+                        {#each [0, 15, 30, 45] as mnt (mnt)}<option value={mnt}>:{String(mnt).padStart(2, '0')}</option>{/each}
+                      </select>
+                      <select class="select select-xs bg-base-100 border-base-300"
+                        value={draftHour >= 12 ? 'PM' : 'AM'}
+                        onchange={(e) => { draftHour = (draftHour % 12) + (e.currentTarget.value === 'PM' ? 12 : 0); }}>
+                        <option>AM</option><option>PM</option>
+                      </select>
+                    {/if}
+                    <button class="btn btn-primary btn-xs" disabled={reminderBusy === r.name} onclick={() => saveSchedule(r)}>{$t('common.save')}</button>
+                    <button class="btn btn-ghost btn-xs" onclick={() => (editingSchedule = null)}>{$t('common.cancel')}</button>
+                  </div>
+                {/if}
                 <div class="flex items-center gap-2 mt-2">
                   <button class="btn btn-ghost btn-xs" disabled={reminderBusy === r.name} onclick={() => runReminder(r)}>{$t('flows.runNow')}</button>
                   <button class="btn btn-ghost btn-xs text-error ml-auto" disabled={reminderBusy === r.name} onclick={() => (deleteReminder = r)}>{$t('common.delete')}</button>

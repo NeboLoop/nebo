@@ -91,3 +91,56 @@ export function describeSchedule(raw: string | undefined | null): { text: string
 	const cronish = /^[\d*,/\-A-Za-z]+(\s+[\d*,/\-A-Za-z]+){4,6}$/.test(s) && /[*\/]/.test(s);
 	return { text: s, isCron: cronish };
 }
+
+/**
+ * The simple schedule shapes the inline editor can hold. parseSimple returns
+ * null for anything else — those schedules render read-only rather than being
+ * rewritten into something they never said.
+ */
+export type SimpleSchedule =
+	| { kind: 'daily'; hour: number; minute: number }
+	| { kind: 'weekdays'; hour: number; minute: number }
+	| { kind: 'weekends'; hour: number; minute: number }
+	| { kind: 'weekly'; dow: number; hour: number; minute: number }
+	| { kind: 'hours'; n: number }
+	| { kind: 'minutes'; n: number };
+
+export function parseSimple(cron: string): SimpleSchedule | null {
+	const f = cron.trim().split(/\s+/);
+	if (f.length < 5 || f.length > 7) return null;
+	let sec = '0', min: string, hour: string, dom: string, mon: string, dow: string, year = '*';
+	if (f.length === 5) [min, hour, dom, mon, dow] = f;
+	else if (f.length === 6) [sec, min, hour, dom, mon, dow] = f;
+	else [sec, min, hour, dom, mon, dow, year] = f;
+	if ((sec !== '0' && sec !== '*') || mon !== '*' || year !== '*' || dom !== '*') return null;
+	dow = dow.replace(/7/g, '0');
+
+	let m: RegExpMatchArray | null;
+	if ((m = min.match(/^\*\/(\d+)$/)) && hour === '*' && dow === '*') return { kind: 'minutes', n: +m[1] };
+	if ((m = hour.match(/^\*\/(\d+)$/)) && min === '0' && dow === '*') return { kind: 'hours', n: +m[1] };
+	if (!/^\d{1,2}$/.test(min) || !/^\d{1,2}$/.test(hour)) return null;
+	const base = { hour: +hour, minute: +min };
+	if (dow === '*') return { kind: 'daily', ...base };
+	if (dow === '1-5') return { kind: 'weekdays', ...base };
+	if (dow === '0,6' || dow === '6,0') return { kind: 'weekends', ...base };
+	if (/^\d$/.test(dow)) return { kind: 'weekly', dow: +dow, ...base };
+	return null;
+}
+
+/** Emits the event tool's 6-field form (sec min hour dom mon dow). */
+export function buildSimple(s: SimpleSchedule): string {
+	switch (s.kind) {
+		case 'minutes':
+			return `0 */${s.n} * * * *`;
+		case 'hours':
+			return `0 0 */${s.n} * * *`;
+		case 'weekly':
+			return `0 ${s.minute} ${s.hour} * * ${s.dow}`;
+		case 'weekdays':
+			return `0 ${s.minute} ${s.hour} * * 1-5`;
+		case 'weekends':
+			return `0 ${s.minute} ${s.hour} * * 0,6`;
+		default:
+			return `0 ${s.minute} ${s.hour} * * *`;
+	}
+}

@@ -38,8 +38,8 @@
 	} = $props();
 
 	const isEditable = $derived(mode === 'edit');
-	const triggerTypes = ['schedule', 'heartbeat', 'event', 'manual'] as const;
-	const triggerIcons: Record<string, string> = { schedule: '⏱', heartbeat: '♥', event: '⚡', manual: '▶' };
+	const triggerTypes = ['schedule', 'heartbeat', 'event', 'watch', 'manual'] as const;
+	const triggerIcons: Record<string, string> = { schedule: '⏱', heartbeat: '♥', event: '⚡', watch: '👁', manual: '▶' };
 	const activityTypeDef = $derived(activity ? getActivityType(activity.type) : null);
 
 	// ── Schedule helpers
@@ -171,6 +171,45 @@
 	}
 
 	/** Switch trigger type; preserves config when the type is unchanged. */
+	// Watch editor data — plugins that declare events, and the chosen
+	// plugin's event names. Loaded lazily on first entry to the watch editor.
+	let watchPlugins = $state<{ slug: string; name: string }[]>([]);
+	let watchEvents = $state<string[]>([]);
+	let watchLoaded = $state(false);
+
+	async function loadWatchPlugins() {
+		if (watchLoaded) return;
+		watchLoaded = true;
+		try {
+			const api = await import('$lib/api/nebo');
+			const r = (await api.listAllPluginEvents()) as {
+				events?: { plugin?: string; pluginName?: string; name?: string }[];
+			};
+			const seen = new Map<string, string>();
+			for (const e of r.events ?? []) {
+				if (e.plugin) seen.set(e.plugin, e.pluginName || e.plugin);
+			}
+			watchPlugins = [...seen.entries()].map(([slug, name]) => ({ slug, name }));
+		} catch { watchPlugins = []; }
+	}
+
+	async function loadWatchEvents(slug: string) {
+		watchEvents = [];
+		if (!slug) return;
+		try {
+			const api = await import('$lib/api/nebo');
+			const r = (await api.listPluginEvents(slug)) as { events?: { name?: string }[] };
+			watchEvents = (r.events ?? []).map((e) => e.name || '').filter(Boolean);
+		} catch { /* leave empty; the field stays a free input */ }
+	}
+
+	$effect(() => {
+		if (workflow?.trigger?.type === 'watch' && isEditable) {
+			loadWatchPlugins();
+			if (workflow.trigger.plugin) loadWatchEvents(workflow.trigger.plugin);
+		}
+	});
+
 	function switchTriggerType(tt: string) {
 		if (workflow?.trigger?.type === tt) return;
 		if (tt === 'schedule') {
@@ -786,6 +825,49 @@
 								onchange={(value) => onupdateTrigger?.({ ...currentTrigger(), event: value })}
 							/>
 							<div class="text-xs text-base-content/40 mt-1">Type to search known sources, Enter to add. Custom names and wildcards (email.*) work too.</div>
+						</div>
+					{/if}
+
+					<!-- Watch: poll a plugin and run when it reports something new.
+					     Two dropdowns, nothing to type — the plugin's own manifest
+					     supplies the events and the command. -->
+					{#if workflow?.trigger?.type === 'watch'}
+						<div class="flex flex-col gap-2">
+							<div>
+								<div class="text-xs text-base-content/60 mb-0.5">Plugin</div>
+								<select
+									class="select select-sm w-full bg-base-100 border-base-300"
+									value={workflow?.trigger?.plugin ?? ''}
+									onchange={(e) => {
+										const plugin = e.currentTarget.value;
+										loadWatchEvents(plugin);
+										onupdateTrigger?.({ type: 'watch', plugin, event: '' });
+									}}
+								>
+									<option value="" disabled>Choose a plugin…</option>
+									{#each watchPlugins as pl (pl.slug)}
+										<option value={pl.slug}>{pl.name}</option>
+									{/each}
+								</select>
+							</div>
+							{#if workflow?.trigger?.plugin}
+								<div>
+									<div class="text-xs text-base-content/60 mb-0.5">When it reports</div>
+									<select
+										class="select select-sm w-full bg-base-100 border-base-300"
+										value={workflow?.trigger?.event ?? ''}
+										onchange={(e) => onupdateTrigger?.({ type: 'watch', plugin: workflow?.trigger?.plugin ?? '', event: e.currentTarget.value })}
+									>
+										<option value="" disabled>Choose an event…</option>
+										{#each watchEvents as ev (ev)}
+											<option value={ev}>{ev}</option>
+										{/each}
+									</select>
+								</div>
+								{#if workflow?.trigger?.event}
+									<div class="text-xs text-base-content/40">Runs whenever {workflow.trigger.plugin} reports {workflow.trigger.event}; other flows can listen for {workflow.trigger.plugin}.{workflow.trigger.event} too.</div>
+								{/if}
+							{/if}
 						</div>
 					{/if}
 
