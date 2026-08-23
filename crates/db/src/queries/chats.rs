@@ -477,8 +477,14 @@ impl Store {
 
     pub fn count_chat_messages(&self, chat_id: &str) -> Result<i64, NeboError> {
         let conn = self.conn()?;
+        // Internal turns (`isMeta` — preloads, auto-continuation nudges) never
+        // reach the transcript, so they must not inflate its count either: the
+        // client pages until it has loaded as many as this says exist.
         conn.query_row(
-            "SELECT COUNT(*) FROM chat_messages WHERE chat_id = ?1 AND role IN ('user', 'assistant')",
+            "SELECT COUNT(*) FROM chat_messages
+              WHERE chat_id = ?1
+                AND role IN ('user', 'assistant')
+                AND COALESCE(json_extract(metadata, '$.isMeta'), 0) NOT IN (1, 'true')",
             params![chat_id],
             |row| row.get(0),
         )

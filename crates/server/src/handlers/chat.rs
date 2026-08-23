@@ -138,13 +138,25 @@ fn default_content_blocks(content: &str, call_count: usize) -> Vec<serde_json::V
     blocks
 }
 
-/// Reconstruct metadata JSON from tool_calls + tool_results columns.
+/// Prepare stored messages for a human transcript.
 ///
-/// Handles three cases:
+/// Internal turns are dropped: a message carrying `isMeta` was written by the
+/// system (a preloaded skill, an auto-continuation nudge), not by the owner or
+/// the employee. The model keeps them in its history; the owner never sees the
+/// house talking to itself in their conversation.
+///
+/// Then metadata JSON is reconstructed from tool_calls + tool_results columns:
 /// 1. Old metadata with toolCalls already built — strip outputs, done
 /// 2. New metadata with only contentBlocks (persisted block order) — build toolCalls, use persisted order
 /// 3. No metadata — build everything, fall back to text→tools order
-pub fn build_message_metadata(messages: &mut [db::models::ChatMessage]) {
+pub fn build_message_metadata(messages: &mut Vec<db::models::ChatMessage>) {
+    messages.retain(|m| {
+        m.metadata
+            .as_deref()
+            .and_then(|meta| serde_json::from_str::<serde_json::Value>(meta).ok())
+            .and_then(|v| v.get("isMeta").and_then(|f| f.as_bool()))
+            != Some(true)
+    });
     // Phase 1: Collect tool result statuses from role="tool" messages
     let mut tool_statuses: HashMap<String, bool> = HashMap::new();
     for msg in messages.iter() {

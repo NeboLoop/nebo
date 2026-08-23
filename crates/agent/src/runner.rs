@@ -1020,6 +1020,22 @@ impl Runner {
                 (req.prompt.clone(), metadata)
             };
 
+            // An auto-continuation is the house nudging the employee, not the
+            // owner speaking. It stays in the model's history (that is the
+            // whole point) and out of the owner's transcript — `isMeta` is what
+            // the read path filters on.
+            let metadata = if crate::goals::is_continuation_prompt(&effective_content) {
+                let mut value: serde_json::Value = metadata
+                    .as_deref()
+                    .and_then(|m| serde_json::from_str(m).ok())
+                    .unwrap_or_else(|| serde_json::json!({}));
+                value["isMeta"] = serde_json::json!(true);
+                value["autoContinue"] = serde_json::json!(true);
+                Some(value.to_string())
+            } else {
+                metadata
+            };
+
             let t_msg_save = std::time::Instant::now();
             info!(session_id = %session_id, prompt_len = effective_content.len(), "appending user message");
             self.sessions

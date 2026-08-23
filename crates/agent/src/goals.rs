@@ -54,9 +54,14 @@ pub const CONTINUATION_PREFIX: &str =
 const JUDGE_SYSTEM_PROMPT: &str = "\
 You judge whether an AI assistant finished its turn or left an explicit unfinished commitment.\n\
 Respond with STRICT JSON only: {\"verdict\": \"continue\" | \"done\", \"reason\": \"...\"}\n\
-Verdict \"continue\" ONLY if the assistant's response contains an explicit unfinished commitment: \
-promised next steps (\"I'll now…\", \"next I will…\"), a partial enumeration it said it would \
-complete, or work it stated it would do but didn't show. If uncertain, the verdict is \"done\".";
+Verdict \"continue\" ONLY if the assistant's response contains an explicit unfinished commitment \
+it can act on RIGHT NOW: promised next steps (\"I'll now…\", \"next I will…\"), a partial \
+enumeration it said it would complete, or work it stated it would do but didn't show.\n\
+Verdict \"done\" whenever the assistant is waiting on the person: if its response asks a question, \
+or requests information, a decision, or access it needs before it can proceed, the turn is \
+finished — the ball is in the person's court. A promise conditioned on their answer (\"once you \
+give me X, I'll…\") is NOT an unfinished commitment; continuing cannot supply the missing X.\n\
+If uncertain, the verdict is \"done\".";
 
 /// Judge decision for a completed run.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -218,6 +223,22 @@ pub fn enabled() -> bool {
 struct SessionGoalState {
     continuations: u32,
     last_real_prompt: String,
+    /// Fingerprint of the response that triggered the last continuation.
+    last_response: Option<u64>,
+}
+
+/// Whitespace- and case-insensitive fingerprint of an assistant response.
+/// Two turns that say the same thing fingerprint the same.
+fn response_fingerprint(response: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    response
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+        .hash(&mut hasher);
+    hasher.finish()
 }
 
 /// In-memory per-session continuation budget + last real user prompt.
@@ -247,6 +268,7 @@ impl GoalTracker {
         let entry = map.entry(session_key.to_string()).or_default();
         entry.continuations = 0;
         entry.last_real_prompt = truncate_str(prompt, STORED_PROMPT_CAP).to_string();
+        entry.last_response = None;
     }
 
     /// The last real user prompt recorded for this session, if any.
@@ -266,14 +288,23 @@ impl GoalTracker {
             .unwrap_or(limit > 0)
     }
 
-    /// Consume one continuation slot. Returns false when the budget is
-    /// exhausted (the last assistant message simply stands).
-    pub fn try_consume(&self, session_key: &str, limit: u32) -> bool {
+    /// Consume one continuation slot for `assistant_response`. Returns false
+    /// when the budget is exhausted, or when this response says the same thing
+    /// as the one that triggered the previous continuation — a turn that
+    /// repeats itself has stopped making progress, and nudging it again only
+    /// prints the same answer into the owner's transcript. Either way the last
+    /// assistant message simply stands.
+    pub fn try_consume(&self, session_key: &str, limit: u32, assistant_response: &str) -> bool {
         let mut map = self.lock();
         let entry = map.entry(session_key.to_string()).or_default();
         if entry.continuations >= limit {
             return false;
         }
+        let fingerprint = response_fingerprint(assistant_response);
+        if entry.last_response == Some(fingerprint) {
+            return false;
+        }
+        entry.last_response = Some(fingerprint);
         entry.continuations += 1;
         true
     }
@@ -289,36 +320,61 @@ mod tests {
         t.on_real_message("agent:a:web", "do five things");
         for i in 0..MAX_AUTO_CONTINUATIONS {
             assert!(
-                t.try_consume("agent:a:web", MAX_AUTO_CONTINUATIONS),
+                t.try_consume("agent:a:web", MAX_AUTO_CONTINUATIONS, &format!("step {i}")),
                 "continuation {} should fit",
                 i
             );
         }
         assert!(!t.has_budget("agent:a:web", MAX_AUTO_CONTINUATIONS));
         assert!(
-            !t.try_consume("agent:a:web", MAX_AUTO_CONTINUATIONS),
+            !t.try_consume("agent:a:web", MAX_AUTO_CONTINUATIONS, "step six"),
             "6th continuation must be refused"
         );
         // Other sessions are unaffected.
-        assert!(t.try_consume("agent:b:web", MAX_AUTO_CONTINUATIONS));
+        assert!(t.try_consume("agent:b:web", MAX_AUTO_CONTINUATIONS, "step one"));
     }
 
     #[test]
     fn real_message_resets_budget() {
         let t = GoalTracker::new();
         t.on_real_message("agent:a:web", "first ask");
-        for _ in 0..MAX_AUTO_CONTINUATIONS {
-            assert!(t.try_consume("agent:a:web", MAX_AUTO_CONTINUATIONS));
+        for i in 0..MAX_AUTO_CONTINUATIONS {
+            assert!(t.try_consume("agent:a:web", MAX_AUTO_CONTINUATIONS, &format!("step {i}")));
         }
-        assert!(!t.try_consume("agent:a:web", MAX_AUTO_CONTINUATIONS));
+        assert!(!t.try_consume("agent:a:web", MAX_AUTO_CONTINUATIONS, "step six"));
 
         t.on_real_message("agent:a:web", "second ask");
         assert!(t.has_budget("agent:a:web", MAX_AUTO_CONTINUATIONS));
-        assert!(t.try_consume("agent:a:web", MAX_AUTO_CONTINUATIONS));
+        assert!(t.try_consume("agent:a:web", MAX_AUTO_CONTINUATIONS, "step one"));
         assert_eq!(
             t.last_real_prompt("agent:a:web").as_deref(),
             Some("second ask")
         );
+    }
+
+    #[test]
+    fn a_repeated_answer_stops_the_loop() {
+        let t = GoalTracker::new();
+        t.on_real_message("agent:a:web", "run the audit");
+        let asking = "I still need the 3 keywords. Once you give me those, I'll open Chrome.";
+        assert!(t.try_consume("agent:a:web", MAX_AUTO_CONTINUATIONS, asking));
+        // The nudge produced the same answer — continuing again cannot help,
+        // even though four slots remain.
+        assert!(
+            !t.try_consume("agent:a:web", MAX_AUTO_CONTINUATIONS, asking),
+            "an identical response must not be nudged again"
+        );
+        // Whitespace and casing don't make it a different answer.
+        assert!(!t.try_consume(
+            "agent:a:web",
+            MAX_AUTO_CONTINUATIONS,
+            "I STILL need the 3 keywords.   Once you give me those,\nI'll open Chrome."
+        ));
+        // Real progress continues to consume budget.
+        assert!(t.try_consume("agent:a:web", MAX_AUTO_CONTINUATIONS, "Searched keyword 1 of 3."));
+        // A real user message clears the fingerprint along with the budget.
+        t.on_real_message("agent:a:web", "here are the keywords");
+        assert!(t.try_consume("agent:a:web", MAX_AUTO_CONTINUATIONS, asking));
     }
 
     #[test]

@@ -1652,7 +1652,14 @@ fn maybe_auto_continue(
             tracing::debug!(session = %p.session_key, "auto-continue: preempted during judging");
             return;
         }
-        if !state.goal_tracker.try_consume(&p.session_key, continuation_limit) {
+        if !state
+            .goal_tracker
+            .try_consume(&p.session_key, continuation_limit, &assistant_response)
+        {
+            tracing::debug!(
+                session = %p.session_key,
+                "auto-continue: budget exhausted or the turn repeated itself"
+            );
             return;
         }
         tracing::info!(
