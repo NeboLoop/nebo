@@ -66,6 +66,33 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// chain.
 pub(crate) const MAX_HANDOFF_DEPTH: u8 = 3;
 
+/// Handoff depth for a DIRECT inbound comm dispatch (DM / agent_space /
+/// embed). Agent-authored messages carry senderKind:"agent" (+ optional
+/// handoffDepth) — a directed message from an agent IS a handoff, so the
+/// chain cap applies exactly like the channel-mention path. Returns None
+/// when the chain is over the cap (caller drops the dispatch). Before this,
+/// these paths hardcoded depth 0, so two bots DM-ing each other looped
+/// uncapped.
+fn inbound_handoff_depth(
+    metadata: &std::collections::HashMap<String, String>,
+    conversation_id: &str,
+) -> Option<u8> {
+    let sender_is_agent = metadata.get("senderKind").map(String::as_str) == Some("agent");
+    let depth: u8 = metadata
+        .get("handoffDepth")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(if sender_is_agent { 1 } else { 0 });
+    if sender_is_agent && depth >= MAX_HANDOFF_DEPTH {
+        tracing::info!(
+            conv_id = %conversation_id,
+            depth,
+            "agent handoff depth cap reached on direct dispatch — dropping (a human message resets the chain)"
+        );
+        return None;
+    }
+    Some(depth)
+}
+
 
 /// Conservative detection of an explicit "produce one joint result together"
 /// ask. Used by the loop channel branch to choose coordination mode (one lead
@@ -3455,6 +3482,10 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
             }
         }
 
+        let Some(handoff_depth_in) = inbound_handoff_depth(&msg.metadata, &msg.conversation_id)
+        else {
+            return;
+        };
         let config = chat_dispatch::ChatConfig {
             session_key,
             prompt,
@@ -3469,7 +3500,7 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
                 provider: "neboai".to_string(),
                 topic: "agent_space".to_string(),
                 conversation_id: msg.conversation_id.clone(),
-                handoff_depth: 0,
+                handoff_depth: handoff_depth_in,
                 approval_relay: is_personal && !is_webhook,
             }),
             entity_config,
@@ -3479,7 +3510,7 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
             mention_context: None,
             tool_scope: None, plan_mode: false,
             channel_ctx: None,
-            handoff_depth: 0,
+            handoff_depth: handoff_depth_in,
             seed_taint: vec![],
             audience: None,
         };
@@ -3591,6 +3622,10 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
             return;
         }
 
+        let Some(handoff_depth_in) = inbound_handoff_depth(&msg.metadata, &msg.conversation_id)
+        else {
+            return;
+        };
         let config = chat_dispatch::ChatConfig {
             session_key,
             prompt,
@@ -3605,7 +3640,7 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
                 provider: "neboai".to_string(),
                 topic: "embed".to_string(),
                 conversation_id: msg.conversation_id.clone(),
-                handoff_depth: 0,
+                handoff_depth: handoff_depth_in,
                 approval_relay: false,
             }),
             entity_config,
@@ -3616,7 +3651,7 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
             tool_scope: None,
             plan_mode: false,
             channel_ctx: None,
-            handoff_depth: 0,
+            handoff_depth: handoff_depth_in,
             seed_taint: vec![],
             audience: None,
         };
@@ -3853,6 +3888,11 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
                 return;
             }
 
+            let Some(handoff_depth_in) =
+                inbound_handoff_depth(&msg.metadata, &msg.conversation_id)
+            else {
+                return;
+            };
             let config = chat_dispatch::ChatConfig {
                 session_key,
                 prompt,
@@ -3867,7 +3907,7 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
                     provider: "neboai".to_string(),
                     topic: msg.topic.clone(),
                     conversation_id: msg.conversation_id.clone(),
-                    handoff_depth: 0,
+                    handoff_depth: handoff_depth_in,
                     approval_relay: is_personal,
                 }),
                 entity_config,
@@ -3877,7 +3917,7 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
                 mention_context: None,
                 tool_scope: None, plan_mode: false,
                 channel_ctx: None,
-                handoff_depth: 0,
+                handoff_depth: handoff_depth_in,
                 seed_taint: vec![],
                 audience: None,
             };
@@ -3954,6 +3994,10 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
             return;
         }
 
+        let Some(handoff_depth_in) = inbound_handoff_depth(&msg.metadata, &msg.conversation_id)
+        else {
+            return;
+        };
         let config = chat_dispatch::ChatConfig {
             session_key,
             prompt,
@@ -3968,7 +4012,7 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
                 provider: "neboai".to_string(),
                 topic: msg.topic.clone(),
                 conversation_id: msg.conversation_id.clone(),
-                handoff_depth: 0,
+                handoff_depth: handoff_depth_in,
                 approval_relay: false,
             }),
             entity_config,
@@ -3978,7 +4022,7 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
             mention_context: None,
             tool_scope: None, plan_mode: false,
             channel_ctx: None,
-            handoff_depth: 0,
+            handoff_depth: handoff_depth_in,
             seed_taint: vec![],
             audience: None,
         };
@@ -4504,7 +4548,9 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
                 tool_scope: None,
                 plan_mode: false,
                 channel_ctx: None,
-                handoff_depth: 0,
+                // This run continues an agent chain at depth_in — its own
+                // coworker sends must not reset the cap.
+                handoff_depth: handoff_depth_in,
                 // Loop-channel members (other bots / remote agents) are
                 // untrusted input — seed the run's taint accordingly.
                 seed_taint: vec![types::provenance::ProvenanceClass::Channel],
