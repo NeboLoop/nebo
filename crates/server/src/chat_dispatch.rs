@@ -295,6 +295,9 @@ pub struct ChatConfig {
     /// triggering input (remote channel message, coworker envelope). Empty for
     /// owner-initiated runs.
     pub seed_taint: Vec<types::provenance::ProvenanceClass>,
+    /// Restrict this run to these tools (declared set trimmed + dispatch-time
+    /// denial — the phone-caller mechanism). None = full roster.
+    pub tool_allowlist: Option<std::collections::HashSet<String>>,
     /// Recall-for-audience: the agent id this run replies to (coworker rail
     /// only). `None` for owner-initiated runs.
     pub audience: Option<String>,
@@ -566,6 +569,18 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
             proactive_inbox: Some(proactive_inbox.clone()),
             progress: Some(progress),
             mention_context,
+            tool_allowlist: config.tool_allowlist.clone(),
+            // Today the only ChatConfig-driven allowlist is the workroom
+            // organizer's coordination scope (phone callers build RunRequest
+            // directly in voice.rs) — so the denial teaches delegation. If a
+            // second allowlist caller appears, thread its own hint instead.
+            tool_denial_hint: config.tool_allowlist.as_ref().map(|_| {
+                "You are coordinating a workroom: delegating IS the action here. \
+                 Address the coworker whose role owns this step — write their \
+                 mention token with a specific ask in your reply — instead of \
+                 doing the step yourself."
+                    .to_string()
+            }),
             tool_scope,
             plan_mode,
             full_access,
@@ -1722,6 +1737,7 @@ fn maybe_auto_continue(
             channel_ctx: None,
             handoff_depth: 0,
             seed_taint: vec![],
+            tool_allowlist: None,
             audience: None,
         };
         run_chat(&state, config).await;
@@ -1794,6 +1810,7 @@ pub async fn run_chat_events(
         full_access,
         handoff_depth: config.handoff_depth,
         seed_taint: config.seed_taint,
+        tool_allowlist: config.tool_allowlist,
         audience: config.audience,
         ..Default::default()
     };

@@ -3559,6 +3559,7 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
             channel_ctx: None,
             handoff_depth: handoff_depth_in,
             seed_taint: vec![],
+            tool_allowlist: None,
             audience: None,
         };
 
@@ -3701,6 +3702,7 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
             channel_ctx: None,
             handoff_depth: handoff_depth_in,
             seed_taint: vec![],
+            tool_allowlist: None,
             audience: None,
         };
 
@@ -3977,6 +3979,7 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
                 channel_ctx: None,
                 handoff_depth: handoff_depth_in,
                 seed_taint: vec![],
+                tool_allowlist: None,
                 audience: None,
             };
 
@@ -4083,6 +4086,7 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
             channel_ctx: None,
             handoff_depth: handoff_depth_in,
             seed_taint: vec![],
+            tool_allowlist: None,
             audience: None,
         };
 
@@ -4174,6 +4178,35 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
                 }),
             );
         }
+
+        // Inside a REGISTERED workroom, an exact member name after '@'
+        // normalizes to that member's mention token before parsing. Agents
+        // naturally write "@Search Analyst"; the owner's composer writes
+        // tokens. Both must dispatch — but only in rooms, where the member
+        // registry makes a name unambiguous. Ambient channels keep the strict
+        // tokens-only invariant (plain text never triggers).
+        let text = match workroom {
+            Some(ref room) => {
+                let mut t = text.clone();
+                for id in &room.member_agent_ids {
+                    if let Ok(Some(agent)) = state.store.get_agent(id) {
+                        let needle = format!("@{}", agent.name).to_lowercase();
+                        loop {
+                            let lower = t.to_lowercase();
+                            let Some(pos) = lower.find(&needle) else { break };
+                            t = format!(
+                                "{}<@{}>{}",
+                                &t[..pos],
+                                id,
+                                &t[pos + needle.len()..]
+                            );
+                        }
+                    }
+                }
+                t
+            }
+            None => text,
+        };
 
         // INGEST: every channel message accrues into the rolling buffer,
         // whether or not the bot ends up responding. Trim by cap + age.
@@ -4635,6 +4668,9 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
                 entity_config::resolve_for_chat(&state.store, "main", "main")
             };
 
+            // Set while building the briefing below; drives the organizer's
+            // coordination-only tool scope.
+            let mut organizer_run = false;
             // Workroom briefing: a room is where delegation happens, not a
             // discussion. The addressed employee learns the mission, who is in
             // the room, and how to hand the next step on — all on the hidden
@@ -4668,6 +4704,7 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
                 let organizer = room.member_agent_ids.first().cloned().unwrap_or_default();
                 let is_organizer = organizer == agent_id
                     || (agent_id.is_empty() && organizer == "assistant");
+                organizer_run = is_organizer;
                 let organizer_label = room_roster
                     .first()
                     .map(|(n, t, _)| format!("{n} ({t})"))
@@ -4690,13 +4727,18 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
                 if is_organizer {
                     Some(format!(
                         "{common}\n\
-                         You are the ORGANIZER of this room. Coordinate — do not perform an \
-                         expert's work yourself, even if you could: each expert holds the \
-                         workflows, instructions, and access for their own domain. Break the \
-                         mission into steps, delegate each step to the member whose role owns \
-                         it (one addressed coworker per reply, with a specific ask), and when \
-                         results return, integrate them. When the mission is complete, deliver \
-                         the combined result plainly and address no one."
+                         You are the ORGANIZER of this room, and in this room DELEGATING \
+                         IS ACTING: your way of doing the work is addressing the expert who \
+                         owns each step. \"Act, don't narrate\" here means: write the \
+                         delegation now, in this reply — one addressed coworker, one \
+                         specific ask. You do not hold this room's execution tools and you \
+                         never execute a mission step yourself, even a trivial one: the \
+                         owner put an expert in this room for each part of the work, and \
+                         each expert holds the workflows, instructions, and access for \
+                         their domain. If a step seems to have no owner, give it to the \
+                         closest expert and say why. When results return, integrate them. \
+                         When the mission is complete, deliver the combined result plainly \
+                         and address no one."
                     ))
                 } else {
                     Some(format!(
@@ -4741,6 +4783,40 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
                 None
             };
 
+            // Persist the room posture INTO the session (isMeta — hidden from
+            // the owner, present in the model's history on every iteration and
+            // every later turn). The mention_context reminder below is
+            // ephemeral: it rides ONE LLM call and vanishes, which is how the
+            // organizer lost its doctrine after the first tool denial. Seeded
+            // once, on the session's first dispatch.
+            if workroom.is_some() {
+                if let Some(ref briefing) = mention_context {
+                    if let Ok(sess) = state.runner.sessions().get_or_create(&session_key, "") {
+                        let fresh = state
+                            .runner
+                            .sessions()
+                            .get_messages(&sess.id)
+                            .map(|m| m.is_empty())
+                            .unwrap_or(false);
+                        if fresh {
+                            let meta = serde_json::json!({
+                                "isMeta": true,
+                                "roomBriefing": true,
+                            })
+                            .to_string();
+                            let _ = state.runner.sessions().append_message(
+                                &sess.id,
+                                "user",
+                                briefing,
+                                None,
+                                None,
+                                Some(&meta),
+                            );
+                        }
+                    }
+                }
+            }
+
             let config = chat_dispatch::ChatConfig {
                 session_key,
                 prompt: prompt.clone(),
@@ -4773,6 +4849,21 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
                 // Loop-channel members (other bots / remote agents) are
                 // untrusted input — seed the run's taint accordingly.
                 seed_taint: vec![types::provenance::ProvenanceClass::Channel],
+                // ENFORCED delegation doctrine: the organizer's only moves are
+                // decompose/delegate/integrate, so its room runs carry a
+                // coordination-only tool surface — prose alone lost twice to
+                // "I could just do this myself". Experts keep the full roster;
+                // the work is theirs.
+                tool_allowlist: if organizer_run {
+                    Some(
+                        ["loop", "message", "agent"]
+                            .into_iter()
+                            .map(String::from)
+                            .collect(),
+                    )
+                } else {
+                    None
+                },
                 audience: None,
             };
 

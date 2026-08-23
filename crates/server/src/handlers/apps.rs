@@ -723,6 +723,7 @@ async fn start_app_agent_run(
             channel_ctx: None,
             handoff_depth: 0,
             seed_taint: vec![],
+            tool_allowlist: None,
             audience: None,
         },
     )

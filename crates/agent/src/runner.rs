@@ -495,6 +495,8 @@ pub struct RunRequest {
     /// point via `ToolContext::whitelist_allows`, and the declared schema is
     /// filtered to match. `None` = every normal run, unrestricted.
     pub tool_allowlist: Option<std::collections::HashSet<String>>,
+    /// Denial text used when a whitelisted run calls an off-list tool.
+    pub tool_denial_hint: Option<String>,
     /// Skill names to pre-load into this run's context. Full SKILL.md content
     /// is injected into the system prompt so the agent has instructions without
     /// needing to discover/load them. Used by sub-agent spawning.
@@ -1246,6 +1248,7 @@ impl Runner {
                         None, // forks carry no mention context
                         None, // command forks are not review forks
                         req.tool_allowlist.as_ref(),
+                        req.tool_denial_hint.clone(),
                         mcp_context.as_ref(),
                         &fork_taint,
                         None, // forks never reply to a coworker audience
@@ -1345,6 +1348,7 @@ impl Runner {
                 mention_context.as_deref(),
                 None, // top-level runs are never review forks
                 req.tool_allowlist.as_ref(),
+                req.tool_denial_hint.clone(),
                 mcp_context.as_ref(),
                 &run_taint,
                 req.audience.as_deref(),
@@ -1532,6 +1536,7 @@ impl Runner {
                             None,
                             Some(rfctx),
                             None, // the review fork's whitelist rides ReviewForkCtx
+                            None, // review forks use the built-in denial text
                             None, // review forks never serve CLI-provider tools
                             &fork_taint,
                             None, // review forks never reply to a coworker audience
@@ -1692,6 +1697,7 @@ async fn run_loop(
     mention_context: Option<&str>,
     review_fork: Option<crate::review_fork::ReviewForkCtx>,
     tool_allowlist: Option<&std::collections::HashSet<String>>,
+    tool_denial_hint: Option<String>,
     mcp_context: Option<&Arc<tokio::sync::Mutex<ToolContext>>>,
     run_taint: &std::sync::Mutex<std::collections::BTreeSet<types::provenance::ProvenanceClass>>,
     audience: Option<&str>,
@@ -4141,6 +4147,7 @@ async fn run_loop(
                     .as_ref()
                     .map(|r| r.whitelist.clone())
                     .or_else(|| tool_allowlist.cloned()),
+                whitelist_denial_hint: tool_denial_hint.clone(),
                 learned_write_agent: review_fork.as_ref().map(|r| r.owner_agent_id.clone()),
                 learned_write_staged: review_fork.as_ref().map(|r| r.staged).unwrap_or(false),
                 skills_read: review_fork
@@ -4352,6 +4359,8 @@ async fn run_loop(
                                  save the learning with it or reply 'Nothing to save.'",
                                 tc.name
                             )
+                        } else if let Some(ref hint) = ctx.whitelist_denial_hint {
+                            format!("'{}' is not available in this run. {}", tc.name, hint)
                         } else {
                             format!(
                                 "'{}' is not available in this call. Use the tools you \

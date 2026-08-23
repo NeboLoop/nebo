@@ -290,6 +290,7 @@ async fn handle_app_ws_message(state: &AppState, agent_id: &str, text: &str) {
                     channel_ctx: None,
                     handoff_depth: 0,
                     seed_taint: vec![],
+                    tool_allowlist: None,
                     audience: None,
                 };
 
@@ -917,6 +918,7 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState) {
                                             channel_ctx: None,
                                             handoff_depth: 0,
                                             seed_taint: vec![],
+                                            tool_allowlist: None,
                                             audience: None,
                                         };
 
@@ -1657,6 +1659,7 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value) {
             channel_ctx: None,
             handoff_depth: 0,
             seed_taint: vec![],
+            tool_allowlist: None,
             audience: None,
         };
         run_chat(state, config).await;
@@ -1752,6 +1755,7 @@ async fn fork_mention_chat(
         channel_ctx: None,
         handoff_depth: 0,
         seed_taint: vec![],
+        tool_allowlist: None,
         audience: None,
     };
 

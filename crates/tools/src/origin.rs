@@ -131,6 +131,10 @@ pub struct ToolContext {
     /// still DECLARED to the model (prompt-cache byte parity) — restriction
     /// happens here, never by narrowing the registry.
     pub tool_whitelist: Option<std::collections::HashSet<String>>,
+    /// When a whitelist denial fires, this text IS the error (the denial must
+    /// teach the recovery for the run's actual situation — a room organizer is
+    /// told to delegate, a phone run is told to take a message).
+    pub whitelist_denial_hint: Option<String>,
     /// Set when this run is the self-improvement review fork (or curator):
     /// the skill tool's writes target the LEARNED tree of this agent instead
     /// of user/skills/, and update/delete require the skill to have been
