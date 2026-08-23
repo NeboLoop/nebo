@@ -96,15 +96,24 @@
   // param carries the coworker thread's session key:
   // agent:{target}:coworker:{sender}[:{matter}].
   const cwKey = $derived($page.url.searchParams.get('cw'));
-  const closeCoworkerThread = () => setParams((p) => p.delete('cw'));
+  const closeCoworkerThread = () => setParams((p) => { p.delete('cw'); p.delete('cwf'); });
   const cwNames = $derived.by(() => {
     if (!cwKey) return null;
     const parts = cwKey.split(':');
     const nameOf = (id: string) =>
       !id || id === 'main' || id === 'assistant'
         ? 'Nebo'
-        : (allAgents.find((a) => a.id === id)?.name ?? id);
-    return { target: nameOf(parts[1] ?? ''), sender: nameOf(parts[3] ?? '') };
+        : (allAgents.find((a) => a.id === id)?.name ?? null);
+    // Sender: the chip passes the display name (?cwf=) because an isolated
+    // sender's key carries its MATTER id, not its agent id. Fall back to a
+    // roster match on the context segment, then to this page's agent (chips
+    // live in the sender's own chat).
+    const sender =
+      $page.url.searchParams.get('cwf') ??
+      nameOf(parts[3] ?? '') ??
+      agent?.name ??
+      'Nebo';
+    return { target: nameOf(parts[1] ?? '') ?? (parts[1] || 'Nebo'), sender };
   });
 
   const settingsSection = $derived($page.url.searchParams.get('settings'));

@@ -571,10 +571,14 @@
     return (tools ?? []).filter((t) => t.payload?.kind !== 'coworker_message');
   }
   // The event chip deep-links to the view-only employee↔employee transcript
-  // (?cw=<threadKey> — URL state, same as every other shell surface).
+  // (?cw=<threadKey> — URL state, same as every other shell surface). The
+  // sender's display name rides as ?cwf= because the thread key's context
+  // segment is the MATTER id for isolated senders — unparseable to a name.
+  // The chip lives in the sender's own chat, so agentName IS the sender.
   function cwHref(key: string): string {
     const url = new URL($page.url);
     url.searchParams.set('cw', key);
+    if (agentName) url.searchParams.set('cwf', agentName);
     return url.pathname + url.search;
   }
 
