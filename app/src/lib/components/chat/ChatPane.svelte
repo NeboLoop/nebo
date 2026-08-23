@@ -1500,10 +1500,11 @@
           </div>
           <!-- Tools this reply ran, on the message itself — never a detached sibling.
                Coworker sends are pulled OUT of the group and shown as events.
-               Non-technical owners see tool activity only while it's LIVE (the
-               app must never look frozen); the finished telemetry line is
-               developer furniture, shown in dev mode (Settings → Developer). -->
-          {#if nonCoworkerTools(msg.tools).length && ($devMode || nonCoworkerTools(msg.tools).some((t) => t.status === 'running'))}
+               While the run is LIVE the work line stays up the whole time —
+               working must ALWAYS be visible, with no flicker between calls.
+               Only after the run ends does the telemetry line become developer
+               furniture, shown in dev mode (Settings → Developer). -->
+          {#if nonCoworkerTools(msg.tools).length && ($devMode || nonCoworkerTools(msg.tools).some((t) => t.status === 'running') || (isLoading && origIdx === groupedMessages.length - 1))}
             {@render toolTimeline(nonCoworkerTools(msg.tools), msg.id ?? `m${origIdx}`)}
           {/if}
           {#each coworkerEvents(msg.tools) as ev, evIdx (evIdx)}

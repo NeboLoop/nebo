@@ -189,6 +189,11 @@
           codeBlock: false,
           horizontalRule: false,
           blockquote: false,
+          // No auto-links while typing or pasting: a URL in the composer is
+          // text the user is still editing, and the underline styling reads
+          // as something clickable that steals the caret. The URL travels as
+          // plain text; transcripts decide their own link rendering.
+          link: false,
           // Tailwind's preflight strips list-style + padding from ol/ul, so an
           // auto-formatted list renders with no marker/indent (looks like the
           // "1." vanished). Re-apply list styling via utility classes.
