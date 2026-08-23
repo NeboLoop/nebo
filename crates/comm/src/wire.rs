@@ -61,6 +61,13 @@ pub struct SendPayload {
     pub conversation_id: String,
     pub stream: String,
     pub content: serde_json::Value,
+    /// Sender agent identity — WHICH of this bot's employees is speaking.
+    /// Empty for main-bot sends; the gateway relays it verbatim (senderId is
+    /// server-stamped, so this only labels a sub-identity within our own bot).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub from_agent_id: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub from_agent_name: String,
 }
 
 /// MESSAGE_DELIVERY frame payload (server -> client).
@@ -79,6 +86,12 @@ pub struct DeliveryPayload {
     /// Source channel ID for @mention deliveries routed from a channel.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub source_channel_id: String,
+    /// Sender agent identity, relayed verbatim from SendPayload. Empty from
+    /// pre-0.4.9 hubs and for main-bot/browser sends.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub from_agent_id: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub from_agent_name: String,
 }
 
 /// JOIN_CONVERSATION frame payload (client -> server).

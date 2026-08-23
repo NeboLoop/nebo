@@ -1566,6 +1566,7 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value) {
                 handoff_depth: 0,
                 // Desktop-forked runs keep approvals on the desktop ApprovalModal.
                 approval_relay: false,
+                from_agent_id: row_id.to_string(),
             }
         })
     } else {

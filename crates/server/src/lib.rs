@@ -73,6 +73,21 @@ pub(crate) const MAX_HANDOFF_DEPTH: u8 = 3;
 /// when the chain is over the cap (caller drops the dispatch). Before this,
 /// these paths hardcoded depth 0, so two bots DM-ing each other looped
 /// uncapped.
+/// True self-delivery: an intra-bot delivery whose sender agent IS the
+/// resolved target agent — the one echo that must never dispatch. (The
+/// bot-level check in handle_comm_message lets identified intra-bot traffic
+/// through so sibling employees can talk; this is the per-target other half.)
+fn is_self_delivery(msg: &comm::CommMessage, target_agent_id: &str) -> bool {
+    let from_agent = msg
+        .metadata
+        .get("fromAgentId")
+        .map(String::as_str)
+        .unwrap_or("");
+    !from_agent.is_empty()
+        && from_agent == target_agent_id
+        && config::read_bot_id().is_some_and(|b| b == msg.from)
+}
+
 fn inbound_handoff_depth(
     metadata: &std::collections::HashMap<String, String>,
     conversation_id: &str,
@@ -3328,13 +3343,24 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
     if !msg.from.is_empty() {
         if let Some(bot_id) = config::read_bot_id() {
             if msg.from == bot_id {
-                tracing::debug!(
-                    topic = %msg.topic,
-                    conv_id = %msg.conversation_id,
-                    sender = %msg.from,
-                    "skipping self-echo (sender_id matches bot_id)"
-                );
-                return;
+                // Agent-aware echo suppression: a delivery from our own bot
+                // WITH a sender agent identity is intra-bot traffic — one of
+                // our employees speaking in a shared conversation (workroom /
+                // loop channel). That must flow so a bot's own employees can
+                // talk in its own channels; only identity-less own-bot
+                // deliveries are true self-echo. True self-delivery (an agent
+                // receiving its own message) is dropped at agent resolution
+                // below, where the target agent is known.
+                let from_agent = msg.metadata.get("fromAgentId").map(String::as_str).unwrap_or("");
+                if from_agent.is_empty() {
+                    tracing::debug!(
+                        topic = %msg.topic,
+                        conv_id = %msg.conversation_id,
+                        sender = %msg.from,
+                        "skipping self-echo (sender_id matches bot_id, no sender agent)"
+                    );
+                    return;
+                }
             }
         }
     }
@@ -3352,6 +3378,15 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
         // unresolved slugs both fall back to the primary bot.
         let (agent_id, is_default_bot) =
             resolve_inbound_agent(&state, &agent_slug, &msg.conversation_id, &msg.metadata).await;
+
+        if is_self_delivery(&msg, &agent_id) {
+            tracing::debug!(
+                conv_id = %msg.conversation_id,
+                agent = %agent_id,
+                "skipping self-delivery (sender agent == target agent)"
+            );
+            return;
+        }
 
         // Check if this is the owner's personal loop → unify session with local agent chat
         let space_loop_id = state
@@ -3493,7 +3528,7 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
             user_id: String::new(),
             channel: "neboai".to_string(),
             origin: comm_origin(is_personal && !is_webhook),
-            agent_id,
+            agent_id: agent_id.clone(),
             cancel_token: tokio_util::sync::CancellationToken::new(),
             lane: types::constants::lanes::COMM.to_string(),
             comm_reply: Some(chat_dispatch::CommReplyConfig {
@@ -3502,6 +3537,7 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
                 conversation_id: msg.conversation_id.clone(),
                 handoff_depth: handoff_depth_in,
                 approval_relay: is_personal && !is_webhook,
+                from_agent_id: agent_id.clone(),
             }),
             entity_config,
             images,
@@ -3633,7 +3669,7 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
             user_id: String::new(),
             channel: "neboai".to_string(),
             origin: tools::Origin::Comm,
-            agent_id,
+            agent_id: agent_id.clone(),
             cancel_token: tokio_util::sync::CancellationToken::new(),
             lane: types::constants::lanes::COMM.to_string(),
             comm_reply: Some(chat_dispatch::CommReplyConfig {
@@ -3642,6 +3678,7 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
                 conversation_id: msg.conversation_id.clone(),
                 handoff_depth: handoff_depth_in,
                 approval_relay: false,
+                from_agent_id: agent_id.clone(),
             }),
             entity_config,
             images,
@@ -3716,6 +3753,15 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
                     (aid, false)
                 }
             };
+
+            if is_self_delivery(&msg, &agent_id) {
+                tracing::debug!(
+                    conv_id = %msg.conversation_id,
+                    agent = %agent_id,
+                    "skipping self-delivery (sender agent == target agent)"
+                );
+                return;
+            }
 
             // Write through the conv↔agent association so the durable fallback
             // can resolve this conversation after a restart.
@@ -3900,7 +3946,7 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
                 user_id: String::new(),
                 channel: "neboai".to_string(),
                 origin: comm_origin(is_personal),
-                agent_id,
+                agent_id: agent_id.clone(),
                 cancel_token: tokio_util::sync::CancellationToken::new(),
                 lane: types::constants::lanes::COMM.to_string(),
                 comm_reply: Some(chat_dispatch::CommReplyConfig {
@@ -3909,6 +3955,7 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
                     conversation_id: msg.conversation_id.clone(),
                     handoff_depth: handoff_depth_in,
                     approval_relay: is_personal,
+                    from_agent_id: agent_id.clone(),
                 }),
                 entity_config,
                 images,
@@ -4005,7 +4052,7 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
             user_id: String::new(),
             channel: "neboai".to_string(),
             origin: tools::Origin::Comm,
-            agent_id,
+            agent_id: agent_id.clone(),
             cancel_token: tokio_util::sync::CancellationToken::new(),
             lane: types::constants::lanes::COMM.to_string(),
             comm_reply: Some(chat_dispatch::CommReplyConfig {
@@ -4014,6 +4061,7 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
                 conversation_id: msg.conversation_id.clone(),
                 handoff_depth: handoff_depth_in,
                 approval_relay: false,
+                from_agent_id: agent_id.clone(),
             }),
             entity_config,
             images,
@@ -4530,7 +4578,7 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
                 user_id: String::new(),
                 channel: "neboai".to_string(),
                 origin: tools::Origin::Comm,
-                agent_id,
+                agent_id: agent_id.clone(),
                 cancel_token: tokio_util::sync::CancellationToken::new(),
                 lane: types::constants::lanes::COMM.to_string(),
                 comm_reply: Some(chat_dispatch::CommReplyConfig {
@@ -4539,6 +4587,7 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
                     conversation_id: msg.conversation_id.clone(),
                     handoff_depth: handoff_depth_in.saturating_add(1),
                     approval_relay: false,
+                    from_agent_id: agent_id.clone(),
                 }),
                 entity_config,
                 images: images.clone(),

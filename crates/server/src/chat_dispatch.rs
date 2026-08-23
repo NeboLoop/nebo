@@ -274,6 +274,11 @@ pub struct CommReplyConfig {
     /// chip messages (personal-loop contexts only — approvals must reach the
     /// owner, never third-party loop members).
     pub approval_relay: bool,
+    /// WHICH of this bot's employees replies — rides the wire as
+    /// `fromAgentId` (with `senderName` as `fromAgentName`) so receivers can
+    /// attribute room/DM traffic to a specific agent and suppress only true
+    /// self-echo. Empty = main-bot reply.
+    pub from_agent_id: String,
 }
 
 /// Single entry point for all chat dispatch.
@@ -2197,6 +2202,18 @@ async fn send_comm_msg(
     metadata
         .entry("senderKind".to_string())
         .or_insert_with(|| "agent".to_string());
+    // Sender agent identity → the wire's fromAgentId/fromAgentName (the
+    // outbound transport reads these metadata keys into SendPayload).
+    if !cfg.from_agent_id.is_empty() {
+        metadata
+            .entry("fromAgentId".to_string())
+            .or_insert_with(|| cfg.from_agent_id.clone());
+        if !sender_name.is_empty() {
+            metadata
+                .entry("fromAgentName".to_string())
+                .or_insert_with(|| sender_name.to_string());
+        }
+    }
     if cfg.handoff_depth > 0 {
         metadata
             .entry("handoffDepth".to_string())

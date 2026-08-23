@@ -242,6 +242,9 @@ impl NeboAIPlugin {
             conversation_id: conversation_id.to_string(),
             stream: stream.to_string(),
             content,
+            // Main-bot surface sends (dm/chat/typing) carry no agent identity.
+            from_agent_id: String::new(),
+            from_agent_name: String::new(),
         })
         .map_err(|e| CommError::Other(e.to_string()))?;
 
@@ -722,10 +725,10 @@ impl CommPlugin for NeboAIPlugin {
             dl.outbound(stream, &conv_id, &msg.content);
         }
 
-        // Instrument the RESPONSE: what identity (if any) we attach to a reply.
-        // SendPayload has NO agent id/slug field — the only identity hint is
-        // `senderName` inside `content`. The loop attributes by the bot's
-        // connection, so without a real agent id this shows as the primary.
+        // Instrument the RESPONSE: what identity we attach to a reply. The
+        // sending agent rides the wire as fromAgentId/fromAgentName (stamped
+        // into msg.metadata by the dispatcher); senderName in content remains
+        // for older web readers.
         tracing::info!(
             target: "neboai_identity",
             conv_id = %conv_id,
@@ -742,6 +745,16 @@ impl CommPlugin for NeboAIPlugin {
             conversation_id: conv_id,
             stream: stream.to_string(),
             content,
+            from_agent_id: msg
+                .metadata
+                .get("fromAgentId")
+                .cloned()
+                .unwrap_or_default(),
+            from_agent_name: msg
+                .metadata
+                .get("fromAgentName")
+                .cloned()
+                .unwrap_or_default(),
         })
         .map_err(|e| CommError::Other(e.to_string()))?;
 
@@ -1321,6 +1334,16 @@ async fn read_loop(
                         }
                         if !delivery.source_channel_id.is_empty() {
                             metadata.insert("source_channel_id".to_string(), delivery.source_channel_id.clone());
+                        }
+                        // Sender agent identity (envelope wins over any lifted
+                        // content copy): which of the SENDING bot's employees
+                        // spoke. Drives room attribution and agent-aware
+                        // self-echo suppression.
+                        if !delivery.from_agent_id.is_empty() {
+                            metadata.insert("fromAgentId".to_string(), delivery.from_agent_id.clone());
+                        }
+                        if !delivery.from_agent_name.is_empty() {
+                            metadata.insert("fromAgentName".to_string(), delivery.from_agent_name.clone());
                         }
 
                         let conv_id_str = uuid_from_bytes(&header.conversation_id);
