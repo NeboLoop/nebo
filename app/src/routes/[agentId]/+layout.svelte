@@ -214,12 +214,17 @@
   );
   const openRoom = (id: string) => setParams((p) => p.set('room', id));
   const closeRoom = () => setParams((p) => p.delete('room'));
-  // First two member initials for the row's stacked-avatars glyph.
-  const roomInitials = (room: { memberAgentIds: string[] }) =>
+  // First two members for the row's stacked-avatars glyph, in their roster
+  // colors — the room row previews who's inside.
+  const roomFaces = (room: { memberAgentIds: string[] }) =>
     room.memberAgentIds
-      .map((id) => allAgents.find((a) => a.id === id)?.initial)
-      .filter((x): x is string => !!x)
-      .slice(0, 2);
+      .map((id) => allAgents.find((a) => a.id === id))
+      .filter((a): a is (typeof allAgents)[number] => !!a)
+      .slice(0, 2)
+      .map((a) => {
+        const ac = AGENT_COLORS_MAP[a.color] ?? AGENT_COLORS_MAP['teal'];
+        return { initial: a.initial, cls: `${ac.bgClass} ${ac.inkClass}` };
+      });
 
   const openRuns = () => setParams((p) => p.set('runs', '1'));
   const closeRuns = () => setParams((p) => p.delete('runs'));
@@ -1143,7 +1148,7 @@
         </div>
         {#if sortedWorkrooms.length > 0}
           {#each sortedWorkrooms as room (room.channelId)}
-            {@const initials = roomInitials(room)}
+            {@const faces = roomFaces(room)}
             <button
               class="group/room w-full flex items-center gap-2.5 py-2 px-2.5 mx-1.5 cursor-pointer transition-colors text-left bg-transparent {roomParam === room.channelId
                 ? 'rounded-box border border-primary/30 bg-primary/10 shadow-sm'
@@ -1153,9 +1158,9 @@
               <!-- Stacked-avatars glyph in the avatar slot: this row is a room,
                    not a person. -->
               <div class="relative w-8 h-8 shrink-0">
-                {#if initials.length >= 2}
-                  <div class="absolute top-0 left-0 w-6 h-6 rounded-field bg-base-300 flex items-center justify-center font-mono text-[10px] font-semibold">{initials[0]}</div>
-                  <div class="absolute bottom-0 right-0 w-6 h-6 rounded-field bg-base-200 border border-base-100 flex items-center justify-center font-mono text-[10px] font-semibold">{initials[1]}</div>
+                {#if faces.length >= 2}
+                  <div class="absolute top-0 left-0 w-6 h-6 rounded-field flex items-center justify-center font-mono text-[10px] font-semibold {faces[0].cls}">{faces[0].initial}</div>
+                  <div class="absolute bottom-0 right-0 w-6 h-6 rounded-field border border-base-100 flex items-center justify-center font-mono text-[10px] font-semibold {faces[1].cls}">{faces[1].initial}</div>
                 {:else}
                   <div class="w-8 h-8 rounded-field bg-base-200 flex items-center justify-center text-base-content/70">
                     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>

@@ -1918,7 +1918,7 @@
 		"emptyTitle": "The room is open.",
 		"emptyHint": "@-name an employee to put them to work.",
 		"you": "You",
-		"composerPlaceholder": "Message the room — @-name an employee to bring them in",
+		"composerPlaceholder": "Message the room",
 		"send": "Send"
 	},
 	"agentIsolation": {

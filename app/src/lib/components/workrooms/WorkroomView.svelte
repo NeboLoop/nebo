@@ -141,7 +141,7 @@
 <div class="flex-1 min-w-0 min-h-0 flex flex-col">
   <!-- Who's in the room + what it's for. -->
   <div class="shrink-0 px-5 py-2.5 border-b border-base-300 flex items-center gap-3 min-w-0">
-    <div class="flex items-center gap-1.5 shrink-0">
+    <div class="flex items-center gap-1.5 shrink-0 max-w-[70%] overflow-x-auto">
       {#each members as m (m.id)}
         <span class="inline-flex items-center gap-1.5 pl-1 pr-2.5 py-0.5 rounded-full bg-base-200 text-xs">
           <span class="w-5 h-5 rounded-full flex items-center justify-center font-mono text-[10px] font-semibold {colorClass(rosterFor(m.id)?.color)}">{m.initial}</span>
