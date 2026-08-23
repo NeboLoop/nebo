@@ -3,7 +3,6 @@
   import { t } from 'svelte-i18n';
   import { AGENT_COLORS_MAP } from '$lib/tokens.js';
   import { launchApp } from '$lib/apps/launcher.js';
-  import type { Agent } from '$lib/api/nebo';
   import LayoutDashboard from 'lucide-svelte/icons/layout-dashboard';
   import PieChart from 'lucide-svelte/icons/pie-chart';
   import TrendingUp from 'lucide-svelte/icons/trending-up';
@@ -82,7 +81,7 @@
       const resp = await api.listAgents();
       if (!resp?.agents?.length) return;
 
-      const agents = resp.agents as Agent[];
+      const agents = resp.agents;
       const entries: AppEntry[] = [];
       for (const a of agents) {
         if (!a.isApp) continue;

@@ -139,7 +139,7 @@
       const api = await import('$lib/api/nebo');
       const resp = await api.listAgents();
       if (resp?.agents?.length) {
-        chat.setAllAgents((resp.agents as Agent[]).map(toMentionAgent));
+        chat.setAllAgents((resp.agents).map(toMentionAgent));
       }
     } catch { /* keep empty */ }
   });

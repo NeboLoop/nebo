@@ -1230,7 +1230,7 @@ export interface GetRunResponse {
 }
 
 export interface GetSessionMessagesResponse {
-	messages: unknown[]
+	messages: ChatMessage[]
 	hasMore: boolean
 }
 
@@ -1336,7 +1336,7 @@ export interface ListAgentWorkflowsResponse {
 }
 
 export interface ListAgentsResponse {
-	agents: unknown[]
+	agents: AgentListEntry[]
 	total: number
 }
 
@@ -1895,6 +1895,28 @@ export interface ActiveAgent {
 	status: string
 }
 
+export interface AgentListEntry {
+	id: string
+	name: string
+	displayName: string
+	description: string
+	color?: string
+	handle?: string
+	source: string
+	version?: string
+	isApp: boolean
+	isEnabled: boolean
+	inputValues: string
+	installedAt?: number
+	loopExposed: boolean
+	voice: string
+	isolated: boolean
+	needsSetup: boolean
+	nappPath?: string
+	appWindowConfig?: AppWindowConfig
+	loadError?: string
+}
+
 export interface AgentRunEntry {
 	id: string
 	name: string
@@ -1941,6 +1963,13 @@ export interface AgentWorkflowTrigger {
 export interface AliasEntry {
 	alias: string
 	command: string
+}
+
+export interface AppWindowConfig {
+	width: number
+	height: number
+	resizable: boolean
+	title?: string
 }
 
 export interface Capability {
@@ -2048,7 +2077,6 @@ export type WSServerEventType =
 	| "chat_ack"
 	| "chat_stream"
 	| "chat_error"
-	| "agent_activated"
 
 export interface AppActionEvent {
 	agentId: string
@@ -2097,11 +2125,6 @@ export interface ChatStreamEvent {
 export interface ChatErrorEvent {
 	error: string
 	session_id: string
-}
-
-export interface AgentActivatedEvent {
-	agentId: string
-	name: string
 }
 
 /** Client → Server WebSocket message types */

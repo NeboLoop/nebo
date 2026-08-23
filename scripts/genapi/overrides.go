@@ -29,6 +29,11 @@ var typeOverrides = map[string]string{
 	// ── Chat messages ──
 	"get_chat_messages.messages": "ChatMessage[]",
 	"list_chat_messages.messages": "ChatMessage[]",
+	// Same rows, addressed by session key (embed chat, coworker transcripts).
+	"get_session_messages.messages": "ChatMessage[]",
+
+	// ── Agents roster (enriched rows: display name, source, isolation, setup) ──
+	"list_agents.agents": "AgentListEntry[]",
 
 	// ── User profile ──
 	"userGetProfile.profile": "UserProfileFull",
@@ -65,6 +70,35 @@ var typeOverrides = map[string]string{
 // extraInterfaces defines TypeScript interfaces that don't exist as Rust structs
 // but are needed by the type overrides above.
 var extraInterfaces = map[string]string{
+	"AgentListEntry": `export interface AgentListEntry {
+	id: string
+	name: string
+	displayName: string
+	description: string
+	color?: string
+	handle?: string
+	source: string
+	version?: string
+	isApp: boolean
+	isEnabled: boolean
+	inputValues: string
+	installedAt?: number
+	loopExposed: boolean
+	voice: string
+	isolated: boolean
+	needsSetup: boolean
+	nappPath?: string
+	appWindowConfig?: AppWindowConfig
+	loadError?: string
+}`,
+
+	"AppWindowConfig": `export interface AppWindowConfig {
+	width: number
+	height: number
+	resizable: boolean
+	title?: string
+}`,
+
 	"EnrichedChat": `export interface EnrichedChat {
 	id: string
 	name: string

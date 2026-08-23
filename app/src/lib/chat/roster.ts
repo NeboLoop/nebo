@@ -1,4 +1,4 @@
-import type { Agent } from '$lib/api/neboComponents';
+import type { AgentListEntry } from '$lib/api/neboComponents';
 import type { AgentInfo } from '$lib/chat/controller.svelte';
 
 /**
@@ -6,7 +6,7 @@ import type { AgentInfo } from '$lib/chat/controller.svelte';
  * renders (@mention chips). Every surface that feeds listAgents() into a chat
  * pane goes through here so color/isApp handling can't drift.
  */
-export function toMentionAgent(a: Agent): AgentInfo {
+export function toMentionAgent(a: AgentListEntry): AgentInfo {
 	return {
 		id: a.id,
 		name: a.name,

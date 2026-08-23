@@ -22,7 +22,7 @@
     const api = await import('$lib/api/nebo');
     const agentResp = await api.listAgents().catch(() => null);
     if (agentResp?.agents?.length) {
-      agents = (agentResp.agents as Agent[]).filter(a => !a.isApp).map(a => ({
+      agents = (agentResp.agents).filter(a => !a.isApp).map(a => ({
         id: a.id,
         name: a.name,
         role: a.description || '',

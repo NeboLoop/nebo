@@ -90,7 +90,7 @@
     try {
       const resp = await api.listAgents();
       if (resp?.agents?.length) {
-        chat.setAllAgents((resp.agents as Agent[]).map(toMentionAgent));
+        chat.setAllAgents((resp.agents).map(toMentionAgent));
       }
     } catch (e) {
       console.warn('[chat-embed] Failed to load agents for @mentions:', e);

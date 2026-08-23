@@ -69,7 +69,7 @@
         activeAgents.map((a) => a.id || a.agentId)
       );
       if (agentsResp?.agents?.length) {
-        const agents = agentsResp.agents as Agent[];
+        const agents = agentsResp.agents;
         allAgents = agents.map(a => ({
           id: a.id,
           name: a.name,
