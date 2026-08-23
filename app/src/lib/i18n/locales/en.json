@@ -1911,6 +1911,15 @@
 		"empty": "No messages between these employees yet.",
 		"viewOnly": "This conversation is view-only — employees talk here, you steer them in their own chats"
 	},
+	"workrooms": {
+		"section": "Workrooms",
+		"membersCount": "{count} employees",
+		"emptyTitle": "The room is open.",
+		"emptyHint": "@-name an employee to put them to work.",
+		"you": "You",
+		"composerPlaceholder": "Message the room — @-name an employee to bring them in",
+		"send": "Send"
+	},
 	"agentIsolation": {
 		"title": "Memory isolation",
 		"shared": "Shared memory",

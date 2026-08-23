@@ -17,6 +17,7 @@
   import MarketplaceBrowse from '$lib/components/marketplace/MarketplaceBrowse.svelte';
   import ProductDetail from '$lib/components/marketplace/ProductDetail.svelte';
   import CoworkerThreadView from '$lib/components/chat/CoworkerThreadView.svelte';
+  import WorkroomView from '$lib/components/workrooms/WorkroomView.svelte';
   import AgentSettingsModal from '$lib/components/settings/agent/AgentSettingsModal.svelte';
   import { unreadCount } from '$lib/stores/notifications';
   import { commandPaletteOpen } from '$lib/stores/commandPalette';
@@ -187,6 +188,39 @@
     marketDetail = null;
     market = { ...MARKET_HOME, kind };
   }
+  // ── Workrooms: mission rooms where the owner and several employees share
+  // one conversation (a room IS a loop channel; the hub owns the history).
+  // `?room=<channelId>` opens a room, `?room=new` is the create form.
+  let workrooms = $state<import('$lib/api/neboComponents').Workroom[]>([]);
+  // Live recency: a room row rises within its section when its channel talks.
+  let roomActivity = $state<Record<string, number>>({});
+  async function loadWorkrooms() {
+    try {
+      const api = await import('$lib/api/nebo');
+      const resp = await api.listWorkrooms();
+      workrooms = resp?.workrooms ?? [];
+    } catch {
+      /* section simply stays absent */
+    }
+  }
+  const roomParam = $derived($page.url.searchParams.get('room'));
+  const openRoomObj = $derived(workrooms.find((w) => w.channelId === roomParam) ?? null);
+  const sortedWorkrooms = $derived(
+    [...workrooms].sort(
+      (a, b) =>
+        (roomActivity[b.channelId] ?? b.createdAt * 1000) -
+        (roomActivity[a.channelId] ?? a.createdAt * 1000)
+    )
+  );
+  const openRoom = (id: string) => setParams((p) => p.set('room', id));
+  const closeRoom = () => setParams((p) => p.delete('room'));
+  // First two member initials for the row's stacked-avatars glyph.
+  const roomInitials = (room: { memberAgentIds: string[] }) =>
+    room.memberAgentIds
+      .map((id) => allAgents.find((a) => a.id === id)?.initial)
+      .filter((x): x is string => !!x)
+      .slice(0, 2);
+
   const openRuns = () => setParams((p) => p.set('runs', '1'));
   const closeRuns = () => setParams((p) => p.delete('runs'));
   const openInbox = () => setParams((p) => p.set('inbox', '1'));
@@ -389,6 +423,7 @@
   onMount(() => {
     // Initial roster load
     loadAgentRoster();
+    loadWorkrooms();
 
     // Phones start on the team list. Landing cold on a specific conversation
     // (a shared link, a notification) keeps that conversation — the list is
@@ -454,6 +489,19 @@
         thread.name = data.title;
         apiThreads[id] = [...threads]; // trigger reactivity
       }
+    });
+
+    // Rooms are opened by employees; the sidebar learns about a new one live.
+    onWsEvent('nebo:workroom_created', (data) => {
+      const room = data?.workroom;
+      if (!room?.channelId) return;
+      workrooms = [room, ...workrooms.filter((w) => w.channelId !== room.channelId)];
+      roomActivity[room.channelId] = Date.now();
+    });
+    // Workroom traffic → bump that room's recency in the sidebar section.
+    // The open room view holds its own subscription for the transcript.
+    onWsEvent('nebo:workroom_message', (data) => {
+      if (data?.channelId) roomActivity[data.channelId] = Date.now();
     });
 
     // Run/workflow updates → refresh runs + stats
@@ -1084,6 +1132,48 @@
           {/each}
         </div>
       {/if}
+      {#if !drilledAgent}
+        <!-- WORKROOMS — mission rooms, under the employees (list = conversations;
+             the shelf is for utilities). Rooms are opened by employees, never by
+             a form: whichever employee owns a task creates the room and brings
+             coworkers in. So the empty state is NOTHING — the section exists
+             the day work starts happening in one. -->
+        {#if sortedWorkrooms.length > 0}
+          <div class="flex items-center gap-2 mt-4 mb-1 mx-4">
+            <span class="text-[10px] font-semibold uppercase tracking-wider text-base-content/45">{$t('workrooms.section')}</span>
+          </div>
+          {#each sortedWorkrooms as room (room.channelId)}
+            {@const initials = roomInitials(room)}
+            <button
+              class="group/room w-full flex items-center gap-2.5 py-2 px-2.5 mx-1.5 cursor-pointer transition-colors text-left bg-transparent {roomParam === room.channelId
+                ? 'rounded-box border border-primary/30 bg-primary/10 shadow-sm'
+                : 'rounded-box border border-transparent hover:bg-base-100/70'}"
+              onclick={() => openRoom(room.channelId)}
+            >
+              <!-- Stacked-avatars glyph in the avatar slot: this row is a room,
+                   not a person. -->
+              <div class="relative w-8 h-8 shrink-0">
+                {#if initials.length >= 2}
+                  <div class="absolute top-0 left-0 w-6 h-6 rounded-field bg-base-300 flex items-center justify-center font-mono text-[10px] font-semibold">{initials[0]}</div>
+                  <div class="absolute bottom-0 right-0 w-6 h-6 rounded-field bg-base-200 border border-base-100 flex items-center justify-center font-mono text-[10px] font-semibold">{initials[1]}</div>
+                {:else}
+                  <div class="w-8 h-8 rounded-field bg-base-200 flex items-center justify-center text-base-content/70">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+                  </div>
+                {/if}
+              </div>
+              <div class="flex-1 min-w-0">
+                <div class="flex items-baseline gap-2">
+                  <span class="text-sm font-medium truncate min-w-0">{room.name}</span>
+                  <span class="flex-1"></span>
+                  <span class="text-xs text-base-content/45 shrink-0">{dayLabel(roomActivity[room.channelId] ? roomActivity[room.channelId] / 1000 : room.createdAt)}</span>
+                </div>
+                <div class="text-xs text-base-content/60 truncate">{room.mission || $t('workrooms.membersCount', { values: { count: room.memberAgentIds.length } })}</div>
+              </div>
+            </button>
+          {/each}
+        {/if}
+      {/if}
     {/if}
   {/snippet}
 
@@ -1198,6 +1288,15 @@
 
 <ShelfModal open={runsOpen} title={$t('nav.runs')} onclose={closeRuns}>
   <RunsPane onopen={openRun} />
+</ShelfModal>
+
+<!-- A workroom: the owner's live seat in a mission room an employee opened. -->
+<ShelfModal open={openRoomObj !== null} title={openRoomObj?.name ?? ''} onclose={closeRoom}>
+  {#if openRoomObj}
+    {#key openRoomObj.channelId}
+      <WorkroomView room={openRoomObj} />
+    {/key}
+  {/if}
 </ShelfModal>
 
 <!-- View-only coworker transcript: what one employee told another, verbatim.
