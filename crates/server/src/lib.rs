@@ -4292,6 +4292,16 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
             }
         }
 
+        // Self-mention is never a dispatch: an agent quoting its own token
+        // (echoing the ask it was given, signing its work) must not re-run
+        // itself — that churn burned a one-step mission to the depth cap.
+        if let Some(sender_agent) = msg
+            .metadata
+            .get("fromAgentId")
+            .filter(|s| !s.is_empty())
+        {
+            mentioned_targets.retain(|t| t != sender_agent);
+        }
         let mentioned = !mentioned_targets.is_empty();
 
         // Agent-to-agent handoff guardrails. Agent-authored messages carry

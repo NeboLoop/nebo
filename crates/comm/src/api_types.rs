@@ -699,15 +699,25 @@ impl ChannelMessagesResponse {
                 };
                 // Parse nested payload JSON
                 if let Ok(p) = serde_json::from_str::<ChannelPayload>(&raw.payload) {
-                    item.content = p.content.text;
-                    item.attachments = p.content.attachments;
-                    if !p.metadata.role.is_empty() {
-                        item.role = Some(p.metadata.role);
+                    let c = p.content;
+                    item.content = c.text;
+                    item.attachments = c.attachments;
+                    let role = [c.role, c.metadata.role]
+                        .into_iter()
+                        .find(|r| !r.is_empty());
+                    if let Some(r) = role {
+                        item.role = Some(r);
                     }
-                    if !p.metadata.from_agent_name.is_empty() {
-                        item.sender_name = Some(p.metadata.from_agent_name);
-                    } else if !p.metadata.sender_name.is_empty() {
-                        item.sender_name = Some(p.metadata.sender_name);
+                    let name = [
+                        c.from_agent_name,
+                        c.metadata.from_agent_name,
+                        c.sender_name,
+                        c.metadata.sender_name,
+                    ]
+                    .into_iter()
+                    .find(|n| !n.is_empty());
+                    if let Some(n) = name {
+                        item.sender_name = Some(n);
                     }
                 }
                 item
@@ -734,13 +744,14 @@ pub struct NormalizedChannelMessage {
     pub attachments: Vec<crate::wire::Attachment>,
 }
 
-/// Nested JSON inside ChannelMessageRaw.payload.
+/// Nested JSON inside ChannelMessageRaw.payload. Verified against the hub's
+/// stored rows (2026-08-23): the shape is {content: {...}} where outbound
+/// metadata is BOTH root-copied into content (content.senderName) and nested
+/// at content.metadata — there is no sibling `metadata` block.
 #[derive(Debug, Clone, Deserialize)]
 struct ChannelPayload {
     #[serde(default)]
     content: ChannelContent,
-    #[serde(default)]
-    metadata: ChannelMetadata,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -749,16 +760,25 @@ struct ChannelContent {
     text: String,
     #[serde(default)]
     attachments: Vec<crate::wire::Attachment>,
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-struct ChannelMetadata {
     #[serde(default)]
     role: String,
     /// Sender employee identity, stamped by the sending bot (WS6 wire leg).
     #[serde(default, rename = "fromAgentName")]
     from_agent_name: String,
     /// Agent replies attach senderName (display name only, no id on the wire).
+    #[serde(default, rename = "senderName")]
+    sender_name: String,
+    /// The nested copy — canonical for web readers; same keys as the root.
+    #[serde(default)]
+    metadata: ChannelNestedMetadata,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct ChannelNestedMetadata {
+    #[serde(default)]
+    role: String,
+    #[serde(default, rename = "fromAgentName")]
+    from_agent_name: String,
     #[serde(default, rename = "senderName")]
     sender_name: String,
 }

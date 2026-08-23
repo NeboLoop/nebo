@@ -124,6 +124,12 @@ pub async fn send_workroom_message(
         }
     }
 
+    // The owner's identity rides metadata; the hub flattens metadata into the
+    // stored content, so history reads label this row correctly ("You") after
+    // a reload — labels must be as accurate as the live view.
+    let mut owner_meta = std::collections::HashMap::new();
+    owner_meta.insert("senderName".to_string(), "Owner".to_string());
+    owner_meta.insert("role".to_string(), "user".to_string());
     let msg = comm::CommMessage {
         id: uuid::Uuid::new_v4().to_string(),
         from: String::new(),
@@ -132,7 +138,7 @@ pub async fn send_workroom_message(
         conversation_id: channel_id.clone(),
         msg_type: comm::CommMessageType::LoopChannel,
         content: content.clone(),
-        metadata: std::collections::HashMap::new(),
+        metadata: owner_meta,
         timestamp: 0,
         human_injected: true,
         human_id: None,

@@ -1410,6 +1410,14 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                 {
                                     let mut inbound = workroom_reply;
                                     inbound.topic = "channel".to_string();
+                                    // Local-only stamp (never on the hub wire):
+                                    // lets the dispatcher drop self-mentions —
+                                    // an expert quoting its own token must not
+                                    // re-dispatch itself into a churn loop.
+                                    inbound.metadata.insert(
+                                        "fromAgentId".to_string(),
+                                        reply_config.from_agent_id.clone(),
+                                    );
                                     crate::spawn_comm_loopback(loopback_state.clone(), inbound);
                                 }
                             }
