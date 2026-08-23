@@ -145,6 +145,12 @@ pub trait CommPlugin: Send + Sync {
         None
     }
 
+    /// Look up the channel_id for a channel conversation. Returns None when
+    /// the conversation is not a joined loop channel.
+    async fn channel_for_conversation(&self, _conv_id: &str) -> Option<String> {
+        None
+    }
+
     /// Look up the NeboAI conversation ID for an agent by slug.
     /// Used for forwarding local agent responses to NeboAI.
     async fn agent_space_conv_for_slug(&self, _slug: &str) -> Option<String> {

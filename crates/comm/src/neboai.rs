@@ -1034,6 +1034,15 @@ impl CommPlugin for NeboAIPlugin {
             .map(|meta| meta.loop_id.clone())
     }
 
+    async fn channel_for_conversation(&self, conv_id: &str) -> Option<String> {
+        self.conv_maps
+            .read()
+            .await
+            .channel_by_conv
+            .get(conv_id)
+            .cloned()
+    }
+
     async fn agent_space_conv_for_slug(&self, slug: &str) -> Option<String> {
         self.conv_maps
             .read()

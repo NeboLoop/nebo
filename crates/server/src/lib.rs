@@ -4125,6 +4125,34 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
                 }
             });
 
+        // Workroom live feed: if this channel is a registered room, every
+        // message reaches the owner's UI as an event — mentioned or not,
+        // employee or human. (Initial history is REST getChannelMessages;
+        // this keeps the open room view event-driven, never polling.)
+        if let Some(channel_id) = state
+            .comm_manager
+            .channel_for_conversation(&msg.conversation_id)
+            .await
+        {
+            if let Ok(Some(room)) = state.store.get_workroom(&channel_id) {
+                state.hub.broadcast(
+                    "workroom_message",
+                    serde_json::json!({
+                        "channelId": room.channel_id,
+                        "conversationId": msg.conversation_id,
+                        "from": msg.from,
+                        "fromAgentId": msg.metadata.get("fromAgentId").cloned().unwrap_or_default(),
+                        "senderName": msg
+                            .metadata
+                            .get("fromAgentName")
+                            .cloned()
+                            .unwrap_or_else(|| sender_label.clone()),
+                        "text": text,
+                    }),
+                );
+            }
+        }
+
         // INGEST: every channel message accrues into the rolling buffer,
         // whether or not the bot ends up responding. Trim by cap + age.
         let now = std::time::Instant::now();

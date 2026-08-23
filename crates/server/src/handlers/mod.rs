@@ -25,6 +25,7 @@ pub mod user;
 pub mod desktop;
 pub mod voice;
 pub mod workflows;
+pub mod workrooms;
 pub mod ws;
 
 use axum::http::StatusCode;

@@ -140,6 +140,36 @@ impl PluginManager {
         active.list_channels().await
     }
 
+    /// List messages in a channel (active plugin) — the hub's history, which
+    /// is the room's truth (the local mirror only holds mentioned traffic).
+    pub async fn list_channel_messages(
+        &self,
+        channel_id: &str,
+        limit: usize,
+    ) -> Result<Vec<crate::types::ChannelMessageItem>, CommError> {
+        let inner = self.inner.read().await;
+        let active = inner.active.as_ref().ok_or(CommError::NoActivePlugin)?;
+        if !active.is_connected() {
+            return Err(CommError::NotConnected);
+        }
+        active.list_channel_messages(channel_id, limit).await
+    }
+
+    /// Find-or-create a channel by name (active plugin); returns its
+    /// channel_id. Idempotent — the provider matches by sanitized name.
+    pub async fn ensure_channel(
+        &self,
+        name: &str,
+        description: Option<&str>,
+    ) -> Result<String, CommError> {
+        let inner = self.inner.read().await;
+        let active = inner.active.as_ref().ok_or(CommError::NoActivePlugin)?;
+        if !active.is_connected() {
+            return Err(CommError::NotConnected);
+        }
+        active.ensure_channel(name, description).await
+    }
+
     /// List loops this bot belongs to (active plugin).
     pub async fn list_loops(&self) -> Result<Vec<crate::types::LoopInfo>, CommError> {
         let inner = self.inner.read().await;
@@ -299,6 +329,16 @@ impl PluginManager {
     }
 
     /// Look up the loop_id for an agent_space conversation.
+    /// Channel id for a channel conversation (active plugin), if joined.
+    pub async fn channel_for_conversation(&self, conv_id: &str) -> Option<String> {
+        let inner = self.inner.read().await;
+        if let Some(ref active) = inner.active {
+            active.channel_for_conversation(conv_id).await
+        } else {
+            None
+        }
+    }
+
     pub async fn agent_space_loop_id(&self, conv_id: &str) -> Option<String> {
         let inner = self.inner.read().await;
         if let Some(ref active) = inner.active {

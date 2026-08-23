@@ -28,8 +28,10 @@ mod user_profile;
 mod users;
 pub(crate) mod work;
 mod workflows;
+mod workrooms;
 
 pub use run_usage::cost_microcents;
 pub use license_keys::LicenseKeyRow;
 pub use plugin_account_profiles::PluginAccountProfile;
 pub use work::WorkDocumentListing;
+pub use workrooms::Workroom;

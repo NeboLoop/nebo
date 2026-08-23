@@ -866,6 +866,22 @@ export interface WorkflowToolBinding {
 	tool: string
 }
 
+export interface Workroom {
+	channelId: string
+	name: string
+	mission: string
+	memberAgentIds: string[]
+	createdAt: number
+}
+
+export interface WorkroomMessage {
+	id: string
+	from: string
+	content: string
+	createdAt: string
+	role?: string
+}
+
 // ── API Response Types (inferred from handlers) ────────────────────
 
 export interface ActivateAgentChatResponse {
@@ -1023,6 +1039,10 @@ export interface CreateWorkflowResponse {
 	cascade: unknown
 }
 
+export interface CreateWorkroomResponse {
+	workroom: Workroom
+}
+
 export interface DeactivateAgentResponse {
 	agentId: string
 	name: string
@@ -1095,6 +1115,10 @@ export interface DeleteTeamResponse {
 }
 
 export interface DeleteWorkflowResponse {
+	message: string
+}
+
+export interface DeleteWorkroomResponse {
 	message: string
 }
 
@@ -1290,6 +1314,10 @@ export interface GetWorkflowResponse {
 	workflow: Workflow
 }
 
+export interface GetWorkroomMessagesResponse {
+	messages: WorkroomMessage[]
+}
+
 export interface HttpProxyResponse {
 	status: string
 	headers: unknown
@@ -1466,6 +1494,11 @@ export interface ListWorkflowsResponse {
 	total: number
 }
 
+export interface ListWorkroomsResponse {
+	workrooms: Workroom[]
+	total: number
+}
+
 export interface LocalModelsStatusResponse {
 	available: boolean
 	models: unknown[]
@@ -1636,6 +1669,10 @@ export interface SearchMemoriesResponse {
 
 export interface SearchMessagesResponse {
 	messages: ChatMessage[]
+}
+
+export interface SendWorkroomMessageResponse {
+	message: string
 }
 
 export interface SetAgentChannelConfigResponse {
