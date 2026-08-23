@@ -907,7 +907,35 @@
 
 ---
 
-## Section 10: Cleanup
+## Section 10: Teach-by-Demonstration (TB)
+
+### TB-01: Teach Start (REST contract)
+
+| Check | Expected | Result | Notes |
+|-------|----------|--------|-------|
+| macOS: clean plain-words error OR sessionId | | | |
+
+### TB-02: Teach Stop Without Session
+
+| Check | Expected | Result | Notes |
+|-------|----------|--------|-------|
+| Clean error, validation before finalize | | | |
+
+### TB-03: Composer Affordance
+
+| Check | Expected | Result | Notes |
+|-------|----------|--------|-------|
+| "Teach a task" in + menu on computer surfaces only | | | |
+
+### TB-04: Learned-Skill Pipeline (capture platforms)
+
+| Check | Expected | Result | Notes |
+|-------|----------|--------|-------|
+| One human sentence; skill saved first call; register clean | | | |
+
+---
+
+## Section 11: Cleanup
 
 | Artifact | Cleanup Action | Done | Notes |
 |----------|----------------|------|-------|
@@ -947,7 +975,8 @@
 | Cross-Cutting (X) | 10 | | | | |
 | Workrooms (WR) | 10 | | | | |
 | Register & Governance (CG) | 7 | | | | |
-| **Total** | **98** | | | | |
+| Teach (TB) | 4 | | | | |
+| **Total** | **102** | | | | |
 
 ## Regressions from Previous Run
 

@@ -2010,7 +2010,58 @@ Observe any multi-step run.
 
 ---
 
-## Section 9: Cleanup
+## Section 9: Teach-by-Demonstration (TB)
+
+Teach = the owner performs a task on the employee's computer; the recording
+becomes a learned skill. ONE pathway: composer + menu → "Teach a task" →
+`POST /desktop/teach/start` … `/stop` → learning run (visible sentence +
+hidden briefing) → skill saved via the skill tool. On macOS the capture leg
+is the known-missing piece — these tests pin the CONTRACT so the gap is
+documented, not discovered by a customer.
+
+### TB-01: Teach Start (REST contract)
+
+```
+curl -X POST http://localhost:27895/api/v1/desktop/teach/start
+```
+
+| Check | Expected | Result |
+|-------|----------|--------|
+| macOS | Clean, plain-words error (no panic, no stack, no internals) OR `{sessionId, dir}` if capture has landed | |
+| Error register | Non-scary; names what's unavailable | |
+
+### TB-02: Teach Stop Without a Session
+
+```
+curl -X POST .../desktop/teach/stop -d '{"agentId":"assistant"}'
+```
+
+| Check | Expected | Result |
+|-------|----------|--------|
+| Status | Clean error ("no recording in progress" class), never a crash | |
+| Validation order | Missing agentId errors BEFORE touching the recording | |
+
+### TB-03: Teach Affordance in the Composer
+
+| Check | Expected | Result |
+|-------|----------|--------|
+| + menu on a computer-capable surface | "Teach a task" entry present | |
+| Surfaces without a computer | Entry absent (no dead affordance) | |
+
+### TB-04: Learned-Skill Pipeline (where capture works)
+
+On a platform with capture (cloud/Linux desktop), record ≤30s, stop.
+
+| Check | Expected | Result |
+|-------|----------|--------|
+| Visible message | ONE human sentence — no paths, session ids, or briefing text | |
+| Learning run | Reads timeline.md + spread keyframes; saves via skill tool FIRST CALL | |
+| Skill appears | Named after the task class; steps + varied inputs noted | |
+| Reply register | Thanks + what it learned + schedule question; no internals | |
+
+---
+
+## Section 10: Cleanup
 
 After all tests, remove test artifacts:
 
