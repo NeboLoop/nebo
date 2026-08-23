@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { launchApp } from '$lib/apps/launcher';
   import FlowsPane from '$lib/components/flows/FlowsPane.svelte';
   import { getContext, onDestroy, onMount } from 'svelte';
   import { t } from 'svelte-i18n';
@@ -87,6 +88,8 @@
   onopenruns={ctx.openRuns}
   onsettings={ctx.openSettings}
   isolated={ctx.agent?.isolated ?? false}
+  isApp={ctx.agent?.isApp ?? false}
+  onopenapp={() => launchApp(ctx.agentId, ctx.agent?.name ?? 'App')}
 
   placeholder={$t('chat.startNewThreadWith', { values: { name: agent?.name ?? '' } })}
   emptyTitle={greeting}

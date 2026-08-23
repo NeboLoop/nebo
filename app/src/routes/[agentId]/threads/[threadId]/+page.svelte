@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { launchApp } from '$lib/apps/launcher';
   import FlowsPane from '$lib/components/flows/FlowsPane.svelte';
   import { goto } from '$lib/nav';
   import { getContext, onMount, onDestroy } from 'svelte';
@@ -419,6 +420,8 @@
   onopenruns={ctx.openRuns}
   onsettings={ctx.openSettings}
   isolated={ctx.agent?.isolated ?? false}
+  isApp={ctx.agent?.isApp ?? false}
+  onopenapp={() => launchApp(ctx.agentId, ctx.agent?.name ?? 'App')}
 
   allAgents={chat.allAgents}
   tokenUsage={chat.tokenUsage}

@@ -1892,7 +1892,8 @@
 		"newChatDesc": "Clean context. {name} knows who you are but nothing about previous chats.",
 		"threadOptions": "Chat options",
 		"noChatsYet": "No chats yet. Start a new one.",
-		"noRunsYet": "No runs yet"
+		"noRunsYet": "No runs yet",
+		"appBadge": "App"
 	},
 	"agentLearning": {
 		"title": "Self-improvement",

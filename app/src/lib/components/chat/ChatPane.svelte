@@ -75,7 +75,7 @@
 
   type AgentInfo = { id: string; name: string; color: string; initial: string; role: string; status: string; isApp?: boolean };
 
-  let { messages = [], agentName = 'Agent', agentId = '', threadId = '', sessionId = '', headerTitle = '', headerRight = '', placeholder = '', emptyIcon = '', emptyTitle = '', emptyDesc = '', allAgents = [], onteachsent, activityStatus = '', tokenUsage = null, quotaWarning = '', chatError = '', onsend, onstop, onedit, onredo, onasksubmit, onrestoreversion, ondismisswarning, ondismisserror, onloadmore, isLoading = false, isLoadingMore = false, hasMore = false, allowAttachments = true, flowsPane, onopenruns, onsettings, isolated = false }: {
+  let { messages = [], agentName = 'Agent', agentId = '', threadId = '', sessionId = '', headerTitle = '', headerRight = '', placeholder = '', emptyIcon = '', emptyTitle = '', emptyDesc = '', allAgents = [], onteachsent, activityStatus = '', tokenUsage = null, quotaWarning = '', chatError = '', onsend, onstop, onedit, onredo, onasksubmit, onrestoreversion, ondismisswarning, ondismisserror, onloadmore, isLoading = false, isLoadingMore = false, hasMore = false, allowAttachments = true, flowsPane, onopenruns, onsettings, isolated = false, isApp = false, onopenapp }: {
     messages?: Message[];
     /** Employee-scoped views for the work pane. Omitted on chats with no
      *  employee behind them (channel setup help, the embed), and the matching
@@ -86,6 +86,9 @@
     onsettings?: () => void;
     /** memory.context_isolated — this employee's conversations are sealed. */
     isolated?: boolean;
+    /** This employee is an app: badge the header and offer Open App. */
+    isApp?: boolean;
+    onopenapp?: () => void;
     agentName?: string;
     agentId?: string;
     threadId?: string;
@@ -1014,6 +1017,9 @@
       </button>
       <span class="flex items-baseline gap-2 min-w-0">
         <span class="text-sm font-semibold truncate">{agentName}</span>
+        {#if isApp}
+          <span class="text-[9px] uppercase tracking-wider px-1 py-px rounded bg-info/15 text-info font-semibold shrink-0">{$t('agent.appBadge')}</span>
+        {/if}
         {#if isolated}
           <!-- Separate conversations only mean something when memory is sealed
                between them; say so where the conversations are. -->
@@ -1070,6 +1076,15 @@
         {/if}
         {#if onsettings}
           {@render headerIcon(false, $t('settings.title'), onsettings, settingsIcon)}
+        {/if}
+        {#if isApp && onopenapp}
+          <button
+            class="btn btn-primary btn-xs max-md:btn-sm gap-1 ml-1 shrink-0"
+            onclick={onopenapp}
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+            {$t('agent.openApp')}
+          </button>
         {/if}
       </div>
     </div>

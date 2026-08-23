@@ -578,7 +578,9 @@
 
   async function selectAgent(id: string) {
     const a = allAgents.find(ag => ag.id === id);
-    if (a?.isApp) { goto(`/${id}/overview`); return; }
+    // Apps are employees too: they open a conversation like everyone else,
+    // with Open App available in the chat header. The old /overview landing
+    // was a dead end — no chat, and on a phone no way back.
     // Open the employee's most recent conversation, not a blank new chat.
     // /threads is the NEW-chat page: with the chat list drilled away, sending
     // a row click there stranded every employee who had exactly one
@@ -909,7 +911,11 @@
             </div>
             <div class="flex-1 min-w-0">
               <div class="flex items-baseline gap-2">
-                <span class="text-sm font-medium truncate flex-1 min-w-0">{a.name}</span>
+                <span class="text-sm font-medium truncate min-w-0">{a.name}</span>
+                {#if a.isApp}
+                  <span class="text-[9px] uppercase tracking-wider px-1 py-px rounded bg-info/15 text-info font-semibold shrink-0">{$t('agent.appBadge')}</span>
+                {/if}
+                <span class="flex-1"></span>
                 {#if latest}
                   <span class="text-xs text-base-content/45 shrink-0">{dayLabel(latest.updatedAtEpoch)}</span>
                 {/if}
