@@ -36,24 +36,9 @@ function webkitNodeDedupe() {
 	};
 }
 
-export default defineConfig({
-	plugins: [tailwindcss(), sveltekit(), webkitNodeDedupe()],
-	resolve: {
-		alias: {
-			'daisyui/theme': resolve('node_modules/daisyui/theme/index.js'),
-			daisyui: resolve('node_modules/daisyui/index.js'),
-		}
-	},
-	server: {
-		strictPort: true,
-		hmr: {
-			protocol: 'ws',
-			host: 'localhost',
-			// Follows the dev port so a second dev server (e.g. a worktree preview
-			// on 5174) doesn't point its HMR socket at the first one's.
-			port: Number(process.env.VITE_DEV_PORT ?? 5173),
-		},
-		proxy: {
+// Shared by dev and preview so `vite preview` can exercise the PRODUCTION
+// bundle against the same live backend (WebKit prod-bundle debugging).
+const backendProxy = {
 			'/api': {
 				target: 'http://localhost:27895',
 				changeOrigin: true
@@ -83,6 +68,28 @@ export default defineConfig({
 				ws: true,
 				changeOrigin: true
 			}
+};
+
+export default defineConfig({
+	plugins: [tailwindcss(), sveltekit(), webkitNodeDedupe()],
+	resolve: {
+		alias: {
+			'daisyui/theme': resolve('node_modules/daisyui/theme/index.js'),
+			daisyui: resolve('node_modules/daisyui/index.js'),
 		}
+	},
+	server: {
+		strictPort: true,
+		hmr: {
+			protocol: 'ws',
+			host: 'localhost',
+			// Follows the dev port so a second dev server (e.g. a worktree preview
+			// on 5174) doesn't point its HMR socket at the first one's.
+			port: Number(process.env.VITE_DEV_PORT ?? 5173),
+		},
+		proxy: backendProxy
+	},
+	preview: {
+		proxy: backendProxy
 	}
 });
