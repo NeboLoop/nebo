@@ -679,7 +679,7 @@ impl DynTool for LoopTool {
          - loop(resource: \"channel\", action: \"messages\", channel_id: \"...\", limit: 20) — Read channel messages\n\
          - loop(resource: \"channel\", action: \"members\", channel_id: \"...\") — List channel members\n\
          - loop(resource: \"topic\", action: \"subscribe\", topic: \"news\") / unsubscribe / status\n\
-         - loop(resource: \"workroom\", action: \"create\", name: \"Website launch\", mission: \"...\", agents: [\"Writer\", \"Reviewer\"]) — Open a mission room with coworkers. When a task needs several coworkers on one shared outcome, open a workroom and post the mission with mentions; mentioned coworkers respond in the room.\n\n\
+         - loop(resource: \"workroom\", action: \"create\", name: \"Website launch\", mission: \"...\", agents: [\"Writer\", \"Reviewer\"]) — Open a mission room with coworkers. `agents` is REQUIRED: a room takes at least one named coworker besides you. Every room is NEW — never reuse a name; an existing room's name is an error. After creating, post the mission with mentions; mentioned coworkers respond in the room.\n\n\
          Use loop for bot-to-bot communication and NeboAI infrastructure."
             .to_string()
     }
@@ -703,7 +703,7 @@ impl DynTool for LoopTool {
                 "agents": {
                     "type": "array",
                     "items": { "type": "string" },
-                    "description": "Coworker names to bring into the workroom (workroom create). The creating employee is always a member."
+                    "description": "REQUIRED for workroom create: coworker names to bring into the room — at least one besides yourself (you are always a member). A room with nobody to work with is refused."
                 },
                 "text": { "type": "string", "description": "Message text" },
                 "path": { "type": "string", "description": "Absolute path of a local file to share (for channel/dm share)" },
