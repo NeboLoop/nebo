@@ -288,6 +288,18 @@ impl PluginTool {
     /// `POST /codes` pathway, so there is still exactly one install path and
     /// the user approves by tapping, not by reading a code out of prose.
     /// Unattended runs (and a skipped card) fall back to the text listing.
+    /// The ONE connect-account card payload — used by the install→connect
+    /// chain in discover and by first-use auth in exec. Two producers of this
+    /// widget shape would drift (CODE_AUDITOR 8.1).
+    fn connect_account_widget(plugin: &str, agent_id: &str, label: &str) -> serde_json::Value {
+        serde_json::json!([{
+            "type": "connect_account",
+            "plugin": plugin,
+            "agentId": agent_id,
+            "label": label,
+        }])
+    }
+
     async fn handle_discover(&self, query: &str, ctx: &crate::ToolContext) -> ToolResult {
         let api = match crate::build_neboai_api(&self.db_store) {
             Ok(a) => a,
@@ -398,6 +410,49 @@ impl PluginTool {
                                 )
                                 .await;
                             if answer.as_deref() == Some("installed") {
+                                // ONE-CARD CHAIN: a plugin that declares an
+                                // account gets its connect step NOW, in the
+                                // same flow — install → connect → straight to
+                                // work, no model turn or "set it up later"
+                                // between. Auth-less plugins skip straight on.
+                                let auth_label = self
+                                    .plugin_store
+                                    .get_manifest(top_slug)
+                                    .and_then(|m| m.auth)
+                                    .map(|a| a.label)
+                                    .filter(|l| !l.is_empty());
+                                if let Some(label) = auth_label {
+                                    let agent_id =
+                                        types::keyparser::extract_agent_id(&ctx.session_key);
+                                    if !agent_id.is_empty() {
+                                        let connected = ctx
+                                            .ask_user(
+                                                &format!(
+                                                    "**{top_name}** is installed. Connect your \
+                                                     {label} on the card and I'll get straight \
+                                                     to work."
+                                                ),
+                                                Self::connect_account_widget(
+                                                    top_slug, &agent_id, &label,
+                                                ),
+                                            )
+                                            .await;
+                                        if connected.as_deref() == Some("connected") {
+                                            return ToolResult::ok(format!(
+                                                "{top_name} is installed and its account is \
+                                                 connected. Continue the task NOW via \
+                                                 plugin(resource: \"{top_slug}\", ...) — no \
+                                                 setup narration."
+                                            ));
+                                        }
+                                        return ToolResult::ok(format!(
+                                            "{top_name} is installed; the account was not \
+                                             connected (card skipped). The connect card \
+                                             re-appears on first use — continue, or ask what \
+                                             they'd like to do."
+                                        ));
+                                    }
+                                }
                                 return ToolResult::ok(format!(
                                     "{top_name} is installed. Use it via plugin(resource: \
                                      \"{top_slug}\", ...). If it needs an account, the connect \
@@ -1349,16 +1404,15 @@ impl PluginTool {
                         let answer = ctx
                             .ask_user(
                                 &format!(
-                                    "I need a {display_label} account connected to continue. \
-                                     Connect one on the card and I'll pick up right where I \
+                                    "I need your {display_label} connected to continue. \
+                                     Connect it on the card and I'll pick up right where I \
                                      left off."
                                 ),
-                                serde_json::json!([{
-                                    "type": "connect_account",
-                                    "plugin": pi.resource,
-                                    "agentId": agent_id,
-                                    "label": display_label,
-                                }]),
+                                Self::connect_account_widget(
+                                    &pi.resource,
+                                    agent_id,
+                                    &display_label,
+                                ),
                             )
                             .await;
                         if answer.as_deref() != Some("connected") {
