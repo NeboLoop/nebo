@@ -4714,13 +4714,21 @@ async fn handle_comm_slash_command(
                 tracing::info!(session_key = %session_key, "cancelled active run before /clear");
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             }
+            // /clear rotates like /new instead of DELETEing the transcript.
+            // "Clear" clears CONTEXT, never records: the old conversation
+            // stays in the chat list (that list is the recovery interface),
+            // which also keeps isolated employees' matters intact — the same
+            // records-are-sacred stance as run dismissal. Destruction remains
+            // an explicit act: delete-chat in the list, behind a confirm.
             match state
                 .runner
                 .sessions()
                 .resolve_session_id_by_key(session_key)
-                .and_then(|sid| state.runner.sessions().clear_current_messages(&sid))
+                .and_then(|sid| state.runner.sessions().reset(&sid))
             {
-                Ok(()) => "Conversation cleared.".to_string(),
+                Ok(_new_chat_id) => {
+                    "Context cleared — fresh start. The previous conversation is still in your chat list.".to_string()
+                }
                 Err(e) => format!("Failed to clear: {}", e),
             }
         }

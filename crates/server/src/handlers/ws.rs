@@ -1103,8 +1103,19 @@ async fn handle_builtin_slash(
                 .resolve_session_id_by_key(&session_key)
             {
                 Ok(sid) => {
-                    match state.runner.sessions().clear_current_messages(&sid) {
-                        Ok(()) => Some("Conversation cleared.".to_string()),
+                    // Rotate, don't delete — see the comm dispatch /clear arm.
+                    match state.runner.sessions().reset(&sid) {
+                        Ok(new_chat_id) => {
+                            state.hub.broadcast(
+                                "session_reset",
+                                serde_json::json!({
+                                    "session_id": session_key,
+                                    "success": true,
+                                    "newChatId": new_chat_id,
+                                }),
+                            );
+                            Some("Context cleared — fresh start. The previous conversation is still in your chat list.".to_string())
+                        }
                         Err(e) => Some(format!("Failed to clear: {}", e)),
                     }
                 }
