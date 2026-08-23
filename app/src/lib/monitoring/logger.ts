@@ -256,10 +256,12 @@ class ChildLogger {
 	}
 }
 
-// Create and export singleton logger instance
-// In production builds, suppress debug output; in dev, show everything
+// Create and export singleton logger instance.
+// Production floor is 'warn': info-level telemetry (WS handshakes, load
+// timings) is developer output and echoes payload internals — customers'
+// consoles get problems only. Dev shows everything.
 export const logger = new Logger({
-	minLevel: import.meta.env.DEV ? 'debug' : 'info'
+	minLevel: import.meta.env.DEV ? 'debug' : 'warn'
 });
 
 // Export Logger class for testing and custom instances

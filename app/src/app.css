@@ -128,6 +128,17 @@
   /* Elevated surface — pure white in light themes, same as base-100 in dark themes */
   --color-surface: var(--surface-elevated, #ffffff);
 
+  /* Shell widths. Every column in the app measures itself from these — don't
+     reintroduce arbitrary px values in individual layouts.
+     Layer order, so overlays stop colliding by accident:
+       30 drawer backdrop · 40 workspace drawer · 50 context menus
+       60 pane sheet (mobile work pane) · 65 workFull expand
+       70 shelf drawers/modals · 75 workflow builder (opens FROM the pane)
+       80 computer full window · 90 lightbox */
+  --spacing-rail: 280px;
+  --spacing-rail-collapsed: 48px;
+  --spacing-pane: 450px;
+
   --animate-blink: blink 1s step-end infinite;
   @keyframes blink {
     50% { opacity: 0; }
@@ -198,6 +209,32 @@
   *, *::before, *::after {
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+  }
+
+  /* Scroll handles earn their pixels: invisible until the pointer is over
+     the scroller — never a permanent gray bar beside every fixed-height
+     well. (Explicit .scrollbar-slim / .scrollbar-hide opt-outs still win.) */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: transparent transparent;
+  }
+  *:hover {
+    scrollbar-color: color-mix(in srgb, var(--color-base-content) 25%, transparent) transparent;
+  }
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+    background: transparent;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: transparent;
+    border-radius: 9999px;
+  }
+  *:hover::-webkit-scrollbar-thumb {
+    background: color-mix(in srgb, var(--color-base-content) 22%, transparent);
   }
 
   html {

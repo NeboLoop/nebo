@@ -1,7 +1,9 @@
 <script lang="ts">
   import { t } from 'svelte-i18n';
 
-  // Shared confirmation dialog. Stacks above ManageModal (z-[60] > z-50).
+  // Shared confirmation dialog. z-85 in the layer budget: above the shelf
+  // drawers (70), the builder (75) and the computer (80) — a confirmation
+  // must never open underneath the surface that asked for it.
   let {
     title,
     message,
@@ -21,7 +23,7 @@
 
 <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_noninteractive_element_interactions -->
 <div
-  class="fixed inset-0 z-[60] flex items-center justify-center bg-black/40"
+  class="fixed inset-0 z-[85] flex items-center justify-center bg-black/40"
   role="dialog"
   aria-modal="true"
   tabindex="-1"

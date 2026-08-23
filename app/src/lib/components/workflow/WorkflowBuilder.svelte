@@ -1,9 +1,10 @@
 <script lang="ts">
-	import BuilderCanvas from './BuilderCanvas.svelte';
+	import FlowChain from './FlowChain.svelte';
+	import { extractOpsBlock } from '$lib/utils/workflowOps';
+	import { createChatController } from '$lib/chat/controller.svelte';
 	import NodeConfigPanel from './NodeConfigPanel.svelte';
 	import NodeCatalog from './NodeCatalog.svelte';
 	import { storage } from '$lib/storage';
-	import BuilderChat from './BuilderChat.svelte';
 	import {
 		addActivityToWorkflow,
 		removeActivityFromWorkflow,
@@ -24,6 +25,7 @@
 		focusWorkflow = null,
 		onclose,
 		onsave,
+		onopensettings,
 	}: {
 		workflows: Record<string, WorkflowConfig>;
 		agentId: string;
@@ -32,6 +34,8 @@
 		focusWorkflow?: string | null;
 		onclose?: () => void;
 		onsave?: (workflows: Record<string, WorkflowConfig>) => void;
+		/** Open the employee's settings modal at a section (accounts/channels). */
+		onopensettings?: (section: string) => void;
 	} = $props();
 
 	// ── Mutable builder state (deep clone from read-only props)
@@ -219,6 +223,8 @@
 
 	// ── Selection
 	let selectedNodeId = $state<string | null>(null);
+	/** Reading a flow is the default; the canvas is for laying one out. */
+	let chainView = $state(true);
 	// The builder IS the editor — a View mode here was vestigial (read-only
 	// canvases live on the runs/schedule pages) and, because the Architect
 	// panel only rendered in edit mode, the View/Edit toggle looked identical
@@ -228,10 +234,132 @@
 	// ── Panels
 	// Architect is useful but wide — hidden by default, and the choice
 	// sticks per install (base-scoped storage; tunnel bots share an origin).
-	let chatOpen = $state(storage.get('wf_architect_open') === '1');
-	function toggleChat() {
-		chatOpen = !chatOpen;
-		storage.set('wf_architect_open', chatOpen ? '1' : '0');
+	// ── One-shot AI edit — the Architect, without the second chat. Each card
+	// carries a single input; the instruction goes to the same workflow-ops
+	// session the Architect used, the ops apply to the draft, and there is no
+	// conversation to manage. Session is created lazily and resynced when the
+	// draft has changed since the last send, so the model never edits ghosts.
+	let aiSessionKey = $state<string | null>(null);
+	let aiChat: ReturnType<typeof createChatController> | null = null;
+	let aiBusy = $state<string | null>(null); // activity id, or '__workflow__'
+	let aiNote = $state('');
+	let aiSyncedDraft = '';
+
+	// ── Connections — what this flow needs to be plugged into, and whether it
+	// is. Derived from the steps themselves (tool prefixes + the trigger's
+	// plugin), checked against this employee's connected accounts.
+	// Resource-model plugins (multiAccount, e.g. gws) connect under Accounts;
+	// identity-model ones live under Channels.
+	type FlowConnection = {
+		slug: string;
+		name: string;
+		connected: boolean;
+		section: 'accounts' | 'channels';
+	};
+	let connections = $state<FlowConnection[] | null>(null);
+
+	const referencedPlugins = $derived.by(() => {
+		const out = new Set<string>();
+		const wf = activeWorkflow;
+		if (!wf) return out;
+		for (const a of wf.activities ?? []) {
+			const prefix = a.tool?.split(':')[0]?.trim();
+			if (prefix) out.add(prefix);
+		}
+		if (wf.trigger?.plugin) out.add(wf.trigger.plugin);
+		return out;
+	});
+
+	$effect(() => {
+		const refs = [...referencedPlugins];
+		void activeWorkflowName;
+		if (refs.length === 0) {
+			connections = [];
+			return;
+		}
+		let cancelled = false;
+		(async () => {
+			try {
+				const api = await import('$lib/api/nebo');
+				const resp = (await api.listPlugins()) as {
+					plugins: { slug: string; name?: string; hasAuth?: boolean; multiAccount?: boolean }[];
+				};
+				const bySlug = new Map((resp.plugins ?? []).map((pl) => [pl.slug, pl]));
+				const found = refs.filter((r) => bySlug.has(r));
+				const out = await Promise.all(
+					found.map(async (slug): Promise<FlowConnection> => {
+						const pl = bySlug.get(slug)!;
+						if (!pl.hasAuth) return { slug, name: pl.name || slug, connected: true, section: 'accounts' };
+						if (!pl.multiAccount) return { slug, name: pl.name || slug, connected: true, section: 'channels' };
+						let connected = false;
+						try {
+							const r = (await api.listPluginAccounts(slug, agentId)) as { accounts?: unknown[] };
+							connected = (r.accounts ?? []).length > 0;
+						} catch {
+							/* no account list = not connected */
+						}
+						return { slug, name: pl.name || slug, connected, section: 'accounts' };
+					})
+				);
+				if (!cancelled) connections = out;
+			} catch {
+				if (!cancelled) connections = [];
+			}
+		})();
+		return () => {
+			cancelled = true;
+		};
+	});
+
+	async function aiEdit(targetId: string | null, instruction: string) {
+		const text = instruction.trim();
+		if (!text || aiBusy) return;
+		aiBusy = targetId ?? '__workflow__';
+		aiNote = '';
+		try {
+			const api = await import('$lib/api/nebo');
+			const snapshot = $state.snapshot(builderWorkflows);
+			const draft = JSON.stringify(snapshot);
+			if (!aiChat || draft !== aiSyncedDraft) {
+				const resp = await api.startWorkflowChat(agentId, {
+					workflows: snapshot,
+					selectedWorkflow: activeWorkflowName || '',
+					selectedActivity: targetId || '',
+					refresh: !!aiChat,
+				}) as { sessionKey: string; agentId: string };
+				aiSyncedDraft = draft;
+				if (!aiChat && resp.sessionKey) {
+					aiSessionKey = resp.sessionKey;
+					aiChat = createChatController({
+						agentId: resp.agentId || agentId,
+						sessionKey: resp.sessionKey,
+						channel: 'help:workflow',
+						onResponseComplete: handleAiReply,
+					});
+				}
+			}
+			const scope = targetId
+				? `In workflow "${activeWorkflowName}", edit step "${targetId}": `
+				: `In workflow "${activeWorkflowName}": `;
+			aiChat?.send(scope + text);
+		} catch (e) {
+			aiNote = e instanceof Error ? e.message : String(e);
+			aiBusy = null;
+		}
+	}
+
+	function handleAiReply(content: string) {
+		const block = extractOpsBlock(content);
+		if (block && block.ops.length) {
+			const res = applyArchitectOps(block.ops);
+			aiNote = res.applied.length
+				? res.applied.join(' · ')
+				: res.skipped.map((x) => x.reason).join(' · ');
+		} else {
+			// No ops — the model answered in prose; show the gist.
+			aiNote = content.replace(/\s+/g, ' ').slice(0, 160);
+		}
+		aiBusy = null;
 	}
 	let configOpen = $state(true);
 	let catalogOpen = $state(false);
@@ -241,7 +369,6 @@
 	 *  splices THAT edge rather than the node's first outgoing edge. */
 	let catalogInsertBeforeTarget = $state<string | null>(null);
 	/** Bumped by Tidy Up — tells the canvas to drop manual position overrides. */
-	let layoutEpoch = $state(0);
 
 	// ── Confirm modal
 	let confirmModal = $state<{
@@ -407,50 +534,6 @@
 		confirmModal = null;
 	}
 
-	function handleDuplicateNode(nodeId: string) {
-		if (nodeId === '__trigger__' || nodeId === '__emit__') return;
-
-		updateActiveWorkflow((wf) => {
-			const oldActivities = wf.activities || [];
-			const newActivities = duplicateActivityInWorkflow(oldActivities, nodeId).map(a => ({ ...a, type: a.type || 'custom' }));
-			wf.activities = newActivities;
-
-			const origIdx = newActivities.findIndex((a: WorkflowActivity) => a.id === nodeId);
-			if (origIdx >= 0 && origIdx + 1 < newActivities.length) {
-				const dupeId = newActivities[origIdx + 1].id;
-
-				if (wf.connections) {
-					const dupeType = newActivities[origIdx + 1].type || 'custom';
-					const out = wf.connections.find((c: WorkflowConnection) => c.from === nodeId);
-					if (out) {
-						// Splice the dupe into the first outgoing edge, keeping
-						// its branch label on both halves where label
-						// discipline requires it (branching nodes must label
-						// their outgoing edges).
-						const target = out.to;
-						const label = out.label;
-						const idx = wf.connections.indexOf(out);
-						wf.connections.splice(idx, 1, { from: nodeId, to: dupeId, ...(label ? { label } : {}) });
-						wf.connections.push({
-							from: dupeId,
-							to: target,
-							...(isBranchingType(dupeType) && label ? { label } : {}),
-						});
-					} else {
-						const origType = newActivities[origIdx].type || 'custom';
-						const firstLabel = isBranchingType(origType)
-							? getActivityType(origType).branchLabels?.[0]
-							: undefined;
-						wf.connections.push({ from: nodeId, to: dupeId, ...(firstLabel ? { label: firstLabel } : {}) });
-					}
-				}
-
-				selectedNodeId = dupeId;
-			}
-			return wf;
-		});
-	}
-
 	function handleUpdateActivity(activityId: string, field: keyof WorkflowActivity, value: unknown) {
 		updateActiveWorkflow((wf) => {
 			const act = wf.activities?.find((a: WorkflowActivity) => a.id === activityId);
@@ -524,34 +607,6 @@
 		catalogOpen = true;
 	}
 
-	function handleCreateConnection(fromId: string, toId: string) {
-		// Direction is engine-enforced: nothing enters the trigger, nothing
-		// leaves the emit bookend, and self-loops are meaningless.
-		if (toId === '__trigger__' || fromId === '__emit__' || fromId === toId) return;
-		updateActiveWorkflow((wf) => {
-			if (!wf.connections) {
-				wf.connections = generateLinearConnections(wf.activities || [], wf.emit);
-			}
-			const exists = wf.connections.some((c: WorkflowConnection) => c.from === fromId && c.to === toId);
-			if (!exists) {
-				wf.connections = [...wf.connections, { from: fromId, to: toId }];
-			}
-			return wf;
-		});
-	}
-
-	function handleRemoveConnection(fromId: string, toId: string) {
-		updateActiveWorkflow((wf) => {
-			if (!wf.connections) return wf;
-			wf.connections = removeConnection(wf.connections, fromId, toId);
-			return wf;
-		});
-	}
-
-	function handleDropNode(item: Record<string, unknown>, afterNodeId: string | null) {
-		handleAddNode(item, afterNodeId);
-	}
-
 	function handleNewWorkflow() {
 		const name = `workflow-${Object.keys(builderWorkflows).length + 1}`;
 		const newWf = {
@@ -564,11 +619,6 @@
 		pushUndoSnapshot();
 		activeWorkflowName = name;
 		selectedNodeId = null;
-	}
-
-	function handleTidyUp() {
-		// Drop manual node positions — the canvas re-runs dagre layout.
-		layoutEpoch++;
 	}
 
 	// ── Keyboard shortcuts
@@ -596,43 +646,12 @@
 <svelte:window onkeydown={handleKeyboard} />
 
 <div class="relative flex h-full w-full overflow-hidden">
-	<!-- Left panel: AI Architect Chat. On small screens it overlays the
-	     canvas as a full drawer instead of squeezing it into a sliver. -->
-	{#if mode === 'edit' && chatOpen}
-		<div class="w-[320px] shrink-0 border-r border-base-content/10 flex flex-col overflow-hidden max-md:absolute max-md:inset-0 max-md:z-20 max-md:w-full max-md:border-r-0 max-md:bg-base-100">
-			<div class="md:hidden flex items-center justify-between px-3 py-2 border-b border-base-content/10 shrink-0">
-				<span class="text-sm font-medium">Architect</span>
-				<button class="btn btn-sm btn-ghost btn-square" aria-label="Close Architect" onclick={toggleChat}>
-					<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-				</button>
-			</div>
-			<BuilderChat
-				{agentId}
-				workflows={builderWorkflows}
-				selectedWorkflowName={activeWorkflowName}
-				selectedActivityId={selectedNodeId}
-				onops={applyArchitectOps}
-			/>
-		</div>
-	{/if}
 
 	<!-- Center: Canvas + Toolbar -->
 	<div class="flex-1 min-w-0 min-h-0 flex flex-col overflow-hidden">
 		<!-- Toolbar -->
 		<div class="flex items-center gap-2 px-3 py-2 border-b border-base-content/10 shrink-0 bg-base-100 max-md:flex-wrap">
 			{#if mode === 'edit'}
-				<!-- Chat toggle -->
-				<button
-					class="btn btn-sm btn-ghost gap-1.5 {chatOpen ? 'btn-active' : ''}"
-					title="{chatOpen ? 'Hide' : 'Show'} Architect chat"
-					onclick={toggleChat}
-				>
-					<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m3 21 1.9-5.7a8.5 8.5 0 1 1 3.8 3.8z"/></svg>
-					<span class="text-xs">Architect</span>
-				</button>
-
-				<div class="w-px h-5 bg-base-content/10"></div>
-
 				<!-- Undo -->
 				<button class="btn btn-sm btn-ghost btn-square" title="Undo (Cmd+Z)" disabled={!canUndo} onclick={undo}>
 					<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
@@ -641,8 +660,6 @@
 				<button class="btn btn-sm btn-ghost btn-square" title="Redo (Cmd+Shift+Z)" disabled={!canRedo} onclick={redo}>
 					<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.13-9.36L23 10"/></svg>
 				</button>
-
-				<div class="w-px h-5 bg-base-content/10"></div>
 
 				<!-- Add node -->
 				<button
@@ -691,13 +708,13 @@
 			<div class="flex items-center gap-0.5 px-2 py-1 border-b border-base-content/10 bg-base-200/50 shrink-0 overflow-x-auto">
 				{#each workflowNames as wfName}
 					<button
-						class="px-3 py-1 text-xs font-medium rounded-md cursor-pointer border-none transition-colors shrink-0
+						class="px-3 py-1 max-md:py-2.5 max-md:text-sm text-xs font-medium rounded-md cursor-pointer border-none transition-colors shrink-0
 							{wfName === activeWorkflowName ? 'bg-base-100 text-base-content shadow-sm' : 'bg-transparent text-base-content/50 hover:text-base-content/70 hover:bg-base-100/50'}"
 						onclick={() => { activeWorkflowName = wfName; selectedNodeId = null; }}
 					>{wfName}</button>
 				{/each}
 				<button
-					class="px-2 py-1 text-xs text-base-content/40 hover:text-base-content/70 cursor-pointer border-none bg-transparent rounded-md hover:bg-base-100/50 transition-colors shrink-0"
+					class="px-2 py-1 max-md:px-3 max-md:py-2.5 max-md:text-base text-xs text-base-content/40 hover:text-base-content/70 cursor-pointer border-none bg-transparent rounded-md hover:bg-base-100/50 transition-colors shrink-0"
 					onclick={handleNewWorkflow}
 					title="New workflow"
 				>+</button>
@@ -707,22 +724,21 @@
 		<!-- Canvas -->
 		<div class="flex-1 min-h-0 relative">
 			{#if activeWorkflow}
-				<BuilderCanvas
-					workflow={activeWorkflow}
-					workflowName={activeWorkflowName}
-					{agentId}
-					{mode}
-					{selectedNodeId}
-					{layoutEpoch}
-					ontidy={handleTidyUp}
-					onselect={handleSelectNode}
-					onopenCatalog={handleOpenCatalog}
-					onremove={handleConfirmRemoveNode}
-					onduplicate={handleDuplicateNode}
-					oncreateConnection={handleCreateConnection}
-					onremoveConnection={handleRemoveConnection}
-					ondropNode={handleDropNode}
-				/>
+				<div class="h-full overflow-y-auto">
+					<FlowChain
+						workflow={activeWorkflow}
+						selectedId={selectedNodeId}
+						editable={mode === 'edit'}
+						{aiBusy}
+						{aiNote}
+						{connections}
+						onselect={handleSelectNode}
+						onupdate={handleUpdateActivity}
+						onaiedit={aiEdit}
+						onaddstep={(afterId) => handleOpenCatalog(afterId)}
+						onconnect={(section) => onopensettings?.(section)}
+					/>
+				</div>
 			{:else}
 				<div class="flex h-full items-center justify-center flex-col gap-3">
 					<div class="text-3xl text-base-content/20">+</div>
@@ -768,6 +784,7 @@
 			onremove={(nodeId) => handleConfirmRemoveNode(nodeId)}
 			onremoveWorkflow={() => handleConfirmRemoveWorkflow()}
 			onclose={() => { selectedNodeId = null; }}
+			ondismiss={() => { selectedNodeId = null; configOpen = false; }}
 			onselectActivity={(id) => { selectedNodeId = id || null; }}
 		/>
 	{/if}

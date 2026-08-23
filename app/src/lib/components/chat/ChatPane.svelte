@@ -1,5 +1,6 @@
 <script lang="ts">
   import { t } from 'svelte-i18n';
+  import { devMode } from '$lib/stores/devmode.js';
   import ChatComposer from './ChatComposer.svelte';
   import WorkViewer from './WorkViewer.svelte';
   import DesktopView from './DesktopView.svelte';
@@ -13,10 +14,13 @@
   import { addToast } from '$lib/stores/toast';
   import { parseMarkdown } from '$lib/markdown';
   import FileText from 'lucide-svelte/icons/file-text';
+  import MessageSquareLock from 'lucide-svelte/icons/message-square-lock';
+  import { page } from '$app/stores';
   import Code from 'lucide-svelte/icons/code';
   import Table from 'lucide-svelte/icons/table';
   import Presentation from 'lucide-svelte/icons/presentation';
   import type { UploadedAttachment } from '$lib/types/attachment';
+  import type { Snippet } from 'svelte';
   import { getAttachmentType, formatFileSize, attachmentMediaUrl } from '$lib/types/attachment';
   import { NEAR_BOTTOM_PX, distanceFromBottom } from '$lib/chat/scroll';
   import { threadKey } from '$lib/chat/sessionKey';
@@ -73,8 +77,23 @@
 
   type AgentInfo = { id: string; name: string; color: string; initial: string; role: string; status: string; isApp?: boolean };
 
-  let { messages = [], agentName = 'Agent', agentId = '', threadId = '', sessionId = '', headerTitle = '', headerRight = '', placeholder = '', emptyIcon = '', emptyTitle = '', emptyDesc = '', allAgents = [], onteachsent, activityStatus = '', tokenUsage = null, quotaWarning = '', chatError = '', onsend, onstop, onedit, onredo, onasksubmit, onrestoreversion, ondismisswarning, ondismisserror, onloadmore, isLoading = false, isLoadingMore = false, hasMore = false, allowAttachments = true }: {
+  let { messages = [], agentName = 'Agent', agentId = '', threadId = '', sessionId = '', headerTitle = '', headerRight = '', placeholder = '', emptyIcon = '', emptyTitle = '', emptyDesc = '', allAgents = [], onteachsent, activityStatus = '', tokenUsage = null, quotaWarning = '', chatError = '', onsend, onstop, onedit, onredo, onasksubmit, onrestoreversion, ondismisswarning, ondismisserror, onloadmore, isLoading = false, isLoadingMore = false, hasMore = false, allowAttachments = true, flowsPane, onopenruns, onsettings, isolated = false, isApp = false, onopenapp, onback }: {
     messages?: Message[];
+    /** Employee-scoped views for the work pane. Omitted on chats with no
+     *  employee behind them (channel setup help, the embed), and the matching
+     *  header icon then doesn't render. */
+    flowsPane?: Snippet;
+    /** Runs open as a modal over the workspace, not in the pane. */
+    onopenruns?: () => void;
+    onsettings?: () => void;
+    /** memory.context_isolated — this employee's conversations are sealed. */
+    isolated?: boolean;
+    /** This employee is an app: badge the header and offer Open App. */
+    isApp?: boolean;
+    onopenapp?: () => void;
+    /** Mobile back-to-list. A real navigation (goto) so the URL changes and
+     *  the browser back button stays truthful; rendered only when provided. */
+    onback?: () => void;
     agentName?: string;
     agentId?: string;
     threadId?: string;
@@ -110,7 +129,11 @@
   let composerRef = $state<{ focus: () => void; focusAndInsert: (char: string) => void; addFiles: (files: File[]) => void } | null>(null);
   let creationsOpen = $state(false);
   // The bot's computer takes over the work panel while open.
-  let desktopOpen = $state(false);
+  type PaneView = 'work' | 'flows';
+  // Flows and runs belong to an employee, not to a chat, so they arrive as
+  // props from the agent route. Surfaces without an employee (the channels
+  // help chat, the embed) pass nothing and the icons don't render.
+  let paneView = $state<PaneView>('work');
 
   // Teach-a-task: record a demonstration on the bot's computer, then hand
   // the artifacts to the agent to study (the normal run does the learning —
@@ -129,8 +152,7 @@
       teachError = e instanceof Error ? e.message : String(e);
       return;
     }
-    desktopOpen = true;
-    creationsOpen = true;
+    computerFull = true;
     teachActive = true;
     teachSeconds = 0;
     teachTimer = setInterval(() => (teachSeconds += 1), 1000);
@@ -334,11 +356,12 @@
   }
 
   function openArtifact(id: string) {
-    desktopOpen = false;
+    // Open first: openPane clears a selection left over from another thread,
+    // so setting the new id afterwards can't be undone by it.
+    openPane('work');
     activeArtifactId = id;
     activeVersion = null; // follow latest; the version dropdown pins an older one
     viewSource = false;
-    openWorkPanel();
     const a = artifacts.find(x => x.documentId === id);
     if (a) creationsTitle = a.title;
     // WorkViewer owns fetching + rendering (text/binary/media per format).
@@ -384,22 +407,43 @@
     return () => ro.disconnect();
   });
 
-  // Open the panel at HALF the chat area (Claude-style) unless the user has
-  // dragged it to their own width this session; always resizable after.
-  // Opening with nothing selected shows the artifact list in the panel —
-  // never auto-pick a file the user didn't ask for.
-  function openWorkPanel() {
+  // The ONE way the pane opens. Every caller goes through here — Work, Computer
+  // and teach-a-task all used to set the flags themselves, so two of the three
+  // opened at whatever stale width was left over instead of sizing themselves.
+  // Default is half the chat area, unless the user has dragged it to their own
+  // width this session; always resizable after.
+  // containerEl wraps the chat column AND the pane, so its width doesn't change
+  // when the pane opens — half of it is half either way.
+  function openPane(view: PaneView) {
+    paneView = view;
     creationsOpen = true;
-    if (activeArtifactId && !documentVersions.has(activeArtifactId)) {
+    // Opening Work with nothing selected shows the artifact list — never
+    // auto-pick a file the user didn't ask for.
+    if (view === 'work' && activeArtifactId && !documentVersions.has(activeArtifactId)) {
       activeArtifactId = null; // stale selection from another thread
       activeVersion = null;
     }
     if (!userResized && containerEl) {
       creationsFraction = 0.5;
-      const w = containerEl.getBoundingClientRect().width;
-      creationsWidth = clampPanelWidth(Math.max(360, w * creationsFraction));
+      creationsWidth = clampPanelWidth(containerEl.getBoundingClientRect().width * creationsFraction);
     }
   }
+
+  function closePane() {
+    creationsOpen = false;
+    workFull = false;
+  }
+
+  /** Toggle a pane view from the header: same view closes, different switches. */
+  function togglePane(view: PaneView) {
+    if (creationsOpen && paneView === view) closePane();
+    else openPane(view);
+  }
+
+  // The computer takes the whole window rather than a 450px rail. It is the one
+  // surface you drive rather than refer to, and a remote desktop scaled into a
+  // side panel is unusable.
+  let computerFull = $state(false);
 
   function startResize(e: MouseEvent) {
     e.preventDefault();
@@ -509,6 +553,36 @@
       : null;
   }
 
+  // Coworker sends are events the owner reads ("Messaged Search Analyst"),
+  // never plumbing inside the collapsed tool group.
+  interface CoworkerEventPayload {
+    kind: 'coworker_message';
+    to?: string;
+    toAgentId?: string;
+    threadKey?: string;
+    text?: string;
+    reply?: string | null;
+    [k: string]: unknown;
+  }
+  function coworkerEvents(tools: ToolMsg[] | undefined): CoworkerEventPayload[] {
+    return (tools ?? [])
+      .flatMap((t) => (t.payload?.kind === 'coworker_message' ? [t.payload as CoworkerEventPayload] : []));
+  }
+  function nonCoworkerTools(tools: ToolMsg[] | undefined): ToolMsg[] {
+    return (tools ?? []).filter((t) => t.payload?.kind !== 'coworker_message');
+  }
+  // The event chip deep-links to the view-only employee↔employee transcript
+  // (?cw=<threadKey> — URL state, same as every other shell surface). The
+  // sender's display name rides as ?cwf= because the thread key's context
+  // segment is the MATTER id for isolated senders — unparseable to a name.
+  // The chip lives in the sender's own chat, so agentName IS the sender.
+  function cwHref(key: string): string {
+    const url = new URL($page.url);
+    url.searchParams.set('cw', key);
+    if (agentName) url.searchParams.set('cwf', agentName);
+    return url.pathname + url.search;
+  }
+
   function startEdit(idx: number, content: string) {
     editingIdx = idx;
     editText = content;
@@ -573,11 +647,11 @@
 
   export function showCreations(title = '') {
     creationsTitle = title;
-    openWorkPanel();
+    openPane('work');
   }
 
   export function hideCreations() {
-    creationsOpen = false;
+    closePane();
   }
 
   const hasMessages = $derived(messages.length > 0);
@@ -962,32 +1036,127 @@
     </div>
   {/if}
 
+        {#snippet headerIcon(active: boolean, label: string, onclick: () => void, icon: Snippet)}
+          <button
+            class="w-7 h-7 max-md:w-10 max-md:h-10 rounded-md flex items-center justify-center cursor-pointer bg-transparent border-none transition-colors {active
+              ? 'text-primary bg-primary/10'
+              : 'text-base-content/60 hover:text-base-content hover:bg-base-200'}"
+            {onclick}
+            title={label}
+            aria-label={label}
+          >{@render icon()}</button>
+        {/snippet}
+        {#snippet computerIcon()}
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+        {/snippet}
+        {#snippet flowsIcon()}
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="6" height="6" rx="1.5"/><rect x="15" y="15" width="6" height="6" rx="1.5"/><path d="M9 6h4a2 2 0 0 1 2 2v10"/></svg>
+        {/snippet}
+        {#snippet runsIcon()}
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"/><polyline points="3 3 3 8 8 8"/><polyline points="12 8 12 12 15 14"/></svg>
+        {/snippet}
+        {#snippet settingsIcon()}
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        {/snippet}
+        {#snippet workIcon()}
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/><path d="M14 9l3 3-3 3"/></svg>
+        {/snippet}
+
   <!-- Header -->
   {#if headerTitle}
     <div class="h-11 px-[18px] border-b border-base-content/10 flex items-center gap-2 shrink-0">
-      <span class="text-sm font-semibold truncate min-w-0">{headerTitle}</span>
+      <!-- Below md the workspace list is an off-canvas drawer, and this is its
+           only opener — the top header that used to carry the hamburger is gone. -->
+      <!-- Mobile is list-first: this is "back to your team", so it reads as a
+           back chevron, not a hamburger. -->
+      {#if onback}
       <button
-        class="text-sm ml-auto shrink-0 cursor-pointer bg-transparent border-none text-base-content/70 hover:text-base-content transition-colors flex items-center"
-        onclick={() => { if (desktopOpen && creationsOpen) { desktopOpen = false; creationsOpen = false; } else { desktopOpen = true; creationsOpen = true; } }}
-        title={$t('chat.openComputer')}
+        class="md:hidden w-10 h-10 -ml-2.5 rounded-md flex items-center justify-center border-none bg-transparent cursor-pointer text-base-content/70 shrink-0"
+        aria-label="Employees"
+        onclick={onback}
       >
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="{desktopOpen && creationsOpen ? 'text-primary' : ''}">
-          <rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>
-        </svg>
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
       </button>
-      {#if headerRight}
-        <button
-          data-tour="work"
-          class="text-sm shrink-0 whitespace-nowrap cursor-pointer bg-transparent border-none text-base-content/70 hover:text-base-content transition-colors flex items-center gap-1.5"
-          onclick={() => { if (creationsOpen && !desktopOpen) { creationsOpen = false; } else { desktopOpen = false; openWorkPanel(); } }}
-          title={creationsOpen ? $t('chat.closeWorkPanel') : $t('chat.openWorkPanel')}
-        >
-          {headerRight}
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="{creationsOpen ? 'text-primary' : ''}">
-            <rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/><path d="M14 9l3 3-3 3"/>
-          </svg>
-        </button>
       {/if}
+      <span class="flex items-baseline gap-2 min-w-0">
+        <span class="text-sm font-semibold truncate">{agentName}</span>
+        {#if isApp}
+          <span class="text-[9px] uppercase tracking-wider px-1 py-px rounded bg-info/15 text-info font-semibold shrink-0">{$t('agent.appBadge')}</span>
+        {/if}
+        {#if isolated}
+          <!-- Separate conversations only mean something when memory is sealed
+               between them. MessageSquareLock = "this conversation is sealed";
+               the plain Lock stays on the Settings toggle — that distinction
+               is deliberate. Words live in the tooltip. -->
+          <span
+            class="self-center text-warning/80 shrink-0 tooltip tooltip-bottom"
+            data-tip={$t('agentIsolation.isolated')}
+          >
+            <MessageSquareLock class="w-3 h-3" />
+          </span>
+        {/if}
+        {#if headerTitle && headerTitle !== agentName}
+          <span class="text-sm text-base-content/50 truncate">{headerTitle}</span>
+        {/if}
+      </span>
+      <div class="ml-auto max-lg:hidden flex items-center gap-0.5 shrink-0">
+
+
+
+        {@render headerIcon(computerFull, $t('chat.botComputer'), () => (computerFull = true), computerIcon)}
+        {#if flowsPane}
+          {@render headerIcon(creationsOpen && paneView === 'flows', $t('nav.flows'), () => togglePane('flows'), flowsIcon)}
+        {/if}
+        {#if onopenruns}
+          {@render headerIcon(false, $t('nav.runs'), onopenruns, runsIcon)}
+        {/if}
+        {#if headerRight}
+          {@render headerIcon(creationsOpen && paneView === 'work', $t('chat.work'), () => togglePane('work'), workIcon)}
+        {/if}
+        {#if onsettings}
+          {@render headerIcon(false, $t('settings.title'), onsettings, settingsIcon)}
+        {/if}
+        {#if isApp && onopenapp}
+          <button
+            class="btn btn-primary btn-xs max-md:btn-sm gap-1 ml-1 shrink-0"
+            onclick={onopenapp}
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+            {$t('agent.openApp')}
+          </button>
+        {/if}
+      </div>
+
+      <!-- Narrow widths: the icon row collapses into one labeled menu — five
+           icons ate the title's room anywhere under lg, not just on phones. -->
+      <div class="lg:hidden ml-auto shrink-0 flex items-center gap-1">
+        {#if isApp && onopenapp}
+          <button class="btn btn-primary btn-sm gap-1" onclick={onopenapp}>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+            {$t('agent.openApp')}
+          </button>
+        {/if}
+        <div class="dropdown dropdown-end">
+          <div tabindex="0" role="button" aria-label={$t('common.more')} class="w-10 h-10 rounded-md flex items-center justify-center cursor-pointer text-base-content/60 hover:text-base-content hover:bg-base-200">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></svg>
+          </div>
+          <ul class="dropdown-content menu z-[55] mt-1 w-48 rounded-box border border-base-300 bg-base-100 p-1.5 shadow-lg">
+            <li><button onclick={() => { (document.activeElement as HTMLElement)?.blur(); computerFull = true; }}>{@render computerIcon()}{$t('chat.botComputer')}</button></li>
+            {#if flowsPane}
+              <li><button onclick={() => { (document.activeElement as HTMLElement)?.blur(); togglePane('flows'); }}>{@render flowsIcon()}{$t('nav.flows')}</button></li>
+            {/if}
+            {#if onopenruns}
+              <li><button onclick={() => { (document.activeElement as HTMLElement)?.blur(); onopenruns?.(); }}>{@render runsIcon()}{$t('nav.runs')}</button></li>
+            {/if}
+            {#if headerRight}
+              <li><button onclick={() => { (document.activeElement as HTMLElement)?.blur(); togglePane('work'); }}>{@render workIcon()}{$t('chat.work')}</button></li>
+            {/if}
+            {#if onsettings}
+              <li><button onclick={() => { (document.activeElement as HTMLElement)?.blur(); onsettings?.(); }}>{@render settingsIcon()}{$t('settings.title')}</button></li>
+            {/if}
+          </ul>
+        </div>
+      </div>
     </div>
   {/if}
 
@@ -1070,7 +1239,7 @@
                 <div class="flex-1 min-w-0 pb-3">
                   <div class="flex items-baseline gap-2 text-xs">
                     <span class="truncate {tool.status === 'running' ? 'text-base-content/70' : ''}">{tool.status === 'running' ? (tool.label ?? tool.name) : stepOutcome(tool)}{#if tool.status === 'running' && tool.statusText}<span class="text-base-content/50 ml-1">{tool.statusText}</span>{/if}</span>
-                    <span class="font-mono text-base-content/40 shrink-0">{strapSig(tool)}</span>
+                    {#if $devMode}<span class="font-mono text-base-content/40 shrink-0">{strapSig(tool)}</span>{/if}
                     {#if tool.durationMs}<span class="text-base-content/40 shrink-0">{fmtDuration(tool.durationMs)}</span>{/if}
                   </div>
                   {#if researchState(tool)}
@@ -1329,10 +1498,26 @@
           <div class="text-sm leading-relaxed prose prose-sm max-w-none" onclick={handleWorkMentionClick}>
             {@html linkWorkMentions(renderMarkdown(msg.content), (msg as any).workItems)}
           </div>
-          <!-- Tools this reply ran, on the message itself — never a detached sibling. -->
-          {#if msg.tools?.length}
-            {@render toolTimeline(msg.tools, msg.id ?? `m${origIdx}`)}
+          <!-- Tools this reply ran, on the message itself — never a detached sibling.
+               Coworker sends are pulled OUT of the group and shown as events.
+               While the run is LIVE the work line stays up the whole time —
+               working must ALWAYS be visible, with no flicker between calls.
+               Only after the run ends does the telemetry line become developer
+               furniture, shown in dev mode (Settings → Developer). -->
+          {#if nonCoworkerTools(msg.tools).length && ($devMode || nonCoworkerTools(msg.tools).some((t) => t.status === 'running') || (isLoading && origIdx === groupedMessages.length - 1))}
+            {@render toolTimeline(nonCoworkerTools(msg.tools), msg.id ?? `m${origIdx}`)}
           {/if}
+          {#each coworkerEvents(msg.tools) as ev, evIdx (evIdx)}
+            <a
+              href={ev.threadKey ? cwHref(ev.threadKey) : undefined}
+              class="flex items-center justify-center gap-1.5 my-2.5 text-xs text-base-content/60 no-underline {ev.threadKey ? 'hover:text-base-content transition-colors' : ''}"
+              title={ev.threadKey ? $t('coworkerThread.open') : undefined}
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="shrink-0"><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4Z"/></svg>
+              <span>{$t('chat.messagedCoworker')}</span>
+              <span class="font-medium text-base-content/80">{ev.to}</span>
+            </a>
+          {/each}
           {#if msg.attachments?.length}
             <div class="flex flex-wrap gap-2 mt-2">
               {#each msg.attachments as att}
@@ -1485,8 +1670,8 @@
     </div>
   {/if}
 
-  <!-- Composer -->
-  <div class="max-w-3xl mx-auto w-full shrink-0">
+  <!-- Composer — sits on the home-indicator edge on phones. -->
+  <div class="max-w-3xl mx-auto w-full shrink-0 max-md:pb-[env(safe-area-inset-bottom)]">
     <ChatComposer
       {agentName}
       {agentId}
@@ -1505,6 +1690,18 @@
 </div>
 
 <!-- Resize handle + Creations panel -->
+{#if computerFull}
+  <!-- The computer takes the window. A remote desktop scaled into a side rail
+       is unusable, and this is the one surface you drive rather than refer to. -->
+  <div class="fixed inset-0 z-[80] bg-neutral flex flex-col">
+    <DesktopView
+      onclose={() => (computerFull = false)}
+      onrecord={() => (teachActive ? stopTeach() : startTeach())}
+      recording={teachActive}
+    />
+  </div>
+{/if}
+
 {#if creationsOpen}
   <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
   <div
@@ -1527,7 +1724,7 @@
   </div>
   <!-- Creations panel. pointer-events-none while dragging the divider: the
        viewer iframe otherwise swallows mousemove and the resize stalls. -->
-  <div class="flex flex-col bg-base-100 min-h-0 min-w-0 overflow-hidden shrink-0 border-l border-base-300 max-md:fixed max-md:inset-0 max-md:z-[70] max-md:!w-full max-md:border-l-0 {workFull ? 'fixed inset-0 z-[70] !w-full border-l-0' : ''} {resizing ? 'pointer-events-none' : ''}" style="width: {creationsWidth}px">
+  <div class="flex flex-col bg-base-100 min-h-0 min-w-0 overflow-hidden shrink-0 border-l border-base-300 max-md:fixed max-md:inset-0 max-md:z-[60] max-md:!w-full max-md:border-l-0 {workFull ? 'fixed inset-0 z-[65] !w-full border-l-0' : ''} {resizing ? 'pointer-events-none' : ''}" style="width: {creationsWidth}px">
     <!-- Creations header -->
     <div class="h-11 px-4 border-b border-base-content/10 flex items-center gap-2 shrink-0">
       {#if activeArtifact}
@@ -1585,7 +1782,9 @@
           </ul>
         </div>
       {:else}
-        <span class="text-sm font-semibold flex-1 truncate">{creationsTitle || $t('chat.work')}</span>
+        <span class="text-sm font-semibold flex-1 truncate">
+          {paneView === 'flows' ? $t('nav.flows') : creationsTitle || $t('chat.work')}
+        </span>
       {/if}
       {#if activeArtifact?.url && (activeArtifact.codeUrl || activeArtifact.url.endsWith('.html') || activeArtifact.url.endsWith('.md') || activeArtifact.url.endsWith('.txt'))}
         <div class="flex items-center rounded-md bg-base-200 p-0.5 shrink-0">
@@ -1646,7 +1845,7 @@
       </button>
       <button
         class="w-7 h-7 rounded-md flex items-center justify-center hover:bg-base-200 cursor-pointer bg-transparent border-none text-base-content/70 hover:text-base-content transition-colors shrink-0"
-        onclick={() => { creationsOpen = false; workFull = false; desktopOpen = false; }}
+        onclick={closePane}
         title={$t('chat.closeWorkPanel')}
       >
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
@@ -1654,8 +1853,8 @@
     </div>
     <!-- Creations content — one renderer for every format, routed by extension -->
     <div class="flex-1 overflow-y-auto">
-      {#if desktopOpen}
-        <DesktopView onclose={() => { desktopOpen = false; creationsOpen = false; workFull = false; }} onrecord={() => (teachActive ? stopTeach() : startTeach())} recording={teachActive} />
+      {#if paneView === 'flows'}
+        {#if flowsPane}{@render flowsPane()}{/if}
       {:else if activeArtifact?.url}
         <!-- Key on documentId:version so a new version re-mounts the viewer in
              place (and the version-specific URL also defeats the browser cache). -->
@@ -1705,7 +1904,7 @@
 {#if lightboxUrl}
   <button
     type="button"
-    class="fixed inset-0 z-[80] flex items-center justify-center bg-black/80 p-6 border-0 cursor-zoom-out"
+    class="fixed inset-0 z-[90] flex items-center justify-center bg-black/80 p-6 border-0 cursor-zoom-out"
     onclick={() => (lightboxUrl = null)}
     aria-label={$t('chat.closeImage')}
   >

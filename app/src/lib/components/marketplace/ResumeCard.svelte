@@ -2,7 +2,6 @@
 	import Star from 'lucide-svelte/icons/star';
 	import ArrowRight from 'lucide-svelte/icons/arrow-right';
 	import Check from 'lucide-svelte/icons/check';
-	import { goto } from '$lib/nav';
 	import { type AppItem, itemHref } from '$lib/types/marketplace';
 
 	let {
@@ -106,10 +105,12 @@
 			>
 		{/if}
 		<div class="flex gap-2.5 shrink-0">
-			<button
-				onclick={() => goto(href)}
+			<!-- A navigation is an anchor: the router handles it on /marketplace,
+			     and the marketplace MODAL's click interceptor keeps it in-modal. -->
+			<a
+				{href}
 				class="btn btn-primary btn-sm rounded-full gap-1.5 px-4"
-				>Meet<ArrowRight class="w-4 h-4" /></button
+				>Meet<ArrowRight class="w-4 h-4" /></a
 			>
 		</div>
 	</div>

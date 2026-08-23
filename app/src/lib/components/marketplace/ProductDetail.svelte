@@ -33,7 +33,10 @@
 
 	type ArtifactType = 'skill' | 'agent' | 'plugin' | 'connector' | 'app' | 'collection';
 
-	let { artifactType = 'skill' }: { artifactType?: ArtifactType } = $props();
+	// itemId prop: the marketplace MODAL renders this component outside the
+	// /marketplace/<plural>/[id] routes, so the id can't always come from the
+	// URL. Route pages pass nothing and keep reading $page.params.
+	let { artifactType = 'skill', itemId: itemIdProp = '' }: { artifactType?: ArtifactType; itemId?: string } = $props();
 
 	// Customer-facing label per type. Note "Connection" not "Connector" on the
 	// buyer-facing surface — the founder's rule, mirrored from neboai.com.
@@ -71,7 +74,7 @@
 	let confirmUninstall = $state(false);
 	let uninstalling = $state(false);
 
-	const itemId = $derived($page.params.id ?? '');
+	const itemId = $derived(itemIdProp || ($page.params.id ?? ''));
 	const installed = $derived(Boolean(skill?.installed) || installedLocal);
 
 	const authorName = $derived(skill?.authorName || skill?.author?.name || '');
@@ -129,7 +132,7 @@
 	const longHtml = $derived(hasLongDescription ? parseMarkdown(skill.longDescription) : '');
 
 	const information = $derived.by(() => {
-		const rows: { label: string; value: string; mono?: boolean }[] = [];
+		const rows: { label: string; value: string }[] = [];
 		if (authorName) rows.push({ label: $t('marketplace.detail.developer'), value: authorName });
 		if (skill?.version) rows.push({ label: $t('marketplace.detail.version'), value: `v${skill.version}` });
 		if (skill?.updatedAt) {
@@ -138,7 +141,8 @@
 			} catch { /* skip */ }
 		}
 		// Install counts are hidden marketplace-wide (brand rule) — no installs row.
-		if (skill?.code) rows.push({ label: $t('marketplace.detail.installCode'), value: skill.code, mono: true });
+		// The install code lives in the install rail, where it is copyable — one
+		// producer, not a fact repeated further down the page.
 		return rows;
 	});
 
@@ -510,17 +514,19 @@
 
 			<!-- Right meta sidebar — Information block -->
 			<aside class="flex flex-col gap-4">
-				<div class="rounded-2xl bg-base-100 border border-base-300 p-5">
-					<h3 class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-3">{$t('marketplace.detail.information')}</h3>
-					<dl class="flex flex-col">
-						{#each information as row}
-							<div class="flex items-center justify-between gap-3 py-2 border-b border-base-content/10 last:border-b-0 text-sm">
-								<dt class="text-base-content/50">{row.label}</dt>
-								<dd class="font-medium text-right {row.mono ? 'font-mono' : ''}">{row.value}</dd>
-							</div>
-						{/each}
-					</dl>
-				</div>
+				{#if information.length}
+					<div class="rounded-2xl bg-base-100 border border-base-300 p-5">
+						<h3 class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-3">{$t('marketplace.detail.information')}</h3>
+						<dl class="flex flex-col">
+							{#each information as row}
+								<div class="flex items-center justify-between gap-3 py-2 border-b border-base-content/10 last:border-b-0 text-sm">
+									<dt class="text-base-content/50">{row.label}</dt>
+									<dd class="font-medium text-right">{row.value}</dd>
+								</div>
+							{/each}
+						</dl>
+					</div>
+				{/if}
 
 				{#if authorName}
 					<a href="/marketplace?publisher={encodeURIComponent(authorName)}" class="text-sm text-primary hover:underline text-center">

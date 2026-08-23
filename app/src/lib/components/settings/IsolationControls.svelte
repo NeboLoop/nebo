@@ -16,6 +16,7 @@
   import Users from 'lucide-svelte/icons/users';
   import Lock from 'lucide-svelte/icons/lock';
   import * as api from '$lib/api/nebo';
+  import ConfirmModal from './ConfirmModal.svelte';
 
   let { agentId }: { agentId: string } = $props();
 
@@ -59,6 +60,19 @@
     if (agentId) load();
   });
 
+  // Turning isolation OFF changes what the owner sees and what the employee
+  // remembers — that deserves a real confirmation, not a silent toggle.
+  let confirmOff = $state(false);
+
+  function requestIsolated(value: boolean) {
+    if (saving || value === isolated) return;
+    if (!value && isolated) {
+      confirmOff = true;
+      return;
+    }
+    setIsolated(value);
+  }
+
   async function setIsolated(value: boolean) {
     if (saving || value === isolated) return;
     const prev = isolated;
@@ -85,7 +99,7 @@
             : 'bg-base-100 border-base-content/10 text-base-content/40 hover:text-base-content/70 hover:bg-base-200'}"
           aria-pressed={isolated === o.value}
           disabled={saving}
-          onclick={() => setIsolated(o.value)}
+          onclick={() => requestIsolated(o.value)}
         >
           <o.icon class="w-3.5 h-3.5" />{$t(o.labelKey)}
         </button>
@@ -94,3 +108,14 @@
     <p class="text-xs text-base-content/60 mt-1.5">{$t(currentHint)}</p>
   {/if}
 </div>
+
+{#if confirmOff}
+  <ConfirmModal
+    title={$t('agentIsolation.confirmOffTitle')}
+    message={$t('agentIsolation.confirmOffBody')}
+    confirmLabel={$t('agentIsolation.confirmOffAction')}
+    busy={saving}
+    onConfirm={() => { confirmOff = false; setIsolated(false); }}
+    onCancel={() => (confirmOff = false)}
+  />
+{/if}

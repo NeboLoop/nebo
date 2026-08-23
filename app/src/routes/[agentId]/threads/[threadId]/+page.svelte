@@ -1,7 +1,11 @@
 <script lang="ts">
+  import { launchApp } from '$lib/apps/launcher';
+  import FlowsPane from '$lib/components/flows/FlowsPane.svelte';
+  import { goto } from '$lib/nav';
   import { getContext, onMount, onDestroy } from 'svelte';
   import { t } from 'svelte-i18n';
   import { page } from '$app/stores';
+  import { replaceState } from '$app/navigation';
   import ChatPane from '$lib/components/chat/ChatPane.svelte';
   import type { AgentPageContext, EnrichedChat } from '$lib/types/agentPage';
   import { createChatController, toolDisplayName, artifactsToWorkItems, artifactsToAttachments } from '$lib/chat/controller.svelte';
@@ -76,8 +80,9 @@
     const url = new URL(window.location.href);
     if (!url.searchParams.has('active')) return;
     url.searchParams.delete('active');
-    const next = url.pathname + (url.search ? url.search : '');
-    history.replaceState(history.state, '', next);
+    // SvelteKit's replaceState, not the raw History API — the raw call
+    // desyncs the router's own state tracking.
+    replaceState(url.pathname + url.search, $page.state);
   }
 
   function settleFirstRun(opts?: { clearPendingSend?: boolean }) {
@@ -414,6 +419,13 @@
   }}
   headerTitle={thread?.name ?? $t('chat.thread')}
   headerRight={$t('chat.work')}
+  onopenruns={ctx.openRuns}
+  onback={ctx.openList}
+  onsettings={ctx.openSettings}
+  isolated={ctx.agent?.isolated ?? false}
+  isApp={ctx.agent?.isApp ?? false}
+  onopenapp={() => launchApp(ctx.agentId, ctx.agent?.name ?? 'App')}
+
   allAgents={chat.allAgents}
   tokenUsage={chat.tokenUsage}
   quotaWarning={chat.quotaWarning}
@@ -454,4 +466,6 @@
     chat.dismissError();
   }}
   isLoading={chat.isLoading}
-/>
+>
+  {#snippet flowsPane()}<FlowsPane onask={ctx.askEmployee} />{/snippet}
+</ChatPane>

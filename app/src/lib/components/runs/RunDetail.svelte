@@ -12,7 +12,9 @@
   const runs = $derived(ctx.runs);
   const config = $derived(ctx.config);
 
-  const runId = $derived($page.params.runId);
+  // The run to show is passed in: this renders inside a modal over the
+  // workspace, not as a route of its own.
+  let { runId, onclose }: { runId: string; onclose?: () => void } = $props();
   const selectedRun = $derived(runs.find((r: AgentRun) => r.id === runId) ?? null);
 
   let runDetail = $state<WorkflowRun | null>(null);
@@ -247,9 +249,9 @@
   {:else if selectedRun}
     <!-- Header -->
     <div class="h-11 px-[18px] border-b border-base-content/10 flex items-center gap-2 shrink-0">
-      <a href="/{agentId}/runs" class="w-6 h-6 rounded flex items-center justify-center hover:bg-base-200 cursor-pointer bg-transparent border-none text-base-content/50 no-underline" title={$t('common.back')}>
+      <button type="button" onclick={() => onclose?.()} class="w-6 h-6 rounded flex items-center justify-center hover:bg-base-200 cursor-pointer bg-transparent border-none text-base-content/50" title={$t('common.back')}>
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
-      </a>
+      </button>
       <span class="text-sm font-semibold truncate">{selectedRun.workflowName}</span>
       <span class="py-0 px-1.5 rounded text-xs font-medium shrink-0 {selectedRun.status === 'success' ? 'bg-success/10 text-success' : selectedRun.status === 'failed' ? 'bg-error/10 text-error' : selectedRun.status === 'running' ? 'bg-warning/10 text-warning' : selectedRun.status === 'exited' ? 'bg-info/10 text-info' : selectedRun.status === 'cancelled' ? 'bg-warning/10 text-warning' : 'bg-base-200 text-base-content/50'}">
         {selectedRun.status === 'success' ? $t('common.completed') : selectedRun.status === 'failed' ? $t('common.failed') : selectedRun.status === 'running' ? $t('agent.running') : selectedRun.status === 'exited' ? $t('agentActivity.exited') : selectedRun.status === 'cancelled' ? $t('common.cancelled') : $t('common.skipped')}
@@ -500,7 +502,7 @@
     <div class="flex-1 flex items-center justify-center">
       <div class="text-center">
         <div class="text-sm font-medium mb-1">{$t('agentActivity.runNotFound')}</div>
-        <a href="/{agentId}/runs" class="text-xs text-primary hover:underline">{$t('agentActivity.backToRuns')}</a>
+        <button type="button" onclick={() => onclose?.()} class="text-xs text-primary hover:underline bg-transparent border-none cursor-pointer p-0">{$t('agentActivity.backToRuns')}</button>
       </div>
     </div>
   {/if}

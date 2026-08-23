@@ -79,7 +79,9 @@
 		"hide": "Hide",
 		"yearShort": "yr",
 		"monthShort": "mo",
-		"closeModal": "Close modal"
+		"closeModal": "Close modal",
+		"all": "All",
+		"more": "More"
 	},
 	"time": {
 		"justNow": "just now",
@@ -139,6 +141,8 @@
 		"collapseSidebar": "Collapse sidebar",
 		"agents": "Employees",
 		"inbox": "Inbox",
+		"flows": "Flows",
+		"runs": "Runs",
 		"schedule": "Schedule",
 		"searchOrRun": "Search or run..."
 	},
@@ -191,6 +195,7 @@
 		"roleSuggestion1": "What can you help me with?",
 		"roleSuggestion2": "Give me a brief introduction",
 		"messageChannel": "Message #{channel}...",
+		"messagedCoworker": "Messaged",
 		"disclaimer": "Nebo can make mistakes. Verify important information.",
 		"goodMorning": "Good morning",
 		"goodAfternoon": "Good afternoon",
@@ -221,6 +226,8 @@
 		"driving": "Driving",
 		"startingComputer": "Starting the computer…",
 		"computerReconnecting": "Reconnecting…",
+		"computerUnavailable": "No computer on this machine",
+		"computerUnavailableHint": "The employee's computer runs on Linux installs and cloud employees.",
 		"watchingAndLearning": "{name} is watching and learning",
 		"stopRecording": "Stop recording",
 		"recordTask": "Record task",
@@ -1886,7 +1893,9 @@
 		"appOwnWindow": "This app opens in its own window.",
 		"newChatDesc": "Clean context. {name} knows who you are but nothing about previous chats.",
 		"threadOptions": "Chat options",
-		"noChatsYet": "No chats yet. Start a new one."
+		"noChatsYet": "No chats yet. Start a new one.",
+		"noRunsYet": "No runs yet",
+		"appBadge": "App"
 	},
 	"agentLearning": {
 		"title": "Self-improvement",
@@ -1897,12 +1906,32 @@
 		"off": "Off",
 		"offHint": "This employee does not learn from conversations"
 	},
+	"coworkerThread": {
+		"open": "See what was said",
+		"empty": "No messages between these employees yet.",
+		"viewOnly": "This conversation is view-only — employees talk here, you steer them in their own chats"
+	},
+	"workrooms": {
+		"section": "Workrooms",
+		"emptyRoster": "When your employees team up on a task, their rooms appear here.",
+		"inRoom": "In this room",
+		"organizer": "Organizer",
+		"membersCount": "{count} employees",
+		"emptyTitle": "The room is open.",
+		"emptyHint": "@-name an employee to put them to work.",
+		"you": "You",
+		"composerPlaceholder": "Message the room",
+		"send": "Send"
+	},
 	"agentIsolation": {
 		"title": "Memory isolation",
 		"shared": "Shared memory",
 		"sharedHint": "One memory across every conversation — what this employee learns anywhere, it knows everywhere",
 		"isolated": "Isolated per conversation",
-		"isolatedHint": "Each conversation keeps its own sealed memory — one case, client, or matter never bleeds into another"
+		"isolatedHint": "Each conversation keeps its own sealed memory — one case, client, or matter never bleeds into another",
+		"confirmOffTitle": "Turn off memory isolation?",
+		"confirmOffBody": "Your separate conversations stay saved, but they'll no longer appear as a list of matters — this employee returns to one continuous conversation. What was learned inside each sealed conversation stays sealed: future chats won't draw on it. Nothing is deleted, and turning isolation back on restores the list and each conversation's own memory.",
+		"confirmOffAction": "Turn off isolation"
 	},
 	"agentApprovals": {
 		"title": "Approvals",
@@ -2106,7 +2135,8 @@
 		"noActivityRecords": "No activity records for this run.",
 		"runAgain": "Run Again",
 		"runNotFound": "Run not found",
-		"backToRuns": "Back to runs"
+		"backToRuns": "Back to runs",
+		"runDetail": "Run"
 	},
 	"automations": {
 		"title": "Automations",
@@ -2686,6 +2716,7 @@
 		"filterSystem": "System",
 		"filterWarning": "Warnings",
 		"filterError": "Errors",
+		"formerEmployee": "Former employee",
 		"byEmployee": "Employee",
 		"byDepartment": "Department",
 		"needsApproval": "Needs your approval",
@@ -2705,5 +2736,13 @@
 		"consentAccept": "Enable voice",
 		"consentDecline": "Not now",
 		"cloudIndicator": "Audio is streaming to xAI"
+	},
+	"flows": {
+		"none": "No flows yet",
+		"newCallTree": "New call tree — design what a phone line handles",
+		"reminders": "Reminders & scheduled tasks",
+		"runNow": "Run now",
+		"deleteReminderTitle": "Delete \"{name}\"?",
+		"deleteReminderBody": "This scheduled task stops running and is removed. Past runs stay in the run history."
 	}
 }

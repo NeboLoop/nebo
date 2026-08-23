@@ -30,7 +30,6 @@
   const navItems: PaletteItem[] = $derived([
     { category: $t('commandPalette.navigation'), label: $t('components.commandPalette.agents'), icon: 'cpu', action: () => goto('/') },
     { category: $t('commandPalette.navigation'), label: $t('components.commandPalette.apps'), icon: 'grid', action: () => goto('/apps') },
-    { category: $t('commandPalette.navigation'), label: $t('components.commandPalette.schedule'), icon: 'calendar', action: () => goto('/schedule') },
     { category: $t('commandPalette.navigation'), label: $t('commandPalette.marketplace'), icon: 'store', action: () => goto('/marketplace') },
     { category: $t('commandPalette.navigation'), label: $t('components.commandPalette.activity'), icon: 'calendar', action: () => goto('/activity') },
     { category: $t('commandPalette.navigation'), label: $t('commandPalette.events'), icon: 'calendar', action: () => goto('/events') },

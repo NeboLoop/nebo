@@ -3,8 +3,6 @@
   import { goto } from '$lib/nav';
   import { t } from 'svelte-i18n';
   import { getContext } from 'svelte';
-  import AgentTabBar from '$lib/components/AgentTabBar.svelte';
-  import { mobileChatsOpen } from '$lib/stores/mobileNav';
   import type { AgentPageContext } from '$lib/types/agentPage';
   import { deleteChat, updateChat } from '$lib/api/nebo';
 
@@ -106,81 +104,20 @@
   </div>
 {/if}
 
-<!-- Column 2: Thread list (mobile: slide-over toggled from the threads bar) -->
-{#if $mobileChatsOpen}
-  <div class="fixed inset-0 z-30 bg-black/40 md:hidden" onclick={() => mobileChatsOpen.set(false)} role="presentation"></div>
-{/if}
-<div class="md:w-[260px] md:min-w-[260px] max-md:fixed max-md:inset-y-0 max-md:left-0 max-md:z-40 max-md:w-[280px] max-md:transition-[transform,visibility] {$mobileChatsOpen ? 'max-md:translate-x-0 max-md:shadow-2xl' : 'max-md:-translate-x-full max-md:invisible'} border-r border-base-content/10 shadow-[2px_0_8px_-2px_rgba(0,0,0,0.06)] relative shrink-0 flex flex-col bg-base-200/50 max-md:bg-base-200">
-  <AgentTabBar agentId={agentId} agentName={agent?.name ?? ''} agentInitial={agent?.initial ?? ''} status={agentStatus} isApp={ctx.isApp} />
-
-  <div class="flex-1 overflow-y-auto">
-    <!-- New chat -->
-    <a href="/{agentId}/threads" class="block w-full text-left py-2.5 px-3.5 border-b border-base-300 cursor-pointer hover:bg-base-200 transition-colors no-underline text-base-content">
-      <div class="text-sm font-medium text-primary">+ {$t('agent.newChat')}</div>
-      <div class="text-xs text-base-content/70">{$t('agent.newChatDesc', { values: { name: agent?.name ?? '' } })}</div>
-    </a>
-
-    {#each threads as th}
-      <a
-        href="/{agentId}/threads/{th.id}"
-        class="group relative block w-full text-left py-2.5 px-3.5 border-b border-base-300 cursor-pointer transition-colors no-underline text-base-content {selectedThread === th.id
-          ? 'bg-base-100 border-l-2 border-l-primary'
-          : 'bg-transparent border-l-2 border-l-transparent hover:bg-base-200'}"
-        oncontextmenu={(e) => openCtxMenu(e, th.id)}
-      >
-        {#if renaming?.threadId === th.id}
-          <input
-            bind:this={renameInput}
-            type="text"
-            class="input input-xs input-bordered w-full text-sm font-medium mb-0.5"
-            bind:value={renaming.value}
-            onkeydown={handleRenameKeydown}
-            onblur={commitRename}
-            onclick={(e) => e.preventDefault()}
-          />
-        {:else}
-          <div class="text-sm font-medium truncate mb-0.5">{th.name}</div>
-        {/if}
-        <div class="text-xs text-base-content/70 truncate mb-0.5">{th.preview}</div>
-        <div class="text-xs text-base-content/50 font-mono">{$t('agent.messageCount', { values: { count: th.messages } })} &middot; {th.updatedAt}</div>
-
-        <!-- Three-dot menu button (visible on hover) -->
-        <button
-          class="absolute top-2 right-2 p-1 rounded opacity-0 group-hover:opacity-100 hover:bg-base-300 transition-opacity cursor-pointer bg-transparent border-none"
-          onclick={(e) => { e.preventDefault(); e.stopPropagation(); openCtxMenu(e, th.id); }}
-          aria-label={$t('agent.threadOptions')}
-        >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" class="text-base-content/70">
-            <circle cx="12" cy="5" r="2"/>
-            <circle cx="12" cy="12" r="2"/>
-            <circle cx="12" cy="19" r="2"/>
-          </svg>
-        </button>
-      </a>
-    {/each}
-
-    {#if isThreadsLoading && threads.length === 0}
-      <div class="p-6 flex justify-center">
-        <span class="loading loading-spinner loading-sm"></span>
-      </div>
-    {:else if threads.length === 0}
-      <div class="p-6 text-center text-sm text-base-content/50">{$t('agent.noChatsYet')}</div>
-    {/if}
-  </div>
-</div>
-
+<!-- The chat list now lives in the workspace column, grouped under its
+     employee. This layout is just the conversation. -->
 <!-- Column 3: Chat content from child page -->
 <div class="flex-1 flex flex-col bg-base-100 min-w-0 min-h-0">
-  <!-- Mobile threads bar: the drawer toggle (chat list is a slide-over below md) -->
-  <div class="md:hidden h-10 shrink-0 border-b border-base-300 flex items-center gap-2 px-2">
-    <button
-      class="h-8 px-2.5 rounded-md flex items-center gap-1.5 text-sm font-medium border-none bg-transparent cursor-pointer text-base-content/80"
-      onclick={() => mobileChatsOpen.update((v) => !v)}
-    >
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-      {$t('components.agentTabBar.chats')}
-    </button>
-    <span class="text-sm text-base-content/60 truncate">{agent?.name ?? ''}</span>
-  </div>
-  {@render children()}
+  <!-- SvelteKit reuses the page component across conversation switches (the
+       route id never changes), but the page captures agentId and creates its
+       chat controller ONCE — the controller filters every WS event through
+       that frozen agent id, so switching employees left the transcript stuck
+       on the previous one. The page was designed around remounts (its
+       pending-send stash exists to survive them); this key gives it real
+       ones: a different conversation is a different page instance.
+       Search-param changes (?settings, ?pane, ?run) don't touch the key, so
+       drafts still survive modals. -->
+  {#key `${$page.params.agentId}:${$page.params.threadId ?? ''}`}
+    {@render children()}
+  {/key}
 </div>

@@ -14,6 +14,25 @@
 	</head>
 	<body data-sveltekit-preload-data="hover">
 		<script>
+			// Deploy-window self-healing: during an image swap the HTML can come from
+			// one server version and its hashed chunks from another, so the boot
+			// import fails and the app would hang on the splash forever. Retry the
+			// whole load with backoff (the window is seconds wide); a successful
+			// boot clears the counter (root +layout onMount). Session-scoped so a
+			// genuinely broken deploy stops after 3 tries instead of loop-reloading.
+			(function () {
+				var KEY = 'nebo:boot-retries';
+				function onFail(reason) {
+					var msg = String((reason && reason.message) || reason || '');
+					if (!/importing a module script failed|dynamically imported module/i.test(msg)) return;
+					var n = Number(sessionStorage.getItem(KEY) || 0);
+					if (n >= 3) return;
+					sessionStorage.setItem(KEY, String(n + 1));
+					setTimeout(function () { location.reload(); }, 1500 * (n + 1));
+				}
+				addEventListener('unhandledrejection', function (e) { onFail(e.reason); });
+				addEventListener('error', function (e) { onFail(e.error || e.message); }, true);
+			})();
 			// Prevent Backspace from navigating back when not in an input (Tauri webview issue)
 			document.addEventListener('keydown', function(e) {
 				if (e.key === 'Backspace') {
