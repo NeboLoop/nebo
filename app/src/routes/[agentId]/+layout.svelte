@@ -8,7 +8,7 @@
   import UserMenu from '$lib/components/UserMenu.svelte';
   import WorkflowBuilder from '$lib/components/workflow/WorkflowBuilder.svelte';
   import { launchApp } from '$lib/apps/launcher.js';
-  import { mobileAgentsOpen } from '$lib/stores/mobileNav';
+  import { writable } from 'svelte/store';
   import CollapsibleRail from '$lib/components/ui/CollapsibleRail.svelte';
   import BrandMark from '$lib/components/BrandMark.svelte';
   import ShelfModal from '$lib/components/ui/ShelfModal.svelte';
@@ -20,17 +20,43 @@
   import { unreadCount } from '$lib/stores/notifications';
   import { commandPaletteOpen } from '$lib/stores/commandPalette';
 
-  // Mobile drawers close on any navigation (open → pick → see content).
-  $effect(() => {
-    void $page.url.pathname;
-    mobileAgentsOpen.set(false);
-  });
+  // The list is URL state — SvelteKit-standard, not a side store. `?list=1`
+  // is the roster, `?list=<agentId>` is that employee's matter list, absent
+  // means the conversation. Every transition is a goto, so the browser back
+  // button walks the screens the user actually saw, and each screen has a
+  // real URL. (Store-driven drawers were the bug: tapping back showed the
+  // list without changing the URL, then browser-back navigated somewhere
+  // stale underneath it.)
+  const listParam = $derived($page.url.searchParams.get('list'));
+  const drilledAgentId = $derived(listParam && listParam !== '1' ? listParam : null);
 
-  // The list drills down; it does not expand. Inline expansion put an
-  // 8,000px chat list inside the column and shoved every employee below it off
-  // the screen — unusable at 168 conversations. So the column shows either the
-  // roster or ONE employee's conversations, with a way back.
-  let drilledAgentId = $state<string | null>(null);
+  function listUrl(value: string | null): string {
+    const url = new URL($page.url);
+    if (value) url.searchParams.set('list', value);
+    else url.searchParams.delete('list');
+    return url.pathname + url.search;
+  }
+  const showList = (value: string, replace = false) =>
+    goto(listUrl(value), { replaceState: replace, noScroll: true, keepFocus: true });
+  const closeList = () => goto(listUrl(null), { noScroll: true, keepFocus: true });
+
+  // CollapsibleRail speaks Writable; this adapter routes its open/close
+  // through navigation. Below md the drawer is visible iff ?list is present.
+  const drawerOpen = {
+    subscribe: (run: (v: boolean) => void) => {
+      const un = page.subscribe(($p) => run($p.url.searchParams.has('list')));
+      return un;
+    },
+    set: (v: boolean) => {
+      if (v) showList(drilledAgentId ?? '1');
+      else closeList();
+    },
+    update: (fn: (v: boolean) => boolean) => {
+      const cur = $page.url.searchParams.has('list');
+      const next = fn(cur);
+      if (next !== cur) (next ? showList('1') : closeList());
+    },
+  };
 
   /**
    * What a row click does is decided by memory isolation, because that is what
@@ -40,10 +66,11 @@
    * is a list of matters and you pick one. Isolation off — one memory across
    * every chat, so there is one continuous conversation and we open it.
    */
-  function openAgentRow(id: string) {
+  async function openAgentRow(id: string) {
     const a = allAgents.find((x) => x.id === id);
-    selectAgent(id);
-    if (a?.isolated) drilledAgentId = id;
+    // One navigation, one URL. Two chained gotos raced: the second built its
+    // URL from a not-yet-updated $page and the first overwrote it.
+    selectAgent(id, a?.isolated ? id : null);
   }
 
   // Shelf surfaces open over the workspace rather than navigating away from
@@ -275,9 +302,10 @@
     if (
       typeof window !== 'undefined' &&
       !window.matchMedia('(min-width: 768px)').matches &&
-      !$page.params.threadId
+      !$page.params.threadId &&
+      !$page.url.searchParams.has('list')
     ) {
-      mobileAgentsOpen.set(true);
+      showList('1', true);
     }
 
     // --- WebSocket event listeners (event-driven, no polling) ---
@@ -413,7 +441,7 @@
             const next = [...allAgents];
             next[idx] = { ...next[idx], isolated: iso };
             allAgents = next;
-            if (iso && $page.params.agentId === id) drilledAgentId = id;
+            if (iso && $page.params.agentId === id && $page.url.searchParams.get('list') === '1') showList(id, true);
           }
         } catch { /* malformed frontmatter — leave unknown */ }
         const persona = typeof ar.persona === 'string' ? (ar.persona as string) : '';
@@ -576,7 +604,7 @@
   }
 
 
-  async function selectAgent(id: string) {
+  async function selectAgent(id: string, list: string | null = null) {
     const a = allAgents.find(ag => ag.id === id);
     // Apps are employees too: they open a conversation like everyone else,
     // with Open App available in the chat header. The old /overview landing
@@ -597,7 +625,8 @@
         latest = apiThreads[id][0];
       }
     }
-    goto(latest ? `/${id}/threads/${latest.id}` : `/${id}/threads`);
+    const suffix = list ? `?list=${encodeURIComponent(list)}` : '';
+    goto((latest ? `/${id}/threads/${latest.id}` : `/${id}/threads`) + suffix);
   }
 
   // Returns an i18n key — translate with $t at the call site.
@@ -687,6 +716,7 @@
     openWorkflow,
     openRuns,
     openSettings,
+    openList: () => showList(agent?.isolated ? agentId : '1'),
     askEmployee,
     openCanvas,
     triggerSummary,
@@ -819,7 +849,7 @@
 <CollapsibleRail
   section="workspace"
   title="Nebo"
-  mobileOpen={mobileAgentsOpen}
+  mobileOpen={drawerOpen}
   tour="agents"
 >
   {#snippet leading()}
@@ -851,7 +881,7 @@
       <button
         type="button"
         class="w-full flex items-center gap-2 px-3 py-2 text-sm bg-transparent border-none cursor-pointer hover:bg-base-100/70 text-left"
-        onclick={() => (drilledAgentId = null)}
+        onclick={() => showList('1')}
       >
         <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="10 3 5 8 10 13"/></svg>
         <span class="font-medium truncate">{drilledAgent.name}</span>

@@ -17,7 +17,6 @@
   import Table from 'lucide-svelte/icons/table';
   import Presentation from 'lucide-svelte/icons/presentation';
   import type { UploadedAttachment } from '$lib/types/attachment';
-  import { mobileAgentsOpen } from '$lib/stores/mobileNav';
   import type { Snippet } from 'svelte';
   import { getAttachmentType, formatFileSize, attachmentMediaUrl } from '$lib/types/attachment';
   import { NEAR_BOTTOM_PX, distanceFromBottom } from '$lib/chat/scroll';
@@ -75,7 +74,7 @@
 
   type AgentInfo = { id: string; name: string; color: string; initial: string; role: string; status: string; isApp?: boolean };
 
-  let { messages = [], agentName = 'Agent', agentId = '', threadId = '', sessionId = '', headerTitle = '', headerRight = '', placeholder = '', emptyIcon = '', emptyTitle = '', emptyDesc = '', allAgents = [], onteachsent, activityStatus = '', tokenUsage = null, quotaWarning = '', chatError = '', onsend, onstop, onedit, onredo, onasksubmit, onrestoreversion, ondismisswarning, ondismisserror, onloadmore, isLoading = false, isLoadingMore = false, hasMore = false, allowAttachments = true, flowsPane, onopenruns, onsettings, isolated = false, isApp = false, onopenapp }: {
+  let { messages = [], agentName = 'Agent', agentId = '', threadId = '', sessionId = '', headerTitle = '', headerRight = '', placeholder = '', emptyIcon = '', emptyTitle = '', emptyDesc = '', allAgents = [], onteachsent, activityStatus = '', tokenUsage = null, quotaWarning = '', chatError = '', onsend, onstop, onedit, onredo, onasksubmit, onrestoreversion, ondismisswarning, ondismisserror, onloadmore, isLoading = false, isLoadingMore = false, hasMore = false, allowAttachments = true, flowsPane, onopenruns, onsettings, isolated = false, isApp = false, onopenapp, onback }: {
     messages?: Message[];
     /** Employee-scoped views for the work pane. Omitted on chats with no
      *  employee behind them (channel setup help, the embed), and the matching
@@ -89,6 +88,9 @@
     /** This employee is an app: badge the header and offer Open App. */
     isApp?: boolean;
     onopenapp?: () => void;
+    /** Mobile back-to-list. A real navigation (goto) so the URL changes and
+     *  the browser back button stays truthful; rendered only when provided. */
+    onback?: () => void;
     agentName?: string;
     agentId?: string;
     threadId?: string;
@@ -1034,13 +1036,15 @@
            only opener — the top header that used to carry the hamburger is gone. -->
       <!-- Mobile is list-first: this is "back to your team", so it reads as a
            back chevron, not a hamburger. -->
+      {#if onback}
       <button
         class="md:hidden w-10 h-10 -ml-2.5 rounded-md flex items-center justify-center border-none bg-transparent cursor-pointer text-base-content/70 shrink-0"
         aria-label="Employees"
-        onclick={() => mobileAgentsOpen.update((v) => !v)}
+        onclick={onback}
       >
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
       </button>
+      {/if}
       <span class="flex items-baseline gap-2 min-w-0">
         <span class="text-sm font-semibold truncate">{agentName}</span>
         {#if isApp}

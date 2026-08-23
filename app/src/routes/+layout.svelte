@@ -6,7 +6,6 @@
   import { goto, appPath } from '$lib/nav';
   import { beforeNavigate } from '$app/navigation';
   import { base } from '$app/paths';
-  import { mobileAgentsOpen } from '$lib/stores/mobileNav';
   import { storage } from '$lib/storage';
   import { onMount } from 'svelte';
   import BrandMark from '$lib/components/BrandMark.svelte';

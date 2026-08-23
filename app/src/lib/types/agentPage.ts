@@ -144,6 +144,8 @@ export interface AgentPageContext {
 	openRuns: () => void
 	/** Open this employee's settings modal. */
 	openSettings: () => void
+	/** Show the workspace list (mobile back-to-team) — a real navigation. */
+	openList: () => void
 	/** Drop a starter prompt into this employee's composer. */
 	askEmployee: (prompt: string) => void
 	openCanvas: () => void
