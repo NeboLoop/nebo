@@ -217,7 +217,7 @@
   {#if editable && onaiedit}
     <button
       type="button"
-      class="w-6 h-6 rounded flex items-center justify-center shrink-0 bg-transparent border-none cursor-pointer text-base-content/40 hover:text-primary hover:bg-primary/10 transition-colors"
+      class="w-6 h-6 max-md:w-10 max-md:h-10 rounded flex items-center justify-center shrink-0 bg-transparent border-none cursor-pointer text-base-content/40 hover:text-primary hover:bg-primary/10 transition-colors"
       title="Tell the AI what to change"
       onclick={(e) => {
         e.stopPropagation();
@@ -356,7 +356,7 @@
       <div class="w-px h-3 bg-base-content/20"></div>
       <button
         type="button"
-        class="ml-[-6px] w-4 h-4 rounded-full border border-base-300 bg-base-100 text-base-content/40 hover:text-primary hover:border-primary flex items-center justify-center cursor-pointer text-[10px] leading-none transition-colors"
+        class="ml-[-6px] w-4 h-4 max-md:w-7 max-md:h-7 max-md:ml-[-12px] max-md:text-sm rounded-full border border-base-300 bg-base-100 text-base-content/40 hover:text-primary hover:border-primary flex items-center justify-center cursor-pointer text-[10px] leading-none transition-colors"
         title="Add a step here"
         onclick={() => onaddstep?.(afterId)}
       >+</button>

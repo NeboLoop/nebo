@@ -708,13 +708,13 @@
 			<div class="flex items-center gap-0.5 px-2 py-1 border-b border-base-content/10 bg-base-200/50 shrink-0 overflow-x-auto">
 				{#each workflowNames as wfName}
 					<button
-						class="px-3 py-1 text-xs font-medium rounded-md cursor-pointer border-none transition-colors shrink-0
+						class="px-3 py-1 max-md:py-2.5 max-md:text-sm text-xs font-medium rounded-md cursor-pointer border-none transition-colors shrink-0
 							{wfName === activeWorkflowName ? 'bg-base-100 text-base-content shadow-sm' : 'bg-transparent text-base-content/50 hover:text-base-content/70 hover:bg-base-100/50'}"
 						onclick={() => { activeWorkflowName = wfName; selectedNodeId = null; }}
 					>{wfName}</button>
 				{/each}
 				<button
-					class="px-2 py-1 text-xs text-base-content/40 hover:text-base-content/70 cursor-pointer border-none bg-transparent rounded-md hover:bg-base-100/50 transition-colors shrink-0"
+					class="px-2 py-1 max-md:px-3 max-md:py-2.5 max-md:text-base text-xs text-base-content/40 hover:text-base-content/70 cursor-pointer border-none bg-transparent rounded-md hover:bg-base-100/50 transition-colors shrink-0"
 					onclick={handleNewWorkflow}
 					title="New workflow"
 				>+</button>
@@ -784,6 +784,7 @@
 			onremove={(nodeId) => handleConfirmRemoveNode(nodeId)}
 			onremoveWorkflow={() => handleConfirmRemoveWorkflow()}
 			onclose={() => { selectedNodeId = null; }}
+			ondismiss={() => { selectedNodeId = null; configOpen = false; }}
 			onselectActivity={(id) => { selectedNodeId = id || null; }}
 		/>
 	{/if}

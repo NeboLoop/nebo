@@ -18,6 +18,7 @@
 		onremove,
 		onremoveWorkflow,
 		onclose,
+		ondismiss,
 		onselectActivity,
 	}: {
 		agentId?: string;
@@ -34,6 +35,8 @@
 		onremove?: (nodeId: string) => void;
 		onremoveWorkflow?: () => void;
 		onclose?: () => void;
+		/** Mobile: dismiss the whole sheet (desktop keeps the panel column). */
+		ondismiss?: () => void;
 		onselectActivity?: (id: string) => void;
 	} = $props();
 
@@ -321,6 +324,18 @@
 <div class="w-[340px] shrink-0 border-l border-base-content/10 bg-base-100 flex flex-col overflow-hidden max-md:absolute max-md:inset-x-0 max-md:bottom-0 max-md:z-20 max-md:w-full max-md:h-[70%] max-md:border-l-0 max-md:border-t max-md:rounded-t-xl max-md:shadow-2xl">
 	<!-- Panel header -->
 	<div class="flex items-center justify-between px-4 py-3 border-b border-base-content/10 shrink-0">
+		<!-- On a phone this panel is a sheet OVER the chain. Without its own
+		     exit the only visible × closed the whole builder — a trap. -->
+		{#if ondismiss}
+			<button
+				type="button"
+				class="md:hidden mr-2 h-9 px-3 rounded-md flex items-center gap-1 text-sm font-medium text-primary bg-transparent border-none cursor-pointer shrink-0"
+				onclick={ondismiss}
+			>
+				<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+				Done
+			</button>
+		{/if}
 		<div class="flex-1 min-w-0">
 			<div class="text-sm font-semibold truncate">{workflowName}</div>
 			<div class="text-xs text-base-content/50">{workflow?.activities?.length ?? 0} {(workflow?.activities?.length ?? 0) === 1 ? 'activity' : 'activities'}</div>
@@ -329,7 +344,7 @@
 			{#if isEditable}
 				<input
 					type="checkbox"
-					class="toggle toggle-sm toggle-primary"
+					class="toggle toggle-sm max-md:toggle-md toggle-primary"
 					checked={workflow?.isActive !== false}
 					role="switch"
 					aria-checked={workflow?.isActive !== false}
@@ -438,7 +453,7 @@
 							}}
 						/>
 						<button
-							class="btn btn-xs btn-ghost"
+							class="btn btn-xs max-md:btn-sm btn-ghost"
 							disabled={!newSkillText.trim()}
 							onclick={() => {
 								if (newSkillText.trim()) {
@@ -595,7 +610,7 @@
 							}}
 						/>
 						<button
-							class="btn btn-xs btn-ghost"
+							class="btn btn-xs max-md:btn-sm btn-ghost"
 							disabled={!newStepText.trim()}
 							onclick={() => {
 								if (newStepText.trim()) {
@@ -708,7 +723,7 @@
 									<div class="flex gap-1">
 										{#each DAY_LABELS as d, i}
 											<button
-												class="w-8 h-8 rounded-full text-xs font-medium border cursor-pointer transition-colors
+												class="w-8 h-8 max-md:w-10 max-md:h-10 rounded-full text-xs font-medium border cursor-pointer transition-colors
 													{schedCustomDays.includes(i)
 														? 'border-primary bg-primary/10 text-primary'
 														: 'border-base-300 bg-transparent text-base-content/50 hover:border-base-content/20'}"
@@ -980,14 +995,14 @@
 						<div class="text-xs text-base-content/50 mb-0.5">URL</div>
 						<div class="flex items-center gap-1.5">
 							<code class="text-xs font-mono bg-base-200 rounded px-2 py-1 flex-1 min-w-0 truncate">{published.url}</code>
-							<button class="btn btn-xs btn-ghost shrink-0" onclick={() => copyText('url', published?.url ?? '')}>{copiedField === 'url' ? 'Copied' : 'Copy'}</button>
+							<button class="btn btn-xs max-md:btn-sm btn-ghost shrink-0" onclick={() => copyText('url', published?.url ?? '')}>{copiedField === 'url' ? 'Copied' : 'Copy'}</button>
 						</div>
 					</div>
 					<div class="mb-2">
 						<div class="text-xs text-base-content/50 mb-0.5">API key</div>
 						<div class="flex items-center gap-1.5">
 							<code class="text-xs font-mono bg-base-200 rounded px-2 py-1 flex-1 min-w-0 truncate">{published.key}</code>
-							<button class="btn btn-xs btn-ghost shrink-0" onclick={() => copyText('key', published?.key ?? '')}>{copiedField === 'key' ? 'Copied' : 'Copy'}</button>
+							<button class="btn btn-xs max-md:btn-sm btn-ghost shrink-0" onclick={() => copyText('key', published?.key ?? '')}>{copiedField === 'key' ? 'Copied' : 'Copy'}</button>
 						</div>
 						<div class="text-xs text-warning mt-1">Shown once — store it now.</div>
 					</div>
@@ -995,7 +1010,7 @@
 						<div class="text-xs text-base-content/50 mb-0.5">Example</div>
 						<div class="flex items-start gap-1.5">
 							<code class="text-xs font-mono bg-base-200 rounded px-2 py-1 flex-1 min-w-0 whitespace-pre-wrap break-all">{curlExample}</code>
-							<button class="btn btn-xs btn-ghost shrink-0" onclick={() => copyText('curl', curlExample)}>{copiedField === 'curl' ? 'Copied' : 'Copy'}</button>
+							<button class="btn btn-xs max-md:btn-sm btn-ghost shrink-0" onclick={() => copyText('curl', curlExample)}>{copiedField === 'curl' ? 'Copied' : 'Copy'}</button>
 						</div>
 					</div>
 				{:else}
