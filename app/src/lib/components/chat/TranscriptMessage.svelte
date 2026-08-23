@@ -24,6 +24,8 @@
 </script>
 
 <div class="flex flex-col {mine ? 'items-end' : 'items-start'}">
+  <!-- The speaker's face rides the name line — small, in their roster color —
+       so a multi-party room reads at a glance (owner-approved grammar). -->
   <div class="flex items-center gap-2 mb-1 {mine ? 'flex-row-reverse' : ''}">
     {#if initial}
       <span class="w-5 h-5 rounded-full flex items-center justify-center font-mono text-[10px] font-semibold shrink-0 {avatarClass || 'bg-base-200'}">{initial}</span>
