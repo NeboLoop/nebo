@@ -1,5 +1,6 @@
 <script lang="ts">
   import { t } from 'svelte-i18n';
+  import { devMode } from '$lib/stores/devmode.js';
   import ChatComposer from './ChatComposer.svelte';
   import WorkViewer from './WorkViewer.svelte';
   import DesktopView from './DesktopView.svelte';
@@ -1238,7 +1239,7 @@
                 <div class="flex-1 min-w-0 pb-3">
                   <div class="flex items-baseline gap-2 text-xs">
                     <span class="truncate {tool.status === 'running' ? 'text-base-content/70' : ''}">{tool.status === 'running' ? (tool.label ?? tool.name) : stepOutcome(tool)}{#if tool.status === 'running' && tool.statusText}<span class="text-base-content/50 ml-1">{tool.statusText}</span>{/if}</span>
-                    <span class="font-mono text-base-content/40 shrink-0">{strapSig(tool)}</span>
+                    {#if $devMode}<span class="font-mono text-base-content/40 shrink-0">{strapSig(tool)}</span>{/if}
                     {#if tool.durationMs}<span class="text-base-content/40 shrink-0">{fmtDuration(tool.durationMs)}</span>{/if}
                   </div>
                   {#if researchState(tool)}
@@ -1498,8 +1499,11 @@
             {@html linkWorkMentions(renderMarkdown(msg.content), (msg as any).workItems)}
           </div>
           <!-- Tools this reply ran, on the message itself — never a detached sibling.
-               Coworker sends are pulled OUT of the group and shown as events. -->
-          {#if nonCoworkerTools(msg.tools).length}
+               Coworker sends are pulled OUT of the group and shown as events.
+               Non-technical owners see tool activity only while it's LIVE (the
+               app must never look frozen); the finished telemetry line is
+               developer furniture, shown in dev mode (Settings → Developer). -->
+          {#if nonCoworkerTools(msg.tools).length && ($devMode || nonCoworkerTools(msg.tools).some((t) => t.status === 'running'))}
             {@render toolTimeline(nonCoworkerTools(msg.tools), msg.id ?? `m${origIdx}`)}
           {/if}
           {#each coworkerEvents(msg.tools) as ev, evIdx (evIdx)}
