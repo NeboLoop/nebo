@@ -415,6 +415,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
     }
 
     let hub = state.hub.clone();
+    let workroom_store = state.store.clone();
     let runner = state.runner.clone();
     let janus_usage = state.janus_usage.clone();
     let presence_tracker = state.presence.clone();
@@ -1356,6 +1357,11 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                             error: None,
                             attachments: reply_attachments,
                         };
+                        // Our own outbound never echoes back from the hub, so a
+                        // reply into a registered workroom must broadcast the
+                        // live event itself — otherwise the owner's open room
+                        // only learns of the employee's answer on reload.
+                        let workroom_reply = reply.clone();
                         if let Err(e) = send_to_channel(
                             &reply_config.provider,
                             &comm_manager,
@@ -1365,6 +1371,28 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                         .await
                         {
                             warn!(error = %e, "failed to send comm reply");
+                        } else if reply_config.topic == "channel" {
+                            let channel_id = match comm_manager {
+                                Some(ref cm) => {
+                                    cm.channel_for_conversation(&workroom_reply.conversation_id)
+                                        .await
+                                }
+                                None => None,
+                            };
+                            if let Some(channel_id) = channel_id {
+                                if let Ok(Some(room)) = workroom_store.get_workroom(&channel_id) {
+                                    hub.broadcast(
+                                        "workroom_message",
+                                        serde_json::json!({
+                                            "channelId": room.channel_id,
+                                            "conversationId": workroom_reply.conversation_id,
+                                            "from": agent_display_name.clone(),
+                                            "senderName": agent_display_name.clone(),
+                                            "text": workroom_reply.content,
+                                        }),
+                                    );
+                                }
+                            }
                         }
                     } else {
                         // No text response. Still deliver any run-produced files as

@@ -88,6 +88,13 @@ pub trait CommPlugin: Send + Sync {
         String::new()
     }
 
+    /// The hub conversation id backing a channel (None when unknown). The
+    /// inverse of the conv→channel mapping; joins the conversation on miss
+    /// where the provider supports it.
+    async fn conversation_for_channel(&self, _channel_id: &str) -> Option<String> {
+        None
+    }
+
     /// List members of a channel.
     /// List every agent (AI employee) in a loop — ALL bots' agents, not just
     /// this bot's. Used to resolve outbound @mentions by name/slug.

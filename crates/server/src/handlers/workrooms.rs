@@ -106,9 +106,11 @@ pub async fn send_workroom_message(
         return Err(to_error_response(types::NeboError::NotFound));
     }
 
-    // The standard composer serializes mentions as <@localAgentId>. The hub's
-    // grammar wants <@loop_agent_id> (or a plain @Name for agents that have
-    // no hub identity). Rewrite here — clients never learn the hub's scheme.
+    // The standard composer serializes mentions as <@localAgentId>. Hub-known
+    // agents get their <@loop_agent_id>; room members WITHOUT a hub identity
+    // keep the <@localAgentId> token — in a registered workroom the member
+    // registry is the mention surface, and the channel dispatcher resolves
+    // member tokens locally. One token grammar; plain text never triggers.
     let mut content = text.to_string();
     if content.contains("<@") {
         for a in state.store.list_agents(500, 0).unwrap_or_default() {
@@ -116,11 +118,9 @@ pub async fn send_workroom_message(
             if !content.contains(&token) {
                 continue;
             }
-            let replacement = match a.loop_agent_id.as_deref().filter(|s| !s.is_empty()) {
-                Some(loop_id) => format!("<@{loop_id}>"),
-                None => format!("@{}", a.name),
-            };
-            content = content.replace(&token, &replacement);
+            if let Some(loop_id) = a.loop_agent_id.as_deref().filter(|s| !s.is_empty()) {
+                content = content.replace(&token, &format!("<@{loop_id}>"));
+            }
         }
     }
 
@@ -131,7 +131,7 @@ pub async fn send_workroom_message(
         topic: channel_id.clone(),
         conversation_id: channel_id.clone(),
         msg_type: comm::CommMessageType::LoopChannel,
-        content,
+        content: content.clone(),
         metadata: std::collections::HashMap::new(),
         timestamp: 0,
         human_injected: true,
@@ -148,6 +148,51 @@ pub async fn send_workroom_message(
             "send workroom message: {e}"
         )))
     })?;
+
+    // The hub does not echo a bot's own sends back to it — and in a room whose
+    // members are all THIS bot's employees, the hub has nobody else to deliver
+    // to. Without a local loopback the owner's message leaves and nothing ever
+    // dispatches. Feed the message through the ONE inbound pathway
+    // (handle_comm_message) exactly as the hub would deliver it: topic
+    // "channel", the channel's real conversation id, senderName in the content
+    // JSON. Mention tokens then resolve against the room's member registry and
+    // the addressed employees run. (If the hub ever starts echoing sender
+    // messages, dedupe by msg id here before dispatching twice.)
+    //
+    // human_injected stays FALSE on the loopback: handle_comm_message drops
+    // every human_injected inbound as a gateway echo. The message's human-ness
+    // is what the channel branch actually reads — the absence of
+    // `senderKind: "agent"` — so the owner still opens engagement windows and
+    // resets handoff chains.
+    if let Some(conv_id) = state
+        .comm_manager
+        .conversation_for_channel(&channel_id)
+        .await
+    {
+        let inbound = comm::CommMessage {
+            id: uuid::Uuid::new_v4().to_string(),
+            from: String::new(),
+            to: String::new(),
+            topic: "channel".to_string(),
+            conversation_id: conv_id,
+            msg_type: comm::CommMessageType::LoopChannel,
+            content: serde_json::json!({ "text": content, "senderName": "Owner" }).to_string(),
+            metadata: std::collections::HashMap::new(),
+            timestamp: 0,
+            human_injected: false,
+            human_id: None,
+            task_id: None,
+            correlation_id: None,
+            task_status: None,
+            artifacts: Vec::new(),
+            error: None,
+            attachments: Vec::new(),
+        };
+        let st = state.clone();
+        tokio::spawn(async move {
+            crate::handle_comm_message(st, inbound).await;
+        });
+    }
 
     Ok(Json(serde_json::json!({ "message": "Sent" })))
 }

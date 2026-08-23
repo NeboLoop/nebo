@@ -138,12 +138,29 @@ impl LoopTool {
     /// Resolve employee names/slugs to mention tokens for a channel.
     /// Agents (AI employees — including other bots' agents) resolve to
     /// `<@loop_agent_id>`; bare bot names fall back to `<@bot_id>` (routes to
-    /// that bot's primary employee). Returns (tokens, unresolved_names).
+    /// that bot's primary employee). In a registered WORKROOM the member
+    /// registry is also a mention surface: a member's name resolves to its
+    /// LOCAL agent id token, so room coworkers are addressable without a hub
+    /// identity. Returns (tokens, unresolved_names).
     async fn resolve_mentions(
         &self,
         channel_id: &str,
         names: &[String],
     ) -> (Vec<String>, Vec<String>) {
+        // Workroom members first — the room's own roster outranks hub lookup.
+        let room_members: Vec<db::models::Agent> = self
+            .store
+            .as_ref()
+            .and_then(|store| {
+                let room = store.get_workroom(channel_id).ok().flatten()?;
+                Some(
+                    room.member_agent_ids
+                        .iter()
+                        .filter_map(|id| store.get_agent(id).ok().flatten())
+                        .collect(),
+                )
+            })
+            .unwrap_or_default();
         // Channel → loop mapping comes from the bot's channel list.
         let loop_id = match self.comm.list_channels().await {
             Ok(channels) => channels
@@ -166,6 +183,16 @@ impl LoopTool {
         let mut unresolved = Vec::new();
         for name in names {
             let needle = name.to_lowercase();
+            if let Some(member) = room_members.iter().find(|a| {
+                a.name.to_lowercase() == needle
+                    || a.handle.as_deref().map(str::to_lowercase) == Some(needle.clone())
+            }) {
+                let token = format!("<@{}>", member.id);
+                if !tokens.contains(&token) {
+                    tokens.push(token);
+                }
+                continue;
+            }
             // Employees first (agents within bots), then bot-level fallback.
             // A bare bot name ("Alpha") resolves to that bot's agent too —
             // agent rows carry the hosting bot's name/slug.

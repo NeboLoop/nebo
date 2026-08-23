@@ -3256,7 +3256,7 @@ async fn run_webhook_workflow(
     }
 }
 
-async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
+pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
     tracing::info!(
         target: "neboai_identity",
         topic = %msg.topic,
@@ -4129,28 +4129,32 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
         // message reaches the owner's UI as an event — mentioned or not,
         // employee or human. (Initial history is REST getChannelMessages;
         // this keeps the open room view event-driven, never polling.)
-        if let Some(channel_id) = state
+        // The room registration is held for mention resolution below: in a
+        // registered room the member registry IS the mention surface.
+        let workroom = match state
             .comm_manager
             .channel_for_conversation(&msg.conversation_id)
             .await
         {
-            if let Ok(Some(room)) = state.store.get_workroom(&channel_id) {
-                state.hub.broadcast(
-                    "workroom_message",
-                    serde_json::json!({
-                        "channelId": room.channel_id,
-                        "conversationId": msg.conversation_id,
-                        "from": msg.from,
-                        "fromAgentId": msg.metadata.get("fromAgentId").cloned().unwrap_or_default(),
-                        "senderName": msg
-                            .metadata
-                            .get("fromAgentName")
-                            .cloned()
-                            .unwrap_or_else(|| sender_label.clone()),
-                        "text": text,
-                    }),
-                );
-            }
+            Some(channel_id) => state.store.get_workroom(&channel_id).ok().flatten(),
+            None => None,
+        };
+        if let Some(ref room) = workroom {
+            state.hub.broadcast(
+                "workroom_message",
+                serde_json::json!({
+                    "channelId": room.channel_id,
+                    "conversationId": msg.conversation_id,
+                    "from": msg.from,
+                    "fromAgentId": msg.metadata.get("fromAgentId").cloned().unwrap_or_default(),
+                    "senderName": msg
+                        .metadata
+                        .get("fromAgentName")
+                        .cloned()
+                        .unwrap_or_else(|| sender_label.clone()),
+                    "text": text,
+                }),
+            );
         }
 
         // INGEST: every channel message accrues into the rolling buffer,
@@ -4196,6 +4200,16 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
             let id = id.as_str();
             let local_id = if !bot_id.is_empty() && id == bot_id {
                 Some(String::new()) // primary bot
+            } else if workroom
+                .as_ref()
+                .is_some_and(|r| r.member_agent_ids.iter().any(|m| m == id))
+            {
+                // In a registered workroom the member registry IS the mention
+                // surface: a member's LOCAL agent id is addressable whether or
+                // not the agent has a hub identity or is loop-exposed. This is
+                // what lets a room's employees talk to each other at all —
+                // most employees never leave the machine.
+                Some(id.to_string())
             } else {
                 match state.store.get_agent_by_loop_agent_id(id) {
                     Ok(Some(a)) if a.loop_exposed != 0 => Some(a.id),

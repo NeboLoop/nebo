@@ -706,6 +706,8 @@ impl ChannelMessagesResponse {
                     }
                     if !p.metadata.from_agent_name.is_empty() {
                         item.sender_name = Some(p.metadata.from_agent_name);
+                    } else if !p.metadata.sender_name.is_empty() {
+                        item.sender_name = Some(p.metadata.sender_name);
                     }
                 }
                 item
@@ -756,6 +758,9 @@ struct ChannelMetadata {
     /// Sender employee identity, stamped by the sending bot (WS6 wire leg).
     #[serde(default, rename = "fromAgentName")]
     from_agent_name: String,
+    /// Agent replies attach senderName (display name only, no id on the wire).
+    #[serde(default, rename = "senderName")]
+    sender_name: String,
 }
 
 // ── Chat Message Types ───────────────────────────────────────────────

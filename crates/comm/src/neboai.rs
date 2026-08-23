@@ -913,6 +913,10 @@ impl CommPlugin for NeboAIPlugin {
         self.bot_id.read().await.clone()
     }
 
+    async fn conversation_for_channel(&self, channel_id: &str) -> Option<String> {
+        self.resolve_channel_conv(channel_id).await.ok()
+    }
+
     async fn list_channel_messages(
         &self,
         channel_id: &str,

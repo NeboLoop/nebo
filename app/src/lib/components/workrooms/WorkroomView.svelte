@@ -99,7 +99,7 @@
   const fromRest = (m: WorkroomMessage): RoomMsg => ({
     id: m.id,
     from: nameFor(m.from),
-    content: m.content,
+    content: displayText(m.content),
     mine: m.role === 'user',
   });
 

@@ -331,6 +331,16 @@ impl PluginManager {
         }
     }
 
+    /// The hub conversation backing a channel (inverse mapping).
+    pub async fn conversation_for_channel(&self, channel_id: &str) -> Option<String> {
+        let inner = self.inner.read().await;
+        if let Some(ref active) = inner.active {
+            active.conversation_for_channel(channel_id).await
+        } else {
+            None
+        }
+    }
+
     pub async fn agent_space_loop_id(&self, conv_id: &str) -> Option<String> {
         let inner = self.inner.read().await;
         if let Some(ref active) = inner.active {
