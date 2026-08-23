@@ -1010,25 +1010,42 @@ impl NeboAIApi {
 
     /// Create a channel in a loop. NeboLoop sanitizes the name and auto-adds the
     /// bot's agents as members, so the bot can post immediately after.
+    /// Create a channel in a loop, returning the new channel's id (the hub
+    /// responds with the created channel object; workroom creation needs the
+    /// id to register the room and join the conversation).
     pub async fn create_channel(
         &self,
         loop_id: &str,
         name: &str,
         description: Option<&str>,
-    ) -> Result<(), CommError> {
+    ) -> Result<String, CommError> {
         #[derive(serde::Serialize)]
         struct CreateChannelBody<'a> {
             name: &'a str,
             #[serde(skip_serializing_if = "Option::is_none")]
             description: Option<&'a str>,
         }
-        self.do_json::<serde_json::Value>(
-            reqwest::Method::POST,
-            &format!("/api/v1/loops/{}/channels", loop_id),
-            Some(&CreateChannelBody { name, description }),
-        )
-        .await?;
-        Ok(())
+        let resp = self
+            .do_json::<serde_json::Value>(
+                reqwest::Method::POST,
+                &format!("/api/v1/loops/{}/channels", loop_id),
+                Some(&CreateChannelBody { name, description }),
+            )
+            .await?;
+        // Accept both envelope shapes ({channel:{id}} and flat {id}).
+        let id = resp
+            .get("channel")
+            .and_then(|c| c.get("id"))
+            .or_else(|| resp.get("id"))
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+        if id.is_empty() {
+            return Err(CommError::Other(
+                "create channel: response carried no channel id".into(),
+            ));
+        }
+        Ok(id)
     }
 
     /// List members of a channel.
