@@ -236,6 +236,7 @@ async fn tick(state: &AppState, last_fired: &LastFired) -> Result<(), String> {
             handoff_depth: 0,
             seed_taint: vec![],
             tool_allowlist: None,
+            hidden_prompt: false,
             audience: None,
         };
 

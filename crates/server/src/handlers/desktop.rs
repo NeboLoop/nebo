@@ -120,6 +120,7 @@ pub async fn teach_stop(
         handoff_depth: 0,
         seed_taint: vec![],
         tool_allowlist: None,
+        hidden_prompt: false,
         audience: None,
     };
     crate::chat_dispatch::run_chat(&state, config).await;

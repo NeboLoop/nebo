@@ -188,6 +188,13 @@ export function listActiveAgents() {
 }
 
 /**
+ * @description "Christen primary"
+ */
+export function christenPrimary(req: Record<string, unknown> = {}) {
+	return webapi.post<components.ChristenPrimaryResponse>(`/api/v1/agents/assistant/christen`, req)
+}
+
+/**
  * @description "List event sources"
  */
 export function listEventSources() {

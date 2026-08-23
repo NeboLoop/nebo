@@ -724,6 +724,7 @@ async fn start_app_agent_run(
             handoff_depth: 0,
             seed_taint: vec![],
             tool_allowlist: None,
+            hidden_prompt: false,
             audience: None,
         },
     )

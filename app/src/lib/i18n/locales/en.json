@@ -2744,5 +2744,13 @@
 		"runNow": "Run now",
 		"deleteReminderTitle": "Delete \"{name}\"?",
 		"deleteReminderBody": "This scheduled task stops running and is removed. Past runs stay in the run history."
+	},
+	"christen": {
+		"title": "Name your first employee",
+		"lede": "Every hire starts with a name. This one runs on your machine, remembers everything you teach it, and works for you alone.",
+		"placeholder": "e.g. Jarvis, Piper, Ada…",
+		"create": "Hire them",
+		"creating": "Creating {name}…",
+		"failed": "Couldn't complete the hire. Check your connection and try again."
 	}
 }

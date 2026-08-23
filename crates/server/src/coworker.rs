@@ -160,6 +160,7 @@ async fn send_coworker_message(
         handoff_depth: msg.handoff_depth + 1,
         seed_taint,
         tool_allowlist: None,
+        hidden_prompt: false,
         // Recall-for-audience: the target's recall is filtered against this
         // requester unless the owner granted them in `memory.share_with`.
         audience: Some(sender_ref.to_string()),

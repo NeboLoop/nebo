@@ -3560,6 +3560,7 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
             handoff_depth: handoff_depth_in,
             seed_taint: vec![],
             tool_allowlist: None,
+            hidden_prompt: false,
             audience: None,
         };
 
@@ -3703,6 +3704,7 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
             handoff_depth: handoff_depth_in,
             seed_taint: vec![],
             tool_allowlist: None,
+            hidden_prompt: false,
             audience: None,
         };
 
@@ -3980,6 +3982,7 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
                 handoff_depth: handoff_depth_in,
                 seed_taint: vec![],
                 tool_allowlist: None,
+                hidden_prompt: false,
                 audience: None,
             };
 
@@ -4087,6 +4090,7 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
             handoff_depth: handoff_depth_in,
             seed_taint: vec![],
             tool_allowlist: None,
+            hidden_prompt: false,
             audience: None,
         };
 
@@ -4874,6 +4878,7 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
                 } else {
                     None
                 },
+                hidden_prompt: false,
                 audience: None,
             };
 

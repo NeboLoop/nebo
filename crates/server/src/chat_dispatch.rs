@@ -298,6 +298,10 @@ pub struct ChatConfig {
     /// Restrict this run to these tools (declared set trimmed + dispatch-time
     /// denial — the phone-caller mechanism). None = full roster.
     pub tool_allowlist: Option<std::collections::HashSet<String>>,
+    /// Persist the prompt as an isMeta (owner-invisible) user message — for
+    /// platform-authored prompts like the christening self-introduction. The
+    /// model sees it; the transcript never does.
+    pub hidden_prompt: bool,
     /// Recall-for-audience: the agent id this run replies to (coworker rail
     /// only). `None` for owner-initiated runs.
     pub audience: Option<String>,
@@ -570,6 +574,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
             progress: Some(progress),
             mention_context,
             tool_allowlist: config.tool_allowlist.clone(),
+            hidden_prompt: config.hidden_prompt,
             // Today the only ChatConfig-driven allowlist is the workroom
             // organizer's coordination scope (phone callers build RunRequest
             // directly in voice.rs) — so the denial teaches delegation. If a
@@ -1746,6 +1751,7 @@ fn maybe_auto_continue(
             handoff_depth: 0,
             seed_taint: vec![],
             tool_allowlist: None,
+            hidden_prompt: false,
             audience: None,
         };
         run_chat(&state, config).await;
@@ -1819,6 +1825,7 @@ pub async fn run_chat_events(
         handoff_depth: config.handoff_depth,
         seed_taint: config.seed_taint,
         tool_allowlist: config.tool_allowlist,
+        hidden_prompt: config.hidden_prompt,
         audience: config.audience,
         ..Default::default()
     };

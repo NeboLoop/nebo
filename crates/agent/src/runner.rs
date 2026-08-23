@@ -497,6 +497,9 @@ pub struct RunRequest {
     pub tool_allowlist: Option<std::collections::HashSet<String>>,
     /// Denial text used when a whitelisted run calls an off-list tool.
     pub tool_denial_hint: Option<String>,
+    /// Persist the prompt as isMeta (owner-invisible) — platform-authored
+    /// prompts (christening intro) that must never render as the owner's words.
+    pub hidden_prompt: bool,
     /// Skill names to pre-load into this run's context. Full SKILL.md content
     /// is injected into the system prompt so the agent has instructions without
     /// needing to discover/load them. Used by sub-agent spawning.
@@ -1026,13 +1029,17 @@ impl Runner {
             // owner speaking. It stays in the model's history (that is the
             // whole point) and out of the owner's transcript — `isMeta` is what
             // the read path filters on.
-            let metadata = if crate::goals::is_continuation_prompt(&effective_content) {
+            let metadata = if crate::goals::is_continuation_prompt(&effective_content) || req.hidden_prompt {
                 let mut value: serde_json::Value = metadata
                     .as_deref()
                     .and_then(|m| serde_json::from_str(m).ok())
                     .unwrap_or_else(|| serde_json::json!({}));
                 value["isMeta"] = serde_json::json!(true);
-                value["autoContinue"] = serde_json::json!(true);
+                if req.hidden_prompt {
+                    value["hiddenPrompt"] = serde_json::json!(true);
+                } else {
+                    value["autoContinue"] = serde_json::json!(true);
+                }
                 Some(value.to_string())
             } else {
                 metadata

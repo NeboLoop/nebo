@@ -105,6 +105,7 @@ impl agent::ChannelDispatcher for ChannelDispatchImpl {
                 // input — seed the run's taint accordingly.
                 seed_taint: vec![types::provenance::ProvenanceClass::Channel],
                 tool_allowlist: None,
+                hidden_prompt: false,
                 audience: None,
             };
             let channel = channel_kind.as_str();

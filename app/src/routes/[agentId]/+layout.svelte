@@ -6,6 +6,7 @@
   import { getWebSocketClient } from '$lib/websocket/client';
   import { AGENT_COLORS_MAP, assignAgentColors } from '$lib/tokens.js';
   import UserMenu from '$lib/components/UserMenu.svelte';
+  import ChristeningModal from '$lib/components/ChristeningModal.svelte';
   import WorkflowBuilder from '$lib/components/workflow/WorkflowBuilder.svelte';
   import { launchApp } from '$lib/apps/launcher.js';
   import CollapsibleRail from '$lib/components/ui/CollapsibleRail.svelte';
@@ -281,6 +282,7 @@
   let apiSkills = $state<Record<string, string[]>>({});
   let apiConfig = $state<Record<string, { persona: string; agentMd: string; soul: string; rules: string; model: string; inputs: unknown[]; workflows: Record<string, WorkflowConfig> }>>({});
   let agentsLoading = $state(true);
+  let primaryChristened = $state(true);
   let threadsLoading = $state<Record<string, boolean>>({});
 
 
@@ -298,6 +300,10 @@
       const activeIds = new Set<string>(
         activeAgents.map((a) => a.id || a.agentId)
       );
+      // First-contact gate (owner decision: not skippable): until the primary
+      // is named, the workspace waits behind the christening ceremony. Cloud
+      // installs hit this on first workspace mount — the wizard never runs there.
+      primaryChristened = (agentsResp as any)?.primaryChristened !== false;
       if (agentsResp?.agents?.length) {
         const agents = agentsResp.agents;
         const colors = assignAgentColors(agents);
@@ -1240,6 +1246,16 @@
 
 <!-- Columns 2+3: rendered by child routes -->
 {@render children()}
+
+{#if !primaryChristened && !agentsLoading}
+  <ChristeningModal
+    oncreated={(threadId, name) => {
+      primaryChristened = true;
+      loadAgentRoster();
+      goto(`/assistant/threads/${threadId}`);
+    }}
+  />
+{/if}
 
 <AgentSettingsModal
   open={settingsSection !== null}

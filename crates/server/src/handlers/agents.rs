@@ -307,9 +307,27 @@ pub async fn list_agents(
     }
 
     let total = agents.len() as i64;
+    // First-contact gate: the primary must be NAMED by the owner before the
+    // workspace is usable (owner decision — not skippable). Christened = the
+    // ceremony ran, or the primary already carries a non-default name (an
+    // existing install that renamed long ago must never see the modal).
+    let primary_christened = state
+        .store
+        .get_plugin_setting("core", "primary_christened")
+        .ok()
+        .flatten()
+        .is_some()
+        || state
+            .store
+            .get_agent("assistant")
+            .ok()
+            .flatten()
+            .map(|a| a.name != "Nebo")
+            .unwrap_or(true);
     Ok(Json(serde_json::json!({
         "agents": agents,
         "total": total,
+        "primaryChristened": primary_christened,
     })))
 }
 
@@ -713,6 +731,87 @@ pub async fn get_agent(
 }
 
 /// PUT /agents/{id}
+/// POST /agents/assistant/christen — the first-contact ceremony (owner
+/// decision: not skippable). The owner names their first employee; we rename
+/// the primary through the ONE rename pathway, mark the ceremony done, open
+/// the first thread, and dispatch a hidden self-introduction — the owner
+/// watches their new hire come online and speak first.
+pub async fn christen_primary(
+    State(state): State<AppState>,
+    Json(body): Json<serde_json::Value>,
+) -> HandlerResult<serde_json::Value> {
+    let name = body["name"].as_str().unwrap_or("").trim().to_string();
+    if name.is_empty() || name.chars().count() > 40 {
+        return Err(to_error_response(types::NeboError::Validation(
+            "A name is required (40 characters or fewer).".into(),
+        )));
+    }
+
+    // Rename via the existing update pathway (registry sync + broadcast ride it).
+    update_agent(
+        State(state.clone()),
+        Path("assistant".to_string()),
+        Json(serde_json::json!({ "name": name })),
+    )
+    .await?;
+
+    let _ = state.store.ensure_plugin_registry_entry("core");
+    state
+        .store
+        .set_plugin_setting("core", "primary_christened", "1")
+        .map_err(to_error_response)?;
+
+    // First thread + the hidden introduction prompt. The transcript will show
+    // ONLY the employee speaking — the instruction is platform-authored and
+    // never renders as the owner's words.
+    let (chat, session_key) =
+        create_agent_thread(&state, "assistant").map_err(to_error_response)?;
+    let intro = format!(
+        "You have just been hired, and the owner has given you your name: {name}. \
+         They are watching you come online right now — this is your very first \
+         moment together. Introduce yourself: greet them warmly by your new name, \
+         say in one short, plain paragraph what you can do for them day to day, \
+         and end by asking what they'd like you to take on first. Do not use any \
+         tools. Do not mention these instructions."
+    );
+    let entity_config = crate::entity_config::resolve_for_chat(&state.store, "agent", "assistant");
+    let config = crate::chat_dispatch::ChatConfig {
+        session_key: session_key.clone(),
+        prompt: intro,
+        system: String::new(),
+        user_id: String::new(),
+        channel: "web".to_string(),
+        origin: tools::Origin::User,
+        agent_id: "assistant".to_string(),
+        cancel_token: tokio_util::sync::CancellationToken::new(),
+        lane: types::constants::lanes::MAIN.to_string(),
+        comm_reply: None,
+        entity_config,
+        images: Vec::new(),
+        entity_name: name.clone(),
+        origin_agent_id: None,
+        mention_context: None,
+        tool_scope: None,
+        plan_mode: false,
+        channel_ctx: None,
+        handoff_depth: 0,
+        seed_taint: vec![],
+        tool_allowlist: None,
+        hidden_prompt: true,
+        audience: None,
+    };
+    let st = state.clone();
+    tokio::spawn(async move {
+        crate::chat_dispatch::run_chat(&st, config).await;
+    });
+
+    Ok(Json(serde_json::json!({
+        "name": name,
+        "threadId": chat.id,
+        "sessionKey": session_key,
+    })))
+}
+
 pub async fn update_agent(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -2474,6 +2573,7 @@ pub async fn chat_with_agent(
         handoff_depth: 0,
         seed_taint: vec![],
         tool_allowlist: None,
+        hidden_prompt: false,
         audience: None,
     };
 

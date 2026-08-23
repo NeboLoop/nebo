@@ -34,6 +34,7 @@ var typeOverrides = map[string]string{
 
 	// ── Agents roster (enriched rows: display name, source, isolation, setup) ──
 	"list_agents.agents": "AgentListEntry[]",
+	"list_agents.primaryChristened": "boolean",
 
 	// ── Workrooms (Workroom/WorkroomMessage generated from Rust structs) ──
 	"list_workrooms.workrooms":        "Workroom[]",
