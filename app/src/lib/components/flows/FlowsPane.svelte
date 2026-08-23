@@ -18,6 +18,25 @@
   let { onask }: { onask: (prompt: string) => void } = $props();
 
   const ctx = getContext<AgentPageContext>('agentPage');
+
+  // Recurring work lives in TWO stores: workflow bindings, and the event
+  // tool's cron jobs ("set up a recurring weather check" in chat lands
+  // there). A Flows list that only shows one of them is lying — the owner
+  // must see every recurring thing this employee does, in one place.
+  // Named agents' crons get migrated into workflows at startup; what remains
+  // here are the primary employee's own reminders, matched by agentId.
+  import * as api from '$lib/api/nebo';
+  import type { CronJob } from '$lib/api/neboComponents';
+  let reminders = $state<CronJob[]>([]);
+  $effect(() => {
+    const id = ctx.agentId;
+    if (!id) return;
+    api.listTasks(200, 0).then((r) => {
+      reminders = (r.tasks ?? []).filter(
+        (t) => (t.agentId ?? '') === id || (id === 'assistant' && !t.agentId)
+      );
+    }).catch(() => { reminders = []; });
+  });
   const entries = $derived(ctx.workflowEntries);
   const stats = $derived(ctx.workflowStats);
 
@@ -119,6 +138,40 @@
           </div>
         </div>
       {/each}
+    {/if}
+
+    {#if reminders.length > 0}
+      <div class="mt-2">
+        <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1.5">{$t('flows.reminders')}</div>
+        <div class="flex flex-col gap-2">
+          {#each reminders as r (r.id)}
+            <div class="rounded-lg border border-base-300 bg-base-100 p-3 flex items-start gap-2.5">
+              <div class="w-[22px] h-[22px] rounded flex items-center justify-center text-sm shrink-0 mt-0.5 {r.enabled !== false ? 'bg-primary/10 text-primary' : 'bg-base-200 text-base-content/40'}">&#8986;</div>
+              <div class="flex-1 min-w-0">
+                <div class="flex items-center gap-1.5 flex-wrap">
+                  <span class="text-sm font-medium">{r.name}</span>
+                  {#if r.enabled === false}
+                    <span class="py-0 px-1.5 rounded bg-base-200 text-xs text-base-content/50">{$t('common.paused')}</span>
+                  {/if}
+                </div>
+                {#if r.instructions || r.message || r.command}
+                  <div class="text-xs text-base-content/70 mt-0.5 line-clamp-2">{r.instructions || r.message || r.command}</div>
+                {/if}
+                <div class="flex items-center gap-1.5 mt-1.5 flex-wrap">
+                  <span class="text-xs text-base-content/50 font-mono">{r.schedule}</span>
+                  {#if r.lastRun}
+                    <span class="text-xs text-base-content/30">&middot;</span>
+                    <span class="text-xs text-base-content/50 font-mono">{r.lastRun}</span>
+                  {/if}
+                  {#if r.lastError}
+                    <span class="text-xs text-error font-mono truncate">{r.lastError}</span>
+                  {/if}
+                </div>
+              </div>
+            </div>
+          {/each}
+        </div>
+      </div>
     {/if}
 
     <button

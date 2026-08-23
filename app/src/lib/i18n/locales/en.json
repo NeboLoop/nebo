@@ -80,7 +80,8 @@
 		"yearShort": "yr",
 		"monthShort": "mo",
 		"closeModal": "Close modal",
-		"all": "All"
+		"all": "All",
+		"more": "More"
 	},
 	"time": {
 		"justNow": "just now",
@@ -1909,7 +1910,10 @@
 		"shared": "Shared memory",
 		"sharedHint": "One memory across every conversation — what this employee learns anywhere, it knows everywhere",
 		"isolated": "Isolated per conversation",
-		"isolatedHint": "Each conversation keeps its own sealed memory — one case, client, or matter never bleeds into another"
+		"isolatedHint": "Each conversation keeps its own sealed memory — one case, client, or matter never bleeds into another",
+		"confirmOffTitle": "Turn off memory isolation?",
+		"confirmOffBody": "Your separate conversations stay saved, but they'll no longer appear as a list of matters — this employee returns to one continuous conversation. What was learned inside each sealed conversation stays sealed: future chats won't draw on it. Nothing is deleted, and turning isolation back on restores the list and each conversation's own memory.",
+		"confirmOffAction": "Turn off isolation"
 	},
 	"agentApprovals": {
 		"title": "Approvals",
@@ -2717,6 +2721,7 @@
 	},
 	"flows": {
 		"none": "No flows yet",
-		"newCallTree": "New call tree — design what a phone line handles"
+		"newCallTree": "New call tree — design what a phone line handles",
+		"reminders": "Reminders & scheduled tasks"
 	}
 }

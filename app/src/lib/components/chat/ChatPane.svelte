@@ -1001,6 +1001,32 @@
     </div>
   {/if}
 
+        {#snippet headerIcon(active: boolean, label: string, onclick: () => void, icon: Snippet)}
+          <button
+            class="w-7 h-7 max-md:w-10 max-md:h-10 rounded-md flex items-center justify-center cursor-pointer bg-transparent border-none transition-colors {active
+              ? 'text-primary bg-primary/10'
+              : 'text-base-content/60 hover:text-base-content hover:bg-base-200'}"
+            {onclick}
+            title={label}
+            aria-label={label}
+          >{@render icon()}</button>
+        {/snippet}
+        {#snippet computerIcon()}
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+        {/snippet}
+        {#snippet flowsIcon()}
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="6" height="6" rx="1.5"/><rect x="15" y="15" width="6" height="6" rx="1.5"/><path d="M9 6h4a2 2 0 0 1 2 2v10"/></svg>
+        {/snippet}
+        {#snippet runsIcon()}
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"/><polyline points="3 3 3 8 8 8"/><polyline points="12 8 12 12 15 14"/></svg>
+        {/snippet}
+        {#snippet settingsIcon()}
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        {/snippet}
+        {#snippet workIcon()}
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/><path d="M14 9l3 3-3 3"/></svg>
+        {/snippet}
+
   <!-- Header -->
   {#if headerTitle}
     <div class="h-11 px-[18px] border-b border-base-content/10 flex items-center gap-2 shrink-0">
@@ -1035,34 +1061,9 @@
           <span class="text-sm text-base-content/50 truncate">{headerTitle}</span>
         {/if}
       </span>
-      <div class="ml-auto flex items-center gap-0.5 shrink-0">
-        {#snippet headerIcon(active: boolean, label: string, onclick: () => void, icon: Snippet)}
-          <button
-            class="w-7 h-7 max-md:w-10 max-md:h-10 rounded-md flex items-center justify-center cursor-pointer bg-transparent border-none transition-colors {active
-              ? 'text-primary bg-primary/10'
-              : 'text-base-content/60 hover:text-base-content hover:bg-base-200'}"
-            {onclick}
-            title={label}
-            aria-label={label}
-          >{@render icon()}</button>
-        {/snippet}
+      <div class="ml-auto max-md:hidden flex items-center gap-0.5 shrink-0">
 
-        {#snippet computerIcon()}
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
-        {/snippet}
-        {#snippet flowsIcon()}
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="6" height="6" rx="1.5"/><rect x="15" y="15" width="6" height="6" rx="1.5"/><path d="M9 6h4a2 2 0 0 1 2 2v10"/></svg>
-        {/snippet}
-        {#snippet runsIcon()}
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"/><polyline points="3 3 3 8 8 8"/><polyline points="12 8 12 12 15 14"/></svg>
-        {/snippet}
-        {#snippet settingsIcon()}
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-        {/snippet}
 
-        {#snippet workIcon()}
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/><path d="M14 9l3 3-3 3"/></svg>
-        {/snippet}
 
         {@render headerIcon(computerFull, $t('chat.botComputer'), () => (computerFull = true), computerIcon)}
         {#if flowsPane}
@@ -1086,6 +1087,37 @@
             {$t('agent.openApp')}
           </button>
         {/if}
+      </div>
+
+      <!-- Phone: the icon row collapses into one labeled menu — five icons ate
+           the title's room at 390px. -->
+      <div class="md:hidden ml-auto shrink-0 flex items-center gap-1">
+        {#if isApp && onopenapp}
+          <button class="btn btn-primary btn-sm gap-1" onclick={onopenapp}>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+            {$t('agent.openApp')}
+          </button>
+        {/if}
+        <div class="dropdown dropdown-end">
+          <div tabindex="0" role="button" aria-label={$t('common.more')} class="w-10 h-10 rounded-md flex items-center justify-center cursor-pointer text-base-content/60 hover:text-base-content hover:bg-base-200">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></svg>
+          </div>
+          <ul class="dropdown-content menu z-[55] mt-1 w-48 rounded-box border border-base-300 bg-base-100 p-1.5 shadow-lg">
+            <li><button onclick={() => { (document.activeElement as HTMLElement)?.blur(); computerFull = true; }}>{@render computerIcon()}{$t('chat.botComputer')}</button></li>
+            {#if flowsPane}
+              <li><button onclick={() => { (document.activeElement as HTMLElement)?.blur(); togglePane('flows'); }}>{@render flowsIcon()}{$t('nav.flows')}</button></li>
+            {/if}
+            {#if onopenruns}
+              <li><button onclick={() => { (document.activeElement as HTMLElement)?.blur(); onopenruns?.(); }}>{@render runsIcon()}{$t('nav.runs')}</button></li>
+            {/if}
+            {#if headerRight}
+              <li><button onclick={() => { (document.activeElement as HTMLElement)?.blur(); togglePane('work'); }}>{@render workIcon()}{$t('chat.work')}</button></li>
+            {/if}
+            {#if onsettings}
+              <li><button onclick={() => { (document.activeElement as HTMLElement)?.blur(); onsettings?.(); }}>{@render settingsIcon()}{$t('settings.title')}</button></li>
+            {/if}
+          </ul>
+        </div>
       </div>
     </div>
   {/if}
