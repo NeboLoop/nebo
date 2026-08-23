@@ -9,7 +9,6 @@
 -->
 <script lang="ts">
   import type { Snippet } from 'svelte';
-  import type { Writable } from 'svelte/store';
   import { t } from 'svelte-i18n';
   import { sidebarCollapsedFor } from '$lib/stores/sidebar';
 
@@ -18,8 +17,11 @@
     section: string;
     /** Shown in the header when expanded. */
     title?: string;
-    /** Drawer open state below md. Omit for a rail with no mobile drawer. */
-    mobileOpen?: Writable<boolean>;
+    /** Drawer open below md — plain state down, event up. The caller owns
+     *  where that state lives (for the workspace it is the URL). Omit both
+     *  for a rail with no mobile drawer. */
+    mobileOpen?: boolean;
+    onmobileclose?: () => void;
     /** Rendered at the far left of the header, in both states. */
     leading?: Snippet;
     /** Extra header content, right of the title, left of the toggle. */
@@ -37,6 +39,7 @@
     section,
     title,
     mobileOpen,
+    onmobileclose,
     leading,
     headerActions,
     expanded,
@@ -46,24 +49,25 @@
   }: Props = $props();
 
   const isCollapsed = sidebarCollapsedFor(section);
-  const drawerOpen = $derived(mobileOpen ? $mobileOpen : false);
+  const drawerOpen = $derived(mobileOpen ?? false);
+  const hasDrawer = $derived(mobileOpen !== undefined);
 
   // On mobile the drawer is full-width, so the rail rendering never applies.
   const showRail = $derived($isCollapsed && !drawerOpen);
 
   function toggle() {
     if (typeof window !== 'undefined' && !window.matchMedia('(min-width: 768px)').matches) {
-      mobileOpen?.set(false);
+      onmobileclose?.();
       return;
     }
     isCollapsed.set(!$isCollapsed);
   }
 </script>
 
-{#if mobileOpen && drawerOpen}
+{#if drawerOpen}
   <div
     class="fixed inset-0 z-30 bg-black/40 md:hidden"
-    onclick={() => mobileOpen.set(false)}
+    onclick={() => onmobileclose?.()}
     role="presentation"
   ></div>
 {/if}
@@ -72,7 +76,7 @@
   data-tour={tour}
   class="{$isCollapsed
     ? 'md:w-rail-collapsed md:min-w-rail-collapsed'
-    : 'md:w-rail md:min-w-rail'} {mobileOpen
+    : 'md:w-rail md:min-w-rail'} {hasDrawer
     ? `max-md:fixed max-md:inset-y-0 max-md:left-0 max-md:z-40 max-md:w-full max-md:transition-[transform,visibility] ${
         drawerOpen ? 'max-md:translate-x-0 max-md:shadow-2xl' : 'max-md:-translate-x-full max-md:invisible'
       }`

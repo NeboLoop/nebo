@@ -8,7 +8,6 @@
   import UserMenu from '$lib/components/UserMenu.svelte';
   import WorkflowBuilder from '$lib/components/workflow/WorkflowBuilder.svelte';
   import { launchApp } from '$lib/apps/launcher.js';
-  import { writable } from 'svelte/store';
   import CollapsibleRail from '$lib/components/ui/CollapsibleRail.svelte';
   import BrandMark from '$lib/components/BrandMark.svelte';
   import ShelfModal from '$lib/components/ui/ShelfModal.svelte';
@@ -40,23 +39,8 @@
     goto(listUrl(value), { replaceState: replace, noScroll: true, keepFocus: true });
   const closeList = () => goto(listUrl(null), { noScroll: true, keepFocus: true });
 
-  // CollapsibleRail speaks Writable; this adapter routes its open/close
-  // through navigation. Below md the drawer is visible iff ?list is present.
-  const drawerOpen = {
-    subscribe: (run: (v: boolean) => void) => {
-      const un = page.subscribe(($p) => run($p.url.searchParams.has('list')));
-      return un;
-    },
-    set: (v: boolean) => {
-      if (v) showList(drilledAgentId ?? '1');
-      else closeList();
-    },
-    update: (fn: (v: boolean) => boolean) => {
-      const cur = $page.url.searchParams.has('list');
-      const next = fn(cur);
-      if (next !== cur) (next ? showList('1') : closeList());
-    },
-  };
+  // Drawer visibility below md is exactly "is a list screen in the URL".
+  const listOpen = $derived($page.url.searchParams.has('list'));
 
   /**
    * What a row click does is decided by memory isolation, because that is what
@@ -67,9 +51,24 @@
    * every chat, so there is one continuous conversation and we open it.
    */
   async function openAgentRow(id: string) {
-    const a = allAgents.find((x) => x.id === id);
-    // One navigation, one URL. Two chained gotos raced: the second built its
-    // URL from a not-yet-updated $page and the first overwrote it.
+    let a = allAgents.find((x) => x.id === id);
+    // Isolation decides whether this tap lands on the matter list, and the
+    // flag is lazy (the list endpoint has no frontmatter). Unknown → resolve
+    // it FIRST, then navigate once — a tap must not guess and correct itself.
+    if (a && a.isolated === undefined) {
+      try {
+        const api = await import('$lib/api/nebo');
+        const resp = (await api.getAgent(id)) as { agent?: { frontmatter?: string } };
+        const iso = JSON.parse(resp.agent?.frontmatter || '{}')?.memory?.context_isolated === true;
+        const idx = allAgents.findIndex((x) => x.id === id);
+        if (idx !== -1) {
+          const next = [...allAgents];
+          next[idx] = { ...next[idx], isolated: iso };
+          allAgents = next;
+          a = next[idx];
+        }
+      } catch { /* unknown stays unknown; fall through to plain open */ }
+    }
     selectAgent(id, a?.isolated ? id : null);
   }
 
@@ -849,7 +848,8 @@
 <CollapsibleRail
   section="workspace"
   title="Nebo"
-  mobileOpen={drawerOpen}
+  mobileOpen={listOpen}
+  onmobileclose={closeList}
   tour="agents"
 >
   {#snippet leading()}
@@ -878,14 +878,14 @@
   {#snippet expanded()}
     {#if drilledAgent}
       <!-- One employee's conversations. -->
-      <button
-        type="button"
-        class="w-full flex items-center gap-2 px-3 py-2 text-sm bg-transparent border-none cursor-pointer hover:bg-base-100/70 text-left"
-        onclick={() => showList('1')}
+      <!-- A link, because it is one: the router intercepts it natively. -->
+      <a
+        href={listUrl('1')}
+        class="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-base-100/70 text-left"
       >
         <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="10 3 5 8 10 13"/></svg>
         <span class="font-medium truncate">{drilledAgent.name}</span>
-      </button>
+      </a>
       <div class="h-px bg-base-content/8 mx-3 mb-1"></div>
       <!-- Isolation means each conversation is its own sealed matter, so
            starting a new one has to be reachable from the list of them. -->

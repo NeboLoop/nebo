@@ -5,6 +5,7 @@
   import { getContext, onMount, onDestroy } from 'svelte';
   import { t } from 'svelte-i18n';
   import { page } from '$app/stores';
+  import { replaceState } from '$app/navigation';
   import ChatPane from '$lib/components/chat/ChatPane.svelte';
   import type { AgentPageContext, EnrichedChat } from '$lib/types/agentPage';
   import { createChatController, toolDisplayName, artifactsToWorkItems, artifactsToAttachments } from '$lib/chat/controller.svelte';
@@ -79,8 +80,9 @@
     const url = new URL(window.location.href);
     if (!url.searchParams.has('active')) return;
     url.searchParams.delete('active');
-    const next = url.pathname + (url.search ? url.search : '');
-    history.replaceState(history.state, '', next);
+    // SvelteKit's replaceState, not the raw History API — the raw call
+    // desyncs the router's own state tracking.
+    replaceState(url.pathname + url.search, $page.state);
   }
 
   function settleFirstRun(opts?: { clearPendingSend?: boolean }) {
