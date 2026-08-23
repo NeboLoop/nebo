@@ -222,6 +222,21 @@ pub async fn list_agents(
             "installedAt": db_row.map(|r| r.installed_at),
             "loopExposed": db_row.map(|r| r.loop_exposed != 0).unwrap_or(false),
             "voice": db_row.map(|r| r.voice.as_str()).unwrap_or(""),
+            // The roster's "editable" affordance keys off nappPath — omitting
+            // it made every agent look hand-editable.
+            "nappPath": db_row.and_then(|r| r.napp_path.clone()),
+            // memory.context_isolated — the roster shows a lock on sealed
+            // employees, so the list must know without N getAgent round trips.
+            // ONE source of truth: DB frontmatter, because that is what the
+            // runtime enforces. No filesystem fallback when a DB row exists —
+            // a lock that overstates enforcement would lie to the owner.
+            "isolated": match db_row {
+                Some(r) => serde_json::from_str::<serde_json::Value>(&r.frontmatter)
+                    .ok()
+                    .and_then(|fm| fm.pointer("/memory/context_isolated").and_then(|v| v.as_bool()))
+                    .unwrap_or(false),
+                None => loaded.config.as_ref().map(|c| c.memory.context_isolated).unwrap_or(false),
+            },
         });
         // Derive needsSetup from config inputs vs stored input_values
         let needs_setup = if let Some(ref cfg) = loaded.config {
@@ -284,6 +299,8 @@ pub async fn list_agents(
             "installedAt": r.installed_at,
             "loopExposed": r.loop_exposed != 0,
             "voice": r.voice,
+            "nappPath": r.napp_path,
+            "isolated": false,
             "needsSetup": false,
             "loadError": "agent files failed to load — this employee cannot run correctly; delete it or repair its files",
         }));

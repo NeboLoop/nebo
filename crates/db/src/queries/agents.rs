@@ -131,6 +131,12 @@ impl Store {
     /// Sync filesystem-owned columns: content (agent_md, frontmatter) and
     /// manifest identity (name, description). The manifest is the source of
     /// truth for display name — without this, agents get stuck with slug names.
+    ///
+    /// Owner-set runtime state rides IN the DB frontmatter and the filesystem
+    /// knows nothing about it, so a content refresh must carry it forward:
+    /// `memory.context_isolated` (the isolation toggle) previously vanished on
+    /// every server restart, silently un-isolating employees. The owner's DB
+    /// value always wins over the publisher's shipped default.
     pub fn sync_agent_content(
         &self,
         id: &str,
@@ -138,10 +144,35 @@ impl Store {
         frontmatter: &str,
     ) -> Result<(), NeboError> {
         let conn = self.conn()?;
+        let existing: Option<String> = conn
+            .query_row(
+                "SELECT frontmatter FROM agents WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .optional()
+            .db_err("sync_agent_content read")?;
+        let mut merged = frontmatter.to_string();
+        if let Some(iso) = existing
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+            .and_then(|fm| fm.pointer("/memory/context_isolated").and_then(|v| v.as_bool()))
+        {
+            if let Ok(mut incoming) = serde_json::from_str::<serde_json::Value>(frontmatter) {
+                if let Some(obj) = incoming.as_object_mut() {
+                    let mem = obj
+                        .entry("memory")
+                        .or_insert_with(|| serde_json::json!({}));
+                    if let Some(mem_obj) = mem.as_object_mut() {
+                        mem_obj.insert("context_isolated".into(), serde_json::json!(iso));
+                        merged = incoming.to_string();
+                    }
+                }
+            }
+        }
         conn.execute(
             "UPDATE agents SET agent_md = ?1, frontmatter = ?2, updated_at = unixepoch()
              WHERE id = ?3",
-            params![agent_md, frontmatter, id],
+            params![agent_md, merged, id],
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;
         Ok(())
