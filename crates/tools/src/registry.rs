@@ -209,7 +209,12 @@ pub trait DynTool: Send + Sync {
 
 /// Registry manages available tools.
 pub struct Registry {
-    tools: Arc<RwLock<HashMap<String, Box<dyn DynTool>>>>,
+    // Arc, not Box: execute() clones the handle and drops the map lock BEFORE
+    // awaiting the tool (snapshot-then-release). A Box'd map forced holding
+    // the read guard across the whole tool future — so a tool parked on an
+    // ask card (install/connect) deadlocked any concurrent register/
+    // unregister (POST /codes re-registers the plugin tool mid-install).
+    tools: Arc<RwLock<HashMap<String, Arc<dyn DynTool>>>>,
     /// Cached tool definitions (description + schema) computed at registration time.
     /// Avoids regenerating descriptions and JSON schemas on every LLM iteration.
     def_cache: Arc<RwLock<HashMap<String, ToolDefinition>>>,
@@ -325,7 +330,7 @@ impl Registry {
         if tools.contains_key(&name) {
             warn!(tool = %name, "tool already registered, overwriting");
         }
-        tools.insert(name.clone(), tool);
+        tools.insert(name.clone(), Arc::from(tool));
         drop(tools);
         self.def_cache.write().await.insert(name.clone(), def);
         debug!(tool = %name, "registered tool");
@@ -689,12 +694,19 @@ impl Registry {
             None
         };
 
-        // ── Phase 3: Re-acquire lock and execute ───────────────────
-        let tools = self.tools.read().await;
-        let mut result = match tools
-            .get(name)
-            .or_else(|| tools.get(strip_mcp_prefix(name)))
-        {
+        // ── Phase 3: snapshot the tool handle, RELEASE the lock, execute ──
+        // The guard must not live across the tool future: a tool can park for
+        // minutes on an ask card, and register/unregister (plugin installs)
+        // need the write lock meanwhile. Holding the read guard here
+        // deadlocked the install card against its own discover call.
+        let tool = {
+            let tools = self.tools.read().await;
+            tools
+                .get(name)
+                .or_else(|| tools.get(strip_mcp_prefix(name)))
+                .cloned()
+        };
+        let mut result = match tool {
             Some(tool) => tool.execute_dyn(ctx, input).await,
             None => ToolResult::error(format!(
                 "Tool '{}' was unregistered during permit acquisition",
