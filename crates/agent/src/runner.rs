@@ -6787,6 +6787,8 @@ mod named_invocation_tests {
 mod tests {
     use super::*;
 
+    /// Spiral tests exercise the counting mechanics at the shipped default.
+    const SAME_ACTION_LIMIT: usize = crate::guardrails::DEFAULT_SAME_ACTION_LIMIT;
 
     /// Minimal provider stub for resolve_aux tests (only id() matters).
     struct StubProvider(&'static str);
@@ -7124,7 +7126,7 @@ mod tests {
     fn spiral_backstop_is_a_nudge_not_a_stop() {
         let src = include_str!("runner.rs");
         let block = src
-            .split("racked up SAME_ACTION_LIMIT UNPRODUCTIVE attempts")
+            .split("racked up the same-action limit of UNPRODUCTIVE attempts")
             .nth(1)
             .expect("spiral backstop block");
         let block = &block[..block.find("\n            // ──").unwrap_or(block.len())];

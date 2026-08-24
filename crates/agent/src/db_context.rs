@@ -407,12 +407,14 @@ pub async fn join_prompt_recall(
             let results: Vec<tools::HybridSearchResult> = fts
                 .iter()
                 .filter_map(|(mem_id, rank)| {
-                    // Same floor as the hybrid leg: unrequested recall stays
-                    // silent unless the match is real.
+                    // No PROMPT_RECALL_MIN_SCORE here: that floor is
+                    // calibrated for cosine similarity, and BM25 magnitudes
+                    // are corpus-dependent (a clean single-term match in a
+                    // small store sits well below 0.45) — applying it emptied
+                    // this tier entirely. An FTS hit is already a literal
+                    // term match from the user's own prompt; normalize_bm25
+                    // orders, it does not gate.
                     let score = crate::search::normalize_bm25(*rank);
-                    if score < PROMPT_RECALL_MIN_SCORE {
-                        return None;
-                    }
                     store.get_memory(*mem_id).ok().flatten().map(|m| {
                         tools::HybridSearchResult {
                             memory_id: Some(*mem_id),
