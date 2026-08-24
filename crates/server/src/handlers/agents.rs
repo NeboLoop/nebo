@@ -376,9 +376,11 @@ pub async fn create_agent(
     State(state): State<AppState>,
     Json(body): Json<serde_json::Value>,
 ) -> HandlerResult<serde_json::Value> {
-    // Blank agent: create a minimal agent and auto-activate it
+    // Blank agent: create a minimal agent and auto-activate it. The sidebar's
+    // "+ new employee" flow names it at birth — hiring starts with a name.
     if body.get("blank").and_then(|v| v.as_bool()).unwrap_or(false) {
-        return create_blank_agent(state).await;
+        let name = body["name"].as_str().filter(|n| !n.trim().is_empty());
+        return create_blank_agent(state, name).await;
     }
 
     let agent_md = body["agentMd"].as_str().ok_or_else(|| {
@@ -1280,13 +1282,17 @@ pub async fn process_agent_bindings(
 }
 
 /// Create a blank agent instance, auto-activate it, and return it.
-async fn create_blank_agent(state: AppState) -> HandlerResult<serde_json::Value> {
+async fn create_blank_agent(
+    state: AppState,
+    name: Option<&str>,
+) -> HandlerResult<serde_json::Value> {
     let id = uuid::Uuid::new_v4().to_string();
-    let agent_md = "---\nname: New Agent\ndescription: \"\"\n---\n";
+    let name = name.map(str::trim).unwrap_or("New Agent");
+    let agent_md = format!("---\nname: {:?}\ndescription: \"\"\n---\n", name);
 
     let agent = state
         .store
-        .create_agent(&id, None, "New Agent", "", agent_md, "{}", None, None)
+        .create_agent(&id, None, name, "", &agent_md, "{}", None, None)
         .map_err(to_error_response)?;
 
     // Auto-activate: insert into agent_registry so it shows in sidebar

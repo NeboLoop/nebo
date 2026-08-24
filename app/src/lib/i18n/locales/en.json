@@ -2759,5 +2759,13 @@
 		"create": "Hire them",
 		"creating": "Creating {name}…",
 		"failed": "Couldn't complete the hire. Check your connection and try again."
+	},
+	"newEmployee": {
+		"title": "Hire an employee",
+		"lede": "Name your new employee. They start blank — teach them their job in chat, or shape them in Settings.",
+		"placeholder": "e.g. Dispatch, Piper, Sam…",
+		"create": "Hire them",
+		"failed": "Couldn't create the employee. Try again.",
+		"marketplaceHint": "Want a pre-built expert instead? Browse the Marketplace."
 	}
 }

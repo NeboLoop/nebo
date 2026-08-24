@@ -22,6 +22,7 @@
   import WorkroomView from '$lib/components/workrooms/WorkroomView.svelte';
   import AgentSettingsModal from '$lib/components/settings/agent/AgentSettingsModal.svelte';
   import ConfirmModal from '$lib/components/settings/ConfirmModal.svelte';
+  import NewEmployeeModal from '$lib/components/NewEmployeeModal.svelte';
   import { unreadCount } from '$lib/stores/notifications';
   import { slide } from 'svelte/transition';
   import { logger } from '$lib/monitoring';
@@ -233,6 +234,7 @@
   // Room housekeeping: right-click → Remove forgets the registration (the
   // conversation history stays on the hub); confirm first — it's an audit
   // surface leaving the sidebar.
+  let newEmployeeOpen = $state(false);
   let roomCtxMenu = $state<{ x: number; y: number; channelId: string } | null>(null);
   let removeRoom = $state<import('$lib/api/neboComponents').Workroom | null>(null);
   let removeRoomBusy = $state(false);
@@ -1092,8 +1094,8 @@
          command palette; only the header button is gone. -->
     <button
       class="w-7 h-7 rounded-md flex items-center justify-center hover:bg-base-100 cursor-pointer bg-transparent border-none shrink-0"
-      onclick={() => agentId && goto(`/${agentId}/threads`)}
-      title={$t('agent.newChat')}
+      onclick={() => (newEmployeeOpen = true)}
+      title={$t('newEmployee.title')}
     >
       <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><line x1="8" y1="3" x2="8" y2="13"/><line x1="3" y1="8" x2="13" y2="8"/></svg>
     </button>
@@ -1317,6 +1319,17 @@
       primaryChristened = true;
       loadAgentRoster();
       goto(`/assistant/threads/${threadId}`);
+    }}
+  />
+{/if}
+
+{#if newEmployeeOpen}
+  <NewEmployeeModal
+    onclose={() => (newEmployeeOpen = false)}
+    oncreated={(id) => {
+      newEmployeeOpen = false;
+      loadAgentRoster();
+      goto(`/${id}/threads`);
     }}
   />
 {/if}
