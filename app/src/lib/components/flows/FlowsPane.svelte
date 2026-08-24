@@ -61,10 +61,13 @@
     reminderBusy = null;
   }
 
-  // Inline schedule editor: two dropdowns, only for schedules the simple
-  // shapes can hold. Anything else stays read-only — never rewrite a
-  // schedule into something it never said. Draft state is flat (freq + n +
-  // time) and only becomes a SimpleSchedule at save.
+  // Clicking a reminder card expands it into its editor: instruction text +
+  // the simple schedule dropdowns. Schedules the simple shapes can't hold
+  // stay read-only — never rewrite a schedule into something it never said.
+  // Draft state is flat (freq + n + time) and only becomes a SimpleSchedule
+  // at save.
+  let expandedReminder = $state<string | null>(null);
+  let draftText = $state('');
   let editingSchedule = $state<string | null>(null); // reminder name
   let draftFreq = $state('daily');
   let draftN = $state(4);
@@ -99,12 +102,33 @@
     return { kind: draftFreq as 'daily' | 'weekdays' | 'weekends', hour: draftHour, minute: draftMinute };
   }
 
-  async function saveSchedule(t: CronJob) {
+  function toggleExpand(r: CronJob) {
+    if (expandedReminder === r.name) {
+      expandedReminder = null;
+      editingSchedule = null;
+      return;
+    }
+    expandedReminder = r.name;
+    draftText = r.instructions || r.message || r.command || '';
+    if (parseSimple(r.schedule)) startEditSchedule(r);
+    else editingSchedule = null;
+  }
+
+  // ONE save: text back into the field it came from, plus the schedule when
+  // the simple editor could hold it.
+  async function saveReminder(t: CronJob) {
     if (reminderBusy) return;
     reminderBusy = t.name;
+    const body: Record<string, string> = {};
+    const field = t.instructions ? 'instructions' : t.message ? 'message' : t.command ? 'command' : 'instructions';
+    if (draftText.trim() && draftText !== (t.instructions || t.message || t.command || '')) {
+      body[field] = draftText;
+    }
+    if (editingSchedule === t.name) body.schedule = buildSimple(draftToSimple());
     try {
-      await api.updateTask(t.name, { schedule: buildSimple(draftToSimple()) });
+      if (Object.keys(body).length) await api.updateTask(t.name, body);
       await loadReminders();
+      expandedReminder = null;
       editingSchedule = null;
     } catch { /* keep the editor open so nothing is silently lost */ }
     reminderBusy = null;
@@ -234,34 +258,40 @@
             <div class="rounded-lg border border-base-300 bg-base-100 p-3 flex items-start gap-2.5">
               <div class="w-[22px] h-[22px] rounded flex items-center justify-center text-sm shrink-0 mt-0.5 {r.enabled !== false ? 'bg-primary/10 text-primary' : 'bg-base-200 text-base-content/40'}">&#8986;</div>
               <div class="flex-1 min-w-0">
-                <div class="flex items-center gap-1.5 flex-wrap">
-                  <span class="text-sm font-medium">{r.name}</span>
-                  {#if r.enabled === false}
-                    <span class="py-0 px-1.5 rounded bg-base-200 text-xs text-base-content/50">{$t('common.paused')}</span>
+                <!-- The card IS the affordance: click to open the editor. -->
+                <button
+                  type="button"
+                  class="w-full text-left bg-transparent border-none p-0 cursor-pointer"
+                  onclick={() => toggleExpand(r)}
+                >
+                  <div class="flex items-center gap-1.5 flex-wrap">
+                    <span class="text-sm font-medium">{r.name}</span>
+                    {#if r.enabled === false}
+                      <span class="py-0 px-1.5 rounded bg-base-200 text-xs text-base-content/50">{$t('common.paused')}</span>
+                    {/if}
+                  </div>
+                  {#if expandedReminder !== r.name && (r.instructions || r.message || r.command)}
+                    <div class="text-xs text-base-content/70 mt-0.5 line-clamp-2">{r.instructions || r.message || r.command}</div>
                   {/if}
-                </div>
-                {#if r.instructions || r.message || r.command}
-                  <div class="text-xs text-base-content/70 mt-0.5 line-clamp-2">{r.instructions || r.message || r.command}</div>
+                  <div class="flex items-center gap-1.5 mt-1.5 flex-wrap">
+                    <span class="text-xs text-base-content/50 {sched.isCron ? 'font-mono' : ''}" title={parseSimple(r.schedule) ? undefined : 'This schedule is more specific than the simple editor can hold'}>{sched.text}</span>
+                    {#if r.lastRun}
+                      <span class="text-xs text-base-content/30">&middot;</span>
+                      <span class="text-xs text-base-content/50 font-mono">{r.lastRun}</span>
+                    {/if}
+                    {#if r.lastError}
+                      <span class="text-xs text-error font-mono truncate">{r.lastError}</span>
+                    {/if}
+                  </div>
+                </button>
+                {#if expandedReminder === r.name}
+                  <textarea
+                    class="w-full mt-2 py-1.5 px-2 rounded-md border border-base-300 text-xs bg-base-100 outline-none resize-y leading-relaxed min-h-16"
+                    rows="3"
+                    bind:value={draftText}
+                  ></textarea>
                 {/if}
-                <div class="flex items-center gap-1.5 mt-1.5 flex-wrap">
-                  {#if parseSimple(r.schedule)}
-                    <button
-                      type="button"
-                      class="text-xs text-base-content/60 underline decoration-dotted underline-offset-2 bg-transparent border-none p-0 cursor-pointer hover:text-primary"
-                      onclick={() => (editingSchedule === r.name ? (editingSchedule = null) : startEditSchedule(r))}
-                    >{sched.text}</button>
-                  {:else}
-                    <span class="text-xs text-base-content/50 {sched.isCron ? 'font-mono' : ''}" title="This schedule is more specific than the simple editor can hold">{sched.text}</span>
-                  {/if}
-                  {#if r.lastRun}
-                    <span class="text-xs text-base-content/30">&middot;</span>
-                    <span class="text-xs text-base-content/50 font-mono">{r.lastRun}</span>
-                  {/if}
-                  {#if r.lastError}
-                    <span class="text-xs text-error font-mono truncate">{r.lastError}</span>
-                  {/if}
-                </div>
-                {#if editingSchedule === r.name}
+                {#if editingSchedule === r.name && expandedReminder === r.name}
                   <div class="flex items-center gap-1.5 mt-2 flex-wrap">
                     <select class="select select-xs bg-base-100 border-base-300" bind:value={draftFreq}>
                       <option value="daily">Every day</option>
@@ -290,11 +320,13 @@
                         <option>AM</option><option>PM</option>
                       </select>
                     {/if}
-                    <button class="btn btn-primary btn-xs" disabled={reminderBusy === r.name} onclick={() => saveSchedule(r)}>{$t('common.save')}</button>
-                    <button class="btn btn-ghost btn-xs" onclick={() => (editingSchedule = null)}>{$t('common.cancel')}</button>
                   </div>
                 {/if}
                 <div class="flex items-center gap-2 mt-2">
+                  {#if expandedReminder === r.name}
+                    <button class="btn btn-primary btn-xs" disabled={reminderBusy === r.name} onclick={() => saveReminder(r)}>{$t('common.save')}</button>
+                    <button class="btn btn-ghost btn-xs" onclick={() => toggleExpand(r)}>{$t('common.cancel')}</button>
+                  {/if}
                   <button class="btn btn-ghost btn-xs" disabled={reminderBusy === r.name} onclick={() => runReminder(r)}>{$t('flows.runNow')}</button>
                   <button class="btn btn-ghost btn-xs text-error ml-auto" disabled={reminderBusy === r.name} onclick={() => (deleteReminder = r)}>{$t('common.delete')}</button>
                 </div>
@@ -317,7 +349,7 @@
     <button
       class="mt-1 w-full py-2.5 rounded-lg border border-dashed border-base-300 text-sm text-primary font-medium cursor-pointer bg-transparent hover:bg-base-200 transition-colors"
       onclick={() => onask(`Set up a new flow for me: `)}
-    >Ask {ctx.agent?.name ?? 'your employee'} to set one up</button>
+    >{$t('flows.askSetup', { values: { name: ctx.agent?.name ?? $t('chat.yourEmployee') } })}</button>
   </div>
 </div>
 

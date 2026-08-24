@@ -400,6 +400,15 @@
       isLoadingMore = false;
     }
   }
+
+  // ?ask= — a starter prompt from a pane CTA lands in the composer, then the
+  // param is cleared so refresh doesn't re-insert it.
+  const askPrefill = $derived($page.url.searchParams.get('ask') ?? '');
+  function clearAsk() {
+    const url = new URL($page.url);
+    url.searchParams.delete('ask');
+    goto(url.pathname + url.search, { replaceState: true, noScroll: true, keepFocus: true });
+  }
 </script>
 
 <ChatPane
@@ -420,6 +429,8 @@
   headerTitle={thread?.name ?? $t('chat.thread')}
   headerRight={$t('chat.work')}
   onopenruns={ctx.openRuns}
+  composerPrefill={askPrefill}
+  onprefilled={clearAsk}
   onback={ctx.openList}
   onsettings={ctx.openSettings}
   isolated={ctx.agent?.isolated ?? false}

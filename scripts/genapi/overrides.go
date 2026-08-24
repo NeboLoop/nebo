@@ -90,6 +90,7 @@ var extraInterfaces = map[string]string{
 	inputValues: string
 	installedAt?: number
 	loopExposed: boolean
+	loopAgentId?: string
 	voice: string
 	isolated: boolean
 	needsSetup: boolean

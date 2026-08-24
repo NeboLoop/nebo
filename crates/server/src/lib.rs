@@ -2637,21 +2637,19 @@ async fn handle_agent_fs_events(
                     });
 
                 let final_id = if let Some(ref existing) = db_agent {
-                    // Update existing record with fresh filesystem content
-                    let _ = state.store.update_agent(
+                    // Update existing record with fresh filesystem content via
+                    // the ONE manifest-sync pathway (same as boot + Changed):
+                    // update_agent is the owner surface — it would lock the
+                    // manifest name and wipe pricing.
+                    let _ = state.store.sync_agent_content(
+                        &existing.id,
+                        &loaded.agent_md,
+                        &loaded.frontmatter,
+                    );
+                    let _ = state.store.sync_agent_identity(
                         &existing.id,
                         &loaded.agent_def.name,
                         &loaded.description,
-                        &loaded.agent_md,
-                        &loaded.frontmatter,
-                        None,
-                        None,
-                        None,
-                        None,
-                        None,
-                        None,
-                        None,
-                        None,
                     );
                     existing.id.clone()
                 } else {
@@ -4829,6 +4827,21 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
                         }
                     }
                 }
+            }
+
+            // The owner's live room view shows who picked the message up —
+            // a send must never look like it went into the void. Cleared
+            // client-side when this agent's reply lands as workroom_message.
+            if let Some(ref room) = workroom {
+                state.hub.broadcast(
+                    "workroom_activity",
+                    serde_json::json!({
+                        "channelId": room.channel_id,
+                        "agentId": if agent_id.is_empty() { "assistant".to_string() } else { agent_id.clone() },
+                        "agentName": agent_name.clone(),
+                        "state": "started",
+                    }),
+                );
             }
 
             let config = chat_dispatch::ChatConfig {

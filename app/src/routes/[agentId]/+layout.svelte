@@ -122,7 +122,9 @@
   const settingsSection = $derived($page.url.searchParams.get('settings'));
   const runsOpen = $derived($page.url.searchParams.has('runs'));
   const openRunId = $derived($page.url.searchParams.get('run'));
-  const openRun = (id: string) => setParams((p) => { p.delete('runs'); p.set('run', id); });
+  // Keep `runs` in place: the run detail stacks OVER the run list, so its
+  // back/close returns to the list instead of dumping the owner to the chat.
+  const openRun = (id: string) => setParams((p) => p.set('run', id));
   const closeRun = () => setParams((p) => p.delete('run'));
   const marketOpen = $derived($page.url.searchParams.has('market'));
   const openMarket = () => setParams((p) => p.set('market', '1'));
@@ -318,6 +320,7 @@
           editable: !a.nappPath,
           isApp: a.isApp ?? false,
           loopExposed: a.loopExposed ?? false,
+          loopAgentId: a.loopAgentId,
           voice: a.voice || '',
           // The list endpoint reports isolation directly (the roster lock
           // needs it for every row).
@@ -1261,11 +1264,19 @@
   open={settingsSection !== null}
   section={settingsSection ?? 'general'}
   agentName={agent?.name ?? ''}
+  avatarInitial={agent?.initial ?? ''}
+  avatarClass={agentColor ? `${agentColor.bgClass} ${agentColor.inkClass}` : ''}
   onsection={selectSection}
   onclose={closeSettings}
 />
 
-<ShelfModal open={openRunId !== null} title={$t('agentActivity.runDetail')} onclose={closeRun}>
+<ShelfModal
+  open={openRunId !== null}
+  title={agent ? `${agent.name} — ${$t('agentActivity.runDetail')}` : $t('agentActivity.runDetail')}
+  avatarInitial={agent?.initial ?? ''}
+  avatarClass={agentColor ? `${agentColor.bgClass} ${agentColor.inkClass}` : ''}
+  onclose={closeRun}
+>
   <div class="flex-1 min-h-0 flex flex-col overflow-hidden">
     {#if openRunId}<RunDetail runId={openRunId} onclose={closeRun} />{/if}
   </div>
@@ -1321,7 +1332,13 @@
   </div>
 </ShelfModal>
 
-<ShelfModal open={runsOpen} title={$t('nav.runs')} onclose={closeRuns}>
+<ShelfModal
+  open={runsOpen}
+  title={agent ? `${agent.name} — ${$t('nav.runs')}` : $t('nav.runs')}
+  avatarInitial={agent?.initial ?? ''}
+  avatarClass={agentColor ? `${agentColor.bgClass} ${agentColor.inkClass}` : ''}
+  onclose={closeRuns}
+>
   <RunsPane onopen={openRun} />
 </ShelfModal>
 
@@ -1331,7 +1348,7 @@
     {#key openRoomObj.channelId}
       <WorkroomView
         room={openRoomObj}
-        roster={allAgents.map((a) => ({ id: a.id, name: a.name, initial: a.initial, color: a.color }))}
+        roster={allAgents.map((a) => ({ id: a.id, name: a.name, initial: a.initial, color: a.color, loopAgentId: a.loopAgentId }))}
       />
     {/key}
   {/if}

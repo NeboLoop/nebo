@@ -898,7 +898,7 @@
         oninput={debouncePersonaSave}
         disabled={!agent?.editable}
         placeholder={$t('agentSettings.personaPlaceholder')}
-        class="w-full flex-1 min-h-0 py-[7px] px-2.5 rounded-md border border-base-300 text-sm bg-base-100 outline-none resize-none font-mono leading-relaxed disabled:opacity-60 disabled:cursor-not-allowed"
+        class="w-full flex-1 min-h-0 py-[7px] px-2.5 rounded-md border border-base-300 text-sm max-md:text-base bg-base-100 outline-none resize-none font-mono leading-relaxed disabled:opacity-60 disabled:cursor-not-allowed"
       ></textarea>
       <div class="shrink-0 flex items-center justify-end gap-3">
         {#if personaSaved}
@@ -924,7 +924,7 @@
         oninput={debounceSoulSave}
         disabled={!agent?.editable}
         placeholder={$t('agentSettings.soulPlaceholder')}
-        class="w-full flex-1 min-h-0 py-[7px] px-2.5 rounded-md border border-base-300 text-sm bg-base-100 outline-none resize-none font-mono leading-relaxed disabled:opacity-60 disabled:cursor-not-allowed"
+        class="w-full flex-1 min-h-0 py-[7px] px-2.5 rounded-md border border-base-300 text-sm max-md:text-base bg-base-100 outline-none resize-none font-mono leading-relaxed disabled:opacity-60 disabled:cursor-not-allowed"
       ></textarea>
       <div class="shrink-0 flex items-center justify-end gap-3">
         {#if soulSaved}
@@ -955,7 +955,7 @@
         oninput={debounceRulesSave}
         disabled={!agent?.editable}
         placeholder={$t('agentSettings.rulesPlaceholder')}
-        class="w-full py-[7px] px-2.5 rounded-md border border-base-300 text-sm bg-base-100 outline-none resize-y font-mono leading-relaxed disabled:opacity-60 disabled:cursor-not-allowed"
+        class="w-full py-[7px] px-2.5 rounded-md border border-base-300 text-sm max-md:text-base bg-base-100 outline-none resize-y font-mono leading-relaxed disabled:opacity-60 disabled:cursor-not-allowed"
       ></textarea>
 
     {:else if section === 'configure'}

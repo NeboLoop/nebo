@@ -694,6 +694,10 @@ pub struct Agent {
     /// Empty = server default.
     #[serde(default)]
     pub voice: String,
+    /// 1 once the owner has renamed this agent; manifest syncs never overwrite
+    /// a locked name (owner wins, same contract as memory.context_isolated).
+    #[serde(default)]
+    pub name_locked: i64,
 }
 
 fn default_input_values() -> String {

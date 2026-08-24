@@ -47,7 +47,7 @@
 
   type AgentInfo = { id: string; name: string; role: string; initial: string; status: string; color: string; isApp?: boolean };
 
-  let { agentName = 'Agent', agentId = '', threadId = '', placeholder = '', allAgents = [], onsend, onstop, isLoading = false, sessionId = '', allowAttachments = true, onteach }: {
+  let { agentName = 'Agent', agentId = '', threadId = '', placeholder = '', allAgents = [], onsend, onstop, isLoading = false, sessionId = '', allowAttachments = true, onteach, prefill = '', onprefilled }: {
     agentName?: string;
     agentId?: string;
     threadId?: string;
@@ -64,6 +64,11 @@
     /** Present on surfaces where the bot has a computer: adds "Teach a task"
      *  to the + menu. The parent owns the recording lifecycle. */
     onteach?: () => void;
+    /** Starter text dropped into the composer (e.g. "Ask X to set one up").
+     *  Prefill, don't send — the owner finishes the sentence. */
+    prefill?: string;
+    /** Fired once the prefill landed, so the parent can clear its source. */
+    onprefilled?: () => void;
   } = $props();
 
   let editorElement = $state<HTMLDivElement | null>(null);
@@ -148,6 +153,13 @@
     if (draftKey) storage.remove(draftKey);
     if (draftSaveTimer) clearTimeout(draftSaveTimer);
   }
+
+  // Drop the starter prompt in and hand the owner the cursor.
+  $effect(() => {
+    if (!prefill || !editor) return;
+    editor.chain().focus('end').insertContent(prefill).run();
+    onprefilled?.();
+  });
 
   // Computed
   const hasContent = $derived(!editorIsEmpty || attachments.length > 0);

@@ -97,21 +97,30 @@ pub async fn send_workroom_message(
             "text required".into(),
         )));
     }
-    if state
+    let room = state
         .store
         .get_workroom(&channel_id)
         .map_err(to_error_response)?
-        .is_none()
-    {
-        return Err(to_error_response(types::NeboError::NotFound));
-    }
+        .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
+
+    // Room dispatch is mention-driven — an unaddressed owner message would
+    // reach nobody. The organizer (first member) owns the room, so address it
+    // explicitly: the mention renders in the transcript, so the owner SEES who
+    // their message went to instead of it vanishing into the void.
+    let mut content = if !text.contains('@') {
+        match room.member_agent_ids.first() {
+            Some(organizer) => format!("<@{organizer}> {text}"),
+            None => text.to_string(),
+        }
+    } else {
+        text.to_string()
+    };
 
     // The standard composer serializes mentions as <@localAgentId>. Hub-known
     // agents get their <@loop_agent_id>; room members WITHOUT a hub identity
     // keep the <@localAgentId> token — in a registered workroom the member
     // registry is the mention surface, and the channel dispatcher resolves
     // member tokens locally. One token grammar; plain text never triggers.
-    let mut content = text.to_string();
     if content.contains("<@") {
         for a in state.store.list_agents(500, 0).unwrap_or_default() {
             let token = format!("<@{}>", a.id);

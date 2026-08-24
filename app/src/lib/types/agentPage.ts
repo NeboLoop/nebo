@@ -114,6 +114,8 @@ export interface AgentDisplay {
 	isApp?: boolean
 	/** Whether this agent is exposed on the user's personal loop. */
 	loopExposed?: boolean
+	/** Hub identity UUID — the wire's mention tokens may carry this id. */
+	loopAgentId?: string
 	/** Realtime voice id (xAI voice id; empty = default). */
 	voice?: string
 }

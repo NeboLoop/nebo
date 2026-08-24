@@ -221,6 +221,9 @@ pub async fn list_agents(
             "inputValues": db_row.map(|r| r.input_values.as_str()).unwrap_or("{}"),
             "installedAt": db_row.map(|r| r.installed_at),
             "loopExposed": db_row.map(|r| r.loop_exposed != 0).unwrap_or(false),
+            // Hub identity — the wire's mention tokens may carry this UUID, and
+            // the client's ONE mention renderer resolves it back to the name.
+            "loopAgentId": db_row.and_then(|r| r.loop_agent_id.clone()),
             "voice": db_row.map(|r| r.voice.as_str()).unwrap_or(""),
             // The roster's "editable" affordance keys off nappPath — omitting
             // it made every agent look hand-editable.
@@ -740,6 +743,22 @@ pub async fn christen_primary(
     State(state): State<AppState>,
     Json(body): Json<serde_json::Value>,
 ) -> HandlerResult<serde_json::Value> {
+    // ONE-SHOT, enforced here — not in any client. Once the primary has been
+    // christened, that moment is over, permanently: no surface can re-trigger
+    // the ceremony, rename races can't fork it, and a UI bug can only show a
+    // modal whose submit is refused.
+    let already = state
+        .store
+        .get_plugin_setting("core", "primary_christened")
+        .ok()
+        .flatten()
+        .is_some();
+    if already {
+        return Err(to_error_response(types::NeboError::Validation(
+            "Your first employee already has a name. Rename them any time in their settings.".into(),
+        )));
+    }
+
     let name = body["name"].as_str().unwrap_or("").trim().to_string();
     if name.is_empty() || name.chars().count() > 40 {
         return Err(to_error_response(types::NeboError::Validation(

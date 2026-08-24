@@ -19,6 +19,7 @@
   import type { Workroom, WorkroomMessage } from '$lib/api/neboComponents';
   import { getWebSocketClient } from '$lib/websocket/client';
   import { parseMarkdown } from '$lib/markdown';
+  import { renderMentionChips } from '$lib/mentions';
   import TranscriptMessage from '$lib/components/chat/TranscriptMessage.svelte';
   import ChatComposer from '$lib/components/chat/ChatComposer.svelte';
   import { AGENT_COLORS_MAP } from '$lib/tokens.js';
@@ -29,7 +30,7 @@
   }: {
     room: Workroom;
     /** The employee roster, for member chips and sender-name resolution. */
-    roster?: { id: string; name: string; initial: string; color?: string }[];
+    roster?: { id: string; name: string; initial: string; color?: string; loopAgentId?: string }[];
   } = $props();
 
   type RoomMsg = {
@@ -49,6 +50,9 @@
     roster.find((a) => a.id === label || a.name === label);
 
   let messages: RoomMsg[] = $state([]);
+  // Members currently running because of a room dispatch — the owner's proof
+  // a message was picked up. Set by workroom_activity, cleared by the reply.
+  let working: { id: string; name: string }[] = $state([]);
   let loading = $state(true);
   let sending = $state(false);
   let scroller = $state<HTMLDivElement | null>(null);
@@ -69,13 +73,12 @@
     }))
   );
 
-  // The composer serializes mentions as <@localAgentId>; the owner reads
-  // names. (The server rewrites the same tokens into the hub's grammar.)
-  const displayText = (text: string) =>
-    text.replace(/<@([A-Za-z0-9-]+)>/g, (whole, id) => {
-      const a = roster.find((x) => x.id === id);
-      return a ? `@${a.name}` : whole;
-    });
+  // Dedupe key for the owner's optimistic send vs its wire echo: the wire copy
+  // may carry rewritten hub-grammar tokens AND a server-prepended organizer
+  // mention (unaddressed sends route to the organizer), so mention tokens are
+  // stripped entirely — only the human-typed text has to match.
+  const strippedText = (text: string) =>
+    text.replace(/<@[A-Za-z0-9._-]+>/g, '').replace(/\s+/g, ' ').trim();
 
   // Who is in the room — resolved against the roster; unknown ids (a cloud
   // coworker, a departed employee) keep their raw label rather than vanishing.
@@ -92,16 +95,21 @@
 
   // The hub speaks in ids; the owner reads names.
   const nameFor = (from: string) =>
-    roster.find((a) => a.id === from || a.name === from)?.name ?? from;
+    roster.find((a) => a.id === from || a.name === from || a.loopAgentId === from)?.name ?? from;
 
   // The hub's history rows carry `role` for human-injected legs; live WS
-  // events carry senderName. Both normalize to the same shape.
+  // events carry senderName. Both normalize to the same shape. Content stays
+  // RAW — mention tokens render as chips at display time.
   const fromRest = (m: WorkroomMessage): RoomMsg => ({
     id: m.id,
     from: nameFor(m.from),
-    content: displayText(m.content),
+    content: m.content,
     mine: m.role === 'user',
   });
+
+  function clearWorking(senderName: string, fromAgentId?: string) {
+    working = working.filter((w) => w.name !== senderName && w.id !== (fromAgentId || ''));
+  }
 
   async function scrollToEnd() {
     await tick();
@@ -125,22 +133,44 @@
       if (data?.channelId !== room.channelId) return;
       const text = data.text ?? '';
       if (!text) return;
-      // The owner's own send already rendered optimistically — don't double it
-      // (the wire copy may carry hub-grammar mention tokens; compare both forms).
-      if (messages.some((m) => m.mine && (m.content === text || m.content === displayText(text))))
+      const senderName = data.senderName || nameFor(data.fromAgentId || data.from || '');
+      clearWorking(senderName, data.fromAgentId);
+      // The owner's wire echo comes back senderName "Owner" — it is MINE, and
+      // it already rendered optimistically. Drop the duplicate; keep it (as a
+      // mine bubble) only if another device sent it.
+      const isOwner = senderName === 'Owner';
+      if (isOwner && messages.some((m) => m.mine && strippedText(m.content) === strippedText(text)))
         return;
       messages = [
         ...messages,
         {
           id: crypto.randomUUID(),
-          from: data.senderName || nameFor(data.fromAgentId || data.from || ''),
-          content: displayText(text),
-          mine: false,
+          from: isOwner ? '' : senderName,
+          content: text,
+          mine: isOwner,
         },
       ];
       scrollToEnd();
     });
-    return off;
+
+    // "Somebody picked your message up": the server broadcasts when a room
+    // dispatch starts an agent run; the reply's workroom_message clears it.
+    const offActivity = getWebSocketClient().on('workroom_activity', (data: any) => {
+      if (data?.channelId !== room.channelId || data?.state !== 'started') return;
+      const id = data.agentId || data.agentName;
+      if (!id || working.some((w) => w.id === id)) return;
+      working = [...working, { id, name: data.agentName || nameFor(id) }];
+      scrollToEnd();
+      // Failsafe: a run that dies without posting must not spin forever.
+      setTimeout(() => {
+        working = working.filter((w) => w.id !== id);
+      }, 300_000);
+    });
+
+    return () => {
+      off();
+      offActivity();
+    };
   });
 
   async function send(raw: string) {
@@ -151,7 +181,7 @@
       await sendWorkroomMessage(room.channelId, { text });
       messages = [
         ...messages,
-        { id: crypto.randomUUID(), from: '', content: displayText(text), mine: true },
+        { id: crypto.randomUUID(), from: '', content: text, mine: true },
       ];
       scrollToEnd();
     } catch {
@@ -225,8 +255,17 @@
             mine={m.mine}
             initial={sender?.initial ?? ''}
             avatarClass={sender ? colorClass(sender.color) : ''}
-            html={parseMarkdown(m.content)}
+            html={renderMentionChips(parseMarkdown(m.content), roster)}
           />
+        {/each}
+        <!-- Who is on it right now — the owner's proof a send was picked up. -->
+        {#each working as w (w.id)}
+          {@const wa = rosterFor(w.id) ?? rosterFor(w.name)}
+          <div class="flex items-center gap-2.5">
+            <span class="w-6 h-6 rounded-full flex items-center justify-center font-mono text-[10px] font-semibold shrink-0 {colorClass(wa?.color)}">{wa?.initial ?? (w.name[0] ?? '?').toUpperCase()}</span>
+            <span class="text-xs text-base-content/60">{$t('workrooms.working', { values: { name: w.name } })}</span>
+            <span class="loading loading-dots loading-xs text-base-content/50"></span>
+          </div>
         {/each}
       </div>
     {/if}

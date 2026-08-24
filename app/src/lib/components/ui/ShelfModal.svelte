@@ -19,15 +19,20 @@
     open: boolean;
     title: string;
     onclose: () => void;
+    /** Employee identity chip before the title — same avatar/color as the roster row. */
+    avatarInitial?: string;
+    avatarClass?: string;
     /** Header content between the title and the close button. */
     actions?: Snippet;
     children: Snippet;
   }
 
-  let { open, title, onclose, actions, children }: Props = $props();
+  let { open, title, onclose, avatarInitial = '', avatarClass = '', actions, children }: Props = $props();
 
   function onkeydown(e: KeyboardEvent) {
-    if (e.key === 'Escape' && open) {
+    // defaultPrevented = a stacked shelf already consumed this Escape —
+    // one press closes one layer, never the whole stack.
+    if (e.key === 'Escape' && open && !e.defaultPrevented) {
       e.preventDefault();
       onclose();
     }
@@ -91,6 +96,9 @@
       </div>
 
       <div class="h-12 max-md:h-10 px-4 border-b border-base-300 flex items-center gap-2 shrink-0">
+        {#if avatarInitial}
+          <span class="w-6 h-6 rounded-md flex items-center justify-center font-mono text-[10px] font-semibold shrink-0 {avatarClass}">{avatarInitial}</span>
+        {/if}
         <span class="text-sm font-semibold">{title}</span>
         <div class="flex-1"></div>
         {#if actions}{@render actions()}{/if}

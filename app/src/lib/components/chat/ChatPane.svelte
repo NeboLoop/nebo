@@ -9,6 +9,7 @@
   import AskWidget from './AskWidget.svelte';
   import type { AskWidgetDef } from './AskWidget.svelte';
   import { AGENT_COLORS_MAP } from '$lib/tokens.js';
+  import { renderMentionChips } from '$lib/mentions';
   import { downloadArtifact } from '$lib/chat/download';
   import { backendUrl, backendBase } from '$lib/api/base';
   import { addToast } from '$lib/stores/toast';
@@ -77,7 +78,7 @@
 
   type AgentInfo = { id: string; name: string; color: string; initial: string; role: string; status: string; isApp?: boolean };
 
-  let { messages = [], agentName = 'Agent', agentId = '', threadId = '', sessionId = '', headerTitle = '', headerRight = '', placeholder = '', emptyIcon = '', emptyTitle = '', emptyDesc = '', allAgents = [], onteachsent, activityStatus = '', tokenUsage = null, quotaWarning = '', chatError = '', onsend, onstop, onedit, onredo, onasksubmit, onrestoreversion, ondismisswarning, ondismisserror, onloadmore, isLoading = false, isLoadingMore = false, hasMore = false, allowAttachments = true, flowsPane, onopenruns, onsettings, isolated = false, isApp = false, onopenapp, onback }: {
+  let { messages = [], agentName = 'Agent', agentId = '', threadId = '', sessionId = '', headerTitle = '', headerRight = '', placeholder = '', emptyIcon = '', emptyTitle = '', emptyDesc = '', allAgents = [], onteachsent, activityStatus = '', tokenUsage = null, quotaWarning = '', chatError = '', onsend, onstop, onedit, onredo, onasksubmit, onrestoreversion, ondismisswarning, ondismisserror, onloadmore, isLoading = false, isLoadingMore = false, hasMore = false, allowAttachments = true, flowsPane, onopenruns, onsettings, isolated = false, isApp = false, onopenapp, onback, composerPrefill = '', onprefilled }: {
     messages?: Message[];
     /** Employee-scoped views for the work pane. Omitted on chats with no
      *  employee behind them (channel setup help, the embed), and the matching
@@ -94,6 +95,9 @@
     /** Mobile back-to-list. A real navigation (goto) so the URL changes and
      *  the browser back button stays truthful; rendered only when provided. */
     onback?: () => void;
+    /** Starter text for the composer (prefill, don't send). */
+    composerPrefill?: string;
+    onprefilled?: () => void;
     agentName?: string;
     agentId?: string;
     threadId?: string;
@@ -187,16 +191,6 @@
   // Pinned version of the active document; null = follow the latest version.
   let activeVersion = $state<number | null>(null);
 
-  // Replace <@id> tokens (already HTML-escaped) with styled mention chips
-  function renderMentionChips(escapedHtml: string): string {
-    return escapedHtml.replace(/&lt;@([a-zA-Z0-9._-]+)&gt;/g, (_, id) => {
-      const agent = allAgents.find(a => a.id === id);
-      if (!agent) return `<span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-xs font-medium bg-base-300 text-base-content/70 align-baseline">@unknown</span>`;
-      const c = AGENT_COLORS_MAP[agent.color || 'teal'] || AGENT_COLORS_MAP['teal'];
-      return `<span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-xs font-medium align-baseline ${c.bgClass} ${c.inkClass}"><span class="w-4 h-4 rounded-sm flex items-center justify-center text-xs font-semibold shrink-0">${agent.initial || agent.name.charAt(0).toUpperCase()}</span><span>${agent.name}</span></span>`;
-    });
-  }
-
   // Render assistant message content with basic markdown + mention chips.
   // Code blocks get a copy affordance: each <pre> is wrapped with a positioned
   // button handled by delegated click (copyCodeBlock) — the button copies the
@@ -210,7 +204,7 @@
         `<div class="relative group/code"><button type="button" data-code-copy title="${$t('chat.copyCode')}" class="absolute top-2 right-2 z-10 px-2 py-0.5 rounded text-xs font-medium bg-base-100/80 border border-base-content/10 text-base-content/60 opacity-0 group-hover/code:opacity-100 hover:text-base-content hover:bg-base-200 cursor-pointer transition-opacity">${$t('common.copy')}</button><pre>`
       )
       .replace(/<\/pre>/g, '</pre></div>');
-    return renderMentionChips(withCopy);
+    return renderMentionChips(withCopy, allAgents);
   }
 
   // Delegated handler for the injected code-block copy buttons.
@@ -1684,6 +1678,8 @@
       {isLoading}
       {allowAttachments}
       onteach={startTeach}
+      prefill={composerPrefill}
+      {onprefilled}
       bind:this={composerRef}
     />
   </div>

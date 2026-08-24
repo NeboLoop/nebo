@@ -3,6 +3,7 @@
   import FlowsPane from '$lib/components/flows/FlowsPane.svelte';
   import { getContext, onDestroy, onMount } from 'svelte';
   import { t } from 'svelte-i18n';
+  import { page } from '$app/stores';
   import { goto } from '$lib/nav';
   import ChatPane from '$lib/components/chat/ChatPane.svelte';
   import type { AgentPageContext } from '$lib/types/agentPage';
@@ -77,6 +78,15 @@
       chat.isLoading = false;
     }
   }
+
+  // ?ask= — a starter prompt from a pane CTA lands in the composer, then the
+  // param is cleared so refresh doesn't re-insert it.
+  const askPrefill = $derived($page.url.searchParams.get('ask') ?? '');
+  function clearAsk() {
+    const url = new URL($page.url);
+    url.searchParams.delete('ask');
+    goto(url.pathname + url.search, { replaceState: true, noScroll: true, keepFocus: true });
+  }
 </script>
 
 <ChatPane
@@ -86,6 +96,8 @@
   headerTitle={$t('chat.newThread')}
   headerRight={$t('chat.work')}
   onopenruns={ctx.openRuns}
+  composerPrefill={askPrefill}
+  onprefilled={clearAsk}
   onback={ctx.openList}
   onsettings={ctx.openSettings}
   isolated={ctx.agent?.isolated ?? false}

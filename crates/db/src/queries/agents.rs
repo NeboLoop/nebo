@@ -12,7 +12,7 @@ impl Store {
             .prepare(
                 "SELECT id, kind, name, description, agent_md, frontmatter,
                         pricing_model, pricing_cost, is_enabled, installed_at, updated_at,
-                        napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config, soul, rules, handle, color, loop_exposed, loop_agent_id, department, voice
+                        napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config, soul, rules, handle, color, loop_exposed, loop_agent_id, department, voice, name_locked
                  FROM agents ORDER BY installed_at DESC LIMIT ?1 OFFSET ?2",
             )
             .db_err("list_agents prepare")?;
@@ -34,7 +34,7 @@ impl Store {
         conn.query_row(
             "SELECT id, kind, name, description, agent_md, frontmatter,
                     pricing_model, pricing_cost, is_enabled, installed_at, updated_at,
-                    napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config, soul, rules, handle, color, loop_exposed, loop_agent_id, department, voice
+                    napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config, soul, rules, handle, color, loop_exposed, loop_agent_id, department, voice, name_locked
              FROM agents WHERE id = ?1",
             params![id],
             row_to_agent,
@@ -61,7 +61,7 @@ impl Store {
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
              RETURNING id, kind, name, description, agent_md, frontmatter,
                        pricing_model, pricing_cost, is_enabled, installed_at, updated_at,
-                       napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config, soul, rules, handle, color, loop_exposed, loop_agent_id, department, voice",
+                       napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config, soul, rules, handle, color, loop_exposed, loop_agent_id, department, voice, name_locked",
             params![id, kind, name, description, agent_md, frontmatter, pricing_model, pricing_cost],
             row_to_agent,
         )
@@ -86,7 +86,8 @@ impl Store {
     ) -> Result<(), NeboError> {
         let conn = self.conn()?;
         conn.execute(
-            "UPDATE agents SET name = ?1, description = ?2, agent_md = ?3,
+            "UPDATE agents SET name_locked = CASE WHEN ?1 != name THEN 1 ELSE name_locked END,
+                    name = ?1, description = ?2, agent_md = ?3,
                     frontmatter = ?4, pricing_model = ?5, pricing_cost = ?6,
                     soul = COALESCE(?7, soul),
                     rules = COALESCE(?8, rules),
@@ -179,7 +180,10 @@ impl Store {
     }
 
     /// Sync display name and description from the manifest.
-    /// Only updates if the manifest provides non-empty values.
+    /// Only updates if the manifest provides non-empty values, and never
+    /// overwrites an owner-renamed (name_locked) name — the boot FS→DB sync
+    /// runs on every restart and used to revert christened names to the
+    /// bundled manifest's default.
     pub fn sync_agent_identity(
         &self,
         id: &str,
@@ -188,7 +192,7 @@ impl Store {
     ) -> Result<(), NeboError> {
         let conn = self.conn()?;
         conn.execute(
-            "UPDATE agents SET name = CASE WHEN ?2 != '' THEN ?2 ELSE name END,
+            "UPDATE agents SET name = CASE WHEN ?2 != '' AND name_locked = 0 THEN ?2 ELSE name END,
                     description = CASE WHEN ?3 != '' THEN ?3 ELSE description END,
                     updated_at = unixepoch()
              WHERE id = ?1",
@@ -204,7 +208,7 @@ impl Store {
         conn.query_row(
             "SELECT id, kind, name, description, agent_md, frontmatter,
                     pricing_model, pricing_cost, is_enabled, installed_at, updated_at,
-                    napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config, soul, rules, handle, color, loop_exposed, loop_agent_id, department, voice
+                    napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config, soul, rules, handle, color, loop_exposed, loop_agent_id, department, voice, name_locked
              FROM agents WHERE LOWER(name) = LOWER(?1)",
             params![name],
             row_to_agent,
@@ -344,7 +348,7 @@ impl Store {
         conn.query_row(
             "SELECT id, kind, name, description, agent_md, frontmatter,
                     pricing_model, pricing_cost, is_enabled, installed_at, updated_at,
-                    napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config, soul, rules, handle, color, loop_exposed, loop_agent_id, department, voice
+                    napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config, soul, rules, handle, color, loop_exposed, loop_agent_id, department, voice, name_locked
              FROM agents WHERE loop_agent_id = ?1",
             params![loop_agent_id],
             row_to_agent,
@@ -686,5 +690,6 @@ fn row_to_agent(row: &rusqlite::Row) -> rusqlite::Result<Agent> {
         loop_agent_id: row.get(22)?,
         department: row.get(23)?,
         voice: row.get(24)?,
+        name_locked: row.get(25)?,
     })
 }

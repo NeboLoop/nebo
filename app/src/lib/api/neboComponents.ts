@@ -64,6 +64,7 @@ export interface Agent {
 	loopAgentId?: string
 	department?: string
 	voice?: string
+	nameLocked?: number
 }
 
 export interface AgentProfile {
@@ -1953,6 +1954,7 @@ export interface AgentListEntry {
 	inputValues: string
 	installedAt?: number
 	loopExposed: boolean
+	loopAgentId?: string
 	voice: string
 	isolated: boolean
 	needsSetup: boolean

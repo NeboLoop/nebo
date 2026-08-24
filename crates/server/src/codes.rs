@@ -2153,11 +2153,17 @@ async fn reconcile_agents(state: &AppState) -> Result<(), NeboError> {
         .into_iter()
         .filter(|a| a.id != "assistant" && a.loop_exposed != 0)
         .map(|a| {
-            let name = manifest_name_by_id
-                .get(&a.id)
-                .filter(|n| !n.is_empty())
-                .cloned()
-                .unwrap_or_else(|| a.name.clone());
+            // Owner-renamed agents (name_locked) keep the owner's name as
+            // canonical — no manifest heal, and the remote handle follows it.
+            let name = if a.name_locked != 0 {
+                a.name.clone()
+            } else {
+                manifest_name_by_id
+                    .get(&a.id)
+                    .filter(|n| !n.is_empty())
+                    .cloned()
+                    .unwrap_or_else(|| a.name.clone())
+            };
             if name != a.name {
                 info!(target: "neboai_identity", id = %a.id, db_name = %a.name, manifest_name = %name, "reconcile: healing drifted local name from manifest");
                 if let Err(e) = state.store.sync_agent_identity(&a.id, &name, &a.description) {
