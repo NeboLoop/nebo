@@ -230,7 +230,7 @@ impl DynTool for SkillTool {
                 "action": {
                     "type": "string",
                     "description": "Action to perform",
-                    "enum": ["list", "discover", "help", "browse", "read_resource", "load", "unload", "create", "update", "delete", "install", "configure", "secrets", "reviews", "rate"]
+                    "enum": ["list", "catalog", "discover", "help", "browse", "read_resource", "load", "unload", "create", "update", "delete", "install", "configure", "secrets", "reviews", "rate"]
                 },
                 "name": {
                     "type": "string",
@@ -307,7 +307,9 @@ impl DynTool for SkillTool {
             let agent = learned_owner.as_deref().or(agent_scope.as_deref());
 
             match domain_input.action.as_str() {
-                "list" => {
+                // "catalog" is the word this tool's own description uses —
+                // models reach for it as an action; it IS the list.
+                "list" | "catalog" => {
                     // Budget-constrained catalog: show count +
                     // capped entries with truncated descriptions. Never dump the full
                     // catalog — use discover(query) for targeted search.

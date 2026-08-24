@@ -82,7 +82,7 @@ impl DynTool for KeychainTool {
                 "add" | "store" => handle_add(&input).await,
                 "delete" => handle_delete(&input).await,
                 _ => ToolResult::error(format!(
-                    "Unknown action '{}'. Use: get, find, add, delete",
+                    "Unknown action '{}'. Use: get, find, add (alias: store), delete",
                     action
                 )),
             }
@@ -174,15 +174,14 @@ async fn handle_delete(input: &serde_json::Value) -> ToolResult {
         Some(s) if !s.is_empty() => s,
         _ => return ToolResult::error(errors::missing_param("delete", "service", "keychain(action: \"delete\", service: \"myapp\", account: \"user@example.com\")")),
     };
-    let account = match input["account"].as_str() {
-        Some(a) if !a.is_empty() => a,
-        _ => return ToolResult::error(errors::missing_param("delete", "account", "keychain(action: \"delete\", service: \"myapp\", account: \"user@example.com\")")),
-    };
-    run_command(
-        "security",
-        &["delete-generic-password", "-s", service, "-a", account],
-    )
-    .await
+    // `account` narrows the match but is optional — `security` deletes by
+    // service alone, and demanding it turned label-only deletes into errors.
+    let mut args = vec!["delete-generic-password", "-s", service];
+    if let Some(a) = input["account"].as_str().filter(|a| !a.is_empty()) {
+        args.push("-a");
+        args.push(a);
+    }
+    run_command("security", &args).await
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -287,18 +286,17 @@ async fn handle_delete(input: &serde_json::Value) -> ToolResult {
         Some(s) if !s.is_empty() => s,
         _ => return ToolResult::error(errors::missing_param("delete", "service", "keychain(action: \"delete\", service: \"myapp\", account: \"user@example.com\")")),
     };
-    let account = match input["account"].as_str() {
-        Some(a) if !a.is_empty() => a,
-        _ => return ToolResult::error(errors::missing_param("delete", "account", "keychain(action: \"delete\", service: \"myapp\", account: \"user@example.com\")")),
-    };
     if !which("secret-tool") {
         return ToolResult::error("secret-tool not found. Do not retry \u{2014} this is an environment error. The libsecret-tools package must be installed on this system.");
     }
-    run_command(
-        "secret-tool",
-        &["clear", "service", service, "account", account],
-    )
-    .await
+    // `account` narrows the match but is optional — clearing by service alone
+    // is valid, and demanding it turned label-only deletes into errors.
+    let mut args = vec!["clear", "service", service];
+    if let Some(a) = input["account"].as_str().filter(|a| !a.is_empty()) {
+        args.push("account");
+        args.push(a);
+    }
+    run_command("secret-tool", &args).await
 }
 
 // ═══════════════════════════════════════════════════════════════════════

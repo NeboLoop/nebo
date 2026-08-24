@@ -271,6 +271,22 @@ impl OsTool {
         {
             return "file";
         }
+        // Keychain: a `password` param is uniquely keychain-shaped, and
+        // `service` with a keychain verb is too — models often write the full
+        // arg set (service/account/password) and drop `resource`, which used
+        // to cost three "Resource is required" errors before the first store.
+        if input
+            .get("password")
+            .and_then(|v| v.as_str())
+            .is_some_and(|s| !s.is_empty())
+            || (input
+                .get("service")
+                .and_then(|v| v.as_str())
+                .is_some_and(|s| !s.is_empty())
+                && matches!(action, "get" | "find" | "add" | "store" | "delete"))
+        {
+            return "keychain";
+        }
         // Calendar: date, calendar, end_date, location, or days present
         if input
             .get("date")
@@ -371,7 +387,7 @@ impl DynTool for OsTool {
          - app: list, launch, quit, quit_all, activate, hide, info, frontmost\n\
          - settings: volume, brightness, wifi, bluetooth, battery, darkmode, sleep, lock, info, mute (value: true|false)\n\
          - music: play, pause, next, previous, status, search, volume, playlists, shuffle\n\
-         - keychain: get, find, add, delete\n\
+         - keychain: get, find, add (alias: store), delete (account optional — narrows the match)\n\
          - search: search (file search via OS index)\n\
          - mail: accounts, unread, read, send, search — LOCAL Apple Mail. read/search take optional account (name or address, e.g. \"sites@stadium.partners\") + mailbox; search is a SUBSTRING match on subject/sender (no Gmail operators like from:)\n\
          - contacts: search, get, create, groups\n\
@@ -873,6 +889,15 @@ impl DynTool for OsTool {
                     }
                 }
 
+                // Resources that live on OTHER tools: redirect with the exact
+                // call, so a wrong-tool guess costs one corrected call, not a
+                // hunt. (These are the names models actually reach for here.)
+                res @ ("context" | "memory" | "session" | "task" | "profile" | "advisors") => {
+                    ToolResult::error(format!(
+                        "'{res}' is not an os resource — it lives on the `agent` tool. \
+                         Call agent(resource: \"{res}\", action: ...) instead."
+                    ))
+                }
                 other => ToolResult::error(format!(
                     "Unknown resource '{}'. Available: file, shell, window, input, clipboard, capture, \
                      notification, ui, menu, dialog, space, shortcut, tts, dock, app, settings, music, \
@@ -900,6 +925,28 @@ mod tests {
         assert_eq!(OsTool::infer_resource("unread"), "mail");
         assert_eq!(OsTool::infer_resource("today"), "calendar");
         assert_eq!(OsTool::infer_resource("unknown_action"), "");
+    }
+
+    /// AT-09's three "Resource is required" errors: a full keychain arg set
+    /// (service/account/password) with `resource` dropped must route itself.
+    #[test]
+    fn keychain_shaped_args_infer_the_resource() {
+        let input = serde_json::json!({
+            "action": "add", "service": "myapp", "account": "me", "password": "s3cret"
+        });
+        assert_eq!(OsTool::resolved_resource(&input), "keychain");
+        // A password alone is uniquely keychain-shaped, any verb.
+        let input = serde_json::json!({"action": "store", "service": "x", "password": "p"});
+        assert_eq!(OsTool::resolved_resource(&input), "keychain");
+        // service + keychain verb, no password (get/find/delete legs).
+        let input = serde_json::json!({"action": "delete", "service": "myapp"});
+        assert_eq!(OsTool::resolved_resource(&input), "keychain");
+        // A bare "delete" with a file path must NOT become keychain.
+        let input = serde_json::json!({"action": "delete", "path": "/tmp/x"});
+        assert_ne!(OsTool::resolved_resource(&input), "keychain");
+        // An explicit resource always wins.
+        let input = serde_json::json!({"resource": "file", "action": "delete", "service": "x"});
+        assert_eq!(OsTool::resolved_resource(&input), "file");
     }
 
     #[test]
