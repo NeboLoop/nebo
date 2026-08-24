@@ -6,6 +6,7 @@ mod channel_bindings;
 mod artifact_updates;
 mod auth_profiles;
 mod chats;
+mod comm_seen;
 mod commander;
 mod cron_jobs;
 mod embeddings;

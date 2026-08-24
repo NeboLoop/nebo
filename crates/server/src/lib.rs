@@ -3293,6 +3293,29 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
         "INBOUND handle_comm_message — what the loop says about the sender"
     );
 
+    // Durable inbound dedupe. The hub replays each agent space from its last
+    // ACKED offset on reconnect, and acks are best-effort — so a message we
+    // processed but whose ack was lost comes back on the next connect. The
+    // per-connection in-memory window can't catch that (a new connection has
+    // no memory), which is how a flapping cloud bot re-fired its webhook
+    // workflow and re-sent the same welcome email for as long as the flap
+    // lasted. Wire msg_ids are unique per delivery; seeing one twice is
+    // always a redelivery. Skip only messages with a real id — transient
+    // frames carry a nil uuid and never reach here with side effects.
+    if !msg.id.is_empty() && !msg.id.starts_with("00000000-") {
+        match state.store.mark_comm_message_seen(&msg.id) {
+            Ok(first_time) if !first_time => {
+                tracing::info!(msg_id = %msg.id, topic = %msg.topic, "dropping redelivered comm message (already processed)");
+                return;
+            }
+            Err(e) => {
+                // Fail open: losing dedupe for one message beats dropping it.
+                tracing::warn!(error = %e, "comm dedupe check failed — processing anyway");
+            }
+            _ => {}
+        }
+    }
+
     // Route account stream messages (plan changes, token refresh)
     if msg.topic == "account" {
         if let Ok(event) = serde_json::from_str::<serde_json::Value>(&msg.content) {
