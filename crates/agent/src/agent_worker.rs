@@ -1009,6 +1009,19 @@ fn normalize_watch_payload(payload: &mut serde_json::Value) {
             obj.insert(key.to_string(), serde_json::Value::String(v));
         }
     }
+    // The message reference too: Gmail's raw shape says `id`, workflows say
+    // `message_id` — the download step of the same dropped report would have
+    // fetched with an EMPTY ref even after the gates passed.
+    let missing_mid = obj
+        .get("message_id")
+        .and_then(|v| v.as_str())
+        .map_or(true, |s| s.is_empty());
+    if missing_mid
+        && let Some(id) = obj.get("id").and_then(|v| v.as_str()).map(str::to_string)
+        && !id.is_empty()
+    {
+        obj.insert("message_id".to_string(), serde_json::Value::String(id));
+    }
 }
 
 
@@ -3440,6 +3453,8 @@ mod watch_payload_tests {
         normalize_watch_payload(&mut p);
         assert!(p["from"].as_str().unwrap().contains("alside.com"));
         assert!(p["subject"].as_str().unwrap().contains("Open Order Report"));
+        // The download step reads message_id; the raw shape says id.
+        assert_eq!(p["message_id"], "1a033574ee0ae0e2");
     }
 
     /// A payload that already carries top-level fields is never overwritten,
