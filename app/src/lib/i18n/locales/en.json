@@ -2146,7 +2146,8 @@
 		"factSubject": "Subject",
 		"factDate": "Date",
 		"factAttachment": "Attachment",
-		"factVia": "Via"
+		"factVia": "Via",
+		"interrupted": "Interrupted"
 	},
 	"automations": {
 		"title": "Automations",

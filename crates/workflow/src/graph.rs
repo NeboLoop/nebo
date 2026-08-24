@@ -516,11 +516,29 @@ async fn execute_node<'a>(
 /// `${NEBO_SKILL_DIR}` are expanded before the definition reaches the engine
 /// (workflow manager, `params.skill` names the skill) — same expansion the
 /// skill system uses, so this node never grows its own.
+/// Resume fast-forward for deterministic nodes (command/http): an activity
+/// this run already completed replays its recorded output instead of
+/// re-executing — the same Temporal property (and the same
+/// (activity_id, iteration) key) as the LLM path in `run_llm_loop`. Without
+/// this, a crash-resumed run re-ran command side effects it had already
+/// performed (proven by the WS4 kill-test: a1 executed twice). Control nodes
+/// (condition/loop/wait) deliberately re-evaluate — they route the walk and
+/// are pure over the same context.
+fn replay_completed(ctx: &GraphCtx<'_>, scope: &WalkScope, activity: &Activity) -> Option<String> {
+    let done = ctx.store.completed_activity_contents(&ctx.run_id).ok()?;
+    done.get(&(activity.id.clone(), scope.iteration.clone())).cloned()
+}
+
 async fn run_command<'a>(
     ctx: &GraphCtx<'a>,
     scope: &WalkScope,
     activity: &Activity,
 ) -> Result<(), WorkflowError> {
+    if let Some(content) = replay_completed(ctx, scope, activity) {
+        info!(activity = activity.id.as_str(), "resume: replaying completed command node");
+        ctx.state.lock().unwrap().outputs.insert(activity.id.clone(), content);
+        return route(ctx, scope, &activity.id, |_| true).await;
+    }
     let started_at = chrono::Utc::now().timestamp();
 
     let fail = |err_msg: String| {
@@ -674,6 +692,11 @@ async fn run_http<'a>(
     scope: &WalkScope,
     activity: &Activity,
 ) -> Result<(), WorkflowError> {
+    if let Some(content) = replay_completed(ctx, scope, activity) {
+        info!(activity = activity.id.as_str(), "resume: replaying completed http node");
+        ctx.state.lock().unwrap().outputs.insert(activity.id.clone(), content);
+        return route(ctx, scope, &activity.id, |_| true).await;
+    }
     let started_at = chrono::Utc::now().timestamp();
 
     let fail = |err_msg: String| {
@@ -1362,7 +1385,7 @@ mod walk_tests {
         let store = test_store();
         let run_id = uuid::Uuid::new_v4().to_string();
         store
-            .create_workflow_run(&run_id, &def.id, "manual", None, None, None)
+            .create_workflow_run(&run_id, &def.id, "manual", None, None, None, None)
             .expect("run row");
         let result = execute_graph(
             &def,
@@ -1615,7 +1638,7 @@ mod walk_tests {
         let store = test_store();
         let run_id = uuid::Uuid::new_v4().to_string();
         store
-            .create_workflow_run(&run_id, &def.id, "manual", None, None, None)
+            .create_workflow_run(&run_id, &def.id, "manual", None, None, None, None)
             .expect("run row");
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(5),

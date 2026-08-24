@@ -3,8 +3,8 @@ use rusqlite::params;
 use crate::{DbErrExt, OptionalExt};
 use crate::Store;
 use crate::models::{
-    AgentWorkflowStats, Workflow, WorkflowActivityResult, WorkflowRun, WorkflowRunError,
-    WorkflowToolBinding,
+    AgentWorkflowStats, InterruptedRun, Workflow, WorkflowActivityResult, WorkflowRun,
+    WorkflowRunError, WorkflowToolBinding,
 };
 use types::NeboError;
 
@@ -192,6 +192,10 @@ impl Store {
 
     // ── Workflow Runs ──
 
+    /// `definition` snapshots the workflow JSON at launch (WS4): a crash
+    /// resume executes the definition the run started with, immune to owner
+    /// edits and package sync landing mid-flight. `None` for paths whose
+    /// definition is durable elsewhere (legacy standalone workflows).
     pub fn create_workflow_run(
         &self,
         id: &str,
@@ -200,18 +204,61 @@ impl Store {
         trigger_detail: Option<&str>,
         inputs: Option<&str>,
         session_key: Option<&str>,
+        definition: Option<&str>,
     ) -> Result<WorkflowRun, NeboError> {
         let conn = self.conn()?;
         conn.query_row(
-            "INSERT INTO workflow_runs (id, workflow_id, trigger_type, trigger_detail, inputs, session_key)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            "INSERT INTO workflow_runs (id, workflow_id, trigger_type, trigger_detail, inputs, session_key, definition)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
              RETURNING id, workflow_id, trigger_type, trigger_detail, status, inputs,
                        current_activity, total_tokens_used, error, error_activity,
                        session_key, output, started_at, completed_at",
-            params![id, workflow_id, trigger_type, trigger_detail, inputs, session_key],
+            params![id, workflow_id, trigger_type, trigger_detail, inputs, session_key, definition],
             row_to_workflow_run,
         )
         .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
+    /// Boot sweep (WS4-R1): every run stranded by process death — `running`
+    /// from the crashed process, or `interrupted` from a recovery that itself
+    /// died — is stamped `interrupted` and returned for resume triage. Never
+    /// leaves a phantom `running` row.
+    pub fn mark_interrupted_workflow_runs(
+        &self,
+    ) -> Result<Vec<InterruptedRun>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "UPDATE workflow_runs SET status = 'interrupted'
+                 WHERE status IN ('running', 'interrupted')
+                 RETURNING id, workflow_id, trigger_detail, inputs, definition, resume_attempted",
+            )
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(InterruptedRun {
+                    id: row.get(0)?,
+                    workflow_id: row.get(1)?,
+                    trigger_detail: row.get(2)?,
+                    inputs: row.get(3)?,
+                    definition: row.get(4)?,
+                    resume_attempted: row.get(5)?,
+                })
+            })
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
+    /// One resume per run, ever (WS4-R5 poison protection).
+    pub fn mark_workflow_run_resume_attempted(&self, id: &str) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE workflow_runs SET resume_attempted = 1 WHERE id = ?1",
+            params![id],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
     }
 
     pub fn update_workflow_run(
@@ -356,17 +403,6 @@ impl Store {
         )
         .optional()
         .map_err(|e| NeboError::Database(e.to_string()))
-    }
-
-    /// Mark any "running" workflow runs as cancelled (orphaned from previous shutdown).
-    pub fn cleanup_orphaned_runs(&self) -> Result<u64, NeboError> {
-        let conn = self.conn()?;
-        let count = conn.execute(
-            "UPDATE workflow_runs SET status = 'cancelled', error = 'server restart', completed_at = unixepoch()
-             WHERE status = 'running'",
-            [],
-        ).map_err(|e| NeboError::Database(e.to_string()))?;
-        Ok(count as u64)
     }
 
     // ── Activity Results ──
@@ -737,7 +773,7 @@ mod tests {
             .join(format!("nebo-wf-iter-test-{}.db", uuid::Uuid::new_v4()));
         let store = Store::new(&path.to_string_lossy()).unwrap();
         store
-            .create_workflow_run("run1", "wf1", "manual", None, None, None)
+            .create_workflow_run("run1", "wf1", "manual", None, None, None, None)
             .unwrap();
 
         for (iteration, content) in [("0", "first item"), ("1", "second item")] {
@@ -808,5 +844,66 @@ impl Store {
         conn.execute(&sql, params.as_slice())
             .map_err(|e| NeboError::Database(e.to_string()))?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod durability_tests {
+    use crate::Store;
+
+    fn store() -> Store {
+        let path = std::env::temp_dir()
+            .join(format!("nebo-wfdur-test-{}.db", uuid::Uuid::new_v4()));
+        Store::new(&path.to_string_lossy()).expect("store")
+    }
+
+    /// WS4-R1/R6: the boot sweep stamps every stranded run `interrupted` and
+    /// hands back the definition snapshotted at launch; finished runs are
+    /// never touched.
+    #[test]
+    fn sweep_stamps_stranded_runs_and_returns_snapshots() {
+        let s = store();
+        s.create_workflow_run("r-run", "agent:a1", "watch", Some("order-intake"),
+            Some(r#"{"_watch_payload":{"id":"m1"}}"#), None, Some(r#"{"name":"order-intake"}"#))
+            .unwrap();
+        s.create_workflow_run("r-done", "agent:a1", "manual", None, None, None, Some("{}"))
+            .unwrap();
+        s.update_workflow_run("r-done", Some("completed"), None, None, None, None)
+            .unwrap();
+
+        let rows = s.mark_interrupted_workflow_runs().unwrap();
+        assert_eq!(rows.len(), 1, "only the stranded run is swept");
+        let r = &rows[0];
+        assert_eq!(r.id, "r-run");
+        assert_eq!(r.definition.as_deref(), Some(r#"{"name":"order-intake"}"#));
+        assert_eq!(r.trigger_detail.as_deref(), Some("order-intake"));
+        assert_eq!(r.resume_attempted, 0);
+        let status: String = {
+            let run = s.get_workflow_run("r-run").unwrap().unwrap();
+            run.status
+        };
+        assert_eq!(status, "interrupted", "never a phantom running row");
+        assert_eq!(
+            s.get_workflow_run("r-done").unwrap().unwrap().status,
+            "completed",
+            "finished runs untouched"
+        );
+    }
+
+    /// WS4-R5: a run that was already resumed once comes back from the next
+    /// sweep flagged, so recovery fails it instead of boot-looping. The sweep
+    /// also re-collects rows a dying recovery left stamped `interrupted`.
+    #[test]
+    fn resume_attempted_survives_resweep() {
+        let s = store();
+        s.create_workflow_run("r1", "agent:a1", "manual", None, None, None, Some("{}"))
+            .unwrap();
+        let first = s.mark_interrupted_workflow_runs().unwrap();
+        assert_eq!(first[0].resume_attempted, 0);
+        s.mark_workflow_run_resume_attempted("r1").unwrap();
+        // Process died again before/while resuming: row still interrupted.
+        let second = s.mark_interrupted_workflow_runs().unwrap();
+        assert_eq!(second.len(), 1);
+        assert_eq!(second[0].resume_attempted, 1, "poison flag survives the re-sweep");
     }
 }

@@ -626,6 +626,19 @@ pub struct WorkflowRun {
     pub completed_at: Option<i64>,
 }
 
+/// A run stranded by process death, as returned by the boot sweep (WS4).
+/// Deliberately NOT the full WorkflowRun: `definition` can be large and is
+/// never serialized to the UI — it exists only to relaunch the run.
+#[derive(Debug, Clone)]
+pub struct InterruptedRun {
+    pub id: String,
+    pub workflow_id: String,
+    pub trigger_detail: Option<String>,
+    pub inputs: Option<String>,
+    pub definition: Option<String>,
+    pub resume_attempted: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkflowActivityResult {

@@ -61,6 +61,7 @@
     if (status === 'success') return 'bg-success';
     if (status === 'running') return 'bg-warning animate-pulse';
     if (status === 'failed') return 'bg-error';
+    if (status === 'interrupted') return 'bg-warning';
     return 'bg-base-content/30';
   }
 </script>

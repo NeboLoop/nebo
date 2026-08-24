@@ -137,6 +137,86 @@ impl WorkflowManagerImpl {
         }
     }
 
+    /// Boot recovery (WS4): sweep runs stranded by process death and resume
+    /// them. Same moment and discipline as the scheduler's
+    /// `recover_interrupted_jobs` — one recovery sweep concept, two row kinds.
+    ///
+    /// Every stranded row is stamped `interrupted` (never a phantom
+    /// `running`), then triaged: resumable runs relaunch under their own id
+    /// with their SNAPSHOTTED definition (the engine's resume fast-forward
+    /// skips completed activities); anything unresumable is stamped `failed`
+    /// with a human-readable reason for the run narrator. One resume attempt
+    /// per run, ever — a run that crashes the process again is poison, not a
+    /// boot loop.
+    pub async fn recover_interrupted_runs(self: &Arc<Self>) {
+        let rows = match self.store.mark_interrupted_workflow_runs() {
+            Ok(rows) => rows,
+            Err(e) => {
+                warn!(error = %e, "failed to sweep interrupted workflow runs");
+                return;
+            }
+        };
+        if rows.is_empty() {
+            return;
+        }
+        info!(count = rows.len(), "recovering workflow runs interrupted by restart");
+        for run in rows {
+            let fail = |reason: &str| {
+                let _ = self.store.update_workflow_run(
+                    &run.id,
+                    Some("failed"),
+                    None,
+                    None,
+                    Some(reason),
+                    None,
+                );
+            };
+            if run.resume_attempted != 0 {
+                fail("interrupted again during resume — not retried (poison-run protection)");
+                continue;
+            }
+            let Some(agent_id) =
+                types::keyparser::agent_id_from_workflow_id(&run.workflow_id).map(str::to_string)
+            else {
+                fail("interrupted by a restart and this run type cannot resume");
+                continue;
+            };
+            let Some(definition) = run.definition.clone().filter(|d| !d.is_empty()) else {
+                fail("interrupted by a restart before definition snapshots existed — re-run manually");
+                continue;
+            };
+            if let Err(e) = self.store.mark_workflow_run_resume_attempted(&run.id) {
+                warn!(run_id = %run.id, error = %e, "failed to mark resume attempt");
+                continue;
+            }
+            let mut inputs: serde_json::Value = run
+                .inputs
+                .as_deref()
+                .and_then(|s| serde_json::from_str(s).ok())
+                .unwrap_or_else(|| serde_json::json!({}));
+            if let Some(obj) = inputs.as_object_mut() {
+                obj.insert("_relaunch_run".into(), serde_json::json!(run.id));
+            }
+            match self
+                .run_inline(
+                    definition,
+                    inputs,
+                    "recovery",
+                    run.trigger_detail.clone(),
+                    &agent_id,
+                    None,
+                )
+                .await
+            {
+                Ok(_) => info!(run_id = %run.id, "interrupted run resumed"),
+                Err(e) => {
+                    warn!(run_id = %run.id, error = %e, "interrupted run failed to relaunch");
+                    fail(&format!("interrupted by a restart; resume failed: {e}"));
+                }
+            }
+        }
+    }
+
     /// Cancel all running workflows associated with an agent.
     async fn cancel_runs_for_agent_impl(&self, agent_id: &str) {
         let run_ids = {
@@ -635,6 +715,9 @@ impl WorkflowManager for WorkflowManagerImpl {
                     None,
                     Some(&inputs.to_string()),
                     Some(&session_key),
+                    // Standalone workflows keep their definition durably in the
+                    // workflows table — no per-run snapshot needed.
+                    None,
                 )
                 .map_err(|e| format!("create_workflow_run: {}", e))?;
 
@@ -1129,11 +1212,21 @@ impl WorkflowManager for WorkflowManagerImpl {
             // continue AT the blocked call — never re-run). The approval
             // endpoint passes the reserved `_resume_run` input with the parked
             // run's id; it is stripped before the model ever sees inputs.
-            let (inputs, checkpoint_ctx, resume_state, resume_run_id) = {
+            let (inputs, checkpoint_ctx, resume_state, resume_run_id, relaunch_run_id) = {
                 let mut inputs = inputs;
                 let resume_run: Option<String> = inputs
                     .as_object_mut()
                     .and_then(|m| m.remove("_resume_run"))
+                    .and_then(|v| v.as_str().map(|s| s.to_string()));
+                // Crash recovery (WS4): `_relaunch_run` re-enters an existing
+                // run row under its OWN id with no suspension — the engine's
+                // resume fast-forward returns recorded outputs for completed
+                // activities, so only unfinished work re-executes. A gated call
+                // that fired pre-crash re-parks at the checkpoint (its one-shot
+                // approval was consumed) — never silently re-executed.
+                let relaunch_run: Option<String> = inputs
+                    .as_object_mut()
+                    .and_then(|m| m.remove("_relaunch_run"))
                     .and_then(|v| v.as_str().map(|s| s.to_string()));
                 let resume_state = match &resume_run {
                     Some(rid) => {
@@ -1185,7 +1278,7 @@ impl WorkflowManager for WorkflowManagerImpl {
                 } else {
                     None
                 };
-                (inputs, ctx, resume_state, resume_run)
+                (inputs, ctx, resume_state, resume_run, relaunch_run)
             };
 
             // Resolve the concurrency semaphore for this binding. The permit
@@ -1207,6 +1300,7 @@ impl WorkflowManager for WorkflowManagerImpl {
             // run row, no re-created history.
             let run_id = resume_run_id
                 .clone()
+                .or_else(|| relaunch_run_id.clone())
                 .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
             // Canonical agent session key — tools parse the `agent:<id>:` prefix
             // to resolve per-agent plugin accounts and memory scope. The old
@@ -1219,6 +1313,12 @@ impl WorkflowManager for WorkflowManagerImpl {
                 self.store
                     .update_workflow_run(&run_id, Some("running"), None, None, None, None)
                     .map_err(|e| format!("resume run: {e}"))?;
+            } else if relaunch_run_id.is_some() {
+                // Crash recovery: the row exists (stamped `interrupted` by the
+                // boot sweep) — flip it back to running under its own id.
+                self.store
+                    .update_workflow_run(&run_id, Some("running"), None, None, None, None)
+                    .map_err(|e| format!("relaunch run: {e}"))?;
             } else {
                 self.store
                     .create_workflow_run(
@@ -1228,6 +1328,9 @@ impl WorkflowManager for WorkflowManagerImpl {
                         trigger_detail.as_deref(),
                         Some(&inputs.to_string()),
                         Some(&session_key),
+                        // Definition snapshot (WS4-R6): the run stays resumable
+                        // against exactly what it launched with.
+                        Some(&definition_json),
                     )
                     .map_err(|e| format!("create_workflow_run: {}", e))?;
             }

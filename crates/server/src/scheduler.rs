@@ -39,6 +39,11 @@ pub fn spawn(
             &state,
         );
 
+        // Same sweep moment for workflow runs stranded by process death (WS4):
+        // stamp interrupted, resume from the last completed activity via the
+        // snapshotted definition, fail the unresumable with a narrated reason.
+        state.workflow_manager.recover_interrupted_runs().await;
+
         let mut interval = tokio::time::interval(Duration::from_secs(60));
         loop {
             interval.tick().await;

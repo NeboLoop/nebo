@@ -652,15 +652,12 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         warn!(error = %e, "FTS health check failed — memory search may be degraded");
     }
 
-    // Clean up orphaned workflow runs from previous shutdown
-    match store.cleanup_orphaned_runs() {
-        Ok(0) => {}
-        Ok(n) => info!(
-            count = n,
-            "cancelled orphaned workflow runs from previous session"
-        ),
-        Err(e) => warn!(error = %e, "failed to clean up orphaned workflow runs"),
-    }
+    // Runs stranded by the previous process are NOT cancelled here anymore —
+    // the scheduler's boot sweep (WS4, `recover_interrupted_runs`) owns the
+    // one pathway: stamp `interrupted`, resume from the last completed
+    // activity via the snapshotted definition, fail the unresumable with a
+    // narrated reason. The old janitor stamped them `cancelled` at startup,
+    // which both lied about what happened and raced the recovery sweep.
 
     // Self-heal pre-v0.12.13 chat-created agents: convert assistant-owned
     // generic crons carrying a named agent's duty into that agent's own

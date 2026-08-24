@@ -328,6 +328,7 @@ pub async fn execute_workflow(
                     trigger_detail,
                     Some(&inputs.to_string()),
                     Some(&session_key),
+                    None,
                 )
                 .map_err(|e| WorkflowError::Database(e.to_string()))?;
             id
