@@ -720,18 +720,29 @@ impl AgentWorker {
         }
     }
 
-    /// Stop the worker: cancel all spawned tasks, running workflows, cron jobs and event subscriptions.
+    /// Stop the worker: cancel all spawned tasks, cron jobs and event subscriptions.
+    ///
+    /// `cancel_runs` decides whether in-flight workflow runs die too. Runs are
+    /// detached tokio tasks — they survive the worker's cancel token — so this
+    /// is the ONLY coupling between worker lifetime and run lifetime. Restarts
+    /// (every workflow PUT/toggle restarts the worker so trigger registration
+    /// takes effect) MUST pass `false`: a config edit once killed a customer's
+    /// 20-chunk report run mid-loop, mislabelled "cancelled by user". Deletion,
+    /// uninstall, disable and shutdown pass `true` — there the agent is going
+    /// away and abandoned runs would be zombies.
     ///
     /// Fully awaited — when this returns, every event subscription is gone.
     /// (The old fire-and-forget unsubscribe raced restarts: it could execute
     /// AFTER the replacement worker subscribed, silently killing the new
     /// worker's event triggers.)
-    pub async fn stop(&self, store: &Store) {
+    pub async fn stop(&self, store: &Store, cancel_runs: bool) {
         self.cancel.cancel();
         workflow::triggers::unregister_agent_triggers(&self.agent_id, store);
-        self.workflow_manager
-            .cancel_runs_for_agent(&self.agent_id)
-            .await;
+        if cancel_runs {
+            self.workflow_manager
+                .cancel_runs_for_agent(&self.agent_id)
+                .await;
+        }
         self.event_dispatcher
             .unsubscribe_agent(&self.agent_id)
             .await;
@@ -915,7 +926,8 @@ impl AgentWorkerRegistry {
         {
             let mut workers = self.workers.write().await;
             if let Some(old) = workers.remove(agent_id) {
-                old.stop(&self.store).await;
+                // Restart: in-flight runs keep running (cancel_runs: false).
+                old.stop(&self.store, false).await;
             }
         }
 
@@ -941,11 +953,12 @@ impl AgentWorkerRegistry {
             .insert(agent_id.to_string(), worker);
     }
 
-    /// Stop an agent worker.
+    /// Stop an agent worker. The agent is going away (delete, uninstall,
+    /// disable) — in-flight workflow runs are cancelled with it.
     pub async fn stop_agent(&self, agent_id: &str) {
         let mut workers = self.workers.write().await;
         if let Some(worker) = workers.remove(agent_id) {
-            worker.stop(&self.store).await;
+            worker.stop(&self.store, true).await;
         }
     }
 
@@ -960,7 +973,7 @@ impl AgentWorkerRegistry {
         self.shared_bridges.stop_all().await;
         let mut workers = self.workers.write().await;
         for (_, worker) in workers.drain() {
-            worker.stop(&self.store).await;
+            worker.stop(&self.store, true).await;
         }
     }
 }
