@@ -27,8 +27,10 @@ CRITICAL — DO NOT SKIP TESTS:
 - Section 4 (Workflows) tests W-01 through W-10 are SEPARATE from AT-22. Execute ALL of them.
 - Section 5 (Roles) tests R-01 through R-09 are SEPARATE from AT-20/AT-21. Execute ALL of them.
 - Section 3 (Tools) T-01 and T-02 are REST API calls to /integrations/tools — execute both.
-- Section 7 (Workrooms) WR-01 through WR-10: execute ALL. WR-08 is a KNOWN OPEN — document the failure precisely, do not fix. Timestamp room names ("WR Test {YYYYMMDD-HHMM}") so runs never collide with the never-reuse policy.
+- Section 7 (Workrooms) WR-01 through WR-15: execute ALL. WR-08 was fixed 2026-08-23 — treat as regression check. WR-11..15 cover the delegation-room protocols added 2026-08-23 (organizer default-route, working indicator, mention chips, owner-echo dedupe, right-click removal + crew badge). Timestamp room names ("WR Test {YYYYMMDD-HHMM}") so runs never collide with the never-reuse policy.
 - Section 8 (Register & Governance) CG-01 through CG-07: execute ALL. These are observation tests — watch the live UI/transcript and record verbatim what renders.
+- Section 10 (Identity & First-Start) ID-01 through ID-04: execute ALL. ⚠ ID-02 renames the OWNER's primary employee — record the current name first and RESTORE it before the section ends. Never leave a test name behind.
+- Section 11 (Shell Surfaces) SH-01 through SH-06: SH-01..05 need a browser (Playwright); SH-06 is REST + sqlite. Skip browser legs only with the standard tool-gap reason.
 - If a test has both "Agent tool" and "REST API" methods, execute BOTH.
 - For marketplace installs (S-10, W-09, R-07): use `curl -X POST http://localhost:27895/api/v1/codes -H "Content-Type: application/json" -d '{"code": "CODE-HERE"}'`
 - The ONLY valid SKIP reasons are: "no test binary compiled", "requires hardware not available" (e.g., external display), or "would cause destructive system change" (e.g., toggling DND).
@@ -46,7 +48,9 @@ Then execute every test in plan.md, section by section, in order:
 5. Workflows (W-01 through W-14) — ALL 14. Create test-workflow, run it, check status, multi-activity chaining (W-11), retry/fallback (W-12), token budget (W-13), tools restriction (W-14), install WORK-SW4Z-5XKN, test REST CRUD.
 6. Roles (R-01 through R-09d + R-01a through R-06a) — ALL tests. Create test-role, activate, schedule/heartbeat/event triggers (R-09a/b/c), event emit fan-out (R-09d), install ROLE-KG82-KM2G, test REST CRUD.
 7. Cross-Cutting (X-01 through X-13) — ALL 13. Includes MCP integration (X-11), qualified names/versioning (X-12), dependency cascade (X-13).
-8. Cleanup
+8. Identity & First-Start (ID-01 through ID-04) — ALL 4 (restore the owner's name!)
+9. Shell Surfaces (SH-01 through SH-06) — ALL 6
+10. Cleanup
 
 For agent tool tests: use the tool calls exactly as specified in the plan.
 For REST API tests: use os(resource: "shell", action: "exec", command: "curl ...") to call the API.

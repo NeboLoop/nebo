@@ -1934,6 +1934,61 @@ curl -X DELETE http://localhost:27895/api/v1/workrooms/{channelId}
 | Sidebar | Room gone after reload | |
 | Hub conversation | Survives (records are never destroyed) | |
 
+### WR-11: Unaddressed Owner Message Routes to the Organizer
+
+POST /workrooms/{id}/send with plain text containing no `@` at all
+(e.g. "status?").
+
+| Check | Expected | Result |
+|-------|----------|--------|
+| Content on the wire | Organizer's mention token PREPENDED (visible, not hidden routing) | |
+| Dispatch | The ORGANIZER runs and replies; nobody else | |
+| Text containing any `@` | NOT rewritten (explicit addressing is respected) | |
+
+### WR-12: Working Indicator (workroom_activity)
+
+Send an addressed message with the room open in the UI.
+
+| Check | Expected | Result |
+|-------|----------|--------|
+| On dispatch | `workroom_activity {channelId, agentId, agentName, state:"started"}` broadcast | |
+| Room view | "{Name} is working" row with avatar + dots, at transcript end | |
+| On the agent's reply | Indicator row for that agent clears | |
+| Run dies without posting | Indicator self-clears (failsafe timeout), never spins forever | |
+
+### WR-13: Mention Chips Everywhere (ONE renderer)
+
+Load room history containing tokens in BOTH grammars: `<@localAgentId>` and
+`<@loop_agent_id>` (hub UUID), in owner and agent messages.
+
+| Check | Expected | Result |
+|-------|----------|--------|
+| Every member token | Renders as a colored chip (initial + name), never raw `<@uuid>` | |
+| Hub-UUID token for the PRIMARY | Resolves (list_agents emits loopAgentId) | |
+| Main chat mentions | Same chip, same renderer ($lib/mentions.ts) — no drift between surfaces | |
+| Unknown token | `@unknown` chip (never crashes, never raw) | |
+
+### WR-14: Owner Echo Renders Exactly Once
+
+Send from the room composer; watch the wire echo return.
+
+| Check | Expected | Result |
+|-------|----------|--------|
+| Own message | Appears ONCE, right-aligned as "You" — even though WR-11 prepends a token the optimistic copy lacks | |
+| History reload | Owner rows still labeled "You" (role=user), never "Owner"/name rows | |
+| Second device (or fresh tab) | The wire copy renders as a "You" bubble, not a foreign sender | |
+
+### WR-15: Room Housekeeping (right-click) + Crew Badge
+
+| Check | Expected | Result |
+|-------|----------|--------|
+| Right-click room row | Context menu with "Remove room" (single action) | |
+| Remove | ConfirmModal first; on confirm DELETE /workrooms → row gone live | |
+| Open room removed | The open room view closes | |
+| Hub conversation | Survives removal (registration forgotten, records kept) | |
+| >2 members | Stacked faces + "+N" badge; ≤2 members: no badge | |
+| Organizer face | Always the top-left face in the stack (creator-first ordering) | |
+
 ---
 
 ## Section 8: Conversation Register & Governance
@@ -2061,7 +2116,115 @@ On a platform with capture (cloud/Linux desktop), record ≤30s, stop.
 
 ---
 
-## Section 10: Cleanup
+## Section 10: Identity & First-Start (ID)
+
+The christening protocol: the owner names the first employee ONCE, and the
+name is theirs forever. Backend-enforced — "once the primary Employee has
+been created it's been created."
+
+### ID-01: Christening Is One-Shot
+
+```
+curl -X POST http://localhost:27895/api/v1/agents/assistant/christen \
+  -H 'Content-Type: application/json' -d '{"name": "TestName"}'
+```
+
+| Check | Expected | Result |
+|-------|----------|--------|
+| When already christened | 400 with the teaching message ("already has a name") | |
+| No rename occurs | agents.assistant.name unchanged by the refused call | |
+
+### ID-02: Owner Rename Survives Restart (name_locked)
+
+⚠ OWNER DATA: the primary's name belongs to the owner. Record the current
+name FIRST, test with a temp name, and restore the owner's name at the end
+of the test — never leave a test name behind (this bit us on 2026-08-23).
+
+Rename the primary via PUT /agents/assistant `{name: "<temp>"}`, then restart
+the server (or wait for a watcher restart).
+
+| Check | Expected | Result |
+|-------|----------|--------|
+| After rename | `agents.name_locked = 1` | |
+| After restart | Name still "X" — the bundled manifest ("Nebo") never clobbers | |
+| Roster/API/chat headers | All show "X" (no surface still says "Nebo") | |
+
+### ID-03: Lock Applies to Every Agent, Owner Wins Everywhere
+
+Rename any installed agent in settings; touch its manifest (or restart) so the
+FS→DB sync runs.
+
+| Check | Expected | Result |
+|-------|----------|--------|
+| Boot sync + FS watcher | Neither overwrites the locked name | |
+| Hub reconcile | Remote handle/display follow the OWNER's name, no manifest heal | |
+| Un-renamed agents | Manifest name changes still sync through (lock only after a rename) | |
+
+### ID-04: Christening Modal Never Reappears
+
+| Check | Expected | Result |
+|-------|----------|--------|
+| Workspace load, christened install | No modal — driven by backend `primaryChristened`, not frontend state | |
+| Fresh install (or flag absent + name "Nebo") | Modal appears, not skippable, creates + introduces | |
+
+---
+
+## Section 11: Shell Surfaces (SH) — Playwright
+
+Tonight's shell protocols. One editing surface per object; nothing clips;
+nothing jumps; every count is a door.
+
+### SH-01: Modal Identity + Stacking
+
+| Check | Expected | Result |
+|-------|----------|--------|
+| Settings / Runs / Run modals | Header carries the employee's avatar chip + name | |
+| Run opened from the run list | `‹`/close returns to the LIST (stacked), not the workspace | |
+| Escape with stacked modals | Closes ONE layer per press | |
+
+### SH-02: Stat Tiles Deep-Link
+
+| Check | Expected | Result |
+|-------|----------|--------|
+| "Total runs" tile | Opens Runs modal, All filter | |
+| "Failed" tile | Opens Runs modal with Failed chip preselected | |
+| Tile clicked while modal open | Re-aims the filter | |
+
+### SH-03: Reminder Editing — ONE Surface
+
+| Check | Expected | Result |
+|-------|----------|--------|
+| Reminder card | Read-only summary; NO inline editing anywhere | |
+| Card click | Narrow modal: instructions + plain-English schedule, Save/Cancel | |
+| Complex cron | Shown read-only in the modal; never silently rewritten | |
+| Save | Text lands in the field it came from (instructions/message/command) | |
+
+### SH-04: Nothing Clips, Nothing Jumps
+
+| Check | Expected | Result |
+|-------|----------|--------|
+| Flow/reminder cards | Full content height — no mid-line clipping at any pane height | |
+| Workroom sidebar rows | Hover changes background only — zero geometry shift | |
+
+### SH-05: Hidden-for-now Surfaces
+
+| Check | Expected | Result |
+|-------|----------|--------|
+| Sidebar header | No search button; `+` new-chat and collapse remain; ⌘K still opens palette | |
+| Billing page | No "Give Nebo" gifting section | |
+
+### SH-06: Company Memory Wiring (Nebo KB)
+
+| Check | Expected | Result |
+|-------|----------|--------|
+| Fresh paired install / cloud bot | Exactly ONE KB integration, named "Nebo KB", auth `neboai`, canonical /mcp URL | |
+| Boot with legacy "nebo-kb" row | Healed to "Nebo KB"; an owner-chosen name is never touched | |
+| Boot with existing canonical row | Nothing added (idempotent by URL) | |
+| Tool namespace | `mcp__nebo_kb__…` before and after the rename (unchanged) | |
+
+---
+
+## Section 12: Cleanup
 
 After all tests, remove test artifacts:
 

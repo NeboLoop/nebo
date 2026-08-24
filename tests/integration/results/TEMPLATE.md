@@ -855,6 +855,41 @@
 |-------|----------|--------|-------|
 | DELETE 200; sidebar clears; hub history survives | | | |
 
+### WR-11: Unaddressed Owner Message → Organizer
+
+| Check | Expected | Result | Notes |
+|-------|----------|--------|-------|
+| No-@ send: organizer token prepended (visible), organizer runs | | | |
+| Text with any @ left untouched | | | |
+
+### WR-12: Working Indicator
+
+| Check | Expected | Result | Notes |
+|-------|----------|--------|-------|
+| workroom_activity "started" on dispatch; "{Name} is working" row | | | |
+| Cleared by the agent's reply; failsafe timeout if run dies | | | |
+
+### WR-13: Mention Chips (ONE renderer)
+
+| Check | Expected | Result | Notes |
+|-------|----------|--------|-------|
+| Local id AND hub-UUID tokens render as chips; never raw <@uuid> | | | |
+| Main chat + rooms share $lib/mentions.ts; unknown → @unknown chip | | | |
+
+### WR-14: Owner Echo Once
+
+| Check | Expected | Result | Notes |
+|-------|----------|--------|-------|
+| Own send renders once as "You" despite prepended token on the echo | | | |
+| Reload + second device: owner rows stay "You" | | | |
+
+### WR-15: Housekeeping + Crew Badge
+
+| Check | Expected | Result | Notes |
+|-------|----------|--------|-------|
+| Right-click → Remove (confirm) → row gone live, hub history survives | | | |
+| >2 members: +N badge; organizer face top-left | | | |
+
 ---
 
 ## Section 9: Conversation Register & Governance (CG)
@@ -935,7 +970,80 @@
 
 ---
 
-## Section 11: Cleanup
+## Section 11: Identity & First-Start (ID)
+
+### ID-01: Christening One-Shot
+
+| Check | Expected | Result | Notes |
+|-------|----------|--------|-------|
+| Second christen → 400 teaching message; no rename occurs | | | |
+
+### ID-02: Rename Survives Restart (name_locked) — ⚠ restore the owner's name after
+
+| Check | Expected | Result | Notes |
+|-------|----------|--------|-------|
+| Rename sets name_locked=1; restart keeps the name (manifest never clobbers) | | | |
+| All surfaces show the owner's name | | | |
+
+### ID-03: Owner Wins for Every Agent
+
+| Check | Expected | Result | Notes |
+|-------|----------|--------|-------|
+| Boot sync / FS watcher / hub reconcile never overwrite a locked name | | | |
+| Un-renamed agents still take manifest name updates | | | |
+
+### ID-04: Modal Gate Is Backend-Driven
+
+| Check | Expected | Result | Notes |
+|-------|----------|--------|-------|
+| Christened install: no modal ever; fresh install: modal, not skippable | | | |
+
+---
+
+## Section 12: Shell Surfaces (SH)
+
+### SH-01: Modal Identity + Stacking
+
+| Check | Expected | Result | Notes |
+|-------|----------|--------|-------|
+| Settings/Runs/Run headers carry avatar chip + name | | | |
+| Run detail stacks over run list; back → list; Escape peels one layer | | | |
+
+### SH-02: Stat Tiles Deep-Link
+
+| Check | Expected | Result | Notes |
+|-------|----------|--------|-------|
+| Total runs → All; Failed → Failed chip preselected; re-aims while open | | | |
+
+### SH-03: Reminder Editing — ONE Surface
+
+| Check | Expected | Result | Notes |
+|-------|----------|--------|-------|
+| Cards read-only; click → narrow modal (text + plain-English schedule) | | | |
+| Complex cron read-only; save writes the originating field | | | |
+
+### SH-04: Nothing Clips, Nothing Jumps
+
+| Check | Expected | Result | Notes |
+|-------|----------|--------|-------|
+| Cards full height at any pane size; room rows hover without shifting | | | |
+
+### SH-05: Hidden Surfaces
+
+| Check | Expected | Result | Notes |
+|-------|----------|--------|-------|
+| No sidebar search (⌘K works); no Give Nebo on billing | | | |
+
+### SH-06: Nebo KB Wiring
+
+| Check | Expected | Result | Notes |
+|-------|----------|--------|-------|
+| ONE integration "Nebo KB" (neboai auth, /mcp URL); legacy name healed | | | |
+| Owner-chosen names untouched; idempotent by URL; slug still nebo_kb | | | |
+
+---
+
+## Section 13: Cleanup
 
 | Artifact | Cleanup Action | Done | Notes |
 |----------|----------------|------|-------|
@@ -973,10 +1081,12 @@
 | Agents (A) | 15 | | | | |
 | Plugins (P) | 4 | | | | |
 | Cross-Cutting (X) | 10 | | | | |
-| Workrooms (WR) | 10 | | | | |
+| Workrooms (WR) | 15 | | | | |
 | Register & Governance (CG) | 7 | | | | |
 | Teach (TB) | 4 | | | | |
-| **Total** | **102** | | | | |
+| Identity & First-Start (ID) | 4 | | | | |
+| Shell Surfaces (SH) | 6 | | | | |
+| **Total** | **117** | | | | |
 
 ## Regressions from Previous Run
 
