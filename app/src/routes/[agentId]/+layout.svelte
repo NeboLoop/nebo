@@ -23,7 +23,6 @@
   import AgentSettingsModal from '$lib/components/settings/agent/AgentSettingsModal.svelte';
   import ConfirmModal from '$lib/components/settings/ConfirmModal.svelte';
   import { unreadCount } from '$lib/stores/notifications';
-  import { commandPaletteOpen } from '$lib/stores/commandPalette';
   import { slide } from 'svelte/transition';
   import { logger } from '$lib/monitoring';
   import MessageSquareLock from 'lucide-svelte/icons/message-square-lock';
@@ -1089,13 +1088,8 @@
   {/snippet}
 
   {#snippet headerActions()}
-    <button
-      class="w-7 h-7 rounded-md flex items-center justify-center hover:bg-base-100 cursor-pointer bg-transparent border-none shrink-0 text-base-content/60 hover:text-base-content"
-      onclick={() => commandPaletteOpen.set(true)}
-      title="{$t('nav.searchOrRun')} (⌘K)"
-    >
-      <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="7" cy="7" r="4.5"/><line x1="10.5" y1="10.5" x2="14" y2="14" stroke-linecap="round"/></svg>
-    </button>
+    <!-- Search hidden for now (owner call, 2026-08-23) — ⌘K still opens the
+         command palette; only the header button is gone. -->
     <button
       class="w-7 h-7 rounded-md flex items-center justify-center hover:bg-base-100 cursor-pointer bg-transparent border-none shrink-0"
       onclick={() => agentId && goto(`/${agentId}/threads`)}
