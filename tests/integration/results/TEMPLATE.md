@@ -890,6 +890,24 @@
 | Right-click → Remove (confirm) → row gone live, hub history survives | | | |
 | >2 members: +N badge; organizer face top-left | | | |
 
+### WR-16: Full Delegation Circle
+
+| Check | Expected | Result | Notes |
+|-------|----------|--------|-------|
+| Organizer delegates one ask → expert executes own tools → returns to organizer → integrates; labels perfect | | | |
+
+### WR-17: Organizer Never Executes
+
+| Check | Expected | Result | Notes |
+|-------|----------|--------|-------|
+| Coordination-only allowlist; denial steers to delegation, no false "account lacks tool" | | | |
+
+### WR-18: Chain Caps + Self-Mention
+
+| Check | Expected | Result | Notes |
+|-------|----------|--------|-------|
+| Room 12/30, ambient 3/6; self-mention never re-dispatches; human mention resets | | | |
+
 ---
 
 ## Section 9: Conversation Register & Governance (CG)
@@ -1043,7 +1061,81 @@
 
 ---
 
-## Section 13: Cleanup
+## Section 13: Coworker Messaging (CW)
+
+### CW-01: Send + Reply Round-Trip
+
+| Check | Expected | Result | Notes |
+|-------|----------|--------|-------|
+| A→B coworker send first call; B replies; A reports grounded; names never ids | | | |
+
+### CW-02: Owner Visibility
+
+| Check | Expected | Result | Notes |
+|-------|----------|--------|-------|
+| "Messaged {name}" chips dev-mode ON and OFF; ⇄ transcript read-only | | | |
+
+### CW-03: Unknown Coworker Teaches
+
+| Check | Expected | Result | Notes |
+|-------|----------|--------|-------|
+| Bad name → error lists real roster; no crash/silent drop | | | |
+
+### CW-04: Ambient Chain Caps
+
+| Check | Expected | Result | Notes |
+|-------|----------|--------|-------|
+| Depth 3 stops pingpong; rate 6/5min buffers | | | |
+
+### CW-05: Channel Coordination Mode
+
+| Check | Expected | Result | Notes |
+|-------|----------|--------|-------|
+| Two mentioned + "work together" → one lead consults peer → ONE combined reply | | | |
+
+---
+
+## Section 14: Timers & Scheduling (TM)
+
+### TM-01: One-Shot Fires On Schedule
+
+| Check | Expected | Result | Notes |
+|-------|----------|--------|-------|
+| No early fire; fires ≤90s after due via real tick; never refires | | | |
+
+### TM-02: Recurring Consumes Exactly Once
+
+| Check | Expected | Result | Notes |
+|-------|----------|--------|-------|
+| Two fires ~2min apart; one history row each | | | |
+
+### TM-03: Disabled Means Silent
+
+| Check | Expected | Result | Notes |
+|-------|----------|--------|-------|
+| Off: due moment passes silent; on: next occurrence fires, no catch-up burst | | | |
+
+### TM-04: Schedule Edit Re-Aims
+
+| Check | Expected | Result | Notes |
+|-------|----------|--------|-------|
+| Next fire matches new schedule; old slot silent; cron round-trips | | | |
+
+### TM-05: Restart Recovery
+
+| Check | Expected | Result | Notes |
+|-------|----------|--------|-------|
+| Dangling history row re-fires once on boot | | | |
+
+### TM-06: Unit Legs
+
+| Check | Expected | Result | Notes |
+|-------|----------|--------|-------|
+| cargo due_tests green; vitest schedule.test.ts 22 green | | | |
+
+---
+
+## Section 15: Cleanup
 
 | Artifact | Cleanup Action | Done | Notes |
 |----------|----------------|------|-------|
@@ -1079,14 +1171,16 @@
 | Built-in Tools (T) | 2 | | | | |
 | Workflows (W) | 10 | | | | |
 | Agents (A) | 15 | | | | |
-| Plugins (P) | 4 | | | | |
-| Cross-Cutting (X) | 10 | | | | |
-| Workrooms (WR) | 15 | | | | |
+| Plugins (P) | 5 | | | | |
+| Cross-Cutting (X) | 12 | | | | |
+| Workrooms (WR) | 18 | | | | |
 | Register & Governance (CG) | 7 | | | | |
 | Teach (TB) | 4 | | | | |
 | Identity & First-Start (ID) | 4 | | | | |
 | Shell Surfaces (SH) | 6 | | | | |
-| **Total** | **117** | | | | |
+| Coworkers (CW) | 5 | | | | |
+| Timers (TM) | 6 | | | | |
+| **Total** | **140** | | | | |
 
 ## Regressions from Previous Run
 

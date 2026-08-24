@@ -1751,6 +1751,28 @@ skill(action: "catalog")
 
 **Notes:** If no MCP servers are configured, document that the endpoint works but returns empty. This is expected on a fresh install.
 
+### X-11b: MCP Tool Call Round-Trip (live proxy)
+
+Through chat, on a connected server (Nebo KB is always present on a paired
+install): discover then CALL a namespaced proxy.
+
+```
+nebo chat "use tool_search to find a nebo_kb memory tool, then call mcp__nebo_kb__memory_recall for any stored memory"
+```
+
+| Check | Expected | Result |
+|-------|----------|--------|
+| Discovery | tool_search surfaces the `mcp__nebo_kb__…` proxies with real schemas | |
+| Call | The proxy EXECUTES against the live server (result or clean auth error — never a hallucinated answer) | |
+| Auth | `neboai` auth presents the platform token automatically (nothing asked of the owner) | |
+
+### X-11c: MCP Disconnect/Reconnect Lifecycle
+
+| Check | Expected | Result |
+|-------|----------|--------|
+| Disable the integration | Its `mcp__` proxies leave the registry (tool_search no longer finds them) | |
+| Re-enable | Proxies return with schemas intact; no duplicate registrations | |
+
 ### X-12: Qualified Names and Version Format
 
 > **Tests:** Verify package identity format is accepted in skill/workflow/role metadata
@@ -1989,6 +2011,37 @@ Send from the room composer; watch the wire echo return.
 | >2 members | Stacked faces + "+N" badge; ≤2 members: no badge | |
 | Organizer face | Always the top-left face in the stack (creator-first ordering) | |
 
+### WR-16: Full Delegation Circle (live LLM, ≥2 experts)
+
+Give the organizer's agent a mission requiring two DIFFERENT experts (e.g.
+"deliver the <title> of a page AND publish a one-line summary"). Watch the
+whole circle.
+
+| Check | Expected | Result |
+|-------|----------|--------|
+| Organizer opens ONE room | ≥2 members, both experts present, never reuses a room | |
+| Organizer's first room reply | Addresses ONE expert with one specific ask (delegation, not narration) | |
+| Expert executes | With its OWN tools, in its run — never spawns sub-agents for a member's job | |
+| Expert returns | Result addressed to the ORGANIZER's token | |
+| Organizer integrates | Second delegation or combined result; final reply addresses no one | |
+| Labels | Every row correctly attributed (name + color), zero UUIDs | |
+
+### WR-17: The Organizer Never Executes
+
+| Check | Expected | Result |
+|-------|----------|--------|
+| Organizer run tool scope | Coordination-only allowlist (loop/message/agent) | |
+| Denied tool call | Denial hint steers BACK to delegation — organizer delegates, does not apologize or claim the account lacks the tool | |
+| Trivial step temptation | Even a one-call step goes to the owning expert | |
+
+### WR-18: Chain Caps + Self-Mention Guard
+
+| Check | Expected | Result |
+|-------|----------|--------|
+| Room caps | 12 deep / 30 per 5min (ambient stays 3 / 6) | |
+| Self-mention | An agent quoting its OWN token never re-dispatches itself | |
+| Cap hit | Chain stops silently (buffered, no dispatch); a human mention resets | |
+
 ---
 
 ## Section 8: Conversation Register & Governance
@@ -2224,7 +2277,170 @@ nothing jumps; every count is a door.
 
 ---
 
-## Section 12: Cleanup
+## Section 12: Coworker Messaging — Agent-to-Agent OUTSIDE Rooms (CW)
+
+The coworker rail: named employees on this bot messaging each other directly,
+owner-visible, without a room. Rooms are for missions; the rail is for asks.
+
+### CW-01: Send + Reply Round-Trip
+
+Prompt agent A: "ask {B} what its role is, via
+message(resource: \"coworker\", action: \"send\", to: \"{b-slug}\", text: ...)".
+
+| Check | Expected | Result |
+|-------|----------|--------|
+| A's send | First call, correct resource, delivered | |
+| B runs and replies | Reply reaches A's session; A reports B's answer grounded in the reply | |
+| Attribution | Both legs carry real names, never ids | |
+
+### CW-02: Owner Visibility (trust surface)
+
+| Check | Expected | Result |
+|-------|----------|--------|
+| "Messaged {name}" chips | Visible in the owner transcript, dev mode ON and OFF | |
+| Coworker thread view | Opens read-only (⇄ title); owner steers from the employee's own chat | |
+
+### CW-03: Unknown Coworker Teaches
+
+| Check | Expected | Result |
+|-------|----------|--------|
+| send to a nonexistent name | Error names the real roster (teaches recovery), no crash, no silent drop | |
+
+### CW-04: Ambient Chain Caps
+
+| Check | Expected | Result |
+|-------|----------|--------|
+| Depth | A→B→A→B stops at depth 3 (ambient cap), no infinite pingpong | |
+| Rate | >6 agent-triggered messages in 5min on one channel → buffered, not dispatched | |
+
+### CW-05: Channel Coordination Mode (no room)
+
+In a loop channel, address TWO exposed agents with "work together on ONE
+answer".
+
+| Check | Expected | Result |
+|-------|----------|--------|
+| Routing | ONE lead runs (first mentioned), consults the other via coworker send | |
+| Output | One combined reply, not two independent answers | |
+
+---
+
+## Section 13: Timers & Scheduling (TM)
+
+Not CRUD — proof the clock actually behaves. The scheduler polls every 60s;
+"fires on time" means within ~90s of the due moment.
+
+### TM-01: One-Shot Fires On Schedule (the real tick, not "run now")
+
+Create a one-shot ~2 minutes out (event tool "in 2 minutes" phrasing → the
+year-pinned cron), with an output that proves execution (write a marker file
+or a distinctive notify).
+
+| Check | Expected | Result |
+|-------|----------|--------|
+| Before due | Nothing fires early | |
+| At due +≤90s | The job FIRES via the scheduler tick (not manual run) | |
+| One-shot consumed | It never fires a second time on later ticks | |
+
+### TM-02: Recurring Consumes Occurrences Exactly Once
+
+Create an every-2-minutes job; observe two consecutive fires.
+
+| Check | Expected | Result |
+|-------|----------|--------|
+| Two fires, ~2min apart | last_run advances each fire; no double-fire inside one occurrence | |
+| History | One history row per fire, outcomes recorded | |
+
+### TM-03: Disabled Means Silent
+
+| Check | Expected | Result |
+|-------|----------|--------|
+| Toggle a due-soon job off | Its moment passes with NO fire, no history row | |
+| Toggle back on | Next occurrence fires normally (no catch-up burst) | |
+
+### TM-04: Schedule Edit Re-Aims the Next Fire
+
+Edit a reminder's schedule (modal or PUT /tasks) to a different time.
+
+| Check | Expected | Result |
+|-------|----------|--------|
+| Next fire | Matches the NEW schedule; the old slot stays silent | |
+| Round-trip | The stored cron equals what the plain-English editor emitted | |
+
+### TM-05: Restart Recovery
+
+Kill the server while a scheduled run is in flight (dangling history row).
+
+| Check | Expected | Result |
+|-------|----------|--------|
+| On boot | recover_interrupted_jobs re-fires it once; no duplicate | |
+
+### TM-06: Unit Legs (deterministic)
+
+| Check | Expected | Result |
+|-------|----------|--------|
+| `cargo test -p nebo-server due_tests` | Fire decision: one-shot null-last_run fires from created_at; consumed one-shot never refires; weekday cron skips weekends; 5-field normalizes; garbage → Invalid | |
+| `pnpm vitest run src/lib/utils/schedule.test.ts` | 22 round-trip/refusal cases green (simple shapes lossless; complex crons refused, never rewritten) | |
+
+---
+
+## Section 14: Plugins (P)
+
+Channel and service plugins — the OTHER capability system. Plugins are not
+skills: they carry accounts, sandboxes, and interface bindings.
+
+### P-01: Plugin Surface Lists Honestly
+
+```
+nebo chat "use plugin(action: \"list\")"
+```
+
+| Check | Expected | Result |
+|-------|----------|--------|
+| First call | plugin tool, list action; installed plugins with connection state | |
+| No fabrication | States (connected/needs auth) match Settings → Plugins exactly | |
+
+### P-02: Plugin Call Round-Trip
+
+On a CONNECTED plugin (e.g. Gmail): a safe read through the plugin tool.
+
+| Check | Expected | Result |
+|-------|----------|--------|
+| First call | plugin(resource: "<name>", …) — never a guessed skill or raw HTTP | |
+| Result | Real data from the account, reported grounded | |
+
+### P-03: Missing Account → ONE connect_account Card
+
+Call a plugin whose account is NOT connected.
+
+| Check | Expected | Result |
+|-------|----------|--------|
+| The ask pathway | connect_account card via ctx.ask_user (the ONE producer) | |
+| No synthetic cards, no crash | Run pauses awaiting the card, resumes after connect | |
+
+### P-04: Install From Marketplace + Dependency Cascade
+
+Install a plugin code (or an agent whose frontmatter requires a plugin).
+
+| Check | Expected | Result |
+|-------|----------|--------|
+| Install | Lands under the canonical install pathway (codes::handle_code) | |
+| Cascade | Declared plugin deps install with it; interface bindings gate correctly | |
+
+### P-05: Channels Are Plugins, Not Skills
+
+```
+nebo chat "use skill(action: \"discover\", query: \"slack\")"
+```
+
+| Check | Expected | Result |
+|-------|----------|--------|
+| Skill discover | Does NOT invent a slack skill; channel I/O routes via plugin tool | |
+| Register | The reply steers to the plugin pathway without hunting | |
+
+---
+
+## Section 15: Cleanup
 
 After all tests, remove test artifacts:
 
