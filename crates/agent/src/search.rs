@@ -72,6 +72,12 @@ pub async fn hybrid_search(
     };
 
     let mut merged: HashMap<String, SearchResult> = HashMap::new();
+    // Strongest UNWEIGHTED component per candidate (raw cosine or raw
+    // normalized BM25). The relevance FILTER runs on this; the fused weighted
+    // score only ORDERS. Filtering on the fused score structurally floored
+    // any memory missing one leg — an unembedded memory tops out at
+    // text_weight (0.2 on long queries) no matter how exact its text match.
+    let mut strength: HashMap<String, f64> = HashMap::new();
     let fts_limit = (config.limit * 3) as i64;
 
     // 1. FTS5 on memories table — across the read-scope chain so an
@@ -79,9 +85,12 @@ pub async fn hybrid_search(
     let scope_chain = crate::memory::memory_scope_chain(user_id);
     if let Ok(fts_results) = store.search_memories_fts(query, &scope_chain, fts_limit) {
         for (memory_id, rank) in &fts_results {
-            let norm_score = normalize_bm25(*rank) * text_weight;
+            let raw = normalize_bm25(*rank);
+            let norm_score = raw * text_weight;
             if let Ok(Some(mem)) = store.get_memory(*memory_id) {
                 let merge_key = format!("mem:{}", memory_id);
+                let st = strength.entry(merge_key.clone()).or_insert(0.0);
+                *st = st.max(raw);
                 let entry = merged.entry(merge_key).or_insert_with(|| SearchResult {
                     memory_id: Some(*memory_id),
                     chunk_id: None,
@@ -105,7 +114,8 @@ pub async fn hybrid_search(
                 } else {
                     1.0
                 };
-                let norm_score = normalize_bm25(*rank) * text_weight * dampening;
+                let raw = normalize_bm25(*rank) * dampening;
+                let norm_score = raw * text_weight;
 
                 // Merge by memory_id if available, else by chunk_id
                 let merge_key = if let Some(mid) = memory_id {
@@ -113,6 +123,8 @@ pub async fn hybrid_search(
                 } else {
                     format!("chunk:{}", chunk_id)
                 };
+                let st = strength.entry(merge_key.clone()).or_insert(0.0);
+                *st = st.max(raw);
 
                 let entry = merged.entry(merge_key).or_insert_with(|| {
                     // Try to load the parent memory for key/namespace
@@ -160,7 +172,7 @@ pub async fn hybrid_search(
                     continue;
                 }
                 let chunk_id = *id as i64;
-                merge_vector_hit(store, &mut merged, chunk_id, sim * vector_weight);
+                merge_vector_hit(store, &mut merged, &mut strength, chunk_id, sim, vector_weight);
             }
         } else {
             // Brute-force fallback: load all embeddings and cosine scan
@@ -174,16 +186,18 @@ pub async fn hybrid_search(
                     if sim < config.min_score {
                         continue;
                     }
-                    merge_vector_hit(store, &mut merged, *chunk_id, sim * vector_weight);
+                    merge_vector_hit(store, &mut merged, &mut strength, *chunk_id, sim, vector_weight);
                 }
             }
         }
     }
 
-    // Collect, filter by min_score, sort by score DESC, take top N
+    // Collect, filter on component STRENGTH (raw, unweighted), order by the
+    // fused score, take top N.
     let mut results: Vec<SearchResult> = merged
-        .into_values()
-        .filter(|r| r.score >= config.min_score)
+        .into_iter()
+        .filter(|(k, _)| strength.get(k).copied().unwrap_or(0.0) >= config.min_score)
+        .map(|(_, r)| r)
         .collect();
     results.sort_by(|a, b| {
         b.score
@@ -271,15 +285,20 @@ fn classify_query(query: &str) -> QueryClass {
 fn merge_vector_hit(
     store: &Arc<Store>,
     merged: &mut HashMap<String, SearchResult>,
+    strength: &mut HashMap<String, f64>,
     chunk_id: i64,
-    vector_score: f64,
+    raw_sim: f64,
+    vector_weight: f64,
 ) {
+    let vector_score = raw_sim * vector_weight;
     if let Ok(Some((_, memory_id, text, _source))) = store.get_memory_chunk(chunk_id) {
         let merge_key = if let Some(mid) = memory_id {
             format!("mem:{}", mid)
         } else {
             format!("chunk:{}", chunk_id)
         };
+        let st = strength.entry(merge_key.clone()).or_insert(0.0);
+        *st = st.max(raw_sim);
 
         let entry = merged.entry(merge_key).or_insert_with(|| {
             let (key, value, namespace) = if let Some(mid) = memory_id {
