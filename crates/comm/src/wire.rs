@@ -246,6 +246,8 @@ mod tests {
             agent_id: String::new(),
             agent_slug: String::new(),
             source_channel_id: String::new(),
+            from_agent_id: String::new(),
+            from_agent_name: String::new(),
         };
         let json = serde_json::to_string(&p).unwrap();
         let p2: DeliveryPayload = serde_json::from_str(&json).unwrap();
@@ -253,6 +255,7 @@ mod tests {
         assert_eq!(p2.content["text"], "hello");
         // Agent fields should be omitted when empty
         assert!(!json.contains("agentId"));
+        assert!(!json.contains("fromAgentId"), "empty sender identity stays off the wire");
     }
 
     #[test]
@@ -264,12 +267,17 @@ mod tests {
             agent_id: "agent-123".into(),
             agent_slug: "atlas".into(),
             source_channel_id: String::new(),
+            from_agent_id: "emp-9".into(),
+            from_agent_name: "Receptionist".into(),
         };
         let json = serde_json::to_string(&p).unwrap();
         let p2: DeliveryPayload = serde_json::from_str(&json).unwrap();
         assert_eq!(p2.agent_id, "agent-123");
         assert_eq!(p2.agent_slug, "atlas");
         assert!(p2.source_channel_id.is_empty());
+        // Sender identity relays verbatim (which employee is speaking).
+        assert_eq!(p2.from_agent_id, "emp-9");
+        assert_eq!(p2.from_agent_name, "Receptionist");
     }
 
     #[test]
