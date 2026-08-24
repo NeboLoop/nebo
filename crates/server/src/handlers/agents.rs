@@ -825,7 +825,8 @@ pub async fn christen_primary(
     }
 
     // Rename via the existing update pathway (registry sync + broadcast ride it).
-    update_agent(
+    // The Json response body is the caller's own payload echoed back — unused here.
+    let _ = update_agent(
         State(state.clone()),
         Path("assistant".to_string()),
         Json(serde_json::json!({ "name": name })),

@@ -64,13 +64,11 @@ struct PluginInput {
     /// Typed input object for a port `operation`; each field becomes a `--key value` flag.
     #[serde(default)]
     input: serde_json::Value,
-    /// Plain-language description of a gated operation for the owner's approval
-    /// prompt (e.g. "Pay Acme Supplies $2,500.00 for bill #1042"). Required by
-    /// the approval gate for gated operations; shown to the owner as the
-    /// headline. Never forwarded to the plugin binary.
-    #[serde(default)]
-    display: String,
 }
+// NOTE: gated operations also carry a `display` arg (declared in the tool
+// schema below) — the approval gate reads it from the RAW tool-call args
+// before dispatch, so it is deliberately absent from this struct and never
+// forwarded to the plugin binary.
 
 fn default_action() -> String {
     "exec".to_string()
@@ -883,8 +881,6 @@ impl DynTool for PluginTool {
                     query: String::new(),
                     operation: String::new(),
                     input: serde_json::Value::Null,
-                    // Approval-prompt text only — never forwarded to the binary.
-                    display: String::new(),
                 };
                 return self.handle_exec(&port_pi, ctx).await;
             }

@@ -1839,27 +1839,6 @@ fn build_agent_context(store: &Store, agent_id: &str) -> Option<String> {
     Some(out)
 }
 
-fn build_activity_prompt(
-    activity: &Activity,
-    prior_context: &str,
-    inputs: &serde_json::Value,
-    skill_content: Option<&HashMap<String, String>>,
-    emit_source: Option<&str>,
-    has_browser: bool,
-    tool_names: &[String],
-) -> String {
-    build_activity_prompt_with_context(
-        activity,
-        prior_context,
-        inputs,
-        skill_content,
-        emit_source,
-        has_browser,
-        tool_names,
-        None,
-    )
-}
-
 #[allow(clippy::too_many_arguments)]
 fn build_activity_prompt_with_context(
     activity: &Activity,
@@ -2352,7 +2331,7 @@ mod engine_tests {
         }))
         .unwrap();
         let names: Vec<String> = tool_names.iter().map(|s| s.to_string()).collect();
-        build_activity_prompt(
+        build_activity_prompt_with_context(
             &activity,
             "",
             &serde_json::json!({}),
@@ -2360,6 +2339,7 @@ mod engine_tests {
             None,
             false,
             &names,
+            None,
         )
     }
 
@@ -2438,7 +2418,7 @@ mod engine_tests {
             "params": { "to": "owner@example.com", "subject": "Daily {{topic}}" }
         }))
         .unwrap();
-        let prompt = build_activity_prompt(
+        let prompt = build_activity_prompt_with_context(
             &activity,
             "",
             &serde_json::json!({}),
@@ -2446,6 +2426,7 @@ mod engine_tests {
             None,
             false,
             &[],
+            None,
         );
         assert!(prompt.contains("## Activity Type: email"));
         assert!(prompt.contains("## Parameters"));
@@ -2458,7 +2439,7 @@ mod engine_tests {
             "id": "a", "intent": "Do the thing"
         }))
         .unwrap();
-        let prompt = build_activity_prompt(
+        let prompt = build_activity_prompt_with_context(
             &plain,
             "",
             &serde_json::json!({}),
@@ -2466,6 +2447,7 @@ mod engine_tests {
             None,
             false,
             &[],
+            None,
         );
         assert!(!prompt.contains("## Activity Type"));
         assert!(!prompt.contains("## Parameters"));

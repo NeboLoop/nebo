@@ -146,7 +146,7 @@ pub fn scan(root: &Path) -> ImportManifest {
     // Credentials: the manifest lists ONLY what apply performs (known LLM
     // provider keys → provider profiles); everything else is a note naming
     // when its slice lands. Key names only — never values.
-    let mut credential_key = |key: &str, source_path: &str, m: &mut ImportManifest| {
+    let credential_key = |key: &str, source_path: &str, m: &mut ImportManifest| {
         match super::apply::provider_for_env_key(key) {
             Some(provider) => m.push(ImportItem {
                 kind: ItemKind::Credential,

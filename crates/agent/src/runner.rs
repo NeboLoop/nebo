@@ -226,13 +226,8 @@ fn action_key(call: &ai::ToolCall) -> String {
     format!("{}:{}", call.name, verb)
 }
 
-/// Cap on unproductive repeats of the same (tool, action) before the spiral
-/// backstop ends the turn. Default only — the live value comes from
-/// Settings → Developer via `guardrails::GuardrailConfig`.
-const SAME_ACTION_LIMIT: usize = crate::guardrails::DEFAULT_SAME_ACTION_LIMIT;
-
 /// Whether an unproductive tool attempt should feed the coarse (tool, action)
-/// spiral counter (`SAME_ACTION_LIMIT`).
+/// spiral counter (the same-action limit from `guardrails::GuardrailConfig`).
 ///
 /// File-read errors are excluded: per-path `read_failures` already caps retries
 /// on the same target. Counting every failed read across different paths toward
@@ -1766,9 +1761,9 @@ async fn run_loop(
     // Spiral backstop (FRAMES Phase 2): UNPRODUCTIVE repeats of the SAME (tool,
     // action) within a turn — errored or returning already-seen content — are the
     // wander-spiral the identical-args and read-failure guards both miss (glob
-    // hunting across dirs, browser page re-reads, shell retries). After
-    // SAME_ACTION_LIMIT such attempts, return a terminal result so the run ends and
-    // the agent reports instead of looping.
+    // hunting across dirs, browser page re-reads, shell retries). After the
+    // configured same-action limit of such attempts, return a terminal result so
+    // the run ends and the agent reports instead of looping.
     // ponytail: result-novelty keyed (see counts_toward_action_spiral) — only
     // error/redundant attempts count, so legitimate bulk work (create N distinct
     // todos, write N files) no longer false-trips. File-read errors are also
@@ -4322,7 +4317,7 @@ async fn run_loop(
             }
 
             // Spiral backstop (see action_call_counts): once one (tool, action) has
-            // racked up SAME_ACTION_LIMIT UNPRODUCTIVE attempts this turn (errored or
+            // racked up the same-action limit of UNPRODUCTIVE attempts this turn (errored or
             // returning content the model already had — glob-wander / browser re-read /
             // shell-retry), nudge the model off that action. Productive calls that
             // return novel results don't count, so legitimate bulk work (create N
@@ -4336,7 +4331,7 @@ async fn run_loop(
             //
             // The budget resets when it fires, so a model that changes approach isn't
             // locked out of the action for the rest of the turn — a genuine loop simply
-            // earns another nudge in another SAME_ACTION_LIMIT unproductive calls.
+            // earns another nudge after another limit's worth of unproductive calls.
             let mut spiral_hard_stop: Option<String> = None;
             for (idx, tc) in tool_calls.iter().enumerate() {
                 if blocked_results[idx].is_some() {

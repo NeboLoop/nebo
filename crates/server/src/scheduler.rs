@@ -67,8 +67,8 @@ pub(crate) enum Due {
     /// No occurrence is due yet (or none will ever be — a passed one-shot
     /// whose occurrence was already consumed).
     NotYet,
-    /// An occurrence at this time is due now.
-    At(chrono::DateTime<Local>),
+    /// An occurrence is due now.
+    At,
 }
 
 /// The ONE fire decision: given a job's schedule and history, is an
@@ -113,7 +113,7 @@ pub(crate) fn due_occurrence(
         .map(|dt| dt.with_timezone(&Local))
         .unwrap_or(now);
     match schedule.after(&floor).next() {
-        Some(next) if next <= now => Due::At(next),
+        Some(next) if next <= now => Due::At,
         _ => Due::NotYet,
     }
 }
@@ -187,7 +187,7 @@ async fn tick(
                 continue;
             }
             Due::NotYet => continue,
-            Due::At(_) => {}
+            Due::At => {}
         }
 
         info!(job = job.name.as_str(), "dispatching scheduled task");
@@ -775,7 +775,7 @@ mod due_tests {
         ));
         assert!(matches!(
             due_occurrence(sched, Some(&last), None, local(2026, 8, 23, 9, 30, 5)),
-            Due::At(_)
+            Due::At
         ));
     }
 
@@ -795,7 +795,7 @@ mod due_tests {
         // A tick 3 minutes AFTER the moment (missed ticks happen): still due.
         assert!(matches!(
             due_occurrence(sched, None, Some(&created), local(2026, 8, 23, 10, 8, 0)),
-            Due::At(_)
+            Due::At
         ));
     }
 
@@ -821,7 +821,7 @@ mod due_tests {
         let last = db_ts(local(2026, 8, 23, 6, 0, 0));
         assert!(matches!(
             due_occurrence("0 7 * * *", Some(&last), None, local(2026, 8, 23, 7, 0, 30)),
-            Due::At(_)
+            Due::At
         ));
     }
 
@@ -847,7 +847,7 @@ mod due_tests {
         // Monday morning it fires.
         assert!(matches!(
             due_occurrence(sched, Some(&last), None, local(2026, 8, 24, 7, 0, 30)),
-            Due::At(_)
+            Due::At
         ));
     }
 }

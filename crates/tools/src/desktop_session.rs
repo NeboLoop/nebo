@@ -450,7 +450,7 @@ Reconstructed from the input event log.          Typed text is reassembled from 
     let mut detail: u32 = 0;
     let mut typed = String::new();
     let mut steps: Vec<String> = Vec::new();
-    let mut flush_typed = |typed: &mut String, steps: &mut Vec<String>| {
+    let flush_typed = |typed: &mut String, steps: &mut Vec<String>| {
         if !typed.is_empty() {
             steps.push(format!("Typed: {typed}"));
             typed.clear();
