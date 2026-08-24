@@ -1,6 +1,8 @@
-### message — Outbound Delivery
-USE THIS when: user wants to send a text, notification, or alert to someone outside NeboAI.
+### message — Outbound Delivery & Coworkers
+USE THIS when: user wants to send a text, notification, or alert to someone — or wants you to talk to, hand work to, or introduce yourself to another AI employee on this computer.
 
+- message(resource: coworker, action: send, to: "receptionist", text: "...") — Message a coworker (another AI employee on THIS computer) and wait for their reply. This is THE way to reach a local coworker — no loop, channel, or workspace needed. Multiple coworkers = one send each.
+- message(resource: coworker, action: send, to: "receptionist", text: "...", wait: false) — Fire-and-forget to a coworker (their reply arrives later)
 - message(resource: owner, action: notify, text: "Task complete!") — Notify the owner via companion chat
 - message(resource: sms, action: send, phone: "+15551234567", text: "Hello!") — Send SMS (macOS)
 - message(resource: sms, action: conversations) — List SMS conversations
@@ -11,4 +13,4 @@ USE THIS when: user wants to send a text, notification, or alert to someone outs
 - message(resource: notify, action: dnd_status) — Check Do Not Disturb status
 
 For text-to-speech: use os(resource: "tts", action: "speak", text: "Hello")
-Use message for outbound delivery to humans outside NeboAI.
+Use message for outbound delivery to humans AND for coworkers (AI employees on this computer).

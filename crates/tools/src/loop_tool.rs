@@ -405,7 +405,17 @@ impl LoopTool {
                         name, channel_id, channel_id
                     )),
                     Err(e) => {
-                        ToolResult::error(format!("Failed to ensure channel \"{}\": {}", name, e))
+                        // The commonest wrong turn here is trying to build a
+                        // channel just to reach a LOCAL coworker (observed
+                        // live: "introduce yourself to the other bots" →
+                        // channel ensure → dead end). Teach the rail.
+                        ToolResult::error(format!(
+                            "Failed to ensure channel \"{}\": {}. If you are trying to reach \
+                             another AI employee on THIS computer, you don't need a channel — \
+                             use message(resource: \"coworker\", action: \"send\", to: \"<name>\", \
+                             text: \"...\") instead.",
+                            name, e
+                        ))
                     }
                 }
             }
@@ -692,11 +702,12 @@ impl DynTool for LoopTool {
     }
 
     fn description(&self) -> String {
-        "NeboAI communication — loops (workspaces this agent belongs to), channels, direct messages, and topics.\n\
-         USE THIS when: user asks which loops you belong to, wants to message another bot, post to a channel, or interact with NeboAI infrastructure.\n\n\
+        "NeboAI hub communication — loops (workspaces this agent belongs to), channels, workrooms, and topics.\n\
+         USE THIS when: user asks which loops you belong to, wants to post to a channel, open a workroom, or reach a bot on ANOTHER machine through the hub.\n\
+         NOT for local coworkers: to talk to, hand work to, or introduce yourself to another AI employee on THIS computer, use message(resource: \"coworker\", action: \"send\", to: \"<name>\", text: \"...\") — no loop or channel needed.\n\n\
          - loop(resource: \"loop\", action: \"list\") — List the loops this agent belongs to\n\
          - loop(resource: \"loop\", action: \"get\", loop_id: \"...\") / members — Loop details / members\n\
-         - loop(resource: \"dm\", action: \"send\", to: \"agent-uuid\", text: \"Hello\") — Send a DM to another bot\n\
+         - loop(resource: \"dm\", action: \"send\", to: \"agent-uuid\", text: \"Hello\") — DM a hub bot (on another machine; takes an agent UUID, not a coworker name)\n\
          - loop(resource: \"channel\", action: \"send\", channel_id: \"...\", text: \"Hello\") — Send to a loop channel\n\
          - loop(resource: \"channel\", action: \"send\", channel_id: \"...\", text: \"...\", mention: [\"Executive Assistant\"]) — Hand off to other AI employees: mentioned employees pick the message up and run\n\
          - loop(resource: \"channel\", action: \"share\", path: \"/abs/path/file.pdf\") — Share a local file into the channel reply\n\
@@ -707,7 +718,7 @@ impl DynTool for LoopTool {
          - loop(resource: \"channel\", action: \"members\", channel_id: \"...\") — List channel members\n\
          - loop(resource: \"topic\", action: \"subscribe\", topic: \"news\") / unsubscribe / status\n\
          - loop(resource: \"workroom\", action: \"create\", name: \"Website launch\", mission: \"...\", agents: [\"Writer\", \"Reviewer\"]) — Open a mission room with coworkers. `agents` is REQUIRED: a room takes at least one named coworker besides you. Every room is NEW — never reuse a name; an existing room's name is an error. After creating, post the mission with mentions; mentioned coworkers respond in the room.\n\n\
-         Use loop for bot-to-bot communication and NeboAI infrastructure."
+         Use loop for hub channels, workrooms, and cross-machine bots; a coworker on this computer is message(resource: \"coworker\")."
             .to_string()
     }
 

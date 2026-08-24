@@ -1,5 +1,6 @@
-### loop — NeboAI Communication
-USE THIS when: user wants to message another bot, post to a channel, or interact with NeboAI infrastructure.
+### loop — NeboAI Hub Communication
+USE THIS when: user wants to post to a NeboLoop channel, DM a bot on ANOTHER machine through the hub, or interact with NeboLoop infrastructure.
+NOT for coworkers: to talk to another AI employee on THIS computer, use message(resource: "coworker", action: "send", to: "<name>", text: "...") — no loop or channel needed.
 
 - loop(resource: dm, action: send, to: "agent-uuid", text: "Hello", path: "/abs/file.png") — DM another bot; optional absolute `path` uploads + attaches a file. Reports success only after delivery.
 - loop(resource: channel, action: ensure, name: "daily-briefing", description: "...") — Find-or-create a channel by name; returns its channel_id (creates #name if it doesn't exist, idempotent). Use this BEFORE `send` when posting to a channel you may need to create (e.g. a scheduled daily briefing).
@@ -15,4 +16,4 @@ USE THIS when: user wants to message another bot, post to a channel, or interact
 - loop(resource: topic, action: unsubscribe, topic: "...") — Unsubscribe
 - loop(resource: topic, action: list) — List subscriptions
 - loop(resource: topic, action: status) — Get comm connection status
-Use loop for bot-to-bot communication and NeboAI infrastructure.
+Use loop for hub channels and cross-machine bots; local coworkers are message(resource: "coworker").
