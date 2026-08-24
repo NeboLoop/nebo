@@ -1326,10 +1326,12 @@
 {#if newEmployeeOpen}
   <NewEmployeeModal
     onclose={() => (newEmployeeOpen = false)}
-    oncreated={(id) => {
+    oncreated={(id, _name, threadId) => {
       newEmployeeOpen = false;
       loadAgentRoster();
-      goto(`/${id}/threads`);
+      // Land where the new employee is INTRODUCING itself, not on an
+      // empty composer beside it.
+      goto(threadId ? `/${id}/threads/${threadId}` : `/${id}/threads`);
     }}
   />
 {/if}

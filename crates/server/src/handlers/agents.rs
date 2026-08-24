@@ -587,6 +587,9 @@ pub async fn create_agent(
         "agent": agent,
         "installReport": install_report,
         "cascade": cascade,
+        // Only the blank-create (Hire) branch opens an introduction thread;
+        // the key rides both branches so the CONTRACT has one shape.
+        "threadId": serde_json::Value::Null,
     })))
 }
 

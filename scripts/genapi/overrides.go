@@ -35,6 +35,9 @@ var typeOverrides = map[string]string{
 	// ── Agents roster (enriched rows: display name, source, isolation, setup) ──
 	"list_agents.agents": "AgentListEntry[]",
 	"list_agents.primaryChristened": "boolean",
+	// Blank-create (the Hire flow) returns the introduction thread so the
+	// UI can land the owner where the new employee is speaking.
+	"create_agent.threadId": "string | null",
 
 	// ── Workrooms (Workroom/WorkroomMessage generated from Rust structs) ──
 	"list_workrooms.workrooms":        "Workroom[]",

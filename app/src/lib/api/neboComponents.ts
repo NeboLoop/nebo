@@ -999,6 +999,7 @@ export interface CreateAgentResponse {
 	agent: Agent
 	installReport: unknown
 	cascade: unknown
+	threadId: string | null
 }
 
 export interface CreateAgentWorkflowResponse {

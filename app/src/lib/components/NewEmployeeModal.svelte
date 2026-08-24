@@ -9,7 +9,7 @@
 
   let { onclose, oncreated }: {
     onclose: () => void;
-    oncreated: (agentId: string, name: string) => void;
+    oncreated: (agentId: string, name: string, threadId: string | null) => void;
   } = $props();
 
   let name = $state('');
@@ -24,7 +24,7 @@
     errorMsg = '';
     try {
       const resp = await createAgent({ blank: true, name: name.trim() });
-      oncreated(resp.agent.id, resp.agent.name);
+      oncreated(resp.agent.id, resp.agent.name, resp.threadId);
     } catch (e: unknown) {
       errorMsg = e instanceof Error ? e.message : $t('newEmployee.failed');
       busy = false;
