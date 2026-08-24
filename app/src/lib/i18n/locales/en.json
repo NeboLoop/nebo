@@ -1921,6 +1921,9 @@
 		"emptyHint": "@-name an employee to put them to work.",
 		"you": "You",
 		"working": "{name} is working",
+		"remove": "Remove room",
+		"removeTitle": "Remove \"{name}\"?",
+		"removeBody": "The room leaves your sidebar and employees stop working in it. Its conversation history is kept.",
 		"composerPlaceholder": "Message the room",
 		"send": "Send"
 	},

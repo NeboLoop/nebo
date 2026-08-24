@@ -21,6 +21,7 @@
   import CoworkerThreadView from '$lib/components/chat/CoworkerThreadView.svelte';
   import WorkroomView from '$lib/components/workrooms/WorkroomView.svelte';
   import AgentSettingsModal from '$lib/components/settings/agent/AgentSettingsModal.svelte';
+  import ConfirmModal from '$lib/components/settings/ConfirmModal.svelte';
   import { unreadCount } from '$lib/stores/notifications';
   import { commandPaletteOpen } from '$lib/stores/commandPalette';
   import { slide } from 'svelte/transition';
@@ -229,6 +230,30 @@
         const ac = AGENT_COLORS_MAP[a.color] ?? AGENT_COLORS_MAP['teal'];
         return { initial: a.initial, cls: `${ac.bgClass} ${ac.inkClass}` };
       });
+
+  // Room housekeeping: right-click → Remove forgets the registration (the
+  // conversation history stays on the hub); confirm first — it's an audit
+  // surface leaving the sidebar.
+  let roomCtxMenu = $state<{ x: number; y: number; channelId: string } | null>(null);
+  let removeRoom = $state<import('$lib/api/neboComponents').Workroom | null>(null);
+  let removeRoomBusy = $state(false);
+  function handleRoomContext(e: MouseEvent, channelId: string) {
+    e.preventDefault();
+    roomCtxMenu = { x: e.clientX, y: e.clientY, channelId };
+  }
+  async function confirmRemoveRoom() {
+    const room = removeRoom;
+    if (!room || removeRoomBusy) return;
+    removeRoomBusy = true;
+    try {
+      const api = await import('$lib/api/nebo');
+      await api.deleteWorkroom(room.channelId);
+      workrooms = workrooms.filter((w) => w.channelId !== room.channelId);
+      if (roomParam === room.channelId) closeRoom();
+      removeRoom = null;
+    } catch { /* row stays; the owner can retry */ }
+    removeRoomBusy = false;
+  }
 
   // The value doubles as the initial status filter ("failed") so the stat
   // tiles can deep-link straight to what they count; '1' = unfiltered.
@@ -958,6 +983,34 @@
   </div>
 {/if}
 
+<!-- Workroom context menu — one action: housekeeping. -->
+{#if roomCtxMenu}
+  <div class="fixed inset-0 z-50" onclick={() => (roomCtxMenu = null)} oncontextmenu={(e) => { e.preventDefault(); roomCtxMenu = null; }} role="presentation"></div>
+  <div
+    class="fixed z-50 w-[180px] py-1 rounded-lg border border-base-300 bg-base-100 shadow-xl"
+    style="left: {roomCtxMenu.x}px; top: {roomCtxMenu.y}px;"
+  >
+    <button
+      class="flex items-center gap-2.5 w-full px-3 py-1.5 text-sm text-left cursor-pointer bg-transparent border-none hover:bg-error/10 text-error transition-colors"
+      onclick={() => { removeRoom = workrooms.find((w) => w.channelId === roomCtxMenu?.channelId) ?? null; roomCtxMenu = null; }}
+    >
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+      {$t('workrooms.remove')}
+    </button>
+  </div>
+{/if}
+
+{#if removeRoom}
+  <ConfirmModal
+    title={$t('workrooms.removeTitle', { values: { name: removeRoom.name } })}
+    message={$t('workrooms.removeBody')}
+    confirmLabel={$t('workrooms.remove')}
+    busy={removeRoomBusy}
+    onConfirm={confirmRemoveRoom}
+    onCancel={() => (removeRoom = null)}
+  />
+{/if}
+
 <!-- Delete agent confirmation modal -->
 {#if deleteTarget}
   <div class="fixed inset-0 z-[80] flex items-center justify-center p-4" role="dialog" aria-modal="true">
@@ -1171,13 +1224,19 @@
                 ? 'rounded-box border border-primary/30 bg-primary/10 shadow-sm'
                 : 'rounded-box border border-transparent hover:bg-base-100/70'}"
               onclick={() => openRoom(room.channelId)}
+              oncontextmenu={(e) => handleRoomContext(e, room.channelId)}
             >
               <!-- Stacked-avatars glyph in the avatar slot: this row is a room,
                    not a person. -->
               <div class="relative w-8 h-8 shrink-0">
                 {#if faces.length >= 2}
+                  {@const extra = room.memberAgentIds.length - 2}
                   <div class="absolute top-0 left-0 w-6 h-6 rounded-field flex items-center justify-center font-mono text-[10px] font-semibold {faces[0].cls}">{faces[0].initial}</div>
                   <div class="absolute bottom-0 right-0 w-6 h-6 rounded-field border border-base-100 flex items-center justify-center font-mono text-[10px] font-semibold {faces[1].cls}">{faces[1].initial}</div>
+                  {#if extra > 0}
+                    <!-- The row says "several"; the full roster is the room's member rail. -->
+                    <div class="absolute -top-1 -right-1 min-w-4 h-4 px-0.5 rounded-full bg-neutral text-neutral-content border border-base-100 flex items-center justify-center font-mono text-[9px] font-semibold">+{extra}</div>
+                  {/if}
                 {:else}
                   <div class="w-8 h-8 rounded-field bg-base-200 flex items-center justify-center text-base-content/70">
                     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
