@@ -259,6 +259,11 @@ pub struct CheckpointCtx {
     pub operation_policy: Option<tools::policy::OperationPolicy>,
     /// The seat binding name (for the suspension row / notification).
     pub binding_name: String,
+    /// The run's inputs carry untrusted content (a watch/comm payload) —
+    /// the gate decides as `Origin::Comm` instead of trusted Workflow, so a
+    /// gated `Always` floors to Approval (WS2-R7: input taint, not just
+    /// origin; the payload steering the run arrived from outside).
+    pub tainted: bool,
 }
 
 /// Durable resume state for a run parked at the approval checkpoint —
@@ -1510,7 +1515,7 @@ async fn run_llm_loop(
             // the call the owner saw — a drifted re-derivation re-asks.
             if tc.name == "plugin" {
                 if let Some(cp) = checkpoint {
-                    if let Some(policy) = &cp.operation_policy {
+                    {
                         let op = tc
                             .input
                             .get("operation")
@@ -1519,8 +1524,26 @@ async fn run_llm_loop(
                             .to_string();
                         if !op.is_empty() {
                             let suffix = tools::plugin_tool::port_suffix(&op);
-                            {
-                                match policy.decide(&op) {
+                            // Effective origin (WS2): the engine always runs as
+                            // Workflow (trusted — owner-authored automation), but
+                            // a run DRIVEN by untrusted content (watch/comm
+                            // payload in its inputs) is decided as Comm: the
+                            // words steering this run arrived from outside, so a
+                            // gated Always floors to Approval (WS2-R7). With no
+                            // policy set, decide_optional applies the same rule
+                            // (None ⇒ trusted no-gate, untrusted ⇒ safe default).
+                            let effective_origin = if cp.tainted {
+                                tools::Origin::Comm
+                            } else {
+                                tools::Origin::Workflow
+                            };
+                            let access = tools::policy::OperationPolicy::decide_optional(
+                                cp.operation_policy.as_ref(),
+                                &op,
+                                effective_origin,
+                            );
+                            if let Some(access) = access {
+                                match access {
                                     tools::policy::OperationAccess::Always => {}
                                     tools::policy::OperationAccess::Blocked => {
                                         tool_result_entries.push(serde_json::json!({

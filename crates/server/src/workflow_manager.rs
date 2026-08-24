@@ -1168,10 +1168,23 @@ impl WorkflowManager for WorkflowManagerImpl {
                     .as_deref()
                     .map(|d| d.split(':').next().unwrap_or(d).to_string())
                     .unwrap_or_default();
-                let ctx = policy.map(|p| workflow::engine::CheckpointCtx {
-                    operation_policy: Some(p),
-                    binding_name: binding,
-                });
+                // WS2-R7: a watch/comm payload in the inputs means untrusted
+                // content steers this run (the live case: inbound factory email
+                // driving approval-gated CRM writes) — the checkpoint decides
+                // as Comm even though the origin is Workflow. The taint check
+                // is deliberately the reserved keys the launch paths stamp.
+                let tainted = inputs.get("_watch_payload").is_some()
+                    || inputs.get("_watch_source").is_some()
+                    || inputs.get("_comm_payload").is_some();
+                let ctx = if policy.is_some() || tainted {
+                    Some(workflow::engine::CheckpointCtx {
+                        operation_policy: policy,
+                        binding_name: binding,
+                        tainted,
+                    })
+                } else {
+                    None
+                };
                 (inputs, ctx, resume_state, resume_run)
             };
 

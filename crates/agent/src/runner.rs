@@ -4545,19 +4545,28 @@ async fn run_loop(
                 // `operation`) is decided by the employee's OperationPolicy: Always
                 // runs, Approval asks the owner (interactive) / refuses when
                 // unattended, Blocked is refused (the toolset also omits it — this
-                // is the hard backstop). Only enforced when a policy is set; with
-                // none, plugin ops stay ungated (installation is the grant). The
-                // workflow path enforces the same decision at its checkpoint.
+                // is the hard backstop). Origin-aware (WS2): an untrusted origin
+                // floors gated Always to Approval, and with NO policy set a
+                // trusted origin keeps "installation is the grant" while an
+                // untrusted one falls back to the safe default — the decision
+                // lives in decide/decide_optional, shared with the workflow
+                // checkpoint (Rule 8.1).
                 if tool_calls[idx].name == "plugin" {
-                    if let (Some(policy), Some(op)) = (
-                        operation_policy,
-                        tool_calls[idx]
-                            .input
-                            .get("operation")
-                            .and_then(|v| v.as_str())
-                            .filter(|s| !s.is_empty()),
-                    ) {
-                        match policy.decide(op) {
+                    let op = tool_calls[idx]
+                        .input
+                        .get("operation")
+                        .and_then(|v| v.as_str())
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_string);
+                    let access = op.as_deref().and_then(|op| {
+                        tools::policy::OperationPolicy::decide_optional(
+                            operation_policy,
+                            op,
+                            origin,
+                        )
+                    });
+                    if let (Some(access), Some(op)) = (access, op.as_deref()) {
+                        match access {
                             tools::policy::OperationAccess::Always => {}
                             tools::policy::OperationAccess::Blocked => {
                                 blocked_results[idx] = Some((

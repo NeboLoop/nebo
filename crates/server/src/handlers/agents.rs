@@ -3972,7 +3972,11 @@ pub async fn get_agent_operations(
                 "capability": op.split('.').next().unwrap_or(""),
                 "critical": tools::interface_catalog::is_critical(op),
                 "override": policy.operations.get(&suffix).map(|a| a.as_str()),
-                "effective": policy.decide(op).as_str(),
+                // The Controls view shows the policy as configured — the
+                // trusted-origin resolution. Untrusted origins (inbound
+                // email/DM, apps, skills, MCP, callers) additionally floor
+                // gated Always to Approval at run time (WS2).
+                "effective": policy.decide(op, tools::Origin::User).as_str(),
             })
         })
         .collect();

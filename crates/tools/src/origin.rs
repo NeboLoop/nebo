@@ -30,6 +30,28 @@ impl Default for Origin {
     }
 }
 
+impl Origin {
+    /// Trust classification for the per-operation gate (WS2). Trusted origins
+    /// are the owner's own surfaces; everything that carries someone else's
+    /// words or code into a run is untrusted — for a GATED operation an
+    /// `Always` grant is floored to `Approval` on untrusted origins, so
+    /// untrusted content can never silently reach money movement, outbound
+    /// contact, or an irreversible write (the lethal-trifecta shape).
+    ///
+    /// Exhaustive match on purpose (same discipline as `ExecutionMode::from`):
+    /// adding an origin forces the trust call here.
+    pub fn is_trusted(&self) -> bool {
+        match self {
+            Origin::User | Origin::System | Origin::Workflow => true,
+            Origin::Comm
+            | Origin::App
+            | Origin::Skill
+            | Origin::Mcp
+            | Origin::Caller => false,
+        }
+    }
+}
+
 /// Communication personality for a run, derived from `Origin`.
 ///
 /// Orthogonal to `PromptMode` (Full/Minimal): a subagent is Minimal+Autonomous,

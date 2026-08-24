@@ -541,23 +541,55 @@ impl OperationPolicy {
         serde_json::to_string(self).unwrap_or_else(|_| "{}".to_string())
     }
 
-    /// The access decision for one operation (bare op or fully-qualified port).
+    /// The access decision for one operation (bare op or fully-qualified port),
+    /// from the origin the request arrived over.
     /// Non-gated operations are never gated (`Always`). For a gated op: an explicit
     /// per-operation override wins; otherwise the employee default applies, except
     /// a `critical` op is never auto-loosened to `Always` by the default.
-    pub fn decide(&self, operation: &str) -> OperationAccess {
+    ///
+    /// Then the origin floor (WS2): a gated op resolved to `Always` — by
+    /// default OR by explicit override — is floored to `Approval` when the
+    /// origin is untrusted. Untrusted input driving an outbound/irreversible
+    /// op always gets an owner decision; `Blocked` stays blocked.
+    pub fn decide(&self, operation: &str, origin: Origin) -> OperationAccess {
         if !crate::interface_catalog::is_gated(operation) {
             return OperationAccess::Always;
         }
         let suffix = crate::plugin_tool::port_suffix(operation);
-        if let Some(access) = self.operations.get(&suffix) {
-            return *access;
-        }
-        if self.default == OperationAccess::Always && crate::interface_catalog::is_critical(operation)
+        let resolved = if let Some(access) = self.operations.get(&suffix) {
+            *access
+        } else if self.default == OperationAccess::Always
+            && crate::interface_catalog::is_critical(operation)
         {
+            OperationAccess::Approval
+        } else {
+            self.default
+        };
+        if resolved == OperationAccess::Always && !origin.is_trusted() {
             return OperationAccess::Approval;
         }
-        self.default
+        resolved
+    }
+
+    /// The complete gate decision including the no-policy case (WS2-R3), so
+    /// the chat gate and the workflow checkpoint share ONE rule (Rule 8.1):
+    /// `None` = the gate does not apply — a trusted origin with no policy set
+    /// keeps "installation is the grant". An UNTRUSTED origin with no policy
+    /// falls back to the safe default policy (gated → Approval) instead of
+    /// skipping the gate — the no-policy skip was the widest path from
+    /// untrusted input to an ungated outbound operation.
+    pub fn decide_optional(
+        policy: Option<&OperationPolicy>,
+        operation: &str,
+        origin: Origin,
+    ) -> Option<OperationAccess> {
+        match policy {
+            Some(p) => Some(p.decide(operation, origin)),
+            None if !origin.is_trusted() => {
+                Some(OperationPolicy::default().decide(operation, origin))
+            }
+            None => None,
+        }
     }
 }
 
@@ -628,17 +660,17 @@ mod tests {
 
         // Reads are ungated, so they resolve to Always no matter what is stored.
         assert_eq!(
-            read_only.decide("ballast.kb.article.search"),
+            read_only.decide("ballast.kb.article.search", Origin::User),
             OperationAccess::Always
         );
         // Writes are refused, and the block survives the provenance prefix a seat
         // adds to the port.
         assert_eq!(
-            read_only.decide("ballast.kb.article.create"),
+            read_only.decide("ballast.kb.article.create", Origin::User),
             OperationAccess::Blocked
         );
         assert_eq!(
-            read_only.decide("research.analyst.kb.article.update"),
+            read_only.decide("research.analyst.kb.article.update", Origin::User),
             OperationAccess::Blocked
         );
 
@@ -649,18 +681,18 @@ mod tests {
             operations: HashMap::new(),
         };
         assert_eq!(
-            autonomous.decide("ballast.kb.article.create"),
+            autonomous.decide("ballast.kb.article.create", Origin::User),
             OperationAccess::Always
         );
 
         // The default employee is asked before a KB write, never before a read.
         let default = OperationPolicy::default();
         assert_eq!(
-            default.decide("ballast.kb.article.create"),
+            default.decide("ballast.kb.article.create", Origin::User),
             OperationAccess::Approval
         );
         assert_eq!(
-            default.decide("ballast.kb.article.search"),
+            default.decide("ballast.kb.article.search", Origin::User),
             OperationAccess::Always
         );
     }
@@ -669,19 +701,19 @@ mod tests {
     fn operation_policy_decide_precedence_and_critical() {
         // Non-gated ops are never gated.
         let p = OperationPolicy::default();
-        assert_eq!(p.decide("ledger.vendor.find"), OperationAccess::Always);
+        assert_eq!(p.decide("ledger.vendor.find", Origin::User), OperationAccess::Always);
         // Default (Approval) applies to a gated op with no override.
-        assert_eq!(p.decide("mail.message.send"), OperationAccess::Approval);
+        assert_eq!(p.decide("mail.message.send", Origin::User), OperationAccess::Approval);
 
         // Employee default = Always loosens ordinary gated ops...
         let mut auto = OperationPolicy {
             default: OperationAccess::Always,
             operations: HashMap::new(),
         };
-        assert_eq!(auto.decide("mail.message.send"), OperationAccess::Always);
+        assert_eq!(auto.decide("mail.message.send", Origin::User), OperationAccess::Always);
         // ...but NOT critical (money/contract) ops — those stay Approval.
         assert_eq!(
-            auto.decide("ledger.billpayment.create"),
+            auto.decide("ledger.billpayment.create", Origin::User),
             OperationAccess::Approval
         );
         // An explicit per-op override wins, even opting a critical op into Always.
@@ -690,13 +722,13 @@ mod tests {
             OperationAccess::Always,
         );
         assert_eq!(
-            auto.decide("accounting.ap-specialist.ledger.billpayment.create"),
+            auto.decide("accounting.ap-specialist.ledger.billpayment.create", Origin::User),
             OperationAccess::Always
         );
         // Blocked override on a gated op.
         auto.operations
             .insert("esign.document.send".to_string(), OperationAccess::Blocked);
-        assert_eq!(auto.decide("esign.document.send"), OperationAccess::Blocked);
+        assert_eq!(auto.decide("esign.document.send", Origin::User), OperationAccess::Blocked);
     }
 
     #[test]
@@ -868,5 +900,78 @@ mod tests {
         assert!(!is_privilege_escalation("visudo --check /etc/sudoers"));
         assert!(!is_privilege_escalation("git commit -m 'use sudo'"));
         assert!(!is_privilege_escalation("grep sudoers /etc/group"));
+    }
+
+    /// WS2-R6: the full origin × policy × op-class matrix. GATED = outbound
+    /// (`mail.message.send`); CRITICAL = money (`ledger.billpayment.create`);
+    /// NON-GATED = a read (`ledger.vendor.find`).
+    #[test]
+    fn origin_matrix_untrusted_always_floors_to_approval() {
+        use OperationAccess::*;
+        const GATED: &str = "mail.message.send";
+        const CRITICAL: &str = "ledger.billpayment.create";
+        const READ: &str = "ledger.vendor.find";
+        let trusted = [Origin::User, Origin::System, Origin::Workflow];
+        let untrusted = [
+            Origin::Comm,
+            Origin::App,
+            Origin::Skill,
+            Origin::Mcp,
+            Origin::Caller,
+        ];
+
+        // default Always (full autonomy) + per-op Always on the critical op
+        let auto = OperationPolicy {
+            default: Always,
+            operations: HashMap::from([("ledger.billpayment.create".to_string(), Always)]),
+        };
+        for o in trusted {
+            assert_eq!(auto.decide(GATED, o), Always, "trusted keeps Always: {o:?}");
+            assert_eq!(auto.decide(CRITICAL, o), Always, "explicit critical override holds: {o:?}");
+            assert_eq!(auto.decide(READ, o), Always);
+        }
+        for o in untrusted {
+            assert_eq!(auto.decide(GATED, o), Approval, "untrusted floors default-Always: {o:?}");
+            assert_eq!(auto.decide(CRITICAL, o), Approval, "untrusted floors per-op Always: {o:?}");
+            assert_eq!(auto.decide(READ, o), Always, "non-gated is never gated: {o:?}");
+        }
+
+        // default Approval: unchanged everywhere; Blocked never loosens.
+        let mut default = OperationPolicy::default();
+        default.operations.insert("mail.message.send".to_string(), Blocked);
+        for o in trusted.iter().chain(untrusted.iter()) {
+            assert_eq!(default.decide(GATED, *o), Blocked, "Blocked holds: {o:?}");
+            assert_eq!(default.decide(CRITICAL, *o), Approval);
+            assert_eq!(default.decide(READ, *o), Always);
+        }
+    }
+
+    /// WS2-R3: no policy at all. Trusted origins keep "installation is the
+    /// grant" (gate does not apply); untrusted origins get the safe default
+    /// (gated → Approval) instead of skipping the gate.
+    #[test]
+    fn origin_matrix_no_policy_path() {
+        use OperationAccess::*;
+        assert_eq!(
+            OperationPolicy::decide_optional(None, "mail.message.send", Origin::User),
+            None,
+            "trusted + no policy: gate does not apply"
+        );
+        assert_eq!(
+            OperationPolicy::decide_optional(None, "mail.message.send", Origin::Comm),
+            Some(Approval),
+            "untrusted + no policy: gated op needs the owner"
+        );
+        assert_eq!(
+            OperationPolicy::decide_optional(None, "ledger.vendor.find", Origin::Comm),
+            Some(Always),
+            "untrusted + no policy: reads still flow"
+        );
+        let auto = OperationPolicy { default: Always, operations: HashMap::new() };
+        assert_eq!(
+            OperationPolicy::decide_optional(Some(&auto), "mail.message.send", Origin::Comm),
+            Some(Approval),
+            "with a policy, decide_optional defers to decide (floored)"
+        );
     }
 }
