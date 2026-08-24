@@ -6,12 +6,28 @@
 <script lang="ts">
   import { getContext } from 'svelte';
   import { t } from 'svelte-i18n';
+  import { page } from '$app/stores';
   import type { AgentPageContext } from '$lib/types/agentPage';
 
   let { onopen }: { onopen: (id: string) => void } = $props();
 
   const ctx = getContext<AgentPageContext>('agentPage');
-  let statusFilter = $state<'all' | 'failed' | 'running'>('all');
+  // The ?runs param's value carries the entry filter ("failed"/"running") so
+  // the stat tiles deep-link to what they count; the chips own it after that.
+  const entryFilter = (v: string | null): 'all' | 'failed' | 'running' =>
+    v === 'failed' || v === 'running' ? v : 'all';
+  let statusFilter = $state<'all' | 'failed' | 'running'>(
+    entryFilter($page.url.searchParams.get('runs'))
+  );
+  // Clicking a tile while the modal is already open re-aims the filter.
+  let prevRunsParam = $page.url.searchParams.get('runs');
+  $effect(() => {
+    const v = $page.url.searchParams.get('runs');
+    if (v !== prevRunsParam) {
+      prevRunsParam = v;
+      if (v !== null) statusFilter = entryFilter(v);
+    }
+  });
 
   const runs = $derived(ctx.runs);
   const shown = $derived(

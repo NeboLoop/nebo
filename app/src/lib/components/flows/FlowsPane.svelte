@@ -176,19 +176,29 @@
   <div class="flex-1 min-h-0 overflow-y-auto p-3 flex flex-col gap-2">
     <!-- Two across, not four: this is a 450px rail, not a settings page. -->
     {#if stats.totalRuns > 0}
-      <div class="grid grid-cols-2 gap-2 mb-1">
-        <div class="rounded-lg border border-base-300 bg-base-100 p-2 text-center">
+      <!-- The numbers are doors: each tile opens the run list aimed at what
+           it counts. -->
+      <div class="grid grid-cols-2 gap-2 mb-1 shrink-0">
+        <button
+          type="button"
+          class="rounded-lg border border-base-300 bg-base-100 p-2 text-center cursor-pointer hover:bg-base-200/50 transition-colors"
+          onclick={() => ctx.openRuns()}
+        >
           <div class="text-base font-semibold">{stats.totalRuns}</div>
           <div class="text-xs text-base-content/50">{$t('agentActivity.totalRuns')}</div>
-        </div>
-        <div class="rounded-lg border border-base-300 bg-base-100 p-2 text-center">
+        </button>
+        <button
+          type="button"
+          class="rounded-lg border border-base-300 bg-base-100 p-2 text-center cursor-pointer hover:bg-base-200/50 transition-colors"
+          onclick={() => ctx.openRuns(stats.failed > 0 ? 'failed' : undefined)}
+        >
           <div class="text-base font-semibold {stats.failed > 0 ? 'text-error' : 'text-success'}">
             {stats.failed > 0 ? stats.failed : stats.completed}
           </div>
           <div class="text-xs text-base-content/50">
             {stats.failed > 0 ? $t('common.failed') : $t('common.completed')}
           </div>
-        </div>
+        </button>
       </div>
     {/if}
 

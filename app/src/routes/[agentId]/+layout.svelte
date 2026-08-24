@@ -230,7 +230,10 @@
         return { initial: a.initial, cls: `${ac.bgClass} ${ac.inkClass}` };
       });
 
-  const openRuns = () => setParams((p) => p.set('runs', '1'));
+  // The value doubles as the initial status filter ("failed") so the stat
+  // tiles can deep-link straight to what they count; '1' = unfiltered.
+  const openRuns = (filter?: string) =>
+    setParams((p) => p.set('runs', filter === 'failed' || filter === 'running' ? filter : '1'));
   const closeRuns = () => setParams((p) => p.delete('runs'));
   const openInbox = () => setParams((p) => p.set('inbox', '1'));
   const openSettings = () => setParams((p) => p.set('settings', 'general'));

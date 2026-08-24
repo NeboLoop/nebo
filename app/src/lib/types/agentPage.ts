@@ -143,7 +143,8 @@ export interface AgentPageContext {
 	readonly agentStatuses: Record<string, string>
 	openWorkflow: (name: string, wf: WorkflowConfig) => void
 	/** Open the runs modal. */
-	openRuns: () => void
+	/** Optional entry filter ("failed"/"running") aims the run list's chips. */
+	openRuns: (filter?: string) => void
 	/** Open this employee's settings modal. */
 	openSettings: () => void
 	/** Show the workspace list (mobile back-to-team) — a real navigation. */
