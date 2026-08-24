@@ -5,6 +5,11 @@ description: |
   tool on first attempt. Run with --override to compare STRAP vs flat naming.
 target_component: os
 
+setup:
+  - "printf 'test content\n' > /tmp/nebo-naming-test.txt"
+teardown:
+  - "rm -f /tmp/nebo-naming-test.txt"
+
 conversation:
   - role: user
     content: "Read the file /tmp/nebo-naming-test.txt and tell me what's in it."

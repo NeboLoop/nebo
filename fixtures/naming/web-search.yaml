@@ -15,8 +15,8 @@ prompt_assertions:
       check: { first_call: true, tool: [web, web_search] }
       severity: critical
     - id: has-query
-      text: "Model passes a query about rust async runtime"
-      check: { first_call: true, arg: query, matches: "(?i)rust" }
+      text: "Model passes a query about rust async runtime (the web tool takes `queries`, an array)"
+      check: { first_call: true, arg: queries, matches: "(?i)rust" }
       severity: critical
     - id: not-fetch
       text: "Model does NOT use fetch/http to hit a specific URL"

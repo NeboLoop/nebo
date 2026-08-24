@@ -4,6 +4,11 @@ description: |
   Baseline task: search for a pattern in files. Measures first-call tool naming accuracy.
 target_component: os
 
+setup:
+  - "mkdir -p /tmp/nebo-project && printf '// TODO fix this\n' > /tmp/nebo-project/x.txt"
+teardown:
+  - "rm -rf /tmp/nebo-project"
+
 conversation:
   - role: user
     content: "Search for the word 'TODO' in all files under /tmp/nebo-project/"

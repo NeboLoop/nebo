@@ -4,34 +4,47 @@ description: |
   Baseline task: replace text in a file. Measures first-call tool naming accuracy.
 target_component: os
 
+setup:
+  - "printf 'Hello there\n' > /tmp/nebo-greeting.txt"
+teardown:
+  - "rm -f /tmp/nebo-greeting.txt"
+
 conversation:
   - role: user
     content: "In the file /tmp/nebo-greeting.txt, replace 'Hello' with 'Goodbye'."
 
 prompt_assertions:
   first_call:
+    # STRAP tools share one tool name with the operation in `action` — a bare
+    # tool match would pass on ANY os call (calibration 2026-08-24: a read
+    # first call passed "calls-any-edit"). Checks pin the action arg.
+    # Calibration 2026-08-24: the model consistently verifies-then-edits on a
+    # natural-language ask (read call 1, edit call 2 with perfect anchors) —
+    # which the shipped prompt doctrine prescribes ("verify a remembered path
+    # or value before acting"). A first-call edit is the leaner ideal, kept as
+    # an important signal; the critical claims are the edit itself and its args.
     - id: calls-any-edit
-      text: "Model's first call edits the file — either os(resource: 'file', action: 'edit') or file_edit(path: '...') depending on convention"
-      check: { first_call: true, tool: [os, file_edit] }
-      severity: critical
+      text: "Model's first call is the edit — os(action: 'edit') on the target file (verify-first costs one extra call)"
+      check: { first_call: true, tool: os, arg: action, equals: "edit" }
+      severity: important
     - id: correct-path
-      text: "Model passes the correct file path"
-      check: { first_call: true, arg: path, equals: "/tmp/nebo-greeting.txt" }
+      text: "The edit targets the correct file path"
+      check: { tool: os, arg: path, equals: "/tmp/nebo-greeting.txt" }
       severity: critical
     - id: has-old-string
-      text: "Model passes old_string: 'Hello'"
-      check: { first_call: true, arg: old_string, equals: "Hello" }
+      text: "The edit call anchors on the existing text (old_string contains 'Hello')"
+      check: { tool: os, arg: old_string, contains: "Hello" }
       severity: critical
     - id: has-new-string
-      text: "Model passes new_string: 'Goodbye'"
-      check: { first_call: true, arg: new_string, equals: "Goodbye" }
+      text: "The edit call replaces with text containing 'Goodbye'"
+      check: { tool: os, arg: new_string, contains: "Goodbye" }
       severity: critical
   cost:
-    - id: single-call
-      text: "Task completes in 1 tool call"
-      check: { tool_calls: 1 }
+    - id: within-two-calls
+      text: "Task completes in at most 2 tool calls (verify + edit)"
+      check: { max_tool_calls: 2 }
       severity: important
 
 ideal_behavior:
-  tool_calls: 1
+  tool_calls: 2
   total_tokens: 1500

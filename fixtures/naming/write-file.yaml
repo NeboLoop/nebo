@@ -4,6 +4,11 @@ description: |
   Baseline task: write a file. Measures first-call tool naming accuracy.
 target_component: os
 
+setup:
+  - "rm -f /tmp/nebo-greeting.txt"
+teardown:
+  - "rm -f /tmp/nebo-greeting.txt"
+
 conversation:
   - role: user
     content: "Create a file at /tmp/nebo-greeting.txt with the content 'Hello, World!'"

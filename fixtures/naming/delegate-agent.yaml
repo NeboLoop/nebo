@@ -1,8 +1,16 @@
-id: naming-delegate-agent
-name: "Naming test — delegate to a named agent"
+id: naming-coworker-message
+name: "Naming test — hand work to a named coworker"
 description: |
-  Baseline task: delegate work to a named agent. Measures first-call tool naming accuracy.
-target_component: agent
+  Baseline task: ask a named employee to do something. The delegate action was
+  removed — work for a named coworker is a MESSAGE (their session, their
+  memory, owner-visible on both sides). Measures first-call naming accuracy
+  for the canonical pathway: message(resource: 'coworker', action: 'send').
+target_component: message
+
+setup:
+  - "curl -s -X POST localhost:27895/api/v1/agents -H 'Content-Type: application/json' -d '{\"blank\":true,\"name\":\"chief-of-staff\"}' > /dev/null"
+teardown:
+  - "python3 -c \"import json,urllib.request as u; ags=json.load(u.urlopen('http://localhost:27895/api/v1/agents'))['agents']; ids=[a['id'] for a in ags if a.get('name')=='chief-of-staff']; [u.urlopen(u.Request('http://localhost:27895/api/v1/agents/'+i, method='DELETE')) for i in ids]\""
 
 conversation:
   - role: user
@@ -10,24 +18,21 @@ conversation:
 
 prompt_assertions:
   first_call:
-    - id: calls-agent
-      text: "Model calls 'agent' tool"
-      check: { first_call: true, tool: agent }
+    - id: calls-message
+      text: "Model's first call is the message tool (not agent.delegate — removed)"
+      check: { first_call: true, tool: message }
       severity: critical
-    - id: uses-registry-resource
-      text: "Model uses resource: 'registry' (not 'task')"
-      check: { first_call: true, arg: resource, equals: "registry" }
+    - id: uses-coworker-resource
+      text: "Model uses resource: 'coworker'"
+      check: { first_call: true, arg: resource, equals: "coworker" }
       severity: critical
-    - id: uses-delegate-action
-      text: "Model uses action: 'delegate'"
-      check: { first_call: true, arg: action, equals: "delegate" }
+    - id: uses-send-action
+      text: "Model uses action: 'send'"
+      check: { first_call: true, arg: action, equals: "send" }
       severity: critical
-    - id: has-name
-      text: "Model passes name: 'chief-of-staff'"
-      check: { first_call: true, arg: name, contains: "chief-of-staff" }
-      severity: critical
-    - id: no-spawn
-      text: "Model does NOT use action: 'spawn'"
+    - id: has-recipient
+      text: "Model addresses chief-of-staff"
+      check: { first_call: true, arg: to, contains: "chief" }
       severity: critical
   cost:
     - id: single-call

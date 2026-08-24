@@ -1,0 +1,85 @@
+== read-file
+  calls-any-read            ✓    ✓    ✓   100%  verified
+  correct-path              ✓    ✓    ✓   100%  verified
+  single-call               ✓    ✓    ✓   100%  verified
+  verified: 9/9 passed · judged: 0/0 passed
+== write-file
+  calls-any-write           ✓    ✓    ✓   100%  verified
+  correct-path              ✓    ✓    ✓   100%  verified
+  has-content               ✓    ✓    ✓   100%  verified
+  single-call               ✓    ✓    ✓   100%  verified
+  verified: 12/12 passed · judged: 0/0 passed
+== edit-file
+  calls-any-edit            ✓    ✓    ✓   100%  verified
+  correct-path              ✓    ✓    ✓   100%  verified
+  has-old-string            ✗    ✗    ✗     0%  verified
+  has-new-string            ✗    ✗    ✗     0%  verified
+  single-call               ✗    ✓    ✓    66%  verified
+  verified: 8/15 passed · judged: 0/0 passed
+== grep-file
+  calls-any-grep            ✗    ✓    ✓    66%  verified
+  correct-pattern           ✗    ✓    ✓    66%  verified
+  single-call               ✗    ✓    ✓    66%  verified
+  verified: 6/9 passed · judged: 0/0 passed
+== shell-command
+  calls-any-shell           ✗    ✓    ✓    66%  verified
+  correct-command           ✗    ✓    ✓    66%  verified
+  single-call               ✗    ✓    ✓    66%  verified
+  verified: 6/9 passed · judged: 0/0 passed
+== web-search
+  calls-any-search          ✓    ✓    ✓   100%  verified
+  has-query                 ✗    ✗    ✗     0%  verified
+  single-call               ✓    ✓    ✓   100%  verified
+  verified: 6/9 passed · judged: 0/0 passed
+== delegate-agent
+  calls-agent               ✓    ✗    ✗    33%  verified
+  uses-registry-resource    ✓    ✗    ✗    33%  verified
+  uses-delegate-action      ✗    ✗    ✗     0%  verified
+  has-name                  ✗    ✗    ✗     0%  verified
+  single-call               ✗    ✓    ✗    33%  verified
+  verified: 3/15 passed · judged: 0/0 passed
+=== round 2 (contract-corrected fixtures) ===
+== edit-file
+  calls-any-edit            ✗    ✗    ✗     0%  verified
+  correct-path              ✓    ✓    ✓   100%  verified
+  has-old-string            ✓    ✗    ✗    33%  verified
+  has-new-string            ✓    ✗    ✗    33%  verified
+  single-call               ✗    ✓    ✓    66%  verified
+  verified: 7/15 passed · judged: 0/0 passed
+== web-search
+  calls-any-search          ✓    ✓    ✓   100%  verified
+  has-query                 ✓    ✓    ✓   100%  verified
+  single-call               ✗    ✓    ✗    33%  verified
+  verified: 7/9 passed · judged: 0/0 passed
+== delegate-agent
+  calls-message             ✗    ✗    ✗     0%  verified
+  uses-coworker-resource    ✗    ✗    ✗     0%  verified
+  uses-send-action          ✗    ✗    ✗     0%  verified
+  has-recipient             ✗    ✗    ✗     0%  verified
+  single-call               ✓    ✗    ✗    33%  verified
+  verified: 1/15 passed · judged: 0/0 passed
+=== round 3 (self-contained fixtures, per-run setup) ===
+== edit-file
+  calls-any-edit            ✗    ✗    ✗     0%  verified
+  correct-path              ✓    ✓    ✓   100%  verified
+  has-old-string            ✓    ✓    ✓   100%  verified
+  has-new-string            ✓    ✓    ✓   100%  verified
+  single-call               ✗    ✗    ✗     0%  verified
+  verified: 9/15 passed · judged: 0/0 passed
+== grep-file
+  calls-any-grep            ✓    ✓    ✓   100%  verified
+  correct-pattern           ✓    ✓    ✓   100%  verified
+  single-call               ✓    ✓    ✓   100%  verified
+  verified: 9/9 passed · judged: 0/0 passed
+== shell-command
+  calls-any-shell           ✓    ✓    ✓   100%  verified
+  correct-command           ✓    ✓    ✓   100%  verified
+  single-call               ✓    ✓    ✓   100%  verified
+  verified: 9/9 passed · judged: 0/0 passed
+== delegate-agent
+  calls-message             ✓    ✓    ✓   100%  verified
+  uses-coworker-resource    ✓    ✓    ✓   100%  verified
+  uses-send-action          ✓    ✓    ✓   100%  verified
+  has-recipient             ✓    ✓    ✓   100%  verified
+  single-call               ✓    ✓    ✓   100%  verified
+  verified: 15/15 passed · judged: 0/0 passed
