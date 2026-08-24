@@ -990,8 +990,9 @@ impl AgentWorkerRegistry {
 /// against nothing and silently dropped the factory's real Open Order
 /// Report on the FIRST live watch event (2026-08-24), after every test with
 /// hand-built payloads had passed. Existing top-level values always win;
-/// this only fills gaps.
-fn normalize_watch_payload(payload: &mut serde_json::Value) {
+/// this only fills gaps. Public: the run-display summarizer applies the same
+/// lifting when rendering a run's input — ONE lifting implementation.
+pub fn normalize_watch_payload(payload: &mut serde_json::Value) {
     fn header_value(headers: &[serde_json::Value], name: &str) -> Option<String> {
         headers.iter().find_map(|h| {
             let n = h.get("name")?.as_str()?;

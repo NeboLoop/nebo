@@ -5,7 +5,7 @@
   import { getWebSocketClient } from '$lib/websocket/client';
   import PrettyJson from '$lib/components/PrettyJson.svelte';
   import type { AgentPageContext, AgentRun, WorkflowActivity } from '$lib/types/agentPage';
-  import type { WorkflowRun, WorkflowActivityResult, PendingTask } from '$lib/api/neboComponents';
+  import type { WorkflowRun, WorkflowActivityResult, PendingTask, RunDisplay, RunDisplayEntry } from '$lib/api/neboComponents';
 
   const ctx = getContext<AgentPageContext>('agentPage');
   const agentId = $derived(ctx.agentId);
@@ -20,6 +20,9 @@
   let runDetail = $state<WorkflowRun | null>(null);
   let activities = $state<WorkflowActivityResult[]>([]);
   let taskItems = $state<Record<string, PendingTask[]>>({});
+  // Human-readable projection, derived server-side (the engine narrates —
+  // the client never parses per-type output shapes). Absent on old servers.
+  let display = $state<RunDisplay | null>(null);
   let loading = $state(false);
 
   // Track which activities and steps are expanded — multiple can be open
@@ -33,6 +36,7 @@
     loading = true;
     runDetail = null;
     activities = [];
+    display = null;
     expandedActivities = {};
     expandedSteps = {};
 
@@ -42,6 +46,7 @@
       if (res?.run) runDetail = res.run;
       if (res?.activities) activities = res.activities;
       if (res?.taskItems && typeof res.taskItems === 'object') taskItems = res.taskItems as Record<string, PendingTask[]>;
+      if (res?.display) display = res.display;
     }).catch(err => {
       console.warn('[nebo] Failed to load run detail:', err);
     }).finally(() => {
@@ -153,6 +158,22 @@
     return typeof inp === 'string' && inp.length > 0 ? inp : null;
   });
   let showRawInput = $state(false);
+
+  const inputSummary = $derived(display?.input ?? null);
+  function activitySummary(id: string): RunDisplayEntry | null {
+    return display?.activities?.[id] ?? null;
+  }
+  // Known input fact keys localize; anything else is data and renders as-is.
+  function factLabel(key: string): string {
+    const known: Record<string, string> = {
+      from: $t('agentActivity.factFrom'),
+      subject: $t('agentActivity.factSubject'),
+      date: $t('agentActivity.factDate'),
+      attachment: $t('agentActivity.factAttachment'),
+      via: $t('agentActivity.factVia'),
+    };
+    return known[key] ?? key;
+  }
 
   const duration = $derived.by(() => {
     if (runDetail?.startedAt && runDetail?.completedAt) {
@@ -292,14 +313,30 @@
         <div class="mb-4">
           <div class="flex items-center justify-between mb-1">
             <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('agentActivity.input')}</div>
-            {#if runInputData}
+            {#if runInputData || inputSummary}
               <button type="button" class="btn btn-ghost btn-xs" onclick={() => (showRawInput = !showRawInput)}>
                 {showRawInput ? $t('agentActivity.viewPretty') : $t('agentActivity.viewRaw')}
               </button>
             {/if}
           </div>
           <div class="p-3 rounded-lg border border-base-300 bg-base-200/30 overflow-x-auto">
-            {#if runInputData && !showRawInput}
+            {#if inputSummary && !showRawInput}
+              <!-- The engine's summary: what arrived, in human terms -->
+              {#if inputSummary.line}
+                <div class="text-sm font-medium mb-1.5">{inputSummary.line}</div>
+              {/if}
+              {#if inputSummary.facts.length > 0}
+                <div class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5">
+                  {#each inputSummary.facts as fact}
+                    <div class="text-xs text-base-content/50">{factLabel(fact.key)}</div>
+                    <div class="text-xs text-base-content/70 break-words min-w-0">{fact.value}</div>
+                  {/each}
+                </div>
+              {/if}
+            {:else if runInputData && !showRawInput}
+              <PrettyJson value={runInputData} />
+            {:else if runInputData && showRawInput && inputSummary}
+              <!-- Raw for a summarized input is the full browsable tree -->
               <PrettyJson value={runInputData} />
             {:else}
               <pre class="text-xs text-base-content/70 whitespace-pre-wrap font-mono m-0">{runInputs}</pre>
@@ -317,6 +354,7 @@
             {@const def = getActivityDef(activity.activityId)}
             {@const isExpanded = expandedActivities[activity.activityId] ?? false}
             {@const actOutput = activityOutputs[activity.activityId] ?? ''}
+            {@const summary = activitySummary(activity.activityId)}
             <div class="flex gap-3">
               <!-- Stepper dot + line -->
               <div class="flex flex-col items-center shrink-0">
@@ -343,10 +381,16 @@
                   class="w-full text-left flex items-center gap-2 cursor-pointer bg-transparent border-none p-0"
                   onclick={() => toggleActivity(activity.activityId)}
                 >
-                  <span class="text-sm font-medium">{activity.activityId}</span>
-                  <span class="text-xs text-base-content/50 font-mono">{formatActivityDuration(activity)}</span>
-                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="text-base-content/30 ml-auto transition-transform {isExpanded ? 'rotate-90' : ''}"><polyline points="9 6 15 12 9 18"/></svg>
+                  <span class="text-sm font-medium min-w-0 truncate">{summary?.line || activity.activityId}</span>
+                  {#if summary?.verdict === 'stopped'}
+                    <span class="py-0 px-1.5 rounded text-xs font-medium shrink-0 bg-info/10 text-info">{$t('agentActivity.gateStopped')}</span>
+                  {/if}
+                  <span class="text-xs text-base-content/50 font-mono shrink-0">{formatActivityDuration(activity)}</span>
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="text-base-content/30 ml-auto shrink-0 transition-transform {isExpanded ? 'rotate-90' : ''}"><polyline points="9 6 15 12 9 18"/></svg>
                 </button>
+                {#if isExpanded && summary?.line && summary.line !== activity.activityId}
+                  <div class="text-xs text-base-content/50 font-mono mt-0.5">{activity.activityId}</div>
+                {/if}
 
                 {#if activity.error}
                   <!-- Red only for genuine failures; a clean early-exit reason is informational. -->
@@ -442,7 +486,22 @@
                       <!-- No steps defined — show activity-level result -->
                       <div>
                         <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1">{$t('agentActivity.result')}</div>
-                        {#if actOutput}
+                        {#if summary && summary.facts.length > 0}
+                          <div class="p-3 rounded-lg border border-base-300 bg-base-200/30">
+                            <div class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5">
+                              {#each summary.facts as fact}
+                                <div class="text-xs text-base-content/50">{factLabel(fact.key)}</div>
+                                <div class="text-xs text-base-content/70 break-words min-w-0">{fact.value}</div>
+                              {/each}
+                            </div>
+                            {#if actOutput}
+                              <details class="mt-2">
+                                <summary class="text-xs text-base-content/50 cursor-pointer select-none">{$t('agentActivity.viewRaw')}</summary>
+                                <pre class="text-xs text-base-content/70 whitespace-pre-wrap font-mono m-0 mt-1 overflow-x-auto">{actOutput}</pre>
+                              </details>
+                            {/if}
+                          </div>
+                        {:else if actOutput}
                           <div class="p-3 rounded-lg border border-base-300 bg-base-200/30">
                             <div class="text-xs text-base-content/70 whitespace-pre-wrap">{actOutput}</div>
                           </div>

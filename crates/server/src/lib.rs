@@ -19,6 +19,7 @@ pub(crate) mod plugin_oauth;
 mod plugin_provider;
 mod redact;
 pub mod routes;
+pub mod run_display;
 pub mod run_registry;
 mod scheduler;
 mod spa;

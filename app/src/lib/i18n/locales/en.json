@@ -2140,7 +2140,13 @@
 		"runAgain": "Run Again",
 		"runNotFound": "Run not found",
 		"backToRuns": "Back to runs",
-		"runDetail": "Run"
+		"runDetail": "Run",
+		"gateStopped": "Stopped here",
+		"factFrom": "From",
+		"factSubject": "Subject",
+		"factDate": "Date",
+		"factAttachment": "Attachment",
+		"factVia": "Via"
 	},
 	"automations": {
 		"title": "Automations",

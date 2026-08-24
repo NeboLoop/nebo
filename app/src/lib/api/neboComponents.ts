@@ -1258,6 +1258,7 @@ export interface GetRunResponse {
 	run: WorkflowRun
 	activities: WorkflowActivityResult[]
 	taskItems: unknown
+	display: RunDisplay
 }
 
 export interface GetSessionMessagesResponse {
@@ -2081,6 +2082,22 @@ export interface ImportOutcome {
 	agentId: string | null
 	agentName: string | null
 	skipped: string[]
+}
+
+export interface RunDisplayFact {
+	key: string
+	value: string
+}
+
+export interface RunDisplayEntry {
+	line: string | null
+	verdict?: string
+	facts: RunDisplayFact[]
+}
+
+export interface RunDisplay {
+	input: RunDisplayEntry | null
+	activities: Record<string, RunDisplayEntry>
 }
 
 export interface ToolPermission {

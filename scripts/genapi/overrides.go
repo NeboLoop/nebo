@@ -39,6 +39,9 @@ var typeOverrides = map[string]string{
 	// UI can land the owner where the new employee is speaking.
 	"create_agent.threadId": "string | null",
 
+	// ── Run detail: human-readable projection derived server-side ──
+	"get_run.display": "RunDisplay",
+
 	// ── Workrooms (Workroom/WorkroomMessage generated from Rust structs) ──
 	"list_workrooms.workrooms":        "Workroom[]",
 	"create_workroom.workroom":        "Workroom",
@@ -79,6 +82,21 @@ var typeOverrides = map[string]string{
 // extraInterfaces defines TypeScript interfaces that don't exist as Rust structs
 // but are needed by the type overrides above.
 var extraInterfaces = map[string]string{
+	"RunDisplay": `export interface RunDisplayFact {
+	key: string
+	value: string
+}
+
+export interface RunDisplayEntry {
+	line: string | null
+	verdict?: string
+	facts: RunDisplayFact[]
+}
+
+export interface RunDisplay {
+	input: RunDisplayEntry | null
+	activities: Record<string, RunDisplayEntry>
+}`,
 	"AgentListEntry": `export interface AgentListEntry {
 	id: string
 	name: string
