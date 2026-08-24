@@ -29,6 +29,7 @@
   import type { CronJob } from '$lib/api/neboComponents';
   import { describeSchedule, parseSimple, buildSimple, type SimpleSchedule } from '$lib/utils/schedule';
   import ConfirmModal from '$lib/components/settings/ConfirmModal.svelte';
+  import ShelfModal from '$lib/components/ui/ShelfModal.svelte';
 
   let reminders = $state<CronJob[]>([]);
   let reminderBusy = $state<string | null>(null);
@@ -61,14 +62,14 @@
     reminderBusy = null;
   }
 
-  // Clicking a reminder card expands it into its editor: instruction text +
-  // the simple schedule dropdowns. Schedules the simple shapes can't hold
-  // stay read-only — never rewrite a schedule into something it never said.
-  // Draft state is flat (freq + n + time) and only becomes a SimpleSchedule
-  // at save.
-  let expandedReminder = $state<string | null>(null);
+  // Clicking a reminder card opens THE editor — a narrow modal, the same
+  // "over" tier every other editor uses (cards stay read-only summaries; one
+  // editing surface per object). Schedules the simple shapes can't hold stay
+  // read-only — never rewrite a schedule into something it never said. Draft
+  // state is flat (freq + n + time) and only becomes a SimpleSchedule at save.
+  let editorReminder = $state<CronJob | null>(null);
   let draftText = $state('');
-  let editingSchedule = $state<string | null>(null); // reminder name
+  let scheduleEditable = $state(false);
   let draftFreq = $state('daily');
   let draftN = $state(4);
   let draftHour = $state(9); // 0-23
@@ -92,7 +93,6 @@
       draftHour = p.hour; draftMinute = p.minute;
       draftN = 4;
     }
-    editingSchedule = t.name;
   }
 
   function draftToSimple(): SimpleSchedule {
@@ -102,34 +102,29 @@
     return { kind: draftFreq as 'daily' | 'weekdays' | 'weekends', hour: draftHour, minute: draftMinute };
   }
 
-  function toggleExpand(r: CronJob) {
-    if (expandedReminder === r.name) {
-      expandedReminder = null;
-      editingSchedule = null;
-      return;
-    }
-    expandedReminder = r.name;
+  function openEditor(r: CronJob) {
+    editorReminder = r;
     draftText = r.instructions || r.message || r.command || '';
-    if (parseSimple(r.schedule)) startEditSchedule(r);
-    else editingSchedule = null;
+    scheduleEditable = !!parseSimple(r.schedule);
+    if (scheduleEditable) startEditSchedule(r);
   }
 
   // ONE save: text back into the field it came from, plus the schedule when
   // the simple editor could hold it.
-  async function saveReminder(t: CronJob) {
-    if (reminderBusy) return;
+  async function saveReminder() {
+    const t = editorReminder;
+    if (!t || reminderBusy) return;
     reminderBusy = t.name;
     const body: Record<string, string> = {};
     const field = t.instructions ? 'instructions' : t.message ? 'message' : t.command ? 'command' : 'instructions';
     if (draftText.trim() && draftText !== (t.instructions || t.message || t.command || '')) {
       body[field] = draftText;
     }
-    if (editingSchedule === t.name) body.schedule = buildSimple(draftToSimple());
+    if (scheduleEditable) body.schedule = buildSimple(draftToSimple());
     try {
       if (Object.keys(body).length) await api.updateTask(t.name, body);
       await loadReminders();
-      expandedReminder = null;
-      editingSchedule = null;
+      editorReminder = null;
     } catch { /* keep the editor open so nothing is silently lost */ }
     reminderBusy = null;
   }
@@ -202,7 +197,7 @@
     {:else}
       {#each entries as [name, wf] (name)}
         {@const purchased = wf.source === 'marketplace'}
-        <div class="rounded-lg border border-base-300 bg-base-100 overflow-hidden">
+        <div class="rounded-lg border border-base-300 bg-base-100 overflow-hidden shrink-0">
           <div class="flex items-start gap-2.5 p-3">
             <div class="w-[22px] h-[22px] rounded flex items-center justify-center text-sm shrink-0 mt-0.5 {wf.isActive !== false ? 'bg-primary/10 text-primary' : 'bg-base-200 text-base-content/40'}">
               {#if wf.trigger?.type === 'schedule'}&#8635;{:else if wf.trigger?.type === 'event'}&#9889;{:else if wf.trigger?.type === 'watch'}&#128065;{:else if wf.trigger?.type === 'heartbeat'}&#10084;{:else}&#9654;{/if}
@@ -255,14 +250,14 @@
         <div class="flex flex-col gap-2">
           {#each reminders as r (r.id)}
             {@const sched = describeSchedule(r.schedule)}
-            <div class="rounded-lg border border-base-300 bg-base-100 p-3 flex items-start gap-2.5">
+            <div class="rounded-lg border border-base-300 bg-base-100 p-3 flex items-start gap-2.5 shrink-0">
               <div class="w-[22px] h-[22px] rounded flex items-center justify-center text-sm shrink-0 mt-0.5 {r.enabled !== false ? 'bg-primary/10 text-primary' : 'bg-base-200 text-base-content/40'}">&#8986;</div>
               <div class="flex-1 min-w-0">
-                <!-- The card IS the affordance: click to open the editor. -->
+                <!-- The card is a summary; editing lives in ONE place — the modal. -->
                 <button
                   type="button"
                   class="w-full text-left bg-transparent border-none p-0 cursor-pointer"
-                  onclick={() => toggleExpand(r)}
+                  onclick={() => openEditor(r)}
                 >
                   <div class="flex items-center gap-1.5 flex-wrap">
                     <span class="text-sm font-medium">{r.name}</span>
@@ -270,7 +265,7 @@
                       <span class="py-0 px-1.5 rounded bg-base-200 text-xs text-base-content/50">{$t('common.paused')}</span>
                     {/if}
                   </div>
-                  {#if expandedReminder !== r.name && (r.instructions || r.message || r.command)}
+                  {#if r.instructions || r.message || r.command}
                     <div class="text-xs text-base-content/70 mt-0.5 line-clamp-2">{r.instructions || r.message || r.command}</div>
                   {/if}
                   <div class="flex items-center gap-1.5 mt-1.5 flex-wrap">
@@ -284,49 +279,7 @@
                     {/if}
                   </div>
                 </button>
-                {#if expandedReminder === r.name}
-                  <textarea
-                    class="w-full mt-2 py-1.5 px-2 rounded-md border border-base-300 text-xs bg-base-100 outline-none resize-y leading-relaxed min-h-16"
-                    rows="3"
-                    bind:value={draftText}
-                  ></textarea>
-                {/if}
-                {#if editingSchedule === r.name && expandedReminder === r.name}
-                  <div class="flex items-center gap-1.5 mt-2 flex-wrap">
-                    <select class="select select-xs bg-base-100 border-base-300" bind:value={draftFreq}>
-                      <option value="daily">Every day</option>
-                      <option value="weekdays">Weekdays</option>
-                      <option value="weekends">Weekends</option>
-                      {#each DOW_LABELS as d, i (i)}
-                        <option value={`dow${i}`}>{d}s</option>
-                      {/each}
-                      <option value="hours">Every N hours</option>
-                      <option value="minutes">Every N minutes</option>
-                    </select>
-                    {#if draftFreq === 'hours' || draftFreq === 'minutes'}
-                      <input type="number" min="1" max={draftFreq === 'hours' ? 23 : 59} class="input input-xs w-16 bg-base-100 border-base-300" bind:value={draftN} />
-                    {:else}
-                      <select class="select select-xs bg-base-100 border-base-300"
-                        value={String(draftHour % 12 === 0 ? 12 : draftHour % 12)}
-                        onchange={(e) => { const h12 = +e.currentTarget.value; draftHour = (h12 % 12) + (draftHour >= 12 ? 12 : 0); }}>
-                        {#each Array.from({ length: 12 }, (_, i) => i + 1) as h (h)}<option value={String(h)}>{h}</option>{/each}
-                      </select>
-                      <select class="select select-xs bg-base-100 border-base-300" bind:value={draftMinute}>
-                        {#each [0, 15, 30, 45] as mnt (mnt)}<option value={mnt}>:{String(mnt).padStart(2, '0')}</option>{/each}
-                      </select>
-                      <select class="select select-xs bg-base-100 border-base-300"
-                        value={draftHour >= 12 ? 'PM' : 'AM'}
-                        onchange={(e) => { draftHour = (draftHour % 12) + (e.currentTarget.value === 'PM' ? 12 : 0); }}>
-                        <option>AM</option><option>PM</option>
-                      </select>
-                    {/if}
-                  </div>
-                {/if}
                 <div class="flex items-center gap-2 mt-2">
-                  {#if expandedReminder === r.name}
-                    <button class="btn btn-primary btn-xs" disabled={reminderBusy === r.name} onclick={() => saveReminder(r)}>{$t('common.save')}</button>
-                    <button class="btn btn-ghost btn-xs" onclick={() => toggleExpand(r)}>{$t('common.cancel')}</button>
-                  {/if}
                   <button class="btn btn-ghost btn-xs" disabled={reminderBusy === r.name} onclick={() => runReminder(r)}>{$t('flows.runNow')}</button>
                   <button class="btn btn-ghost btn-xs text-error ml-auto" disabled={reminderBusy === r.name} onclick={() => (deleteReminder = r)}>{$t('common.delete')}</button>
                 </div>
@@ -352,6 +305,67 @@
     >{$t('flows.askSetup', { values: { name: ctx.agent?.name ?? $t('chat.yourEmployee') } })}</button>
   </div>
 </div>
+
+<!-- THE reminder editor — the same "over" tier as every other editor. -->
+<ShelfModal
+  narrow
+  open={editorReminder !== null}
+  title={editorReminder?.name ?? ''}
+  onclose={() => (editorReminder = null)}
+>
+  {#if editorReminder}
+    <div class="flex-1 min-w-0 flex flex-col gap-3 p-4 overflow-y-auto">
+      <div>
+        <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1.5">{$t('flows.editorInstructions')}</div>
+        <textarea
+          class="w-full py-2 px-2.5 rounded-md border border-base-300 text-sm max-md:text-base bg-base-100 outline-none resize-y leading-relaxed min-h-32"
+          bind:value={draftText}
+        ></textarea>
+      </div>
+      <div>
+        <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1.5">{$t('flows.editorSchedule')}</div>
+        {#if scheduleEditable}
+          <div class="flex items-center gap-1.5 flex-wrap">
+            <select class="select select-sm bg-base-100 border-base-300" bind:value={draftFreq}>
+              <option value="daily">Every day</option>
+              <option value="weekdays">Weekdays</option>
+              <option value="weekends">Weekends</option>
+              {#each DOW_LABELS as d, i (i)}
+                <option value={`dow${i}`}>{d}s</option>
+              {/each}
+              <option value="hours">Every N hours</option>
+              <option value="minutes">Every N minutes</option>
+            </select>
+            {#if draftFreq === 'hours' || draftFreq === 'minutes'}
+              <input type="number" min="1" max={draftFreq === 'hours' ? 23 : 59} class="input input-sm w-16 bg-base-100 border-base-300" bind:value={draftN} />
+            {:else}
+              <select class="select select-sm bg-base-100 border-base-300"
+                value={String(draftHour % 12 === 0 ? 12 : draftHour % 12)}
+                onchange={(e) => { const h12 = +e.currentTarget.value; draftHour = (h12 % 12) + (draftHour >= 12 ? 12 : 0); }}>
+                {#each Array.from({ length: 12 }, (_, i) => i + 1) as h (h)}<option value={String(h)}>{h}</option>{/each}
+              </select>
+              <select class="select select-sm bg-base-100 border-base-300" bind:value={draftMinute}>
+                {#each [0, 15, 30, 45] as mnt (mnt)}<option value={mnt}>:{String(mnt).padStart(2, '0')}</option>{/each}
+              </select>
+              <select class="select select-sm bg-base-100 border-base-300"
+                value={draftHour >= 12 ? 'PM' : 'AM'}
+                onchange={(e) => { draftHour = (draftHour % 12) + (e.currentTarget.value === 'PM' ? 12 : 0); }}>
+                <option>AM</option><option>PM</option>
+              </select>
+            {/if}
+          </div>
+        {:else}
+          <!-- More specific than the simple shapes can hold — display, never rewrite. -->
+          <div class="text-sm text-base-content/70 font-mono">{describeSchedule(editorReminder.schedule).text}</div>
+        {/if}
+      </div>
+      <div class="flex items-center gap-2 mt-1">
+        <button class="btn btn-primary btn-sm" disabled={reminderBusy === editorReminder.name} onclick={saveReminder}>{$t('common.save')}</button>
+        <button class="btn btn-ghost btn-sm" onclick={() => (editorReminder = null)}>{$t('common.cancel')}</button>
+      </div>
+    </div>
+  {/if}
+</ShelfModal>
 
 {#if deleteReminder}
   <ConfirmModal

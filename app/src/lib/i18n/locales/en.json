@@ -2744,6 +2744,8 @@
 		"reminders": "Reminders & scheduled tasks",
 		"runNow": "Run now",
 		"askSetup": "Ask {name} to set one up",
+		"editorInstructions": "What it does",
+		"editorSchedule": "When it runs",
 		"deleteReminderTitle": "Delete \"{name}\"?",
 		"deleteReminderBody": "This scheduled task stops running and is removed. Past runs stay in the run history."
 	},

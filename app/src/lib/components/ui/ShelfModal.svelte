@@ -22,12 +22,14 @@
     /** Employee identity chip before the title — same avatar/color as the roster row. */
     avatarInitial?: string;
     avatarClass?: string;
+    /** Compact card for single-object editors (a reminder, a field group). */
+    narrow?: boolean;
     /** Header content between the title and the close button. */
     actions?: Snippet;
     children: Snippet;
   }
 
-  let { open, title, onclose, avatarInitial = '', avatarClass = '', actions, children }: Props = $props();
+  let { open, title, onclose, avatarInitial = '', avatarClass = '', narrow = false, actions, children }: Props = $props();
 
   function onkeydown(e: KeyboardEvent) {
     // defaultPrevented = a stacked shelf already consumed this Escape —
@@ -77,7 +79,7 @@
     ></div>
     <div
       bind:this={sheet}
-      class="relative flex flex-col w-[min(96vw,72rem)] h-[min(90vh,48rem)] rounded-2xl border border-base-300 max-md:w-full max-md:h-[93dvh] max-md:rounded-b-none max-md:border-0 max-md:pb-[env(safe-area-inset-bottom)] max-md:shadow-[0_-8px_30px_rgba(0,0,0,0.18)] bg-base-100 shadow-2xl overflow-hidden {dragging ? '' : 'max-md:transition-transform max-md:duration-200'} motion-safe:max-md:animate-[sheet-up_0.24s_ease-out]"
+      class="relative flex flex-col {narrow ? 'w-[min(92vw,30rem)] h-auto max-h-[min(90vh,40rem)] max-md:h-auto max-md:max-h-[93dvh]' : 'w-[min(96vw,72rem)] h-[min(90vh,48rem)] max-md:h-[93dvh]'} rounded-2xl border border-base-300 max-md:w-full max-md:rounded-b-none max-md:border-0 max-md:pb-[env(safe-area-inset-bottom)] max-md:shadow-[0_-8px_30px_rgba(0,0,0,0.18)] bg-base-100 shadow-2xl overflow-hidden {dragging ? '' : 'max-md:transition-transform max-md:duration-200'} motion-safe:max-md:animate-[sheet-up_0.24s_ease-out]"
       style={dragDy > 0 ? `transform: translateY(${dragDy}px)` : ''}
       role="dialog"
       aria-modal="true"
