@@ -785,16 +785,31 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
             .unwrap_or_default()
             .is_empty()
     {
-        let already = store
+        let existing = store
             .list_mcp_integrations()
             .unwrap_or_default()
             .into_iter()
-            .any(|i| i.server_url.as_deref() == Some(cfg.neboai.memory_url.as_str()));
-        if !already {
+            .find(|i| i.server_url.as_deref() == Some(cfg.neboai.memory_url.as_str()));
+        if let Some(existing) = existing {
+            // Heal the machine default only: rows our older auto-wire named
+            // "nebo-kb" get the human-readable name. A name the OWNER chose is
+            // never second-guessed. (Tool namespaces are unaffected — both
+            // spellings slug to nebo_kb.)
+            if existing.name == "nebo-kb" {
+                let _ = store.update_mcp_integration(
+                    &existing.id,
+                    Some("Nebo KB"),
+                    None,
+                    None,
+                    None,
+                    None,
+                );
+            }
+        } else {
             let id = uuid::Uuid::new_v4().to_string();
             match store.create_mcp_integration(
                 &id,
-                "nebo-kb",
+                "Nebo KB",
                 "http",
                 Some(&cfg.neboai.memory_url),
                 "neboai",
