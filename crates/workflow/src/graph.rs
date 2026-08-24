@@ -891,6 +891,7 @@ async fn run_loop<'a>(
         .unwrap_or_default();
 
     let mut processed: u64 = 0;
+    let total_items = items.len() as u64;
     for item in items.into_iter().take(max_iterations as usize) {
         if let Some(token) = ctx.cancel_token {
             if token.is_cancelled() {
@@ -926,7 +927,27 @@ async fn run_loop<'a>(
         started_at,
         Some(chrono::Utc::now().timestamp()),
     );
-    let summary = format!("{} items processed", processed);
+    // No silent caps (WS3-R6): a truncated loop must never read as a complete
+    // one. Live incident: maxIterations 16 with 20 report chunks would have
+    // dropped the last 4 with the run stamped `completed`.
+    let summary = if total_items > processed {
+        warn!(
+            activity = activity.id.as_str(),
+            processed,
+            total_items,
+            max_iterations,
+            "loop truncated by maxIterations cap"
+        );
+        format!(
+            "processed {} of {} items — STOPPED at the maxIterations cap ({}); {} item(s) were NOT processed",
+            processed,
+            total_items,
+            max_iterations,
+            total_items - processed
+        )
+    } else {
+        format!("{} items processed", processed)
+    };
     ctx.state
         .lock()
         .unwrap()
@@ -1516,13 +1537,25 @@ mod walk_tests {
                 {"from":"l","to":"after","label":"Done"},
                 {"from":"after","to":"__emit__"}]
         }"#;
-        let (result, _store, _) = run_graph(
+        let (result, store, run_id) = run_graph(
             def,
             serde_json::json!({"items": ["x", "y", "z"]}),
             &provider,
         )
         .await;
         result.expect("run ok");
+        // No silent caps (WS3-R6): the truncation is named in the loop's
+        // recorded output — a capped run must never read as a complete one.
+        let output = store
+            .get_workflow_run(&run_id)
+            .unwrap()
+            .unwrap()
+            .output
+            .unwrap_or_default();
+        assert!(
+            output.contains("processed 2 of 3 items") && output.contains("NOT processed"),
+            "loop truncation must surface in the run output: {output:?}"
+        );
         let calls = provider.calls();
         // Count on the user-message part only — downstream system prompts
         // contain upstream intents via Prior Results.
