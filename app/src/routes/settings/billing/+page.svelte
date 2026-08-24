@@ -17,7 +17,6 @@
     InvoiceInfo
   } from '$lib/api/neboComponents';
   import Spinner from '$lib/components/ui/Spinner.svelte';
-  import GiveNebo from '$lib/components/GiveNebo.svelte';
 
   let isLoading = $state(true);
   let status = $state<AccountStatusResponse | null>(null);
@@ -380,8 +379,6 @@
       </section>
     {/if}
 
-    <!-- Give Nebo -->
-    <GiveNebo />
 
     <!-- Stripe Customer Portal -->
     <div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5">
