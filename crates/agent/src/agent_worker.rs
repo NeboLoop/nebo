@@ -970,6 +970,48 @@ impl AgentWorkerRegistry {
 /// Format: `"30m"` or `"30m|08:00-18:00"`
 ///
 /// Returns `(Duration, Option<(NaiveTime, NaiveTime)>)`.
+
+/// Lift the fields workflow authors gate on to the TOP of a watch payload.
+/// Gmail's raw message shape buries From/Subject in payload.headers[] — a
+/// gate written as `_watch_payload.from contains alside.com` evaluated
+/// against nothing and silently dropped the factory's real Open Order
+/// Report on the FIRST live watch event (2026-08-24), after every test with
+/// hand-built payloads had passed. Existing top-level values always win;
+/// this only fills gaps.
+fn normalize_watch_payload(payload: &mut serde_json::Value) {
+    fn header_value(headers: &[serde_json::Value], name: &str) -> Option<String> {
+        headers.iter().find_map(|h| {
+            let n = h.get("name")?.as_str()?;
+            if n.eq_ignore_ascii_case(name) {
+                h.get("value")?.as_str().map(str::to_string)
+            } else {
+                None
+            }
+        })
+    }
+    let headers: Vec<serde_json::Value> = match payload
+        .get("payload")
+        .and_then(|p| p.get("headers"))
+        .and_then(|h| h.as_array())
+    {
+        Some(h) => h.clone(),
+        None => return,
+    };
+    let Some(obj) = payload.as_object_mut() else {
+        return;
+    };
+    for (key, hdr) in [("from", "From"), ("subject", "Subject"), ("to", "To"), ("date", "Date")] {
+        let missing = obj
+            .get(key)
+            .and_then(|v| v.as_str())
+            .map_or(true, |s| s.is_empty());
+        if missing && let Some(v) = header_value(&headers, hdr) {
+            obj.insert(key.to_string(), serde_json::Value::String(v));
+        }
+    }
+}
+
+
 fn parse_heartbeat(
     config: &str,
 ) -> (
@@ -1284,6 +1326,12 @@ async fn watch_loop(
                                 );
                                 continue;
                             }
+
+                            // ONE normalization, before every consumer (the
+                            // auto-emitted event AND the inline run's
+                            // _watch_payload) sees the payload.
+                            let mut payload = payload;
+                            normalize_watch_payload(&mut payload);
 
                             if let Some((ref base_source, multiplexed)) = auto_emit {
                                 let (event_source, event_payload) = if multiplexed {
@@ -3369,5 +3417,45 @@ mod tests {
             Some(("C1".into(), "1700.5".into()))
         );
         assert_eq!(reply_participation_key(&serde_json::json!({})), None);
+    }
+}
+
+#[cfg(test)]
+mod watch_payload_tests {
+    use super::normalize_watch_payload;
+
+    /// The exact shape that dropped the factory's report: raw Gmail message,
+    /// sender only inside payload.headers[].
+    #[test]
+    fn gmail_raw_shape_gets_top_level_fields() {
+        let mut p = serde_json::json!({
+            "event": "email.new",
+            "id": "1a033574ee0ae0e2",
+            "payload": {"headers": [
+                {"name": "Delivered-To", "value": "orders@vividwindows.com"},
+                {"name": "From", "value": "<WindowConfirmation@alside.com>"},
+                {"name": "Subject", "value": "Open Order Report: 87495 VIVID WINDOWS"}
+            ]}
+        });
+        normalize_watch_payload(&mut p);
+        assert!(p["from"].as_str().unwrap().contains("alside.com"));
+        assert!(p["subject"].as_str().unwrap().contains("Open Order Report"));
+    }
+
+    /// A payload that already carries top-level fields is never overwritten,
+    /// and a non-email payload passes through untouched.
+    #[test]
+    fn existing_fields_win_and_non_email_untouched() {
+        let mut p = serde_json::json!({
+            "from": "reports@alside.com",
+            "payload": {"headers": [{"name": "From", "value": "someone@else.com"}]}
+        });
+        normalize_watch_payload(&mut p);
+        assert_eq!(p["from"], "reports@alside.com");
+
+        let mut folder = serde_json::json!({"path": "/tmp/x", "kind": "created"});
+        let before = folder.clone();
+        normalize_watch_payload(&mut folder);
+        assert_eq!(folder, before);
     }
 }
