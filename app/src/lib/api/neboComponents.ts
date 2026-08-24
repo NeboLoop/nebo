@@ -972,7 +972,6 @@ export interface CheckUpdatesResponse {
 export interface ChristenPrimaryResponse {
 	name: string
 	threadId: string
-	sessionKey: string
 }
 
 export interface CompleteResponse {

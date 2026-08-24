@@ -845,7 +845,6 @@ pub async fn christen_primary(
     Ok(Json(serde_json::json!({
         "name": name,
         "threadId": thread_id,
-        "sessionKey": session_key,
     })))
 }
 
