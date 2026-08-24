@@ -275,14 +275,14 @@ impl OsTool {
         // `service` with a keychain verb is too — models often write the full
         // arg set (service/account/password) and drop `resource`, which used
         // to cost three "Resource is required" errors before the first store.
-        if input
-            .get("password")
-            .and_then(|v| v.as_str())
-            .is_some_and(|s| !s.is_empty())
-            || (input
-                .get("service")
+        let has_kc_field = |key: &str| {
+            input
+                .get(key)
                 .and_then(|v| v.as_str())
                 .is_some_and(|s| !s.is_empty())
+        };
+        if has_kc_field("password")
+            || ((has_kc_field("service") || has_kc_field("label"))
                 && matches!(action, "get" | "find" | "add" | "store" | "delete"))
         {
             return "keychain";
@@ -743,6 +743,18 @@ impl DynTool for OsTool {
                      keychain, search, mail, contacts, calendar, reminders",
                 );
             }
+
+            // Settings VALUES models guess as resources: `os(resource:
+            // "battery", action: "info")` is the natural first shape, but
+            // battery/volume/brightness are ACTIONS on the settings
+            // resource. Honor the guess instead of erroring.
+            let resource = if matches!(resource.as_str(), "battery" | "volume" | "brightness") {
+                input["action"] = serde_json::Value::String(resource.clone());
+                "settings".to_string()
+            } else {
+                resource
+            };
+            input["resource"] = serde_json::Value::String(resource.clone());
 
             // Ensure resource is present in input for downstream tools
             if !input

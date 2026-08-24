@@ -2238,6 +2238,23 @@ async fn save_binding(
                     serde_json::json!([{ "id": "run", "intent": intent, "steps": steps }]);
             }
 
+            // Convenience: activities written with `prompt` (the word models
+            // and humans reach for) are the same thing as `intent` — accept
+            // the synonym instead of refusing a runnable definition.
+            if let Some(acts) = def.get_mut("activities").and_then(|v| v.as_array_mut()) {
+                for a in acts.iter_mut() {
+                    if a.get("intent").and_then(|i| i.as_str()).unwrap_or("").is_empty()
+                        && let Some(prompt) = a
+                            .get("prompt")
+                            .and_then(|p| p.as_str())
+                            .filter(|p| !p.is_empty())
+                            .map(str::to_string)
+                    {
+                        a["intent"] = serde_json::Value::String(prompt);
+                    }
+                }
+            }
+
             // Reject hollow definitions loudly — a workflow with no activities
             // can never execute, and silently storing one reads as success.
             let has_runnable_activity = def

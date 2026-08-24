@@ -90,6 +90,18 @@ impl DynTool for KeychainTool {
     }
 }
 
+
+/// `security` reports a missing item as an ERROR with scary "system error"
+/// framing; a lookup that finds nothing is a valid NEGATIVE RESULT — models
+/// were reporting "the delete didn't work" off the verify leg's error.
+#[cfg(target_os = "macos")]
+fn not_found_to_ok(res: ToolResult, what: &str) -> ToolResult {
+    if res.is_error && res.content.contains("could not be found") {
+        return ToolResult::ok(format!("No keychain item found for '{what}'."));
+    }
+    res
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 // macOS implementations (security command)
 // ═══════════════════════════════════════════════════════════════════════
@@ -110,11 +122,12 @@ async fn handle_get(input: &serde_json::Value) -> ToolResult {
         Some(a) if !a.is_empty() => a,
         _ => return ToolResult::error(errors::missing_param("get", "account", "keychain(action: \"get\", service: \"myapp\", account: \"user@example.com\")")),
     };
-    run_command(
+    let res = run_command(
         "security",
         &["find-generic-password", "-s", service, "-a", account, "-w"],
     )
-    .await
+    .await;
+    not_found_to_ok(res, service)
 }
 
 #[cfg(target_os = "macos")]
@@ -123,7 +136,8 @@ async fn handle_find(input: &serde_json::Value) -> ToolResult {
         Some(l) if !l.is_empty() => l,
         _ => return ToolResult::error(errors::missing_param("find", "label", "keychain(action: \"find\", label: \"myapp\")")),
     };
-    run_command("security", &["find-generic-password", "-l", label]).await
+    let res = run_command("security", &["find-generic-password", "-l", label]).await;
+    not_found_to_ok(res, label)
 }
 
 #[cfg(target_os = "macos")]
@@ -181,9 +195,12 @@ async fn handle_delete(input: &serde_json::Value) -> ToolResult {
         args.push("-a");
         args.push(a);
     }
-    let res = run_command("security", &args).await;
+    let res = not_found_to_ok(run_command("security", &args).await, service);
     if res.is_error {
         return res;
+    }
+    if res.content.starts_with("No keychain item found") {
+        return res; // nothing to delete — a clean negative, not a failure
     }
     // On success `security` PRINTS the deleted item's attributes — which reads
     // as "the entry is still there" and got reported exactly that way. Say
