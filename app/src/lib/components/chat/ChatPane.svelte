@@ -541,6 +541,44 @@
     return Math.max(0, entries.length - 4);
   }
 
+  // A run receipt: the run narrator's projection attached by the work tool
+  // when a finished run's status is fetched. A card is a receipt, not a
+  // decoration — every line is recorded state, and the card deep-links into
+  // the narrated run detail.
+  interface RunReceiptPayload {
+    kind: 'run_receipt';
+    runId: string;
+    workflow?: string;
+    status?: string;
+    error?: string | null;
+    errorActivity?: string | null;
+    order?: string[];
+    display?: {
+      input?: { line?: string | null; facts?: { key: string; value: string }[] } | null;
+      activities?: Record<string, { line?: string | null; verdict?: string }>;
+    };
+    [k: string]: unknown;
+  }
+  function runReceipt(tool: ToolMsg): RunReceiptPayload | null {
+    return tool.payload?.kind === 'run_receipt'
+      ? (tool.payload as unknown as RunReceiptPayload)
+      : null;
+  }
+  function receiptLines(rr: RunReceiptPayload): { line: string; failed: boolean; stopped: boolean }[] {
+    const acts = rr.display?.activities ?? {};
+    const ids = rr.order?.length ? rr.order : Object.keys(acts);
+    return ids
+      .map((id) => {
+        const a = acts[id];
+        return {
+          line: a?.line || id,
+          failed: rr.errorActivity === id,
+          stopped: a?.verdict === 'stopped',
+        };
+      })
+      .filter((l) => l.line);
+  }
+
   function searchPayload(tool: ToolMsg): SearchResultsPayload | null {
     return tool.payload?.kind === 'search_results' && Array.isArray((tool.payload as unknown as SearchResultsPayload).groups)
       ? (tool.payload as unknown as SearchResultsPayload)
@@ -1282,6 +1320,32 @@
                       {#if rs.claims_verified}
                         <div class="mt-2 text-xs text-base-content/50">{$t('chat.researchVerified', { values: { n: rs.claims_verified } })}</div>
                       {/if}
+                    </div>
+                  {/if}
+                  {#if runReceipt(tool)}
+                    {@const rr = runReceipt(tool)!}
+                    <div class="mt-2 max-w-[560px] rounded-xl border border-base-300 bg-base-100 px-3.5 py-3">
+                      <div class="flex items-center gap-2">
+                        <span class="text-sm font-medium truncate flex-1">{rr.workflow ?? $t('chat.runReceiptTitle')}</span>
+                        <span class="py-0 px-1.5 rounded text-xs font-medium shrink-0 {rr.status === 'completed' ? 'bg-success/10 text-success' : rr.status === 'failed' ? 'bg-error/10 text-error' : 'bg-warning/10 text-warning'}">
+                          {rr.status === 'completed' ? $t('common.completed') : rr.status === 'failed' ? $t('common.failed') : rr.status}
+                        </span>
+                      </div>
+                      {#if rr.display?.input?.line}
+                        <div class="text-xs text-base-content/50 truncate mt-0.5">{rr.display.input.line}</div>
+                      {/if}
+                      <div class="mt-2 flex flex-col gap-1">
+                        {#each receiptLines(rr) as l}
+                          <div class="flex items-start gap-2 text-xs">
+                            <span class="shrink-0 {l.failed ? 'text-error' : l.stopped ? 'text-info' : 'text-success'}">{l.failed ? '✗' : l.stopped ? '⏹' : '✓'}</span>
+                            <span class="text-base-content/70 min-w-0">{l.line}</span>
+                          </div>
+                        {/each}
+                      </div>
+                      {#if rr.error}
+                        <div class="mt-1.5 text-xs text-error">{rr.error}</div>
+                      {/if}
+                      <a href="?run={rr.runId}" class="inline-block mt-2 text-xs text-primary no-underline hover:underline">{$t('chat.openRun')}</a>
                     </div>
                   {/if}
                   {#if searchPayload(tool)}

@@ -295,6 +295,8 @@
 		"showingFirstRows": "Showing first {shown} of {total} rows.",
 		"noPreviewFormat": "No in-app preview for this format yet — download it to open in its native app.",
 		"researchTitle": "Deep research",
+		"runReceiptTitle": "Workflow run",
+		"openRun": "Open run →",
 		"researchCounting": "{n} sources and counting…",
 		"researchComplete": "Research complete · {n} sources",
 		"researchScoping": "planning angles",

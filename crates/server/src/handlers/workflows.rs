@@ -296,37 +296,9 @@ pub async fn get_run(
     }
 
     // Human-readable projection (derived at read time — works for historical
-    // runs, never stored, never drifts from the recorded data). The activity
-    // definitions supply type/intent: agent runs keep theirs on the binding,
-    // legacy workflows in the definition JSON.
-    let activity_defs: Option<serde_json::Value> = types::keyparser::agent_id_from_workflow_id(&id)
-        .and_then(|agent_id| {
-            let binding = run
-                .trigger_detail
-                .as_deref()
-                .map(|d| d.split(':').next().unwrap_or(d))?;
-            state
-                .store
-                .list_agent_workflows(agent_id)
-                .ok()?
-                .into_iter()
-                .find(|w| w.binding_name == binding)
-                .and_then(|w| w.activities)
-        })
-        .or_else(|| {
-            let wf = state.store.get_workflow(&id).ok().flatten()?;
-            serde_json::from_str::<serde_json::Value>(&wf.definition)
-                .ok()?
-                .get("activities")
-                .cloned()
-        });
-    let display = serde_json::json!({
-        "input": crate::run_display::input_display(run.inputs.as_deref()),
-        "activities": crate::run_display::activities_display(
-            run.output.as_deref(),
-            activity_defs.as_ref(),
-        ),
-    });
+    // runs, never stored, never drifts from the recorded data). ONE builder,
+    // shared with the work tool's chat receipt (`run_receipt`).
+    let display = crate::run_display::for_run(&state.store, &run);
 
     Ok(Json(serde_json::json!({
         "run": run,

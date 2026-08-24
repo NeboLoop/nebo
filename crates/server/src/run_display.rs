@@ -14,6 +14,39 @@
 
 use serde_json::{Value, json};
 
+/// The full display projection for one run: the input summary plus every
+/// activity's narration. The activity definitions supply type/intent — agent
+/// runs keep theirs on the binding, legacy workflows in the definition JSON.
+/// ONE builder: the run-detail endpoint and the work tool's chat receipt both
+/// come through here.
+pub fn for_run(store: &db::Store, run: &db::models::WorkflowRun) -> Value {
+    let activity_defs: Option<Value> =
+        types::keyparser::agent_id_from_workflow_id(&run.workflow_id)
+            .and_then(|agent_id| {
+                let binding = run
+                    .trigger_detail
+                    .as_deref()
+                    .map(|d| d.split(':').next().unwrap_or(d))?;
+                store
+                    .list_agent_workflows(agent_id)
+                    .ok()?
+                    .into_iter()
+                    .find(|w| w.binding_name == binding)
+                    .and_then(|w| w.activities)
+            })
+            .or_else(|| {
+                let wf = store.get_workflow(&run.workflow_id).ok().flatten()?;
+                serde_json::from_str::<Value>(&wf.definition)
+                    .ok()?
+                    .get("activities")
+                    .cloned()
+            });
+    json!({
+        "input": input_display(run.inputs.as_deref()),
+        "activities": activities_display(run.output.as_deref(), activity_defs.as_ref()),
+    })
+}
+
 const LINE_MAX: usize = 140;
 const VALUE_MAX: usize = 120;
 const FACTS_MAX: usize = 10;

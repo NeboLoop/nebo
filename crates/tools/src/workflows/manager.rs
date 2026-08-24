@@ -98,6 +98,18 @@ pub trait WorkflowManager: Send + Sync {
         limit: i64,
     ) -> Pin<Box<dyn Future<Output = Vec<WorkflowRunInfo>> + Send + 'a>>;
 
+    /// Human-readable receipt for one run — the run narrator's projection
+    /// (input summary + per-activity line/facts), for rich card rendering in
+    /// chat. `None` when the run doesn't exist. ONE narrator: the server impl
+    /// delegates to the same builder the run-detail endpoint uses. Default
+    /// `None` so test doubles don't have to care.
+    fn run_receipt<'a>(
+        &'a self,
+        _run_id: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Option<serde_json::Value>> + Send + 'a>> {
+        Box::pin(async { None })
+    }
+
     /// Toggle a workflow's enabled state. Returns new is_enabled.
     fn toggle<'a>(
         &'a self,

@@ -945,6 +945,35 @@ impl WorkflowManager for WorkflowManagerImpl {
         })
     }
 
+    fn run_receipt<'a>(
+        &'a self,
+        run_id: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<serde_json::Value>> + Send + 'a>>
+    {
+        Box::pin(async move {
+            let run = self.store.get_workflow_run(run_id).ok().flatten()?;
+            // Execution order for the card's ✓-lines — the display map is
+            // keyed by activity id and carries no order of its own.
+            let mut order: Vec<String> = Vec::new();
+            if let Ok(results) = self.store.list_activity_results(&run.id) {
+                for r in results {
+                    if !order.contains(&r.activity_id) {
+                        order.push(r.activity_id.clone());
+                    }
+                }
+            }
+            Some(serde_json::json!({
+                "runId": run.id,
+                "workflow": run.trigger_detail,
+                "status": run.status,
+                "error": run.error,
+                "errorActivity": run.error_activity,
+                "order": order,
+                "display": crate::run_display::for_run(&self.store, &run),
+            }))
+        })
+    }
+
     fn list_runs<'a>(
         &'a self,
         workflow_id: &'a str,

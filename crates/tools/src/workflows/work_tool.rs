@@ -235,7 +235,26 @@ impl WorkTool {
                 match runs.first() {
                     Some(run) => {
                         let json = serde_json::to_value(run).unwrap_or_default();
-                        ToolResult::ok(serde_json::to_string_pretty(&json).unwrap_or_default())
+                        let result = ToolResult::ok(
+                            serde_json::to_string_pretty(&json).unwrap_or_default(),
+                        );
+                        // Finished run → attach the narrator's receipt so the
+                        // app renders a rich card (kind: run_receipt) instead
+                        // of raw JSON. Running/pending runs stay plain — a
+                        // receipt is only issued for recorded outcomes.
+                        if matches!(
+                            run.status.as_str(),
+                            "completed" | "failed" | "cancelled" | "interrupted" | "exited"
+                        ) {
+                            if let Some(mut receipt) = self.manager.run_receipt(&run.id).await {
+                                if let Some(obj) = receipt.as_object_mut() {
+                                    obj.insert("kind".into(), serde_json::json!("run_receipt"));
+                                    obj.insert("workflow".into(), serde_json::json!(info.name));
+                                }
+                                return result.with_payload(receipt);
+                            }
+                        }
+                        result
                     }
                     None => ToolResult::ok(format!("No runs found for workflow {:?}", info.name)),
                 }
