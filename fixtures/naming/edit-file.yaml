@@ -12,19 +12,24 @@ prompt_assertions:
   first_call:
     - id: calls-any-edit
       text: "Model's first call edits the file — either os(resource: 'file', action: 'edit') or file_edit(path: '...') depending on convention"
+      check: { first_call: true, tool: [os, file_edit] }
       severity: critical
     - id: correct-path
       text: "Model passes the correct file path"
+      check: { first_call: true, arg: path, equals: "/tmp/nebo-greeting.txt" }
       severity: critical
     - id: has-old-string
       text: "Model passes old_string: 'Hello'"
+      check: { first_call: true, arg: old_string, equals: "Hello" }
       severity: critical
     - id: has-new-string
       text: "Model passes new_string: 'Goodbye'"
+      check: { first_call: true, arg: new_string, equals: "Goodbye" }
       severity: critical
   cost:
     - id: single-call
       text: "Task completes in 1 tool call"
+      check: { tool_calls: 1 }
       severity: important
 
 ideal_behavior:

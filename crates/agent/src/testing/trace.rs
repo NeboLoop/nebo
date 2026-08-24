@@ -67,6 +67,10 @@ pub struct AssertionResult {
     pub passed: bool,
     #[serde(default)]
     pub evidence: String,
+    /// "verified" (program check) or "judged" (LLM grader). Empty in
+    /// historical files — read as judged, since only the judge existed then.
+    #[serde(default)]
+    pub mode: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

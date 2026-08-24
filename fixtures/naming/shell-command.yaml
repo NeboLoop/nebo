@@ -12,13 +12,16 @@ prompt_assertions:
   first_call:
     - id: calls-any-shell
       text: "Model's first call runs a shell command — either os(resource: 'shell', action: 'exec') or bash(command: '...') depending on convention"
+      check: { first_call: true, tool: [os, bash] }
       severity: critical
     - id: correct-command
       text: "Model passes command containing 'uptime'"
+      check: { first_call: true, arg: command, contains: "uptime" }
       severity: critical
   cost:
     - id: single-call
       text: "Task completes in 1 tool call"
+      check: { tool_calls: 1 }
       severity: important
 
 ideal_behavior:

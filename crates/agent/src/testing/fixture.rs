@@ -92,6 +92,61 @@ pub struct Assertion {
     pub threshold: Option<f64>,
     #[serde(default)]
     pub tests: Option<String>,
+    /// Structured matcher evaluated deterministically from the trace, BEFORE
+    /// any grader call. Present → the assertion is program-verified and never
+    /// routed to the LLM judge; absent → prose-only, judged as before.
+    #[serde(default)]
+    pub check: Option<Check>,
+}
+
+/// Deterministic predicate over a [`super::trace::Trace`]. All present
+/// criteria must hold (AND). A check with no criteria, or arg predicates with
+/// no way to select a call, is a fixture-authoring error — the run fails with
+/// a diagnostic, it never falls open to the judge.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Check {
+    /// 1-based tool-call ordinal to inspect.
+    #[serde(default)]
+    pub call: Option<usize>,
+    /// Sugar for `call: 1`.
+    #[serde(default)]
+    pub first_call: bool,
+    /// Tool name must be one of these (single string or list in YAML).
+    #[serde(default, deserialize_with = "one_or_many")]
+    pub tool: Vec<String>,
+    /// Dot path into the call's arguments (e.g. `old_string`, `input.subject`).
+    #[serde(default)]
+    pub arg: Option<String>,
+    /// Assert the arg is present (implied by equals/contains/matches).
+    #[serde(default)]
+    pub exists: bool,
+    #[serde(default)]
+    pub equals: Option<serde_yaml::Value>,
+    #[serde(default)]
+    pub contains: Option<String>,
+    /// Regex over the arg's string form.
+    #[serde(default)]
+    pub matches: Option<String>,
+    /// Exact total tool-call count for the whole trace.
+    #[serde(default)]
+    pub tool_calls: Option<usize>,
+    #[serde(default)]
+    pub max_tool_calls: Option<usize>,
+    #[serde(default)]
+    pub max_total_tokens: Option<usize>,
+}
+
+fn one_or_many<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum OneOrMany {
+        One(String),
+        Many(Vec<String>),
+    }
+    Ok(match OneOrMany::deserialize(d)? {
+        OneOrMany::One(s) => vec![s],
+        OneOrMany::Many(v) => v,
+    })
 }
 
 fn default_severity() -> Severity {

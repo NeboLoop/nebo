@@ -12,16 +12,20 @@ prompt_assertions:
   first_call:
     - id: calls-any-write
       text: "Model's first call writes the file — either os(resource: 'file', action: 'write') or file_write(path: '...') depending on convention"
+      check: { first_call: true, tool: [os, file_write] }
       severity: critical
     - id: correct-path
       text: "Model passes the correct file path"
+      check: { first_call: true, arg: path, equals: "/tmp/nebo-greeting.txt" }
       severity: critical
     - id: has-content
       text: "Model passes content containing 'Hello, World!'"
+      check: { first_call: true, arg: content, contains: "Hello, World!" }
       severity: critical
   cost:
     - id: single-call
       text: "Task completes in 1 tool call"
+      check: { tool_calls: 1 }
       severity: important
 
 ideal_behavior:

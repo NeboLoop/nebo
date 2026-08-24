@@ -13,9 +13,11 @@ prompt_assertions:
   first_call:
     - id: calls-any-read
       text: "Model's first call reads the file — either os(resource: 'file', action: 'read') or file_read(path: '...') depending on convention"
+      check: { first_call: true, tool: [os, file_read] }
       severity: critical
     - id: correct-path
       text: "Model passes path: '/tmp/nebo-naming-test.txt'"
+      check: { first_call: true, arg: path, equals: "/tmp/nebo-naming-test.txt" }
       severity: critical
     - id: no-shell-cat
       text: "Model does NOT fall back to shell cat/head/tail"
@@ -23,6 +25,7 @@ prompt_assertions:
   cost:
     - id: single-call
       text: "Task completes in 1 tool call"
+      check: { tool_calls: 1 }
       severity: important
 
 ideal_behavior:

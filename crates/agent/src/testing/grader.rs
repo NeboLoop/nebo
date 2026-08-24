@@ -128,14 +128,10 @@ async fn grade_with_claude_code(prompt: &str, model: &str) -> Result<String, Str
 fn build_grader_prompt(trace: &Trace, fixture: &Fixture) -> String {
     let trace_json = serde_json::to_string_pretty(trace).unwrap_or_default();
 
+    // Prose-only assertions. Check-bearing ones are program-verified before
+    // any grader call and never routed to the judge (WS1-R3).
     let mut assertions_text = String::new();
-    for a in fixture.prompt_assertions.all() {
-        assertions_text.push_str(&format!(
-            "- [{}] ({:?}) {}\n",
-            a.id, a.severity, a.text
-        ));
-    }
-    for a in &fixture.integrated_assertions {
+    for a in super::checks::judged_assertions(fixture) {
         assertions_text.push_str(&format!(
             "- [{}] ({:?}) {}\n",
             a.id, a.severity, a.text
@@ -251,8 +247,15 @@ fn parse_grade_response(text: &str) -> Result<GradeResult, String> {
         _ => cleaned,
     };
 
-    serde_json::from_str::<GradeResult>(json_str).map_err(|e| {
-        warn!(raw_response = %text, "failed to parse grader response");
-        format!("parse grader JSON: {} (raw: {}...)", e, &text[..text.len().min(200)])
-    })
+    serde_json::from_str::<GradeResult>(json_str)
+        .map(|mut g| {
+            for a in &mut g.assertions {
+                a.mode = super::checks::MODE_JUDGED.to_string();
+            }
+            g
+        })
+        .map_err(|e| {
+            warn!(raw_response = %text, "failed to parse grader response");
+            format!("parse grader JSON: {} (raw: {}...)", e, &text[..text.len().min(200)])
+        })
 }

@@ -1,3 +1,4 @@
+pub mod checks;
 pub mod fixture;
 pub mod trace;
 pub mod engine;

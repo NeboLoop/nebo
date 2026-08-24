@@ -12,15 +12,19 @@ prompt_assertions:
   first_call:
     - id: calls-agent
       text: "Model calls 'agent' tool"
+      check: { first_call: true, tool: agent }
       severity: critical
     - id: uses-registry-resource
       text: "Model uses resource: 'registry' (not 'task')"
+      check: { first_call: true, arg: resource, equals: "registry" }
       severity: critical
     - id: uses-delegate-action
       text: "Model uses action: 'delegate'"
+      check: { first_call: true, arg: action, equals: "delegate" }
       severity: critical
     - id: has-name
       text: "Model passes name: 'chief-of-staff'"
+      check: { first_call: true, arg: name, contains: "chief-of-staff" }
       severity: critical
     - id: no-spawn
       text: "Model does NOT use action: 'spawn'"
@@ -28,6 +32,7 @@ prompt_assertions:
   cost:
     - id: single-call
       text: "Task completes in 1 tool call"
+      check: { tool_calls: 1 }
       severity: important
 
 ideal_behavior:

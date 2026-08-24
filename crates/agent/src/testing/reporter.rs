@@ -14,9 +14,17 @@ pub fn print_report(fixture: &Fixture, traces: &[Trace]) {
     );
     println!("  Runs:      {}", n);
 
-    // FCSR
+    // FCSR — a judge-derived metric. With program checks only, printing the
+    // default 0% would mislabel a verified-green run as a failure.
     let graded: Vec<_> = traces.iter().filter_map(|t| t.grade.as_ref()).collect();
-    if !graded.is_empty() {
+    let judge_ran = graded
+        .iter()
+        .any(|g| g.assertions.iter().any(|a| a.mode != super::checks::MODE_VERIFIED));
+    if !graded.is_empty() && !judge_ran {
+        println!();
+        println!("  FCSR / pollution: n/a (program checks only — no judge ran)");
+    }
+    if !graded.is_empty() && judge_ran {
         println!();
         println!("  ═══ FIRST-CALL SUCCESS RATE ═══");
         println!();
@@ -52,8 +60,11 @@ pub fn print_report(fixture: &Fixture, traces: &[Trace]) {
             "significant"
         };
         println!("    Average: {:.2} ({})", avg_poll, label);
+    }
 
-        // Assertions table
+    // Assertions table — prints for program-only runs too (WS1-R4): the
+    // verified rows ARE the result when no judge ran.
+    if !graded.is_empty() {
         if let Some(first_grade) = graded.first() {
             println!();
             println!("  ═══ ASSERTIONS ═══");
@@ -91,13 +102,43 @@ pub fn print_report(fixture: &Fixture, traces: &[Trace]) {
                 } else {
                     0
                 };
+                // Provenance: was this row proven from the trace or opined by
+                // the judge? (WS1-R4)
+                let mode = if assertion.mode == super::checks::MODE_VERIFIED {
+                    "verified"
+                } else {
+                    "judged"
+                };
                 println!(
-                    "  {:<24} {} {:>3}%",
+                    "  {:<24} {} {:>3}%  {}",
                     truncate(&assertion.id, 24),
                     results.join(" "),
-                    rate
+                    rate,
+                    mode
                 );
             }
+
+            // Summary: the two provenances counted separately (WS1-R4).
+            let count = |want_verified: bool, want_passed: bool| {
+                graded
+                    .iter()
+                    .flat_map(|g| g.assertions.iter())
+                    .filter(|a| {
+                        (a.mode == super::checks::MODE_VERIFIED) == want_verified
+                            && a.passed == want_passed
+                    })
+                    .count()
+            };
+            let (vp, vf) = (count(true, true), count(true, false));
+            let (jp, jf) = (count(false, true), count(false, false));
+            println!();
+            println!(
+                "  verified: {}/{} passed · judged: {}/{} passed",
+                vp,
+                vp + vf,
+                jp,
+                jp + jf
+            );
         }
     }
 

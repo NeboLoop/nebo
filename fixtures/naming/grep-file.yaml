@@ -12,9 +12,11 @@ prompt_assertions:
   first_call:
     - id: calls-any-grep
       text: "Model's first call searches file contents — either os(resource: 'file', action: 'grep') or grep(regex: '...') depending on convention"
+      check: { first_call: true, tool: [os, grep] }
       severity: critical
     - id: correct-pattern
       text: "Model passes regex/pattern containing 'TODO'"
+      check: { first_call: true, arg: pattern, contains: "TODO" }
       severity: critical
     - id: not-glob
       text: "Model does NOT use glob/find (which matches filenames, not contents)"
@@ -22,6 +24,7 @@ prompt_assertions:
   cost:
     - id: single-call
       text: "Task completes in 1 tool call"
+      check: { tool_calls: 1 }
       severity: important
 
 ideal_behavior:

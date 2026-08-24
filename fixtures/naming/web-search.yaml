@@ -12,9 +12,11 @@ prompt_assertions:
   first_call:
     - id: calls-any-search
       text: "Model's first call searches the web — either web(action: 'search') or web_search(query: '...') depending on convention"
+      check: { first_call: true, tool: [web, web_search] }
       severity: critical
     - id: has-query
       text: "Model passes a query about rust async runtime"
+      check: { first_call: true, arg: query, matches: "(?i)rust" }
       severity: critical
     - id: not-fetch
       text: "Model does NOT use fetch/http to hit a specific URL"
@@ -22,6 +24,7 @@ prompt_assertions:
   cost:
     - id: single-call
       text: "Task completes in 1 tool call"
+      check: { tool_calls: 1 }
       severity: important
 
 ideal_behavior:

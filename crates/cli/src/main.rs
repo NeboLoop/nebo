@@ -119,6 +119,11 @@ enum TestCommands {
         /// Grader model for LLM-as-judge evaluation
         #[arg(long)]
         grader: Option<String>,
+        /// Never invoke the LLM judge — program checks alone decide.
+        /// Deterministic and dependency-free (no `claude` CLI), so verified
+        /// suites can run in CI. Overrides --grader.
+        #[arg(long)]
+        no_judge: bool,
         /// Number of runs per fixture (for variance measurement)
         #[arg(long, default_value = "1")]
         runs: usize,
@@ -633,7 +638,7 @@ async fn run_chat(
 }
 
 async fn run_test_command(command: TestCommands) -> anyhow::Result<()> {
-    use agent::testing::{engine, fixture, grader, reporter, trace};
+    use agent::testing::{checks, engine, fixture, grader, reporter, trace};
     use std::path::Path;
 
     match command {
@@ -653,6 +658,7 @@ async fn run_test_command(command: TestCommands) -> anyhow::Result<()> {
             overrides,
             model,
             grader: grader_model,
+            no_judge,
             runs,
             server,
             output,
@@ -672,6 +678,9 @@ async fn run_test_command(command: TestCommands) -> anyhow::Result<()> {
             let mut all_candidate_scores: Vec<trace::FixtureScores> = Vec::new();
 
             let mut failed_fixtures: Vec<String> = Vec::new();
+            // Failed CRITICAL program checks — fail the process at the end
+            // (the CI contract: a corrupted trace can never exit 0).
+            let mut critical_check_failures: Vec<String> = Vec::new();
 
             for fix in &fixtures {
                 println!("Running fixture: {} ({}x)", fix.id, runs);
@@ -685,10 +694,66 @@ async fn run_test_command(command: TestCommands) -> anyhow::Result<()> {
                     }
                 };
 
-                if let Some(ref grader_model) = grader_model {
+                // Program checks first — deterministic, from the trace, before
+                // any judge. A malformed matcher fails the RUN (never open);
+                // a failed critical check fails the fixture regardless of the
+                // judge's verdict (WS1-R2).
+                for trace in &mut traces {
+                    let verified = checks::evaluate_fixture_checks(fix, trace)
+                        .map_err(|e| anyhow::anyhow!("fixture {}: {}", fix.id, e))?;
+                    if verified.is_empty() {
+                        continue;
+                    }
+                    for v in &verified {
+                        if !v.passed {
+                            let critical = fix
+                                .prompt_assertions
+                                .all()
+                                .into_iter()
+                                .chain(fix.integrated_assertions.iter())
+                                .any(|a| a.id == v.id && a.severity == fixture::Severity::Critical);
+                            if critical {
+                                critical_check_failures
+                                    .push(format!("{} / {}: {}", fix.id, v.id, v.evidence));
+                            }
+                        }
+                    }
+                    match &mut trace.grade {
+                        Some(g) => {
+                            let mut merged = verified.clone();
+                            merged.extend(g.assertions.drain(..));
+                            g.assertions = merged;
+                        }
+                        None => {
+                            trace.grade = Some(trace::GradeResult {
+                                assertions: verified,
+                                // Judge-derived metrics: honest zero until a
+                                // judge runs; the reporter labels the modes.
+                                first_call_success_rate: 0.0,
+                                context_pollution_score: 0.0,
+                                tool_quality: Vec::new(),
+                                model_behavior: Vec::new(),
+                                overall_notes: String::new(),
+                            });
+                        }
+                    }
+                }
+
+                if let Some(ref grader_model) = grader_model.as_ref().filter(|_| !no_judge) {
                     for trace in &mut traces {
                         match grader::grade(trace, fix, &server, grader_model).await {
-                            Ok(grade) => trace.grade = Some(grade),
+                            Ok(grade) => match &mut trace.grade {
+                                // Keep the verified rows in front of the judged ones.
+                                Some(existing) => {
+                                    existing.assertions.extend(grade.assertions);
+                                    existing.first_call_success_rate = grade.first_call_success_rate;
+                                    existing.context_pollution_score = grade.context_pollution_score;
+                                    existing.tool_quality = grade.tool_quality;
+                                    existing.model_behavior = grade.model_behavior;
+                                    existing.overall_notes = grade.overall_notes;
+                                }
+                                None => trace.grade = Some(grade),
+                            },
                             Err(e) => eprintln!("  grading failed: {}", e),
                         }
                     }
@@ -727,6 +792,12 @@ async fn run_test_command(command: TestCommands) -> anyhow::Result<()> {
 
             if !failed_fixtures.is_empty() {
                 eprintln!("\n  {} fixture(s) failed: {}", failed_fixtures.len(), failed_fixtures.join(", "));
+            }
+            if !critical_check_failures.is_empty() {
+                eprintln!("\n  {} critical program check(s) FAILED:", critical_check_failures.len());
+                for f in &critical_check_failures {
+                    eprintln!("    ✗ {}", f);
+                }
             }
 
             if let Some(ref exp_name) = experiment {
@@ -767,6 +838,15 @@ async fn run_test_command(command: TestCommands) -> anyhow::Result<()> {
                         .map_err(|e| anyhow::anyhow!(e))?;
                     println!("  History updated: {}/history.jsonl", output_dir);
                 }
+            }
+
+            // The CI contract: reports and artifacts are written above, but a
+            // failed critical program check can never exit 0 (WS1-R2).
+            if !critical_check_failures.is_empty() {
+                anyhow::bail!(
+                    "{} critical program check(s) failed",
+                    critical_check_failures.len()
+                );
             }
         }
     }
