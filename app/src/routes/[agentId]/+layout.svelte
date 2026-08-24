@@ -1159,8 +1159,12 @@
         {#if sortedWorkrooms.length > 0}
           {#each sortedWorkrooms as room (room.channelId)}
             {@const faces = roomFaces(room)}
+            <!-- Margin lives on the wrapper, width on the button — w-full plus
+                 mx on the same box overflows the column and summons a
+                 scrollbar on hover (the row "jump"). -->
+            <div class="mx-1.5">
             <button
-              class="group/room w-full flex items-center gap-2.5 py-2 px-2.5 mx-1.5 cursor-pointer transition-colors text-left bg-transparent {roomParam === room.channelId
+              class="group/room w-full flex items-center gap-2.5 py-2 px-2.5 cursor-pointer transition-colors text-left bg-transparent {roomParam === room.channelId
                 ? 'rounded-box border border-primary/30 bg-primary/10 shadow-sm'
                 : 'rounded-box border border-transparent hover:bg-base-100/70'}"
               onclick={() => openRoom(room.channelId)}
@@ -1186,6 +1190,7 @@
                 <div class="text-xs text-base-content/60 truncate">{room.mission || $t('workrooms.membersCount', { values: { count: room.memberAgentIds.length } })}</div>
               </div>
             </button>
+            </div>
           {/each}
         {:else}
           <!-- The section teaches what rooms ARE before the first one exists —
