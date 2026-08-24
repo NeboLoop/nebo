@@ -30,7 +30,8 @@ export type ActivityType =
 	| 'greeting'
 	| 'intent'
 	| 'transfer'
-	| 'take_message';
+	| 'take_message'
+	| 'disclosures';
 
 // ── Type definition ──────────────────────────────────────────────────
 export interface ActivityTypeDefinition {
@@ -149,6 +150,14 @@ export const ACTIVITY_TYPES: Record<ActivityType, ActivityTypeDefinition> = {
 				type: 'textarea',
 				placeholder: 'Caller asks for a person, is upset, or has an emergency',
 			},
+			{
+				key: 'to',
+				label: 'Connects to',
+				type: 'text',
+				placeholder: 'our office manager',
+				description:
+					'Who the caller is told they are being connected to. The number itself stays in the line settings.',
+			},
 		],
 	},
 	take_message: {
@@ -165,6 +174,26 @@ export const ACTIVITY_TYPES: Record<ActivityType, ActivityTypeDefinition> = {
 				label: 'What to capture',
 				type: 'text',
 				placeholder: 'name, number, reason for calling, best time to call back',
+			},
+		],
+	},
+	disclosures: {
+		type: 'disclosures',
+		label: 'May share',
+		description: 'Facts this line states directly, without a lookup',
+		icon: '☑',
+		accentClass: 'border-success',
+		defaultSkills: [],
+		defaultSteps: [],
+		parameters: [
+			{
+				key: 'text',
+				label: 'Approved information',
+				type: 'textarea',
+				placeholder:
+					'Open Mon–Fri 8–5. Located at 123 Main St. Cleanings start at $120.',
+				description:
+					'The owner-approved public facts for this line — hours, address, service area, base pricing. Customer or account specifics are never listed here; those go through a lookup.',
 			},
 		],
 	},

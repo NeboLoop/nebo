@@ -57,7 +57,8 @@ Then execute every test in plan.md, section by section, in order:
 10. Coworkers (CW-01 through CW-05) — ALL 5
 11. Timers (TM-01 through TM-06) — ALL 6 (start TM-01/02 early; they wait on the clock)
 12. Plugins (P-01 through P-05) — ALL 5
-13. Cleanup
+13. Phone & Call Trees (PH-01 through PH-03) — ALL 3 (no live carrier call needed; assembly + grants are deterministic)
+14. Cleanup
 
 For agent tool tests: use the tool calls exactly as specified in the plan.
 For REST API tests: use os(resource: "shell", action: "exec", command: "curl ...") to call the API.

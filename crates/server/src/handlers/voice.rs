@@ -219,7 +219,7 @@ fn wav_from_pcm16_mono_24k(pcm: &[u8]) -> Vec<u8> {
 /// Runner stays the ONE brain: full harness, full tool loop, same policy
 /// engine — and the voice model just narrates the result. Never re-expose the
 /// raw registry here; that recreates a second, untuned tool pathway.
-fn voice_tools(transfer: bool, intents: &[String]) -> Vec<serde_json::Value> {
+fn voice_tools(transfer: bool, telephony: bool, intents: &[String]) -> Vec<serde_json::Value> {
     let mut nebo_params = serde_json::json!({
         "type": "object",
         "properties": {
@@ -252,6 +252,25 @@ fn voice_tools(transfer: bool, intents: &[String]) -> Vec<serde_json::Value> {
                         completed result for you to relay aloud.",
         "parameters": nebo_params
     })];
+    if telephony {
+        // A phone employee must be able to put the receiver down — without
+        // this tool, every call ended only when the CALLER gave up and hung
+        // up, with the line burning per-minute cost in silence.
+        tools.push(serde_json::json!({
+            "type": "function",
+            "name": "end_call",
+            "description": "Hang up this call. Use it AFTER your goodbye has been said —                             when the conversation is complete, the caller says goodbye,                             you've finished leaving a voicemail, or nothing remains to do.                             Never leave the line open waiting for the caller to hang up.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "summary": {
+                        "type": "string",
+                        "description": "One line on how the call ended."
+                    }
+                }
+            }
+        }));
+    }
     if transfer {
         // Only declared when the line HAS an owner-set target — a tool the
         // model can see but that goes nowhere is exactly the broken promise
@@ -304,7 +323,15 @@ struct CallTree {
     greeting: String,
     intents: Vec<TreeIntent>,
     has_transfer: bool,
+    /// Who the transfer connects to, for speech ("our office manager",
+    /// "the on-call tech"). The NUMBER stays in the line's bridge config —
+    /// the tree names the person, never dials.
+    transfer_target: String,
     take_message_fields: String,
+    /// Facts this line may state directly — the owner-approved public
+    /// information (hours, address, service area, base pricing). Anything
+    /// else about customers or accounts goes through the nebo tool.
+    disclosures: String,
 }
 
 /// Find the agent's active call tree for a line: exact label match wins,
@@ -412,14 +439,39 @@ fn resolve_call_tree(state: &AppState, agent_id: &str, line: &str) -> Option<Cal
     }
 
     let has_transfer = binding.activities.iter().any(|a| a.activity_type == "transfer");
+    let transfer_target = binding
+        .activities
+        .iter()
+        .find(|a| a.activity_type == "transfer")
+        .map(|a| {
+            let t = param_str(a, "to");
+            if t.is_empty() { param_str(a, "target") } else { t }
+        })
+        .unwrap_or_default();
     let take_message_fields = binding
         .activities
         .iter()
         .find(|a| a.activity_type == "take_message")
         .map(|a| param_str(a, "fields"))
         .unwrap_or_default();
+    let disclosures = binding
+        .activities
+        .iter()
+        .find(|a| a.activity_type == "disclosures")
+        .map(|a| {
+            let t = param_str(a, "text");
+            if t.is_empty() { a.intent.clone() } else { t }
+        })
+        .unwrap_or_default();
 
-    Some(CallTree { greeting, intents, has_transfer, take_message_fields })
+    Some(CallTree {
+        greeting,
+        intents,
+        has_transfer,
+        transfer_target,
+        take_message_fields,
+        disclosures,
+    })
 }
 
 /// Who is on the line when the speaker is NOT the owner: the agent that
@@ -646,6 +698,27 @@ async fn handle_conversation_ws(mut socket: WebSocket, state: AppState, mut q: C
         instructions.push_str(soul.trim());
         instructions.push_str("\n\n---\n\n");
     }
+    // The persona is the employee's OPERATING INSTRUCTIONS — pricing rules,
+    // qualification scripts, escalation paths. With soul alone the call knows
+    // WHO it is but not HOW this business runs, and answers thin exactly
+    // where a wrong answer is a claims problem (pricing, availability).
+    // Frontmatter is config, not prose — only the body rides. Capped:
+    // realtime context is identity + operating rules; bulk knowledge stays
+    // behind the `nebo` tool.
+    if let Some(agent) = agent_row.as_ref() {
+        let body = napp::agent::split_frontmatter(&agent.agent_md)
+            .map(|(_, b)| b)
+            .unwrap_or_else(|_| agent.agent_md.clone());
+        let body = body.trim();
+        if !body.is_empty() {
+            instructions.push_str(clip_at_char_boundary(body, VOICE_PERSONA_CHAR_CAP));
+            instructions.push_str("\n\n---\n\n");
+        }
+        if let Some(rules) = agent.rules.as_deref().filter(|r| !r.trim().is_empty()) {
+            instructions.push_str(rules.trim());
+            instructions.push_str("\n\n---\n\n");
+        }
+    }
     let telephony = q.telephony.is_some();
     let outbound = q.direction.as_deref() == Some("outbound");
     // The line's call tree, when the owner designed one: the greeting, the
@@ -675,7 +748,10 @@ async fn handle_conversation_ws(mut socket: WebSocket, state: AppState, mut q: C
                        tool to note that you left a voicemail, and end the call. \
                        If the person says to stop calling, remove them, or not to call again: \
                        apologize once, confirm they won't be called again, use the `nebo` tool to \
-                       run `phonecall optout` for their number, and end the call politely. \
+                       run `phonecall optout` for their number, then say a brief goodbye and use \
+                       the end_call tool. \
+                       YOU hang up when the call is done: say your goodbye, then use the \
+                       end_call tool — never leave the line open. \
                        Never claim to be human; if asked, say plainly that you're an AI assistant.",
         );
         if let Some(biz) = q.business.as_deref().filter(|s| !s.is_empty()) {
@@ -703,6 +779,9 @@ async fn handle_conversation_ws(mut socket: WebSocket, state: AppState, mut q: C
                        For ANYTHING that needs real data or action (calendar, messages, records, \
                        lookups), call the `nebo` tool and relay its result aloud — never guess. \
                        Tell the caller you're checking while it works. \
+                       When the call is complete — the caller says goodbye, or their need is \
+                       handled and nothing remains — say a brief goodbye and use the end_call \
+                       tool to hang up. Never leave the line open waiting for the caller. \
                        Never claim to be human; if asked, say plainly that you're an AI \
                        assistant for the business.",
         );
@@ -736,6 +815,16 @@ async fn handle_conversation_ws(mut socket: WebSocket, state: AppState, mut q: C
                     tree.take_message_fields
                 ));
             }
+            if !tree.disclosures.is_empty() {
+                instructions.push_str(&format!(
+                    "\n\nYou may state the following directly when asked — this is the \
+                     owner-approved public information for this line:\n{}\n\
+                     Anything about a specific customer, account, or order is NOT in \
+                     this list: look it up with the nebo tool instead of answering \
+                     from assumption.",
+                    tree.disclosures
+                ));
+            }
         }
         // Only promise what this line can actually do. A transfer offer with
         // no target behind it is the exact broken promise callers complained
@@ -745,11 +834,16 @@ async fn handle_conversation_ws(mut socket: WebSocket, state: AppState, mut q: C
         let offer_transfer =
             q.transfer.is_some() && call_tree.as_ref().is_none_or(|t| t.has_transfer);
         if offer_transfer {
-            instructions.push_str(
+            let target = call_tree
+                .as_ref()
+                .map(|t| t.transfer_target.as_str())
+                .filter(|t| !t.is_empty())
+                .unwrap_or("the business's human line");
+            instructions.push_str(&format!(
                 "\n\nIf the caller asks for a person, needs a human, or you can't help: say \
-                 one brief handoff sentence, then use the transfer_call tool to connect them \
-                 to the business's human line.",
-            );
+                 one brief handoff sentence naming who you're connecting them to \
+                 ({target}), then use the transfer_call tool."
+            ));
         } else {
             instructions.push_str(
                 "\n\nYou CANNOT transfer or forward calls — do not offer to. If the caller \
@@ -771,7 +865,14 @@ async fn handle_conversation_ws(mut socket: WebSocket, state: AppState, mut q: C
             ));
         }
         if let Some(from) = q.caller_id.as_deref().filter(|s| !s.is_empty()) {
-            instructions.push_str(&format!("\n\nThe caller is phoning from {from}."));
+            instructions.push_str(&format!(
+                "\n\nThe caller is phoning from {from}. \
+                 Customer records live in the business's CRM, not in your head: \
+                 when you need to know who this caller is or anything about their \
+                 account, history, or orders, use the `nebo` tool to look them up \
+                 by this number — tell them you're pulling up their information \
+                 while it works — and never guess or invent customer details."
+            ));
         }
     } else {
         instructions.push_str(
@@ -805,7 +906,7 @@ async fn handle_conversation_ws(mut socket: WebSocket, state: AppState, mut q: C
         endpoint,
         bearer,
         bot_id: q.agent_id.clone(),
-        tools: voice_tools(declare_transfer, &tree_intents),
+        tools: voice_tools(declare_transfer, telephony, &tree_intents),
         instructions,
         replace,
         keyterms,
@@ -1255,6 +1356,36 @@ async fn handle_conversation_session(
                         // which raises Escalate to the gateway; NeboAI
                         // redirects the live leg to the line's owner-set
                         // target. Only ever declared when the line has one.
+                        // `end_call` is a session tool: ack it, tell the
+                        // bridge, and let the bridge drain the goodbye audio
+                        // before it sends CallEnd to the gateway.
+                        if name == "end_call" && caller_ctx.is_some() {
+                            let summary = decode_tool_arguments(&arguments)
+                                .get("summary")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            info!(summary = %summary, "employee ending the call");
+                            pending_tools += 1;
+                            let _ = tool_done_tx
+                                .send((
+                                    call_id,
+                                    serde_json::json!({
+                                        "ok": true,
+                                        "content": "Call ended."
+                                    })
+                                    .to_string(),
+                                ))
+                                .await;
+                            let _ = socket
+                                .send(Message::Text(
+                                    serde_json::json!({"type": "end_call", "summary": summary})
+                                        .to_string()
+                                        .into(),
+                                ))
+                                .await;
+                            continue;
+                        }
                         if name == "transfer_call" && caller_ctx.is_some() {
                             let summary = decode_tool_arguments(&arguments)
                                 .get("summary")
@@ -1437,6 +1568,38 @@ async fn handle_conversation_session(
         }
         if !agent_partial.trim().is_empty() {
             relay_loop_turn(&state, conv, stream, "assistant", agent_partial.trim());
+        }
+    }
+}
+
+/// Character cap for the persona body in a realtime session. The realtime
+/// context is for identity + operating rules — bulk knowledge stays behind
+/// the `nebo` tool, where a delegated run has the full toolset.
+const VOICE_PERSONA_CHAR_CAP: usize = 8_000;
+
+/// Clip at a char boundary at or below `cap` bytes (never splits a code point).
+fn clip_at_char_boundary(s: &str, cap: usize) -> &str {
+    if s.len() <= cap {
+        return s;
+    }
+    let mut end = cap;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
+#[cfg(test)]
+mod voice_prompt_tests {
+    use super::*;
+
+    #[test]
+    fn clip_never_splits_a_code_point() {
+        let s = "café-persona-…";
+        for cap in 0..=s.len() {
+            let c = clip_at_char_boundary(s, cap);
+            assert!(c.len() <= cap.max(0));
+            assert!(s.starts_with(c));
         }
     }
 }

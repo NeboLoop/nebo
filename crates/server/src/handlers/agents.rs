@@ -3737,8 +3737,12 @@ pub async fn start_workflow_chat(
            comma-separated strings — tools e.g. \"agent:memory, os:calendar\", workflows \
            (this agent's workflow names), plugins (slugs), mcp (server names)). Grants are \
            ENFORCED: a caller in that intent can touch nothing else.\n\
-         - transfer (params: when — needs the line's owner-set transfer number to work)\n\
+         - transfer (params: when; to — WHO the caller is told they're being connected \
+           to, e.g. \"our office manager\". Needs the line's owner-set transfer number to work)\n\
          - take_message (params: fields — the fallback for everything unmatched)\n\
+         - disclosures (params: text — the owner-approved public facts this line may state \
+           directly: hours, address, service area, base pricing. NEVER customer or account \
+           specifics — those go through an intent's granted lookup)\n\
          Create one with: {{\"op\":\"create_workflow\",\"name\":NAME,\"workflow\":{{\"type\":\"call_tree\",\
          \"trigger\":{{\"type\":\"call\",\"line\":\"Front Desk\"}}}}}} then add_activity the nodes. \
          Grant the MINIMUM each intent needs — the grants are a security boundary, not decoration.\n\n\

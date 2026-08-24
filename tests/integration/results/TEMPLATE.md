@@ -1135,7 +1135,29 @@
 
 ---
 
-## Section 15: Cleanup
+## Section 15: Phone & Call Trees (PH)
+
+### PH-01: Instruction Assembly
+
+| Check | Expected | Result | Notes |
+|-------|----------|--------|-------|
+| soul→persona→rules order; greeting exact; intents only; transfer names target; disclosures bounded; CRM steering | | | |
+
+### PH-02: Per-Intent Grants
+
+| Check | Expected | Result | Notes |
+|-------|----------|--------|-------|
+| crm intent sees mcp__crm__* + floor only; others don't; fallback = floor | | | |
+
+### PH-03: Line Resolution
+
+| Check | Expected | Result | Notes |
+|-------|----------|--------|-------|
+| Exact > catch-all; inactive never; no tree = generic manners | | | |
+
+---
+
+## Section 16: Cleanup
 
 | Artifact | Cleanup Action | Done | Notes |
 |----------|----------------|------|-------|
@@ -1180,7 +1202,8 @@
 | Shell Surfaces (SH) | 6 | | | | |
 | Coworkers (CW) | 5 | | | | |
 | Timers (TM) | 6 | | | | |
-| **Total** | **140** | | | | |
+| Phone (PH) | 3 | | | | |
+| **Total** | **143** | | | | |
 
 ## Regressions from Previous Run
 

@@ -195,8 +195,9 @@ export const NODE_CATALOG_ITEMS = [
     items: [
       { type: 'activity-greeting', label: 'Greeting', desc: 'What the line says when it answers', icon: '☎' },
       { type: 'activity-intent', label: 'Intent', desc: 'One job + its allowed tools', icon: '⌁' },
-      { type: 'activity-transfer', label: 'Transfer to human', desc: 'Live handoff to the transfer number', icon: '➦' },
+      { type: 'activity-transfer', label: 'Transfer to human', desc: 'Live handoff — name who it connects to', icon: '➦' },
       { type: 'activity-take_message', label: 'Take a message', desc: 'Capture a message (the fallback)', icon: '✉' },
+      { type: 'activity-disclosures', label: 'May share', desc: 'Facts this line states directly (hours, address, pricing)', icon: '☑' },
     ],
   },
   {

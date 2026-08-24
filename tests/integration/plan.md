@@ -2440,7 +2440,45 @@ nebo chat "use skill(action: \"discover\", query: \"slack\")"
 
 ---
 
-## Section 15: Cleanup
+## Section 15: Phone & Call Trees (PH)
+
+The line's whole job description is the call tree; enforcement is code.
+
+### PH-01: Instruction Assembly (deterministic, no live call)
+
+Build a call tree with greeting, two intents (one granting `mcp: "crm"`),
+transfer (with `to`), take_message, and disclosures. Open a telephony voice
+session (wss /voice/conversation?telephony=1&...) and capture the realtime
+config (or unit-drive the assembly).
+
+| Check | Expected | Result |
+|-------|----------|--------|
+| Identity | soul THEN persona body (frontmatter stripped, capped) THEN rules | |
+| Greeting | Exact tree greeting quoted in instructions | |
+| Intents | Both listed with names + descriptions; nothing else offered | |
+| Transfer | Offer names the tree's `to` target; absent tree/transfer ⇒ explicit CANNOT-transfer + take-message | |
+| Disclosures | Approved facts listed; customer/account data explicitly excluded → nebo lookup | |
+| Caller id | Number stated + CRM-lookup steering (never guess customer details) | |
+
+### PH-02: Per-Intent Grants Are a Boundary
+
+| Check | Expected | Result |
+|-------|----------|--------|
+| Intent with `mcp: "crm"` | Delegated run sees `mcp__crm__*` + caller floor, NOTHING else | |
+| Other intent | No CRM tools; its own grants only | |
+| No matching intent | Take-message path, no tool access beyond the floor | |
+
+### PH-03: Line Resolution
+
+| Check | Expected | Result |
+|-------|----------|--------|
+| Exact line label | Wins over the empty-line catch-all | |
+| Inactive binding | Never resolves | |
+| No tree | Generic telephony manners, no invented greeting/intents | |
+
+---
+
+## Section 16: Cleanup
 
 After all tests, remove test artifacts:
 
