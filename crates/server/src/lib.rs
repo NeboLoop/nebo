@@ -3087,6 +3087,8 @@ fn sync_agent_workflows(store: &db::Store, agent_id: &str, config: &napp::agent:
             binding.emit.as_deref(),
             activities_json.as_deref(),
             connections_json.as_deref(),
+            // Package sync — owner-modified rows are off limits.
+            false,
         );
     }
 }

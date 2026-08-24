@@ -1276,6 +1276,8 @@ pub async fn process_agent_bindings(
             binding.emit.as_deref(),
             activities_json.as_deref(),
             connections_json.as_deref(),
+            // Package content (install/activate) — owner rows are off limits.
+            false,
         ) {
             warn!(agent = agent_id, binding = %binding_name, error = %e, "failed to upsert agent workflow");
             report.push(serde_json::json!({
@@ -2505,6 +2507,7 @@ pub async fn duplicate_agent(
             wf.emit.as_deref(),
             activities_str.as_deref(),
             connections_str.as_deref(),
+            true,
         );
     }
 
@@ -2950,6 +2953,7 @@ pub async fn create_agent_workflow(
             emit_val,
             activities_json.as_deref(),
             connections_json.as_deref(),
+            true,
         )
         .map_err(to_error_response)?;
 
@@ -3106,6 +3110,7 @@ pub async fn update_agent_workflow(
             emit_val,
             activities_json.as_deref(),
             connections_json.as_deref(),
+            true,
         )
         .map_err(to_error_response)?;
 

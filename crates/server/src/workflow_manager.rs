@@ -2377,6 +2377,7 @@ async fn save_binding(
                     emit,
                     activities_json.as_deref(),
                     connections_json.as_deref(),
+                    true,
                 )
                 .map_err(|e| format!("upsert_agent_workflow: {}", e))?;
 
@@ -2486,6 +2487,8 @@ pub(crate) fn apply_workflow_binding(
             emit,
             activities_json.as_deref(),
             connections_json.as_deref(),
+            // Applied proposals and tuning are live changes to this instance.
+            true,
         )
         .map_err(|e| format!("upsert_agent_workflow: {}", e))?;
 

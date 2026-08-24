@@ -388,6 +388,12 @@ impl Store {
 
     // ── Agent Workflow Bindings ──
 
+    /// `owner_modified` says who is writing: `true` for the owner's surfaces
+    /// (API PUT/POST, the work tool) — the write always lands and flags the
+    /// row; `false` for package sync (boot FS→DB, legacy migration) — the
+    /// write lands only on rows the owner has never touched. A cloud bot's
+    /// image roll re-extracts the packaged agent.json, and an unconditional
+    /// upsert silently reverted live owner edits on every restart.
     pub fn upsert_agent_workflow(
         &self,
         agent_id: &str,
@@ -399,12 +405,13 @@ impl Store {
         emit: Option<&str>,
         activities: Option<&str>,
         connections: Option<&str>,
+        owner_modified: bool,
     ) -> Result<(), NeboError> {
         let conn = self.conn()?;
         conn.execute(
             "INSERT INTO agent_workflows (agent_id, binding_name,
-                    trigger_type, trigger_config, description, inputs, emit, activities, connections)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                    trigger_type, trigger_config, description, inputs, emit, activities, connections, owner_modified)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
              ON CONFLICT(agent_id, binding_name) DO UPDATE SET
                 trigger_type = excluded.trigger_type,
                 trigger_config = excluded.trigger_config,
@@ -412,9 +419,12 @@ impl Store {
                 inputs = excluded.inputs,
                 emit = excluded.emit,
                 activities = excluded.activities,
-                connections = excluded.connections",
+                connections = excluded.connections,
+                owner_modified = MAX(agent_workflows.owner_modified, excluded.owner_modified)
+             WHERE agent_workflows.owner_modified = 0 OR excluded.owner_modified = 1",
             params![agent_id, binding_name,
-                    trigger_type, trigger_config, description, inputs, emit, activities, connections],
+                    trigger_type, trigger_config, description, inputs, emit, activities, connections,
+                    owner_modified as i64],
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;
         Ok(())
@@ -743,4 +753,62 @@ fn row_to_agent(row: &rusqlite::Row) -> rusqlite::Result<Agent> {
         voice: row.get(24)?,
         name_locked: row.get(25)?,
     })
+}
+
+#[cfg(test)]
+mod owner_modified_tests {
+    use crate::Store;
+
+    fn store() -> Store {
+        let path = std::env::temp_dir()
+            .join(format!("nebo-wfown-test-{}.db", uuid::Uuid::new_v4()));
+        let s = Store::new(&path.to_string_lossy()).expect("store");
+        s.create_agent("a1", None, "Test", "", "", "{}", None, None)
+            .expect("agent row");
+        s
+    }
+
+    fn activities(s: &Store) -> String {
+        s.list_agent_workflows("a1").unwrap()[0]
+            .activities
+            .as_ref()
+            .map(|v| v.to_string())
+            .unwrap_or_default()
+    }
+
+    /// The Biss incident: a pod restart re-synced the packaged agent.json
+    /// over a live owner restructure. Package sync (owner_modified=false)
+    /// must never touch a row the owner has written.
+    #[test]
+    fn package_sync_cannot_clobber_owner_edits() {
+        let s = store();
+        // Package install seeds the binding.
+        s.upsert_agent_workflow("a1", "order-intake", "watch", "{}", None, None, None,
+            Some(r#"[{"id":"v1"}]"#), None, false).unwrap();
+        assert!(activities(&s).contains("v1"));
+        // Owner restructures it.
+        s.upsert_agent_workflow("a1", "order-intake", "watch", "{}", None, None, None,
+            Some(r#"[{"id":"v2-owner"}]"#), None, true).unwrap();
+        // Boot re-sync from the packaged file: must be a no-op.
+        s.upsert_agent_workflow("a1", "order-intake", "watch", "{}", None, None, None,
+            Some(r#"[{"id":"v1"}]"#), None, false).unwrap();
+        assert!(activities(&s).contains("v2-owner"), "package sync reverted an owner edit");
+        // A later owner edit still lands.
+        s.upsert_agent_workflow("a1", "order-intake", "watch", "{}", None, None, None,
+            Some(r#"[{"id":"v3-owner"}]"#), None, true).unwrap();
+        assert!(activities(&s).contains("v3-owner"));
+    }
+
+    /// Untouched package rows keep following the package.
+    #[test]
+    fn package_sync_still_updates_pristine_rows() {
+        let s = store();
+        s.upsert_agent_workflow("a1", "daily-brief", "schedule", "0 0 8 * * * *", None, None, None,
+            Some(r#"[{"id":"pkg1"}]"#), None, false).unwrap();
+        s.upsert_agent_workflow("a1", "daily-brief", "schedule", "0 0 9 * * * *", None, None, None,
+            Some(r#"[{"id":"pkg2"}]"#), None, false).unwrap();
+        let rows = s.list_agent_workflows("a1").unwrap();
+        assert_eq!(rows[0].trigger_config, "0 0 9 * * * *");
+        assert!(activities(&s).contains("pkg2"));
+    }
 }

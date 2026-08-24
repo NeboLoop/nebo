@@ -1002,6 +1002,7 @@ impl PersonaTool {
                                 binding.emit.as_deref(),
                                 activities_json.as_deref(),
                                 connections_json.as_deref(),
+                                true,
                             );
                         }
                     }
@@ -1486,16 +1487,22 @@ impl PersonaTool {
                 let normalized = Self::normalize_cron(&binding.trigger_config);
                 if normalized != binding.trigger_config {
                     // Update agent_workflows
+                    // Pass the row's own values back — upsert overwrites every
+                    // column, and None here would erase a workflow's activity
+                    // graph just to repair its cron.
+                    let activities_str = binding.activities.as_ref().map(|v| v.to_string());
+                    let connections_str = binding.connections.as_ref().map(|v| v.to_string());
                     if let Err(e) = self.store.upsert_agent_workflow(
                         &agent.id,
                         &binding.binding_name,
                         "schedule",
                         &normalized,
                         binding.description.as_deref(),
-                        None,
-                        None,
-                        None,
-                        None,
+                        binding.inputs.as_deref(),
+                        binding.emit.as_deref(),
+                        activities_str.as_deref(),
+                        connections_str.as_deref(),
+                        true,
                     ) {
                         fixes.push(format!(
                             "FAILED {}/{}: {} ({})",
@@ -1711,6 +1718,7 @@ impl PersonaTool {
                 binding.emit.as_deref(),
                 activities_json.as_deref(),
                 connections_json.as_deref(),
+                true,
             ) {
                 warn!(agent = agent_id, binding = %binding_name, error = %e, "failed to upsert agent workflow");
             }

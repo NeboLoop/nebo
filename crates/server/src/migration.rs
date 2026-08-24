@@ -490,6 +490,7 @@ pub fn migrate_orphaned_agent_crons(store: &db::Store) {
                     None,
                     Some(&activities.to_string()),
                     None,
+                    false,
                 )
                 .is_err()
             {
