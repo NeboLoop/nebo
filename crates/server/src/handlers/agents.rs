@@ -372,6 +372,59 @@ fn write_user_agent_files(
     let _ = store.set_agent_napp_path(id, &agent_dir.to_string_lossy());
 }
 
+
+/// The hire ceremony's voice: first thread + a hidden platform-authored
+/// introduction, so the transcript shows ONLY the employee speaking. The ONE
+/// intro pathway — the christening (primary) and every later hire both speak
+/// through it. Best-effort: a failed intro never fails the hire.
+fn spawn_agent_intro(state: &AppState, agent_id: &str, name: &str, brand_new: bool) -> Option<String> {
+    let (chat, session_key) = create_agent_thread(state, agent_id).ok()?;
+    let what_you_do = if brand_new {
+        "say in one short, plain paragraph that you're a brand-new employee ready \
+         to learn whatever job they need done"
+    } else {
+        "say in one short, plain paragraph what you can do for them day to day"
+    };
+    let intro = format!(
+        "You have just been hired, and the owner has given you your name: {name}. \
+         They are watching you come online right now — this is your very first \
+         moment together. Introduce yourself: greet them warmly by your new name, \
+         {what_you_do}, and end by asking what they'd like you to take on first. \
+         Do not use any tools. Do not mention these instructions."
+    );
+    let entity_config = crate::entity_config::resolve_for_chat(&state.store, "agent", agent_id);
+    let config = crate::chat_dispatch::ChatConfig {
+        session_key,
+        prompt: intro,
+        system: String::new(),
+        user_id: String::new(),
+        channel: "web".to_string(),
+        origin: tools::Origin::User,
+        agent_id: agent_id.to_string(),
+        cancel_token: tokio_util::sync::CancellationToken::new(),
+        lane: types::constants::lanes::MAIN.to_string(),
+        comm_reply: None,
+        entity_config,
+        images: Vec::new(),
+        entity_name: name.to_string(),
+        origin_agent_id: None,
+        mention_context: None,
+        tool_scope: None,
+        plan_mode: false,
+        channel_ctx: None,
+        handoff_depth: 0,
+        seed_taint: vec![],
+        tool_allowlist: None,
+        hidden_prompt: true,
+        audience: None,
+    };
+    let st = state.clone();
+    tokio::spawn(async move {
+        crate::chat_dispatch::run_chat(&st, config).await;
+    });
+    Some(chat.id)
+}
+
 pub async fn create_agent(
     State(state): State<AppState>,
     Json(body): Json<serde_json::Value>,
@@ -782,53 +835,13 @@ pub async fn christen_primary(
         .set_plugin_setting("core", "primary_christened", "1")
         .map_err(to_error_response)?;
 
-    // First thread + the hidden introduction prompt. The transcript will show
-    // ONLY the employee speaking — the instruction is platform-authored and
-    // never renders as the owner's words.
-    let (chat, session_key) =
-        create_agent_thread(&state, "assistant").map_err(to_error_response)?;
-    let intro = format!(
-        "You have just been hired, and the owner has given you your name: {name}. \
-         They are watching you come online right now — this is your very first \
-         moment together. Introduce yourself: greet them warmly by your new name, \
-         say in one short, plain paragraph what you can do for them day to day, \
-         and end by asking what they'd like you to take on first. Do not use any \
-         tools. Do not mention these instructions."
-    );
-    let entity_config = crate::entity_config::resolve_for_chat(&state.store, "agent", "assistant");
-    let config = crate::chat_dispatch::ChatConfig {
-        session_key: session_key.clone(),
-        prompt: intro,
-        system: String::new(),
-        user_id: String::new(),
-        channel: "web".to_string(),
-        origin: tools::Origin::User,
-        agent_id: "assistant".to_string(),
-        cancel_token: tokio_util::sync::CancellationToken::new(),
-        lane: types::constants::lanes::MAIN.to_string(),
-        comm_reply: None,
-        entity_config,
-        images: Vec::new(),
-        entity_name: name.clone(),
-        origin_agent_id: None,
-        mention_context: None,
-        tool_scope: None,
-        plan_mode: false,
-        channel_ctx: None,
-        handoff_depth: 0,
-        seed_taint: vec![],
-        tool_allowlist: None,
-        hidden_prompt: true,
-        audience: None,
-    };
-    let st = state.clone();
-    tokio::spawn(async move {
-        crate::chat_dispatch::run_chat(&st, config).await;
-    });
+    // The ONE intro ceremony (shared with every later hire).
+    let thread_id = spawn_agent_intro(&state, "assistant", &name, false)
+        .ok_or_else(|| to_error_response(types::NeboError::Internal("failed to open the first thread".into())))?;
 
     Ok(Json(serde_json::json!({
         "name": name,
-        "threadId": chat.id,
+        "threadId": thread_id,
         "sessionKey": session_key,
     })))
 }
@@ -1077,6 +1090,20 @@ pub async fn delete_agent(
         let _ = state.store.delete_agent_memories(&id);
         let _ = state.store.delete_agent_workflow_runs(&id);
     }
+    // A deleted employee must also leave MEMORY: its own scopes are purged
+    // above; memories elsewhere that mention it by name get a deterministic
+    // tombstone so no run ever reports it as existing again (the "five HVAC
+    // agents confirmed active" incident — recalled long after deletion).
+    let note = format!(
+        "NOTE: '{}' was deleted on {}; it no longer exists — do not report it as active",
+        name,
+        chrono::Local::now().format("%Y-%m-%d")
+    );
+    match state.store.tombstone_memories_mentioning(&name, &note) {
+        Ok(n) if n > 0 => info!(agent = %name, memories = n, "tombstoned memories mentioning deleted agent"),
+        Err(e) => warn!(agent = %name, error = %e, "memory tombstone sweep failed (non-fatal)"),
+        _ => {}
+    }
 
     // Clean up filesystem. Remove the exact directory the loader read from
     // (source_path) for filesystem-only agents, plus the conventional napp /
@@ -1322,9 +1349,15 @@ async fn create_blank_agent(
         serde_json::json!({ "agentId": &id, "name": &agent.name }),
     );
 
+    // Every hire introduces itself — the ONE intro ceremony.
+    let thread_id = spawn_agent_intro(&state, &id, &agent.name, true)
+        .map(serde_json::Value::String)
+        .unwrap_or(serde_json::Value::Null);
+
     Ok(Json(serde_json::json!({
         "agent": { "id": id, "name": agent.name },
         "activated": true,
+        "threadId": thread_id,
     })))
 }
 
@@ -3184,6 +3217,14 @@ pub async fn delete_agent_workflow(
 
     // Write to filesystem
     write_agent_json_to_fs(&agent.napp_path, &fm);
+
+    // A deleted workflow leaves memory too — same rule as employees.
+    let note = format!(
+        "NOTE: the workflow '{}' was deleted on {}; it no longer exists — do not report it as running",
+        binding_name,
+        chrono::Local::now().format("%Y-%m-%d")
+    );
+    let _ = state.store.tombstone_memories_mentioning(&binding_name, &note);
 
     Ok(Json(serde_json::json!({
         "message": format!("Binding '{}' deleted", binding_name),

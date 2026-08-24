@@ -618,12 +618,63 @@ impl Store {
     /// Memory chunks cascade-delete via FK.
     pub fn delete_agent_memories(&self, agent_id: &str) -> Result<usize, NeboError> {
         let conn = self.conn()?;
-        let pattern = format!("%:agent:{}", agent_id);
-        conn.execute(
-            "DELETE FROM memories WHERE user_id LIKE ?1",
-            params![pattern],
-        )
-        .map_err(|e| NeboError::Database(e.to_string()))
+        // Both the base agent scope AND its isolation contexts — the old
+        // base-only pattern left every sealed matter's memories alive after
+        // the employee was deleted. Chunks/embeddings cascade via FK.
+        let base = format!("%:agent:{}", agent_id);
+        let ctx = format!("%:agent:{}:ctx:%", agent_id);
+        let n = conn
+            .execute(
+                "DELETE FROM memories WHERE user_id LIKE ?1 OR user_id LIKE ?2",
+                params![base, ctx],
+            )
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(n)
+    }
+
+    /// The other half of "deleted things leave memory": memories in ANY scope
+    /// whose key or value mentions the deleted thing by name get a tombstone
+    /// note appended (never destroyed — a memory may hold other facts), and
+    /// their chunks are cleared so the boot backfill re-embeds the corrected
+    /// text. Deterministic, no LLM. Names shorter than 4 chars are skipped —
+    /// a substring sweep on "Al" would maul unrelated memories.
+    pub fn tombstone_memories_mentioning(
+        &self,
+        name: &str,
+        note: &str,
+    ) -> Result<usize, NeboError> {
+        let name = name.trim();
+        if name.len() < 4 {
+            return Ok(0);
+        }
+        let conn = self.conn()?;
+        let pattern = format!("%{}%", name.to_lowercase());
+        let ids: Vec<i64> = {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id FROM memories
+                     WHERE (LOWER(value) LIKE ?1 OR LOWER(key) LIKE ?1)
+                       AND value NOT LIKE '%' || ?2 || '%'",
+                )
+                .map_err(|e| NeboError::Database(e.to_string()))?;
+            let rows = stmt
+                .query_map(params![pattern, note], |r| r.get(0))
+                .map_err(|e| NeboError::Database(e.to_string()))?;
+            rows.filter_map(|r| r.ok()).collect()
+        };
+        for id in &ids {
+            conn.execute(
+                "UPDATE memories SET value = value || ' [' || ?2 || ']', updated_at = CURRENT_TIMESTAMP WHERE id = ?1",
+                params![id, note],
+            )
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+            conn.execute(
+                "DELETE FROM memory_chunks WHERE memory_id = ?1",
+                params![id],
+            )
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        }
+        Ok(ids.len())
     }
 
     /// Delete all workflow run history for this agent.

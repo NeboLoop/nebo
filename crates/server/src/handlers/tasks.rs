@@ -146,6 +146,14 @@ pub async fn delete_task(
         .store
         .delete_cron_job_by_name(&name)
         .map_err(to_error_response)?;
+    // A deleted scheduled task leaves memory too — same rule as employees
+    // and workflows: nothing removed may keep being reported as existing.
+    let note = format!(
+        "NOTE: the scheduled task '{}' was deleted on {}; it no longer exists — do not report it as active",
+        name,
+        chrono::Local::now().format("%Y-%m-%d")
+    );
+    let _ = state.store.tombstone_memories_mentioning(&name, &note);
     Ok(Json(serde_json::json!({"success": true})))
 }
 
