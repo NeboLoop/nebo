@@ -2075,10 +2075,14 @@ async fn run_loop(
                         &recall_prompt,
                         &recall_user_id,
                         db_context::PROMPT_MEMORY_CANDIDATES,
-                        // min_score 0: FTS-only installs score below the
-                        // vector-scale default floor (see format_prompt_
-                        // relevant_memories docs).
-                        Some(0.0),
+                        // Relevance floor: with single-leg renormalization
+                        // and the corrected BM25 orientation, both installs
+                        // score real matches well above this — and a prompt
+                        // with NO relevant memories now injects NOTHING
+                        // instead of the best of the irrelevant (which was
+                        // 1.2k of noise on every turn, and what weak models
+                        // answered instead of the ask).
+                        Some(db_context::PROMPT_RECALL_MIN_SCORE),
                     )
                     .await;
                 (results, t_start.elapsed())

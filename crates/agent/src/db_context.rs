@@ -343,6 +343,13 @@ const PROMPT_MEMORY_CHAR_BUDGET: usize = 1200;
 /// trimming (same as the old FTS candidate count).
 pub const PROMPT_MEMORY_CANDIDATES: usize = 10;
 
+/// Relevance floor for UNREQUESTED recall. The memory tool's own searches
+/// keep their permissive default — the user asked, weak hits beat none. This
+/// floor is for injection nobody asked for: below it, silence. A strong
+/// FTS-only match scores ~0.9, a strong hybrid match ~0.6+; unrelated
+/// vector-noise pairs sit ~0.2-0.35 weighted.
+pub const PROMPT_RECALL_MIN_SCORE: f64 = 0.45;
+
 /// Hard latency budget for the VECTOR leg of per-message recall, measured
 /// from the join point (time the spawned search already had during the
 /// sibling prompt-assembly loads counts toward it for free). Rationale: the
@@ -400,13 +407,19 @@ pub async fn join_prompt_recall(
             let results: Vec<tools::HybridSearchResult> = fts
                 .iter()
                 .filter_map(|(mem_id, rank)| {
+                    // Same floor as the hybrid leg: unrequested recall stays
+                    // silent unless the match is real.
+                    let score = crate::search::normalize_bm25(*rank);
+                    if score < PROMPT_RECALL_MIN_SCORE {
+                        return None;
+                    }
                     store.get_memory(*mem_id).ok().flatten().map(|m| {
                         tools::HybridSearchResult {
                             memory_id: Some(*mem_id),
                             key: m.key,
                             value: m.value,
                             namespace: m.namespace,
-                            score: crate::search::normalize_bm25(*rank),
+                            score,
                         }
                     })
                 })

@@ -46,7 +46,30 @@ pub async fn hybrid_search(
     vector_index: Option<&IdMapIndex>,
 ) -> Vec<SearchResult> {
     let query_class = classify_query(query);
-    let (vector_weight, text_weight) = adaptive_weights(&query_class);
+    // Embed the query up front: fusion weights depend on whether the vector
+    // leg actually runs. A single-leg (FTS-only) search must not be scaled by
+    // its fusion weight — that pushed every real match under any floor, which
+    // is why recall historically ran floorless (min_score 0) and injected
+    // whatever scored best, relevant or not.
+    let query_vec: Option<Vec<f32>> = match embedding_provider {
+        Some(provider) => match provider.embed(&[query.to_string()]).await {
+            Ok(vecs) if !vecs.is_empty() => Some(vecs[0].clone()),
+            Ok(_) => {
+                debug!("empty embedding result for query");
+                None
+            }
+            Err(e) => {
+                warn!(error = %e, "vector search embedding failed, using text-only");
+                None
+            }
+        },
+        None => None,
+    };
+    let (vector_weight, text_weight) = if query_vec.is_some() {
+        adaptive_weights(&query_class)
+    } else {
+        (0.0, 1.0)
+    };
 
     let mut merged: HashMap<String, SearchResult> = HashMap::new();
     let fts_limit = (config.limit * 3) as i64;
@@ -125,43 +148,35 @@ pub async fn hybrid_search(
         }
     }
 
-    // 3. Vector search (if embedding provider available)
-    if let Some(provider) = embedding_provider {
-        match provider.embed(&[query.to_string()]).await {
-            Ok(query_vecs) if !query_vecs.is_empty() => {
-                let query_vec = &query_vecs[0];
-
-                if let Some(index) = vector_index.filter(|idx| !idx.is_empty()) {
-                    // Fast path: ANN search via TurboVec
-                    let k = config.limit * 3;
-                    let (scores, ids) = index.search(query_vec, k);
-                    for (score, id) in scores.iter().zip(ids.iter()) {
-                        let sim = *score as f64;
-                        if sim < config.min_score {
-                            continue;
-                        }
-                        let chunk_id = *id as i64;
-                        merge_vector_hit(store, &mut merged, chunk_id, sim * vector_weight);
+    // 3. Vector search (when the query embedded above)
+    if let Some(query_vec) = &query_vec {
+        if let Some(index) = vector_index.filter(|idx| !idx.is_empty()) {
+            // Fast path: ANN search via TurboVec
+            let k = config.limit * 3;
+            let (scores, ids) = index.search(query_vec, k);
+            for (score, id) in scores.iter().zip(ids.iter()) {
+                let sim = *score as f64;
+                if sim < config.min_score {
+                    continue;
+                }
+                let chunk_id = *id as i64;
+                merge_vector_hit(store, &mut merged, chunk_id, sim * vector_weight);
+            }
+        } else {
+            // Brute-force fallback: load all embeddings and cosine scan
+            let model = embedding_provider
+                .map(|p| p.id().to_string())
+                .unwrap_or_default();
+            if let Ok(all_embeddings) = store.get_all_embeddings_by_user(user_id, &model) {
+                for (chunk_id, blob) in &all_embeddings {
+                    let stored_vec = ai::bytes_to_f32(blob);
+                    let sim = cosine_similarity(query_vec, &stored_vec);
+                    if sim < config.min_score {
+                        continue;
                     }
-                } else {
-                    // Brute-force fallback: load all embeddings and cosine scan
-                    let model = provider.id().to_string();
-                    if let Ok(all_embeddings) =
-                        store.get_all_embeddings_by_user(user_id, &model)
-                    {
-                        for (chunk_id, blob) in &all_embeddings {
-                            let stored_vec = ai::bytes_to_f32(blob);
-                            let sim = cosine_similarity(query_vec, &stored_vec);
-                            if sim < config.min_score {
-                                continue;
-                            }
-                            merge_vector_hit(store, &mut merged, *chunk_id, sim * vector_weight);
-                        }
-                    }
+                    merge_vector_hit(store, &mut merged, *chunk_id, sim * vector_weight);
                 }
             }
-            Ok(_) => debug!("empty embedding result for query"),
-            Err(e) => warn!(error = %e, "vector search embedding failed, using text-only"),
         }
     }
 
@@ -207,9 +222,13 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f64 {
 
 /// Normalize BM25 rank (negative, lower = better) to 0..1 (higher = better).
 pub fn normalize_bm25(rank: f64) -> f64 {
-    // BM25 ranks are negative in SQLite FTS5; more negative = better match
-    // Convert: score = 1 / (1 + abs(rank))
-    1.0 / (1.0 + rank.abs())
+    // BM25 ranks are negative in SQLite FTS5; more negative = better match.
+    // Map so a STRONGER match scores HIGHER: |rank| / (1 + |rank|).
+    // The old 1/(1+|rank|) inverted the ordering — the weakest FTS hit
+    // outscored the strongest, so recall surfaced the LEAST relevant memory
+    // and the memory tool ranked its text results backwards.
+    let a = rank.abs();
+    a / (1.0 + a)
 }
 
 /// Query classification for adaptive weighting.
@@ -382,12 +401,14 @@ mod tests {
     #[test]
     fn test_normalize_bm25() {
         // Rank of 0 => score 1.0
-        assert!((normalize_bm25(0.0) - 1.0).abs() < 1e-6);
+        // rank 0 = no match strength → floor of the scale, not the ceiling.
+        assert!(normalize_bm25(0.0).abs() < 1e-6);
         // Negative rank => between 0 and 1
         let score = normalize_bm25(-5.0);
         assert!(score > 0.0 && score < 1.0);
         // More negative = better = higher score
-        assert!(normalize_bm25(-10.0) < normalize_bm25(-5.0));
+        // More negative (better BM25 match) must score HIGHER.
+        assert!(normalize_bm25(-10.0) > normalize_bm25(-5.0));
     }
 
     #[test]
