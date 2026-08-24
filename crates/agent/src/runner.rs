@@ -3164,8 +3164,16 @@ async fn run_loop(
         // Convert ChatMessage to ai::Message, then append any app-injected steering as
         // ephemeral <system-reminder> turns for this iteration only (R8).
         let mut ai_messages = convert_messages(&window_messages);
+        // Reminders are collected first, then INSERTED BEFORE a fresh user ask
+        // rather than appended after it. When the transcript's tail is the
+        // user's just-sent message, anything placed after it becomes the last
+        // thing the model reads — and weak models answer the tail: a 39-char
+        // ask followed by 1.3k of recalled memory got the ASK echoed back as
+        // text instead of executed. Mid-run (tail = tool results), appending
+        // at the end is correct — a correction should be the freshest signal.
+        let mut reminder_msgs: Vec<Message> = Vec::new();
         for text in hook_reminders {
-            ai_messages.push(Message {
+            reminder_msgs.push(Message {
                 role: "user".to_string(),
                 content: steering::wrap_system_reminder(&text),
                 ..Default::default()
@@ -3174,7 +3182,7 @@ async fn run_loop(
         // Queued stream reminders ride THIS call only, then vanish (R8:
         // reminders are ephemeral — never persisted, never re-sent).
         for content in pending_stream_reminders.drain(..) {
-            ai_messages.push(Message {
+            reminder_msgs.push(Message {
                 role: "user".to_string(),
                 content,
                 ..Default::default()
@@ -3188,7 +3196,7 @@ async fn run_loop(
         // prompt). Ephemeral: this iteration only, never persisted. The post-tool-round
         // reminder registry can't cover this — it fires too late to shape the first reply.
         if iteration == 1 && steering::channel_is_external(channel) {
-            ai_messages.push(Message {
+            reminder_msgs.push(Message {
                 role: "user".to_string(),
                 content: steering::wrap_system_reminder(&format!(
                     "You are fully connected on the `{channel}` channel with your complete \
@@ -3201,6 +3209,18 @@ async fn run_loop(
                 )),
                 ..Default::default()
             });
+        }
+
+        // The splice: before the fresh ask when it is the tail, else at the end.
+        if !reminder_msgs.is_empty() {
+            let insert_at = if ai_messages.last().map(|m| m.role == "user").unwrap_or(false) {
+                ai_messages.len() - 1
+            } else {
+                ai_messages.len()
+            };
+            for (i, m) in reminder_msgs.into_iter().enumerate() {
+                ai_messages.insert(insert_at + i, m);
+            }
         }
 
         // (First-run onboarding is handled proactively + deterministically by the
@@ -3315,9 +3335,24 @@ async fn run_loop(
             bps
         };
 
+        // "A named tool call is an instruction" — enforced in code, not prose.
+        // When the fresh ask IS an explicit invocation of a declared tool
+        // ("use os(...)"), the first response must be a tool call: weak models
+        // otherwise echo the syntax back as text. First iteration only — the
+        // model needs Auto afterwards to write its final report.
+        let forced_choice = if iteration == 1 {
+            ai_messages
+                .iter()
+                .rev()
+                .find(|m| m.role == "user" && !m.content.starts_with("<system-reminder>"))
+                .and_then(|m| named_tool_invocation(&m.content, &tool_defs))
+        } else {
+            None
+        };
+
         // Build ChatRequest
         let chat_req = ChatRequest {
-            tool_choice: Default::default(),
+            tool_choice: forced_choice.unwrap_or_default(),
             messages: ai_messages,
             tools: tool_defs,
             max_tokens: if output_escalated {
@@ -6181,6 +6216,38 @@ fn user_demanded_action(messages: &[ChatMessage]) -> bool {
 }
 
 /// Convert database ChatMessages to ai::Messages for the provider.
+/// Detect a prompt that IS an explicit invocation of a declared tool —
+/// "use os(resource: ...)", "call web(...)", or the bare "skill(...)" — and
+/// return the ToolChoice that forces that tool. Conservative on purpose: the
+/// whole trimmed prompt must be the invocation (optional leading verb, known
+/// tool name, parenthesized args to the end), so prose that merely mentions a
+/// call is never hijacked.
+fn named_tool_invocation(
+    prompt: &str,
+    tools: &[ai::ToolDefinition],
+) -> Option<ai::ToolChoice> {
+    let t = prompt.trim();
+    if !t.ends_with(')') {
+        return None;
+    }
+    let lower = t.to_lowercase();
+    let rest = ["use ", "call ", "run ", "invoke "]
+        .iter()
+        .find_map(|v| lower.starts_with(*v).then(|| t[v.len()..].trim_start()))
+        .unwrap_or(t);
+    let name: String = rest
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+        .collect();
+    if name.is_empty() || !rest[name.len()..].trim_start().starts_with('(') {
+        return None;
+    }
+    tools
+        .iter()
+        .any(|d| d.name == name)
+        .then(|| ai::ToolChoice::Tool(name))
+}
+
 fn convert_messages(messages: &[ChatMessage]) -> Vec<Message> {
     messages
         .iter()
@@ -6669,6 +6736,52 @@ fn partition_tool_calls(calls: &[(&str, &serde_json::Value, bool)]) -> (Vec<usiz
 /// (ancestor/descendant). Mutations to overlapping paths must not race.
 fn paths_overlap(a: &std::path::Path, b: &std::path::Path) -> bool {
     a.starts_with(b) || b.starts_with(a)
+}
+
+#[cfg(test)]
+mod named_invocation_tests {
+    use super::named_tool_invocation;
+    use ai::{ToolChoice, ToolDefinition};
+
+    fn defs(names: &[&str]) -> Vec<ToolDefinition> {
+        names
+            .iter()
+            .map(|n| ToolDefinition {
+                name: n.to_string(),
+                description: String::new(),
+                input_schema: serde_json::json!({}),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn explicit_invocations_force_the_tool() {
+        let tools = defs(&["os", "skill", "mcp__nebo_kb__memory_recall"]);
+        for p in [
+            r#"use os(resource: "app", action: "list")"#,
+            r#"os(resource: "shell", action: "exec", command: "ls")"#,
+            r#"call skill(action: "catalog")"#,
+            r#"Use os(resource: "mail", action: "unread")"#,
+        ] {
+            match named_tool_invocation(p, &tools) {
+                Some(ToolChoice::Tool(name)) => assert!(!name.is_empty(), "{p}"),
+                other => panic!("{p} → {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn prose_and_unknown_tools_stay_auto() {
+        let tools = defs(&["os", "skill"]);
+        for p in [
+            r#"how do I use os(resource: "app") safely?"#, // prose prefix
+            r#"use frobnicate(action: "x")"#,              // undeclared tool
+            r#"use os(resource: "app") and then summarize the results for me"#, // trailing prose
+            "what apps are open?",
+        ] {
+            assert!(named_tool_invocation(p, &tools).is_none(), "{p}");
+        }
+    }
 }
 
 #[cfg(test)]

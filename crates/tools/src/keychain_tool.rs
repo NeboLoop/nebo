@@ -181,7 +181,14 @@ async fn handle_delete(input: &serde_json::Value) -> ToolResult {
         args.push("-a");
         args.push(a);
     }
-    run_command("security", &args).await
+    let res = run_command("security", &args).await;
+    if res.is_error {
+        return res;
+    }
+    // On success `security` PRINTS the deleted item's attributes — which reads
+    // as "the entry is still there" and got reported exactly that way. Say
+    // what happened instead of echoing the dump.
+    ToolResult::ok(format!("Deleted '{service}' from the keychain."))
 }
 
 // ═══════════════════════════════════════════════════════════════════════
