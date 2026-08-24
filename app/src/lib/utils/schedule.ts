@@ -113,7 +113,8 @@ export function parseSimple(cron: string): SimpleSchedule | null {
 	else if (f.length === 6) [sec, min, hour, dom, mon, dow] = f;
 	else [sec, min, hour, dom, mon, dow, year] = f;
 	if ((sec !== '0' && sec !== '*') || mon !== '*' || year !== '*' || dom !== '*') return null;
-	dow = dow.replace(/7/g, '0');
+	// Named DOW (Mon-Fri) is what the canvas emits — normalize like describeCron.
+	dow = normDow(dow);
 
 	let m: RegExpMatchArray | null;
 	if ((m = min.match(/^\*\/(\d+)$/)) && hour === '*' && dow === '*') return { kind: 'minutes', n: +m[1] };

@@ -1784,8 +1784,22 @@ impl PersonaTool {
 
         let seven_field = match fields.len() {
             5 => format!("0 {} *", processed), // standard 5-field → 7-field
-            6 => format!("0 {}", processed),   // 6-field (missing seconds) → 7-field
-            7 => processed,                    // already 7-field
+            6 => {
+                // Ambiguous: `sec min hour dom mon dow` (the cron crate's own
+                // 6-field form — what the schedule editors emit) vs
+                // `min hour dom mon dow year` (5-field + year). Only a last
+                // field that IS a year means seconds are missing; assuming
+                // "missing seconds" for both silently shifted every field of a
+                // sec-first cron (hour became dom…) and broke the timer.
+                let last = fields[5];
+                let is_year = last.len() == 4 && last.chars().all(|c| c.is_ascii_digit());
+                if is_year {
+                    format!("0 {}", processed) // min-first + year → prepend seconds
+                } else {
+                    format!("{} *", processed) // sec-first → append year
+                }
+            }
+            7 => processed, // already 7-field
             _ => format!("0 {} * * * *", processed), // best effort
         };
         Self::fix_dow_field(&seven_field)
@@ -2669,6 +2683,30 @@ mod tests {
     /// Extract the day-of-week field from a normalized 7-field cron.
     fn tools_dow(cron: &str) -> String {
         cron.split_whitespace().nth(5).unwrap_or("").to_string()
+    }
+
+    /// 6-field crons are ambiguous. sec-first (what the schedule editors
+    /// emit) must NOT get a second seconds field prepended — that shifted
+    /// every field and silently broke the timer; only a trailing year means
+    /// seconds are missing.
+    #[test]
+    fn test_normalize_cron_six_field_disambiguation() {
+        // sec-first: "0 30 9 * * *" (9:30 daily, what buildSimple emits)
+        // → append year, fields intact.
+        assert_eq!(
+            PersonaTool::normalize_cron("0 30 9 * * *"),
+            "0 30 9 * * * *"
+        );
+        // sec-first with named DOW stays parseable and keeps its hour.
+        assert_eq!(
+            PersonaTool::normalize_cron("0 0 7 * * MON-FRI"),
+            "0 0 7 * * MON-FRI *"
+        );
+        // min-first + trailing year (a one-shot missing seconds) → prepend.
+        assert_eq!(
+            PersonaTool::normalize_cron("48 13 27 7 * 2026"),
+            "0 48 13 27 7 * 2026"
+        );
     }
 
     #[test]

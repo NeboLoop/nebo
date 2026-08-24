@@ -60,6 +60,64 @@ pub fn spawn(
     });
 }
 
+/// Outcome of the ONE fire decision for a job at a given instant.
+pub(crate) enum Due {
+    /// The schedule string doesn't parse (even after normalization).
+    Invalid(String),
+    /// No occurrence is due yet (or none will ever be — a passed one-shot
+    /// whose occurrence was already consumed).
+    NotYet,
+    /// An occurrence at this time is due now.
+    At(chrono::DateTime<Local>),
+}
+
+/// The ONE fire decision: given a job's schedule and history, is an
+/// occurrence due at `now`?
+///
+/// last_run is stored as SQLite `datetime('now')` (UTC) — parsed as UTC then
+/// converted to Local so the cron comparison stays in one timezone.
+///
+/// When last_run is NULL (never fired), the floor falls back to created_at —
+/// NOT to `now`. With a year-pinned one-shot cron (e.g. an "in 1 minute"
+/// timer with cron `47 37 19 26 5 * 2026`), defaulting to `now` means
+/// `schedule.after(now)` returns the single moment while it's still in the
+/// future, but on the very next tick `now` has advanced past it — so the
+/// task silently never fires. Using `created_at` as the floor guarantees
+/// `schedule.after(floor).next()` always returns the cron's moment.
+pub(crate) fn due_occurrence(
+    schedule_str: &str,
+    last_run: Option<&str>,
+    created_at: Option<&str>,
+    now: chrono::DateTime<Local>,
+) -> Due {
+    // Normalize at read time — handles stale 5-field expressions in DB.
+    let normalized = tools::PersonaTool::normalize_cron(schedule_str);
+    let schedule: Schedule = match normalized.parse() {
+        Ok(s) => s,
+        Err(e) => return Due::Invalid(e.to_string()),
+    };
+    let parse_db_ts = |s: &str| -> Option<i64> {
+        s.parse::<i64>().ok().or_else(|| {
+            chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
+                .ok()
+                .map(|dt| dt.and_utc().timestamp())
+        })
+    };
+    let last_run_ts = last_run
+        .and_then(parse_db_ts)
+        .or_else(|| created_at.and_then(parse_db_ts))
+        .unwrap_or(0);
+    let floor = chrono::Utc
+        .timestamp_opt(last_run_ts, 0)
+        .single()
+        .map(|dt| dt.with_timezone(&Local))
+        .unwrap_or(now);
+    match schedule.after(&floor).next() {
+        Some(next) if next <= now => Due::At(next),
+        _ => Due::NotYet,
+    }
+}
+
 async fn tick(
     store: &Arc<Store>,
     runner: &Arc<Runner>,
@@ -122,56 +180,14 @@ async fn tick(
     let mut dispatched: u64 = 0;
 
     for job in &jobs {
-        // Normalize schedule at read time — handles stale 5-field expressions in DB
-        let normalized = tools::PersonaTool::normalize_cron(&job.schedule);
-        let schedule: Schedule = match normalized.parse() {
-            Ok(s) => s,
-            Err(e) => {
-                warn!(job = job.name.as_str(), schedule = %normalized, error = %e, "invalid cron expression");
+        match due_occurrence(&job.schedule, job.last_run.as_deref(), job.created_at.as_deref(), now)
+        {
+            Due::Invalid(e) => {
+                warn!(job = job.name.as_str(), schedule = %job.schedule, error = %e, "invalid cron expression");
                 continue;
             }
-        };
-
-        // last_run is stored as SQLite `datetime('now')` (UTC) — parse as UTC
-        // then convert to Local so the cron comparison stays in one timezone.
-        //
-        // When last_run is NULL (never fired), fall back to created_at — NOT
-        // to `now`. With a year-pinned one-shot cron (e.g. an "in 1 minute"
-        // timer with cron `47 37 19 26 5 * 2026`), defaulting to `now` means
-        // `schedule.after(now)` returns the single moment when it's still in
-        // the future, but on the very next tick (60s later) `now` has
-        // advanced past it AND last_run has advanced with it — so
-        // `schedule.after(new_now)` returns None (no future occurrences in
-        // 2026 match) and the task silently never fires. Using
-        // `created_at` as the floor guarantees `schedule.after(floor).next()`
-        // always returns the cron's moment, which we then compare to `now`.
-        let parse_db_ts = |s: &str| -> Option<i64> {
-            s.parse::<i64>().ok().or_else(|| {
-                chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
-                    .ok()
-                    .map(|dt| dt.and_utc().timestamp())
-            })
-        };
-        let last_run_ts = job
-            .last_run
-            .as_deref()
-            .and_then(parse_db_ts)
-            .or_else(|| job.created_at.as_deref().and_then(parse_db_ts))
-            .unwrap_or(0);
-        let last_run = chrono::Utc
-            .timestamp_opt(last_run_ts, 0)
-            .single()
-            .map(|dt| dt.with_timezone(&Local))
-            .unwrap_or(now);
-
-        // Get the upcoming time from last_run — if it's before now, the job is due
-        let next = match schedule.after(&last_run).next() {
-            Some(t) => t,
-            None => continue,
-        };
-
-        if next > now {
-            continue; // not yet due
+            Due::NotYet => continue,
+            Due::At(_) => {}
         }
 
         info!(job = job.name.as_str(), "dispatching scheduled task");
@@ -732,3 +748,107 @@ async fn execute_agent_workflow_task(
         Err(e) => (false, String::new(), Some(e)),
     }
 }
+
+#[cfg(test)]
+mod due_tests {
+    use super::*;
+    use chrono::TimeZone;
+
+    fn local(y: i32, mo: u32, d: u32, h: u32, mi: u32, s: u32) -> chrono::DateTime<Local> {
+        Local.with_ymd_and_hms(y, mo, d, h, mi, s).single().unwrap()
+    }
+
+    /// A UTC timestamp string in the SQLite `datetime('now')` shape,
+    /// for a LOCAL wall-clock moment.
+    fn db_ts(t: chrono::DateTime<Local>) -> String {
+        t.with_timezone(&chrono::Utc).format("%Y-%m-%d %H:%M:%S").to_string()
+    }
+
+    #[test]
+    fn recurring_fires_when_due_and_not_before() {
+        // Every 30 minutes; last ran at :00 → due at :30, not at :29.
+        let last = db_ts(local(2026, 8, 23, 9, 0, 0));
+        let sched = "0 0,30 * * * *";
+        assert!(matches!(
+            due_occurrence(sched, Some(&last), None, local(2026, 8, 23, 9, 29, 0)),
+            Due::NotYet
+        ));
+        assert!(matches!(
+            due_occurrence(sched, Some(&last), None, local(2026, 8, 23, 9, 30, 5)),
+            Due::At(_)
+        ));
+    }
+
+    /// THE silent-never-fires bug: a year-pinned one-shot with NULL last_run
+    /// must still fire after its moment passes — the floor is created_at,
+    /// never `now`.
+    #[test]
+    fn one_shot_with_null_last_run_fires_from_created_at() {
+        let created = db_ts(local(2026, 8, 23, 10, 0, 0));
+        // One-shot at 10:05:00 local on 2026-08-23.
+        let sched = "0 5 10 23 8 * 2026";
+        // Before the moment: not yet.
+        assert!(matches!(
+            due_occurrence(sched, None, Some(&created), local(2026, 8, 23, 10, 4, 0)),
+            Due::NotYet
+        ));
+        // A tick 3 minutes AFTER the moment (missed ticks happen): still due.
+        assert!(matches!(
+            due_occurrence(sched, None, Some(&created), local(2026, 8, 23, 10, 8, 0)),
+            Due::At(_)
+        ));
+    }
+
+    /// After the one-shot's occurrence is consumed (last_run stamped at/after
+    /// it), it never fires again.
+    #[test]
+    fn one_shot_never_refires_after_consumption() {
+        let sched = "0 5 10 23 8 * 2026";
+        let last = db_ts(local(2026, 8, 23, 10, 8, 0));
+        assert!(matches!(
+            due_occurrence(sched, Some(&last), None, local(2026, 8, 23, 10, 9, 0)),
+            Due::NotYet
+        ));
+        assert!(matches!(
+            due_occurrence(sched, Some(&last), None, local(2027, 1, 1, 0, 0, 0)),
+            Due::NotYet
+        ));
+    }
+
+    /// Stale 5-field crons in the DB normalize instead of erroring.
+    #[test]
+    fn five_field_cron_normalizes() {
+        let last = db_ts(local(2026, 8, 23, 6, 0, 0));
+        assert!(matches!(
+            due_occurrence("0 7 * * *", Some(&last), None, local(2026, 8, 23, 7, 0, 30)),
+            Due::At(_)
+        ));
+    }
+
+    #[test]
+    fn garbage_is_invalid_not_a_panic() {
+        assert!(matches!(
+            due_occurrence("not a cron", None, None, Local::now()),
+            Due::Invalid(_)
+        ));
+    }
+
+    /// Weekday schedules respect the local calendar: a weekdays-at-7 cron is
+    /// not due on Sunday even long after Friday's run.
+    #[test]
+    fn weekday_cron_skips_the_weekend() {
+        // 2026-08-21 is a Friday; 2026-08-23 is a Sunday.
+        let last = db_ts(local(2026, 8, 21, 7, 0, 30));
+        let sched = "0 0 7 * * Mon-Fri";
+        assert!(matches!(
+            due_occurrence(sched, Some(&last), None, local(2026, 8, 23, 7, 30, 0)),
+            Due::NotYet
+        ));
+        // Monday morning it fires.
+        assert!(matches!(
+            due_occurrence(sched, Some(&last), None, local(2026, 8, 24, 7, 0, 30)),
+            Due::At(_)
+        ));
+    }
+}
+
