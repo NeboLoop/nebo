@@ -13,6 +13,7 @@ use std::sync::{Arc, Mutex};
 
 use futures::FutureExt;
 use futures::future::BoxFuture;
+use futures::stream::{self, TryStreamExt};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
@@ -31,6 +32,9 @@ use crate::parser::{
 const MAX_NODE_VISITS: u32 = 10_000;
 /// Default loop iteration cap when params.maxIterations is absent.
 const DEFAULT_MAX_ITERATIONS: u64 = 100;
+/// Ceiling on `params.concurrency` for loop iterations — bounds provider
+/// pressure and DB write fan-in however large the declared value is.
+const MAX_LOOP_CONCURRENCY: u64 = 16;
 
 #[derive(Clone)]
 struct Edge {
@@ -890,9 +894,39 @@ async fn run_loop<'a>(
         })
         .unwrap_or_default();
 
-    let mut processed: u64 = 0;
+    // Opt-in concurrent iterations: `params.concurrency` (default 1 =
+    // byte-identical sequential behavior). Iteration scopes are already
+    // isolated — own arrival map, own dotted identity, own per-iteration
+    // result rows — which is what makes this safe. Two caveats the default
+    // protects: with concurrency > 1, sibling iterations' body-node
+    // `outputs` land last-COMPLETION-wins (nondeterministic downstream —
+    // aggregate through external state or the loop summary, never through
+    // `nodes.<body-node>`), and a failing iteration drops in-flight
+    // siblings mid-run (resume fast-forward re-runs exactly the
+    // unfinished ones — the (activity, iteration) keying is order-free).
+    let concurrency = activity
+        .params
+        .as_ref()
+        .and_then(|p| p.get("concurrency"))
+        .and_then(|v| {
+            v.as_u64()
+                .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+        })
+        .unwrap_or(1)
+        .clamp(1, MAX_LOOP_CONCURRENCY) as usize;
+
     let total_items = items.len() as u64;
-    for item in items.into_iter().take(max_iterations as usize) {
+    let taken: Vec<(u64, serde_json::Value)> = items
+        .into_iter()
+        .take(max_iterations as usize)
+        .enumerate()
+        .map(|(i, item)| (i as u64, item))
+        .collect();
+    let processed = taken.len() as u64;
+
+    let body = &body;
+    let entry_edges = &entry_edges;
+    let run_one = move |idx: u64, item: serde_json::Value| async move {
         if let Some(token) = ctx.cancel_token {
             if token.is_cancelled() {
                 return Err(WorkflowError::Cancelled);
@@ -900,20 +934,29 @@ async fn run_loop<'a>(
         }
         let body_scope = WalkScope {
             arrivals: Mutex::new(HashMap::new()),
-            indegree: body_indegree(ctx, &activity.id, &body),
+            indegree: body_indegree(ctx, &activity.id, body),
             stop_node: Some(activity.id.clone()),
             item: Some(item),
             iteration: if scope.iteration.is_empty() {
-                processed.to_string()
+                idx.to_string()
             } else {
-                format!("{}.{}", scope.iteration, processed)
+                format!("{}.{}", scope.iteration, idx)
             },
         };
         let walks = entry_edges
             .iter()
             .map(|e| arrive(ctx, &body_scope, e.to.clone(), true));
-        first_error(futures::future::join_all(walks).await)?;
-        processed += 1;
+        first_error(futures::future::join_all(walks).await)
+    };
+
+    if concurrency <= 1 {
+        for (idx, item) in taken {
+            run_one(idx, item).await?;
+        }
+    } else {
+        stream::iter(taken.into_iter().map(Ok))
+            .try_for_each_concurrent(concurrency, |(idx, item)| run_one(idx, item))
+            .await?;
     }
 
     let _ = ctx.store.create_activity_result(
@@ -1600,6 +1643,131 @@ mod walk_tests {
         assert!(d_call.contains("'c' result"));
         assert!(!d_call.contains("'b' result"), "dead branch leaked output");
         assert_eq!(run_status(&store, &run_id), "completed");
+    }
+
+    #[tokio::test]
+    async fn test_loop_concurrency_processes_all_items() {
+        let provider = MockProvider::new(&[]);
+        let def = r#"{
+            "version":"1.0","id":"t","name":"T",
+            "activities":[
+                {"id":"l","type":"loop","params":{"source":"inputs.items","concurrency":3}},
+                {"id":"body","intent":"task-body"},
+                {"id":"after","intent":"task-after"}],
+            "connections":[
+                {"from":"__trigger__","to":"l"},
+                {"from":"l","to":"body","label":"Each item"},
+                {"from":"body","to":"l"},
+                {"from":"l","to":"after","label":"Done"},
+                {"from":"after","to":"__emit__"}]
+        }"#;
+        let (result, store, run_id) = run_graph(
+            def,
+            serde_json::json!({"items": ["x", "y", "z"]}),
+            &provider,
+        )
+        .await;
+        result.expect("run ok");
+        // Every iteration ran and recorded under its own identity — the
+        // (activity, iteration) keying must hold under concurrency.
+        let done = store.completed_activity_contents(&run_id).unwrap();
+        for i in ["0", "1", "2"] {
+            assert!(
+                done.contains_key(&("body".to_string(), i.to_string())),
+                "iteration {i} missing a completed body row"
+            );
+        }
+        let output = store
+            .get_workflow_run(&run_id)
+            .unwrap()
+            .unwrap()
+            .output
+            .unwrap_or_default();
+        assert!(output.contains("3 items processed"), "summary: {output:?}");
+    }
+
+    #[tokio::test]
+    async fn test_loop_concurrency_iterations_overlap() {
+        // Deterministic overlap proof, immune to suite-load scheduling: all
+        // three 2s-wait iterations are polled in one startup burst, so their
+        // recorded started_at all precede every completed_at (which trail by
+        // >= 2s). Serialized iterations CANNOT satisfy this — iteration 1's
+        // start would trail iteration 0's completion. No wall-clock ceiling:
+        // a starved test thread stretches both edges equally.
+        let provider = MockProvider::new(&[]);
+        let def = r#"{
+            "version":"1.0","id":"t","name":"T",
+            "activities":[
+                {"id":"l","type":"loop","params":{"source":"inputs.items","concurrency":3}},
+                {"id":"w","type":"wait","params":{"duration":"2s"}},
+                {"id":"after","intent":"task-after"}],
+            "connections":[
+                {"from":"__trigger__","to":"l"},
+                {"from":"l","to":"w","label":"Each item"},
+                {"from":"w","to":"l"},
+                {"from":"l","to":"after","label":"Done"},
+                {"from":"after","to":"__emit__"}]
+        }"#;
+        let (result, store, run_id) = run_graph(
+            def,
+            serde_json::json!({"items": [1, 2, 3]}),
+            &provider,
+        )
+        .await;
+        result.expect("run ok");
+        let waits: Vec<_> = store
+            .list_activity_results(&run_id)
+            .unwrap()
+            .into_iter()
+            .filter(|r| r.activity_id == "w")
+            .collect();
+        assert_eq!(waits.len(), 3, "three wait iterations must record");
+        let max_start = waits.iter().map(|r| r.started_at).max().unwrap();
+        let min_complete = waits
+            .iter()
+            .map(|r| r.completed_at.expect("completed"))
+            .min()
+            .unwrap();
+        assert!(
+            max_start < min_complete,
+            "every iteration must start before any completes \
+             (max_start {max_start} >= min_complete {min_complete}) — loop serialized?"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_loop_concurrency_respects_truncation_cap() {
+        let provider = MockProvider::new(&[]);
+        let def = r#"{
+            "version":"1.0","id":"t","name":"T",
+            "activities":[
+                {"id":"l","type":"loop","params":{"source":"inputs.items","maxIterations":2,"concurrency":8}},
+                {"id":"body","intent":"task-body"},
+                {"id":"after","intent":"task-after"}],
+            "connections":[
+                {"from":"__trigger__","to":"l"},
+                {"from":"l","to":"body","label":"Each item"},
+                {"from":"body","to":"l"},
+                {"from":"l","to":"after","label":"Done"},
+                {"from":"after","to":"__emit__"}]
+        }"#;
+        let (result, store, run_id) = run_graph(
+            def,
+            serde_json::json!({"items": ["a", "b", "c", "d"]}),
+            &provider,
+        )
+        .await;
+        result.expect("run ok");
+        let output = store
+            .get_workflow_run(&run_id)
+            .unwrap()
+            .unwrap()
+            .output
+            .unwrap_or_default();
+        assert!(
+            output.contains("processed 2 of 4 items") && output.contains("NOT processed"),
+            "truncation must stay loud under concurrency: {output:?}"
+        );
     }
 
     #[tokio::test]
