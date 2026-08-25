@@ -3188,6 +3188,30 @@ async fn run_loop(
             });
         }
 
+        // Session wake rail (R3): payloads that arrived while this run was
+        // busy are heard mid-work — injected here, stamped delivered at
+        // injection (same ephemerality contract as every stream reminder).
+        let wake_entries = steering::drain_wakes(&session_key);
+        if !wake_entries.is_empty() {
+            let ids: Vec<i64> = wake_entries.iter().map(|e| e.wake_id).collect();
+            {
+                let mut taint = run_taint.lock().unwrap();
+                for entry in &wake_entries {
+                    taint.extend(entry.taint.iter().copied());
+                }
+            }
+            for entry in wake_entries {
+                reminder_msgs.push(Message {
+                    role: "user".to_string(),
+                    content: entry.content,
+                    ..Default::default()
+                });
+            }
+            if let Err(e) = store.mark_session_wakes_delivered(&ids) {
+                warn!(error = %e, "wake: failed to stamp mid-run delivery");
+            }
+        }
+
         // On external channels (NeboLoop/Slack/…) a weak model sometimes opens by
         // claiming it "isn't connected" and offering to simulate — it has its full
         // toolset, it just doesn't believe it. Ground it on the first iteration with

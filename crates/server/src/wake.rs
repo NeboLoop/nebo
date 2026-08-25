@@ -62,7 +62,35 @@ pub fn enqueue(
 /// is busy (its run's completion drains) or a wake run is already in flight.
 pub async fn deliver(state: &AppState, session_key: &str) {
     if state.run_registry.find_by_session(session_key).await.is_some() {
-        return; // busy — on_run_finished drains when the live run ends
+        // Busy (R3): hand the payloads to the live run's steering stream —
+        // the agent hears them mid-work. Rows stamp delivered at injection
+        // (runner-side); a run that ends without draining loses nothing —
+        // the still-pending rows redeliver from the completion hook.
+        let (batch, poisoned) = match state.store.claim_session_wakes(session_key) {
+            Ok(v) => v,
+            Err(e) => {
+                warn!(error = %e, session = %session_key, "wake: busy claim failed");
+                return;
+            }
+        };
+        if poisoned > 0 {
+            warn!(session = %session_key, poisoned, "wake: undeliverable wakes poisoned");
+        }
+        for w in batch {
+            let taint =
+                serde_json::from_str::<Vec<ProvenanceClass>>(&w.provenance).unwrap_or_default();
+            let content = agent::steering::wrap_system_reminder(&format!(
+                "[Background event — not an owner message]\n{}:\n{}\n\nHandle this alongside \
+                 your current work, and include the outcome in your report to the owner.",
+                label(&w.kind),
+                clip(&w.payload)
+            ));
+            agent::steering::push_wake(
+                session_key,
+                agent::steering::WakeEntry { wake_id: w.id, content, taint },
+            );
+        }
+        return;
     }
     {
         let mut in_flight = IN_FLIGHT.lock().expect("wake in-flight lock");
@@ -170,6 +198,9 @@ pub async fn deliver(state: &AppState, session_key: &str) {
 /// Stamps the batch the finished run carried (if it was a wake run), then
 /// drains anything that queued while the session was busy.
 pub fn on_run_finished(state: &AppState, session_key: &str) {
+    // Discard inbox entries the finished run never drained — their DB rows
+    // are still pending and redeliver as a normal wake below.
+    let _ = agent::steering::drain_wakes(session_key);
     let ids = IN_FLIGHT.lock().expect("wake in-flight lock").remove(session_key);
     if let Some(ids) = ids
         && !ids.is_empty()

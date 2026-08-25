@@ -119,6 +119,11 @@ pub struct Orchestrator {
     concurrency: Arc<ConcurrencyController>,
     active: Arc<RwLock<HashMap<String, ActiveAgent>>>,
     lanes: Option<Arc<LaneManager>>,
+    /// Session wake rail (R5): fire-and-forget completions send the parent
+    /// session key here after the wake row is persisted; the server pumps it
+    /// into `wake::deliver`. The row is durable either way — a dropped
+    /// notification is recovered by the boot sweep.
+    wake_notify: Option<tokio::sync::mpsc::UnboundedSender<String>>,
 }
 
 impl Orchestrator {
@@ -133,11 +138,17 @@ impl Orchestrator {
             concurrency,
             active: Arc::new(RwLock::new(HashMap::new())),
             lanes: None,
+            wake_notify: None,
         }
     }
 
     pub fn with_lanes(mut self, lanes: Arc<LaneManager>) -> Self {
         self.lanes = Some(lanes);
+        self
+    }
+
+    pub fn with_wake_notify(mut self, tx: tokio::sync::mpsc::UnboundedSender<String>) -> Self {
+        self.wake_notify = Some(tx);
         self
     }
 
@@ -276,6 +287,9 @@ impl Orchestrator {
             let spawn_req = req.clone();
 
             let bg_session_key = format!("subagent:{}:{}", req.parent_session_key, task_id_clone);
+            let parent_session_key = req.parent_session_key.clone();
+            let description = req.description.clone();
+            let wake_notify = self.wake_notify.clone();
 
             tokio::spawn(async move {
                 let mut run_req = build_subagent_request(
@@ -291,6 +305,16 @@ impl Orchestrator {
                 let result =
                     run_and_collect(&runner, run_req, cancel, None, parent_stream_tx, None).await;
 
+                let wake_payload = match &result {
+                    Ok(output) => format!(
+                        "Task \"{}\" (id {}) FINISHED. Output:\n{}",
+                        description, task_id_clone, output
+                    ),
+                    Err(e) => format!(
+                        "Task \"{}\" (id {}) FAILED: {}",
+                        description, task_id_clone, e
+                    ),
+                };
                 match result {
                     Ok(output) => {
                         let _ = store.update_task_completed(&task_id_clone, Some(&output));
@@ -300,13 +324,28 @@ impl Orchestrator {
                     }
                 }
 
+                // Session wake rail (R5): wake the parent — failure is a
+                // completion too. Interactive parents only: workflow-internal
+                // and nested-subagent parents are synchronously orchestrated,
+                // not asleep.
+                if is_interactive_session(&parent_session_key) {
+                    let ok = store
+                        .enqueue_session_wake(&parent_session_key, "task_done", &wake_payload, "[]", 0)
+                        .is_ok();
+                    if ok && let Some(tx) = wake_notify {
+                        let _ = tx.send(parent_session_key);
+                    }
+                }
+
                 active.write().await.remove(&task_id_clone);
             });
 
             Ok(SpawnResult {
                 task_id,
                 success: true,
-                output: "Sub-agent spawned in background.".to_string(),
+                output: "Sub-agent spawned in background. When it finishes or fails you will \
+                         be woken automatically to act on the result and report."
+                    .to_string(),
                 error: None,
             })
         }
@@ -967,6 +1006,15 @@ fn check_completion_heuristic(messages: &[db::models::ChatMessage]) -> bool {
 /// Build a RunRequest for a sub-agent. Single source of truth for sub-agent request construction.
 /// Uses PromptMode::Minimal — sub-agents get identity + capabilities + behavior core,
 /// but skip memory docs, tool routing guide, etiquette, comm style, and autonomy sections.
+/// A session that can be woken (R5): an owner-facing chat session — not a
+/// nested subagent and not a workflow run's ephemeral execution session.
+fn is_interactive_session(session_key: &str) -> bool {
+    !session_key.is_empty()
+        && !session_key.starts_with("subagent:")
+        && !session_key.starts_with("workflow-")
+        && !session_key.contains(":workflow:")
+}
+
 fn build_subagent_request(
     session_key: &str,
     prompt: &str,

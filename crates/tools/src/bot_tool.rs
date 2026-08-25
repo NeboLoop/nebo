@@ -2180,7 +2180,7 @@ impl DynTool for AgentTool {
                 "skills": { "type": "array", "items": { "type": "string" }, "description": "Skill names to pre-load in the sub-agent's context. The full SKILL.md is injected so the sub-agent has instructions without needing to discover them." },
                 "plugins": { "type": "array", "items": { "type": "string" }, "description": "Plugin install codes (e.g. PLUG-XXXX-XXXX) to give the sub-agent. Plugin docs and capabilities are injected so it knows how to use them." },
                 "tools": { "type": "array", "items": { "type": "string" }, "description": "STRAP domain tool names (e.g. \"web\", \"loop\", \"message\") the sub-agent needs. Tool docs are injected so it knows resources, actions, and usage." },
-                "wait": { "type": "boolean", "description": "Wait for sub-agent to complete (default: true)" },
+                "wait": { "type": "boolean", "description": "Wait for sub-agent to complete (default: true). false = background; you are woken automatically when it finishes or fails." },
                 "session_id": { "type": "string", "description": "Session ID" },
                 "task": { "type": "string", "description": "Task description for advisor deliberation" },
                 "text": { "type": "string", "description": "Text for ask prompts" },

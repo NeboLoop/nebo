@@ -5,7 +5,7 @@ CRITICAL: To delegate to a NAMED agent (e.g. "chief-of-staff"), use agent(resour
 **Sub-agents (parallel work):**
 Spawn sub-agents for independent work. Two modes:
 - **wait: true (DEFAULT)** — You block until the sub-agent finishes. Result returns inline. Use this for most cases.
-- **wait: false** — Sub-agent runs in background. Its result is automatically delivered to your conversation when it completes. Use this only when you have other work to do in parallel.
+- **wait: false** — Sub-agent runs in background. When it finishes or fails you are woken automatically to act on the result and report. Use this only when you have other work to do in parallel.
 - agent(resource: task, action: spawn, prompt: "Research competitor pricing", tools: ["web"]) — Spawn with web tool docs
 - agent(resource: task, action: spawn, prompt: "Check inbox for urgent items", plugins: ["PLUG-PJ3Z-ECFV"], tools: ["loop", "message"]) — Spawn with plugin + tools
 - agent(resource: task, action: spawn, prompt: "...", wait: false, tools: ["web"]) — Background with tool docs

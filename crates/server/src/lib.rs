@@ -1835,9 +1835,14 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         workflow_manager.clone() as Arc<dyn tools::WorkflowManager>,
     );
 
-    // Create orchestrator and fill the late-binding handle
+    // Create orchestrator and fill the late-binding handle. The wake channel
+    // lets fire-and-forget task completions reach the session wake rail (R5)
+    // without the agent crate depending on server state — rows are durable
+    // before the send, so a dropped notification only delays to the boot sweep.
+    let (wake_tx, mut wake_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
     let orchestrator = agent::Orchestrator::new(runner.clone(), store.clone(), concurrency.clone())
-        .with_lanes(lanes.clone());
+        .with_lanes(lanes.clone())
+        .with_wake_notify(wake_tx);
     if orch_handle
         .set(Box::new(orchestrator) as Box<dyn tools::SubAgentOrchestrator>)
         .is_err()
@@ -1927,6 +1932,16 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         channel_engagement: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         store_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
     };
+
+    // Pump task-completion wake notifications into the ONE delivery rail.
+    {
+        let wake_state = state.clone();
+        tokio::spawn(async move {
+            while let Some(session_key) = wake_rx.recv().await {
+                wake::deliver(&wake_state, &session_key).await;
+            }
+        });
+    }
 
     // Install the chat-title sink: the runner generates+persists titles for every
     // run path, then this broadcasts the change + propagates it to the loop. One

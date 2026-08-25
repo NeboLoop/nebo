@@ -165,6 +165,41 @@ fn reminders() -> Vec<Box<dyn Reminder>> {
     ]
 }
 
+/// Session wake rail (R3): payloads for sessions that were BUSY when a wake
+/// arrived. `wake::deliver` pushes (wake row id, pre-wrapped reminder text);
+/// `run_loop` drains between tool iterations, injects on the message stream,
+/// and stamps the rows delivered. In-memory by design — entries a run never
+/// drained are cleared by the run-completion hook and the still-pending DB
+/// rows redeliver as a normal wake, so the race loses nothing.
+pub struct WakeEntry {
+    pub wake_id: i64,
+    pub content: String,
+    /// The payload's provenance — merged into the live run's taint set at
+    /// injection so mid-run delivery can't launder content past the WS2 gates.
+    pub taint: Vec<types::provenance::ProvenanceClass>,
+}
+
+static WAKE_INBOX: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<String, Vec<WakeEntry>>>,
+> = std::sync::LazyLock::new(Default::default);
+
+pub fn push_wake(session_key: &str, entry: WakeEntry) {
+    WAKE_INBOX
+        .lock()
+        .expect("wake inbox lock")
+        .entry(session_key.to_string())
+        .or_default()
+        .push(entry);
+}
+
+pub fn drain_wakes(session_key: &str) -> Vec<WakeEntry> {
+    WAKE_INBOX
+        .lock()
+        .expect("wake inbox lock")
+        .remove(session_key)
+        .unwrap_or_default()
+}
+
 /// Wrap reminder text as a `<system-reminder>` with a gentle, ignorable tail.
 pub fn wrap_system_reminder(text: &str) -> String {
     format!(
