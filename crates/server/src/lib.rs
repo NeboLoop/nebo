@@ -790,10 +790,13 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
             .into_iter()
             .find(|i| i.server_url.as_deref() == Some(cfg.neboai.memory_url.as_str()));
         if let Some(existing) = existing {
-            // Heal the machine default only: rows our older auto-wire named
-            // "nebo-kb" get the human-readable name. A name the OWNER chose is
-            // never second-guessed. (Tool namespaces are unaffected — both
-            // spellings slug to nebo_kb.)
+            // Heal the machine defaults only. Names: rows our older auto-wire
+            // named "nebo-kb" get the human-readable name; a name the OWNER
+            // chose is never second-guessed. Auth: the platform memory URL is
+            // OURS — any older row still carrying oauth/api-key auth presents
+            // a long-dead token, 401s on every call, and can never refresh
+            // ("no token_endpoint"). The live rotating platform token is the
+            // only auth that works here, so converge on it.
             if existing.name == "nebo-kb" {
                 let _ = store.update_mcp_integration(
                     &existing.id,
@@ -803,6 +806,23 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
                     None,
                     None,
                 );
+            }
+            if existing.auth_type != "neboai" {
+                match store.update_mcp_integration(
+                    &existing.id,
+                    None,
+                    None,
+                    Some("neboai"),
+                    None,
+                    None,
+                ) {
+                    Ok(()) => info!(
+                        id = %existing.id,
+                        was = %existing.auth_type,
+                        "healed company Memory auth to the platform token"
+                    ),
+                    Err(e) => warn!(error = %e, "failed to heal company Memory auth"),
+                }
             }
         } else {
             let id = uuid::Uuid::new_v4().to_string();
