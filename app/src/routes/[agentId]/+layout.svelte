@@ -27,6 +27,7 @@
   import { slide } from 'svelte/transition';
   import { logger } from '$lib/monitoring';
   import MessageSquareLock from 'lucide-svelte/icons/message-square-lock';
+  import SettingsIcon from 'lucide-svelte/icons/settings';
 
   // Sidebar drill choreography: siblings collapse, the clicked row rides to
   // the top, conversations expand under it. Zero-duration under
@@ -1164,6 +1165,18 @@
               <div class="text-xs text-base-content/60 truncate">{latest?.preview || a.role}</div>
             </div>
           </button>
+          {#if isPinned}
+            <!-- The employee's settings must be reachable from the drilled
+                 list too — not only from inside an open chat. Same canonical
+                 route the context menu uses. -->
+            <button
+              class="shrink-0 p-1.5 rounded-field bg-transparent border-none cursor-pointer text-base-content/50 hover:text-base-content hover:bg-base-100 transition-colors"
+              onclick={(e) => { e.stopPropagation(); goto(`/${a.id}/settings/general`); }}
+              title={$t('nav.settings')}
+            >
+              <SettingsIcon class="w-4 h-4" />
+            </button>
+          {/if}
         </div>
       {/each}
       {#if drilledAgent}
