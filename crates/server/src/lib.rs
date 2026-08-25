@@ -3664,6 +3664,24 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
             serde_json::from_str(&msg.content).unwrap_or(serde_json::Value::Null);
         let ctx = content_json.get("context").filter(|v| v.is_object());
         let embed_info = content_json.get("embed").filter(|v| v.is_object());
+
+        // A trusted `embed.agent` routes the conversation to a specific
+        // employee on this bot (a lot-QR bound to one, like a phone line) —
+        // same lookup as an @mention, sourced from the gateway stamp instead
+        // of the text. Unknown or not loop-exposed ⇒ main persona.
+        if agent_id.is_empty() {
+            if let Some(id) = embed_info
+                .and_then(|e| e.get("agent"))
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+            {
+                if let Ok(Some(a)) = state.store.get_agent_by_loop_agent_id(id) {
+                    if a.loop_exposed != 0 {
+                        agent_id = a.id;
+                    }
+                }
+            }
+        }
         let mention_context = build_embed_context(ctx, embed_info);
 
         let app_label = ctx
