@@ -106,8 +106,9 @@ impl MessageTool {
                     .with_payload(payload),
                     None => ToolResult::ok(format!(
                         "Message delivered to {} — they are handling it in their own session; \
-                         their reply will be added to your context when it arrives. \
-                         Report this as \"asked {} — waiting\", never as done.",
+                         when their reply arrives you will be woken automatically to act on it \
+                         and report. Until then, report this as \"asked {} — waiting\", never as \
+                         done.",
                         delivery.to_name, delivery.to_name
                     ))
                     .with_payload(payload),
@@ -128,7 +129,7 @@ impl DynTool for MessageTool {
          USE THIS when: handing work to a named coworker, or when the user wants to send a text, notification, or alert to someone outside NeboAI.\n\n\
          Coworkers (named employees on this bot):\n\
          - message(resource: \"coworker\", action: \"send\", to: \"receptionist\", text: \"Can you confirm tomorrow's 2pm?\") — Message a coworker and wait for their reply\n\
-         - message(resource: \"coworker\", action: \"send\", to: \"receptionist\", text: \"FYI: the Smith file moved.\", wait: false) — Fire-and-forget (delivery is acknowledged; their reply arrives later)\n\
+         - message(resource: \"coworker\", action: \"send\", to: \"receptionist\", text: \"FYI: the Smith file moved.\", wait: false) — Fire-and-forget (delivery is acknowledged; their reply wakes you automatically to act on it)\n\
          The message is delivered into the coworker's own session — their persona, their memory, their connected accounts, their receipt — and the conversation is visible to the owner on both sides. \
          Work for a coworker? Message them by name. Extra hands for your own work? Spawn a task: agent(resource: \"task\", action: \"spawn\", ...).\n\
          Never claim a coworker's work is done — report \"asked X — waiting\" or relay their actual reply.\n\n\
@@ -161,7 +162,7 @@ impl DynTool for MessageTool {
                 },
                 "text": { "type": "string", "description": "Message text" },
                 "to": { "type": "string", "description": "Coworker to message — an installed employee's name (e.g. \"receptionist\") or id" },
-                "wait": { "type": "boolean", "description": "Coworker send: wait for their reply (default true). false = fire-and-forget; delivery is still acknowledged.", "default": true },
+                "wait": { "type": "boolean", "description": "Coworker send: wait for their reply (default true). false = fire-and-forget; their reply wakes you automatically.", "default": true },
                 "title": { "type": "string", "description": "Notification or alert title" },
                 "phone": { "type": "string", "description": "Phone number or contact for SMS" },
                 "query": { "type": "string", "description": "Search query for SMS search" },

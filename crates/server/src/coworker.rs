@@ -183,8 +183,8 @@ async fn send_coworker_message(
     // run (forwarding approval/ask requests to the owner's frontend), records
     // the reply in the sender-side thread, then hands the reply to whoever is
     // waiting. If nobody is — fire-and-forget, or the reply SLA expired — the
-    // failed oneshot send returns the reply and it is injected into the
-    // sender's session instead. The reply reaches the sender exactly once.
+    // failed oneshot send returns the reply and it WAKES the sender's session
+    // through the wake rail instead. The reply reaches the sender exactly once.
     let (done_tx, done_rx) = tokio::sync::oneshot::channel::<String>();
     {
         let state = state.clone();
@@ -194,6 +194,7 @@ async fn send_coworker_message(
         let thread_key = thread_key.clone();
         let mirror = mirror.clone();
         let sender_session_key = msg.sender_session_key.clone();
+        let sender_depth = msg.handoff_depth;
         let cancel_token = cancel_token.clone();
         tokio::spawn(async move {
             let owner = OwnerForward {
@@ -214,8 +215,24 @@ async fn send_coworker_message(
             let reply = label_tainted_reply(reply, &reply_provenance);
             record_reply(&state, mirror.as_deref(), &to_name, &reply);
             if let Err(reply) = done_tx.send(reply) {
+                // Nobody is blocked on this reply (fire-and-forget, or the
+                // SLA expired) — wake the sender's session with it (R4). The
+                // reply's provenance rides the wake so the woken run is
+                // decided at the WS2 gates; depth continues the sender's
+                // chain so wake-driven sends stay bounded (R6).
                 if !reply.is_empty() {
-                    inject_reply_into_sender(&state, &sender_session_key, &to_name, &reply);
+                    let mut provenance = reply_provenance.clone();
+                    if !provenance.contains(&types::provenance::ProvenanceClass::Coworker) {
+                        provenance.push(types::provenance::ProvenanceClass::Coworker);
+                    }
+                    crate::wake::enqueue(
+                        &state,
+                        &sender_session_key,
+                        "coworker_reply",
+                        &format!("[Reply from {}]\n{}", to_name, reply),
+                        &provenance,
+                        sender_depth.saturating_add(1),
+                    );
                 }
             }
         });
@@ -256,36 +273,6 @@ async fn send_coworker_message(
         thread_key,
         reply,
     })
-}
-
-/// Append a coworker's reply into the sender's session as a system message
-/// (same convention as the mention rail's `inject_delegate_response`) so it
-/// reaches the sender's context next turn.
-fn inject_reply_into_sender(
-    state: &AppState,
-    sender_session_key: &str,
-    to_name: &str,
-    reply: &str,
-) {
-    let injection = format!("[Reply from {}]\n{}", to_name, reply);
-    match state
-        .runner
-        .sessions()
-        .resolve_session_id_by_key(sender_session_key)
-    {
-        Ok(sid) => {
-            if let Err(e) = state
-                .runner
-                .sessions()
-                .append_message(&sid, "system", &injection, None, None, None)
-            {
-                tracing::warn!(error = %e, "coworker: failed to inject reply into sender session");
-            }
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, sender = %sender_session_key, "coworker: sender session not found for reply injection");
-        }
-    }
 }
 
 /// Forwarding surface handed to `collect_channel_reply` for runs that happen

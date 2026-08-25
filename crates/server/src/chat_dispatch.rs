@@ -424,6 +424,8 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
     let hub = state.hub.clone();
     let workroom_store = state.store.clone();
     let loopback_state = state.clone();
+    let wake_state = state.clone();
+    let wake_session_key = config.session_key.clone();
     let runner = state.runner.clone();
     let janus_usage = state.janus_usage.clone();
     let presence_tracker = state.presence.clone();
@@ -1630,6 +1632,11 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                 cancelled,
             );
         }
+
+        // Session wake rail: stamp any wake batch this run carried, then
+        // drain wakes that queued while the session was busy. MUST run after
+        // the RunHandle drop so deliver() sees the session as idle.
+        crate::wake::on_run_finished(&wake_state, &wake_session_key);
 
         Ok(())
     });

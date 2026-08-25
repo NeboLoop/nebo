@@ -8,6 +8,7 @@ mod queries;
 
 pub use pool::create_pool;
 pub use queries::cost_microcents;
+pub use queries::{SessionWake, WAKE_MAX_ATTEMPTS};
 pub use queries::LicenseKeyRow;
 pub use queries::PluginAccountProfile;
 pub use queries::WorkDocumentListing;

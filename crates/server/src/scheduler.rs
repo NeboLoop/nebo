@@ -44,6 +44,10 @@ pub fn spawn(
         // snapshotted definition, fail the unresumable with a narrated reason.
         state.workflow_manager.recover_interrupted_runs().await;
 
+        // Same sweep moment for session wakes persisted but not delivered
+        // before a crash (session wake rail, R1): redeliver on boot.
+        crate::wake::recover_pending_wakes(&state).await;
+
         let mut interval = tokio::time::interval(Duration::from_secs(60));
         loop {
             interval.tick().await;

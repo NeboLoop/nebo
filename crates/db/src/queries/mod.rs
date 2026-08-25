@@ -23,6 +23,7 @@ mod plugins;
 mod provider_models;
 mod refresh_tokens;
 mod run_usage;
+mod session_wakes;
 mod sessions;
 mod settings;
 mod user_profile;
@@ -32,6 +33,7 @@ mod workflows;
 mod workrooms;
 
 pub use run_usage::cost_microcents;
+pub use session_wakes::{SessionWake, WAKE_MAX_ATTEMPTS};
 pub use license_keys::LicenseKeyRow;
 pub use plugin_account_profiles::PluginAccountProfile;
 pub use work::WorkDocumentListing;
