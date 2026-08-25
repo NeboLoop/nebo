@@ -3694,6 +3694,11 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
                     if a.loop_exposed != 0 {
                         agent_id = a.id;
                     }
+                } else if let Ok(Some(a)) = state.store.get_agent(id) {
+                    // The owner picked the employee from this bot's own
+                    // roster (never loop-exposed, so no loop_agent_id) —
+                    // the id is the local one.
+                    agent_id = a.id;
                 }
             }
         }
