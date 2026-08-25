@@ -22,6 +22,7 @@ pub mod routes;
 pub mod run_display;
 pub mod run_registry;
 mod scheduler;
+pub mod wake;
 mod spa;
 mod state;
 pub mod workflow_manager;
@@ -5278,6 +5279,31 @@ fn build_embed_context(
     }
     if !location.is_empty() {
         out.push_str(&format!(" Current location: {}.", location.join(", ")));
+    }
+
+    // Host-asserted free-form context (advisory) — e.g. a page passing ids.
+    if let Some(custom) = ctx.and_then(|c| c.get("custom")).and_then(|v| v.as_object()) {
+        let pairs: Vec<String> = custom
+            .iter()
+            .filter_map(|(k, v)| v.as_str().map(|s| format!("{}={}", k, s)))
+            .collect();
+        if !pairs.is_empty() {
+            out.push_str(&format!(" Page context: {}.", pairs.join(", ")));
+        }
+    }
+
+    // Gateway-stamped entity (trusted): the conversation is about ONE record
+    // in Company Memory — a lot-QR visitor asking about one vehicle, etc.
+    if let Some(entity) = str_at(embed, "entity") {
+        let label = str_at(embed, "label").unwrap_or_else(|| entity.clone());
+        out.push_str(&format!(
+            " This conversation is with an anonymous visitor about \"{}\" (memory entity {}). \
+             Before answering anything factual about it, look it up with your memory tools \
+             (memory_who_is / memory_recall) and answer only from what they return; if the \
+             lookup fails or a detail is missing, say so and offer to connect them with a person. \
+             Never write what the visitor says into memory.",
+            label, entity
+        ));
     }
 
     if let Some(a) = app.or(verified) {
