@@ -1835,7 +1835,9 @@
 		"departments": "Departments",
 		"allDepartments": "All departments",
 		"toolCategories": "Tool categories",
-		"allToolCategories": "All tool categories"
+		"allToolCategories": "All tool categories",
+		"moreEmployees": "More employees",
+		"moreTools": "More tools"
 	},
 	"commander": {
 		"autoLayout": "Auto Layout",
