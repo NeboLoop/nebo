@@ -8,12 +8,14 @@
 //! NEVER decides routing. The per-step execution model inside an activity
 //! (one step per LLM turn, evaluator-gated) is untouched — see engine.rs.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
 
 use futures::FutureExt;
 use futures::future::BoxFuture;
-use futures::stream::{self, TryStreamExt};
+use futures::stream::FuturesUnordered;
+use futures::StreamExt as _;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
@@ -35,6 +37,15 @@ const DEFAULT_MAX_ITERATIONS: u64 = 100;
 /// Ceiling on `params.concurrency` for loop iterations — bounds provider
 /// pressure and DB write fan-in however large the declared value is.
 const MAX_LOOP_CONCURRENCY: u64 = 16;
+/// Hands-free default: loops run concurrently without any declaration —
+/// owners describe workflows, the engine owns execution. 4 balances provider
+/// pressure against wall-clock for typical LLM bodies; the governor adapts
+/// DOWNWARD from here on live rate-limit pressure. `params.concurrency`
+/// remains as an escape hatch (1 = strictly sequential for order-dependent
+/// external side effects), never a knob owners are expected to touch.
+const AUTO_LOOP_CONCURRENCY: u64 = 4;
+/// Per-item retry budget when an iteration fails rate-limit-shaped.
+const MAX_ITEM_RATE_LIMIT_RETRIES: u32 = 4;
 
 #[derive(Clone)]
 struct Edge {
@@ -106,6 +117,70 @@ struct WalkScope {
     /// is the identity the resume fast-forward matches on; without it every
     /// iteration of a body looks like the same completed activity.
     iteration: String,
+    /// Iteration-LOCAL node outputs. `None` at top level (writes go to the
+    /// global state map); `Some` inside a loop iteration, seeded from the
+    /// parent scope's locals so nested loops read outward. This is what makes
+    /// concurrent iterations semantically invisible: a body node's readers
+    /// (prior context, data paths) see ONLY their own iteration's values —
+    /// never a racing sibling's — and the loop publishes the highest-index
+    /// iteration's outputs on completion, which is byte-what sequential
+    /// execution produced.
+    outputs: Option<Mutex<HashMap<String, String>>>,
+}
+
+/// Write a node's output where this scope's readers will find it:
+/// iteration-local inside a loop body, the global run state otherwise.
+fn record_output(ctx: &GraphCtx, scope: &WalkScope, id: &str, content: String) {
+    match &scope.outputs {
+        Some(local) => {
+            local.lock().unwrap().insert(id.to_string(), content);
+        }
+        None => {
+            ctx.state.lock().unwrap().outputs.insert(id.to_string(), content);
+        }
+    }
+}
+
+/// AIMD governor for concurrent loop iterations: halve on rate-limit
+/// pressure, creep back up (+1 per completed iteration) toward the ceiling.
+/// Purely reactive — the pressure signals are in-band in the iterations'
+/// own provider responses; the engine never asks a control plane anything.
+struct LoopGovernor {
+    ceiling: usize,
+    target: AtomicUsize,
+}
+
+impl LoopGovernor {
+    fn new(ceiling: usize) -> Self {
+        Self {
+            ceiling,
+            target: AtomicUsize::new(ceiling),
+        }
+    }
+    fn target(&self) -> usize {
+        self.target.load(Ordering::Relaxed).max(1)
+    }
+    fn on_rate_limit(&self) {
+        let t = self.target();
+        self.target.store((t / 2).max(1), Ordering::Relaxed);
+    }
+    fn on_success(&self) {
+        let t = self.target();
+        self.target.store((t + 1).min(self.ceiling), Ordering::Relaxed);
+    }
+}
+
+/// Rate-limit-shaped error text, as providers actually spell it. String
+/// matching is the in-band reality: by the time an error reaches the loop it
+/// has been through Display; the typed ProviderError::RateLimit renders as
+/// "rate limit exceeded" and gateway 429s carry their status or phrase.
+fn is_rate_limit_shaped(msg: &str) -> bool {
+    let m = msg.to_lowercase();
+    m.contains("rate limit")
+        || m.contains("rate_limit")
+        || m.contains("429")
+        || m.contains("too many requests")
+        || m.contains("overloaded")
 }
 
 /// Execute a workflow with explicit connections. Completes the run record
@@ -167,6 +242,7 @@ pub(crate) async fn execute_graph(
         stop_node: None,
         item: None,
         iteration: String::new(),
+        outputs: None,
     };
 
     let walks = entries
@@ -540,7 +616,7 @@ async fn run_command<'a>(
 ) -> Result<(), WorkflowError> {
     if let Some(content) = replay_completed(ctx, scope, activity) {
         info!(activity = activity.id.as_str(), "resume: replaying completed command node");
-        ctx.state.lock().unwrap().outputs.insert(activity.id.clone(), content);
+        record_output(ctx, scope, &activity.id, content);
         return route(ctx, scope, &activity.id, |_| true).await;
     }
     let started_at = chrono::Utc::now().timestamp();
@@ -606,11 +682,7 @@ async fn run_command<'a>(
         &result.content,
     );
     info!(activity = activity.id.as_str(), "command node completed");
-    ctx.state
-        .lock()
-        .unwrap()
-        .outputs
-        .insert(activity.id.clone(), result.content);
+    record_output(ctx, scope, &activity.id, result.content);
     route(ctx, scope, &activity.id, |_| true).await
 }
 
@@ -680,11 +752,7 @@ async fn run_wait<'a>(
         started_at,
         Some(chrono::Utc::now().timestamp()),
     );
-    ctx.state
-        .lock()
-        .unwrap()
-        .outputs
-        .insert(activity.id.clone(), format!("waited {}s", duration.as_secs()));
+    record_output(ctx, scope, &activity.id, format!("waited {}s", duration.as_secs()));
     route(ctx, scope, &activity.id, |_| true).await
 }
 
@@ -698,7 +766,7 @@ async fn run_http<'a>(
 ) -> Result<(), WorkflowError> {
     if let Some(content) = replay_completed(ctx, scope, activity) {
         info!(activity = activity.id.as_str(), "resume: replaying completed http node");
-        ctx.state.lock().unwrap().outputs.insert(activity.id.clone(), content);
+        record_output(ctx, scope, &activity.id, content);
         return route(ctx, scope, &activity.id, |_| true).await;
     }
     let started_at = chrono::Utc::now().timestamp();
@@ -773,11 +841,7 @@ async fn run_http<'a>(
         Some(chrono::Utc::now().timestamp()),
     );
     info!(activity = activity.id.as_str(), "http node completed");
-    ctx.state
-        .lock()
-        .unwrap()
-        .outputs
-        .insert(activity.id.clone(), result.content);
+    record_output(ctx, scope, &activity.id, result.content);
     route(ctx, scope, &activity.id, |_| true).await
 }
 
@@ -790,7 +854,7 @@ async fn run_condition<'a>(
 ) -> Result<(), WorkflowError> {
     let started_at = chrono::Utc::now().timestamp();
     let data = data_context(ctx, scope);
-    let context_text = prior_context_for(ctx, &activity.id);
+    let context_text = prior_context_for(ctx, scope, &activity.id);
 
     match evaluate_condition(activity, &data, &context_text) {
         Ok(verdict) => {
@@ -807,11 +871,7 @@ async fn run_condition<'a>(
                 Some(completed_at),
             );
             let chosen = if verdict { "True" } else { "False" };
-            ctx.state
-                .lock()
-                .unwrap()
-                .outputs
-                .insert(activity.id.clone(), chosen.to_string());
+            record_output(ctx, scope, &activity.id, chosen.to_string());
             info!(activity = activity.id.as_str(), verdict = chosen, "condition evaluated");
             route(ctx, scope, &activity.id, |label| label == Some(chosen)).await
         }
@@ -894,17 +954,15 @@ async fn run_loop<'a>(
         })
         .unwrap_or_default();
 
-    // Opt-in concurrent iterations: `params.concurrency` (default 1 =
-    // byte-identical sequential behavior). Iteration scopes are already
-    // isolated — own arrival map, own dotted identity, own per-iteration
-    // result rows — which is what makes this safe. Two caveats the default
-    // protects: with concurrency > 1, sibling iterations' body-node
-    // `outputs` land last-COMPLETION-wins (nondeterministic downstream —
-    // aggregate through external state or the loop summary, never through
-    // `nodes.<body-node>`), and a failing iteration drops in-flight
-    // siblings mid-run (resume fast-forward re-runs exactly the
-    // unfinished ones — the (activity, iteration) keying is order-free).
-    let concurrency = activity
+    // Hands-free concurrency: iterations run concurrently BY DEFAULT (auto
+    // ceiling 4), adaptively governed — owners never dial a knob. This is
+    // semantically invisible because iteration outputs are scope-local
+    // (readers see only their own iteration) and the loop publishes the
+    // highest-index iteration's outputs on completion — byte-what
+    // sequential execution produced. `params.concurrency` remains an escape
+    // hatch: 1 declares order-dependent external side effects (strictly
+    // sequential); an explicit value sets the governor's ceiling.
+    let ceiling = activity
         .params
         .as_ref()
         .and_then(|p| p.get("concurrency"))
@@ -912,7 +970,7 @@ async fn run_loop<'a>(
             v.as_u64()
                 .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
         })
-        .unwrap_or(1)
+        .unwrap_or(AUTO_LOOP_CONCURRENCY)
         .clamp(1, MAX_LOOP_CONCURRENCY) as usize;
 
     let total_items = items.len() as u64;
@@ -926,12 +984,19 @@ async fn run_loop<'a>(
 
     let body = &body;
     let entry_edges = &entry_edges;
+    // On success an iteration returns its scope-local outputs, so the loop
+    // can publish deterministically after ALL iterations complete.
     let run_one = move |idx: u64, item: serde_json::Value| async move {
         if let Some(token) = ctx.cancel_token {
             if token.is_cancelled() {
                 return Err(WorkflowError::Cancelled);
             }
         }
+        let seed: HashMap<String, String> = scope
+            .outputs
+            .as_ref()
+            .map(|l| l.lock().unwrap().clone())
+            .unwrap_or_default();
         let body_scope = WalkScope {
             arrivals: Mutex::new(HashMap::new()),
             indegree: body_indegree(ctx, &activity.id, body),
@@ -942,21 +1007,81 @@ async fn run_loop<'a>(
             } else {
                 format!("{}.{}", scope.iteration, idx)
             },
+            outputs: Some(Mutex::new(seed)),
         };
         let walks = entry_edges
             .iter()
             .map(|e| arrive(ctx, &body_scope, e.to.clone(), true));
-        first_error(futures::future::join_all(walks).await)
+        first_error(futures::future::join_all(walks).await)?;
+        let locals = body_scope
+            .outputs
+            .map(|l| l.into_inner().unwrap())
+            .unwrap_or_default();
+        Ok::<_, WorkflowError>(locals)
     };
 
-    if concurrency <= 1 {
+    // (iteration idx, locals) per completed iteration — publication source.
+    let mut completed_locals: Vec<(u64, HashMap<String, String>)> = Vec::new();
+
+    if ceiling <= 1 {
         for (idx, item) in taken {
-            run_one(idx, item).await?;
+            let locals = run_one(idx, item).await?;
+            completed_locals.push((idx, locals));
         }
     } else {
-        stream::iter(taken.into_iter().map(Ok))
-            .try_for_each_concurrent(concurrency, |(idx, item)| run_one(idx, item))
-            .await?;
+        let governor = LoopGovernor::new(ceiling);
+        let mut queue: VecDeque<(u64, serde_json::Value, u32)> =
+            taken.into_iter().map(|(i, item)| (i, item, 0)).collect();
+        let mut inflight = FuturesUnordered::new();
+        loop {
+            while inflight.len() < governor.target() {
+                let Some((idx, item, attempt)) = queue.pop_front() else {
+                    break;
+                };
+                let retry_copy = item.clone();
+                inflight.push(async move {
+                    if attempt > 0 {
+                        // Exponential backoff before a rate-limited retry —
+                        // the OTHER half of halving the admission target.
+                        let secs = (1u64 << attempt.min(4)).min(16);
+                        tokio::time::sleep(std::time::Duration::from_secs(secs)).await;
+                    }
+                    (idx, retry_copy, attempt, run_one(idx, item).await)
+                });
+            }
+            let Some((idx, item, attempt, outcome)) = inflight.next().await else {
+                break;
+            };
+            match outcome {
+                Ok(locals) => {
+                    governor.on_success();
+                    completed_locals.push((idx, locals));
+                }
+                Err(e)
+                    if is_rate_limit_shaped(&e.to_string())
+                        && attempt < MAX_ITEM_RATE_LIMIT_RETRIES =>
+                {
+                    governor.on_rate_limit();
+                    warn!(
+                        activity = activity.id.as_str(),
+                        iteration = idx,
+                        attempt,
+                        target = governor.target(),
+                        "iteration rate-limited — halving concurrency and requeueing"
+                    );
+                    queue.push_back((idx, item, attempt + 1));
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
+    // Publish the highest-index iteration's outputs into the parent scope —
+    // deterministic and identical to what sequential execution left behind.
+    if let Some((_, locals)) = completed_locals.into_iter().max_by_key(|(i, _)| *i) {
+        for (id, content) in locals {
+            record_output(ctx, scope, &id, content);
+        }
     }
 
     let _ = ctx.store.create_activity_result(
@@ -991,11 +1116,7 @@ async fn run_loop<'a>(
     } else {
         format!("{} items processed", processed)
     };
-    ctx.state
-        .lock()
-        .unwrap()
-        .outputs
-        .insert(activity.id.clone(), summary);
+    record_output(ctx, scope, &activity.id, summary);
     info!(activity = activity.id.as_str(), processed, "loop completed");
     route(ctx, scope, &activity.id, |label| label == Some("Done")).await
 }
@@ -1008,7 +1129,7 @@ async fn run_llm_activity<'a>(
     scope: &WalkScope,
     activity: &Activity,
 ) -> Result<(), WorkflowError> {
-    let mut prior_context = prior_context_for(ctx, &activity.id);
+    let mut prior_context = prior_context_for(ctx, scope, &activity.id);
     if let Some(item) = &scope.item {
         prior_context.push_str(&format!("\n[Current item]: {}\n", item));
     }
@@ -1115,11 +1236,7 @@ async fn run_llm_activity<'a>(
                 return route(ctx, scope, &activity.id, |_| false).await;
             }
 
-            ctx.state
-                .lock()
-                .unwrap()
-                .outputs
-                .insert(activity.id.clone(), result_text);
+            record_output(ctx, scope, &activity.id, result_text);
             route(ctx, scope, &activity.id, |_| true).await
         }
         Err(WorkflowError::Exited(reason)) => {
@@ -1169,12 +1286,17 @@ async fn run_llm_activity<'a>(
 /// Prior context for a node: outputs of its STATIC transitive predecessors
 /// that have executed, in activity-array order — deterministic regardless of
 /// parallel completion timing.
-fn prior_context_for(ctx: &GraphCtx, node: &str) -> String {
-    let st = ctx.state.lock().unwrap();
+fn prior_context_for(ctx: &GraphCtx, scope: &WalkScope, node: &str) -> String {
+    let global = ctx.state.lock().unwrap();
+    let local = scope.outputs.as_ref().map(|l| l.lock().unwrap());
     let mut out = String::new();
     if let Some(ancestors) = ctx.ancestors.get(node) {
         for id in ancestors {
-            if let Some(result) = st.outputs.get(id) {
+            let result = local
+                .as_ref()
+                .and_then(|l| l.get(id))
+                .or_else(|| global.outputs.get(id));
+            if let Some(result) = result {
                 out.push_str(&format!("\n[Activity '{}' result]: {}\n", id, result));
             }
         }
@@ -1196,9 +1318,16 @@ fn final_context(def: &WorkflowDef, outputs: &HashMap<String, String>) -> String
 /// The data context expressions resolve against:
 /// `{ inputs, item, nodes: { <activity-id>: <parsed output or string> } }`.
 fn data_context(ctx: &GraphCtx, scope: &WalkScope) -> serde_json::Value {
-    let st = ctx.state.lock().unwrap();
-    let nodes: serde_json::Map<String, serde_json::Value> = st
-        .outputs
+    let mut merged: HashMap<String, String> =
+        ctx.state.lock().unwrap().outputs.clone();
+    // Iteration-local values shadow the global map — a body node reads its
+    // OWN iteration, never a racing sibling's.
+    if let Some(local) = &scope.outputs {
+        for (k, v) in local.lock().unwrap().iter() {
+            merged.insert(k.clone(), v.clone());
+        }
+    }
+    let nodes: serde_json::Map<String, serde_json::Value> = merged
         .iter()
         .map(|(id, out)| {
             let parsed = serde_json::from_str::<serde_json::Value>(out)
@@ -1365,6 +1494,13 @@ mod walk_tests {
         scripts: Vec<(String, String)>,
         /// Tokens reported per turn (input+output split evenly).
         usage_per_turn: Option<i32>,
+        /// Remaining stream() calls to fail with ProviderError::RateLimit
+        /// (failed calls are NOT recorded — call-count asserts see successes).
+        rate_limit_failures: StdMutex<u32>,
+        /// system-prompt substring -> scripted response. Loop iteration
+        /// identity ([Current item]) lives in the SYSTEM prompt, so per-item
+        /// scripting keys here; user scripts take precedence.
+        context_scripts: Vec<(String, String)>,
     }
 
     impl MockProvider {
@@ -1376,7 +1512,20 @@ mod walk_tests {
                     .map(|(k, v)| (k.to_string(), v.to_string()))
                     .collect(),
                 usage_per_turn: None,
+                rate_limit_failures: StdMutex::new(0),
+                context_scripts: vec![],
             }
+        }
+        fn with_context_scripts(mut self, scripts: &[(&str, &str)]) -> Self {
+            self.context_scripts = scripts
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect();
+            self
+        }
+        fn with_rate_limit_failures(self, n: u32) -> Self {
+            *self.rate_limit_failures.lock().unwrap() = n;
+            self
         }
         fn with_usage(mut self, tokens: i32) -> Self {
             self.usage_per_turn = Some(tokens);
@@ -1396,6 +1545,13 @@ mod walk_tests {
             &self,
             req: &ai::ChatRequest,
         ) -> Result<ai::EventReceiver, ai::ProviderError> {
+            {
+                let mut remaining = self.rate_limit_failures.lock().unwrap();
+                if *remaining > 0 {
+                    *remaining -= 1;
+                    return Err(ai::ProviderError::RateLimit);
+                }
+            }
             let user = req
                 .messages
                 .iter()
@@ -1414,6 +1570,12 @@ mod walk_tests {
                 .iter()
                 .find(|(key, _)| user.contains(key.as_str()))
                 .map(|(_, resp)| resp.clone())
+                .or_else(|| {
+                    self.context_scripts
+                        .iter()
+                        .find(|(key, _)| req.system.contains(key.as_str()))
+                        .map(|(_, resp)| resp.clone())
+                })
                 .unwrap_or_else(|| format!("done: {}", user));
             let (tx, rx) = tokio::sync::mpsc::channel(4);
             let usage_per_turn = self.usage_per_turn;
@@ -1643,6 +1805,186 @@ mod walk_tests {
         assert!(d_call.contains("'c' result"));
         assert!(!d_call.contains("'b' result"), "dead branch leaked output");
         assert_eq!(run_status(&store, &run_id), "completed");
+    }
+
+    #[tokio::test]
+    async fn test_loop_auto_concurrency_overlaps_without_declaration() {
+        // Hands-free: NO concurrency param — the engine parallelizes by
+        // default. Same deterministic overlap proof as the declared test.
+        let provider = MockProvider::new(&[]);
+        let def = r#"{
+            "version":"1.0","id":"t","name":"T",
+            "activities":[
+                {"id":"l","type":"loop","params":{"source":"inputs.items"}},
+                {"id":"w","type":"wait","params":{"duration":"2s"}},
+                {"id":"after","intent":"task-after"}],
+            "connections":[
+                {"from":"__trigger__","to":"l"},
+                {"from":"l","to":"w","label":"Each item"},
+                {"from":"w","to":"l"},
+                {"from":"l","to":"after","label":"Done"},
+                {"from":"after","to":"__emit__"}]
+        }"#;
+        let (result, store, run_id) = run_graph(
+            def,
+            serde_json::json!({"items": [1, 2, 3]}),
+            &provider,
+        )
+        .await;
+        result.expect("run ok");
+        let waits: Vec<_> = store
+            .list_activity_results(&run_id)
+            .unwrap()
+            .into_iter()
+            .filter(|r| r.activity_id == "w")
+            .collect();
+        assert_eq!(waits.len(), 3);
+        let max_start = waits.iter().map(|r| r.started_at).max().unwrap();
+        let min_complete = waits
+            .iter()
+            .map(|r| r.completed_at.expect("completed"))
+            .min()
+            .unwrap();
+        assert!(
+            max_start < min_complete,
+            "auto default must overlap (max_start {max_start} >= min_complete {min_complete})"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_loop_publishes_highest_index_iteration() {
+        // Sequential-equivalent publication: downstream of Done sees the
+        // LAST item's body output — identical to sequential execution —
+        // regardless of concurrent completion order.
+        let provider = MockProvider::new(&[]).with_context_scripts(&[
+            ("[Current item]: \"ITEM_ALPHA\"", "out-ALPHA"),
+            ("[Current item]: \"ITEM_BETA\"", "out-BETA"),
+            ("[Current item]: \"ITEM_GAMMA\"", "out-GAMMA"),
+        ]);
+        let def = r#"{
+            "version":"1.0","id":"t","name":"T",
+            "activities":[
+                {"id":"l","type":"loop","params":{"source":"inputs.items"}},
+                {"id":"body","intent":"task-body"},
+                {"id":"after","intent":"task-after"}],
+            "connections":[
+                {"from":"__trigger__","to":"l"},
+                {"from":"l","to":"body","label":"Each item"},
+                {"from":"body","to":"l"},
+                {"from":"l","to":"after","label":"Done"},
+                {"from":"after","to":"__emit__"}]
+        }"#;
+        let (result, _, _) = run_graph(
+            def,
+            serde_json::json!({"items": ["ITEM_ALPHA", "ITEM_BETA", "ITEM_GAMMA"]}),
+            &provider,
+        )
+        .await;
+        result.expect("run ok");
+        let calls = provider.calls();
+        let after = calls
+            .iter()
+            .find(|c| c.split("###SYSTEM###").next().unwrap_or("").contains("task-after"))
+            .expect("after call");
+        let system = after.split("###SYSTEM###").nth(1).unwrap_or("");
+        assert!(
+            system.contains("out-GAMMA"),
+            "downstream must see the highest-index iteration's output: {system:?}"
+        );
+        assert!(
+            !system.contains("out-ALPHA") && !system.contains("out-BETA"),
+            "downstream must NOT see racing siblings' outputs: {system:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_loop_iteration_local_context_no_bleed() {
+        // Two-node body under concurrency: node b2's prior context must
+        // carry ITS OWN iteration's b1 output — never a racing sibling's.
+        let provider = MockProvider::new(&[]).with_context_scripts(&[
+            ("[Current item]: \"ITEM_ALPHA\"", "b1out-ALPHA"),
+            ("[Current item]: \"ITEM_BETA\"", "b1out-BETA"),
+            ("[Current item]: \"ITEM_GAMMA\"", "b1out-GAMMA"),
+        ]);
+        let def = r#"{
+            "version":"1.0","id":"t","name":"T",
+            "activities":[
+                {"id":"l","type":"loop","params":{"source":"inputs.items"}},
+                {"id":"b1","intent":"task-b1"},
+                {"id":"b2","intent":"task-b2"},
+                {"id":"after","intent":"task-after"}],
+            "connections":[
+                {"from":"__trigger__","to":"l"},
+                {"from":"l","to":"b1","label":"Each item"},
+                {"from":"b1","to":"b2"},
+                {"from":"b2","to":"l"},
+                {"from":"l","to":"after","label":"Done"},
+                {"from":"after","to":"__emit__"}]
+        }"#;
+        let (result, _, _) = run_graph(
+            def,
+            serde_json::json!({"items": ["ITEM_ALPHA", "ITEM_BETA", "ITEM_GAMMA"]}),
+            &provider,
+        )
+        .await;
+        result.expect("run ok");
+        let calls = provider.calls();
+        let mut matched = 0;
+        for c in &calls {
+            let user = c.split("###SYSTEM###").next().unwrap_or("");
+            if !user.contains("task-b2") {
+                continue;
+            }
+            let system = c.split("###SYSTEM###").nth(1).unwrap_or("");
+            for token in ["ALPHA", "BETA", "GAMMA"] {
+                let own = system.contains(&format!("[Current item]: \"ITEM_{token}\""));
+                let sees = system.contains(&format!("b1out-{token}"));
+                if own {
+                    assert!(sees, "b2 must see its own iteration's b1 output: {c:?}");
+                    matched += 1;
+                } else {
+                    assert!(
+                        !sees,
+                        "b2 leaked a sibling iteration's b1 output ({token}): {c:?}"
+                    );
+                }
+            }
+        }
+        assert_eq!(matched, 3, "all three b2 calls must be item-matched");
+    }
+
+    #[tokio::test]
+    async fn test_loop_governor_requeues_rate_limited_iteration() {
+        // stream_with_retry absorbs 2 retries internally (3 attempts); 3
+        // consecutive RateLimit errors fail the activity — the governor must
+        // requeue the iteration (with backoff + halved target) rather than
+        // fail the run, and the retry then succeeds.
+        let provider = MockProvider::new(&[]).with_rate_limit_failures(3);
+        let def = r#"{
+            "version":"1.0","id":"t","name":"T",
+            "activities":[
+                {"id":"l","type":"loop","params":{"source":"inputs.items"}},
+                {"id":"body","intent":"task-body"},
+                {"id":"after","intent":"task-after"}],
+            "connections":[
+                {"from":"__trigger__","to":"l"},
+                {"from":"l","to":"body","label":"Each item"},
+                {"from":"body","to":"l"},
+                {"from":"l","to":"after","label":"Done"},
+                {"from":"after","to":"__emit__"}]
+        }"#;
+        let (result, store, run_id) = run_graph(
+            def,
+            serde_json::json!({"items": ["only-item"]}),
+            &provider,
+        )
+        .await;
+        result.expect("run must survive a rate-limited iteration via requeue");
+        let done = store.completed_activity_contents(&run_id).unwrap();
+        assert!(
+            done.contains_key(&("body".to_string(), "0".to_string())),
+            "requeued iteration must eventually complete"
+        );
     }
 
     #[tokio::test]
