@@ -50,6 +50,8 @@
   const DISMISS_AT = 110;
 
   function dragStart(e: PointerEvent) {
+    // The whole header is the drag surface, but its buttons stay buttons.
+    if ((e.target as HTMLElement).closest('button')) return;
     dragStartY = e.clientY;
     dragging = true;
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
@@ -85,19 +87,22 @@
       aria-modal="true"
       aria-label={title}
     >
-      <!-- Grab handle — the drawer's own affordance; also the drag surface. -->
+      <!-- Grab surface: the handle AND the whole header row drag the sheet
+           on touch (a 20px pill alone is an unhittable target); header
+           buttons opt out inside dragStart. -->
       <div
-        class="md:hidden shrink-0 pt-2 pb-1 flex justify-center cursor-grab touch-none"
+        class="max-md:touch-none max-md:cursor-grab shrink-0"
         onpointerdown={dragStart}
         onpointermove={dragMove}
         onpointerup={dragEnd}
         onpointercancel={dragEnd}
         role="presentation"
       >
-        <div class="w-9 h-1 rounded-full bg-base-content/20"></div>
-      </div>
+        <div class="md:hidden pt-3 pb-2 flex justify-center">
+          <div class="w-12 h-1.5 rounded-full bg-base-content/25"></div>
+        </div>
 
-      <div class="h-12 max-md:h-10 px-4 border-b border-base-300 flex items-center gap-2 shrink-0">
+        <div class="h-12 max-md:h-10 px-4 border-b border-base-300 flex items-center gap-2">
         {#if avatarInitial}
           <span class="w-6 h-6 rounded-md flex items-center justify-center font-mono text-[10px] font-semibold shrink-0 {avatarClass}">{avatarInitial}</span>
         {/if}
@@ -112,6 +117,7 @@
         >
           <X class="w-4 h-4" />
         </button>
+        </div>
       </div>
       <div class="flex-1 min-h-0 flex">
         {@render children()}

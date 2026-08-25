@@ -57,6 +57,34 @@
 
 	const isBrowseView = $derived(kind === 'employees' || kind === 'tools');
 
+	// ── Search: server-side (q on /store/browse) for the browse views. A live
+	// query flips the view to a flat ranked result list — grouping by
+	// department is browsing, not finding.
+	let searchQ = $state('');
+	let searchItems: AppItem[] = $state([]);
+	let searching = $state(false);
+	let searchSeq = 0;
+	const searchActive = $derived(isBrowseView && searchQ.trim().length > 1);
+
+	$effect(() => {
+		const q = searchQ.trim();
+		if (!searchActive) {
+			searchItems = [];
+			return;
+		}
+		const seq = ++searchSeq;
+		searching = true;
+		const t = setTimeout(async () => {
+			const res = (await api
+				.browseStore(kind, undefined, price === 'all' ? undefined : price, q, 48, 0)
+				.catch(() => ({ products: [], total: 0 }))) as { products?: unknown[] };
+			if (seq !== searchSeq) return;
+			searchItems = ((res.products as Record<string, unknown>[]) || []).map((r, i) => toAppItem(r, i));
+			searching = false;
+		}, 250);
+		return () => clearTimeout(t);
+	});
+
 	async function fetchBrowse(offset: number): Promise<{ items: AppItem[]; total: number }> {
 		const res = (await api
 			.browseStore(
@@ -141,17 +169,30 @@
 	const employeesByDept = $derived.by(() => {
 		if (!mktMap) return [] as { name: string; roles: AppItem[] }[];
 		const depts = deptFilter ? [deptFilter] : mktMap.departments;
-		return depts
+		const groups = depts
 			.map((d) => ({ name: d, roles: employees.filter((e) => mapOf(e)?.dept === d) }))
 			.filter((g) => g.roles.length > 0);
+		// Anything the curated map doesn't know yet still deserves a shelf —
+		// otherwise a newly published employee is invisible until the next
+		// map edit ships.
+		if (!deptFilter) {
+			const unmapped = employees.filter((e) => !mapOf(e)?.dept);
+			if (unmapped.length) groups.push({ name: $t('marketplace.moreEmployees'), roles: unmapped });
+		}
+		return groups;
 	});
 	const toolItems = $derived(kind === 'tools' ? browseItems : []);
 	const toolsByCategory = $derived.by(() => {
 		if (!mktMap) return [] as { name: string; items: AppItem[] }[];
 		const cats = tcFilter ? [tcFilter] : mktMap.toolCategories;
-		return cats
+		const groups = cats
 			.map((c) => ({ name: c, items: toolItems.filter((t) => mapOf(t)?.tc === c) }))
 			.filter((g) => g.items.length > 0);
+		if (!tcFilter) {
+			const unmapped = toolItems.filter((t) => !mapOf(t)?.tc);
+			if (unmapped.length) groups.push({ name: $t('marketplace.moreTools'), items: unmapped });
+		}
+		return groups;
 	});
 
 	// A category on its own (no kind/price/publisher) gets the editorial
@@ -220,6 +261,31 @@
 	<div class="max-w-6xl mx-auto px-6 py-8 pb-12">
 		<h1 class="font-display text-3xl font-bold tracking-tight">{$t('marketplace.employeesHeadline')}</h1>
 		<p class="text-base text-base-content/70 mt-2 max-w-3xl leading-relaxed">{$t('marketplace.employeesLede')}</p>
+		<label class="mt-5 max-w-md flex items-center gap-2 rounded-full border border-base-300 bg-base-100 px-4 py-2 focus-within:border-primary">
+			<Search class="w-4 h-4 text-base-content/50 shrink-0" />
+			<input
+				class="w-full bg-transparent outline-none text-sm"
+				type="search"
+				placeholder={$t('marketplace.searchPlaceholder')}
+				bind:value={searchQ}
+			/>
+		</label>
+		{#if searchActive}
+			{#if searching}
+				<div class="flex justify-center py-16"><span class="loading loading-spinner loading-md text-primary"></span></div>
+			{:else if searchItems.length === 0}
+				<div class="flex flex-col items-center justify-center py-16 text-center">
+					<Search class="w-10 h-10 text-base-content/40 mb-3" />
+					<p class="text-base font-medium">{$t('marketplace.nothingHereYet')}</p>
+				</div>
+			{:else}
+				<div class="grid grid-cols-1 md:grid-cols-2 gap-5 mt-6">
+					{#each searchItems as e (e.id)}
+						<ResumeCard item={e} department={mapOf(e)?.dept ?? ''} title={mapOf(e)?.role ?? e.name} responsibilities={respOf(e)} />
+					{/each}
+				</div>
+			{/if}
+		{:else}
 		{#if !mktMap || employees.length === 0}
 			<div class="flex flex-col items-center justify-center py-16 text-center">
 				<Search class="w-10 h-10 text-base-content/40 mb-3" />
@@ -247,6 +313,7 @@
 					</button>
 				</div>
 			{/if}
+		{/if}
 		{/if}
 	</div>
 {:else if kind === 'tools'}
