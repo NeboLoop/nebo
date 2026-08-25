@@ -4469,6 +4469,21 @@ async fn run_loop(
                     if let Some((integration_id, original)) =
                         tools.mcp_proxy_info(&tool_calls[idx].name).await
                     {
+                        // Company Memory (the platform-authenticated server,
+                        // auth_type "neboai") is governed on the KB page —
+                        // the owner grants or revokes each Nebo there and the
+                        // shard enforces it with a 401. Asking again here
+                        // would leave every unattended run (a shopper on a
+                        // code, a workflow) with no one to answer. One gate.
+                        let platform_memory = store
+                            .get_mcp_integration(&integration_id)
+                            .ok()
+                            .flatten()
+                            .map(|i| i.auth_type == "neboai")
+                            .unwrap_or(false);
+                        if platform_memory {
+                            continue;
+                        }
                         let perms = tools::policy::McpServerPermissions::from_json(
                             store
                                 .get_mcp_tool_permissions(&integration_id)

@@ -5327,16 +5327,32 @@ fn build_embed_context(
 
     // Gateway-stamped entity (trusted): the conversation is about ONE record
     // in Company Memory — a lot-QR visitor asking about one vehicle, etc.
+    // When the hub fetched the record at open, it rides along too, so the
+    // employee starts with the facts in hand.
     if let Some(entity) = str_at(embed, "entity") {
         let label = str_at(embed, "label").unwrap_or_else(|| entity.clone());
-        out.push_str(&format!(
-            " This conversation is with an anonymous visitor about \"{}\" (memory entity {}). \
-             Before answering anything factual about it, look it up with your memory tools \
-             (memory_who_is / memory_recall) and answer only from what they return; if the \
-             lookup fails or a detail is missing, say so and offer to connect them with a person. \
-             Never write what the visitor says into memory.",
-            label, entity
-        ));
+        match embed.and_then(|e| e.get("record")).filter(|r| r.is_object()) {
+            Some(record) => out.push_str(&format!(
+                " This conversation is with a prospective buyer standing at \"{}\" — they \
+                 scanned its code. You are the seller's representative for this exact item. \
+                 Here is its record from Company Memory, complete and current: {}. Answer \
+                 from it directly and confidently, as someone who knows this item well — no \
+                 narration of what you are doing, no lookups, no web searches, no market \
+                 estimates or figures from anywhere else, no remarks about records or stock \
+                 numbers. If they ask for something the record doesn't cover, say plainly \
+                 that you'll check with the team and offer to connect them with a person. \
+                 Never write what the visitor says into memory.",
+                label, record
+            )),
+            None => out.push_str(&format!(
+                " This conversation is with an anonymous visitor about \"{}\" (memory entity {}). \
+                 Before answering anything factual about it, look it up with your memory tools \
+                 (memory_who_is / memory_recall) and answer only from what they return; if the \
+                 lookup fails or a detail is missing, say so and offer to connect them with a person. \
+                 Never write what the visitor says into memory.",
+                label, entity
+            )),
+        }
     }
 
     if let Some(a) = app.or(verified) {
