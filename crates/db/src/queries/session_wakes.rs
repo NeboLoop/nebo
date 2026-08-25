@@ -17,8 +17,11 @@ pub struct SessionWake {
 }
 
 /// A wake is poisoned (stamped failed, never retried) after this many
-/// delivery attempts.
-pub const WAKE_MAX_ATTEMPTS: i64 = 3;
+/// delivery attempts. Claiming counts as the attempt, and a busy-claim whose
+/// run ends before draining re-claims later — live coalescing runs showed
+/// healthy payloads reaching 3 claims from that churn alone, so the ceiling
+/// leaves margin above it.
+pub const WAKE_MAX_ATTEMPTS: i64 = 5;
 
 impl Store {
     /// Write-ahead: persist the wake BEFORE any delivery attempt.
@@ -144,15 +147,15 @@ mod tests {
     }
 
     #[test]
-    fn poison_after_three_attempts() {
+    fn poison_after_max_attempts() {
         let s = store();
         s.enqueue_session_wake("agent:z:web", "coworker_reply", "cursed", "[]", 0).unwrap();
-        for round in 1..=3 {
+        for round in 1..=super::WAKE_MAX_ATTEMPTS {
             let (claimed, _) = s.claim_session_wakes("agent:z:web").unwrap();
             assert_eq!(claimed.len(), 1, "round {round} still claimable");
             // Delivery fails — never stamped.
         }
-        // Fourth sweep: over the threshold, stamped poisoned, never returned.
+        // Next sweep: over the threshold, stamped poisoned, never returned.
         let (claimed, poisoned) = s.claim_session_wakes("agent:z:web").unwrap();
         assert!(claimed.is_empty());
         assert_eq!(poisoned, 1, "the failure is counted, never silent");
