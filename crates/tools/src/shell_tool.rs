@@ -130,6 +130,23 @@ impl ShellTool {
             }
         }
 
+        // A follow/watch with no bound parks the run for the WHOLE timeout and
+        // returns nothing useful. Observed live 2026-08-27: an agent told to
+        // poll a log reached for `tail -f … | grep READY` with timeout 300 and
+        // sat there for five minutes producing no output. Nebo runs unattended,
+        // so there is no one to Ctrl-C it. Refuse and teach the bounded form —
+        // same shape as the host-converter redirect above.
+        if let Some(flag) = detect_unbounded_follow(&input.command) {
+            return ToolResult::error(format!(
+                "`{flag}` follows output forever and would block this call for its \
+                 entire timeout without returning anything. Take a bounded snapshot \
+                 instead — e.g. `tail -n 50 <file>`, `docker compose logs --tail 50`, \
+                 or `journalctl -n 50` — and call again if you need a later view. If \
+                 you genuinely need to follow, bound it explicitly with `timeout N …` \
+                 or pipe through `head -n N`."
+            ));
+        }
+
         // Privilege escalation is never a legitimate automation step: Nebo runs
         // unattended, so sudo either hangs on a password prompt or silently
         // escalates. Refuse before anything executes (covers background too).
@@ -737,6 +754,38 @@ fn extract_base_command(command: &str) -> String {
 
 /// Interpret a command's exit code using command-specific semantics.
 /// Returns (is_error, optional_message).
+/// The follow/watch flag in a command that would never terminate on its own,
+/// if any. Returns `None` when the command bounds itself — `timeout N …`,
+/// a `head` in the pipeline, or `tail -f -m N` all terminate, and refusing
+/// those would block legitimate work.
+fn detect_unbounded_follow(command: &str) -> Option<&'static str> {
+    let c = command.to_lowercase();
+    // Explicit bounds make a follow finite — allow them through.
+    if c.contains("timeout ") || c.contains("| head") || c.contains("|head") {
+        return None;
+    }
+    // `watch` re-runs forever and takes no follow flag at all.
+    if c.split_whitespace().next() == Some("watch") {
+        return Some("watch");
+    }
+    // A bare `-f`/`--follow` token. Only meaningful for the log readers — for
+    // `grep -f patterns.txt` the same flag means "patterns from file", which is
+    // finite and must not be refused.
+    if !c.split_whitespace().any(|t| t == "-f" || t == "--follow") {
+        return None;
+    }
+    if c.contains("journalctl") {
+        return Some("journalctl -f");
+    }
+    if c.contains("logs") {
+        return Some("logs -f");
+    }
+    if c.contains("tail") {
+        return Some("tail -f");
+    }
+    None
+}
+
 fn interpret_exit_code(command: &str, exit_code: i32, output: &str) -> (bool, Option<String>) {
     let base = extract_base_command(command);
     match base.as_str() {
@@ -822,6 +871,28 @@ mod tests {
 
     // Privilege escalation never executes — foreground or background — and the
     // refusal steers toward reporting to the user, not retrying.
+    #[test]
+    fn unbounded_follows_are_detected() {
+        // The exact shape that parked a live run for 300s.
+        assert!(detect_unbounded_follow("tail -f /tmp/app.log 2>&1 | grep \"READY\"").is_some());
+        assert!(detect_unbounded_follow("tail -f /var/log/x").is_some());
+        assert!(detect_unbounded_follow("docker compose logs -f web").is_some());
+        assert!(detect_unbounded_follow("journalctl -f -u nebo").is_some());
+        assert!(detect_unbounded_follow("watch docker ps").is_some());
+    }
+
+    #[test]
+    fn bounded_and_ordinary_commands_pass() {
+        // Self-bounding forms must NOT be refused.
+        assert!(detect_unbounded_follow("timeout 5 tail -f /tmp/app.log").is_none());
+        assert!(detect_unbounded_follow("tail -f /tmp/app.log | head -n 20").is_none());
+        // Ordinary snapshots — the form the refusal teaches.
+        assert!(detect_unbounded_follow("tail -n 50 /tmp/app.log").is_none());
+        assert!(detect_unbounded_follow("docker compose logs --tail 50 web").is_none());
+        assert!(detect_unbounded_follow("ls -la /tmp").is_none());
+        assert!(detect_unbounded_follow("grep -f patterns.txt input.txt").is_none());
+    }
+
     #[tokio::test]
     async fn privilege_escalation_is_refused() {
         let t = tool();

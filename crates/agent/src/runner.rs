@@ -79,6 +79,105 @@ const MAX_AUTO_CONTINUATIONS_DEFAULT: usize = 5;
 const MAX_AUTO_CONTINUATIONS_CEILING: usize = 50;
 /// Max recovery attempts when output is truncated by token limit.
 const MAX_OUTPUT_RECOVERY_ATTEMPTS: usize = 3;
+
+/// Absolute per-turn ceiling on repeats of ONE exact call (same tool, same
+/// arguments), counted regardless of whether the result changed.
+///
+/// Every other repetition guard keys on the RESULT being identical
+/// (`counts_toward_action_spiral` → `flagged_redundant` or an error). A polling
+/// loop defeats all of them by construction: `docker compose logs`, `tail`, a
+/// status endpoint — the bytes drift every call, so nothing is ever flagged
+/// unproductive and no counter moves. Live-verified 2026-08-27: 16 identical
+/// polls against a growing log produced ZERO guard firings, and the customer
+/// incident it reproduces ran 12,093 requests in 24h.
+///
+/// This is the backstop for that class: it counts the CALL, not the answer.
+/// Set well above any legitimate repeat (the incident's own real debugging
+/// repeated one `docker compose logs` 13 times across a turn) and far below the
+/// iteration ceiling, so it only ever catches a genuine runaway.
+const IDENTICAL_CALL_ABORT: usize = 12;
+
+/// Evicted messages that must accumulate before another background LLM
+/// compaction is spawned for a session.
+///
+/// The sliding window evicts whenever a conversation exceeds
+/// `MAX_MESSAGE_COUNT` (80) — regardless of token budget — so a sustained
+/// agentic session evicts on EVERY iteration, and the ungated spawn fired one
+/// ~13.5s summary per iteration. Measured in the 2026-08-27 incident: 3,845
+/// compactions against 3,981 agent turns (0.97 per turn), 376MB of input and
+/// 14.4 hours of wall time — a third of all traffic, for a summary the next
+/// iteration immediately superseded. The quick string-extraction fallback still
+/// runs on every eviction, so nothing is lost between LLM passes; this only
+/// throttles the expensive upgrade.
+const SUMMARY_MIN_EVICTED: usize = 20;
+
+/// Sessions with a background compaction in flight. The spawn is
+/// fire-and-forget, so without this N summaries run concurrently — each taking
+/// an LLM permit from the agent's own calls and racing on `update_summary`,
+/// where the last writer wins in arbitrary order.
+static SUMMARY_INFLIGHT: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashSet<String>>,
+> = std::sync::LazyLock::new(Default::default);
+
+/// Messages evicted for a session since its last spawned LLM summary.
+static SUMMARY_EVICTED_SINCE: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<String, usize>>,
+> = std::sync::LazyLock::new(Default::default);
+
+/// Whether this eviction should spawn an LLM summary. Accumulates the evicted
+/// count and returns true at most once per [`SUMMARY_MIN_EVICTED`] messages per
+/// session, never while one is already running.
+fn summary_due(session_id: &str, evicted: usize) -> bool {
+    let mut since = SUMMARY_EVICTED_SINCE.lock().unwrap_or_else(|p| p.into_inner());
+    let acc = since.entry(session_id.to_string()).or_insert(0);
+    *acc += evicted;
+    if *acc < SUMMARY_MIN_EVICTED {
+        return false;
+    }
+    let mut inflight = SUMMARY_INFLIGHT.lock().unwrap_or_else(|p| p.into_inner());
+    if !inflight.insert(session_id.to_string()) {
+        return false; // one already running; keep accumulating
+    }
+    *acc = 0;
+    true
+}
+
+/// Minimum gap between background tool-summary labels for one session.
+///
+/// The label is a one-line UX caption ("Read auth config and fixed token
+/// validation"). It was spawned once per tool-executing iteration, which made
+/// it **30.1% of all LLM requests** in the 2026-08-27 incident (3,597 of
+/// 11,946) — a third of the traffic for a caption. At a normal working pace one
+/// label per round still lands; in a fast loop the captions were arriving
+/// faster than a human could read them anyway.
+const TOOL_SUMMARY_MIN_GAP: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// Last tool-summary label spawned per session.
+static TOOL_SUMMARY_LAST: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>,
+> = std::sync::LazyLock::new(Default::default);
+
+/// Whether to spawn a tool-summary label for this iteration. Rate-limited per
+/// session; the label is cosmetic, so skipping one costs nothing but the
+/// caption for that round.
+fn tool_summary_due(session_id: &str, now: std::time::Instant) -> bool {
+    let mut last = TOOL_SUMMARY_LAST.lock().unwrap_or_else(|p| p.into_inner());
+    match last.get(session_id) {
+        Some(prev) if now.duration_since(*prev) < TOOL_SUMMARY_MIN_GAP => false,
+        _ => {
+            last.insert(session_id.to_string(), now);
+            true
+        }
+    }
+}
+
+/// Release the in-flight marker when a background summary finishes.
+fn summary_done(session_id: &str) {
+    SUMMARY_INFLIGHT
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .remove(session_id);
+}
 /// Default output token cap for LLM requests.
 const DEFAULT_MAX_OUTPUT_TOKENS: i32 = 16_384;
 /// Escalated output token cap after a max_tokens truncation.
@@ -257,6 +356,36 @@ fn record_action_spiral(
     if counts_toward_action_spiral(call, is_error, flagged_redundant) {
         *counts.entry(action_key(call)).or_insert(0) += 1;
     }
+}
+
+/// Key for the per-turn identical-call budget: exact tool name + exact
+/// arguments. Deliberately ignores the RESULT — that is the whole point (see
+/// [`IDENTICAL_CALL_ABORT`]).
+fn identical_call_key(call: &ai::ToolCall) -> (u64, u64) {
+    (
+        simple_hash(call.name.as_bytes()),
+        simple_hash(call.input.to_string().as_bytes()),
+    )
+}
+
+/// Count this call against the per-turn identical-call budget.
+fn record_identical_call(
+    counts: &mut std::collections::HashMap<(u64, u64), usize>,
+    call: &ai::ToolCall,
+) {
+    *counts.entry(identical_call_key(call)).or_insert(0) += 1;
+}
+
+/// Whether this call has already been made [`IDENTICAL_CALL_ABORT`] times this
+/// turn, and the turn must therefore END. Mirrors the runner loop so unit tests
+/// can assert the turn-level budget without driving a full run (same discipline
+/// as `record_action_spiral`).
+fn identical_call_abort_due(
+    counts: &std::collections::HashMap<(u64, u64), usize>,
+    call: &ai::ToolCall,
+) -> Option<usize> {
+    let repeats = counts.get(&identical_call_key(call)).copied().unwrap_or(0);
+    (repeats >= IDENTICAL_CALL_ABORT).then_some(repeats)
 }
 
 /// Cross-turn spiral memory. The per-turn counters reset every run, so a model
@@ -1739,6 +1868,14 @@ async fn run_loop(
     // Rolling hashes of recent tool results for stale-result detection in steering
     // (name_hash, args_hash, result_hash, was_unproductive)
     let mut recent_tool_result_hashes: Vec<(u64, u64, u64, bool)> = Vec::new();
+    // Per-turn count of each exact (tool, args) call, incremented on EVERY
+    // execution regardless of productivity. Deliberately not the 10-entry
+    // `recent_tool_result_hashes` ring — that is sized for ping-pong detection
+    // and can never show more than 10 repeats, so a turn-level budget cannot be
+    // read from it. Never reset mid-turn: the reset is exactly what let the
+    // spiral nudge fire forever without ever ending a run.
+    let mut identical_call_counts: std::collections::HashMap<(u64, u64), usize> =
+        std::collections::HashMap::new();
     // Per-(name, args) hash of a read-only call's own last result, for the
     // no-progress check: identical read + identical answer = no new information.
     let mut readonly_result_hash_by_call: std::collections::HashMap<(u64, u64), u64> =
@@ -2843,9 +2980,12 @@ async fn run_loop(
             };
             let _ = sessions.update_summary(session_id, &immediate_summary);
 
-            // Background: fire LLM summary, store when done (non-blocking)
+            // Background: fire LLM summary, store when done (non-blocking).
+            // Throttled by `summary_due` — the quick fallback above already
+            // captured this eviction, so skipping here loses nothing.
             let cheap_model = selector.get_cheapest_model();
-            let prov = prefer_non_gateway(&providers.read().await);
+            let prov = prefer_non_gateway(&providers.read().await)
+                .filter(|_| summary_due(session_id, evicted.len()));
             if let Some(prov) = prov {
                 let sess = sessions.clone();
                 let sid = session_id.to_string();
@@ -2870,6 +3010,7 @@ async fn run_loop(
                             debug!(error = %e, "background LLM compaction failed");
                         }
                     }
+                    summary_done(&sid);
                 });
                 crate::memory_flush::track_extraction(handle).await;
             }
@@ -4315,6 +4456,45 @@ async fn run_loop(
                 }
             }
 
+            // ── Runaway backstop: the same exact call, over and over ──────────
+            // Checked BEFORE execution and independent of every productivity
+            // signal. This is the only guard that can see a drifting-output poll
+            // loop, because it never looks at the result. It ENDS the turn rather
+            // than nudging: the spiral backstop below resets its own budget when
+            // it fires, which is precisely how a loop earns an unlimited number of
+            // nudges and still runs to the iteration ceiling.
+            let mut identical_call_abort: Option<(String, usize)> = None;
+            for (idx, tc) in tool_calls.iter().enumerate() {
+                if blocked_results[idx].is_some() {
+                    continue;
+                }
+                if let Some(repeats) = identical_call_abort_due(&identical_call_counts, tc) {
+                    identical_call_abort = Some((action_key(tc), repeats));
+                    break;
+                }
+            }
+            if let Some((key, repeats)) = identical_call_abort {
+                warn!(
+                    session_id,
+                    action = %key,
+                    repeats,
+                    "runaway backstop: identical call repeated past ceiling — ending turn"
+                );
+                turn_exit_reason = "runaway_tool_loop".to_string();
+                let _ = tx
+                    .send(StreamEvent::control_notice(
+                        format!(
+                            "Stopped: '{}' was called {} times with identical arguments \
+                             without resolving. Ending the run so it cannot continue \
+                             indefinitely.",
+                            key, repeats
+                        ),
+                        "runaway_tool_loop",
+                    ))
+                    .await;
+                break;
+            }
+
             // Defense-in-depth: block repeated reads of the SAME target that keep
             // FAILING via different methods/args (which the identical-args guard above
             // misses — the #research read-loop). After READ_FAILURE_LIMIT failures of a
@@ -5476,6 +5656,10 @@ async fn run_loop(
                     content_hash,
                     unproductive,
                 ));
+                // Turn-level repeat budget: counts the CALL, not the answer, so a
+                // poll whose output drifts every time still accrues (see
+                // IDENTICAL_CALL_ABORT).
+                record_identical_call(&mut identical_call_counts, &tc);
                 recent_tool_names.push(tc.name.clone());
                 // Engine-stamped provenance: union this call's classes into
                 // the run's taint set (static table; model-invisible).
@@ -5591,7 +5775,9 @@ async fn run_loop(
             // Pattern 13: background tool summary generation via cheap model.
             // Spawns a fire-and-forget task that calls the cheapest provider to
             // generate a one-line label for the UX showing what the agent did.
-            {
+            // Rate-limited per session (see TOOL_SUMMARY_MIN_GAP) — ungated this
+            // was a third of all LLM requests.
+            if tool_summary_due(session_id, std::time::Instant::now()) {
                 let prov_lock = providers.read().await;
                 let prov_snapshot: Vec<Arc<dyn Provider>> = prov_lock.clone();
                 drop(prov_lock);
@@ -7301,6 +7487,160 @@ mod tests {
         assert_eq!(classify_run("subagent:parent:child"), ("chat", None));
         // A truncated workflow key must not record an empty-string id.
         assert_eq!(classify_run("agent:abc:workflow:"), ("workflow", None));
+    }
+}
+
+#[cfg(test)]
+mod runaway_backstop_tests {
+    use super::*;
+
+    fn call(name: &str, cmd: &str) -> ai::ToolCall {
+        ai::ToolCall {
+            id: "t".into(),
+            name: name.into(),
+            input: serde_json::json!({"action": "exec", "command": cmd}),
+        }
+    }
+
+    /// The runaway backstop counts the CALL, not the answer. This is the case
+    /// every other guard misses: a poll whose output drifts every time
+    /// (`docker compose logs`, `tail`, a status endpoint) is never flagged
+    /// unproductive, so `counts_toward_action_spiral` never fires and the
+    /// 3-strike identical-args block never accrues. Live-verified 2026-08-27:
+    /// 16 such polls produced ZERO guard firings.
+    #[test]
+    fn identical_call_aborts_even_when_every_result_differs() {
+        let mut counts = std::collections::HashMap::new();
+        let c = call("os", "tail -30 /var/log/app.log");
+        for i in 0..IDENTICAL_CALL_ABORT {
+            assert!(
+                identical_call_abort_due(&counts, &c).is_none(),
+                "must not abort at {i} repeats"
+            );
+            record_identical_call(&mut counts, &c);
+        }
+        assert_eq!(
+            identical_call_abort_due(&counts, &c),
+            Some(IDENTICAL_CALL_ABORT),
+            "the {IDENTICAL_CALL_ABORT}th repeat ends the turn"
+        );
+    }
+
+    /// Distinct work never accrues toward one budget — the guard must not
+    /// punish a model doing many different things with the same tool.
+    #[test]
+    fn different_arguments_do_not_share_a_budget() {
+        let mut counts = std::collections::HashMap::new();
+        for i in 0..40 {
+            record_identical_call(&mut counts, &call("os", &format!("echo {i}")));
+        }
+        for i in 0..40 {
+            assert!(
+                identical_call_abort_due(&counts, &call("os", &format!("echo {i}"))).is_none(),
+                "40 distinct commands must never trip the backstop"
+            );
+        }
+    }
+
+    /// Same command, different tool = different budget.
+    #[test]
+    fn tool_name_is_part_of_the_key() {
+        let mut counts = std::collections::HashMap::new();
+        for _ in 0..IDENTICAL_CALL_ABORT {
+            record_identical_call(&mut counts, &call("os", "ls"));
+        }
+        assert!(identical_call_abort_due(&counts, &call("os", "ls")).is_some());
+        assert!(identical_call_abort_due(&counts, &call("execute", "ls")).is_none());
+    }
+
+    /// The tool-summary label is a caption, not work. Once per iteration made it
+    /// 30.1% of all LLM requests in the incident; it is rate-limited per session.
+    #[test]
+    fn tool_summary_label_is_rate_limited() {
+        let sid = "label-test-session";
+        TOOL_SUMMARY_LAST.lock().unwrap().remove(sid);
+        let t0 = std::time::Instant::now();
+
+        assert!(tool_summary_due(sid, t0), "first label always lands");
+        // A fast loop: ten tool rounds inside the gap produce no further labels.
+        for i in 1..=10 {
+            let t = t0 + std::time::Duration::from_secs(i);
+            assert!(!tool_summary_due(sid, t), "no label {i}s into the gap");
+        }
+        // Past the gap, labelling resumes.
+        assert!(
+            tool_summary_due(sid, t0 + TOOL_SUMMARY_MIN_GAP),
+            "label resumes after the gap"
+        );
+    }
+
+    /// Sessions are rate-limited independently.
+    #[test]
+    fn tool_summary_limit_is_per_session() {
+        let t = std::time::Instant::now();
+        for sid in ["label-a", "label-b"] {
+            TOOL_SUMMARY_LAST.lock().unwrap().remove(sid);
+        }
+        assert!(tool_summary_due("label-a", t));
+        assert!(tool_summary_due("label-b", t));
+    }
+
+    /// The compaction gate: an eviction on every iteration must NOT produce an
+    /// LLM summary on every iteration. Reproduces the 2026-08-27 ratio (0.97
+    /// summaries per turn) and asserts the throttled behaviour.
+    #[test]
+    fn summary_is_throttled_not_per_eviction() {
+        let sid = "throttle-test-session";
+        SUMMARY_EVICTED_SINCE
+            .lock()
+            .unwrap()
+            .remove(sid);
+        SUMMARY_INFLIGHT.lock().unwrap().remove(sid);
+
+        // 30 iterations that each evict 2 messages — the shape of any session
+        // past MAX_MESSAGE_COUNT. Ungated this fired 30 LLM summaries.
+        let mut spawned = 0;
+        for _ in 0..30 {
+            if summary_due(sid, 2) {
+                spawned += 1;
+                summary_done(sid); // simulate the task finishing immediately
+            }
+        }
+        // 60 evicted / 20 per summary = 3, never 30.
+        assert_eq!(spawned, 3, "one summary per {SUMMARY_MIN_EVICTED} evicted messages");
+    }
+
+    /// While a summary is in flight, no second one is spawned for that session —
+    /// the fire-and-forget spawn otherwise ran N concurrently, each taking an
+    /// LLM permit and racing on update_summary.
+    #[test]
+    fn summary_never_runs_concurrently_for_one_session() {
+        let sid = "inflight-test-session";
+        SUMMARY_EVICTED_SINCE.lock().unwrap().remove(sid);
+        SUMMARY_INFLIGHT.lock().unwrap().remove(sid);
+
+        assert!(summary_due(sid, SUMMARY_MIN_EVICTED), "first crosses the bar");
+        // Still running: further evictions accumulate but must not spawn.
+        for _ in 0..10 {
+            assert!(
+                !summary_due(sid, SUMMARY_MIN_EVICTED),
+                "no second summary while one is in flight"
+            );
+        }
+        summary_done(sid);
+        assert!(summary_due(sid, 1), "spawns again once the first finished");
+    }
+
+    /// Sessions are throttled independently — one busy conversation must not
+    /// starve another's compaction.
+    #[test]
+    fn throttle_is_per_session() {
+        for sid in ["sess-a", "sess-b"] {
+            SUMMARY_EVICTED_SINCE.lock().unwrap().remove(sid);
+            SUMMARY_INFLIGHT.lock().unwrap().remove(sid);
+        }
+        assert!(summary_due("sess-a", SUMMARY_MIN_EVICTED));
+        assert!(summary_due("sess-b", SUMMARY_MIN_EVICTED));
     }
 }
 

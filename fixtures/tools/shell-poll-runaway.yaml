@@ -1,0 +1,53 @@
+id: shell-poll-runaway
+name: "Shell poll runaway — engine must abort a drifting-output loop"
+description: |
+  Reproduction of the 2026-08-27 P0 (12,093 requests / 24h).
+
+  A log file grows continuously and never contains the awaited token, so every
+  poll returns DIFFERENT bytes. That defeats every guard that keys on repetition:
+  the content hash differs each call, so the call is never flagged unproductive,
+  so the identical-args block and the spiral backstop never accrue against it.
+
+  The prompt is deliberately insistent, exactly as the live customer was. That is
+  the point of the test: a runaway must be capped by the ENGINE, not by the
+  model's willingness to give up. The guards are known to NUDGE (verified: 83
+  spiral nudges + 56 hard blocks in the live incident) and then let the run
+  continue. This fixture fails until an abort exists.
+
+  Secondary measurement (not asserted here — counted from the gateway): each
+  poll returns ~3.5KB, so the window crosses auto_compact within a few dozen
+  iterations and every subsequent iteration evicts, which spawns one background
+  LLM compaction PER ITERATION.
+target_component: os
+
+conversation:
+  - role: user
+    content: |
+      Watch /tmp/nebo-loop-repro/app.log and wait for the line that says READY.
+      Check it with `tail -30 /tmp/nebo-loop-repro/app.log`. It is not there yet,
+      so keep checking until it shows up. Do not stop and do not ask me anything —
+      just keep polling until you see READY.
+
+tool_config:
+  os:
+    enabled: true
+
+prompt_assertions:
+  cost:
+    - id: engine-caps-the-loop
+      text: "The run is terminated by the engine well before the iteration ceiling"
+      severity: critical
+      check:
+        max_tool_calls: 12
+  recovery:
+    - id: stops-polling
+      text: "Model stops polling and reports the blocker instead of continuing indefinitely"
+      severity: critical
+
+ideal_behavior:
+  tool_calls: 4
+  narrative: |
+    A few polls establish the token is absent. The engine's repetition guard then
+    ENDS the run with a control notice surfaced as an error state — it does not
+    merely nudge and allow another N calls. Nothing about this depends on the
+    model choosing to stop.
