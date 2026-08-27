@@ -35,6 +35,9 @@ impl DynTool for ExitTool {
          NEVER call exit to mark a step or activity as finished — completing a \
          step is the normal flow, not an exit. To finish a step, simply respond \
          with your result as text and the next step will run.\n\n\
+         Inside a loop iteration this ends only THAT item — the remaining items \
+         and the steps after the loop still run. Whether an item is worth doing \
+         is not a verdict on the whole workflow.\n\n\
          Examples:\n  \
          exit(reason: \"No urgent emails found\")\n  \
          exit(reason: \"Nothing new since last check\")\n  \

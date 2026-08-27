@@ -1022,11 +1022,32 @@ async fn run_loop<'a>(
 
     // (iteration idx, locals) per completed iteration — publication source.
     let mut completed_locals: Vec<(u64, HashMap<String, String>)> = Vec::new();
+    // Iterations that ended early (exit tool / step evaluator). An exit is a
+    // WHOLE-WORKFLOW decision ("nothing meaningful to do") — incoherent from
+    // inside item N, where the work is already established and may already
+    // have hit external systems. Letting it escape the loop skipped the
+    // terminal activities that store/send/record (live 2026-08-27: an agent
+    // exited iteration 3/3 with a progress note AFTER writing two orders to
+    // the customer's CRM — no state commit, no report, owner never told).
+    // So it ends the ITERATION; siblings keep going and the loop still routes
+    // to Done. Surfaced below, never silent.
+    let mut exited: Vec<(u64, String)> = Vec::new();
 
     if ceiling <= 1 {
         for (idx, item) in taken {
-            let locals = run_one(idx, item).await?;
-            completed_locals.push((idx, locals));
+            match run_one(idx, item).await {
+                Ok(locals) => completed_locals.push((idx, locals)),
+                Err(WorkflowError::Exited(reason)) => {
+                    warn!(
+                        activity = activity.id.as_str(),
+                        iteration = idx,
+                        reason = %reason,
+                        "iteration exited early — ending this item, not the workflow"
+                    );
+                    exited.push((idx, reason));
+                }
+                Err(e) => return Err(e),
+            }
         }
     } else {
         let governor = LoopGovernor::new(ceiling);
@@ -1056,6 +1077,18 @@ async fn run_loop<'a>(
                 Ok(locals) => {
                     governor.on_success();
                     completed_locals.push((idx, locals));
+                }
+                Err(WorkflowError::Exited(reason)) => {
+                    // Not a failure and not rate pressure — don't penalize the
+                    // governor, don't kill the siblings already in flight.
+                    governor.on_success();
+                    warn!(
+                        activity = activity.id.as_str(),
+                        iteration = idx,
+                        reason = %reason,
+                        "iteration exited early — ending this item, not the workflow"
+                    );
+                    exited.push((idx, reason));
                 }
                 Err(e)
                     if is_rate_limit_shaped(&e.to_string())
@@ -1098,7 +1131,7 @@ async fn run_loop<'a>(
     // No silent caps (WS3-R6): a truncated loop must never read as a complete
     // one. Live incident: maxIterations 16 with 20 report chunks would have
     // dropped the last 4 with the run stamped `completed`.
-    let summary = if total_items > processed {
+    let mut summary = if total_items > processed {
         warn!(
             activity = activity.id.as_str(),
             processed,
@@ -1116,6 +1149,26 @@ async fn run_loop<'a>(
     } else {
         format!("{} items processed", processed)
     };
+    // Same rule as the cap above: an incomplete loop must never read as a
+    // complete one, so exited iterations are named in the loop's output.
+    if !exited.is_empty() {
+        warn!(
+            activity = activity.id.as_str(),
+            exited = exited.len(),
+            processed,
+            "iterations ended early — loop continued and routed to Done"
+        );
+        let detail = exited
+            .iter()
+            .map(|(i, r)| format!("#{i}: {r}"))
+            .collect::<Vec<_>>()
+            .join("; ");
+        summary.push_str(&format!(
+            " — {} of them ended early WITHOUT completing ({})",
+            exited.len(),
+            detail
+        ));
+    }
     record_output(ctx, scope, &activity.id, summary);
     info!(activity = activity.id.as_str(), processed, "loop completed");
     route(ctx, scope, &activity.id, |label| label == Some("Done")).await
@@ -1501,6 +1554,9 @@ mod walk_tests {
         /// identity ([Current item]) lives in the SYSTEM prompt, so per-item
         /// scripting keys here; user scripts take precedence.
         context_scripts: Vec<(String, String)>,
+        /// system-prompt substring -> exit reason. Emits a real `exit` tool
+        /// call so the engine takes its genuine EXIT_SENTINEL path.
+        exit_scripts: Vec<(String, String)>,
     }
 
     impl MockProvider {
@@ -1514,7 +1570,15 @@ mod walk_tests {
                 usage_per_turn: None,
                 rate_limit_failures: StdMutex::new(0),
                 context_scripts: vec![],
+                exit_scripts: vec![],
             }
+        }
+        fn with_exit_scripts(mut self, scripts: &[(&str, &str)]) -> Self {
+            self.exit_scripts = scripts
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect();
+            self
         }
         fn with_context_scripts(mut self, scripts: &[(&str, &str)]) -> Self {
             self.context_scripts = scripts
@@ -1565,6 +1629,25 @@ mod walk_tests {
                 .lock()
                 .unwrap()
                 .push(format!("{}\n###SYSTEM###\n{}", user, req.system));
+            if let Some((_, reason)) = self
+                .exit_scripts
+                .iter()
+                .find(|(key, _)| req.system.contains(key.as_str()))
+            {
+                let reason = reason.clone();
+                let (tx, rx) = tokio::sync::mpsc::channel(4);
+                tokio::spawn(async move {
+                    let _ = tx
+                        .send(ai::StreamEvent::tool_call(ai::ToolCall {
+                            id: "exit-1".into(),
+                            name: "exit".into(),
+                            input: serde_json::json!({ "reason": reason }),
+                        }))
+                        .await;
+                    let _ = tx.send(ai::StreamEvent::done()).await;
+                });
+                return Ok(rx);
+            }
             let response = self
                 .scripts
                 .iter()
@@ -1849,6 +1932,68 @@ mod walk_tests {
             max_start < min_complete,
             "auto default must overlap (max_start {max_start} >= min_complete {min_complete})"
         );
+    }
+
+    #[tokio::test]
+    async fn test_loop_iteration_exit_does_not_abandon_the_workflow() {
+        // Live incident 2026-08-27 (Vivid order-intake): an agent in the LAST
+        // loop iteration called exit with a PROGRESS note ("Chunk 2 complete:
+        // …") after writing two orders into the customer's CRM. The exit
+        // escaped the loop, so commit-state / render-report / deliver-report
+        // never ran: real writes, no state commit, no report, owner never
+        // told. An exit means "the whole workflow has nothing to do" — from
+        // inside item N that is incoherent, so it must end the ITEM.
+        for concurrency in ["1", "4"] {
+            let provider = MockProvider::new(&[])
+                .with_exit_scripts(&[("[Current item]: \"ITEM_GAMMA\"", "Chunk 2 complete")]);
+            let def = format!(
+                r#"{{
+                "version":"1.0","id":"t","name":"T",
+                "activities":[
+                    {{"id":"l","type":"loop","params":{{"source":"inputs.items","concurrency":{concurrency}}}}},
+                    {{"id":"body","intent":"task-body"}},
+                    {{"id":"after","intent":"task-after"}}],
+                "connections":[
+                    {{"from":"__trigger__","to":"l"}},
+                    {{"from":"l","to":"body","label":"Each item"}},
+                    {{"from":"body","to":"l"}},
+                    {{"from":"l","to":"after","label":"Done"}},
+                    {{"from":"after","to":"__emit__"}}]
+            }}"#
+            );
+            let (result, store, run_id) = run_graph(
+                &def,
+                serde_json::json!({"items": ["ITEM_ALPHA", "ITEM_BETA", "ITEM_GAMMA"]}),
+                &provider,
+            )
+            .await;
+            result.unwrap_or_else(|e| panic!("concurrency={concurrency}: run must not abort: {e:?}"));
+            assert_eq!(
+                run_status(&store, &run_id),
+                "completed",
+                "concurrency={concurrency}: an item's exit must not mark the RUN exited"
+            );
+            // The crux: the Done side (commit/deliver in the real workflow) ran.
+            let calls = provider.calls();
+            let user_part = |c: &String| c.split("###SYSTEM###").next().unwrap_or("").to_string();
+            assert_eq!(
+                calls.iter().filter(|c| user_part(c).contains("task-after")).count(),
+                1,
+                "concurrency={concurrency}: terminal activity must still run"
+            );
+            // …and the early end is named, never silent (same rule as the cap).
+            let output = store
+                .get_workflow_run(&run_id)
+                .unwrap()
+                .unwrap()
+                .output
+                .unwrap_or_default();
+            assert!(
+                output.contains("ended early WITHOUT completing")
+                    && output.contains("Chunk 2 complete"),
+                "concurrency={concurrency}: exited iteration must surface: {output:?}"
+            );
+        }
     }
 
     #[tokio::test]
