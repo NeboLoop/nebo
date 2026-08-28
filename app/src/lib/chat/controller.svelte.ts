@@ -642,13 +642,37 @@ export function createChatController(config: ChatControllerConfig) {
 
   // --- Subscribe to WS events ---
   const unsubs: (() => void)[] = [];
-  unsubs.push(ws.on('chat_stream', handleChatStream));
-  unsubs.push(ws.on('chat_complete', handleChatComplete));
-  unsubs.push(ws.on('chat_message', handleChatMessage));
-  unsubs.push(ws.on('chat_cancelled', handleChatCancelled));
-  unsubs.push(ws.on('thinking', handleThinking));
-  unsubs.push(ws.on('tool_start', handleToolStart));
-  unsubs.push(ws.on('tool_result', handleToolResult));
+  // A chat frame can pass the `readyState === OPEN` check and still be discarded
+  // when that socket closes milliseconds later: no throw, and the wire protocol has
+  // no ack to catch it. Without this the spinner and the stop button run forever
+  // against a server that never received the message (observed on cloud bots,
+  // 2026-08-26). ponytail: surface the failure rather than auto-resending, because
+  // replaying an unacked chat risks a duplicate turn, worse than an honest error.
+  const DELIVERY_TIMEOUT_MS = 30_000;
+  let deliveryTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function clearDeliveryTimer() {
+    if (deliveryTimer) {
+      clearTimeout(deliveryTimer);
+      deliveryTimer = null;
+    }
+  }
+
+  /** Register a server handler. ANY inbound event proves the last send landed. */
+  function onServer(type: string, fn: (data: any) => void) {
+    return ws.on(type, (data: any) => {
+      clearDeliveryTimer();
+      fn(data);
+    });
+  }
+
+  unsubs.push(onServer('chat_stream', handleChatStream));
+  unsubs.push(onServer('chat_complete', handleChatComplete));
+  unsubs.push(onServer('chat_message', handleChatMessage));
+  unsubs.push(onServer('chat_cancelled', handleChatCancelled));
+  unsubs.push(onServer('thinking', handleThinking));
+  unsubs.push(onServer('tool_start', handleToolStart));
+  unsubs.push(onServer('tool_result', handleToolResult));
 
   function handleResearchProgress(data: any) {
     if (!isMyEvent(data)) return;
@@ -665,13 +689,13 @@ export function createChatController(config: ChatControllerConfig) {
       return;
     }
   }
-  unsubs.push(ws.on('research_progress', handleResearchProgress));
-  unsubs.push(ws.on('usage', handleUsage));
-  unsubs.push(ws.on('quota_warning', handleQuotaWarning));
-  unsubs.push(ws.on('chat_error', handleChatError));
-  unsubs.push(ws.on('ask_request', handleAskRequest));
-  unsubs.push(ws.on('subagent_progress', handleSubagentProgress));
-  unsubs.push(ws.on('session_reset', handleSessionReset));
+  unsubs.push(onServer('research_progress', handleResearchProgress));
+  unsubs.push(onServer('usage', handleUsage));
+  unsubs.push(onServer('quota_warning', handleQuotaWarning));
+  unsubs.push(onServer('chat_error', handleChatError));
+  unsubs.push(onServer('ask_request', handleAskRequest));
+  unsubs.push(onServer('subagent_progress', handleSubagentProgress));
+  unsubs.push(onServer('session_reset', handleSessionReset));
 
   // --- Actions ---
 
@@ -704,6 +728,13 @@ export function createChatController(config: ChatControllerConfig) {
     if (config.channel) payload.channel = config.channel;
     if (options?.attachments?.length) payload.attachments = options.attachments;
     ws.send('chat', payload);
+
+    clearDeliveryTimer();
+    deliveryTimer = setTimeout(() => {
+      deliveryTimer = null;
+      if (!isLoading) return;
+      setError('Message not delivered. The connection dropped, so send it again.');
+    }, DELIVERY_TIMEOUT_MS);
   }
 
   function stop() {
@@ -711,6 +742,7 @@ export function createChatController(config: ChatControllerConfig) {
     if (activeSessionKey) payload.session_id = activeSessionKey;
     else payload.agent_id = agentId;
     ws.send('cancel', payload);
+    clearDeliveryTimer();
     isLoading = false;
     resetStreaming();
     phaseStartTime = 0;
@@ -797,6 +829,7 @@ export function createChatController(config: ChatControllerConfig) {
   function destroy() {
     unsubs.forEach(fn => fn());
     if (usageClearTimer) clearTimeout(usageClearTimer);
+    clearDeliveryTimer();
   }
 
   // --- Public API ---
@@ -828,6 +861,7 @@ export function createChatController(config: ChatControllerConfig) {
     setSessionKey(key: string) {
       if (key !== activeSessionKey) {
         activeSessionKey = key;
+        clearDeliveryTimer();
         isLoading = false;
         activityStatus = '';
         resetStreaming();

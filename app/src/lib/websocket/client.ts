@@ -180,11 +180,18 @@ class WebSocketClient {
 							// Start presence tracking after first successful connection
 							this.startPresenceTracking();
 
-							// Flush queued messages
+							// Flush queued messages. Pop only AFTER a successful send:
+							// shift()-then-check discarded every queued message whenever the
+							// socket wasn't writable at flush time, silently and with no retry.
 							while (this.messageQueue.length > 0) {
-								const msg = this.messageQueue.shift();
-								if (msg && this.ws?.readyState === WebSocket.OPEN) {
+								if (this.ws?.readyState !== WebSocket.OPEN) break;
+								const msg = this.messageQueue[0];
+								try {
 									this.ws.send(msg);
+									this.messageQueue.shift();
+								} catch (err) {
+									log.warn('WS flush failed, keeping message queued: ' + String(err));
+									break;
 								}
 							}
 							continue;
@@ -354,11 +361,15 @@ class WebSocketClient {
 		};
 		const payload = JSON.stringify(message);
 		if (this.ws?.readyState === WebSocket.OPEN) {
-			this.ws.send(payload);
-		} else {
-			log.debug('Queuing message, WS not open: ' + type);
-			this.messageQueue.push(payload);
+			try {
+				this.ws.send(payload);
+				return;
+			} catch (err) {
+				log.warn('WS send threw, queuing instead: ' + type + ': ' + String(err));
+			}
 		}
+		log.debug('Queuing message, WS not open: ' + type);
+		this.messageQueue.push(payload);
 	}
 
 	/**

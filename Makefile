@@ -239,6 +239,10 @@ plugin-status:
 # (localrivet/obscura) — upstream lacks the CDP fixes new_page() needs. Locally we
 # stage from the sibling fork's release build; CI fetches prebuilt fork release assets.
 
+# Copying is guarded by `cmp -s`: an unconditional cp rewrites 117MB of ad-hoc
+# signed Mach-O every `make dev`/`make run`, and each rewrite gives macOS a fresh
+# provenance xattr to re-evaluate. syspolicyd then saturates a core and can block
+# rustc's dlopen of proc-macro dylibs for minutes. Only copy when bytes differ.
 # Sibling Obscura fork checkout (default: ~/workspaces/nebo/obscura).
 OBSCURA_REPO ?= $(shell cd .. && pwd)/obscura
 # Target triple Tauri expects in the externalBin filename (host triple by default;
@@ -253,9 +257,17 @@ stage-obscura:
 		cross="$(OBSCURA_REPO)/target/$(OBSCURA_TRIPLE)/release/$$bin"; \
 		host="$(OBSCURA_REPO)/target/release/$$bin"; \
 		if [ -f "$$cross" ]; then \
-			cp "$$cross" "$$dst"; chmod +x "$$dst"; echo "  staged $$bin (fork cross build)"; \
+			if cmp -s "$$cross" "$$dst"; then \
+				echo "  $$bin already staged (unchanged)"; \
+			else \
+				cp "$$cross" "$$dst"; chmod +x "$$dst"; echo "  staged $$bin (fork cross build)"; \
+			fi; \
 		elif [ -f "$$host" ]; then \
-			cp "$$host" "$$dst"; chmod +x "$$dst"; echo "  staged $$bin (fork host build)"; \
+			if cmp -s "$$host" "$$dst"; then \
+				echo "  $$bin already staged (unchanged)"; \
+			else \
+				cp "$$host" "$$dst"; chmod +x "$$dst"; echo "  staged $$bin (fork host build)"; \
+			fi; \
 		elif [ -f "$$dst" ]; then \
 			echo "  keeping existing $$bin (no fork build found)"; \
 		else \
