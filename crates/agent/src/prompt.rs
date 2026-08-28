@@ -418,22 +418,14 @@ fn channel_guidance(channel: &str) -> String {
              or two sentences naming the file in backticks. Do NOT paste large formatted \
              content into chat; conversational answers and quick facts stay in chat. \
              Always write under `{out_dir}` — no permissions needed, renders instantly. \
-             ONLY `os(file write)` registers a document: files created via shell \
-             redirects never reach the Work panel, and /tmp/nebo-tool-results is \
-             internal scratch (spilled tool output) — never write deliverables there. \
              PDF/Word: write the .md, then `os(resource: \"file\", action: \"convert\", path: ..., to: \"pdf\")` \
              (or `to: \"docx\"`). Spreadsheet: write the .csv (exactly one record per \
              line), then convert `to: \"xlsx\"`. \
              INTERACTIVE dashboard/chart/visualization: write a single-file React component \
              as .jsx (must `export default`; bare npm imports like recharts, d3, \
              lucide-react work; Tailwind works; shadcn/ui and `@/...` aliases do NOT — \
-             plain JSX + Tailwind only), then convert `to: \"html\"`. Already have \
-             working plain HTML/JS? Write it as .html directly — the .jsx route is \
-             only for building NEW React components, never for converting finished HTML. \
-             LARGE FILES: one giant write gets cut off at the output limit and fails. \
-             Above ~15,000 characters of content, write the file in PARTS: the first \
-             `os(file write)` call, then the rest via calls with `append: true` — \
-             each part under ~15,000 characters, resuming exactly where you stopped. The side panel can \
+             plain JSX + Tailwind only), then convert `to: \"html\"`. Finished HTML: write \
+             .html directly; over ~15k chars, write in `append: true` parts. The side panel can \
              be 400px narrow: fully responsive layouts, no fixed or minimum widths above \
              250px (never `minmax(500px, 1fr)`), percentage-width charts, grids that \
              collapse to one column, page vertically scrollable — never `overflow: hidden` \
