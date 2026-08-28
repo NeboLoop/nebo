@@ -1242,6 +1242,8 @@ async fn run_llm_activity<'a>(
             .as_ref()
             .filter(|r| r.activity_id == activity.id && r.iteration == scope.iteration),
         &scope.iteration,
+    
+        ctx.cancel_token,
     )
     .await
     {

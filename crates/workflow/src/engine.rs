@@ -13,6 +13,11 @@ use crate::parser::{Activity, WorkflowDef};
 
 const MAX_ITERATIONS: u32 = 50;
 
+/// Identical-call ceiling — the SAME evidence-bound value as the chat runner
+/// (see `ai::call_budget` module docs: the incident's legitimate debugging
+/// repeated one call 13 times; the ceiling must clear that with margin).
+const IDENTICAL_CALL_ABORT: usize = 16;
+
 /// Open a provider stream, retrying transient/retryable errors (transport
 /// blips, 5xx, rate limits) with a short backoff — the same classes the
 /// chat runner retries. Terminal errors (auth, usage limit) fail immediately.
@@ -471,6 +476,8 @@ pub async fn execute_workflow(
             checkpoint,
             resume.as_ref().filter(|r| r.activity_id == activity.id),
             "", // sequential engine has no loop nodes
+        
+            cancel_token,
         )
         .await
         {
@@ -695,6 +702,7 @@ pub(crate) async fn execute_activity_with_retry(
     checkpoint: Option<&CheckpointCtx>,
     resume: Option<&ResumeState>,
     iteration: &str,
+    cancel_token: Option<&CancellationToken>,
 ) -> Result<(String, u32), WorkflowError> {
     // Resume fast-forward: an activity this run already completed returns its
     // recorded output instead of re-executing — the Temporal property that a
@@ -735,6 +743,8 @@ pub(crate) async fn execute_activity_with_retry(
             checkpoint,
             resume,
             iteration,
+        
+            cancel_token,
         )
         .await
         {
@@ -793,6 +803,7 @@ pub async fn execute_activity(
     checkpoint: Option<&CheckpointCtx>,
     resume: Option<&ResumeState>,
     iteration: &str,
+    cancel_token: Option<&CancellationToken>,
 ) -> Result<(String, u32), WorkflowError> {
     // Detect if browser tool is available for this activity
     let has_browser = tools.iter().any(|t| t.name() == "web");
@@ -852,7 +863,7 @@ pub async fn execute_activity(
             Some(r) => (r.messages.clone(), Some(r.pending.clone())),
             None => (messages, None),
         };
-        return run_llm_loop(activity, memory_user_id, memory_writes_disabled, provider, tools, roster, &tool_defs, &system, messages, spent, spent_output, make_trace(String::new()), store, checkpoint, pending, iteration).await;
+        return run_llm_loop(activity, memory_user_id, memory_writes_disabled, provider, tools, roster, &tool_defs, &system, messages, spent, spent_output, make_trace(String::new()), store, checkpoint, pending, iteration, cancel_token).await;
     }
 
     // --- Per-step execution ---
@@ -938,6 +949,8 @@ pub async fn execute_activity(
             checkpoint,
             if resume.is_some() && (i as i64) == resume_step { resume_pending.take() } else { None },
             iteration,
+        
+            cancel_token,
         )
         .await
         .map_err(|e| {
@@ -1278,6 +1291,7 @@ async fn run_llm_loop(
     checkpoint: Option<&CheckpointCtx>,
     pending: Option<ai::ToolCall>,
     iteration: &str,
+    cancel_token: Option<&CancellationToken>,
 ) -> Result<(String, u32), WorkflowError> {
     let mut tokens_used: u32 = 0;
     let mut iterations: u32 = 0;
@@ -1296,6 +1310,9 @@ async fn run_llm_loop(
     let mut consecutive_all_not_found: u32 = 0;
     let mut last_tool_name: String = String::new();
     let mut consecutive_same_tool: u32 = 0;
+    // ONE identical-call budget shared with the chat runner (Rule 8): counts
+    // the CALL, not the answer — polling defeats every result-keyed guard.
+    let mut call_budget = ai::call_budget::CallBudget::new();
     // Tools this activity must actually land before it may finish (see
     // Activity::requires_tools). Only a NON-error result counts: an attempt
     // that failed is exactly the case this guard exists to catch.
@@ -1350,6 +1367,12 @@ async fn run_llm_loop(
     }
 
     loop {
+        // Mid-activity cancellation: without this check a single activity ran
+        // its full iteration budget after the workflow was cancelled — the
+        // between-activities check could not reach inside the loop.
+        if cancel_token.map(|t| t.is_cancelled()).unwrap_or(false) {
+            return Err(WorkflowError::Cancelled);
+        }
         if iterations >= max_iterations {
             return Err(WorkflowError::MaxIterations(activity.id.clone()));
         }
@@ -1365,7 +1388,7 @@ async fn run_llm_loop(
             enable_thinking: false,
             metadata: None,
             cache_breakpoints: vec![],
-            cancel_token: None,
+            cancel_token: cancel_token.cloned(),
             trace: Some(trace.clone()),
         };
 
@@ -1503,6 +1526,20 @@ async fn run_llm_loop(
         // with tools::workflow_session_key — supersedes the older inline binding).
         let mut tool_result_entries = Vec::new();
         for tc in &tool_calls {
+            // Runaway backstop, shared kernel with the chat runner. An abort
+            // fails the ACTIVITY with an honest message; the workflow's own
+            // retry/error routing then applies (never a silent stop).
+            if let Some(repeats) =
+                call_budget.abort_due(&tc.name, &tc.input, IDENTICAL_CALL_ABORT)
+            {
+                return Err(WorkflowError::RunawayLoop(format!(
+                    "'{}' was called {} times with identical arguments without \
+                     resolving in activity '{}'. Ending the activity so it cannot \
+                     continue indefinitely.",
+                    tc.name, repeats, activity.id
+                )));
+            }
+            call_budget.record(&tc.name, &tc.input);
             let (_name, resolved_input, tool) =
                 resolve_tool_call(tools, roster, &tc.name, &tc.input);
             // ── Approval checkpoint (per-employee operation policy) ──────

@@ -45,6 +45,8 @@ pub enum WorkflowError {
     Blocked(String),
     #[error("workflow cancelled")]
     Cancelled,
+    #[error("runaway call loop: {0}")]
+    RunawayLoop(String),
     /// The run reached a gated operation whose per-employee policy says
     /// "Needs approval": it SUSPENDED at the checkpoint (state persisted in
     /// workflow_run_suspensions, run status `awaiting_approval`) and waits for

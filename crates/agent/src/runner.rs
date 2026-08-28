@@ -375,35 +375,9 @@ fn record_action_spiral(
     }
 }
 
-/// Key for the per-turn identical-call budget: exact tool name + exact
-/// arguments. Deliberately ignores the RESULT — that is the whole point (see
-/// [`IDENTICAL_CALL_ABORT`]).
-fn identical_call_key(call: &ai::ToolCall) -> (u64, u64) {
-    (
-        simple_hash(call.name.as_bytes()),
-        simple_hash(call.input.to_string().as_bytes()),
-    )
-}
-
-/// Count this call against the per-turn identical-call budget.
-fn record_identical_call(
-    counts: &mut std::collections::HashMap<(u64, u64), usize>,
-    call: &ai::ToolCall,
-) {
-    *counts.entry(identical_call_key(call)).or_insert(0) += 1;
-}
-
-/// Whether this call has already been made [`IDENTICAL_CALL_ABORT`] times this
-/// turn, and the turn must therefore END. Mirrors the runner loop so unit tests
-/// can assert the turn-level budget without driving a full run (same discipline
-/// as `record_action_spiral`).
-fn identical_call_abort_due(
-    counts: &std::collections::HashMap<(u64, u64), usize>,
-    call: &ai::ToolCall,
-) -> Option<usize> {
-    let repeats = counts.get(&identical_call_key(call)).copied().unwrap_or(0);
-    (repeats >= IDENTICAL_CALL_ABORT).then_some(repeats)
-}
+/// The identical-call budget itself lives in `ai::call_budget` — ONE
+/// implementation shared with the workflow activity loop (Rule 8). The
+/// evidence-bound ceiling stays here with its incident history.
 
 /// Cross-turn spiral memory. The per-turn counters reset every run, so a model
 /// that resumed the same doomed strategy after each user message ("Let me read
@@ -1899,8 +1873,7 @@ async fn run_loop(
     // time_based_micro_compact) so the model's history never mutates mid-run.
     let mut frozen_renderings: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
-    let mut identical_call_counts: std::collections::HashMap<(u64, u64), usize> =
-        std::collections::HashMap::new();
+    let mut identical_call_budget = ai::call_budget::CallBudget::new();
     // Per-(name, args) hash of a read-only call's own last result, for the
     // no-progress check: identical read + identical answer = no new information.
     let mut readonly_result_hash_by_call: std::collections::HashMap<(u64, u64), u64> =
@@ -4494,7 +4467,7 @@ async fn run_loop(
                 if blocked_results[idx].is_some() {
                     continue;
                 }
-                if let Some(repeats) = identical_call_abort_due(&identical_call_counts, tc) {
+                if let Some(repeats) = identical_call_budget.abort_due(&tc.name, &tc.input, IDENTICAL_CALL_ABORT) {
                     identical_call_abort = Some((action_key(tc), repeats));
                     break;
                 }
@@ -5723,7 +5696,7 @@ async fn run_loop(
                 // Turn-level repeat budget: counts the CALL, not the answer, so a
                 // poll whose output drifts every time still accrues (see
                 // IDENTICAL_CALL_ABORT).
-                record_identical_call(&mut identical_call_counts, &tc);
+                identical_call_budget.record(&tc.name, &tc.input);
                 recent_tool_names.push(tc.name.clone());
                 // Engine-stamped provenance: union this call's classes into
                 // the run's taint set (static table; model-invisible).
@@ -7574,17 +7547,17 @@ mod runaway_backstop_tests {
     /// 16 such polls produced ZERO guard firings.
     #[test]
     fn identical_call_aborts_even_when_every_result_differs() {
-        let mut counts = std::collections::HashMap::new();
+        let mut budget = ai::call_budget::CallBudget::new();
         let c = call("os", "tail -30 /var/log/app.log");
         for i in 0..IDENTICAL_CALL_ABORT {
             assert!(
-                identical_call_abort_due(&counts, &c).is_none(),
+                budget.abort_due(&c.name, &c.input, IDENTICAL_CALL_ABORT).is_none(),
                 "must not abort at {i} repeats"
             );
-            record_identical_call(&mut counts, &c);
+            budget.record(&c.name, &c.input);
         }
         assert_eq!(
-            identical_call_abort_due(&counts, &c),
+            budget.abort_due(&c.name, &c.input, IDENTICAL_CALL_ABORT),
             Some(IDENTICAL_CALL_ABORT),
             "the {IDENTICAL_CALL_ABORT}th repeat ends the turn"
         );
@@ -7594,13 +7567,15 @@ mod runaway_backstop_tests {
     /// punish a model doing many different things with the same tool.
     #[test]
     fn different_arguments_do_not_share_a_budget() {
-        let mut counts = std::collections::HashMap::new();
+        let mut budget = ai::call_budget::CallBudget::new();
         for i in 0..40 {
-            record_identical_call(&mut counts, &call("os", &format!("echo {i}")));
+            let c = call("os", &format!("echo {i}"));
+            budget.record(&c.name, &c.input);
         }
         for i in 0..40 {
+            let c = call("os", &format!("echo {i}"));
             assert!(
-                identical_call_abort_due(&counts, &call("os", &format!("echo {i}"))).is_none(),
+                budget.abort_due(&c.name, &c.input, IDENTICAL_CALL_ABORT).is_none(),
                 "40 distinct commands must never trip the backstop"
             );
         }
@@ -7609,12 +7584,14 @@ mod runaway_backstop_tests {
     /// Same command, different tool = different budget.
     #[test]
     fn tool_name_is_part_of_the_key() {
-        let mut counts = std::collections::HashMap::new();
+        let mut budget = ai::call_budget::CallBudget::new();
+        let a = call("os", "ls");
         for _ in 0..IDENTICAL_CALL_ABORT {
-            record_identical_call(&mut counts, &call("os", "ls"));
+            budget.record(&a.name, &a.input);
         }
-        assert!(identical_call_abort_due(&counts, &call("os", "ls")).is_some());
-        assert!(identical_call_abort_due(&counts, &call("execute", "ls")).is_none());
+        let b = call("execute", "ls");
+        assert!(budget.abort_due(&a.name, &a.input, IDENTICAL_CALL_ABORT).is_some());
+        assert!(budget.abort_due(&b.name, &b.input, IDENTICAL_CALL_ABORT).is_none());
     }
 
     /// The tool-summary label is a caption, not work. Once per iteration made it
