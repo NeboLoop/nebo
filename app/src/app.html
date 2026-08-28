@@ -22,16 +22,44 @@
 			// genuinely broken deploy stops after 3 tries instead of loop-reloading.
 			(function () {
 				var KEY = 'nebo:boot-retries';
+				// A boot that dies silently must NEVER leave a blank page
+				// (observed live 2026-08-28: iPhone over the tunnel — chunk
+				// import fails, retries exhaust, white screen until a manual
+				// refresh). One honest fallback screen, shown whenever the
+				// app hasn't mounted: retries exhausted, an unmatched boot
+				// error, or nothing at all after 12s.
+				function showRecovery() {
+					if (window.__NEBO_BOOTED || document.getElementById('nebo-recover')) return;
+					// Inline styles are deliberate: this screen exists for the case
+					// where the app's CSS chunks never arrived. Colors follow the
+					// system scheme so it doesn't flashbang a dark phone at night.
+					var dark = matchMedia && matchMedia('(prefers-color-scheme: dark)').matches;
+					var bg = dark ? '#111826' : '#ffffff';
+					var fg = dark ? '#e5e7eb' : '#333333';
+					var mut = dark ? '#9ca3af' : '#666666';
+					var bd = dark ? '#374151' : '#cccccc';
+					var d = document.createElement('div');
+					d.id = 'nebo-recover';
+					d.style.cssText = 'position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;background:' + bg + ';color:' + fg + ';font-family:-apple-system,system-ui,sans-serif;z-index:99999;text-align:center;padding:24px';
+					d.innerHTML = '<div style="font-size:17px;font-weight:600">Nebo didn\u2019t finish loading</div>' +
+						'<div style="font-size:14px;color:' + mut + ';max-width:280px">The connection may have hiccuped. This usually works on the next try.</div>' +
+						'<button style="padding:10px 22px;border:1px solid ' + bd + ';border-radius:10px;background:' + bg + ';color:' + fg + ';font-size:15px" onclick="sessionStorage.removeItem(\'nebo:boot-retries\');location.reload()">Try again</button>';
+					document.body.appendChild(d);
+				}
 				function onFail(reason) {
 					var msg = String((reason && reason.message) || reason || '');
 					if (!/importing a module script failed|dynamically imported module/i.test(msg)) return;
 					var n = Number(sessionStorage.getItem(KEY) || 0);
-					if (n >= 3) return;
+					if (n >= 3) { showRecovery(); return; }
 					sessionStorage.setItem(KEY, String(n + 1));
 					setTimeout(function () { location.reload(); }, 1500 * (n + 1));
 				}
 				addEventListener('unhandledrejection', function (e) { onFail(e.reason); });
 				addEventListener('error', function (e) { onFail(e.error || e.message); }, true);
+				// Watchdog: mounted apps set __NEBO_BOOTED (root layout onMount).
+				// If nothing mounts — any silent death, matched or not — the
+				// recovery screen appears instead of an endless blank.
+				setTimeout(showRecovery, 12000);
 			})();
 			// Prevent Backspace from navigating back when not in an input (Tauri webview issue)
 			document.addEventListener('keydown', function(e) {

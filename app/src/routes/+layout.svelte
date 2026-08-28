@@ -47,7 +47,9 @@
 
   // Check onboarding status and initialize WebSocket on mount
   onMount(() => {
-    // Booted successfully — reset the deploy-window boot-retry counter (app.html).
+    // Booted successfully — reset the deploy-window boot-retry counter and
+    // disarm the blank-page watchdog (both in app.html).
+    (window as any).__NEBO_BOOTED = true;
     sessionStorage.removeItem('nebo:boot-retries');
     checkOnboardingStatus();
 
