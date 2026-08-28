@@ -1038,6 +1038,16 @@ async fn handle_builtin_slash(
 
     match cmd.as_str() {
         "/new" => {
+            // Thread conversations ARE single conversations — the URL binds
+            // the thread id, and get_or_create pins active_chat_id back to it,
+            // so rotation can't take effect. The + button is the new-thread
+            // pathway; say so instead of faking a reset.
+            if session_id.contains(":thread:") {
+                return Some(
+                    "Each conversation here is its own thread — use the + button to start a new one."
+                        .to_string(),
+                );
+            }
             // Rotate session → new conversation, old history preserved in DB.
             let session_key = if !agent_id.is_empty() {
                 types::keyparser::build_agent_session_key(agent_id, channel)
@@ -1066,6 +1076,37 @@ async fn handle_builtin_slash(
         }
 
         "/clear" => {
+            // Thread conversations: the key the client sent IS the
+            // conversation (`agent:<id>:thread:<uuid>`). Rebuilding an
+            // agent+channel key here pointed /clear at a session that never
+            // existed for threads ("Failed to clear: not found"), and
+            // rotation wouldn't stick anyway — get_or_create pins a thread
+            // session back to its URL-bound chat. Clear means clear: wipe
+            // this thread's messages in place.
+            if let Some(chat_id) = types::keyparser::chat_id_from_thread_key(session_id) {
+                return Some(match state.store.delete_chat_messages_by_chat_id(chat_id) {
+                    Ok(()) => {
+                        if let Ok(sid) = state
+                            .runner
+                            .sessions()
+                            .resolve_session_id_by_key(session_id)
+                        {
+                            let _ = state.store.reset_session_counters(&sid);
+                            let _ = state.store.update_session_summary(&sid, "");
+                        }
+                        state.hub.broadcast(
+                            "session_reset",
+                            serde_json::json!({
+                                "session_id": session_id,
+                                "success": true,
+                                "newChatId": chat_id,
+                            }),
+                        );
+                        "Context cleared — fresh start.".to_string()
+                    }
+                    Err(e) => format!("Failed to clear: {}", e),
+                });
+            }
             // Clear messages in the current conversation (stay in same session).
             let session_key = if !agent_id.is_empty() {
                 types::keyparser::build_agent_session_key(agent_id, channel)
