@@ -236,9 +236,38 @@ pub fn build_thread_session_key(parent_key: &str, thread_id: &str) -> String {
     format!("{}:thread:{}", parent_key, thread_id)
 }
 
+/// The chat id embedded in a thread-scoped session key: everything after the
+/// FIRST `:thread:` marker, verbatim. `None` when the key has no `:thread:`.
+///
+/// This is the ONE home for the raw `find(":thread:")` slicing convention
+/// (previously inline in ws.rs dispatch_chat): `agent:<id>:thread:<chat>`
+/// keys parse with channel == "thread" and is_thread == FALSE (the agent
+/// prefix returns early from `parse_session_key`), so the chat id CANNOT be
+/// read via `SessionKeyInfo` — see the tripwire in chat_dispatch.rs's
+/// session_key_contract_tests. The remainder is NOT re-parsed: a key with
+/// trailing segments after the chat id (e.g. a subagent-wrapped parent key)
+/// returns them attached, exactly as the call-site slicing always did.
+pub fn chat_id_from_thread_key(key: &str) -> Option<&str> {
+    key.find(":thread:").map(|pos| &key[pos + ":thread:".len()..])
+}
+
 /// Build a topic session key from a parent key.
 pub fn build_topic_session_key(parent_key: &str, topic_id: &str) -> String {
     format!("{}:topic:{}", parent_key, topic_id)
+}
+
+/// The agent id embedded in an a2ui surface id (`agent:{agentId}:{view}`):
+/// the second `:`-segment, verbatim. `None` when the id has fewer than two
+/// segments.
+///
+/// Mirrors the ws.rs a2ui_action call site exactly: the leading literal is
+/// NOT validated (any `x:y…` shape yields `Some("y")`), and an empty second
+/// segment yields `Some("")` — callers treat empty as missing. A surface id
+/// is NOT a session key; never feed one to the session-key parsers.
+pub fn agent_id_from_surface_id(surface_id: &str) -> Option<&str> {
+    let mut parts = surface_id.split(':');
+    parts.next()?;
+    parts.next()
 }
 
 #[cfg(test)]
@@ -381,6 +410,58 @@ mod tests {
             build_topic_session_key("slack:channel:abc", "t2"),
             "slack:channel:abc:topic:t2"
         );
+    }
+
+    /// Surface ids (`agent:{id}:{view}`) yield the second segment; fewer
+    /// than two segments yield None. The prefix is deliberately unvalidated
+    /// and an empty second segment comes back as Some("") — both locked to
+    /// match the ws.rs a2ui_action semantics this replaced.
+    #[test]
+    fn agent_id_from_surface_id_takes_the_second_segment() {
+        assert_eq!(agent_id_from_surface_id("agent:abc:view"), Some("abc"));
+        assert_eq!(
+            agent_id_from_surface_id("agent:abc:view:extra"),
+            Some("abc")
+        );
+        assert_eq!(agent_id_from_surface_id("foo:bar"), Some("bar"));
+        assert_eq!(agent_id_from_surface_id("agent::view"), Some(""));
+        assert_eq!(agent_id_from_surface_id("agent"), None);
+        assert_eq!(agent_id_from_surface_id(""), None);
+    }
+
+    /// Thread keys yield the chat id after the FIRST `:thread:` marker;
+    /// non-thread keys yield None. This backs ws.rs's turn_chat_id
+    /// resolution, where SessionKeyInfo.is_thread is useless for
+    /// agent-prefixed keys.
+    #[test]
+    fn chat_id_from_thread_key_slices_after_first_marker() {
+        assert_eq!(
+            chat_id_from_thread_key("agent:a1:thread:chat-42"),
+            Some("chat-42")
+        );
+        assert_eq!(
+            chat_id_from_thread_key("discord:group:123:thread:t456"),
+            Some("t456")
+        );
+        assert_eq!(chat_id_from_thread_key("agent:a1:web"), None);
+        assert_eq!(chat_id_from_thread_key(""), None);
+    }
+
+    /// The remainder is verbatim, not re-parsed: a subagent-wrapped thread
+    /// key keeps its trailing task segment attached, and a second `:thread:`
+    /// marker is NOT a new split point — first marker wins. Locks the exact
+    /// semantics of the original ws.rs slicing.
+    #[test]
+    fn chat_id_from_thread_key_keeps_the_raw_remainder() {
+        assert_eq!(
+            chat_id_from_thread_key("subagent:agent:a1:thread:chat-42:sa-1"),
+            Some("chat-42:sa-1")
+        );
+        assert_eq!(
+            chat_id_from_thread_key("x:thread:a:thread:b"),
+            Some("a:thread:b")
+        );
+        assert_eq!(chat_id_from_thread_key("agent:a1:thread:"), Some(""));
     }
 
     #[test]

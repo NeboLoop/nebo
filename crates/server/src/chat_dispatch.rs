@@ -2733,8 +2733,9 @@ mod session_key_contract_tests {
 
     /// `agent:<id>:thread:<chat>` (built by handlers/agents.rs and voice.rs)
     /// parses with channel == "thread" and is_thread == FALSE — the agent
-    /// prefix returns early, so server code extracts the chat id by slicing
-    /// on ":thread:" (ws.rs), NOT via SessionKeyInfo.is_thread. If the parser
+    /// prefix returns early, so server code extracts the chat id via
+    /// `keyparser::chat_id_from_thread_key` (the named home of the ws.rs
+    /// ":thread:" slicing), NOT via SessionKeyInfo.is_thread. If the parser
     /// ever starts setting is_thread here, that slicing convention must be
     /// revisited — this test is the tripwire.
     #[test]

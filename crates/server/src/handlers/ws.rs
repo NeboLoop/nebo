@@ -438,38 +438,8 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState) {
                                     dispatch_chat(&state, &parsed).await;
                                 }
                                 "cancel" => {
-                                    let data = &parsed["data"];
-                                    let session_id = data["session_id"]
-                                        .as_str()
-                                        .unwrap_or("default")
-                                        .to_string();
-                                    let registry = &state.run_registry;
-
-                                    // Support cancel by run_id, entity_id, or session_id
-                                    if let Some(run_id) = data["run_id"].as_str() {
-                                        if registry.cancel(run_id).await {
-                                            info!(run_id, "cancelled run by run_id");
-                                        } else {
-                                            debug!(run_id, "cancel: run_id not found");
-                                        }
-                                    } else if let Some(entity_id) = data["entity_id"].as_str() {
-                                        let count = registry.cancel_by_entity(entity_id).await;
-                                        info!(entity_id, count, "cancelled runs by entity_id");
-                                    } else if registry.cancel_by_session(&session_id).await {
-                                        info!(session_id = %session_id, "cancelled run by session_id");
-                                    } else {
-                                        // Stop means stop: cancel ALL active runs.
-                                        let count = registry.cancel_all().await;
-                                        if count > 0 {
-                                            warn!(
-                                                requested = %session_id,
-                                                "cancel key mismatch — cancelled all {} active runs",
-                                                count
-                                            );
-                                        } else {
-                                            debug!(session_id = %session_id, "cancel: no active runs");
-                                        }
-                                    }
+                                    let (_outcome, session_id) =
+                                        apply_cancel(&parsed["data"], &state.run_registry).await;
                                     state.hub.broadcast("chat_cancelled", serde_json::json!({
                                         "session_id": session_id,
                                     }));
@@ -843,8 +813,9 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState) {
                                     }
 
                                     // Parse agent_id from surface_id "agent:{id}:{view}"
-                                    let parts: Vec<&str> = surface_id.split(':').collect();
-                                    let agent_id = if parts.len() >= 2 { parts[1].to_string() } else { String::new() };
+                                    let agent_id = types::keyparser::agent_id_from_surface_id(&surface_id)
+                                        .unwrap_or("")
+                                        .to_string();
 
                                     if agent_id.is_empty() {
                                         debug!("a2ui_action: could not extract agent_id from {}", surface_id);
@@ -1353,6 +1324,107 @@ async fn handle_builtin_slash(
     }
 }
 
+/// Outcome of one "cancel" WS message — which precedence tier matched.
+/// Pure data so the chain is unit-testable; the `chat_cancelled` broadcast
+/// SEND stays at the call site.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CancelOutcome {
+    /// run_id was present and matched a live run.
+    RunId,
+    /// run_id was present but unknown — the chain STOPS here (no fallback):
+    /// naming a specific run and missing it must not kill unrelated runs.
+    RunIdMiss,
+    /// entity_id was present; `count` runs of that entity were cancelled.
+    Entity { count: usize },
+    /// session_id matched a live run.
+    Session,
+    /// Nothing matched but runs were active — stop means stop: all cancelled.
+    AllFallback { count: usize },
+    /// Nothing matched and nothing was running.
+    NoActiveRuns,
+}
+
+/// The cancel precedence chain: run_id > entity_id > session_id > cancel-ALL
+/// fallback. Returns the outcome and the session_id to echo in the
+/// `chat_cancelled` broadcast (missing session_id defaults to "default").
+async fn apply_cancel(
+    data: &serde_json::Value,
+    registry: &crate::run_registry::RunRegistry,
+) -> (CancelOutcome, String) {
+    let session_id = data["session_id"].as_str().unwrap_or("default").to_string();
+
+    // Support cancel by run_id, entity_id, or session_id
+    let outcome = if let Some(run_id) = data["run_id"].as_str() {
+        if registry.cancel(run_id).await {
+            info!(run_id, "cancelled run by run_id");
+            CancelOutcome::RunId
+        } else {
+            debug!(run_id, "cancel: run_id not found");
+            CancelOutcome::RunIdMiss
+        }
+    } else if let Some(entity_id) = data["entity_id"].as_str() {
+        let count = registry.cancel_by_entity(entity_id).await;
+        info!(entity_id, count, "cancelled runs by entity_id");
+        CancelOutcome::Entity { count }
+    } else if registry.cancel_by_session(&session_id).await {
+        info!(session_id = %session_id, "cancelled run by session_id");
+        CancelOutcome::Session
+    } else {
+        // Stop means stop: cancel ALL active runs.
+        let count = registry.cancel_all().await;
+        if count > 0 {
+            warn!(
+                requested = %session_id,
+                "cancel key mismatch — cancelled all {} active runs",
+                count
+            );
+            CancelOutcome::AllFallback { count }
+        } else {
+            debug!(session_id = %session_id, "cancel: no active runs");
+            CancelOutcome::NoActiveRuns
+        }
+    };
+
+    (outcome, session_id)
+}
+
+/// The defaulted fields of a "chat" WS payload's `data` object — the pure
+/// wire contract, separated from dispatch so it is unit-testable.
+#[derive(Debug)]
+struct ChatPayload {
+    session_id: String,
+    prompt: String,
+    system: String,
+    user_id: String,
+    channel: String,
+    agent_id: String,
+    scope: String,
+    attachments: Vec<comm::wire::Attachment>,
+}
+
+impl ChatPayload {
+    /// Parse a chat `data` object. Missing or non-string fields take their
+    /// wire defaults (session_id → "default", channel → "web", everything
+    /// else → empty); unknown fields are ignored; a malformed `attachments`
+    /// array degrades to none rather than failing the message.
+    fn parse(data: &serde_json::Value) -> Self {
+        Self {
+            session_id: data["session_id"].as_str().unwrap_or("default").to_string(),
+            prompt: data["prompt"].as_str().unwrap_or("").to_string(),
+            system: data["system"].as_str().unwrap_or("").to_string(),
+            user_id: data["user_id"].as_str().unwrap_or("").to_string(),
+            channel: data["channel"].as_str().unwrap_or("web").to_string(),
+            agent_id: data["agent_id"].as_str().unwrap_or("").to_string(),
+            scope: data["scope"].as_str().unwrap_or("").to_string(),
+            // Uploaded attachment metadata from the WS payload
+            attachments: data
+                .get("attachments")
+                .and_then(|v| serde_json::from_value(v.clone()).ok())
+                .unwrap_or_default(),
+        }
+    }
+}
+
 /// Dispatch a chat message to the agent runner via the unified chat pipeline.
 ///
 /// The run's cancel token is deliberately INDEPENDENT of the WS connection: a
@@ -1363,19 +1435,16 @@ async fn handle_builtin_slash(
 /// (the "cancel" WS message), never through connection lifetime.
 async fn dispatch_chat(state: &AppState, msg: &serde_json::Value) {
     let data = &msg["data"];
-    let session_id = data["session_id"].as_str().unwrap_or("default").to_string();
-    let prompt = data["prompt"].as_str().unwrap_or("").to_string();
-    let system = data["system"].as_str().unwrap_or("").to_string();
-    let user_id = data["user_id"].as_str().unwrap_or("").to_string();
-    let channel = data["channel"].as_str().unwrap_or("web").to_string();
-    let agent_id = data["agent_id"].as_str().unwrap_or("").to_string();
-    let scope = data["scope"].as_str().unwrap_or("").to_string();
-
-    // Extract uploaded attachment metadata from the WS payload
-    let ws_attachments: Vec<comm::wire::Attachment> = data
-        .get("attachments")
-        .and_then(|v| serde_json::from_value(v.clone()).ok())
-        .unwrap_or_default();
+    let ChatPayload {
+        session_id,
+        prompt,
+        system,
+        user_id,
+        channel,
+        agent_id,
+        scope,
+        attachments: ws_attachments,
+    } = ChatPayload::parse(data);
 
     info!(
         session_id = %session_id,
@@ -1528,8 +1597,10 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value) {
         // conversation, never the agent's merged stream. The chat for this
         // turn is the thread uuid embedded in the session key, or the
         // session's active chat.
-        let turn_chat_id = if let Some(pos) = session_key.find(":thread:") {
-            session_key[pos + 8..].to_string()
+        let turn_chat_id = if let Some(chat_id) =
+            types::keyparser::chat_id_from_thread_key(&session_key)
+        {
+            chat_id.to_string()
         } else {
             state
                 .runner
@@ -2178,5 +2249,238 @@ mod prompt_image_extraction_tests {
         let (cleaned, images) = extract_images_from_prompt(&prompt);
         assert!(images.is_empty());
         assert_eq!(cleaned, prompt);
+    }
+}
+
+#[cfg(test)]
+mod chat_payload_tests {
+    //! Locks the "chat" WS payload wire contract dispatch_chat is built on —
+    //! the field defaults the frontend and channel clients rely on.
+    use super::ChatPayload;
+
+    /// An absent/empty data object takes every wire default: session_id
+    /// "default", channel "web", all other strings empty, no attachments.
+    #[test]
+    fn missing_fields_take_wire_defaults() {
+        for data in [serde_json::json!({}), serde_json::Value::Null] {
+            let p = ChatPayload::parse(&data);
+            assert_eq!(p.session_id, "default");
+            assert_eq!(p.channel, "web");
+            assert_eq!(p.prompt, "");
+            assert_eq!(p.system, "");
+            assert_eq!(p.user_id, "");
+            assert_eq!(p.agent_id, "");
+            assert_eq!(p.scope, "");
+            assert!(p.attachments.is_empty());
+        }
+    }
+
+    /// Provided fields pass through verbatim and unknown extra fields are
+    /// ignored rather than rejected.
+    #[test]
+    fn provided_fields_pass_through_and_extras_are_ignored() {
+        let data = serde_json::json!({
+            "session_id": "agent:a1:web",
+            "prompt": "hello",
+            "system": "be terse",
+            "user_id": "u1",
+            "channel": "app",
+            "agent_id": "a1",
+            "scope": "browser",
+            "unknown_field": 42,
+        });
+        let p = ChatPayload::parse(&data);
+        assert_eq!(p.session_id, "agent:a1:web");
+        assert_eq!(p.prompt, "hello");
+        assert_eq!(p.system, "be terse");
+        assert_eq!(p.user_id, "u1");
+        assert_eq!(p.channel, "app");
+        assert_eq!(p.agent_id, "a1");
+        assert_eq!(p.scope, "browser");
+    }
+
+    /// Non-string values fall back to the same defaults as missing fields —
+    /// a numeric session_id must not panic or leak into the session key.
+    #[test]
+    fn non_string_values_fall_back_to_defaults() {
+        let data = serde_json::json!({
+            "session_id": 7,
+            "channel": {"nested": true},
+            "prompt": ["not", "a", "string"],
+        });
+        let p = ChatPayload::parse(&data);
+        assert_eq!(p.session_id, "default");
+        assert_eq!(p.channel, "web");
+        assert_eq!(p.prompt, "");
+    }
+
+    /// Well-formed attachments deserialize from the camelCase wire shape; a
+    /// malformed attachments array degrades to none instead of failing the
+    /// whole message.
+    #[test]
+    fn attachments_parse_or_degrade_to_none() {
+        let data = serde_json::json!({
+            "attachments": [{
+                "fileId": "f1",
+                "filename": "a.png",
+                "mimeType": "image/png",
+                "size": 10,
+                "url": "http://x/a.png",
+            }]
+        });
+        let p = ChatPayload::parse(&data);
+        assert_eq!(p.attachments.len(), 1);
+        assert_eq!(p.attachments[0].file_id, "f1");
+        assert_eq!(p.attachments[0].mime_type, "image/png");
+
+        let bad = serde_json::json!({ "attachments": [{"nope": true}] });
+        assert!(ChatPayload::parse(&bad).attachments.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod cancel_precedence_tests {
+    //! Locks the ws "cancel" precedence chain itself (run_id > entity_id >
+    //! session_id > cancel-ALL fallback). The registry building blocks the
+    //! chain calls are pinned in run_registry's cancel_semantics_tests.
+    use super::{CancelOutcome, apply_cancel};
+    use crate::run_registry::{RegisterParams, RunHandle, RunRegistry};
+    use tokio_util::sync::CancellationToken;
+
+    async fn reg(
+        registry: &RunRegistry,
+        session_key: &str,
+        entity_id: &str,
+        token: &CancellationToken,
+    ) -> RunHandle {
+        registry
+            .register(RegisterParams {
+                session_key: session_key.to_string(),
+                entity_id: entity_id.to_string(),
+                entity_name: entity_id.to_string(),
+                origin: "ws".to_string(),
+                channel: "main".to_string(),
+                cancel_token: token.clone(),
+                parent_run_id: None,
+            })
+            .await
+    }
+
+    /// A run_id in the payload wins over entity_id AND session_id — only the
+    /// named run is cancelled even when the other keys would also match.
+    #[tokio::test]
+    async fn run_id_tier_wins_over_entity_and_session() {
+        let registry = RunRegistry::new();
+        let (ta, tb) = (CancellationToken::new(), CancellationToken::new());
+        let h1 = reg(&registry, "agent:a:main", "a", &ta).await;
+        let _h2 = reg(&registry, "agent:a:thread:c1", "a", &tb).await;
+
+        let data = serde_json::json!({
+            "run_id": h1.run_id,
+            "entity_id": "a",
+            "session_id": "agent:a:thread:c1",
+        });
+        let (outcome, session_id) = apply_cancel(&data, &registry).await;
+        assert_eq!(outcome, CancelOutcome::RunId);
+        assert_eq!(session_id, "agent:a:thread:c1");
+        assert!(ta.is_cancelled());
+        assert!(!tb.is_cancelled());
+    }
+
+    /// An UNKNOWN run_id stops the chain — it does NOT fall through to
+    /// entity/session/all: naming a specific run and missing it must never
+    /// kill unrelated runs.
+    #[tokio::test]
+    async fn unknown_run_id_stops_the_chain() {
+        let registry = RunRegistry::new();
+        let token = CancellationToken::new();
+        let _h = reg(&registry, "agent:a:main", "a", &token).await;
+
+        let data = serde_json::json!({
+            "run_id": "no-such-run",
+            "entity_id": "a",
+            "session_id": "agent:a:main",
+        });
+        let (outcome, _) = apply_cancel(&data, &registry).await;
+        assert_eq!(outcome, CancelOutcome::RunIdMiss);
+        assert!(!token.is_cancelled());
+    }
+
+    /// With no run_id, entity_id cancels EVERY run of that entity (and only
+    /// that entity), even when session_id is also present.
+    #[tokio::test]
+    async fn entity_tier_fires_when_no_run_id() {
+        let registry = RunRegistry::new();
+        let (ta, tb, tc) = (
+            CancellationToken::new(),
+            CancellationToken::new(),
+            CancellationToken::new(),
+        );
+        let _h1 = reg(&registry, "agent:x:main", "x", &ta).await;
+        let _h2 = reg(&registry, "agent:x:thread:c1", "x", &tb).await;
+        let _h3 = reg(&registry, "agent:y:main", "y", &tc).await;
+
+        let data = serde_json::json!({
+            "entity_id": "x",
+            "session_id": "agent:y:main",
+        });
+        let (outcome, _) = apply_cancel(&data, &registry).await;
+        assert_eq!(outcome, CancelOutcome::Entity { count: 2 });
+        assert!(ta.is_cancelled());
+        assert!(tb.is_cancelled());
+        assert!(!tc.is_cancelled());
+    }
+
+    /// With no run_id/entity_id, an exactly-matching session_id cancels that
+    /// session's run and leaves the rest alive.
+    #[tokio::test]
+    async fn session_tier_fires_when_no_run_or_entity_key() {
+        let registry = RunRegistry::new();
+        let (ta, tb) = (CancellationToken::new(), CancellationToken::new());
+        let _h1 = reg(&registry, "agent:a:main", "a", &ta).await;
+        let _h2 = reg(&registry, "agent:b:main", "b", &tb).await;
+
+        let data = serde_json::json!({ "session_id": "agent:a:main" });
+        let (outcome, session_id) = apply_cancel(&data, &registry).await;
+        assert_eq!(outcome, CancelOutcome::Session);
+        assert_eq!(session_id, "agent:a:main");
+        assert!(ta.is_cancelled());
+        assert!(!tb.is_cancelled());
+    }
+
+    /// The cancel-ALL fallback ("stop means stop") fires ONLY when no key
+    /// matched anything AND runs are active — every live run is cancelled.
+    #[tokio::test]
+    async fn fallback_cancels_all_only_when_nothing_matched() {
+        let registry = RunRegistry::new();
+        let (ta, tb) = (CancellationToken::new(), CancellationToken::new());
+        let _h1 = reg(&registry, "agent:a:main", "a", &ta).await;
+        let _h2 = reg(&registry, "agent:b:main", "b", &tb).await;
+
+        let data = serde_json::json!({ "session_id": "stale-key" });
+        let (outcome, _) = apply_cancel(&data, &registry).await;
+        assert_eq!(outcome, CancelOutcome::AllFallback { count: 2 });
+        assert!(ta.is_cancelled());
+        assert!(tb.is_cancelled());
+    }
+
+    /// With nothing running, a mismatched cancel is a quiet no-op — no
+    /// fallback warn, count zero.
+    #[tokio::test]
+    async fn no_active_runs_is_a_quiet_noop() {
+        let registry = RunRegistry::new();
+        let data = serde_json::json!({ "session_id": "anything" });
+        let (outcome, _) = apply_cancel(&data, &registry).await;
+        assert_eq!(outcome, CancelOutcome::NoActiveRuns);
+    }
+
+    /// A payload with no session_id echoes "default" in the broadcast
+    /// session_id — the wire default the frontend keys on.
+    #[tokio::test]
+    async fn missing_session_id_defaults_for_the_broadcast() {
+        let registry = RunRegistry::new();
+        let (outcome, session_id) = apply_cancel(&serde_json::Value::Null, &registry).await;
+        assert_eq!(outcome, CancelOutcome::NoActiveRuns);
+        assert_eq!(session_id, "default");
     }
 }
