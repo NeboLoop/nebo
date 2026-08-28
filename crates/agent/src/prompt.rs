@@ -429,7 +429,11 @@ fn channel_guidance(channel: &str) -> String {
              lucide-react work; Tailwind works; shadcn/ui and `@/...` aliases do NOT — \
              plain JSX + Tailwind only), then convert `to: \"html\"`. Already have \
              working plain HTML/JS? Write it as .html directly — the .jsx route is \
-             only for building NEW React components, never for converting finished HTML. The side panel can \
+             only for building NEW React components, never for converting finished HTML. \
+             LARGE FILES: one giant write gets cut off at the output limit and fails. \
+             Above ~15,000 characters of content, write the file in PARTS: the first \
+             `os(file write)` call, then the rest via calls with `append: true` — \
+             each part under ~15,000 characters, resuming exactly where you stopped. The side panel can \
              be 400px narrow: fully responsive layouts, no fixed or minimum widths above \
              250px (never `minmax(500px, 1fr)`), percentage-width charts, grids that \
              collapse to one column, page vertically scrollable — never `overflow: hidden` \

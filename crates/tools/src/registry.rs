@@ -565,6 +565,25 @@ impl Registry {
         };
         let name = name.as_str();
 
+        // Truncated-stream salvage detection: when a tool call's argument
+        // stream is cut off mid-flight (output cap hit while emitting a huge
+        // payload), the gateway wraps the unparseable text as {"_raw": ...}.
+        // Dispatching that produces a terse per-tool serde error ("missing
+        // field `action`") that teaches nothing — observed live 2026-08-28:
+        // five identical 45KB dashboard writes, each streamed ~60s, each
+        // failing the same way. Catch it at the ONE dispatch choke point and
+        // teach the recovery instead.
+        if let Some(obj) = input.as_object() {
+            if obj.len() == 1 {
+                if let Some(raw) = obj.get("_raw").and_then(|v| v.as_str()) {
+                    return ToolResult::error(format!(
+                        "Your tool call's arguments were CUT OFF mid-stream at the output                          limit ({} characters arrived, JSON incomplete). Do NOT retry the                          same call — it will be cut off again. Produce large content in                          PARTS instead: first `os(resource: \"file\", action: \"write\",                          path: ..., content: <first portion>)`, then repeat with                          `append: true` for each following portion. Keep each call's                          content under ~15,000 characters.",
+                        raw.len()
+                    ));
+                }
+            }
+        }
+
         let permit_kind = {
             let tools = self.tools.read().await;
             let tool = match tools
