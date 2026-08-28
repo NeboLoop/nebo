@@ -13,15 +13,25 @@ use crate::parser::{Activity, WorkflowDef};
 
 const MAX_ITERATIONS: u32 = 50;
 
-/// Identical-call ceiling — the SAME evidence-bound value as the chat runner
-/// (see `ai::call_budget` module docs: the incident's legitimate debugging
-/// repeated one call 13 times; the ceiling must clear that with margin).
-const IDENTICAL_CALL_ABORT: usize = 16;
+use crate::loop_contract::{ActivityLoop, LoopTurn};
+
+/// Per-activity turn budget: params.maxIterations overrides the default —
+/// the same shape the graph loop node accepts (graph.rs).
+fn activity_max_iterations(activity: &Activity) -> u32 {
+    activity
+        .params
+        .as_ref()
+        .and_then(|p| p.get("maxIterations"))
+        .and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse().ok())))
+        .map(|v| v as u32)
+        .unwrap_or(MAX_ITERATIONS)
+}
+
 
 /// Open a provider stream, retrying transient/retryable errors (transport
 /// blips, 5xx, rate limits) with a short backoff — the same classes the
 /// chat runner retries. Terminal errors (auth, usage limit) fail immediately.
-async fn stream_with_retry(
+pub(crate) async fn stream_with_retry(
     provider: &dyn ai::Provider,
     req: &ChatRequest,
 ) -> Result<tokio::sync::mpsc::Receiver<ai::StreamEvent>, ai::ProviderError> {
@@ -306,6 +316,9 @@ pub async fn execute_workflow(
     trigger_detail: Option<&str>,
     store: &Arc<Store>,
     provider: &dyn ai::Provider,
+    // The ONE injected agentic loop every activity runs through (Phase 4:
+    // the engine's own loop is deleted; see loop_contract).
+    loop_impl: &dyn ActivityLoop,
     resolved_tools: &[Box<dyn DynTool>],
     // Names of deferred tools in the registry (MCP proxies etc.) — excluded
     // from the fail-soft roster so their schemas only ship to activities
@@ -360,6 +373,7 @@ pub async fn execute_workflow(
             &inputs,
             store,
             provider,
+            loop_impl,
             resolved_tools,
             deferred_tools,
             &run_id,
@@ -462,8 +476,8 @@ pub async fn execute_workflow(
             memory_writes_disabled,
             &inputs,
             provider,
+            loop_impl,
             &activity_tools,
-            resolved_tools,
             skill_content,
             activity_emit,
             store,
@@ -686,10 +700,8 @@ pub(crate) async fn execute_activity_with_retry(
     memory_writes_disabled: bool,
     inputs: &serde_json::Value,
     provider: &dyn ai::Provider,
+    loop_impl: &dyn ActivityLoop,
     tools: &[&Box<dyn DynTool>],
-    // Full resolved roster — dispatch fallback only (see resolve_tool_call);
-    // schemas advertised to the model come from `tools` (the scoped set).
-    roster: &[Box<dyn DynTool>],
     skill_content: Option<&HashMap<String, String>>,
     emit_source: Option<&str>,
     store: &Arc<Store>,
@@ -729,8 +741,8 @@ pub(crate) async fn execute_activity_with_retry(
             memory_writes_disabled,
             inputs,
             provider,
+            loop_impl,
             tools,
-            roster,
             skill_content,
             emit_source,
             store,
@@ -787,10 +799,8 @@ pub async fn execute_activity(
     memory_writes_disabled: bool,
     inputs: &serde_json::Value,
     provider: &dyn ai::Provider,
+    loop_impl: &dyn ActivityLoop,
     tools: &[&Box<dyn DynTool>],
-    // Full resolved roster — dispatch fallback only (see resolve_tool_call);
-    // schemas advertised to the model come from `tools` (the scoped set).
-    roster: &[Box<dyn DynTool>],
     skill_content: Option<&HashMap<String, String>>,
     emit_source: Option<&str>,
     store: &Arc<Store>,
@@ -808,16 +818,6 @@ pub async fn execute_activity(
     // Detect if browser tool is available for this activity
     let has_browser = tools.iter().any(|t| t.name() == "web");
     let tool_names: Vec<String> = tools.iter().map(|t| t.name().to_string()).collect();
-
-    // Build tool definitions (shared across all steps)
-    let tool_defs: Vec<ai::ToolDefinition> = tools
-        .iter()
-        .map(|t| ai::ToolDefinition {
-            name: t.name().to_string(),
-            description: t.description(),
-            input_schema: t.schema(),
-        })
-        .collect();
 
     // Trace builder — links every LLM call to this agent/run/workflow/action/step
     // so Janus can attribute usage per agent and per workflow. agent_id is "" for
@@ -859,11 +859,46 @@ pub async fn execute_activity(
             },
             ..Default::default()
         }];
-        let (messages, pending) = match resume {
+        let (seed, pending) = match resume {
             Some(r) => (r.messages.clone(), Some(r.pending.clone())),
             None => (messages, None),
         };
-        return run_llm_loop(activity, memory_user_id, memory_writes_disabled, provider, tools, roster, &tool_defs, &system, messages, spent, spent_output, make_trace(String::new()), store, checkpoint, pending, iteration, cancel_token).await;
+        let turn = LoopTurn {
+            activity,
+            system,
+            seed_messages: seed,
+            advertised_tools: tool_names.clone(),
+            agent_id,
+            user_id: memory_user_id,
+            memory_writes_disabled,
+            trace: make_trace(String::new()),
+            checkpoint,
+            pending,
+            iteration,
+            step_index: None,
+            max_iterations: activity_max_iterations(activity),
+            min_iterations: activity.min_iterations,
+            requires_tools: activity.requires_tools.clone(),
+            output_budget_max: activity.token_budget.max,
+            spent_output_before: *spent_output,
+            model: activity.model.clone(),
+            cancel: cancel_token.cloned(),
+            turn_key: format!("{}:{}", activity.id, iteration),
+        };
+        let out = loop_impl.run_turn(turn).await?;
+        *spent += out.total_tokens;
+        *spent_output += out.output_tokens;
+        // Post-turn budget check (the in-loop check moved into the injected
+        // loop; this end-of-activity check holds for ANY implementation —
+        // same rule as the per-step check below).
+        if activity.token_budget.max > 0 && *spent_output > activity.token_budget.max {
+            return Err(WorkflowError::BudgetExceeded {
+                activity_id: activity.id.clone(),
+                used: *spent_output,
+                limit: activity.token_budget.max,
+            });
+        }
+        return Ok((out.text, out.total_tokens));
     }
 
     // --- Per-step execution ---
@@ -931,28 +966,41 @@ pub async fn execute_activity(
             });
         }
 
-        // Run LLM loop for this step
-        let (step_result, step_tokens) = run_llm_loop(
+        // Run this step through the ONE injected agentic loop.
+        let turn = LoopTurn {
             activity,
-            memory_user_id,
+            system: system.clone(),
+            seed_messages: messages.clone(),
+            advertised_tools: tool_names.clone(),
+            agent_id,
+            user_id: memory_user_id,
             memory_writes_disabled,
-            provider,
-            tools,
-            roster,
-            &tool_defs,
-            &system,
-            messages.clone(),
-            spent,
-            spent_output,
-            make_trace(i.to_string()),
-            store,
+            trace: make_trace(i.to_string()),
             checkpoint,
-            if resume.is_some() && (i as i64) == resume_step { resume_pending.take() } else { None },
+            pending: if resume.is_some() && (i as i64) == resume_step {
+                resume_pending.take()
+            } else {
+                None
+            },
             iteration,
-        
-            cancel_token,
-        )
-        .await
+            step_index: Some(i as i64),
+            max_iterations: activity_max_iterations(activity),
+            min_iterations: activity.min_iterations,
+            requires_tools: activity.requires_tools.clone(),
+            output_budget_max: activity.token_budget.max,
+            spent_output_before: *spent_output,
+            model: activity.model.clone(),
+            cancel: cancel_token.cloned(),
+            turn_key: format!("{}:{}:{}", activity.id, iteration, i),
+        };
+        let (step_result, step_tokens) = loop_impl
+            .run_turn(turn)
+            .await
+            .map(|o| {
+                *spent += o.total_tokens;
+                *spent_output += o.output_tokens;
+                (o.text, o.total_tokens)
+            })
         .map_err(|e| {
             // Exit-by-design (exit tool) is a clean stop, not a step failure —
             // recording it as failed painted successful exited runs red in the UI.
@@ -1223,553 +1271,6 @@ async fn evaluate_step(
 /// by the fixed tool-schema overhead resent every turn (~30k), so an
 /// input-inclusive budget would fail on turn 1 regardless of the model's work.
 /// Budgets are opt-in: an activity with no declared budget (max 0) is uncapped.
-
-/// Resolve a model tool call to an executable tool + input.
-///
-/// The first-tool-call-success contract: a call written against a legacy
-/// pre-STRAP name (`organizer(resource: "mail")`) EXECUTES — resolved through
-/// the one canonical alias table (tools::registry::resolve_flat_alias) — it
-/// never bounces through a correction round-trip. And scoping restricts the
-/// advertised MENU, never the executable KITCHEN: a real roster tool called
-/// by name runs (with a warning that names the scope miss) even when its
-/// schema wasn't shipped for this activity. Small models follow step text
-/// literally; their first call has to land.
-fn resolve_tool_call<'a>(
-    scoped: &[&'a Box<dyn DynTool>],
-    roster: &'a [Box<dyn DynTool>],
-    call_name: &str,
-    input: &serde_json::Value,
-) -> (String, serde_json::Value, Option<&'a Box<dyn DynTool>>) {
-    let (name, input) = match tools::registry::resolve_flat_alias(call_name) {
-        Some((strap, params)) => {
-            let mut merged = input.clone();
-            if let Some(obj) = merged.as_object_mut() {
-                for (k, v) in params {
-                    obj.entry(&k).or_insert(v);
-                }
-            }
-            info!(requested = %call_name, resolved = %strap, "legacy tool name resolved at dispatch");
-            (strap, merged)
-        }
-        None => (call_name.to_string(), input.clone()),
-    };
-    let stripped = strip_mcp_prefix(&name).to_string();
-    let found: Option<&'a Box<dyn DynTool>> = scoped
-        .iter()
-        .find(|t| t.name() == name)
-        .or_else(|| scoped.iter().find(|t| t.name() == stripped))
-        .copied()
-        .or_else(|| {
-            roster
-                .iter()
-                .find(|t| t.name() == name || t.name() == stripped)
-                .inspect(|t| {
-                    warn!(
-                        tool = %t.name(),
-                        "tool executed outside activity scope — declare or reference it so its schema ships"
-                    );
-                })
-        });
-    (name, input, found)
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn run_llm_loop(
-    activity: &Activity,
-    memory_user_id: &str,
-    memory_writes_disabled: bool,
-    provider: &dyn ai::Provider,
-    tools: &[&Box<dyn DynTool>],
-    roster: &[Box<dyn DynTool>],
-    tool_defs: &[ai::ToolDefinition],
-    system: &str,
-    mut messages: Vec<ai::Message>,
-    spent: &mut u32,
-    spent_output: &mut u32,
-    trace: ai::RequestTrace,
-    store: &Arc<Store>,
-    checkpoint: Option<&CheckpointCtx>,
-    pending: Option<ai::ToolCall>,
-    iteration: &str,
-    cancel_token: Option<&CancellationToken>,
-) -> Result<(String, u32), WorkflowError> {
-    let mut tokens_used: u32 = 0;
-    let mut iterations: u32 = 0;
-    // Per-activity turn budget: params.maxIterations overrides the default,
-    // same shape the graph loop node already accepts (graph.rs).
-    let max_iterations: u32 = activity
-        .params
-        .as_ref()
-        .and_then(|p| p.get("maxIterations"))
-        .and_then(|v| {
-            v.as_u64()
-                .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
-        })
-        .map(|v| v as u32)
-        .unwrap_or(MAX_ITERATIONS);
-    let mut consecutive_all_not_found: u32 = 0;
-    let mut last_tool_name: String = String::new();
-    let mut consecutive_same_tool: u32 = 0;
-    // ONE identical-call budget shared with the chat runner (Rule 8): counts
-    // the CALL, not the answer — polling defeats every result-keyed guard.
-    let mut call_budget = ai::call_budget::CallBudget::new();
-    // Tools this activity must actually land before it may finish (see
-    // Activity::requires_tools). Only a NON-error result counts: an attempt
-    // that failed is exactly the case this guard exists to catch.
-    let mut required_pending: std::collections::HashSet<String> =
-        activity.requires_tools.iter().cloned().collect();
-
-    // Workflow activities are unattended — Origin::Workflow keeps the ask tool
-    // (and any HITL-gated capability) unavailable so the engine never blocks on
-    // a UI prompt. Carry the run's agent identity in the session key so tools
-    // resolve per-agent state (plugin account profiles, memory scope) — a bare
-    // context made every workflow run account-less and scope-less.
-    let mut ctx = tools::ToolContext::new(tools::Origin::Workflow).with_session(
-        tools::workflow_session_key(&trace.agent_id, &trace.run_id),
-        trace.run_id.clone(),
-    );
-    // Caller-resolved memory scope: without it every workflow activity ran
-    // tools against the global unowned "" scope (see execute_workflow docs).
-    ctx.user_id = memory_user_id.to_string();
-    ctx.memory_writes_disabled = memory_writes_disabled;
-    let ctx = ctx;
-
-    // ── Durable resume entry ──────────────────────────────────────────
-    // The restored conversation ends at the assistant message whose gated
-    // call the owner just approved. Execute exactly that call (checkpoint
-    // bypassed — it IS the approved call), append its result, and fall into
-    // the normal loop: the next model turn sees the outcome and continues
-    // the workflow from precisely where it paused. Nothing earlier re-runs.
-    if let Some(tc) = pending {
-        let (_name, input, tool) = resolve_tool_call(tools, roster, &tc.name, &tc.input);
-        let result = match tool {
-            Some(t) => t.execute_dyn(&ctx, input).await,
-            None => tools::ToolResult::error(format!("tool not found: {}", tc.name)),
-        };
-        if result.terminal {
-            return Err(WorkflowError::Blocked(result.content.clone()));
-        }
-        if !result.is_error {
-            if let Some(reason) = result.content.strip_prefix(tools::EXIT_SENTINEL) {
-                return Err(WorkflowError::Exited(reason.to_string()));
-            }
-        }
-        messages.push(ai::Message {
-            role: "tool".into(),
-            content: String::new(),
-            tool_results: Some(serde_json::Value::Array(vec![serde_json::json!({
-                "tool_call_id": tc.id,
-                "content": result.content,
-                "is_error": result.is_error,
-            })])),
-            ..Default::default()
-        });
-    }
-
-    loop {
-        // Mid-activity cancellation: without this check a single activity ran
-        // its full iteration budget after the workflow was cancelled — the
-        // between-activities check could not reach inside the loop.
-        if cancel_token.map(|t| t.is_cancelled()).unwrap_or(false) {
-            return Err(WorkflowError::Cancelled);
-        }
-        if iterations >= max_iterations {
-            return Err(WorkflowError::MaxIterations(activity.id.clone()));
-        }
-        let req = ChatRequest {
-            tool_choice: Default::default(),
-            messages: messages.clone(),
-            tools: tool_defs.to_vec(),
-            max_tokens: 16384,
-            temperature: 0.0,
-            system: system.to_string(),
-            static_system: String::new(),
-            model: activity.model.clone(),
-            enable_thinking: false,
-            metadata: None,
-            cache_breakpoints: vec![],
-            cancel_token: cancel_token.cloned(),
-            trace: Some(trace.clone()),
-        };
-
-        let mut rx = stream_with_retry(provider, &req)
-            .await
-            .map_err(|e| WorkflowError::Provider(e.to_string()))?;
-
-        let mut response_text = String::new();
-        let mut tool_calls: Vec<ai::ToolCall> = Vec::new();
-        // Per-turn usage, merged max-per-field across however many Usage
-        // events the provider emits. Usage counters are cumulative running
-        // totals, so max = final; SUMMING them counted a ~200-token turn as
-        // tens of thousands and tripped every budget (the 71613/8000 failures).
-        let mut turn_input: i32 = 0;
-        let mut turn_output: i32 = 0;
-
-        while let Some(event) = rx.recv().await {
-            match event.event_type {
-                StreamEventType::Text => {
-                    response_text.push_str(&event.text);
-                }
-                StreamEventType::ToolCall => {
-                    if let Some(tc) = event.tool_call {
-                        tool_calls.push(tc);
-                    }
-                }
-                StreamEventType::Error => {
-                    return Err(WorkflowError::ActivityFailed(
-                        activity.id.clone(),
-                        event.error.unwrap_or_default(),
-                    ));
-                }
-                // Providers emit usage as a dedicated Usage event; Done always
-                // carries usage: None. Reading usage only on Done recorded 0
-                // tokens for every workflow run, so token budgets never
-                // enforced and the only runaway stop was the iteration cap.
-                StreamEventType::Usage => {
-                    if let Some(usage) = event.usage {
-                        turn_input = turn_input.max(usage.input_tokens);
-                        turn_output = turn_output.max(usage.output_tokens);
-                    }
-                }
-                StreamEventType::Done => {
-                    if let Some(usage) = event.usage {
-                        turn_input = turn_input.max(usage.input_tokens);
-                        turn_output = turn_output.max(usage.output_tokens);
-                    }
-                    break;
-                }
-                _ => {}
-            }
-        }
-
-        // Commit the merged turn usage exactly once, after the stream ends.
-        let turn_total = (turn_input.max(0) + turn_output.max(0)) as u32;
-        tokens_used += turn_total;
-        *spent += turn_total;
-        *spent_output += turn_output.max(0) as u32;
-
-        // Per-activity token budget — enforced DURING the loop, not after the
-        // activity finishes. A runaway activity stops at its own ceiling
-        // instead of spending unboundedly until the workflow-total check.
-        // Budgets meter OUTPUT tokens (the model's work), cumulative across
-        // the activity's steps; run totals stay full input+output.
-        if activity.token_budget.max > 0 && *spent_output > activity.token_budget.max {
-            return Err(WorkflowError::BudgetExceeded {
-                activity_id: activity.id.clone(),
-                used: *spent_output,
-                limit: activity.token_budget.max,
-            });
-        }
-
-        // If no tool calls, check if we should force-continue (min_iterations budget)
-        if tool_calls.is_empty() {
-            if activity.min_iterations > 0
-                && iterations < activity.min_iterations
-                && !response_text.is_empty()
-            {
-                info!(
-                    activity_id = %activity.id,
-                    iteration = iterations,
-                    min = activity.min_iterations,
-                    "budget continuation: forcing next iteration"
-                );
-                messages.push(ai::Message {
-                    role: "assistant".into(),
-                    content: response_text,
-                    ..Default::default()
-                });
-                messages.push(ai::Message {
-                    role: "user".into(),
-                    content: "You stopped early but your task is not complete. \
-                              Keep working — use your tools to make more progress. \
-                              Do not summarize or ask to continue. Take the next action."
-                        .to_string(),
-                    ..Default::default()
-                });
-                iterations += 1;
-                continue;
-            }
-            // If the LLM produced no text but tool calls were made,
-            // synthesize output from tool results so downstream steps/activities
-            // get context (n8n-style: empty output = branch termination).
-            if response_text.is_empty() && iterations > 0 {
-                response_text = synthesize_from_tool_results(&messages);
-            }
-            // The activity declared an outward effect it never achieved. Fail
-            // loudly: a run that "completed" while its email never sent looks
-            // healthy in every log and is the worst kind of silent failure.
-            if !required_pending.is_empty() {
-                let mut missing: Vec<String> = required_pending.into_iter().collect();
-                missing.sort();
-                return Err(WorkflowError::ActivityFailed(
-                    activity.id.clone(),
-                    format!(
-                        "stopped without a successful {} call — the activity's required effect \
-                         never happened. The model's own summary said: {}",
-                        missing.join(", "),
-                        response_text.chars().take(300).collect::<String>()
-                    ),
-                ));
-            }
-            return Ok((response_text, tokens_used));
-        }
-
-        // Add assistant message with tool calls
-        messages.push(ai::Message {
-            role: "assistant".into(),
-            content: response_text,
-            tool_calls: Some(serde_json::to_value(&tool_calls).unwrap_or_default()),
-            ..Default::default()
-        });
-
-        // Execute each tool call and collect results (ctx built above the loop
-        // with tools::workflow_session_key — supersedes the older inline binding).
-        let mut tool_result_entries = Vec::new();
-        for tc in &tool_calls {
-            // Runaway backstop, shared kernel with the chat runner. An abort
-            // fails the ACTIVITY with an honest message; the workflow's own
-            // retry/error routing then applies (never a silent stop).
-            if let Some(repeats) =
-                call_budget.abort_due(&tc.name, &tc.input, IDENTICAL_CALL_ABORT)
-            {
-                return Err(WorkflowError::RunawayLoop(format!(
-                    "'{}' was called {} times with identical arguments without \
-                     resolving in activity '{}'. Ending the activity so it cannot \
-                     continue indefinitely.",
-                    tc.name, repeats, activity.id
-                )));
-            }
-            call_budget.record(&tc.name, &tc.input);
-            let (_name, resolved_input, tool) =
-                resolve_tool_call(tools, roster, &tc.name, &tc.input);
-            // ── Approval checkpoint (per-employee operation policy) ──────
-            // The headless analog of the chat runner's operation gate: a gated
-            // interface operation is decided by the SAME OperationPolicy.
-            // Always → run; Blocked → refuse (roster omission is the primary
-            // control, this is the backstop); Approval → SUSPEND the run
-            // (persist the pending call, park as awaiting_approval, notify the
-            // owner) instead of failing headless. On the post-approval re-run
-            // the one-shot token (operation + exact input hash) admits exactly
-            // the call the owner saw — a drifted re-derivation re-asks.
-            if tc.name == "plugin" {
-                if let Some(cp) = checkpoint {
-                    {
-                        let op = tc
-                            .input
-                            .get("operation")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        if !op.is_empty() {
-                            let suffix = tools::plugin_tool::port_suffix(&op);
-                            // Effective origin (WS2): the engine always runs as
-                            // Workflow (trusted — owner-authored automation), but
-                            // a run DRIVEN by untrusted content (watch/comm
-                            // payload in its inputs) is decided as Comm: the
-                            // words steering this run arrived from outside, so a
-                            // gated Always floors to Approval (WS2-R7). With no
-                            // policy set, decide_optional applies the same rule
-                            // (None ⇒ trusted no-gate, untrusted ⇒ safe default).
-                            let effective_origin = if cp.tainted {
-                                tools::Origin::Comm
-                            } else {
-                                tools::Origin::Workflow
-                            };
-                            let access = tools::policy::OperationPolicy::decide_optional(
-                                cp.operation_policy.as_ref(),
-                                &op,
-                                effective_origin,
-                            );
-                            if let Some(access) = access {
-                                match access {
-                                    tools::policy::OperationAccess::Always => {}
-                                    tools::policy::OperationAccess::Blocked => {
-                                        tool_result_entries.push(serde_json::json!({
-                                            "tool_call_id": tc.id,
-                                            "content": format!(
-                                                "The operation '{op}' is turned OFF (Blocked) for this AI employee in its Controls. Do not retry or work around it."
-                                            ),
-                                            "is_error": true,
-                                        }));
-                                        continue;
-                                    }
-                                    tools::policy::OperationAccess::Approval => {
-                                        let display = tc
-                                            .input
-                                            .get("display")
-                                            .and_then(|v| v.as_str())
-                                            .unwrap_or("")
-                                            .trim()
-                                            .to_string();
-                                        if display.is_empty() {
-                                            tool_result_entries.push(serde_json::json!({
-                                                "tool_call_id": tc.id,
-                                                "content": format!(
-                                                    "The operation '{op}' needs the owner's approval, and the approval prompt requires a `display` sentence. Retry the SAME call adding display: one plain-language sentence a non-technical person understands — real names and formatted amounts, never raw ids or cents."
-                                                ),
-                                                "is_error": true,
-                                            }));
-                                            continue;
-                                        }
-                                        let messages_json =
-                                            serde_json::to_string(&messages).unwrap_or_default();
-                                        let pending_json =
-                                            serde_json::to_string(tc).unwrap_or_default();
-                                        if let Err(e) = store.create_workflow_suspension(
-                                            &trace.run_id,
-                                            &trace.agent_id,
-                                            &cp.binding_name,
-                                            &activity.id,
-                                            iteration,
-                                            trace.step_id.parse::<i64>().ok(),
-                                            &messages_json,
-                                            &pending_json,
-                                            &suffix,
-                                            &display,
-                                        ) {
-                                            // Can't persist the suspension → the run
-                                            // cannot park safely; fail loud, never
-                                            // silent-run the gated call.
-                                            return Err(WorkflowError::Database(format!(
-                                                "failed to persist approval suspension: {e}"
-                                            )));
-                                        }
-                                        let _ = store.update_workflow_run(
-                                            &trace.run_id,
-                                            Some("awaiting_approval"),
-                                            Some(&activity.id),
-                                            None,
-                                            None,
-                                            None,
-                                        );
-                                        return Err(WorkflowError::AwaitingApproval {
-                                            operation: suffix,
-                                            display,
-                                        });
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            let result = match tool {
-                Some(t) => t.execute_dyn(&ctx, resolved_input).await,
-                None => tools::ToolResult::error(format!("tool not found: {}", tc.name)),
-            };
-
-            // Terminal tool result (auth expired, account not connected,
-            // permission off — FRAMES classification): the run cannot do its
-            // job; end it as blocked instead of feeding the error back for the
-            // model to improvise around. The chat runner already does this —
-            // the workflow engine let the model "voluntarily" exit, which read
-            // as a clean stop and hid hard failures for days.
-            if result.terminal {
-                return Err(WorkflowError::Blocked(result.content.clone()));
-            }
-
-            // Check for exit sentinel
-            if !result.is_error {
-                if let Some(reason) = result.content.strip_prefix(tools::EXIT_SENTINEL) {
-                    return Err(WorkflowError::Exited(reason.to_string()));
-                }
-                required_pending.remove(&tc.name);
-            }
-
-            tool_result_entries.push(serde_json::json!({
-                "tool_call_id": tc.id,
-                "content": result.content,
-                "is_error": result.is_error,
-            }));
-        }
-
-        // Same-tool loop detection
-        if let Some(first_call) = tool_calls.first() {
-            if first_call.name == last_tool_name {
-                consecutive_same_tool += 1;
-            } else {
-                last_tool_name = first_call.name.clone();
-                consecutive_same_tool = 1;
-            }
-        }
-        // Early termination on repeated tool-not-found
-        let all_not_found = tool_result_entries.iter().all(|e| {
-            e.get("is_error").and_then(|v| v.as_bool()).unwrap_or(false)
-                && e.get("content")
-                    .and_then(|v| v.as_str())
-                    .map_or(false, |s| s.contains("tool not found"))
-        });
-        if all_not_found {
-            consecutive_all_not_found += 1;
-            if consecutive_all_not_found >= 3 {
-                let names: Vec<&str> = tool_calls.iter().map(|tc| tc.name.as_str()).collect();
-                return Err(WorkflowError::ActivityFailed(
-                    activity.id.clone(),
-                    format!("repeated tool-not-found for: {}", names.join(", ")),
-                ));
-            }
-        } else {
-            consecutive_all_not_found = 0;
-        }
-
-        messages.push(ai::Message {
-            role: "tool".into(),
-            content: String::new(),
-            tool_results: Some(serde_json::Value::Array(tool_result_entries)),
-            ..Default::default()
-        });
-
-        // Same-tool loop nudge — MUST come after the tool-results message:
-        // providers reject a user message wedged between tool_use and
-        // tool_result, which would 400 exactly when the model is stuck.
-        if consecutive_same_tool >= 3 {
-            messages.push(ai::Message {
-                role: "user".into(),
-                content: format!(
-                    "You have called '{}' {} times in a row. Take a different action \
-                     or complete this activity by responding without tool calls.",
-                    last_tool_name, consecutive_same_tool
-                ),
-                ..Default::default()
-            });
-        }
-
-        iterations += 1;
-    }
-}
-
-/// When the LLM completes via tool calls without a final text response,
-/// extract the last tool result contents as the step output.
-fn synthesize_from_tool_results(messages: &[ai::Message]) -> String {
-    for msg in messages.iter().rev() {
-        if msg.role == "tool" {
-            if let Some(serde_json::Value::Array(results)) = &msg.tool_results {
-                let parts: Vec<&str> = results
-                    .iter()
-                    .filter_map(|entry| {
-                        let is_err = entry
-                            .get("is_error")
-                            .and_then(|v| v.as_bool())
-                            .unwrap_or(false);
-                        if is_err {
-                            return None;
-                        }
-                        entry.get("content").and_then(|v| v.as_str()).filter(|s| !s.is_empty())
-                    })
-                    .collect();
-                if !parts.is_empty() {
-                    let joined = parts.join("\n---\n");
-                    const MAX_LEN: usize = 4000;
-                    if joined.len() > MAX_LEN {
-                        return format!("{}...", truncate_at_char_boundary(&joined, MAX_LEN));
-                    }
-                    return joined;
-                }
-            }
-        }
-    }
-    String::new()
-}
 
 /// Build the system prompt for a per-step activity (no steps section — steps come as user messages).
 #[allow(clippy::too_many_arguments)]
@@ -2191,17 +1692,6 @@ fn extract_error_pattern(err: &str) -> String {
     }
 }
 
-/// Strip MCP namespace prefix from tool names.
-/// `mcp__{server}__{tool}` → `{tool}`
-/// e.g. "mcp__nebo-agent__plugin" → "plugin"
-fn strip_mcp_prefix(name: &str) -> &str {
-    if !name.starts_with("mcp__") {
-        return name;
-    }
-    let parts: Vec<&str> = name.splitn(3, "__").collect();
-    if parts.len() == 3 { parts[2] } else { name }
-}
-
 #[cfg(test)]
 mod engine_tests {
     use super::*;
@@ -2307,40 +1797,7 @@ mod engine_tests {
         assert_eq!(names, vec!["message", "os"]);
     }
 
-    #[test]
-    fn test_resolve_tool_call_first_call_lands() {
-        // The first-call contract: a legacy name EXECUTES (no correction
-        // round-trip), and scoping narrows the advertised menu but never the
-        // executable kitchen.
-        let roster = fake_registry();
-        let scoped: Vec<&Box<dyn DynTool>> =
-            roster.iter().filter(|t| t.name() == "os" || t.name() == "message").collect();
-
-        // Legacy alias: organizer( → os, params passed through untouched.
-        let input = serde_json::json!({"resource": "mail", "action": "unread"});
-        let (name, resolved_input, tool) = resolve_tool_call(&scoped, &roster, "organizer", &input);
-        assert_eq!(name, "os");
-        assert_eq!(resolved_input, input);
-        assert_eq!(tool.expect("resolves to a live tool").name(), "os");
-
-        // Single-purpose legacy alias injects its absorbed resource.
-        let (_n, resolved_input, tool) =
-            resolve_tool_call(&scoped, &roster, "spotlight", &serde_json::json!({"query": "q"}));
-        assert_eq!(resolved_input["resource"], "search");
-        assert_eq!(tool.unwrap().name(), "os");
-
-        // Out-of-scope but real: plugin isn't in the scoped menu, still runs.
-        let (_n, _i, tool) =
-            resolve_tool_call(&scoped, &roster, "plugin", &serde_json::json!({}));
-        assert_eq!(tool.expect("kitchen is never narrowed").name(), "plugin");
-
-        // Genuinely unknown names still fail (no phantom tools).
-        let (_n, _i, tool) =
-            resolve_tool_call(&scoped, &roster, "definitely_not_a_tool", &serde_json::json!({}));
-        assert!(tool.is_none());
-    }
-
-    #[test]
+        #[test]
     fn test_scoped_activity_tools_honors_declared_mcps_and_cmds() {
         // agent.json declarations are the authored tool contract: mcps
         // selects that server's proxy tools, cmds selects the plugin tool —
@@ -2515,16 +1972,6 @@ mod engine_tests {
         assert!(prompt.contains("## Task\nDo the thing"));
     }
 
-    #[test]
-    fn test_strip_mcp_prefix() {
-        assert_eq!(strip_mcp_prefix("plugin"), "plugin");
-        assert_eq!(strip_mcp_prefix("os"), "os");
-        assert_eq!(strip_mcp_prefix("mcp__nebo-agent__plugin"), "plugin");
-        assert_eq!(strip_mcp_prefix("mcp__nebo-agent__os"), "os");
-        assert_eq!(strip_mcp_prefix("mcp__monument_sh__project"), "project");
-        assert_eq!(strip_mcp_prefix("mcp__only_one"), "mcp__only_one");
-    }
-
     /// Byte-limit truncation must respect UTF-8 boundaries — a slice landing
     /// inside a multibyte character panicked, killed the run task, and left
     /// the run stuck in `running`.
@@ -2538,40 +1985,4 @@ mod engine_tests {
         assert_eq!(truncate_at_char_boundary("📊📊", 5), "📊");
     }
 
-    /// Tool-only completions synthesize output from the LATEST tool message's
-    /// non-error results — error results are excluded, so a step whose tools
-    /// only failed yields empty output (branch termination) instead of
-    /// feeding an error string downstream as if it were data.
-    #[test]
-    fn test_synthesize_from_tool_results_skips_errors_uses_latest() {
-        let tool_msg = |entries: serde_json::Value| ai::Message {
-            role: "tool".into(),
-            content: String::new(),
-            tool_results: Some(entries),
-            ..Default::default()
-        };
-        let messages = vec![
-            tool_msg(serde_json::json!([
-                {"tool_call_id":"1","content":"stale","is_error":false}
-            ])),
-            ai::Message {
-                role: "assistant".into(),
-                content: "calling more tools".into(),
-                ..Default::default()
-            },
-            tool_msg(serde_json::json!([
-                {"tool_call_id":"2","content":"fresh-A","is_error":false},
-                {"tool_call_id":"3","content":"boom","is_error":true},
-                {"tool_call_id":"4","content":"fresh-B","is_error":false}
-            ])),
-        ];
-        let out = synthesize_from_tool_results(&messages);
-        assert_eq!(out, "fresh-A\n---\nfresh-B");
-
-        // Only-errors: empty output, never the error text as data.
-        let failed = vec![tool_msg(serde_json::json!([
-            {"tool_call_id":"1","content":"boom","is_error":true}
-        ]))];
-        assert_eq!(synthesize_from_tool_results(&failed), "");
     }
-}

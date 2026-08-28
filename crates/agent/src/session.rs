@@ -394,6 +394,9 @@ impl SessionManager {
     pub fn delete_session(&self, session_id: &str) -> Result<(), NeboError> {
         let chat_id = self.resolve_chat_id(session_id);
         self.store.delete_chat_messages_by_chat_id(&chat_id)?;
+        // The chat row was lazily created for this session's messages — a
+        // scratch conversation (workflow turn) must not linger in chat lists.
+        self.store.delete_chat(&chat_id)?;
         self.store.delete_session(session_id)?;
         Ok(())
     }

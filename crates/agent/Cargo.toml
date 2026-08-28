@@ -27,6 +27,7 @@ notify = "7"
 libc = "0.2"
 tracing = { workspace = true }
 thiserror = { workspace = true }
+async-trait = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
 chrono-tz = { workspace = true }

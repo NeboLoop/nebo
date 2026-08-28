@@ -539,6 +539,55 @@ struct ToolResultRow {
     payload: Option<serde_json::Value>,
 }
 
+/// Workflow-mode configuration for a run — the ONE-loop convergence: workflow
+/// activities execute through this same Runner instead of a second loop in
+/// the engine. Config on the request, NOT a second run() (Rule 8).
+#[derive(Clone, Default)]
+pub struct WorkflowMode {
+    /// Janus attribution — workflow/action/step ids ride the request trace.
+    pub trace: RequestTrace,
+    /// Schema-advertising filter (context scoping, not security): only these
+    /// tools' schemas ship to the model. Dispatch still resolves through the
+    /// full registry — the same roster fallback the engine loop had.
+    pub advertised_tools: std::collections::HashSet<String>,
+    /// The run's inputs carry untrusted content — a gated `Always` floors to
+    /// Approval (WS2-R7), the same rule the engine checkpoint applied.
+    pub tainted: bool,
+    /// Activity output-token ceiling (0 = none) and what earlier turns of the
+    /// same activity already spent against it.
+    pub output_budget_max: u32,
+    pub spent_output_before: u32,
+    /// Park an Approval-gated operation instead of refusing it unattended:
+    /// the closure persists the suspension (sync — rusqlite is sync) and the
+    /// loop exits with reason "awaiting_approval". None = refuse (chat-style).
+    #[allow(clippy::type_complexity)]
+    pub park: Option<
+        std::sync::Arc<dyn Fn(WorkflowPark<'_>) -> Result<(), String> + Send + Sync>,
+    >,
+}
+
+impl std::fmt::Debug for WorkflowMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WorkflowMode")
+            .field("trace_run", &self.trace.run_id)
+            .field("advertised", &self.advertised_tools.len())
+            .field("tainted", &self.tainted)
+            .field("output_budget_max", &self.output_budget_max)
+            .field("park", &self.park.is_some())
+            .finish()
+    }
+}
+
+/// What the workflow park closure receives — everything a suspension row needs.
+pub struct WorkflowPark<'a> {
+    /// The in-loop conversation at park time (session messages, converted).
+    pub messages: Vec<Message>,
+    pub call: &'a ai::ToolCall,
+    /// Port-suffixed operation name + the owner-facing display sentence.
+    pub operation: String,
+    pub display: String,
+}
+
 /// Input parameters for a run.
 #[derive(Debug, Clone, Default)]
 pub struct RunRequest {
@@ -654,6 +703,10 @@ pub struct RunRequest {
     /// the memory tool refuses non-tacit reads — matter/project facts never
     /// surface in a reply to a non-granted colleague. `None` for owner runs.
     pub audience: Option<String>,
+    /// Workflow-mode configuration (None = every normal chat run). See
+    /// [`WorkflowMode`] — deterministic sampling, advertised-tools scoping,
+    /// pending-call entry, approval parking, output budgets.
+    pub workflow: Option<WorkflowMode>,
 }
 
 /// Shared atomic counters for live run progress reporting.
@@ -1374,6 +1427,7 @@ impl Runner {
                         mcp_context.as_ref(),
                         &fork_taint,
                         None, // forks never reply to a coworker audience
+                        None, // forks are chat, never workflow mode
                     )
                     .await;
 
@@ -1474,19 +1528,23 @@ impl Runner {
                 mcp_context.as_ref(),
                 &run_taint,
                 req.audience.as_deref(),
+                req.workflow.as_ref(),
             )
             .await;
 
-            let run_ok = result.is_ok();
-            if let Err(e) = result {
-                let _ = tx
-                    .send(StreamEvent::error(format!("Agent error: {}", e)))
-                    .await;
-            }
+            let (run_ok, loop_exit_reason) = match result {
+                Ok(reason) => (true, reason),
+                Err(e) => {
+                    let _ = tx
+                        .send(StreamEvent::error(format!("Agent error: {}", e)))
+                        .await;
+                    (false, String::new())
+                }
+            };
             let final_taint: Vec<types::provenance::ProvenanceClass> =
                 run_taint.lock().unwrap().iter().copied().collect();
             let _ = tx
-                .send(StreamEvent::done().with_provenance(final_taint))
+                .send(StreamEvent::done_with_reason(loop_exit_reason).with_provenance(final_taint))
                 .await;
 
             if !skip_memory {
@@ -1662,13 +1720,14 @@ impl Runner {
                             None, // review forks never serve CLI-provider tools
                             &fork_taint,
                             None, // review forks never reply to a coworker audience
+                            None, // review forks are chat, never workflow mode
                         )
                         .await;
                         drop(sub_tx);
 
                         let summary = drainer.await.unwrap_or_default();
                         match fork_result {
-                            Ok(()) => {
+                            Ok(_) => {
                                 let line = summary.trim().chars().take(300).collect::<String>();
                                 info!(
                                     session_id = %session_id_rf,
@@ -1730,6 +1789,12 @@ impl Runner {
         }
 
         Ok(response)
+    }
+
+    /// The tool registry — the workflow adapter executes an approved pending
+    /// call through it before re-entering the loop.
+    pub fn tool_registry(&self) -> Arc<Registry> {
+        self.tools.clone()
     }
 
     pub fn sessions(&self) -> &SessionManager {
@@ -1823,7 +1888,8 @@ async fn run_loop(
     mcp_context: Option<&Arc<tokio::sync::Mutex<ToolContext>>>,
     run_taint: &std::sync::Mutex<std::collections::BTreeSet<types::provenance::ProvenanceClass>>,
     audience: Option<&str>,
-) -> Result<(), String> {
+    workflow_mode: Option<&WorkflowMode>,
+) -> Result<String, String> {
     let mut state = RunState::new();
     // Stream reminders are EPHEMERAL: queued here, injected into the NEXT
     // LLM call's messages in-memory, then dropped. Never persisted to the
@@ -2666,6 +2732,11 @@ async fn run_loop(
             context_file,
         };
         prompt::build_static(&pctx)
+    } else if workflow_mode.is_some() {
+        // Workflow activities own their entire prompt — the engine already
+        // injects agent identity + its memory slice; appending the chat
+        // memory context here would double-inject it.
+        system_prompt.to_string()
     } else {
         build_system_prompt(system_prompt, &db_context_formatted)
     };
@@ -2722,7 +2793,7 @@ async fn run_loop(
 
         if cancel_token.is_cancelled() {
             info!(session_id, "run cancelled before iteration {}", iteration);
-            return Ok(());
+            return Ok(turn_exit_reason);
         }
 
         // Every consumer drains the event receiver until the run completes, so a
@@ -2733,7 +2804,7 @@ async fn run_loop(
                 session_id,
                 iteration, "event receiver dropped — stopping run"
             );
-            return Ok(());
+            return Ok(turn_exit_reason);
         }
 
         // Adaptive iteration limit: extend past default only if making genuine progress.
@@ -3164,6 +3235,25 @@ async fn run_loop(
             }
         }
 
+        // Workflow mode: the activity's scoped set is the declaration —
+        // rebuild from the full registry (deferred included: a declared MCP
+        // tool's schema must ship) and synthesize the `exit` primitive.
+        if let Some(m) = workflow_mode {
+            let full = tools.list().await;
+            tool_defs = full
+                .into_iter()
+                .filter(|td| m.advertised_tools.contains(&td.name))
+                .collect();
+            if m.advertised_tools.contains("exit") && !tool_defs.iter().any(|t| t.name == "exit") {
+                let ex = tools::ExitTool::new();
+                tool_defs.push(ai::ToolDefinition {
+                    name: "exit".into(),
+                    description: tools::registry::DynTool::description(&ex),
+                    input_schema: tools::registry::DynTool::schema(&ex),
+                });
+            }
+        }
+
         // Pattern 3: Deterministic sort for prompt cache stability.
         // Stable alphabetical ordering ensures identical tool blocks across turns,
         // maximising API-side prompt cache hits.
@@ -3239,7 +3329,9 @@ async fn run_loop(
         };
 
         // Determine thinking mode
-        let enable_thinking = if !selected_model.is_empty() {
+        let enable_thinking = if workflow_mode.is_some() {
+            false
+        } else if !selected_model.is_empty() {
             let task = selector.classify_task(&window_messages);
             task == selector::TaskType::Reasoning && selector.supports_thinking(&selected_model)
         } else {
@@ -3513,6 +3605,18 @@ async fn run_loop(
             None
         };
 
+        // Workflow activity output budget — enforced between turns, so a
+        // runaway activity stops at its own ceiling (old-engine parity).
+        if let Some(m) = workflow_mode {
+            if m.output_budget_max > 0
+                && m.spent_output_before + state.total_output_tokens.max(0) as u32
+                    > m.output_budget_max
+            {
+                turn_exit_reason = "output_budget_exceeded".to_string();
+                break;
+            }
+        }
+
         // Build ChatRequest
         let chat_req = ChatRequest {
             tool_choice: forced_choice.unwrap_or_default(),
@@ -3523,7 +3627,7 @@ async fn run_loop(
             } else {
                 DEFAULT_MAX_OUTPUT_TOKENS
             },
-            temperature: 0.7,
+            temperature: if workflow_mode.is_some() { 0.0 } else { 0.7 },
             system: full_system,
             static_system: static_system.clone(),
             model: if selected_model_name.is_empty() {
@@ -3538,10 +3642,14 @@ async fn run_loop(
             // Tag this chat run so Janus attributes its usage per agent (no
             // workflow_id — chat runs are excluded from per-workflow rollups by
             // design; agent_id is the rollup key for chat spend).
-            trace: Some(RequestTrace {
-                agent_id: agent_id.to_string(),
-                run_id: progress.map(|p| p.run_id.clone()).unwrap_or_default(),
-                ..Default::default()
+            trace: Some(match workflow_mode {
+                // Workflow attribution: workflow/action/step ids ride to Janus.
+                Some(m) => m.trace.clone(),
+                None => RequestTrace {
+                    agent_id: agent_id.to_string(),
+                    run_id: progress.map(|p| p.run_id.clone()).unwrap_or_default(),
+                    ..Default::default()
+                },
             }),
         };
 
@@ -3556,7 +3664,7 @@ async fn run_loop(
         let _llm_permit = tokio::select! {
             _ = cancel_token.cancelled() => {
                 info!(session_id, "run cancelled waiting for LLM permit");
-                return Ok(());
+                return Ok(turn_exit_reason);
             }
             permit = concurrency.acquire_llm_permit() => permit,
         };
@@ -3623,7 +3731,7 @@ async fn run_loop(
         let stream_result = tokio::select! {
             _ = cancel_token.cancelled() => {
                 info!(session_id, "run cancelled during provider.stream() call");
-                return Ok(());
+                return Ok(turn_exit_reason);
             }
             result = provider.stream(&chat_req) => result,
         };
@@ -3699,7 +3807,7 @@ async fn run_loop(
                         drop(prov_lock);
                     }
                     tokio::select! {
-                        _ = cancel_token.cancelled() => return Ok(()),
+                        _ = cancel_token.cancelled() => return Ok("cancelled".to_string()),
                         _ = tokio::time::sleep(retry_backoff(transient_retries, None)) => {}
                     }
                     continue;
@@ -3728,7 +3836,7 @@ async fn run_loop(
                         drop(prov_lock);
                     }
                     tokio::select! {
-                        _ = cancel_token.cancelled() => return Ok(()),
+                        _ = cancel_token.cancelled() => return Ok("cancelled".to_string()),
                         _ = tokio::time::sleep(retry_backoff(retryable_retries, None)) => {}
                     }
                     continue;
@@ -3771,7 +3879,7 @@ async fn run_loop(
                             info!(session_id, content_len = assistant_content.len(), tool_count = tool_calls.len(), "saved partial assistant message before cancel");
                         }
                     }
-                    return Ok(());
+                    return Ok(turn_exit_reason);
                 }
                 ev = tokio::time::timeout(STREAM_IDLE_TIMEOUT, rx.recv()) => match ev {
                     Ok(Some(e)) => e,
@@ -4083,7 +4191,7 @@ async fn run_loop(
                         provider_idx += 1;
                     }
                     tokio::select! {
-                        _ = cancel_token.cancelled() => return Ok(()),
+                        _ = cancel_token.cancelled() => return Ok("cancelled".to_string()),
                         _ = tokio::time::sleep(retry_backoff(transient_retries, None)) => {}
                     }
                     continue;
@@ -4125,7 +4233,7 @@ async fn run_loop(
                     provider_idx += 1;
                 }
                 tokio::select! {
-                    _ = cancel_token.cancelled() => return Ok(()),
+                    _ = cancel_token.cancelled() => return Ok("cancelled".to_string()),
                     _ = tokio::time::sleep(retry_backoff(retryable_retries, last_retry_after)) => {}
                 }
                 continue;
@@ -4269,7 +4377,7 @@ async fn run_loop(
                     _ = cancel_token.cancelled() => {
                         info!(session_id, "plan approval cancelled");
                         ask_chs.lock().await.remove(&request_id);
-                        return Ok(());
+                        return Ok(turn_exit_reason);
                     }
                     result = resp_rx => {
                         match result {
@@ -4386,6 +4494,20 @@ async fn run_loop(
             // Apply tool.pre_execute filter hooks — may block individual tools.
             let mut blocked_results: Vec<Option<(ai::ToolCall, ToolResult)>> =
                 vec![None; tool_calls.len()];
+            // Workflow `exit` is a loop primitive, not a real tool: the first
+            // exit call ends the turn before anything in the batch executes.
+            let mut wf_break_reason: Option<String> = None;
+            if workflow_mode.is_some() {
+                if let Some(tc) = tool_calls.iter().find(|tc| tc.name == "exit") {
+                    let reason = tc
+                        .input
+                        .get("reason")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    wf_break_reason = Some(format!("workflow_exit:{reason}"));
+                }
+            }
             let has_pre_hook = hooks.has_subscribers("tool.pre_execute");
             if has_pre_hook {
                 for idx in 0..tool_calls.len() {
@@ -4780,7 +4902,14 @@ async fn run_loop(
                         tools::policy::OperationPolicy::decide_optional(
                             operation_policy,
                             op,
-                            origin,
+                            // Tainted workflow inputs decide as Comm: a gated
+                            // Always floors to Approval (WS2-R7), the same
+                            // rule the engine checkpoint applied.
+                            if workflow_mode.map_or(false, |m| m.tainted) {
+                                tools::Origin::Comm
+                            } else {
+                                origin
+                            },
                         )
                     });
                     if let (Some(access), Some(op)) = (access, op.as_deref()) {
@@ -4892,6 +5021,33 @@ async fn run_loop(
                                             ));
                                         }
                                     }
+                                } else if let Some(park) =
+                                    workflow_mode.and_then(|m| m.park.as_ref())
+                                {
+                                    // Workflow suspend/resume: park the run for the
+                                    // owner instead of refusing — the closure persists
+                                    // the suspension row; the loop exits parked.
+                                    let snapshot = convert_messages(
+                                        &sessions.get_messages(session_id).unwrap_or_default(),
+                                    );
+                                    match park(WorkflowPark {
+                                        messages: snapshot,
+                                        call: &tool_calls[idx],
+                                        operation: tools::plugin_tool::port_suffix(op),
+                                        display: display.clone(),
+                                    }) {
+                                        Ok(()) => {
+                                            wf_break_reason =
+                                                Some("awaiting_approval".to_string());
+                                        }
+                                        Err(e) => {
+                                            // Can't persist the suspension → fail loud,
+                                            // never silent-run the gated call.
+                                            wf_break_reason =
+                                                Some(format!("suspension_failed:{e}"));
+                                        }
+                                    }
+                                    break;
                                 } else {
                                     // Unattended chat origin (cron/comm/subagent): the chat
                                     // gate can't pause. The workflow path handles suspend/
@@ -5010,6 +5166,13 @@ async fn run_loop(
             }
             ctx.approved_categories = approved_cats;
 
+            // Workflow break (exit primitive / approval park): the turn ends
+            // now — nothing in this batch executes.
+            if let Some(reason) = wf_break_reason {
+                turn_exit_reason = reason;
+                break;
+            }
+
             // Partition tool calls into concurrent-safe and sequential phases.
             // Concurrent tools run in parallel via FuturesUnordered, then
             // sequential tools run one at a time to prevent state conflicts.
@@ -5072,7 +5235,7 @@ async fn run_loop(
                 let item = tokio::select! {
                     _ = cancel_token.cancelled() => {
                         info!(session_id, "run cancelled during tool execution");
-                        return Ok(());
+                        return Ok(turn_exit_reason);
                     }
                     next = futures.next() => match next {
                         Some(v) => v,
@@ -5114,7 +5277,7 @@ async fn run_loop(
             for &idx in &sequential_indices {
                 if cancel_token.is_cancelled() {
                     info!(session_id, "run cancelled during sequential tool execution");
-                    return Ok(());
+                    return Ok(turn_exit_reason);
                 }
                 let tc = tool_calls[idx].clone();
                 let _permit = concurrency.acquire_tool_permit().await;
@@ -5254,7 +5417,7 @@ async fn run_loop(
                         while let Some((idx, verification)) = tokio::select! {
                             _ = cancel_token.cancelled() => {
                                 info!(session_id, "run cancelled during sidecar verification");
-                                return Ok(());
+                                return Ok(turn_exit_reason);
                             }
                             next = sidecar_futures.next() => next
                         } {
@@ -6231,7 +6394,7 @@ async fn run_loop(
         &state,
     );
 
-    Ok(())
+    Ok(turn_exit_reason)
 }
 
 /// Persists the finished run's usage. Cost is computed from models.yaml
@@ -6518,7 +6681,7 @@ fn named_tool_invocation(
         .then(|| ai::ToolChoice::Tool(name))
 }
 
-fn convert_messages(messages: &[ChatMessage]) -> Vec<Message> {
+pub(crate) fn convert_messages(messages: &[ChatMessage]) -> Vec<Message> {
     messages
         .iter()
         .filter_map(|msg| {

@@ -68,6 +68,8 @@ struct GraphCtx<'a> {
     inputs: &'a serde_json::Value,
     store: &'a Arc<Store>,
     provider: &'a dyn ai::Provider,
+    /// The ONE injected agentic loop (see workflow::loop_contract).
+    loop_impl: &'a dyn crate::ActivityLoop,
     resolved_tools: &'a [Box<dyn DynTool>],
     /// Deferred tool names — excluded from the scoping fail-soft roster
     /// (see `scoped_activity_tools`).
@@ -194,6 +196,7 @@ pub(crate) async fn execute_graph(
     inputs: &serde_json::Value,
     store: &Arc<Store>,
     provider: &dyn ai::Provider,
+    loop_impl: &dyn crate::ActivityLoop,
     resolved_tools: &[Box<dyn DynTool>],
     // See scoped_activity_tools — deferred schemas ship only when declared/referenced.
     deferred_tools: Option<&HashSet<String>>,
@@ -214,6 +217,7 @@ pub(crate) async fn execute_graph(
         inputs,
         store,
         provider,
+        loop_impl,
         resolved_tools,
         deferred_tools,
         cancel_token,
@@ -309,6 +313,8 @@ fn build_ctx<'a>(
     inputs: &'a serde_json::Value,
     store: &'a Arc<Store>,
     provider: &'a dyn ai::Provider,
+    // The ONE injected agentic loop (see workflow::loop_contract).
+    loop_impl: &'a dyn crate::ActivityLoop,
     resolved_tools: &'a [Box<dyn DynTool>],
     deferred_tools: Option<&'a HashSet<String>>,
     cancel_token: Option<&'a CancellationToken>,
@@ -384,6 +390,7 @@ fn build_ctx<'a>(
         inputs,
         store,
         provider,
+        loop_impl,
         resolved_tools,
         deferred_tools,
         cancel_token,
@@ -1224,8 +1231,8 @@ async fn run_llm_activity<'a>(
         ctx.memory_writes_disabled,
         ctx.inputs,
         ctx.provider,
+        ctx.loop_impl,
         &activity_tools,
-        ctx.resolved_tools,
         ctx.skill_content,
         activity_emit,
         ctx.store,
@@ -1687,6 +1694,78 @@ mod walk_tests {
         Arc::new(Store::new(path.to_str().unwrap()).expect("test store"))
     }
 
+    /// Drives the MockProvider's scripts through the injected-loop contract —
+    /// the minimal faithful stand-in for the runner-backed loop: one scripted
+    /// stream per turn, real `exit` tool calls honored, usage accounted, the
+    /// SAME retry policy (engine::stream_with_retry).
+    struct ScriptedLoop<'a> {
+        provider: &'a MockProvider,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::ActivityLoop for ScriptedLoop<'_> {
+        async fn run_turn(
+            &self,
+            turn: crate::LoopTurn<'_>,
+        ) -> Result<crate::LoopOutcome, WorkflowError> {
+            let req = ai::ChatRequest {
+                messages: turn.seed_messages.clone(),
+                system: turn.system.clone(),
+                temperature: 0.0,
+                max_tokens: 16384,
+                ..Default::default()
+            };
+            let mut rx = crate::engine::stream_with_retry(self.provider, &req)
+                .await
+                .map_err(|e| WorkflowError::Provider(e.to_string()))?;
+            let mut text = String::new();
+            let (mut ti, mut to) = (0i32, 0i32);
+            let mut exit: Option<String> = None;
+            while let Some(ev) = rx.recv().await {
+                match ev.event_type {
+                    ai::StreamEventType::Text => text.push_str(&ev.text),
+                    ai::StreamEventType::ToolCall => {
+                        if let Some(tc) = ev.tool_call {
+                            if tc.name == "exit" {
+                                exit = Some(
+                                    tc.input
+                                        .get("reason")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("")
+                                        .to_string(),
+                                );
+                            }
+                        }
+                    }
+                    ai::StreamEventType::Usage => {
+                        if let Some(u) = ev.usage {
+                            ti = ti.max(u.input_tokens);
+                            to = to.max(u.output_tokens);
+                        }
+                    }
+                    ai::StreamEventType::Done => {
+                        if let Some(u) = ev.usage {
+                            ti = ti.max(u.input_tokens);
+                            to = to.max(u.output_tokens);
+                        }
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            if let Some(reason) = exit {
+                return Err(WorkflowError::Exited(reason));
+            }
+            Ok(crate::LoopOutcome {
+                text,
+                total_tokens: (ti.max(0) + to.max(0)) as u32,
+                output_tokens: to.max(0) as u32,
+            })
+        }
+
+        fn cleanup(&self, _run_id: &str) {}
+    }
+
     async fn run_graph(
         def_json: &str,
         inputs: serde_json::Value,
@@ -1698,6 +1777,7 @@ mod walk_tests {
         store
             .create_workflow_run(&run_id, &def.id, "manual", None, None, None, None)
             .expect("run row");
+        let looper = ScriptedLoop { provider };
         let result = execute_graph(
             &def,
             "",
@@ -1706,6 +1786,7 @@ mod walk_tests {
             &inputs,
             &store,
             provider,
+            &looper,
             &[],
             None,
             &run_id,
@@ -2340,6 +2421,7 @@ mod walk_tests {
                 &serde_json::json!({}),
                 &store,
                 &provider,
+                &ScriptedLoop { provider: &provider },
                 &[],
                 None,
                 &run_id,
@@ -2595,6 +2677,7 @@ mod walk_tests {
                 &serde_json::json!({}),
                 &store,
                 &provider,
+                &ScriptedLoop { provider: &provider },
                 &[],
                 None,
                 &run_id,

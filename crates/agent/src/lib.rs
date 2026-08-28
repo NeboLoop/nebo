@@ -23,6 +23,7 @@ pub const CHARS_PER_TOKEN: usize = 4;
 pub mod memory_debounce;
 pub mod memory_flush;
 pub mod orchestrator;
+pub mod workflow_loop;
 pub mod personality;
 pub mod review_fork;
 pub mod proactive;

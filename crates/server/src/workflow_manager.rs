@@ -57,6 +57,9 @@ pub struct WorkflowManagerImpl {
     event_bus: Option<tools::EventBus>,
     /// Skill loader for resolving skill_content in workflow execution.
     skill_loader: Option<Arc<tools::skills::Loader>>,
+    /// The ONE injected agentic loop every workflow activity runs through
+    /// (Phase 4 — see workflow::loop_contract; impl: agent::workflow_loop).
+    workflow_loop: Arc<dyn workflow::ActivityLoop>,
     /// Per-binding concurrency semaphores. Key: "agent:{agent_id}:{binding}".
     /// Allows up to binding_concurrency() concurrent runs; additional events wait.
     binding_semaphores: Arc<std::sync::Mutex<HashMap<String, Arc<Semaphore>>>>,
@@ -83,6 +86,7 @@ impl WorkflowManagerImpl {
         config: config::Config,
         event_bus: Option<tools::EventBus>,
         skill_loader: Option<Arc<tools::skills::Loader>>,
+        workflow_loop: Arc<dyn workflow::ActivityLoop>,
     ) -> Self {
         Self {
             store,
@@ -94,6 +98,7 @@ impl WorkflowManagerImpl {
             agent_runs: Arc::new(std::sync::Mutex::new(HashMap::new())),
             event_bus,
             skill_loader,
+            workflow_loop,
             binding_semaphores: Arc::new(std::sync::Mutex::new(HashMap::new())),
             failure_counts: Arc::new(std::sync::Mutex::new(HashMap::new())),
             agent_workers: std::sync::OnceLock::new(),
@@ -736,6 +741,7 @@ impl WorkflowManager for WorkflowManagerImpl {
             let active_runs = self.active_runs.clone();
             let event_bus = self.event_bus.clone();
             let skill_loader = self.skill_loader.clone();
+            let wf_loop = self.workflow_loop.clone();
             let run_id_clone = run_id.clone();
             let wf_id = id.to_string();
             let wf_name = wf.name.clone();
@@ -830,7 +836,7 @@ impl WorkflowManager for WorkflowManagerImpl {
                 let deferred_names = tools_registry.get_deferred_names().await;
                 let (wf_memory_user_id, wf_memory_writes_disabled) =
                     workflow_memory_scope(&store, "");
-                match workflow::engine::execute_workflow(
+                let wf_result = workflow::engine::execute_workflow(
                     &def,
                     "", // standalone workflow run — not bound to an agent
                     &wf_memory_user_id,
@@ -840,6 +846,7 @@ impl WorkflowManager for WorkflowManagerImpl {
                     None,
                     &store,
                     &*provider,
+                    &*wf_loop,
                     &resolved_tools,
                     Some(&deferred_names),
                     Some(&run_id_clone),
@@ -851,7 +858,16 @@ impl WorkflowManager for WorkflowManagerImpl {
                     None, // standalone run — no per-employee approval policy
                     None,
                 )
-                .await
+                .await;
+                if !matches!(
+                    wf_result,
+                    Err(workflow::WorkflowError::AwaitingApproval { .. })
+                ) {
+                    // Drop the loop's scratch sessions; a parked run keeps
+                    // them — the suspension is the resume state.
+                    wf_loop.cleanup(&run_id_clone);
+                }
+                match wf_result
                 {
                     Ok((_engine_run_id, _output)) => {
                         // Engine already called complete_workflow_run with output
@@ -1388,6 +1404,7 @@ impl WorkflowManager for WorkflowManagerImpl {
             let event_bus = self.event_bus.clone();
             let skill_loader = self.skill_loader.clone();
             let failure_counts = self.failure_counts.clone();
+            let wf_loop = self.workflow_loop.clone();
             let neboai_api_url = self.config.neboai.api_url.clone();
             let run_id_clone = run_id.clone();
             let agent_id_owned = agent_id.to_string();
@@ -1650,7 +1667,7 @@ impl WorkflowManager for WorkflowManagerImpl {
                 let deferred_names = tools_registry.get_deferred_names().await;
                 let (wf_memory_user_id, wf_memory_writes_disabled) =
                     workflow_memory_scope(&store, &agent_id_owned);
-                match workflow::engine::execute_workflow(
+                let wf_result = workflow::engine::execute_workflow(
                     &def,
                     &agent_id_owned,
                     &wf_memory_user_id,
@@ -1660,6 +1677,7 @@ impl WorkflowManager for WorkflowManagerImpl {
                     None,
                     &store,
                     &*provider,
+                    &*wf_loop,
                     &resolved_tools,
                     Some(&deferred_names),
                     Some(&run_id_clone),
@@ -1671,7 +1689,16 @@ impl WorkflowManager for WorkflowManagerImpl {
                     checkpoint_ctx.as_ref(),
                     resume_state,
                 )
-                .await
+                .await;
+                if !matches!(
+                    wf_result,
+                    Err(workflow::WorkflowError::AwaitingApproval { .. })
+                ) {
+                    // Drop the loop's scratch sessions; a parked run keeps
+                    // them — the suspension is the resume state.
+                    wf_loop.cleanup(&run_id_clone);
+                }
+                match wf_result
                 {
                     Ok((_engine_run_id, output)) => {
                         // Engine already called complete_workflow_run with output

@@ -51,7 +51,11 @@ impl Store {
     pub fn list_chats(&self, limit: i64, offset: i64) -> Result<Vec<Chat>, NeboError> {
         let conn = self.conn()?;
         let mut stmt = conn
-            .prepare("SELECT * FROM chats ORDER BY updated_at DESC LIMIT ?1 OFFSET ?2")
+            .prepare("SELECT * FROM chats
+                 WHERE session_name IS NULL
+                    OR (session_name NOT LIKE 'agent:%:workflow:%'
+                        AND session_name NOT LIKE 'workflow:%')
+                 ORDER BY updated_at DESC LIMIT ?1 OFFSET ?2")
             .map_err(|e| NeboError::Database(e.to_string()))?;
         let rows = stmt
             .query_map(params![limit, offset], row_to_chat)

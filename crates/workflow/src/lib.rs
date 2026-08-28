@@ -1,4 +1,5 @@
 pub mod engine;
+pub mod loop_contract;
 pub mod events;
 mod graph;
 pub mod loader;
@@ -6,6 +7,7 @@ pub mod parser;
 pub mod triggers;
 
 pub use engine::{WorkflowProgress, execute_activity, execute_workflow};
+pub use loop_contract::{ActivityLoop, LoopOutcome, LoopTurn};
 pub use parser::{Activity, WorkflowDef};
 
 #[derive(Debug, thiserror::Error)]
