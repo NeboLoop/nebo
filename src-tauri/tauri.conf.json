@@ -23,7 +23,8 @@
     },
     "externalBin": [
       "binaries/obscura",
-      "binaries/obscura-worker"
+      "binaries/obscura-worker",
+      "binaries/rg"
     ],
     "macOS": {
       "entitlements": "../assets/macos/nebo.entitlements",

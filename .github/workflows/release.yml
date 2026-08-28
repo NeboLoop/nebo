@@ -16,6 +16,7 @@ env:
   # the CDP fixes new_page needs), so no pre-published per-platform assets are required.
   # Pin OBSCURA_REF to a tag for reproducibility once cut; a branch is fine meanwhile.
   OBSCURA_FORK: "https://github.com/localrivet/obscura"
+  RIPGREP_VERSION: "14.1.1"
   OBSCURA_REF: "chromiumoxide-cdp-compat"
 
 jobs:
@@ -168,6 +169,14 @@ jobs:
           done
           ls -la src-tauri/binaries
 
+      - name: Stage ripgrep sidecar (official release)
+        run: |
+          TRIPLE="${{ matrix.target }}"
+          NAME="ripgrep-${RIPGREP_VERSION}-${TRIPLE}"
+          curl -sSfL "https://github.com/BurntSushi/ripgrep/releases/download/${RIPGREP_VERSION}/${NAME}.tar.gz" | tar -xzf -
+          cp "${NAME}/rg" "src-tauri/binaries/rg-${TRIPLE}"
+          chmod +x "src-tauri/binaries/rg-${TRIPLE}"
+
       - name: Build Tauri desktop app
         env:
           # We rely on cc-rs and cmake-rs to derive `-arch` and
@@ -208,6 +217,15 @@ jobs:
                 "$SIDECAR_PATH"
             fi
           done
+
+          # Sign the bundled rg sidecar (plain hardened runtime — no JIT
+          # entitlements; it is not a V8 host like the Obscura binaries).
+          if [ -f "$APP_PATH/Contents/MacOS/rg" ]; then
+            codesign --force --sign "$SIGN_IDENTITY" \
+              --timestamp \
+              --options runtime \
+              "$APP_PATH/Contents/MacOS/rg"
+          fi
 
           # Sign the main executable explicitly
           codesign --force --sign "$SIGN_IDENTITY" \
@@ -510,6 +528,17 @@ jobs:
           done
           ls -la src-tauri/binaries
 
+      - name: Stage ripgrep sidecar (official release)
+        run: |
+          TRIPLE="$(rustc -vV | sed -n 's/^host: //p')"
+          # BurntSushi ships musl for linux-amd64 (static, runs everywhere);
+          # tauri still wants the -gnu host triple in the filename.
+          ASSET="$TRIPLE"; [ "$TRIPLE" = "x86_64-unknown-linux-gnu" ] && ASSET="x86_64-unknown-linux-musl"
+          NAME="ripgrep-${RIPGREP_VERSION}-${ASSET}"
+          curl -sSfL "https://github.com/BurntSushi/ripgrep/releases/download/${RIPGREP_VERSION}/${NAME}.tar.gz" | tar -xzf -
+          cp "${NAME}/rg" "src-tauri/binaries/rg-${TRIPLE}"
+          chmod +x "src-tauri/binaries/rg-${TRIPLE}"
+
       - name: Build Tauri desktop app
         # APPIMAGE_EXTRACT_AND_RUN lets the bundler's linuxdeploy/appimagetool run
         # without a working FUSE mount on the runner; NO_STRIP avoids strip failures
@@ -625,6 +654,15 @@ jobs:
             cp "obscura-src/target/release/${bin}.exe" "src-tauri/binaries/${bin}-${TRIPLE}.exe"
           done
           ls -la src-tauri/binaries
+
+      - name: Stage ripgrep sidecar (official release)
+        shell: bash
+        run: |
+          TRIPLE="$(rustc -vV | sed -n 's/^host: //p')"
+          NAME="ripgrep-${RIPGREP_VERSION}-${TRIPLE}"
+          curl -sSfL -o rg.zip "https://github.com/BurntSushi/ripgrep/releases/download/${RIPGREP_VERSION}/${NAME}.zip"
+          7z x -y rg.zip > /dev/null
+          cp "${NAME}/rg.exe" "src-tauri/binaries/rg-${TRIPLE}.exe"
 
       # Sign the Obscura sidecars BEFORE bundling — they get compressed INTO the
       # NSIS installer, so they cannot be signed afterward (the sign-windows job

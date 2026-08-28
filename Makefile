@@ -40,7 +40,7 @@ MAC_BIN_DIR = $(if $(MAC_TARGET),target/$(MAC_TARGET)/release,$(TAURI_RELEASE))
 # DMG arch suffix: amd64 for the x86_64 cross, else the host arch (arm64).
 DMG_ARCH = $(if $(MAC_TARGET),$(if $(filter x86_64-apple-darwin,$(MAC_TARGET)),amd64,arm64),$(UNAME_M))
 
-.PHONY: help dev run build build-desktop test clean clean-cache seed-plugins stage-obscura bundle-napps plugin-status release release-darwin release-linux release-windows release-macos release-macos-amd64 publish-macos app-bundle dmg notarize install github-release gen
+.PHONY: help dev run build build-desktop test test-live test-live-fast clean clean-cache seed-plugins stage-obscura stage-ripgrep bundle-napps plugin-status release release-darwin release-linux release-windows release-macos release-macos-amd64 publish-macos app-bundle dmg notarize install github-release gen
 
 # Default target
 help:
@@ -61,6 +61,7 @@ help:
 	@echo "  make clean-cache    - Clear global cargo download cache (~/.cargo) — safe while building"
 	@echo "  make seed-plugins   - Copy plugin binaries from sibling repos"
 	@echo "  make stage-obscura  - Stage Obscura sidecars from the fork for bundling"
+	@echo "  make stage-ripgrep  - Stage the official ripgrep binary for bundling"
 	@echo "  make plugin-status  - Show build/bundle status of all 14 plugins"
 	@echo ""
 	@echo "Desktop (macOS):"
@@ -83,7 +84,7 @@ gen:
 
 # ─── Development ─────────────────────────────────────────────────────────────
 
-dev: stage-obscura
+dev: stage-obscura stage-ripgrep
 	@echo "Starting Nebo (Tauri + Vite)..."
 	@echo "  Vite HMR for frontend, Tauri watch for backend"
 	@echo "  Proxy errors during Rust build are normal — Tauri window waits for build."
@@ -99,7 +100,7 @@ dev: stage-obscura
 		true
 
 # Full Tauri app + Vite HMR, but NO Rust file watching — safe for workflow testing
-run: stage-obscura
+run: stage-obscura stage-ripgrep
 	@echo "Starting Nebo (Tauri + Vite, no Rust hot-reload)..."
 	@echo "  Frontend HMR works. Rust backend won't restart on file changes."
 	@echo "  Use this when testing workflows/agents."
@@ -119,6 +120,7 @@ build:
 build-desktop: bundle-napps
 	@echo "Building Tauri desktop app...$(if $(MAC_TARGET), (cross target $(MAC_TARGET)),)"
 	$(MAKE) stage-obscura OBSCURA_TRIPLE=$(MAC_OBSCURA_TRIPLE)
+	$(MAKE) stage-ripgrep OBSCURA_TRIPLE=$(MAC_OBSCURA_TRIPLE)
 	@cd app && pnpm build
 	cargo tauri build $(MAC_TARGET_FLAG)
 
@@ -297,15 +299,17 @@ release-darwin:
 	@cd app && pnpm build
 	# arm64
 	$(MAKE) stage-obscura OBSCURA_TRIPLE=aarch64-apple-darwin
+	$(MAKE) stage-ripgrep OBSCURA_TRIPLE=aarch64-apple-darwin
 	cargo tauri build --target aarch64-apple-darwin
 	cp $(TAURI_TARGET)/aarch64-apple-darwin/release/nebo dist/nebo-darwin-arm64
 	# amd64
 	$(MAKE) stage-obscura OBSCURA_TRIPLE=x86_64-apple-darwin
+	$(MAKE) stage-ripgrep OBSCURA_TRIPLE=x86_64-apple-darwin
 	cargo tauri build --target x86_64-apple-darwin
 	cp $(TAURI_TARGET)/x86_64-apple-darwin/release/nebo dist/nebo-darwin-amd64
 
 # Linux: Tauri desktop + headless CLI
-release-linux: stage-obscura
+release-linux: stage-obscura stage-ripgrep
 	@echo "Building for Linux..."
 	@mkdir -p dist
 	cargo tauri build
@@ -315,7 +319,7 @@ release-linux: stage-obscura
 	cp target/release/nebo-cli dist/nebo-linux-$(ARCH)-headless
 
 # Windows: Tauri desktop app
-release-windows: stage-obscura
+release-windows: stage-obscura stage-ripgrep
 	@echo "Building for Windows..."
 	@mkdir -p dist
 	cargo tauri build
@@ -464,6 +468,36 @@ release-macos-amd64:
 publish-macos:
 	@if [ -z "$(TAG)" ]; then echo "Usage: make publish-macos TAG=v0.12.0"; exit 1; fi
 	@RELEASE_VERSION="$(RELEASE_VERSION)" TAG="$(TAG)" bash scripts/publish-macos.sh
+
+# ─── Ripgrep sidecar ─────────────────────────────────────────────────────────
+# The os grep action embeds ripgrep as a LIBRARY (grep-searcher crate); this
+# stages the official `rg` CLI as a Tauri sidecar so shell commands and skills
+# that call `rg` work on machines that never installed it (2026-08 customer
+# incident: coding employee on a bare Linux box, rg absent). Downloads the
+# official BurntSushi release for the target triple — we never build it.
+# Skips when already staged; bump RIPGREP_VERSION and `rm src-tauri/binaries/rg-*`
+# to upgrade. OBSCURA_TRIPLE doubles as "the externalBin triple" (see above).
+RIPGREP_VERSION ?= 14.1.1
+# BurntSushi ships musl for linux-amd64 (static, runs everywhere); tauri still
+# expects the -gnu host triple in the filename, so asset triple != file triple.
+RG_ASSET_TRIPLE = $(if $(filter x86_64-unknown-linux-gnu,$(OBSCURA_TRIPLE)),x86_64-unknown-linux-musl,$(OBSCURA_TRIPLE))
+RG_EXT = $(if $(findstring windows,$(OBSCURA_TRIPLE)),.exe,)
+
+stage-ripgrep:
+	@mkdir -p src-tauri/binaries
+	@dst="src-tauri/binaries/rg-$(OBSCURA_TRIPLE)$(RG_EXT)"; \
+	if [ -f "$$dst" ]; then echo "  rg already staged (rm $$dst to re-fetch)"; exit 0; fi; \
+	echo "Staging ripgrep $(RIPGREP_VERSION) for $(OBSCURA_TRIPLE)..."; \
+	base="https://github.com/BurntSushi/ripgrep/releases/download/$(RIPGREP_VERSION)"; \
+	name="ripgrep-$(RIPGREP_VERSION)-$(RG_ASSET_TRIPLE)"; \
+	tmp=$$(mktemp -d); \
+	if [ -n "$(RG_EXT)" ]; then \
+		curl -sSfL -o "$$tmp/rg.zip" "$$base/$$name.zip" && (cd "$$tmp" && unzip -q rg.zip); \
+	else \
+		curl -sSfL "$$base/$$name.tar.gz" | tar -xzf - -C "$$tmp"; \
+	fi; \
+	cp "$$tmp/$$name/rg$(RG_EXT)" "$$dst" && chmod +x "$$dst" && rm -rf "$$tmp"; \
+	echo "  staged rg-$(OBSCURA_TRIPLE)$(RG_EXT)"
 
 # ─── Live Fixture Suites ─────────────────────────────────────────────────────
 # The fixtures in `fixtures/` are behavioural tests: they drive a RUNNING Nebo

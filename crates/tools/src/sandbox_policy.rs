@@ -68,9 +68,42 @@ const PACKAGE_REGISTRY_DOMAINS: &[&str] = &[
     "npm.pkg.github.com",
 ];
 
+/// The bundled `rg` sidecar next to the running binary, if present.
+///
+/// Split out so the lookup is testable against an arbitrary dir; callers go
+/// through [`base_runtime_config`].
+fn rg_override(dir: &std::path::Path) -> Option<sandbox_runtime::config::RipgrepConfig> {
+    let name = if cfg!(windows) { "rg.exe" } else { "rg" };
+    let candidate = dir.join(name);
+    candidate.is_file().then(|| sandbox_runtime::config::RipgrepConfig {
+        command: candidate.to_string_lossy().into_owned(),
+        args: None,
+    })
+}
+
+/// The ONE constructor for a sandbox runtime config (server init and per-skill
+/// builds both start here — never call `default_config()` directly).
+///
+/// The sandbox declares ripgrep as a hard dependency; on a bare customer box
+/// with no `rg` on PATH, init fails and scripts silently run UNSANDBOXED
+/// (2026-08 Linux incident). We bundle the official `rg` as a Tauri sidecar
+/// next to the nebo binary, so point the sandbox at that absolute path when
+/// it exists; otherwise keep the default PATH lookup.
+pub fn base_runtime_config() -> SandboxRuntimeConfig {
+    let mut config = SandboxRuntimeConfig::default_config();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            if let Some(rg) = rg_override(dir) {
+                config.ripgrep = Some(rg);
+            }
+        }
+    }
+    config
+}
+
 /// Build a per-skill sandbox config from the skill's declared capabilities.
 pub fn build_sandbox_config(skill: &Skill, work_dir: &Path) -> SandboxRuntimeConfig {
-    let mut config = SandboxRuntimeConfig::default_config();
+    let mut config = base_runtime_config();
 
     // --- Filesystem ---
 

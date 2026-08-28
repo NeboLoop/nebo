@@ -1997,6 +1997,18 @@ impl PluginStore {
         let installed = self.list_installed();
         let mut dirs = std::collections::HashSet::new();
         let mut prefix_parts = Vec::new();
+        // Bundled sidecars (rg, obscura, …) live next to the running binary —
+        // Tauri `externalBin` places them in the exe dir on every platform.
+        // Prepending here is the ONE place every spawn's PATH is built (shell
+        // tool, skill executor, plugin runtime all call this), so `rg` works
+        // on customer machines that never installed ripgrep.
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(dir) = exe.parent() {
+                if dirs.insert(dir.to_path_buf()) {
+                    prefix_parts.push(dir.to_string_lossy().into_owned());
+                }
+            }
+        }
         for (_slug, _version, binary_path, _source) in &installed {
             if let Some(dir) = binary_path.parent() {
                 if dirs.insert(dir.to_path_buf()) {
@@ -2761,6 +2773,30 @@ fn remove_store_artifacts(slug_dir: &Path) -> Result<(), NappError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every spawned shell/skill/plugin builds PATH through this ONE function;
+    /// the exe-sibling dir must lead it so bundled sidecars (`rg`) resolve on
+    /// machines that never installed them — even with zero plugins installed.
+    #[test]
+    fn path_with_plugins_leads_with_the_sidecar_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = PluginStore::new(
+            tmp.path().join("plugins"),
+            tmp.path().join("user"),
+            None,
+        );
+        let exe_dir = std::env::current_exe()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let path = store.path_with_plugins();
+        assert!(
+            path.starts_with(&exe_dir),
+            "PATH must start with the exe dir, got: {path}"
+        );
+    }
 
     /// A remove (as run before every update/reinstall) must delete only the
     /// store's own artifacts — version dirs and .napp files — and preserve the

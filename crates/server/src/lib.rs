@@ -1194,7 +1194,10 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         if mgr.is_supported_platform() {
             match mgr
                 .initialize(
-                    sandbox_runtime::SandboxRuntimeConfig::default_config(),
+                    // ONE config constructor — points the sandbox at the
+                    // bundled rg sidecar so init succeeds on machines that
+                    // never installed ripgrep (unsandboxed-scripts incident).
+                    tools::sandbox_policy::base_runtime_config(),
                     None,
                     false,
                 )
