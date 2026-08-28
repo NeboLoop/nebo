@@ -598,8 +598,13 @@ impl OpenAIProvider {
         for tc in tool_calls.values() {
             if !tc.id.is_empty() && !tc.name.is_empty() && !emitted_tool_calls.contains(&tc.id) {
                 emitted_tool_calls.insert(tc.id.clone());
+                // Unparseable arguments = the stream was cut off mid-payload.
+                // An empty-object fallback silently forwarded the lie; wrap the
+                // raw text instead so the registry's truncation corrective can
+                // name the cutoff and teach chunked writes (same shape the
+                // gateway's salvage uses — ONE downstream detector).
                 let input: serde_json::Value = serde_json::from_str(&tc.arguments)
-                    .unwrap_or(serde_json::Value::Object(Default::default()));
+                    .unwrap_or_else(|_| serde_json::json!({ "_raw": tc.arguments }));
                 let _ = tx
                     .send(StreamEvent::tool_call(ToolCall {
                         id: tc.id.clone(),
