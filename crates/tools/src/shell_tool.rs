@@ -351,7 +351,20 @@ impl ShellTool {
                 // A command that produced a work document (`python gen.py -o report.pdf`,
                 // `nebo-office pptx create … -o deck.pptx`) surfaces it exactly like an
                 // `os` write — same gate the plugin exec pathway uses.
-                let tokens = shlex::split(&input.command).unwrap_or_default();
+                // shlex chokes on quote-heavy commands (an HTML heredoc has
+                // apostrophes everywhere) and returned ZERO tokens — which made
+                // exactly the runs that write big documents the ones whose
+                // documents were never detected (observed live 2026-08-28: a
+                // dashboard.html heredoc left the Work panel empty). Fall back
+                // to whitespace tokens so redirect targets still surface.
+                let tokens = shlex::split(&input.command).unwrap_or_else(|| {
+                    input
+                        .command
+                        .split_whitespace()
+                        .map(|t| t.trim_matches(|c| c == '"' || c == '\'' || c == '>').to_string())
+                        .filter(|t| !t.is_empty())
+                        .collect()
+                });
                 let base = (!input.cwd.is_empty()).then(|| std::path::Path::new(&input.cwd));
                 let result = ToolResult::ok(result);
                 match crate::plugin_tool::produced_work_document(&tokens, base, started) {
