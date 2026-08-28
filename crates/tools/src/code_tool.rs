@@ -6,6 +6,11 @@
 //! context (enclosing symbol + siblings for a line). READ-ONLY by contract —
 //! edits stay on the ONE os file pathway, which calls `syntax::parse_check`
 //! itself in its edit-verification chain.
+//!
+//! When a language server is already on PATH (`crate::lsp` detection table),
+//! four more actions light up: diagnostics, definition, references, hover —
+//! opportunistic enrichment, never a dependency (PRD Pillar 3). Without a
+//! server each returns its factual degradation line; Nebo never installs one.
 
 use std::path::Path;
 
@@ -426,6 +431,147 @@ fn handle_context(input: &Value) -> ToolResult {
     ToolResult::ok(out)
 }
 
+// ── LSP actions (PRD Pillar 3 — opportunistic, never a dependency) ──
+
+/// Resolve `path` for the LSP actions: any existing readable file, no grammar
+/// requirement (clangd serves c/c++, which has no compiled-in grammar).
+fn resolve_lsp_file(raw: &str, action: &str) -> Result<(String, String), ToolResult> {
+    if raw.is_empty() {
+        return Err(ToolResult::error(errors::missing_param(
+            action,
+            "path",
+            &format!("code(action: \"{action}\", path: \"/path/to/file.rs\")"),
+        )));
+    }
+    let path = match types::pathres::resolve(raw) {
+        Ok(p) => p.to_string_lossy().into_owned(),
+        Err(e) => return Err(ToolResult::error(format!("Error: {e}"))),
+    };
+    let source = match std::fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(ToolResult::error(errors::file_not_found(&path)));
+        }
+        Err(e) => return Err(ToolResult::error(format!("Error reading {path}: {e}"))),
+    };
+    Ok((path, source))
+}
+
+/// The Pillar-3 degradation contract: every LSP action's bare-machine answer
+/// is a factual line — never an error, never an install suggestion.
+fn lsp_unavailable_line(u: &crate::lsp::Unavailable) -> String {
+    match u {
+        crate::lsp::Unavailable::NoServer { lang } => format!(
+            "(no language server for {lang} detected — outline/parse_check/query still available)"
+        ),
+        crate::lsp::Unavailable::Crashed { server } => format!(
+            "({server} crashed this session — LSP actions unavailable; outline/parse_check/query still available)"
+        ),
+        crate::lsp::Unavailable::Timeout { server } => format!(
+            "(no answer from {server} within 2s — it may still be indexing; retry, or outline/parse_check/query still available)"
+        ),
+    }
+}
+
+/// Required 1-based line/col for the position actions.
+fn position_params(input: &Value, action: &str) -> Result<(u32, u32), ToolResult> {
+    let line = input.get("line").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+    let col = input.get("col").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+    if line == 0 || col == 0 {
+        return Err(ToolResult::error(errors::missing_param(
+            action,
+            "line, col",
+            &format!("code(action: \"{action}\", path: \"/src/lib.rs\", line: 120, col: 8)"),
+        )));
+    }
+    Ok((line, col))
+}
+
+fn handle_diagnostics(input: &Value, lsp: &dyn crate::lsp::LspProvider) -> ToolResult {
+    let raw = input.get("path").and_then(|v| v.as_str()).unwrap_or("");
+    let (path, source) = match resolve_lsp_file(raw, "diagnostics") {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    match lsp.diagnostics(Path::new(&path), &source) {
+        Ok(report) => ToolResult::ok(format!(
+            "{path}\n{}",
+            crate::lsp::render_diagnostics(&report, 30)
+        )),
+        Err(u) => ToolResult::ok(lsp_unavailable_line(&u)),
+    }
+}
+
+/// definition and references share the one implementation — the request and
+/// the result noun are the only differences.
+fn handle_locations(action: &str, input: &Value, lsp: &dyn crate::lsp::LspProvider) -> ToolResult {
+    let raw = input.get("path").and_then(|v| v.as_str()).unwrap_or("");
+    let (path, source) = match resolve_lsp_file(raw, action) {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let (line, col) = match position_params(input, action) {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let res = if action == "definition" {
+        lsp.definition(Path::new(&path), &source, line, col)
+    } else {
+        lsp.references(Path::new(&path), &source, line, col)
+    };
+    match res {
+        Ok(locs) if locs.is_empty() => ToolResult::ok(format!(
+            "0 {action} results for {path}:{line}:{col}. This is not an error — the server returned none."
+        )),
+        Ok(locs) => {
+            let limit = list_limit(input);
+            let mut out = format!(
+                "{} {action} result{} for {path}:{line}:{col}:",
+                locs.len(),
+                if locs.len() == 1 { "" } else { "s" }
+            );
+            for l in locs.iter().take(limit) {
+                out.push_str(&format!("\n  {}:{}:{}", l.path, l.line, l.col));
+            }
+            if locs.len() > limit {
+                out.push_str(&format!("\n… {} more omitted", locs.len() - limit));
+            }
+            ToolResult::ok(out)
+        }
+        Err(u) => ToolResult::ok(lsp_unavailable_line(&u)),
+    }
+}
+
+fn handle_hover(input: &Value, lsp: &dyn crate::lsp::LspProvider) -> ToolResult {
+    let raw = input.get("path").and_then(|v| v.as_str()).unwrap_or("");
+    let (path, source) = match resolve_lsp_file(raw, "hover") {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    let (line, col) = match position_params(input, "hover") {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    match lsp.hover(Path::new(&path), &source, line, col) {
+        Ok(Some(text)) => {
+            let shown = crate::truncate_str(&text, 4000);
+            let mut out = format!("hover at {path}:{line}:{col}:\n{shown}");
+            if shown.len() < text.len() {
+                out.push_str(&format!(
+                    "\n… truncated ({} of {} chars shown)",
+                    shown.len(),
+                    text.len()
+                ));
+            }
+            ToolResult::ok(out)
+        }
+        Ok(None) => ToolResult::ok(format!(
+            "no hover information at {path}:{line}:{col}. This is not an error — the server had nothing for that position."
+        )),
+        Err(u) => ToolResult::ok(lsp_unavailable_line(&u)),
+    }
+}
+
 fn list_limit(input: &Value) -> usize {
     match input.get("limit").and_then(|v| v.as_u64()) {
         Some(n) if n > 0 => (n as usize).min(MAX_LIST),
@@ -449,13 +595,17 @@ impl DynTool for CodeTool {
          - symbols: search a directory tree for symbols by name (case-insensitive substring; empty name lists all)\n\
          - parse_check: tree-sitter syntax errors for one file (line, col, message)\n\
          - query: structural search with a tree-sitter query (s-expression) over one file\n\
-         - context: the enclosing symbol chain + sibling symbols for a line (edit anchoring)\n\n\
+         - context: the enclosing symbol chain + sibling symbols for a line (edit anchoring)\n\
+         - diagnostics: language-server diagnostics for one file — ONLY when that language's server (rust-analyzer, typescript-language-server, pyright, gopls, clangd) is already installed on this machine; otherwise returns a factual \"(no language server ... detected)\" line\n\
+         - definition / references / hover: language-server navigation and type info at line + col (same availability as diagnostics)\n\n\
          Examples:\n  \
          code(action: \"outline\", path: \"/src/runner.rs\")\n  \
          code(action: \"symbols\", name: \"handle_read\", path: \"/src\")\n  \
          code(action: \"parse_check\", path: \"/src/lib.rs\")\n  \
          code(action: \"query\", path: \"/src/lib.rs\", query: \"(function_item name: (identifier) @name)\")\n  \
-         code(action: \"context\", path: \"/src/lib.rs\", line: 120)"
+         code(action: \"context\", path: \"/src/lib.rs\", line: 120)\n  \
+         code(action: \"diagnostics\", path: \"/src/lib.rs\")\n  \
+         code(action: \"definition\", path: \"/src/lib.rs\", line: 120, col: 8)"
             .to_string()
     }
 
@@ -465,15 +615,16 @@ impl DynTool for CodeTool {
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["outline", "symbols", "parse_check", "query", "context"],
-                    "description": "outline = symbol tree of a file; symbols = search a directory for symbols by name; parse_check = syntax errors; query = tree-sitter structural search; context = enclosing symbol + siblings for a line"
+                    "enum": ["outline", "symbols", "parse_check", "query", "context", "diagnostics", "definition", "references", "hover"],
+                    "description": "outline = symbol tree of a file; symbols = search a directory for symbols by name; parse_check = syntax errors; query = tree-sitter structural search; context = enclosing symbol + siblings for a line; diagnostics/definition/references/hover = language-server answers when that language's server is installed on this machine"
                 },
                 "path": { "type": "string", "description": "Source file path (outline, parse_check, query, context) or directory to search (symbols; defaults to the working directory)" },
                 "name": { "type": "string", "description": "Symbol name filter for symbols — case-insensitive substring; empty lists all symbols" },
                 "query": { "type": "string", "description": "Tree-sitter query s-expression for the query action, e.g. (function_item name: (identifier) @name)" },
-                "line": { "type": "integer", "description": "1-based line for context" },
+                "line": { "type": "integer", "description": "1-based line for context/definition/references/hover" },
+                "col": { "type": "integer", "description": "1-based column for definition/references/hover" },
                 "end_line": { "type": "integer", "description": "Optional 1-based end line for context (defaults to line)" },
-                "limit": { "type": "integer", "description": "Max list entries for symbols/query (default and cap: 200)" }
+                "limit": { "type": "integer", "description": "Max list entries for symbols/query/definition/references (default and cap: 200)" }
             },
             "required": ["action"]
         })
@@ -494,14 +645,18 @@ impl DynTool for CodeTool {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send + 'a>> {
         Box::pin(async move {
             let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
+            let lsp = crate::lsp::default_provider();
             match action {
                 "outline" => handle_outline(&input),
                 "symbols" => handle_symbols(&input),
                 "parse_check" => handle_parse_check(&input),
                 "query" => handle_query(&input),
                 "context" => handle_context(&input),
+                "diagnostics" => handle_diagnostics(&input, lsp.as_ref()),
+                "definition" | "references" => handle_locations(action, &input, lsp.as_ref()),
+                "hover" => handle_hover(&input, lsp.as_ref()),
                 other => ToolResult::error(format!(
-                    "Unknown action: {other} (valid: outline, symbols, parse_check, query, context)"
+                    "Unknown action: {other} (valid: outline, symbols, parse_check, query, context, diagnostics, definition, references, hover)"
                 )),
             }
         })
@@ -664,7 +819,9 @@ mod tests {
     async fn unknown_action_lists_valid_actions() {
         let r = run(json!({"action": "rename"})).await;
         assert!(r.is_error);
-        assert!(r.content.contains("outline, symbols, parse_check, query, context"));
+        assert!(r.content.contains(
+            "outline, symbols, parse_check, query, context, diagnostics, definition, references, hover"
+        ));
     }
 
     /// Every action is read-only and concurrent-safe; none needs approval.
@@ -672,9 +829,178 @@ mod tests {
     fn code_tool_is_read_only_tier() {
         let tool = CodeTool::new();
         assert!(!tool.requires_approval());
-        for action in ["outline", "symbols", "parse_check", "query", "context"] {
+        for action in [
+            "outline",
+            "symbols",
+            "parse_check",
+            "query",
+            "context",
+            "diagnostics",
+            "definition",
+            "references",
+            "hover",
+        ] {
             assert!(tool.is_concurrent_safe(&json!({"action": action})), "{action}");
             assert!(!tool.requires_approval_for(&json!({"action": action})), "{action}");
         }
+    }
+
+    // ── LSP actions (PRD Pillar 3) ──────────────────────────────────
+
+    /// Fixed-answer provider so each LSP action's rendering is testable
+    /// without a real server.
+    struct MockLsp;
+
+    impl crate::lsp::LspProvider for MockLsp {
+        fn diagnostics(
+            &self,
+            _path: &Path,
+            _text: &str,
+        ) -> Result<crate::lsp::DiagReport, crate::lsp::Unavailable> {
+            Ok(crate::lsp::DiagReport {
+                server: "rust-analyzer".into(),
+                diagnostics: vec![crate::lsp::Diag {
+                    line: 40,
+                    col: 5,
+                    severity: crate::lsp::Severity::Warning,
+                    message: "unused variable `x`".into(),
+                }],
+            })
+        }
+        fn definition(
+            &self,
+            _path: &Path,
+            _text: &str,
+            _line: u32,
+            _col: u32,
+        ) -> Result<Vec<crate::lsp::Location>, crate::lsp::Unavailable> {
+            Ok(vec![crate::lsp::Location { path: "/x.rs".into(), line: 10, col: 2 }])
+        }
+        fn references(
+            &self,
+            _path: &Path,
+            _text: &str,
+            _line: u32,
+            _col: u32,
+        ) -> Result<Vec<crate::lsp::Location>, crate::lsp::Unavailable> {
+            Ok(vec![
+                crate::lsp::Location { path: "/x.rs".into(), line: 10, col: 2 },
+                crate::lsp::Location { path: "/y.rs".into(), line: 3, col: 9 },
+            ])
+        }
+        fn hover(
+            &self,
+            _path: &Path,
+            _text: &str,
+            _line: u32,
+            _col: u32,
+        ) -> Result<Option<String>, crate::lsp::Unavailable> {
+            Ok(Some("fn bar(&self)".into()))
+        }
+    }
+
+    /// Degradation contract: with no server installed, every LSP action
+    /// returns the exact factual line — ok (not an error), no install advice.
+    /// (The unit-test default provider is NoServers — see lsp::default_provider.)
+    #[tokio::test]
+    async fn lsp_actions_degrade_factually_without_server() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("m.rs");
+        fs::write(&path, RUST_SRC).unwrap();
+        let p = path.to_str().unwrap();
+        let expect =
+            "(no language server for rust detected — outline/parse_check/query still available)";
+        for input in [
+            json!({"action": "diagnostics", "path": p}),
+            json!({"action": "definition", "path": p, "line": 4, "col": 8}),
+            json!({"action": "references", "path": p, "line": 4, "col": 8}),
+            json!({"action": "hover", "path": p, "line": 4, "col": 8}),
+        ] {
+            let r = run(input.clone()).await;
+            assert!(!r.is_error, "{input}: {}", r.content);
+            assert_eq!(r.content, expect, "{input}");
+        }
+    }
+
+    /// With a server up (mocked), each action renders its factual result:
+    /// the lsp diagnostics line, location rows, hover text.
+    #[test]
+    fn lsp_actions_render_mocked_results() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("m.rs");
+        fs::write(&path, RUST_SRC).unwrap();
+        let p = path.to_str().unwrap();
+
+        let r = handle_diagnostics(&json!({"path": p}), &MockLsp);
+        assert!(!r.is_error, "{}", r.content);
+        assert!(
+            r.content
+                .contains("lsp (rust-analyzer): 1 warning — line 40: unused variable `x`"),
+            "{}",
+            r.content
+        );
+
+        let r = handle_locations("definition", &json!({"path": p, "line": 4, "col": 8}), &MockLsp);
+        assert!(r.content.contains("1 definition result"), "{}", r.content);
+        assert!(r.content.contains("/x.rs:10:2"), "{}", r.content);
+
+        let r = handle_locations("references", &json!({"path": p, "line": 4, "col": 8}), &MockLsp);
+        assert!(r.content.contains("2 references results"), "{}", r.content);
+        assert!(r.content.contains("/y.rs:3:9"), "{}", r.content);
+
+        let r = handle_hover(&json!({"path": p, "line": 4, "col": 8}), &MockLsp);
+        assert!(r.content.contains("fn bar(&self)"), "{}", r.content);
+    }
+
+    /// A crashed server is stated as crashed — factually distinct from
+    /// "not installed", and never retried into a restart loop by this call.
+    #[test]
+    fn lsp_crash_is_stated_distinctly() {
+        struct CrashedLsp;
+        impl crate::lsp::LspProvider for CrashedLsp {
+            fn diagnostics(
+                &self,
+                _path: &Path,
+                _text: &str,
+            ) -> Result<crate::lsp::DiagReport, crate::lsp::Unavailable> {
+                Err(crate::lsp::Unavailable::Crashed { server: "rust-analyzer".into() })
+            }
+            fn definition(
+                &self,
+                _path: &Path,
+                _text: &str,
+                _line: u32,
+                _col: u32,
+            ) -> Result<Vec<crate::lsp::Location>, crate::lsp::Unavailable> {
+                Err(crate::lsp::Unavailable::Crashed { server: "rust-analyzer".into() })
+            }
+            fn references(
+                &self,
+                _path: &Path,
+                _text: &str,
+                _line: u32,
+                _col: u32,
+            ) -> Result<Vec<crate::lsp::Location>, crate::lsp::Unavailable> {
+                Err(crate::lsp::Unavailable::Crashed { server: "rust-analyzer".into() })
+            }
+            fn hover(
+                &self,
+                _path: &Path,
+                _text: &str,
+                _line: u32,
+                _col: u32,
+            ) -> Result<Option<String>, crate::lsp::Unavailable> {
+                Err(crate::lsp::Unavailable::Crashed { server: "rust-analyzer".into() })
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("m.rs");
+        fs::write(&path, RUST_SRC).unwrap();
+        let r = handle_diagnostics(&json!({"path": path.to_str().unwrap()}), &CrashedLsp);
+        assert!(!r.is_error, "{}", r.content);
+        assert_eq!(
+            r.content,
+            "(rust-analyzer crashed this session — LSP actions unavailable; outline/parse_check/query still available)"
+        );
     }
 }

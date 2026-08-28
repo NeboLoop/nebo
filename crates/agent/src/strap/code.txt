@@ -1,7 +1,7 @@
 ### code — Code Intelligence (read-only)
 USE THIS when: working in source code — before reading a large file blind, to find a symbol by name, to check a file's syntax, or to search code structurally.
 
-Read-only tree-sitter parsing compiled into Nebo (rust, typescript, tsx, javascript, python, go, json, yaml, toml, bash, html, css, markdown). No language servers, no external processes, works offline. Edits stay on os(resource: "file", action: "edit") — its result already appends the same syntax check for these languages.
+Read-only tree-sitter parsing compiled into Nebo (rust, typescript, tsx, javascript, python, go, json, yaml, toml, bash, html, css, markdown). outline/symbols/parse_check/query/context need no external processes and work offline. diagnostics/definition/references/hover additionally use a language server ALREADY INSTALLED on this machine (rust-analyzer, typescript-language-server, pyright, gopls, clangd) — Nebo never installs one; without it those actions return the factual line "(no language server for <lang> detected — outline/parse_check/query still available)". Edits stay on os(resource: "file", action: "edit") — its result already appends the same syntax check for these languages, plus language-server diagnostics when a server is available.
 
 | action | what it returns | required params | optional |
 |--------|-----------------|-----------------|----------|
@@ -10,6 +10,10 @@ Read-only tree-sitter parsing compiled into Nebo (rust, typescript, tsx, javascr
 | parse_check | "syntax OK (<lang>)" or each error with line, col, message | path | |
 | query | tree-sitter structural query captures with their lines | path, query | limit |
 | context | enclosing symbol chain + sibling symbols for a line (edit anchoring) | path, line | end_line |
+| diagnostics | language-server diagnostics for one file — "lsp (<server>): 0 diagnostics" or the list | path | |
+| definition | where the symbol at line/col is defined (file:line:col rows) | path, line, col | limit |
+| references | every reference to the symbol at line/col (file:line:col rows) | path, line, col | limit |
+| hover | type/signature/docs for the symbol at line/col | path, line, col | |
 
 Workflow for a large unfamiliar file:
 1. code(action: "outline", path: "/src/runner.rs") — see the structure first
@@ -22,6 +26,7 @@ Rules:
 - A file whose extension has no compiled-in grammar is refused with the supported list — use os file read/grep for those files.
 - symbols matches a case-insensitive substring; an empty name lists every symbol (capped).
 - query takes a tree-sitter s-expression, e.g. (function_item name: (identifier) @name). An invalid query returns the parser's error, not "0 matches".
+- diagnostics/definition/references/hover work only when the language's server is already on this machine — never suggest installing one. They answer within a 2-second budget; a server still indexing returns "(no answer from <server> within 2s ...)" — not an error, retry later or fall back to the tree-sitter actions.
 
 Examples:
 - code(action: "outline", path: "/src/lib.rs")
@@ -30,3 +35,5 @@ Examples:
 - code(action: "parse_check", path: "/src/broken.py")
 - code(action: "query", path: "/src/lib.rs", query: "(function_item name: (identifier) @name)")
 - code(action: "context", path: "/src/lib.rs", line: 120)
+- code(action: "diagnostics", path: "/src/lib.rs")
+- code(action: "definition", path: "/src/lib.rs", line: 120, col: 8)

@@ -29,6 +29,7 @@ pub mod grep_tool;
 pub mod interface_catalog;
 pub mod keychain_tool;
 pub mod loop_tool;
+pub mod lsp;
 pub mod mcp_tool;
 pub mod memory_guard;
 pub mod message_tool;

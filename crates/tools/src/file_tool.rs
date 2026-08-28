@@ -19,6 +19,11 @@ pub struct FileTool {
     /// dedup, whose "refer to the earlier read" stub turns into a blank once that earlier
     /// read is evicted by compaction.
     read_state: Arc<Mutex<HashMap<String, i64>>>,
+    /// LSP diagnostics source for the edit-verification chain's step 2
+    /// (PRD_CODING_HARNESS P4.4). Production wires the process-global client;
+    /// unit tests get `NoServers` by default and inject mocks explicitly —
+    /// see `lsp::default_provider`.
+    lsp: Arc<dyn crate::lsp::LspProvider>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -63,6 +68,7 @@ impl FileTool {
         Self {
             on_file_read: None,
             read_state: Arc::new(Mutex::new(HashMap::new())),
+            lsp: crate::lsp::default_provider(),
         }
     }
 
@@ -529,7 +535,7 @@ impl FileTool {
                     None => Some(input.content.as_str()),
                 };
                 if let Some(src) = parse_src
-                    && let Some(note) = syntax_note(&path, src)
+                    && let Some(note) = syntax_note(&path, src, self.lsp.as_ref())
                 {
                     msg.push('\n');
                     msg.push_str(&note);
@@ -638,9 +644,10 @@ impl FileTool {
         } else {
             format!("Edited {}", path)
         };
-        // Edit-verification chain step 1 (PRD P4.4): the parse verdict on the
-        // post-edit content rides on the edit result.
-        if let Some(note) = syntax_note(&path, &new_content) {
+        // Edit-verification chain steps 1+2 (PRD P4.4): the parse verdict on
+        // the post-edit content rides on the edit result, with LSP
+        // diagnostics after it when a server is up.
+        if let Some(note) = syntax_note(&path, &new_content, self.lsp.as_ref()) {
             msg.push('\n');
             msg.push_str(&note);
         }
@@ -1288,32 +1295,46 @@ pub fn expand_path(path: &str) -> String {
     types::pathres::expand(path).to_string_lossy().into_owned()
 }
 
-/// Edit-verification chain, step 1 (PRD_CODING_HARNESS P4.4): a factual
-/// tree-sitter syntax line for a just-written file whose extension maps to a
-/// compiled-in grammar. `None` for files with no grammar (absence, not noise)
-/// and on parser failure. States only — the write/edit has already landed and
-/// is NEVER blocked or rolled back on a syntax error.
-fn syntax_note(path: &str, content: &str) -> Option<String> {
-    let lang = syntax::Lang::from_path(Path::new(path))?;
-    let errors = syntax::parse_check(content, lang).ok()?;
-    if errors.is_empty() {
-        return Some(format!("syntax OK ({})", lang.name()));
+/// Edit-verification chain, steps 1 and 2 (PRD_CODING_HARNESS P4.4): the ONE
+/// note function for the ONE write/edit pathway.
+///
+/// Step 1 — a factual tree-sitter syntax line for a just-written file whose
+/// extension maps to a compiled-in grammar. Step 2 — the LSP diagnostics line
+/// for the touched file, appended AFTER the tree-sitter verdict when a
+/// language server is up; any unavailability (no server installed, crashed
+/// this session, or no publish within the 2s budget) appends NOTHING —
+/// absence, not noise. `None` when neither step has anything to say. States
+/// only — the write/edit has already landed and is NEVER blocked or rolled
+/// back on a syntax error or diagnostic.
+fn syntax_note(path: &str, content: &str, lsp: &dyn crate::lsp::LspProvider) -> Option<String> {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(lang) = syntax::Lang::from_path(Path::new(path))
+        && let Ok(errors) = syntax::parse_check(content, lang)
+    {
+        if errors.is_empty() {
+            parts.push(format!("syntax OK ({})", lang.name()));
+        } else {
+            let shown: Vec<String> = errors
+                .iter()
+                .take(3)
+                .map(|e| format!("line {}: {}", e.line, e.message))
+                .collect();
+            let mut note = format!(
+                "syntax: {} error{} — {}",
+                errors.len(),
+                if errors.len() == 1 { "" } else { "s" },
+                shown.join("; ")
+            );
+            if errors.len() > 3 {
+                note.push_str(&format!("; {} more", errors.len() - 3));
+            }
+            parts.push(note);
+        }
     }
-    let shown: Vec<String> = errors
-        .iter()
-        .take(3)
-        .map(|e| format!("line {}: {}", e.line, e.message))
-        .collect();
-    let mut note = format!(
-        "syntax: {} error{} — {}",
-        errors.len(),
-        if errors.len() == 1 { "" } else { "s" },
-        shown.join("; ")
-    );
-    if errors.len() > 3 {
-        note.push_str(&format!("; {} more", errors.len() - 3));
+    if let Ok(report) = lsp.diagnostics(Path::new(path), content) {
+        parts.push(crate::lsp::render_diagnostics(&report, 10));
     }
-    Some(note)
+    if parts.is_empty() { None } else { Some(parts.join("\n")) }
 }
 
 /// Current on-disk modification time of `path` in milliseconds since the epoch, or
@@ -1949,6 +1970,117 @@ mod tests {
         );
         assert!(!r.is_error, "{}", r.content);
         assert!(r.content.contains("syntax OK (rust)"), "{}", r.content);
+    }
+
+    // ── Edit-verification chain step 2: the LSP line (PRD P4.4) ─────
+
+    /// Fixed-diagnostics provider standing in for a live server.
+    struct MockLspDiags;
+
+    impl crate::lsp::LspProvider for MockLspDiags {
+        fn diagnostics(
+            &self,
+            _path: &Path,
+            _text: &str,
+        ) -> Result<crate::lsp::DiagReport, crate::lsp::Unavailable> {
+            Ok(crate::lsp::DiagReport {
+                server: "rust-analyzer".into(),
+                diagnostics: vec![crate::lsp::Diag {
+                    line: 1,
+                    col: 4,
+                    severity: crate::lsp::Severity::Warning,
+                    message: "unused variable `x`".into(),
+                }],
+            })
+        }
+        fn definition(
+            &self,
+            path: &Path,
+            _text: &str,
+            _line: u32,
+            _col: u32,
+        ) -> Result<Vec<crate::lsp::Location>, crate::lsp::Unavailable> {
+            Err(crate::lsp::Unavailable::NoServer { lang: crate::lsp::lang_label(path) })
+        }
+        fn references(
+            &self,
+            path: &Path,
+            _text: &str,
+            _line: u32,
+            _col: u32,
+        ) -> Result<Vec<crate::lsp::Location>, crate::lsp::Unavailable> {
+            Err(crate::lsp::Unavailable::NoServer { lang: crate::lsp::lang_label(path) })
+        }
+        fn hover(
+            &self,
+            path: &Path,
+            _text: &str,
+            _line: u32,
+            _col: u32,
+        ) -> Result<Option<String>, crate::lsp::Unavailable> {
+            Err(crate::lsp::Unavailable::NoServer { lang: crate::lsp::lang_label(path) })
+        }
+    }
+
+    /// With the LSP provider unavailable (the unit-test default is
+    /// lsp::NoServers), the result carries the tree-sitter verdict and NO
+    /// lsp line — absence, not noise.
+    #[test]
+    fn write_without_lsp_server_has_no_lsp_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("m.rs");
+        let tool = FileTool::new();
+        let r = tool.execute(
+            &ctx(),
+            json!({"action":"write","path": path.to_str().unwrap(),"content":"fn main() {}\n"}),
+        );
+        assert!(!r.is_error, "{}", r.content);
+        assert!(r.content.contains("syntax OK (rust)"), "{}", r.content);
+        assert!(!r.content.contains("lsp"), "no server means no lsp line: {}", r.content);
+    }
+
+    /// With a server up (mocked), the factual lsp diagnostics line rides on
+    /// the write result AFTER the tree-sitter verdict.
+    #[test]
+    fn write_with_lsp_server_appends_diagnostics_after_syntax_verdict() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("m.rs");
+        let mut tool = FileTool::new();
+        tool.lsp = Arc::new(MockLspDiags);
+        let r = tool.execute(
+            &ctx(),
+            json!({"action":"write","path": path.to_str().unwrap(),"content":"fn main() {}\n"}),
+        );
+        assert!(!r.is_error, "{}", r.content);
+        let syntax_at = r.content.find("syntax OK (rust)").expect("tree-sitter verdict present");
+        let lsp_at = r
+            .content
+            .find("lsp (rust-analyzer): 1 warning — line 1: unused variable `x`")
+            .unwrap_or_else(|| panic!("lsp line present: {}", r.content));
+        assert!(lsp_at > syntax_at, "lsp line comes AFTER the syntax verdict: {}", r.content);
+    }
+
+    /// The same chain rides on the edit pathway (ONE note function).
+    #[test]
+    fn edit_with_lsp_server_appends_diagnostics_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("e.rs");
+        fs::write(&path, "fn main() { let x = 1; }\n").unwrap();
+        let mut tool = FileTool::new();
+        tool.lsp = Arc::new(MockLspDiags);
+        let p = path.to_str().unwrap();
+        assert!(!tool.execute(&ctx(), json!({"action":"read","path": p})).is_error);
+        let r = tool.execute(
+            &ctx(),
+            json!({"action":"edit","path": p,"old_string":"let x = 1;","new_string":"let x = 2;"}),
+        );
+        assert!(!r.is_error, "{}", r.content);
+        assert!(r.content.contains("syntax OK (rust)"), "{}", r.content);
+        assert!(
+            r.content.contains("lsp (rust-analyzer): 1 warning"),
+            "{}",
+            r.content
+        );
     }
 
     // ── Outline-first reads (PRD P4.1) ──────────────────────────────

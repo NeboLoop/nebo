@@ -495,6 +495,17 @@ fn run_doctor(cfg: &config::Config) -> anyhow::Result<()> {
     } else {
         println!("Skills dir: not found");
     }
+    println!();
+
+    // Language servers on PATH (code-intelligence LSP tier — detection only,
+    // never a spawn or an install).
+    println!("Language servers:");
+    for (name, detail) in tools::lsp::detect_servers() {
+        match detail {
+            Some(d) => println!("  {name}: {d}"),
+            None => println!("  {name}: not found"),
+        }
+    }
 
     println!();
     println!("All checks passed.");
