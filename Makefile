@@ -54,7 +54,9 @@ help:
 	@echo "  make run            - Build + run CLI once (no file watching)"
 	@echo "  make build          - Build headless CLI binary"
 	@echo "  make build-desktop  - Build Tauri desktop app"
-	@echo "  make test           - Run all tests"
+	@echo "  make test           - Run all tests (unit, offline)"
+	@echo "  make test-live      - Run the live fixture suite against a running server (LLM-judged)"
+	@echo "  make test-live-fast - Same, program checks only (no judge, no claude CLI)"
 	@echo "  make clean          - Clean build artifacts (target/, dist/) — stop the watcher first"
 	@echo "  make clean-cache    - Clear global cargo download cache (~/.cargo) — safe while building"
 	@echo "  make seed-plugins   - Copy plugin binaries from sibling repos"
@@ -462,3 +464,50 @@ release-macos-amd64:
 publish-macos:
 	@if [ -z "$(TAG)" ]; then echo "Usage: make publish-macos TAG=v0.12.0"; exit 1; fi
 	@RELEASE_VERSION="$(RELEASE_VERSION)" TAG="$(TAG)" bash scripts/publish-macos.sh
+
+# ─── Live Fixture Suites ─────────────────────────────────────────────────────
+# The fixtures in `fixtures/` are behavioural tests: they drive a RUNNING Nebo
+# over its own /ws with real LLM calls through Janus, then grade the trace.
+# `cargo test` cannot cover this — a tool can pass every unit test and still
+# hand the model a wrong answer. (2026-08-28: history compaction rewrote a
+# customer's file read into `[os] 0 lines`; every unit test passed.)
+#
+# Deliberately NOT in CI: each fixture is a real billed LLM round trip. Run it
+# before a release, next to the sign-probe, or after touching tool behaviour.
+#
+#   make test-live                        # smoke suite, LLM-judged
+#   make test-live SUITE=error-handling   # any suite in suites/
+#   make test-live FIXTURE=fixtures/tools/os-file-read.yaml
+#   make test-live-fast                   # program checks only, no claude CLI
+#
+# Prose assertions are graded by Claude Code (`claude -p`), so the CLI must be
+# installed for `test-live`. `test-live-fast` skips the judge and decides from
+# structured `check:` blocks alone — deterministic and free, but silent on any
+# fixture that has no `check:`.
+
+SUITE ?= smoke
+TEST_SERVER ?= localhost:27895
+NEBO_CLI ?= ./target/release/nebo-cli
+
+test-live: $(NEBO_CLI)
+	@curl -sf -m 3 http://$(TEST_SERVER)/health >/dev/null \
+		|| { echo "No Nebo on $(TEST_SERVER) — start one with 'make dev' first."; exit 1; }
+	@command -v claude >/dev/null \
+		|| { echo "Claude Code CLI not found — it grades the prose assertions. Use 'make test-live-fast' to skip the judge."; exit 1; }
+ifdef FIXTURE
+	$(NEBO_CLI) test run --fixture $(FIXTURE) --server $(TEST_SERVER)
+else
+	$(NEBO_CLI) test run --suite suites/$(SUITE).yaml --server $(TEST_SERVER)
+endif
+
+test-live-fast: $(NEBO_CLI)
+	@curl -sf -m 3 http://$(TEST_SERVER)/health >/dev/null \
+		|| { echo "No Nebo on $(TEST_SERVER) — start one with 'make dev' first."; exit 1; }
+ifdef FIXTURE
+	$(NEBO_CLI) test run --fixture $(FIXTURE) --no-judge --server $(TEST_SERVER)
+else
+	$(NEBO_CLI) test run --suite suites/$(SUITE).yaml --no-judge --server $(TEST_SERVER)
+endif
+
+$(NEBO_CLI):
+	@echo "Building the test CLI (make build)..." && $(MAKE) build

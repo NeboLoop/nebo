@@ -608,7 +608,12 @@ pub fn build_strap_section(
         .collect();
     if !mcp_tools.is_empty() {
         // Group tools by server prefix: mcp__monument_sh__comment → "monument_sh"
-        let mut servers: HashMap<String, Vec<String>> = HashMap::new();
+        // BTreeMap, not HashMap: this section sits in the system prompt, and a
+        // HashMap's iteration order differs between instances — so with two or
+        // more MCP servers the prompt's bytes changed every iteration and
+        // busted the provider prefix cache. The order must be stable.
+        let mut servers: std::collections::BTreeMap<String, Vec<String>> =
+            std::collections::BTreeMap::new();
         for tool_name in &mcp_tools {
             let parts: Vec<&str> = tool_name.splitn(3, "__").collect();
             if parts.len() == 3 {
@@ -635,7 +640,7 @@ pub fn build_strap_section(
                 "Call like: {}(input)\n",
                 mcp_tools
                     .iter()
-                    .find(|t| t.contains(server))
+                    .find(|t| t.starts_with(&format!("mcp__{}__", server)))
                     .map(|t| t.as_str())
                     .unwrap_or("mcp__server__tool")
             ));
@@ -1067,6 +1072,24 @@ mod tests {
         assert!(result.is_empty(), "no prose tool/sub-context docs emitted");
         assert!(!result.contains("### "));
         assert!(!result.contains("Tool Documentation"));
+    }
+
+    /// The MCP section is part of the cached system-prompt prefix, so its
+    /// bytes must not depend on hash-seed luck between iterations.
+    #[test]
+    fn test_strap_section_is_byte_stable() {
+        let tools: Vec<String> = [
+            "mcp__zeta__z1", "mcp__alpha__a1", "mcp__alpha__a2", "mcp__mid__m1", "os",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let first = build_strap_section(&tools, &[], &[]);
+        for _ in 0..20 {
+            assert_eq!(build_strap_section(&tools, &[], &[]), first);
+        }
+        assert!(first.find("alpha").unwrap() < first.find("mid").unwrap());
+        assert!(first.find("mid").unwrap() < first.find("zeta").unwrap());
     }
 
     #[test]

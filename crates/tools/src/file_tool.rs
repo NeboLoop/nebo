@@ -324,12 +324,30 @@ impl FileTool {
             lines_read += 1;
         }
 
+        // `<system-reminder>` is NOT available here: it is the message-stream
+        // channel (ephemeral, user-role, `steering::wrap_system_reminder`, never
+        // persisted — CHAT_SYSTEM §4.2). A tool result is tool-role and IS
+        // persisted, so it uses the tool-result vocabulary instead.
+        //
+        // What matters is that an absent result is never mistakable for the
+        // file's contents, and never claims something false. The 2026-08-28
+        // outage was a stub (`[os] 0 lines`) the model read as the answer.
         if result.is_empty() {
-            if offset > 1 {
-                result = format!("(file has fewer than {} lines)", offset);
+            let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+            result = if offset > 1 {
+                format!("(file has fewer than {} lines)", offset)
+            } else if size > 0 {
+                // Bytes on disk but nothing read back. Saying "empty" here would
+                // be a false claim the model has no way to doubt.
+                format!(
+                    "(no content returned — this file is {} bytes on disk, so it is NOT empty. \
+                     This is a read failure, not the file's contents. Try os(resource: \"file\", \
+                     action: \"grep\", path: \"{}\", pattern: \".\") instead of repeating this read.)",
+                    size, path
+                )
             } else {
-                result = "(file is empty)".to_string();
-            }
+                "(file is empty)".to_string()
+            };
         }
 
         // Cap total result size to prevent huge files from blowing up context
@@ -1433,6 +1451,70 @@ mod tests {
     // A read MUST always return the file's content. We deliberately removed the old
     // path-keyed "contents unchanged" cache — it was unverifiable across compaction and
     // gaslit the model into a retry spiral (the #research read-loop incident).
+    #[test]
+    /// A file with content must NEVER read back as empty.
+    ///
+    /// Live 2026-08-28: `read` returned no content for a 651-line / 23KB Python
+    /// file while `grep` on the same path found all 651 lines. The model was told
+    /// the file was empty, and spent 15+ turns re-reading it every way it could
+    /// think of. Nothing in the suite asserted this invariant, which is how it
+    /// shipped. Shaped deliberately like the file that broke it.
+    #[test]
+    fn read_never_reports_a_non_empty_file_as_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("grabber.py");
+        let mut body = String::from("#!/usr/bin/env python3\n");
+        for i in 0..650 {
+            body.push_str(&format!("line_{i} = 'x' * 24  # padding to ~23KB\n"));
+        }
+        fs::write(&path, &body).unwrap();
+        assert!(body.len() > 20_000, "fixture must match the real shape");
+
+        let tool = FileTool::new();
+        let r = tool.execute(
+            &ctx(),
+            json!({"action":"read","path": path.to_str().unwrap()}),
+        );
+
+        // The specific lie: claiming emptiness about a file that has content.
+        assert!(
+            !r.content.contains("(file is empty)"),
+            "a {}-byte file must never report as empty: {}",
+            body.len(),
+            crate::truncate_str(&r.content, 300)
+        );
+        // And it must actually deliver the content, not a bland success with none.
+        assert!(!r.is_error, "read must succeed: {}", r.content);
+        assert!(
+            r.content.contains("line_0") && r.content.contains("line_649"),
+            "read must return the file's lines: {}",
+            crate::truncate_str(&r.content, 300)
+        );
+    }
+
+    /// The honest empty case still reads as empty.
+    #[test]
+    fn read_reports_a_genuinely_empty_file_as_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("empty.txt");
+        fs::write(&path, "").unwrap();
+
+        let tool = FileTool::new();
+        let r = tool.execute(
+            &ctx(),
+            json!({"action":"read","path": path.to_str().unwrap()}),
+        );
+        assert!(!r.is_error);
+        // Tool-result vocabulary, NOT `<system-reminder>` — that tag is the
+        // ephemeral message-stream channel (CHAT_SYSTEM.md §4.2) and must not
+        // appear in a persisted tool result.
+        assert!(
+            r.content.contains("(file is empty)"),
+            "a 0-byte file is genuinely empty: {}",
+            r.content
+        );
+    }
+
     #[test]
     fn file_read_repeat_returns_content() {
         let dir = tempfile::tempdir().unwrap();

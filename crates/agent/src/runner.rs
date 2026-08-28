@@ -95,6 +95,20 @@ const MAX_OUTPUT_RECOVERY_ATTEMPTS: usize = 3;
 /// Set well above any legitimate repeat (the incident's own real debugging
 /// repeated one `docker compose logs` 13 times across a turn) and far below the
 /// iteration ceiling, so it only ever catches a genuine runaway.
+/// Stand-in for a tool_use whose result is missing from history (strict
+/// providers reject an unmatched tool_use).
+///
+/// NOT wrapped as a `<system-reminder>`: that tag is the ephemeral message-stream
+/// channel (`steering::wrap_system_reminder`, never persisted — CHAT_SYSTEM §4.2)
+/// and this is a persisted tool-role message. It only has to be honest and
+/// unmistakable: the old `[Tool result unavailable]` read like the TOOL reporting
+/// failure, and a model that concludes its tools are failing stops trusting the
+/// ones that work — 11 of these landed in the 2026-08-28 loop.
+const ORPHANED_TOOL_RESULT: &str = "(this call's result is missing from the \
+conversation history — it was trimmed, or the run was interrupted. This is NOT a \
+tool failure and says nothing about whether the call succeeded. Make the call \
+again if you still need the result.)";
+
 const IDENTICAL_CALL_ABORT: usize = 12;
 
 /// Evicted messages that must accumulate before another background LLM
@@ -6634,13 +6648,13 @@ fn sanitize_message_order(messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
                                 orphaned_uses += 1;
                                 let synthetic = serde_json::json!([{
                                     "tool_call_id": id,
-                                    "content": "[Tool result unavailable]"
+                                    "content": ORPHANED_TOOL_RESULT
                                 }]);
                                 result.push(ChatMessage {
                                     id: String::new(),
                                     chat_id: String::new(),
                                     role: "tool".to_string(),
-                                    content: "[Tool result unavailable]".to_string(),
+                                    content: ORPHANED_TOOL_RESULT.to_string(),
                                     metadata: None,
                                     created_at: chrono::Utc::now().timestamp(),
                                     day_marker: None,

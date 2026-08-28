@@ -194,7 +194,13 @@ impl OsTool {
     /// Every consumer (approval gate, resource permits, concurrency, capability
     /// gating, safeguards, path scoping) must use this so they all agree on
     /// which resource a call targets.
-    pub(crate) fn resolved_resource(input: &serde_json::Value) -> &str {
+    /// The resource a call operates on, inferring it when the model omitted the
+    /// field. PUBLIC because it is the ONE definition of that inference — the
+    /// history summarizer (`agent::pruning`) must classify a call exactly as the
+    /// executor did, or it mislabels the call and can destroy its result
+    /// (2026-08-28: a bare `os {"action":"read","path":…}` was summarized as
+    /// `[os] 0 lines` and the model believed the file was empty).
+    pub fn resolved_resource(input: &serde_json::Value) -> &str {
         let resource = input.get("resource").and_then(|v| v.as_str()).unwrap_or("");
         if !resource.is_empty() {
             return resource;

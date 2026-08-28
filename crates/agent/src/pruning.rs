@@ -256,10 +256,16 @@ pub fn micro_compact(
                     .map(|r| {
                         let original_id =
                             r.get("tool_call_id").and_then(|v| v.as_str()).unwrap_or("");
+                        // A compacted failure must still read as a failure —
+                        // hardcoding `false` here made every stale error look
+                        // like a success to the model and to
+                        // `compaction::collect_tool_failures`.
+                        let was_error =
+                            r.get("is_error").and_then(|v| v.as_bool()).unwrap_or(false);
                         serde_json::json!({
                             "tool_call_id": original_id,
                             "content": trimmed_content,
-                            "is_error": false
+                            "is_error": was_error
                         })
                     })
                     .collect();
@@ -382,7 +388,12 @@ pub fn time_based_micro_compact(
         // what was fetched. Side-effecting results clear as before.
         let (call_name, call_input) = find_tool_call_for_result(messages, idx);
         let input = call_input.unwrap_or(serde_json::Value::Null);
-        let resource = input.get("resource").and_then(|v| v.as_str()).unwrap_or("");
+        // Same ONE inference the executor and `build_tool_summary` use. Reading
+        // the raw field here left this path with the exact `[os] 0 lines`
+        // defect after the summarizer was fixed: a bare `os {action:"read"}`
+        // carries no `resource`, so it was judged side-effecting and wiped to
+        // `[cleared]`.
+        let resource = tools::OsTool::resolved_resource(&input);
         let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
         let cleared = if is_read_type(call_name.as_str(), resource, action) {
             bounded_content(&msg.content)
@@ -398,10 +409,16 @@ pub fn time_based_micro_compact(
                     .map(|r| {
                         let original_id =
                             r.get("tool_call_id").and_then(|v| v.as_str()).unwrap_or("");
+                        // A compacted failure must still read as a failure —
+                        // hardcoding `false` here made every stale error look
+                        // like a success to the model and to
+                        // `compaction::collect_tool_failures`.
+                        let was_error =
+                            r.get("is_error").and_then(|v| v.as_bool()).unwrap_or(false);
                         serde_json::json!({
                             "tool_call_id": original_id,
                             "content": cleared,
-                            "is_error": false
+                            "is_error": was_error
                         })
                     })
                     .collect();
@@ -449,33 +466,60 @@ pub fn time_based_micro_compact(
 
 /// Determine trimming order for tool types.
 fn trim_priority(tool_name: &str) -> usize {
+    // `file`/`shell` are OsTool's private sub-tools and never appear as a
+    // registered tool name — those arms were dead. `os` covers both.
     match tool_name {
-        "web" => 0,           // Stale fastest
-        "file" => 1,          // Largest output
-        "shell" => 2,         // Often large
-        "os" | "system" => 2, // Same as shell
+        "web" => 0, // Stale fastest
+        "os" => 2,  // Shell/file output is often large
         _ => 3,
     }
 }
 
-/// Find the tool name and input for a tool result message by looking at preceding tool calls.
+/// Find the tool name and input for a tool result message.
+///
+/// The result row carries the `tool_call_id` it answers; match on it. The
+/// runner issues tool calls in parallel and stores each result as its own
+/// message, so "walk back and take the first call" attributed results 2..N of a
+/// batch to call 1 — wrong tool, wrong resource, wrong `is_read_type` verdict,
+/// and therefore the wrong decision about whether to keep the content. Same
+/// family as the `[os] 0 lines` outage. Falls back to the first call only for
+/// legacy rows with no id.
 fn find_tool_call_for_result(
     messages: &[ChatMessage],
     result_idx: usize,
 ) -> (String, Option<serde_json::Value>) {
-    // Look backwards for an assistant message with tool_calls
+    let wanted_id: Option<String> = messages[result_idx]
+        .tool_results
+        .as_deref()
+        .and_then(|tr| serde_json::from_str::<Vec<serde_json::Value>>(tr).ok())
+        .and_then(|rs| {
+            rs.first()
+                .and_then(|r| r.get("tool_call_id").and_then(|v| v.as_str()))
+                .map(str::to_string)
+        })
+        .filter(|id| !id.is_empty());
+
+    // Look backwards for the assistant message that issued the batch.
     for i in (0..result_idx).rev() {
         let msg = &messages[i];
         if msg.role == "assistant" {
             if let Some(ref tc_json) = msg.tool_calls {
                 if let Ok(calls) = serde_json::from_str::<Vec<serde_json::Value>>(tc_json) {
-                    if let Some(first) = calls.first() {
-                        let name = first
+                    let pick = wanted_id
+                        .as_deref()
+                        .and_then(|id| {
+                            calls
+                                .iter()
+                                .find(|c| c.get("id").and_then(|v| v.as_str()) == Some(id))
+                        })
+                        .or_else(|| calls.first());
+                    if let Some(call) = pick {
+                        let name = call
                             .get("name")
                             .and_then(|v| v.as_str())
                             .unwrap_or("unknown")
                             .to_string();
-                        let input = first.get("input").cloned();
+                        let input = call.get("input").cloned();
                         return (name, input);
                     }
                 }
@@ -486,7 +530,8 @@ fn find_tool_call_for_result(
     ("unknown".to_string(), None)
 }
 
-/// Backward-compat wrapper used by micro_compact.
+/// Name-only convenience over [`find_tool_call_for_result`] — same id-matched
+/// attribution, used for trim ordering.
 fn find_tool_name_for_result(messages: &[ChatMessage], result_idx: usize) -> String {
     find_tool_call_for_result(messages, result_idx).0
 }
@@ -506,14 +551,26 @@ const READ_RESULT_KEEP_CHARS: usize = 3500;
 ///   - `os` PIM resources: calendar, mail, contacts, reminders
 ///   - `os` file reads: read, grep, glob, search
 ///   - `web` content fetches: search, fetch, sanitize, read_page, get
+///   - `agent` memory reads: recall, search, list — the employee's own memory
+///   - `skill` loads — instructions the model is following
+///   - `plugin` — Gmail/Drive/CRM payloads are the deliverable
+///   - every `mcp__*` tool — including Company Memory
+///
+/// The last four were missing (2026-08-28 audit): once a session passed the
+/// warning threshold, a recalled memory, a loaded skill, an email body, or a
+/// Company Memory hit was replaced with `[tool] N lines` — the identical
+/// failure that produced `[os] 0 lines`, on four more surfaces. Over-including
+/// costs a bounded slice (`READ_RESULT_KEEP_CHARS`); under-including hands the
+/// model a lie. Err toward keeping.
 ///
 /// Everything else (shell exec, file write/edit, browser click/type/navigate
-/// mutations, etc.) is side-effecting and keeps the line-count summary.
+/// mutations, etc.) is side-effecting and keeps a truthful trimmed stub.
 fn is_read_type(tool_name: &str, resource: &str, action: &str) -> bool {
+    if tool_name.starts_with("mcp__") {
+        return true;
+    }
     match tool_name {
-        // `system` is the deprecated alias for `os`; honor it for historical
-        // tool calls still present in the conversation window.
-        "os" | "system" => match resource {
+        "os" => match resource {
             "calendar" | "mail" | "contacts" | "reminders" => true,
             "file" => matches!(action, "read" | "grep" | "glob" | "search"),
             _ => false,
@@ -522,6 +579,9 @@ fn is_read_type(tool_name: &str, resource: &str, action: &str) -> bool {
             action,
             "search" | "fetch" | "sanitize" | "read_page" | "get"
         ),
+        "agent" => resource == "memory" && matches!(action, "recall" | "search" | "list"),
+        "skill" => action == "load",
+        "plugin" => true,
         _ => false,
     }
 }
@@ -553,6 +613,19 @@ fn bounded_content(content: &str) -> String {
     )
 }
 
+/// The stub that replaces a side-effecting tool result once it ages out of
+/// the window. It states what HAPPENED to the content and how to get it back;
+/// it never presents a measurement as if it were the answer. `[os] 0 lines`
+/// read as "the tool returned nothing" — this reads as "the tool returned N
+/// lines and we trimmed them", which the model can act on correctly.
+fn trimmed_stub(label: &str, line_count: usize) -> String {
+    format!(
+        "{} — {} lines were returned and trimmed from context to save space; \
+         re-run the call if you need that output again",
+        label, line_count
+    )
+}
+
 /// Build an informative one-line summary of a tool call + result.
 /// Pure string ops — no LLM.
 fn build_tool_summary(
@@ -563,7 +636,10 @@ fn build_tool_summary(
     let line_count = tool_result.lines().count();
 
     let input = tool_input.unwrap_or(&serde_json::Value::Null);
-    let resource = input.get("resource").and_then(|v| v.as_str()).unwrap_or("");
+    // ONE resource inference, shared with the executor (Rule 8) — see
+    // `OsTool::resolved_resource`. Reading the raw field here is what let a
+    // 651-line file be summarized as `[os] 0 lines`.
+    let resource = tools::OsTool::resolved_resource(input);
     let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
 
     // Read-type results: the content IS the deliverable. Keep a bounded slice
@@ -573,7 +649,7 @@ fn build_tool_summary(
     }
 
     match tool_name {
-        "system" if resource == "shell" => {
+        "os" if resource == "shell" => {
             let cmd = input
                 .get("command")
                 .and_then(|v| v.as_str())
@@ -583,15 +659,15 @@ fn build_tool_summary(
             } else {
                 cmd.to_string()
             };
-            format!("[system:shell] {} ({} lines)", cmd_short, line_count)
+            trimmed_stub(&format!("[{}:shell] {}", tool_name, cmd_short), line_count)
         }
-        "system" if resource == "file" && action == "read" => {
+        "os" if resource == "file" && action == "read" => {
             let path = input.get("path").and_then(|v| v.as_str()).unwrap_or("?");
-            format!("[system:file:read] {} ({} lines)", path, line_count)
+            trimmed_stub(&format!("[{}:file:read] {}", tool_name, path), line_count)
         }
-        "system" if resource == "file" => {
+        "os" if resource == "file" => {
             let path = input.get("path").and_then(|v| v.as_str()).unwrap_or("?");
-            format!("[system:file:{}] {} ({} lines)", action, path, line_count)
+            trimmed_stub(&format!("[{}:file:{}] {}", tool_name, action, path), line_count)
         }
         "web" if action == "search" => {
             let query = input.get("query").and_then(|v| v.as_str()).unwrap_or("?");
@@ -629,17 +705,15 @@ fn build_tool_summary(
         "web" if action == "fetch" => {
             let url = input.get("url").and_then(|v| v.as_str()).unwrap_or("?");
             let url_short = if url.len() > 60 { format!("{}...", &url[..57]) } else { url.to_string() };
-            format!("[web:fetch] {} ({} lines)", url_short, line_count)
-        }
-        "bot" => {
-            format!("[bot:{}] {} lines", action, line_count)
+            trimmed_stub(&format!("[web:fetch] {}", url_short), line_count)
         }
         _ => {
-            if !resource.is_empty() {
-                format!("[{}:{}] {} lines", tool_name, resource, line_count)
+            let label = if !resource.is_empty() {
+                format!("[{}:{}]", tool_name, resource)
             } else {
-                format!("[{}] {} lines", tool_name, line_count)
-            }
+                format!("[{}]", tool_name)
+            };
+            trimmed_stub(&label, line_count)
         }
     }
 }
@@ -1293,6 +1367,36 @@ mod tests {
         );
     }
 
+    /// The `system` -> `os` rename must stay finished.
+    ///
+    /// It was left half-done once: some match arms were updated, others were
+    /// not, the missed ones went permanently dead, and a customer's 651-line
+    /// file read was collapsed to `[os] 0 lines` and handed to the model as the
+    /// tool's answer. It then told its owner for 15+ turns that it could not
+    /// read a file it had already read.
+    ///
+    /// The instinct on finding that wreckage is to add an alias or a normalizer
+    /// so both names keep working. Both are the same mistake: they make the
+    /// half-done rename permanent and hand the next matcher the same chance to
+    /// remember one name and miss the other. Zero stored messages ever carried
+    /// the old name — the compatibility was never needed. Finish renames.
+    #[test]
+    fn the_old_tool_name_never_comes_back() {
+        let source = include_str!("pruning.rs");
+        let offenders: Vec<&str> = source
+            .lines()
+            .filter(|l| l.contains("\"system\""))
+            // this test names it on purpose
+            .filter(|l| !l.contains("the_old_tool_name_never_comes_back"))
+            .collect();
+        assert!(
+            offenders.is_empty(),
+            "`system` is a dead tool name — normalize at the boundary or migrate \
+             the data, never match on it here:\n{}",
+            offenders.join("\n")
+        );
+    }
+
     #[test]
     fn test_build_tool_summary_shell() {
         let input = serde_json::json!({
@@ -1300,8 +1404,8 @@ mod tests {
             "command": "ls -la /tmp"
         });
         let result = "file1.txt\nfile2.txt\nfile3.txt\n";
-        let summary = build_tool_summary("system", Some(&input), result);
-        assert!(summary.starts_with("[system:shell]"));
+        let summary = build_tool_summary("os", Some(&input), result);
+        assert!(summary.starts_with("[os:shell]"));
         assert!(summary.contains("ls -la /tmp"));
         assert!(summary.contains("3 lines"));
     }
@@ -1322,6 +1426,257 @@ mod tests {
     }
 
     #[test]
+    /// END-TO-END guard for the 2026-08-28 outage class.
+    ///
+    /// `build_tool_summary` unit tests were not enough — the defect only shows
+    /// when a real conversation goes through `micro_compact`, which is the path
+    /// that rewrote a customer's 651-line file read into `[os] 0 lines` and
+    /// handed it to the model as the tool's answer. He then watched his agent
+    /// insist, for 15+ turns, that it could not read a file it had already read.
+    ///
+    /// The invariant this locks: **compaction may shorten a tool result, but it
+    /// must never replace the answer with a bare count.** If this test ever goes
+    /// red, an agent somewhere is about to be told its tools are broken.
+    #[test]
+    fn compaction_never_turns_a_file_read_into_a_line_count() {
+        fn msg(role: &str, content: &str, calls: Option<&str>, results: Option<&str>) -> ChatMessage {
+            ChatMessage {
+                id: String::new(),
+                chat_id: String::new(),
+                role: role.to_string(),
+                content: content.to_string(),
+                metadata: None,
+                created_at: 0,
+                day_marker: None,
+                tool_calls: calls.map(|c| c.to_string()),
+                tool_results: results.map(|r| r.to_string()),
+                token_estimate: None,
+                html: None,
+            }
+        }
+
+        // The exact call shape the model emits: no `resource` field.
+        let call = r#"[{"id":"c1","name":"os","input":{"action":"read","path":"/home/j/grabber.py"}}]"#;
+        let body: String = (0..400)
+            .map(|i| format!("{:6}\tline_{i} = 'payload'\n", i + 1))
+            .collect();
+
+        let mut convo = vec![
+            msg("user", "read grabber.py and fix the bugs", None, None),
+            msg("assistant", "", Some(call), None),
+            msg("tool", &body, None, Some(r#"[{"tool_call_id":"c1","content":"..."}]"#)),
+        ];
+        // Bulk it past the compaction threshold AND past the keep-recent
+        // protection, so the read under test is a real candidate. The first
+        // version of this test had no other tool results, so nothing was ever
+        // compacted and it passed vacuously.
+        pad_past_compaction(&mut convo);
+
+        let (compacted, saved) = micro_compact(&convo, 1_000);
+        assert!(saved > 0, "the test must actually compact something");
+        let read_result = &compacted[2].content;
+        assert_ne!(read_result, &body, "the read must have gone through the summarizer");
+
+        assert!(
+            !read_result.contains("0 lines"),
+            "a file read must never compact to a line count — this is the bug: {read_result}"
+        );
+        assert!(
+            read_result.contains("line_1 ") || read_result.contains("payload"),
+            "the file's content must survive compaction: {}",
+            crate::runner::truncate_str(read_result, 200)
+        );
+    }
+
+    fn tmsg(role: &str, content: &str, calls: Option<&str>, results: Option<&str>) -> ChatMessage {
+        ChatMessage {
+            id: String::new(),
+            chat_id: String::new(),
+            role: role.to_string(),
+            content: content.to_string(),
+            metadata: None,
+            created_at: 0,
+            day_marker: None,
+            tool_calls: calls.map(|c| c.to_string()),
+            tool_results: results.map(|r| r.to_string()),
+            token_estimate: None,
+            html: None,
+        }
+    }
+
+    /// `micro_compact` protects the 5 most recent tool results and only compacts
+    /// candidates beyond them. A test whose only tool results are the ones under
+    /// test therefore compacts NOTHING and passes vacuously — which is exactly
+    /// what happened to the first version of these tests. This pads a
+    /// conversation so the results under test are real candidates.
+    fn pad_past_compaction(convo: &mut Vec<ChatMessage>) {
+        for i in 0..5 {
+            convo.push(tmsg(
+                "assistant", "",
+                Some(&format!(r#"[{{"id":"pad{i}","name":"os","input":{{"action":"exec","command":"true"}}}}]"#)),
+                None,
+            ));
+            convo.push(tmsg(
+                "tool", "ok\n", None,
+                Some(&format!(r#"[{{"tool_call_id":"pad{i}","content":"ok"}}]"#)),
+            ));
+        }
+        for i in 0..40 {
+            convo.push(tmsg("user", &format!("f{i} {}", "x".repeat(400)), None, None));
+            convo.push(tmsg("assistant", &format!("r{i} {}", "y".repeat(400)), None, None));
+        }
+    }
+
+    /// The runner issues tool calls in parallel and stores one message per
+    /// result. Each result must be summarized against ITS OWN call — the old
+    /// `calls.first()` lookup summarized a web fetch as if it were an os read.
+    #[test]
+    fn parallel_batch_results_keep_their_own_call() {
+        let calls = r#"[
+            {"id":"c1","name":"os","input":{"action":"read","path":"/a.py"}},
+            {"id":"c2","name":"os","input":{"action":"exec","command":"cargo build"}},
+            {"id":"c3","name":"web","input":{"action":"fetch","url":"https://example.com/x"}}
+        ]"#;
+        let big = "line\n".repeat(1200);
+        let mut convo = vec![
+            tmsg("user", "go", None, None),
+            tmsg("assistant", "", Some(calls), None),
+            tmsg("tool", &big, None, Some(r#"[{"tool_call_id":"c1","content":"..."}]"#)),
+            tmsg("tool", &big, None, Some(r#"[{"tool_call_id":"c2","content":"..."}]"#)),
+            tmsg("tool", &big, None, Some(r#"[{"tool_call_id":"c3","content":"..."}]"#)),
+        ];
+        pad_past_compaction(&mut convo);
+        let (out, saved) = micro_compact(&convo, 1_000);
+        assert!(saved > 0, "the test must actually compact something");
+
+        // c1 is a read → content kept. c2 is a shell exec → truthful stub
+        // naming the COMMAND. c3 is a web fetch → read-type, content kept.
+        assert!(out[2].content.contains("line"), "read keeps content: {}", out[2].content);
+        assert!(
+            out[3].content.starts_with("[os:shell] cargo build"),
+            "exec result must be attributed to its own call: {}",
+            out[3].content
+        );
+        assert!(out[4].content.contains("line"), "fetch keeps content: {}", out[4].content);
+    }
+
+    /// A compacted failure must still be a failure.
+    #[test]
+    fn compaction_preserves_is_error() {
+        let calls = r#"[{"id":"c1","name":"os","input":{"action":"exec","command":"cargo test"}}]"#;
+        let big = "error[E0308]: mismatched types\n".repeat(300);
+        let mut convo = vec![
+            tmsg("user", "go", None, None),
+            tmsg("assistant", "", Some(calls), None),
+            tmsg("tool", &big, None,
+                 Some(r#"[{"tool_call_id":"c1","content":"...","is_error":true}]"#)),
+        ];
+        pad_past_compaction(&mut convo);
+        let (out, saved) = micro_compact(&convo, 1_000);
+        assert!(saved > 0, "the test must actually compact something");
+        assert_ne!(out[2].content, big, "the failure result must have been compacted");
+        let tr: Vec<serde_json::Value> =
+            serde_json::from_str(out[2].tool_results.as_deref().unwrap()).unwrap();
+        assert_eq!(
+            tr[0].get("is_error").and_then(|v| v.as_bool()),
+            Some(true),
+            "a compacted failure read as a success: {:?}",
+            tr[0]
+        );
+    }
+
+    /// The time-based path had the same missing-`resource` defect as the
+    /// summarizer after the summarizer was fixed. A bare `os read` must keep
+    /// its content here too, not become `[cleared]`.
+    #[test]
+    fn time_based_compact_infers_resource_like_the_executor() {
+        let calls = r#"[{"id":"c1","name":"os","input":{"action":"read","path":"/a.py"}}]"#;
+        let big = "def f():\n    pass\n".repeat(200);
+        let convo = vec![
+            tmsg("user", "go", None, None),
+            tmsg("assistant", "", Some(calls), None),   // created_at 0 → stale
+            tmsg("tool", &big, None, Some(r#"[{"tool_call_id":"c1","content":"..."}]"#)),
+            tmsg("assistant", "", Some(r#"[{"id":"c2","name":"os","input":{"action":"exec","command":"ls"}}]"#), None),
+            tmsg("tool", "a\nb\n", None, Some(r#"[{"tool_call_id":"c2","content":"..."}]"#)),
+        ];
+        let (out, _) = time_based_micro_compact(&convo, 1, 1, 0);
+        assert_ne!(out[2].content, "[cleared]", "a read must not be wiped");
+        assert!(out[2].content.contains("def f()"), "read keeps content: {}", out[2].content);
+    }
+
+    /// Names that are not registered tools get no special treatment, so a
+    /// half-finished rename can never leave a silently dead arm again.
+    #[test]
+    fn dead_tool_names_get_no_special_treatment() {
+        let baseline = trim_priority("definitely-not-a-tool");
+        // (the retired os name is covered by the source-grep guard above; naming it here
+        // would trip that guard.)
+        for dead in ["file", "shell", "bot"] {
+            assert_eq!(trim_priority(dead), baseline, "{dead} must not have its own priority");
+            let s = build_tool_summary(dead, Some(&serde_json::json!({"action":"x"})), "a\nb\n");
+            assert!(!s.starts_with(&format!("[{dead}:")), "{dead} must fall to the catch-all: {s}");
+        }
+    }
+
+    /// The four families the audit found still being collapsed.
+    #[test]
+    fn is_read_type_covers_memory_skill_plugin_mcp() {
+        assert!(is_read_type("agent", "memory", "recall"));
+        assert!(is_read_type("agent", "memory", "search"));
+        assert!(!is_read_type("agent", "task", "create"), "a spawn/create is side-effecting");
+        assert!(is_read_type("skill", "", "load"));
+        assert!(is_read_type("plugin", "gws", ""));
+        assert!(is_read_type("mcp__memory__memory_search", "", ""));
+        assert!(!is_read_type("os", "shell", "exec"));
+    }
+
+    /// A stub states what happened and how to recover; it never reads as the
+    /// tool's answer. `[os] 0 lines` read as "the tool returned nothing".
+    #[test]
+    fn trimmed_stub_states_what_happened() {
+        let s = build_tool_summary("custom_tool", Some(&serde_json::json!({})), "a\nb\nc\n");
+        assert!(s.contains("3 lines were returned"), "{s}");
+        assert!(s.contains("trimmed from context"), "{s}");
+        assert!(s.contains("re-run"), "{s}");
+    }
+
+    /// The 2026-08-28 production defect, exactly as it arrived.
+    ///
+    /// A plain `os` read carries no `resource` field — the tool infers it. The
+    /// summary did not, so a 651-line file was replaced with `[os] 0 lines` and
+    /// handed to the model as the tool's answer. It then reported, for 15+
+    /// turns, that every method of reading the file returned empty. The file
+    /// was fine; the history was forged.
+    #[test]
+    fn read_without_explicit_resource_preserves_content() {
+        let input = serde_json::json!({
+            "action": "read",
+            "path": "/home/jorgen/Nebo/x96-archive/stream-grabber/grabber.py"
+        });
+        let result = "#!/usr/bin/env python3\nimport asyncio\nimport json\n";
+        let summary = build_tool_summary("os", Some(&input), result);
+
+        assert!(
+            !summary.contains("0 lines"),
+            "a read must never collapse to a line count: {summary}"
+        );
+        assert!(
+            summary.contains("import asyncio"),
+            "the file content IS the deliverable: {summary}"
+        );
+    }
+
+    /// The shell half of the same inference — a bare `exec` has no `resource`.
+    #[test]
+    fn exec_without_explicit_resource_is_identified_as_shell() {
+        let input = serde_json::json!({"action": "exec", "command": "ls -la /tmp"});
+        let summary = build_tool_summary("os", Some(&input), "a\nb\nc\n");
+        assert!(
+            !summary.starts_with("[os] "),
+            "an exec must not fall to the unidentified catch-all: {summary}"
+        );
+    }
+
     fn test_build_tool_summary_calendar_preserves_content() {
         // Calendar reads were collapsing to "[os:calendar] 0 lines" — the bug.
         // Now the real content must be preserved.
