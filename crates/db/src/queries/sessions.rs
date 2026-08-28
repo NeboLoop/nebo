@@ -446,3 +446,84 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 }
+
+#[cfg(test)]
+mod counter_tests {
+    use crate::Store;
+
+    fn store() -> (tempfile::TempDir, Store) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("nebo-sessions-test.db");
+        let store = Store::new(&path.to_string_lossy()).expect("store");
+        (dir, store)
+    }
+
+    /// reset_session_counters (the rotate/new-conversation reset) clears ONLY
+    /// per-conversation state; session-level preferences (model override,
+    /// custom label) survive the rotation — that is what makes rotate a
+    /// non-destructive "new conversation" and not a session wipe.
+    #[test]
+    fn reset_session_counters_preserves_preferences() {
+        let (_dir, store) = store();
+        store
+            .create_session("s1", Some("agent:test:web"), None, None, None)
+            .unwrap();
+        store
+            .set_session_model_override("s1", Some("model-x"), Some("provider-y"))
+            .unwrap();
+        store.set_session_label("s1", Some("My label")).unwrap();
+        store.update_session_stats("s1", 5000, 12).unwrap();
+        store.set_session_active_task("s1", "doing things").unwrap();
+        store.update_session_summary("s1", "old summary").unwrap();
+
+        store.reset_session_counters("s1").unwrap();
+
+        let s = store.get_session("s1").unwrap().unwrap();
+        assert_eq!(s.message_count, Some(0));
+        assert_eq!(s.token_count, Some(0));
+        assert_eq!(s.summary, None, "stale summary must not carry over");
+        assert_eq!(s.active_task, None);
+        assert_eq!(s.last_compacted_at, None);
+        // Preferences survive.
+        assert_eq!(s.model_override.as_deref(), Some("model-x"));
+        assert_eq!(s.provider_override.as_deref(), Some("provider-y"));
+        assert_eq!(s.custom_label.as_deref(), Some("My label"));
+    }
+
+    /// get_or_create_scoped_session is an upsert on (name, scope, scope_id):
+    /// a second call with a NEW id returns the EXISTING session row instead
+    /// of creating a competing one.
+    #[test]
+    fn get_or_create_scoped_session_returns_existing_row() {
+        let (_dir, store) = store();
+        let first = store
+            .get_or_create_scoped_session("id-1", "main", "agent", "emp1", None)
+            .unwrap();
+        assert_eq!(first.id, "id-1");
+
+        let second = store
+            .get_or_create_scoped_session("id-2", "main", "agent", "emp1", None)
+            .unwrap();
+        assert_eq!(second.id, "id-1", "same (name, scope, scope_id) upserts");
+        assert_eq!(store.list_sessions_by_scope("agent").unwrap().len(), 1);
+    }
+
+    /// A freshly created session has no active_chat_id — decoupled sessions
+    /// only get one when a conversation is attached or rotated in.
+    #[test]
+    fn new_session_round_trips_with_no_active_chat() {
+        let (_dir, store) = store();
+        let created = store
+            .create_session("s-rt", Some("agent:rt:web"), Some("agent"), Some("rt"), Some("{}"))
+            .unwrap();
+        assert_eq!(created.active_chat_id, None);
+
+        let fetched = store.get_session("s-rt").unwrap().unwrap();
+        assert_eq!(fetched.id, "s-rt");
+        assert_eq!(fetched.name.as_deref(), Some("agent:rt:web"));
+        assert_eq!(fetched.scope.as_deref(), Some("agent"));
+        assert_eq!(fetched.scope_id.as_deref(), Some("rt"));
+        assert_eq!(fetched.metadata.as_deref(), Some("{}"));
+        assert_eq!(fetched.active_chat_id, None);
+    }
+}

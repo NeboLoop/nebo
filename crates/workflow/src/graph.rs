@@ -2355,6 +2355,273 @@ mod walk_tests {
         result.expect("completes without executing the unsatisfiable cycle");
         assert!(provider.calls().is_empty());
     }
+
+    /// A failing node poisons ONLY its own downstream: the fork's sibling
+    /// branch still completes, the failed node's dependents never run, and
+    /// the run records failed — a half-dead graph must never look healthy.
+    #[tokio::test]
+    async fn test_failure_skips_dependents_but_sibling_branch_completes() {
+        // "bad" is a command node executed with an EMPTY tool roster, so it
+        // fails deterministically (no os tool) without any provider error.
+        let provider = MockProvider::new(&[]);
+        let def = r#"{
+            "version":"1.0","id":"t","name":"T",
+            "activities":[
+                {"id":"a","intent":"task-a"},
+                {"id":"bad","type":"command","params":{"command":"echo hi"}},
+                {"id":"c","intent":"task-c"},
+                {"id":"d","intent":"task-d"}],
+            "connections":[
+                {"from":"__trigger__","to":"a"},
+                {"from":"a","to":"bad"},{"from":"a","to":"c"},
+                {"from":"bad","to":"d"},{"from":"c","to":"d"},
+                {"from":"d","to":"__emit__"}]
+        }"#;
+        let (result, store, run_id) = run_graph(def, serde_json::json!({}), &provider).await;
+        match result {
+            Err(WorkflowError::ActivityFailed(id, _)) => assert_eq!(id, "bad"),
+            other => panic!("expected ActivityFailed(bad), got {:?}", other),
+        }
+        assert_eq!(run_status(&store, &run_id), "failed");
+        let calls = provider.calls();
+        let user_part = |c: &String| c.split("###SYSTEM###").next().unwrap_or("").to_string();
+        assert!(
+            calls.iter().any(|c| user_part(c).contains("task-c")),
+            "independent sibling branch must still complete: {calls:?}"
+        );
+        assert!(
+            !calls.iter().any(|c| user_part(c).contains("task-d")),
+            "the failed node's dependent must never run: {calls:?}"
+        );
+    }
+
+    /// The not-taken side of a condition: routing is label-driven, so a
+    /// False verdict must activate the False edge — never "first edge wins".
+    #[tokio::test]
+    async fn test_condition_false_routes_false_branch() {
+        let provider = MockProvider::new(&[]);
+        let def = r#"{
+            "version":"1.0","id":"t","name":"T",
+            "activities":[
+                {"id":"cond","type":"condition","params":{"expression":"inputs.priority > 3"}},
+                {"id":"b","intent":"task-b"},
+                {"id":"c","intent":"task-c"},
+                {"id":"d","intent":"task-d"}],
+            "connections":[
+                {"from":"__trigger__","to":"cond"},
+                {"from":"cond","to":"b","label":"True"},
+                {"from":"cond","to":"c","label":"False"},
+                {"from":"b","to":"d"},{"from":"c","to":"d"},
+                {"from":"d","to":"__emit__"}]
+        }"#;
+        let (result, store, run_id) =
+            run_graph(def, serde_json::json!({"priority": 2}), &provider).await;
+        result.expect("run ok");
+        let calls = provider.calls();
+        assert_eq!(calls.len(), 2, "only c and d run: {:?}", calls);
+        assert!(calls[0].contains("task-c"));
+        assert!(calls[1].contains("task-d"));
+        assert_eq!(run_status(&store, &run_id), "completed");
+    }
+
+    /// A skip propagates through EVERY transitive dependent of the not-taken
+    /// branch: intermediate nodes never execute, and the downstream join
+    /// still releases instead of waiting forever on the dead branch.
+    #[tokio::test]
+    async fn test_skip_propagates_through_chain_to_join() {
+        let provider = MockProvider::new(&[]);
+        // True side is a two-node chain (b -> x) into the join; False goes
+        // straight to it. With False taken, b AND x must both be skipped.
+        let def = r#"{
+            "version":"1.0","id":"t","name":"T",
+            "activities":[
+                {"id":"cond","type":"condition","params":{"expression":"inputs.priority > 3"}},
+                {"id":"b","intent":"task-b"},
+                {"id":"x","intent":"task-x"},
+                {"id":"c","intent":"task-c"},
+                {"id":"d","intent":"task-d"}],
+            "connections":[
+                {"from":"__trigger__","to":"cond"},
+                {"from":"cond","to":"b","label":"True"},
+                {"from":"cond","to":"c","label":"False"},
+                {"from":"b","to":"x"},{"from":"x","to":"d"},
+                {"from":"c","to":"d"},
+                {"from":"d","to":"__emit__"}]
+        }"#;
+        let (result, store, run_id) = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            run_graph(def, serde_json::json!({"priority": 1}), &provider),
+        )
+        .await
+        .expect("join must release on the propagated skip — walk hung");
+        result.expect("run ok");
+        let calls = provider.calls();
+        assert_eq!(calls.len(), 2, "only c and d run: {:?}", calls);
+        assert!(calls[0].contains("task-c"));
+        assert!(calls[1].contains("task-d"));
+        // The join's context carries only the live branch.
+        assert!(calls[1].contains("'c' result"));
+        assert!(
+            !calls[1].contains("'b' result") && !calls[1].contains("'x' result"),
+            "skipped chain leaked output into the join: {}",
+            calls[1]
+        );
+        assert_eq!(run_status(&store, &run_id), "completed");
+    }
+
+    /// A node's output is parsed as JSON into the data context — downstream
+    /// condition routing reads structured fields via `nodes.<id>.<field>`,
+    /// not just raw text.
+    #[tokio::test]
+    async fn test_node_json_output_drives_condition_routing() {
+        let provider = MockProvider::new(&[("task-a", r#"{"count": 7}"#)]);
+        let def = r#"{
+            "version":"1.0","id":"t","name":"T",
+            "activities":[
+                {"id":"a","intent":"task-a"},
+                {"id":"cond","type":"condition","params":{"expression":"nodes.a.count > 5"}},
+                {"id":"hit","intent":"task-hit"},
+                {"id":"miss","intent":"task-miss"}],
+            "connections":[
+                {"from":"__trigger__","to":"a"},
+                {"from":"a","to":"cond"},
+                {"from":"cond","to":"hit","label":"True"},
+                {"from":"cond","to":"miss","label":"False"},
+                {"from":"hit","to":"__emit__"},{"from":"miss","to":"__emit__"}]
+        }"#;
+        let (result, store, run_id) = run_graph(def, serde_json::json!({}), &provider).await;
+        result.expect("run ok");
+        let calls = provider.calls();
+        let user_part = |c: &String| c.split("###SYSTEM###").next().unwrap_or("").to_string();
+        assert_eq!(
+            calls.iter().filter(|c| user_part(c).contains("task-hit")).count(),
+            1,
+            "structured field must route True: {calls:?}"
+        );
+        assert!(
+            !calls.iter().any(|c| user_part(c).contains("task-miss")),
+            "False branch must stay dead: {calls:?}"
+        );
+        assert_eq!(run_status(&store, &run_id), "completed");
+    }
+
+    /// on_error.retry is the activity-level retry budget: after
+    /// stream_with_retry's transient retries are exhausted, a declared budget
+    /// re-runs the activity and the run completes; the default budget (one
+    /// attempt) turns the same failure into a failed run.
+    #[tokio::test]
+    async fn test_on_error_retry_budget() {
+        // 3 consecutive RateLimit errors exhaust stream_with_retry's 3
+        // in-stream attempts, failing activity attempt #1.
+        let with_retry = MockProvider::new(&[]).with_rate_limit_failures(3);
+        let def_retry = r#"{
+            "version":"1.0","id":"t","name":"T",
+            "activities":[{"id":"a","intent":"task-a","on_error":{"retry":2}}],
+            "connections":[
+                {"from":"__trigger__","to":"a"},{"from":"a","to":"__emit__"}]
+        }"#;
+        let (result, store, run_id) =
+            run_graph(def_retry, serde_json::json!({}), &with_retry).await;
+        result.expect("attempt 2 must recover the activity");
+        assert_eq!(run_status(&store, &run_id), "completed");
+        assert_eq!(with_retry.calls().len(), 1, "exactly one successful call");
+
+        // Same failure, default budget (retry 1): the run fails.
+        let no_retry = MockProvider::new(&[]).with_rate_limit_failures(3);
+        let def_plain = r#"{
+            "version":"1.0","id":"t","name":"T",
+            "activities":[{"id":"a","intent":"task-a"}],
+            "connections":[
+                {"from":"__trigger__","to":"a"},{"from":"a","to":"__emit__"}]
+        }"#;
+        let (result, store, run_id) =
+            run_graph(def_plain, serde_json::json!({}), &no_retry).await;
+        assert!(result.is_err(), "no retry budget: the failure must surface");
+        assert_eq!(run_status(&store, &run_id), "failed");
+        assert!(no_retry.calls().is_empty(), "no successful call ever landed");
+    }
+
+    /// Independent roots both run: a graph with two trigger entries executes
+    /// both chains and the final context carries both results.
+    #[tokio::test]
+    async fn test_independent_trigger_entries_both_run() {
+        let provider = MockProvider::new(&[]);
+        let def = r#"{
+            "version":"1.0","id":"t","name":"T",
+            "activities":[
+                {"id":"a","intent":"task-a"},
+                {"id":"b","intent":"task-b"}],
+            "connections":[
+                {"from":"__trigger__","to":"a"},
+                {"from":"__trigger__","to":"b"},
+                {"from":"a","to":"__emit__"},{"from":"b","to":"__emit__"}]
+        }"#;
+        let (result, store, run_id) = run_graph(def, serde_json::json!({}), &provider).await;
+        let (_, final_context) = result.expect("run ok");
+        assert_eq!(provider.calls().len(), 2, "both roots run exactly once");
+        assert!(final_context.contains("[Activity 'a' result]"));
+        assert!(final_context.contains("[Activity 'b' result]"));
+        assert_eq!(run_status(&store, &run_id), "completed");
+    }
+
+    /// An edge to a node that doesn't exist (validation bypassed) fails the
+    /// run loudly with the node named — never a panic, never a silent hang.
+    #[tokio::test]
+    async fn test_unknown_node_reference_fails_loudly() {
+        let def: WorkflowDef = serde_json::from_str(
+            r#"{
+            "version":"1.0","id":"t","name":"T",
+            "activities":[{"id":"a","intent":"task-a"}],
+            "connections":[
+                {"from":"__trigger__","to":"a"},{"from":"a","to":"ghost"}]
+        }"#,
+        )
+        .unwrap();
+        let provider = MockProvider::new(&[]);
+        let store = test_store();
+        let run_id = uuid::Uuid::new_v4().to_string();
+        store
+            .create_workflow_run(&run_id, &def.id, "manual", None, None, None, None)
+            .expect("run row");
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            execute_graph(
+                &def,
+                "",
+                "test-owner",
+                false,
+                &serde_json::json!({}),
+                &store,
+                &provider,
+                &[],
+                None,
+                &run_id,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            ),
+        )
+        .await
+        .expect("terminated within timeout");
+        match result {
+            Err(WorkflowError::Other(msg)) => {
+                assert!(msg.contains("unknown node 'ghost'"), "names the node: {msg}")
+            }
+            other => panic!("expected Other(unknown node), got {:?}", other),
+        }
+        // The reachable node still executed before the dangling edge tripped.
+        assert_eq!(provider.calls().len(), 1);
+        let status = store
+            .get_workflow_run(&run_id)
+            .unwrap()
+            .unwrap()
+            .status;
+        assert_eq!(status, "failed");
+    }
 }
 
 #[cfg(test)]
@@ -2453,5 +2720,82 @@ mod graph_tests {
             )
             .is_err()
         );
+    }
+
+    /// AIMD contract: halve on rate-limit pressure (floor 1, never 0 — a
+    /// zero target would admit nothing and deadlock the loop), creep back +1
+    /// per success, capped at the ceiling. Additive ramp / multiplicative
+    /// backoff, or concurrency either stampedes or collapses.
+    #[test]
+    fn test_loop_governor_aimd_arithmetic() {
+        let g = LoopGovernor::new(4);
+        assert_eq!(g.target(), 4);
+        g.on_rate_limit();
+        assert_eq!(g.target(), 2);
+        g.on_rate_limit();
+        assert_eq!(g.target(), 1);
+        g.on_rate_limit();
+        assert_eq!(g.target(), 1, "backoff floors at 1, never 0");
+        g.on_success();
+        assert_eq!(g.target(), 2, "recovery is additive (+1), not a jump to ceiling");
+        g.on_success();
+        g.on_success();
+        assert_eq!(g.target(), 4);
+        g.on_success();
+        assert_eq!(g.target(), 4, "ramp is capped at the ceiling");
+    }
+
+    /// The in-band pressure classifier: provider spellings of rate-limiting
+    /// must match (else the governor never backs off), and ordinary failures
+    /// must NOT (else real errors get requeued instead of failing the run).
+    #[test]
+    fn test_is_rate_limit_shaped() {
+        for hit in [
+            "rate limit exceeded",
+            "HTTP 429 from gateway",
+            "Too Many Requests",
+            "rate_limit_error",
+            "provider overloaded",
+        ] {
+            assert!(is_rate_limit_shaped(hit), "must classify as rate limit: {hit}");
+        }
+        for miss in [
+            "connection refused",
+            "invalid api key",
+            "activity a failed: bad input",
+        ] {
+            assert!(!is_rate_limit_shaped(miss), "must NOT classify as rate limit: {miss}");
+        }
+    }
+
+    /// Error aggregation is deterministic: branches settle, then the FIRST
+    /// error in edge order wins — never whichever branch happened to lose
+    /// the race.
+    #[test]
+    fn test_first_error_is_edge_ordered() {
+        let r = first_error(vec![
+            Ok(()),
+            Err(WorkflowError::Exited("first".into())),
+            Err(WorkflowError::Exited("second".into())),
+        ]);
+        match r {
+            Err(WorkflowError::Exited(reason)) => assert_eq!(reason, "first"),
+            other => panic!("expected first edge-order error, got {:?}", other),
+        }
+        assert!(first_error(vec![Ok(()), Ok(())]).is_ok());
+    }
+
+    /// `${NEBO_DATA_DIR}`-style placeholders are NOT the engine's to expand:
+    /// the command interpolator substitutes only `{{...}}` data paths and
+    /// must pass `${...}` through byte-for-byte, so the process environment
+    /// (never string interpolation) resolves data-dir paths.
+    #[test]
+    fn test_interpolate_leaves_env_placeholders_literal() {
+        let d = data();
+        let cmd = interpolate_context(
+            "cat ${NEBO_DATA_DIR}/reports/{{item.name}}.csv ${NEBO_SKILL_DIR}/x",
+            &d,
+        );
+        assert_eq!(cmd, "cat ${NEBO_DATA_DIR}/reports/alpha.csv ${NEBO_SKILL_DIR}/x");
     }
 }

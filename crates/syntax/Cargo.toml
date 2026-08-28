@@ -1,0 +1,28 @@
+[package]
+name = "nebo-syntax"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+thiserror = { workspace = true }
+# ONE core version for all grammars. Grammar crates couple to the core only
+# through `tree-sitter-language` (the LanguageFn ABI) — their `tree-sitter`
+# deps are dev-only — so a single core serves every compiled-in grammar.
+# 0.25 is the version the majority of these grammar crates are tested against.
+tree-sitter = "0.25"
+streaming-iterator = "0.1"
+
+# Tier-1 grammars, compiled in. Official crates.io releases.
+tree-sitter-rust = "0.24"
+tree-sitter-typescript = "0.23"
+tree-sitter-javascript = "0.25"
+tree-sitter-python = "0.25"
+tree-sitter-go = "0.25"
+tree-sitter-json = "0.24"
+tree-sitter-yaml = "0.7"
+tree-sitter-toml-ng = "0.7"
+tree-sitter-bash = "0.25"
+tree-sitter-html = "0.23"
+tree-sitter-css = "0.25"
+tree-sitter-md = "0.5"

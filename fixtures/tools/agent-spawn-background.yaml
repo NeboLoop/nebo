@@ -1,0 +1,45 @@
+id: agent-spawn-background
+name: "Sub-agent background mode — wait:false, then status"
+description: |
+  The user explicitly wants work started in the background while the
+  conversation continues. The model must spawn with wait: false (it is woken
+  automatically on completion) and must be able to check on it with
+  action: "status" — not block on it, not pretend it finished, not poll in a
+  tight loop.
+target_component: agent
+
+conversation:
+  - role: user
+    content: "Kick off a background research task summarizing this week's mortgage rate movements — don't wait for it. While that runs, tell me: what's a good subject line for a September open-house email? Then check whether the research has finished."
+
+tool_config:
+  agent:
+    enabled: true
+  web:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: background-spawn
+      text: "Model calls agent resource: 'task', action: 'spawn' with wait: false for the research task"
+      severity: critical
+  conversation:
+    - id: answers-inline-question
+      text: "Model answers the subject-line question itself without blocking on the background task"
+      severity: critical
+    - id: checks-status
+      text: "Model calls agent(resource: 'task', action: 'status') to check the background task"
+      severity: critical
+    - id: honest-about-state
+      text: "Model reports the background task's actual state from the status result — it never claims research results it has not received"
+      severity: critical
+    - id: no-tight-poll
+      text: "Model does not call status more than twice"
+      severity: important
+
+ideal_behavior:
+  tool_calls: 3
+  total_tokens: 6000
+  narrative: |
+    spawn(wait: false) → answer the subject-line question directly →
+    one status check → honest report of where the background task stands.

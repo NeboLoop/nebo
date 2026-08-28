@@ -91,10 +91,6 @@ const MAX_OUTPUT_RECOVERY_ATTEMPTS: usize = 3;
 /// polls against a growing log produced ZERO guard firings, and the customer
 /// incident it reproduces ran 12,093 requests in 24h.
 ///
-/// This is the backstop for that class: it counts the CALL, not the answer.
-/// Set well above any legitimate repeat (the incident's own real debugging
-/// repeated one `docker compose logs` 13 times across a turn) and far below the
-/// iteration ceiling, so it only ever catches a genuine runaway.
 /// Stand-in for a tool_use whose result is missing from history (strict
 /// providers reject an unmatched tool_use).
 ///
@@ -109,7 +105,14 @@ conversation history — it was trimmed, or the run was interrupted. This is NOT
 tool failure and says nothing about whether the call succeeded. Make the call \
 again if you still need the result.)";
 
-const IDENTICAL_CALL_ABORT: usize = 12;
+/// This is the backstop for that class: it counts the CALL, not the answer.
+/// The bound is set by EVIDENCE, not vibes: the incident's own legitimate
+/// debugging repeated one `docker compose logs` 13 times in a single turn, so
+/// the ceiling must clear 13 with margin — 12 would have cut that customer
+/// off one call short of finishing real work. 16 sits above every legitimate
+/// repeat we have observed and far below the iteration ceiling, and the abort
+/// ends only the TURN (honest ControlNotice, resumable) — never the session.
+const IDENTICAL_CALL_ABORT: usize = 16;
 
 /// Evicted messages that must accumulate before another background LLM
 /// compaction is spawned for a session.
@@ -1888,6 +1891,14 @@ async fn run_loop(
     // and can never show more than 10 repeats, so a turn-level budget cannot be
     // read from it. Never reset mid-turn: the reset is exactly what let the
     // spiral nudge fire forever without ever ending a run.
+    // Cross-method memory of files this run has observed (read_ledger.rs).
+    // Reset per run on purpose: files legitimately change between turns.
+    let mut read_ledger = crate::read_ledger::ReadLedger::default();
+    // Frozen tool-result renderings: one rendering per tool_use_id per run,
+    // shared by both compaction paths (pruning::micro_compact and
+    // time_based_micro_compact) so the model's history never mutates mid-run.
+    let mut frozen_renderings: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
     let mut identical_call_counts: std::collections::HashMap<(u64, u64), usize> =
         std::collections::HashMap::new();
     // Per-(name, args) hash of a read-only call's own last result, for the
@@ -2945,13 +2956,14 @@ async fn run_loop(
             pruning::TIME_BASED_KEEP_RECENT,
             pruning::TIME_BASED_GAP_THRESHOLD_SECS,
             thresholds.warning,
+            &mut frozen_renderings,
         );
         if tb_saved > 0 {
             debug!(tokens_saved = tb_saved, "Stage 1: time-based micro-compact");
         }
 
         // Stage 2: Compress tool results with informative summaries
-        let (compacted, mc_saved) = pruning::micro_compact(&working, thresholds.warning);
+        let (compacted, mc_saved) = pruning::micro_compact(&working, thresholds.warning, &mut frozen_renderings);
         if mc_saved > 0 {
             debug!(
                 tokens_saved = mc_saved,
@@ -5526,6 +5538,41 @@ async fn run_loop(
                     );
                 }
 
+                // Read ledger: note repeat observations of a file BEFORE the
+                // spill/truncation rewrites below — the spill note embeds a
+                // fresh uuid path every time, which would read as "content
+                // CHANGED" on every identical re-read. Ranged reads (offset/
+                // limit) are partial views and are deliberately not
+                // fingerprinted. The note is appended after truncation so it
+                // always survives.
+                let ledger_note = if !result.is_error && tc.name == "os" {
+                    let action = tc.input.get("action").and_then(|v| v.as_str()).unwrap_or("");
+                    match (tools::OsTool::resolved_resource(&tc.input), action) {
+                        ("file", "read")
+                            if tc.input.get("offset").is_none()
+                                && tc.input.get("limit").is_none() =>
+                        {
+                            tc.input
+                                .get("path")
+                                .and_then(|v| v.as_str())
+                                .and_then(|p| read_ledger.observe_read(p, &result.content))
+                        }
+                        ("file", "grep") => tc
+                            .input
+                            .get("path")
+                            .and_then(|v| v.as_str())
+                            .and_then(|p| read_ledger.observe_command(p)),
+                        ("shell", _) => tc
+                            .input
+                            .get("command")
+                            .and_then(|v| v.as_str())
+                            .and_then(|c| read_ledger.observe_command(c)),
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+
                 // Success result truncation: persist to file, return preview + path
                 if !result.is_error && result.content.len() > RESULT_CAP {
                     let total_len = result.content.len();
@@ -5565,6 +5612,9 @@ async fn run_loop(
                         "{}\n\n[Result truncated: {} chars total, showing first 4000. Re-run the tool with narrower parameters.]",
                         preview, total_len
                     );
+                }
+                if let Some(note) = ledger_note {
+                    result.content.push_str(&note);
                 }
                 // Log tool_search discoveries (activation happens via message-window
                 // scanning on the next iteration — no persistent set needed)

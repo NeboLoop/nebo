@@ -1,0 +1,10 @@
+name: longsession
+# Long-session behavioural fixtures: sliding-window eviction (>80 messages)
+# and micro-compaction of large tool results. These are the two seams no
+# single-shot fixture exercises — and where the forged "[os] 0 lines" outage
+# lived. Expensive: each fixture is many real LLM round trips. Run rarely,
+# deliberately, against a live server:
+#   make test-live SUITE=longsession
+fixtures:
+  - ../fixtures/longsession/window-eviction-recall.yaml
+  - ../fixtures/longsession/compaction-large-reads.yaml

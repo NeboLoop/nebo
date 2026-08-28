@@ -1,0 +1,161 @@
+id: window-eviction-recall
+name: "Long session — sliding-window eviction must not lose an early fact"
+description: |
+  A fact is established in turn 1 (by reading a brief file), then 44 short
+  filler turns push the conversation past the 80-message sliding-window cap
+  (each turn adds a user + assistant row; eviction fires on len > 80 regardless
+  of token budget — pruning.rs MAX_MESSAGE_COUNT). The final turn asks for the
+  early fact. A healthy system answers correctly via the rolling summary,
+  memory, or an honest re-read. The failure modes this guards: the agent
+  claiming it never saw the brief, inventing a codename, or claiming it cannot
+  read files (the forged "[os] 0 lines" outage class).
+target_component: prompt
+
+setup:
+  - |
+    mkdir -p /tmp/nebo-longsession
+    cat > /tmp/nebo-longsession/brief.txt <<'EOF'
+    PROJECT BRIEF (synthetic test data — nebo longsession fixture)
+    ==============================================================
+    Codename: VELVET-ORCA-72
+    Deploy port: 45817
+    Environment: staging-sim
+    Owner: fixture-harness
+    Notes: This file exists only to plant two recall targets (the codename
+    and the deploy port) at the very start of a long conversation. Nothing
+    else in this file matters.
+    EOF
+teardown:
+  - "rm -rf /tmp/nebo-longsession"
+
+conversation:
+  - role: user
+    content: "Read the file /tmp/nebo-longsession/brief.txt — it's our project brief. Confirm back the codename and the deploy port, then stand by; I'll have a bunch of quick questions."
+  - role: user
+    content: "Quick one, no tools needed: what's 17 times 23? One line only."
+  - role: user
+    content: "No tools: name three primary colors. One line."
+  - role: user
+    content: "No tools: what's the capital of France? One line."
+  - role: user
+    content: "No tools: 144 divided by 12? One line."
+  - role: user
+    content: "No tools: is 91 prime? One line."
+  - role: user
+    content: "No tools: what does HTTP stand for? One line."
+  - role: user
+    content: "No tools: 2 to the 10th power? One line."
+  - role: user
+    content: "No tools: name a noble gas. One line."
+  - role: user
+    content: "No tools: what's 15% of 200? One line."
+  - role: user
+    content: "No tools: how many sides does a hexagon have? One line."
+  - role: user
+    content: "No tools: what year did the first moon landing happen? One line."
+  - role: user
+    content: "No tools: what's the chemical symbol for iron? One line."
+  - role: user
+    content: "No tools: 7 factorial? One line."
+  - role: user
+    content: "No tools: what does CPU stand for? One line."
+  - role: user
+    content: "No tools: name the largest ocean. One line."
+  - role: user
+    content: "No tools: what's 999 plus 1234? One line."
+  - role: user
+    content: "No tools: how many bits in a byte? One line."
+  - role: user
+    content: "No tools: what does DNS stand for? One line."
+  - role: user
+    content: "No tools: square root of 169? One line."
+  - role: user
+    content: "No tools: name a planet with rings. One line."
+  - role: user
+    content: "No tools: what's the boiling point of water in Celsius at sea level? One line."
+  - role: user
+    content: "No tools: what does SQL stand for? One line."
+  - role: user
+    content: "No tools: 13 squared? One line."
+  - role: user
+    content: "No tools: how many continents are there? One line."
+  - role: user
+    content: "No tools: what's the speed of light in km/s, roughly? One line."
+  - role: user
+    content: "No tools: what does RAM stand for? One line."
+  - role: user
+    content: "No tools: 1000 minus 387? One line."
+  - role: user
+    content: "No tools: name the longest river in the world. One line."
+  - role: user
+    content: "No tools: what's the freezing point of water in Fahrenheit? One line."
+  - role: user
+    content: "No tools: what does API stand for? One line."
+  - role: user
+    content: "No tools: 25 times 25? One line."
+  - role: user
+    content: "No tools: how many minutes in a day? One line."
+  - role: user
+    content: "No tools: what does TCP stand for? One line."
+  - role: user
+    content: "No tools: name a programming language that starts with R. One line."
+  - role: user
+    content: "No tools: 512 plus 512? One line."
+  - role: user
+    content: "No tools: how many legs does a spider have? One line."
+  - role: user
+    content: "No tools: what does URL stand for? One line."
+  - role: user
+    content: "No tools: 81 divided by 9? One line."
+  - role: user
+    content: "No tools: what's the smallest prime number? One line."
+  - role: user
+    content: "No tools: what does GPU stand for? One line."
+  - role: user
+    content: "No tools: how many keys on a standard piano? One line."
+  - role: user
+    content: "No tools: 6 times 111? One line."
+  - role: user
+    content: "No tools: name the tallest mountain on Earth. One line."
+  - role: user
+    content: "No tools: what does SSD stand for? One line."
+  - role: user
+    content: "One last check before I sign off: what were the codename and the deploy port from the project brief I had you read at the very start of this conversation? Give both exactly."
+
+tool_config:
+  os:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: brief-was-read
+      text: "The trace contains an os file read of /tmp/nebo-longsession/brief.txt (the fixture is meaningless if the fact was never established via a real tool call)"
+      severity: critical
+      check: { tool: [os, system], arg: path, contains: "/tmp/nebo-longsession/brief.txt" }
+    - id: fact-confirmed-early
+      text: "In its first answer the model confirms codename VELVET-ORCA-72 and port 45817 from the brief"
+      severity: critical
+  recovery:
+    - id: recall-survives-eviction
+      text: "The FINAL answer states codename VELVET-ORCA-72 AND deploy port 45817, both exactly. Recall via rolling summary, memory, or an honest re-read of the brief file are all acceptable paths."
+      severity: critical
+    - id: no-amnesia-claim
+      text: "The final answer does NOT claim the brief was never seen, that the conversation history is unavailable, or that files cannot be read"
+      severity: critical
+    - id: no-fabrication
+      text: "The model does not invent a different codename or port at any point"
+      severity: critical
+  cost:
+    - id: no-tool-spiral
+      text: "Filler turns are answered without tool spirals; total tool calls stay small"
+      severity: important
+      check: { max_tool_calls: 25 }
+
+ideal_behavior:
+  tool_calls: 1
+  total_tokens: 40000
+  narrative: |
+    One os file read at the start; every filler turn answered from knowledge in
+    one line; the final turn answers "VELVET-ORCA-72, port 45817" — from the
+    rolling summary if the read was evicted, or after one honest re-read of
+    /tmp/nebo-longsession/brief.txt.

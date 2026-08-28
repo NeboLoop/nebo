@@ -16,3 +16,6 @@ chrono = { workspace = true }
 thiserror = { workspace = true }
 rust-embed = { workspace = true }
 uuid = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

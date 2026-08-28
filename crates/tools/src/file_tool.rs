@@ -284,6 +284,7 @@ impl FileTool {
         }
 
         // UTF-16 files read from the decoded text; everything else streams from disk.
+        let is_utf16 = utf16_text.is_some();
         let reader: Box<dyn BufRead> = match utf16_text {
             Some(text) => Box::new(std::io::Cursor::new(text)),
             None => Box::new(BufReader::with_capacity(1024 * 1024, file)),
@@ -291,6 +292,18 @@ impl FileTool {
         let mut result = String::new();
         let mut line_num = 0usize;
         let mut lines_read = 0usize;
+        let mut limit_truncated = false;
+        // Spill artifacts (large tool results persisted under nebo-tool-results/)
+        // already CONTAIN the line numbers from the read that produced them —
+        // numbering them again renders "1  1  #!/usr/bin/env" and the model
+        // reads it as "the file is being duplicated" (observed feeding a
+        // distrust spiral in the 2026-08 replay). Our own spill files are the
+        // ONE case a read renders raw.
+        let numbering = std::path::Path::new(&path)
+            .parent()
+            .and_then(|d| d.file_name())
+            .map(|n| n != "nebo-tool-results")
+            .unwrap_or(true);
 
         for line_result in reader.lines() {
             let line = match line_result {
@@ -305,6 +318,7 @@ impl FileTool {
             }
 
             if lines_read >= limit {
+                limit_truncated = true;
                 result.push_str(&format!(
                     "\n... (showing lines {}-{} of {}+)",
                     offset,
@@ -320,7 +334,12 @@ impl FileTool {
                 line
             };
 
-            result.push_str(&format!("{:6}\t{}\n", line_num, display_line));
+            if numbering {
+                result.push_str(&format!("{:6}\t{}\n", line_num, display_line));
+            } else {
+                result.push_str(&display_line);
+                result.push('\n');
+            }
             lines_read += 1;
         }
 
@@ -352,12 +371,38 @@ impl FileTool {
 
         // Cap total result size to prevent huge files from blowing up context
         const FILE_READ_MAX_CHARS: usize = 50_000;
+        let mut char_truncated = false;
         if result.len() > FILE_READ_MAX_CHARS {
+            char_truncated = true;
             let total_len = result.len();
             let truncated = crate::truncate_str(&result, FILE_READ_MAX_CHARS);
             result = format!(
                 "{}\n\n[Output truncated: {} total chars, showing first {}. Use offset/limit params to read specific sections.]",
                 truncated, total_len, FILE_READ_MAX_CHARS
+            );
+        }
+
+        // Outline-first reads (PRD P4.1): a BLIND read (no offset/limit given)
+        // that came back truncated gets the file's tree-sitter outline
+        // prepended, so the next read can target a symbol's line range instead
+        // of paging forward blindly. Decoration of the ONE read pathway —
+        // never a second one. Ranged reads and files with no compiled-in
+        // grammar are untouched (absence, not noise).
+        if (limit_truncated || char_truncated)
+            && input.offset <= 0
+            && input.limit <= 0
+            && !is_utf16
+            && let Some(lang) = syntax::Lang::from_path(Path::new(&path))
+            && let Ok(full) = std::fs::read_to_string(&path)
+            && let Ok(symbols) = syntax::outline(&full, lang)
+            && !symbols.is_empty()
+        {
+            result = format!(
+                "[Outline ({}, {} lines total) — the read below is truncated; request specific sections with offset/limit using these [start-end] line ranges.]\n{}\n\n{}",
+                lang.name(),
+                full.lines().count(),
+                crate::code_tool::render_outline(&symbols, 200),
+                result
             );
         }
 
@@ -469,6 +514,26 @@ impl FileTool {
                 }
                 let action = if input.append { "Appended" } else { "Wrote" };
                 let mut msg = format!("{} {} bytes to {}", action, input.content.len(), path);
+                // Edit-verification chain step 1 (PRD P4.4): parse what is now
+                // on disk. A plain write's file content IS the input content;
+                // an append must be checked as the whole file, so read it back
+                // (and stay silent if that read fails — no false claims).
+                let appended_full = if input.append {
+                    std::fs::read_to_string(&path).ok()
+                } else {
+                    None
+                };
+                let parse_src = match &appended_full {
+                    Some(full) => Some(full.as_str()),
+                    None if input.append => None,
+                    None => Some(input.content.as_str()),
+                };
+                if let Some(src) = parse_src
+                    && let Some(note) = syntax_note(&path, src)
+                {
+                    msg.push('\n');
+                    msg.push_str(&note);
+                }
                 if let Some(note) = overwrite_note {
                     msg.push_str("\n\n");
                     msg.push_str(&note);
@@ -573,6 +638,12 @@ impl FileTool {
         } else {
             format!("Edited {}", path)
         };
+        // Edit-verification chain step 1 (PRD P4.4): the parse verdict on the
+        // post-edit content rides on the edit result.
+        if let Some(note) = syntax_note(&path, &new_content) {
+            msg.push('\n');
+            msg.push_str(&note);
+        }
         if let Some(note) = overwrite_note {
             msg.push_str("\n\n");
             msg.push_str(&note);
@@ -1217,6 +1288,34 @@ pub fn expand_path(path: &str) -> String {
     types::pathres::expand(path).to_string_lossy().into_owned()
 }
 
+/// Edit-verification chain, step 1 (PRD_CODING_HARNESS P4.4): a factual
+/// tree-sitter syntax line for a just-written file whose extension maps to a
+/// compiled-in grammar. `None` for files with no grammar (absence, not noise)
+/// and on parser failure. States only — the write/edit has already landed and
+/// is NEVER blocked or rolled back on a syntax error.
+fn syntax_note(path: &str, content: &str) -> Option<String> {
+    let lang = syntax::Lang::from_path(Path::new(path))?;
+    let errors = syntax::parse_check(content, lang).ok()?;
+    if errors.is_empty() {
+        return Some(format!("syntax OK ({})", lang.name()));
+    }
+    let shown: Vec<String> = errors
+        .iter()
+        .take(3)
+        .map(|e| format!("line {}: {}", e.line, e.message))
+        .collect();
+    let mut note = format!(
+        "syntax: {} error{} — {}",
+        errors.len(),
+        if errors.len() == 1 { "" } else { "s" },
+        shown.join("; ")
+    );
+    if errors.len() > 3 {
+        note.push_str(&format!("; {} more", errors.len() - 3));
+    }
+    Some(note)
+}
+
 /// Current on-disk modification time of `path` in milliseconds since the epoch, or
 /// `None` if it can't be determined. Used by the read-before-edit staleness guard.
 fn current_mtime_ms(path: &str) -> Option<i64> {
@@ -1232,6 +1331,39 @@ fn current_mtime_ms(path: &str) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Spill artifacts under nebo-tool-results/ already carry line numbers
+    /// from the read that produced them; reading one back must NOT number the
+    /// lines again ("1  1  #!/usr..." read as file corruption by the model).
+    /// Every other path keeps the numbered rendering.
+    #[test]
+    fn spill_artifacts_are_read_raw_everything_else_is_numbered() {
+        let tmp = tempfile::tempdir().unwrap();
+        let spill_dir = tmp.path().join("nebo-tool-results");
+        std::fs::create_dir_all(&spill_dir).unwrap();
+        let spill = spill_dir.join("abc.txt");
+        std::fs::write(&spill, "     1\talready numbered\n").unwrap();
+        let normal = tmp.path().join("plain.txt");
+        std::fs::write(&normal, "hello\n").unwrap();
+
+        let tool = FileTool::new();
+        let spill_read = tool.execute(&ctx(), serde_json::json!({
+            "action": "read", "path": spill.to_string_lossy()
+        }));
+        assert!(
+            spill_read.content.starts_with("     1\talready numbered"),
+            "spill read must be raw, got: {}",
+            spill_read.content
+        );
+        let normal_read = tool.execute(&ctx(), serde_json::json!({
+            "action": "read", "path": normal.to_string_lossy()
+        }));
+        assert!(
+            normal_read.content.starts_with("     1\thello"),
+            "normal read keeps numbering, got: {}",
+            normal_read.content
+        );
+    }
     use crate::origin::{Origin, ToolContext};
     use serde_json::json;
     use std::fs;
@@ -1743,6 +1875,150 @@ mod tests {
     #[test]
     fn relativize_returns_original_when_no_prefix() {
         assert_eq!(relativize_path("/x/y/z.rs", "/a/b"), "/x/y/z.rs");
+    }
+
+    // ── Edit-verification chain step 1: the syntax line (PRD P4.4) ──
+
+    /// A write of valid source appends "syntax OK (<lang>)" to the result —
+    /// the parse verdict rides on the ONE write pathway.
+    #[test]
+    fn write_valid_rust_appends_syntax_ok() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("m.rs");
+        let tool = FileTool::new();
+        let r = tool.execute(
+            &ctx(),
+            json!({"action":"write","path": path.to_str().unwrap(),"content":"fn main() {}\n"}),
+        );
+        assert!(!r.is_error, "{}", r.content);
+        assert!(r.content.contains("syntax OK (rust)"), "{}", r.content);
+    }
+
+    /// A write of broken source STATES the errors factually — and still
+    /// lands. Never a block, never a rollback.
+    #[test]
+    fn write_broken_rust_states_errors_and_still_lands() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("broken.rs");
+        let content = "fn main() {\n    let x = ;\n}\n";
+        let tool = FileTool::new();
+        let r = tool.execute(
+            &ctx(),
+            json!({"action":"write","path": path.to_str().unwrap(),"content": content}),
+        );
+        assert!(!r.is_error, "syntax errors must not fail the write: {}", r.content);
+        assert_eq!(fs::read_to_string(&path).unwrap(), content, "the write landed");
+        assert!(r.content.contains("syntax: 1 error"), "{}", r.content);
+        assert!(r.content.contains("line 2"), "{}", r.content);
+    }
+
+    /// Files with no compiled-in grammar get NO syntax line — absence, not
+    /// noise.
+    #[test]
+    fn write_no_grammar_file_has_no_syntax_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("notes.txt");
+        let tool = FileTool::new();
+        let r = tool.execute(
+            &ctx(),
+            json!({"action":"write","path": path.to_str().unwrap(),"content":"fn nope() {}\n"}),
+        );
+        assert!(!r.is_error, "{}", r.content);
+        assert!(!r.content.contains("syntax"), "{}", r.content);
+    }
+
+    /// An edit's result carries the parse verdict of the POST-edit content:
+    /// an edit that breaks the file says so; the fix-up says OK again.
+    #[test]
+    fn edit_reports_syntax_verdict_of_new_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("e.rs");
+        fs::write(&path, "fn main() { let x = 1; }\n").unwrap();
+        let tool = FileTool::new();
+        let p = path.to_str().unwrap();
+        assert!(!tool.execute(&ctx(), json!({"action":"read","path": p})).is_error);
+        let r = tool.execute(
+            &ctx(),
+            json!({"action":"edit","path": p,"old_string":"let x = 1;","new_string":"let x = ;"}),
+        );
+        assert!(!r.is_error, "{}", r.content);
+        assert!(r.content.contains("syntax: 1 error"), "{}", r.content);
+        let r = tool.execute(
+            &ctx(),
+            json!({"action":"edit","path": p,"old_string":"let x = ;","new_string":"let x = 2;"}),
+        );
+        assert!(!r.is_error, "{}", r.content);
+        assert!(r.content.contains("syntax OK (rust)"), "{}", r.content);
+    }
+
+    // ── Outline-first reads (PRD P4.1) ──────────────────────────────
+
+    /// Write a source file long enough to trip the default 2000-line read
+    /// truncation.
+    fn big_rust_file(dir: &std::path::Path) -> PathBuf {
+        let path = dir.join("big.rs");
+        let mut src = String::new();
+        for i in 0..2100 {
+            src.push_str(&format!("fn f{i}() {{}}\n"));
+        }
+        fs::write(&path, &src).unwrap();
+        path
+    }
+
+    /// A blind read that comes back truncated prepends the tree-sitter
+    /// outline with ranged-read instructions — and the outline's own cap is
+    /// stated, never silent.
+    #[test]
+    fn truncated_read_of_source_file_prepends_outline() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = big_rust_file(dir.path());
+        let tool = FileTool::new();
+        let r = tool.execute(&ctx(), json!({"action":"read","path": path.to_str().unwrap()}));
+        assert!(!r.is_error, "{}", r.content);
+        assert!(r.content.starts_with("[Outline (rust, 2100 lines total)"), "{}", crate::truncate_str(&r.content, 200));
+        assert!(r.content.contains("fn f0  [1-1]"), "{}", crate::truncate_str(&r.content, 400));
+        assert!(
+            r.content.contains("… 1900 more omitted"),
+            "outline cap must be stated: {}",
+            crate::truncate_str(&r.content, 400)
+        );
+        assert!(r.content.contains("offset/limit"), "must tell the model how to read ranges");
+        // The truncated content still follows — the outline decorates the ONE
+        // read pathway, it does not replace the read.
+        assert!(r.content.contains("showing lines 1-2000"), "{}", crate::truncate_str(&r.content, 200));
+    }
+
+    /// A read that is NOT truncated carries no outline preamble.
+    #[test]
+    fn untruncated_read_has_no_outline_preamble() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("small.rs");
+        fs::write(&path, "fn a() {}\nfn b() {}\n").unwrap();
+        let tool = FileTool::new();
+        let r = tool.execute(&ctx(), json!({"action":"read","path": path.to_str().unwrap()}));
+        assert!(!r.is_error);
+        assert!(!r.content.contains("[Outline"), "{}", r.content);
+    }
+
+    /// An explicitly RANGED read never gets the outline — the model is
+    /// already reading by range, so the preamble would be repeated noise.
+    #[test]
+    fn ranged_read_has_no_outline_preamble() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = big_rust_file(dir.path());
+        let tool = FileTool::new();
+        let r = tool.execute(
+            &ctx(),
+            json!({"action":"read","path": path.to_str().unwrap(), "offset": 5}),
+        );
+        assert!(!r.is_error);
+        assert!(!r.content.contains("[Outline"), "{}", crate::truncate_str(&r.content, 200));
+        let r = tool.execute(
+            &ctx(),
+            json!({"action":"read","path": path.to_str().unwrap(), "limit": 10}),
+        );
+        assert!(!r.is_error);
+        assert!(!r.content.contains("[Outline"), "{}", crate::truncate_str(&r.content, 200));
     }
 }
 

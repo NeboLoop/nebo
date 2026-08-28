@@ -216,3 +216,48 @@ mod tests {
         assert!(count > 0, "should have applied migrations");
     }
 }
+
+#[cfg(test)]
+mod idempotency_tests {
+    use super::*;
+
+    /// Running the full migration chain twice on the same on-disk DB is a
+    /// no-op the second time: no error, no re-applied migrations, no
+    /// duplicate schema objects. This is the restart path of every install.
+    #[test]
+    fn run_migrations_twice_is_idempotent() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("nebo-migrate-test.db");
+        let conn = Connection::open(&path).unwrap();
+
+        run_migrations(&conn).unwrap();
+
+        let count_rows = |sql: &str| -> i64 { conn.query_row(sql, [], |r| r.get(0)).unwrap() };
+        let applied_1 = count_rows("SELECT COUNT(*) FROM _nebo_migrations");
+        let objects_1 = count_rows("SELECT COUNT(*) FROM sqlite_master");
+
+        // Every embedded migration file must have been applied exactly once.
+        assert_eq!(applied_1, iter_files().len() as i64);
+
+        run_migrations(&conn).expect("second run must not error");
+
+        assert_eq!(
+            count_rows("SELECT COUNT(*) FROM _nebo_migrations"),
+            applied_1,
+            "second run must not re-apply migrations"
+        );
+        assert_eq!(
+            count_rows("SELECT COUNT(*) FROM sqlite_master"),
+            objects_1,
+            "second run must not create duplicate schema objects"
+        );
+    }
+
+    /// A migration file without goose markers is applied verbatim — the
+    /// whole file is the Up script, not silently skipped.
+    #[test]
+    fn extract_goose_up_without_markers_uses_whole_file() {
+        let sql = "CREATE TABLE bare (id INT);";
+        assert_eq!(extract_goose_up(sql), sql);
+    }
+}

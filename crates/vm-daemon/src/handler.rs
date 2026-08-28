@@ -353,3 +353,132 @@ fn collect_files_recursive(
 
     Ok(files)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Dispatch under a hard deadline — a wedged handler must FAIL the test
+    /// with a named error, never park the build queue.
+    async fn call(method: &str, params: Option<serde_json::Value>) -> Response {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut pm = ProcessManager::new(tx);
+        let req = Request {
+            method: method.to_string(),
+            id: 7,
+            params,
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(10), dispatch(&mut pm, &req))
+            .await
+            .unwrap_or_else(|_| panic!("test deadline exceeded (10s): dispatch({method})"))
+    }
+
+    /// INVARIANT: an unknown method is refused with an error naming the method,
+    /// echoing the request id — never silently dropped or treated as success.
+    #[tokio::test]
+    async fn unknown_method_is_rejected() {
+        let resp = call("bogusMethod", None).await;
+        assert_eq!(resp.id, 7);
+        assert!(!resp.success);
+        assert!(resp.error.unwrap().contains("unknown method: bogusMethod"));
+    }
+
+    /// INVARIANT: readFile only serves /sessions/ and /tmp/ — any other path
+    /// (host-sensitive files) is denied without touching the filesystem.
+    #[tokio::test]
+    async fn read_file_outside_allowlist_denied() {
+        for path in ["/etc/passwd", "/root/.ssh/id_rsa", "/sessionsX/evil", "relative/path"] {
+            let resp = call("readFile", Some(serde_json::json!({"path": path}))).await;
+            assert!(!resp.success, "{path} must be denied");
+            assert!(resp.error.unwrap().contains("access denied"));
+        }
+    }
+
+    /// INVARIANT: readFile requires a path parameter, and a missing file inside
+    /// the sandbox maps to a read error, not a panic or success.
+    #[tokio::test]
+    async fn read_file_errors_are_mapped() {
+        let resp = call("readFile", Some(serde_json::json!({}))).await;
+        assert!(!resp.success);
+        assert!(resp.error.unwrap().contains("missing path parameter"));
+
+        let resp = call(
+            "readFile",
+            Some(serde_json::json!({"path": "/sessions/definitely-missing-nebo-test"})),
+        )
+        .await;
+        assert!(!resp.success);
+        assert!(resp.error.unwrap().contains("read failed"));
+    }
+
+    /// INVARIANT: writeFile refuses paths outside /sessions/ and /tmp/ and
+    /// requires both path and content — parameter validation happens before
+    /// any filesystem write.
+    #[tokio::test]
+    async fn write_file_guards() {
+        let resp = call(
+            "writeFile",
+            Some(serde_json::json!({"path": "/etc/cron.d/evil", "content": "x"})),
+        )
+        .await;
+        assert!(!resp.success);
+        assert!(resp.error.unwrap().contains("write denied"));
+
+        let resp = call("writeFile", Some(serde_json::json!({"content": "x"}))).await;
+        assert!(!resp.success);
+        assert!(resp.error.unwrap().contains("missing path parameter"));
+
+        let resp = call("writeFile", Some(serde_json::json!({"path": "/tmp/x"}))).await;
+        assert!(!resp.success);
+        assert!(resp.error.unwrap().contains("missing content parameter"));
+    }
+
+    /// INVARIANT: listDir enforces the same /sessions/ + /tmp/ allowlist as the
+    /// file handlers.
+    #[tokio::test]
+    async fn list_dir_outside_allowlist_denied() {
+        let resp = call("listDir", Some(serde_json::json!({"path": "/etc"}))).await;
+        assert!(!resp.success);
+        assert!(resp.error.unwrap().contains("access denied"));
+    }
+
+    /// INVARIANT: copyOut reports denied paths per-entry in errors (partial
+    /// results, success envelope) rather than failing the whole request, and
+    /// requires src_paths.
+    #[tokio::test]
+    async fn copy_out_denies_per_path() {
+        let resp = call(
+            "copyOut",
+            Some(serde_json::json!({"src_paths": ["/etc/passwd"]})),
+        )
+        .await;
+        assert!(resp.success);
+        let result = resp.result.unwrap();
+        assert_eq!(result["files"].as_array().unwrap().len(), 0);
+        let errors = result["errors"].as_array().unwrap();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0][0], "/etc/passwd");
+        assert_eq!(errors[0][1], "access denied");
+
+        let resp = call("copyOut", Some(serde_json::json!({}))).await;
+        assert!(!resp.success);
+        assert!(resp.error.unwrap().contains("missing src_paths"));
+    }
+
+    /// INVARIANT: spawn rejects malformed params with a descriptive error and
+    /// never launches a process for an unparseable request.
+    #[tokio::test]
+    async fn spawn_rejects_malformed_params() {
+        let resp = call("spawn", Some(serde_json::json!({"nope": true}))).await;
+        assert!(!resp.success);
+        assert!(resp.error.unwrap().contains("invalid spawn params"));
+    }
+
+    /// INVARIANT: deleteSessionDirs requires the names parameter.
+    #[tokio::test]
+    async fn delete_sessions_requires_names() {
+        let resp = call("deleteSessionDirs", Some(serde_json::json!({}))).await;
+        assert!(!resp.success);
+        assert!(resp.error.unwrap().contains("missing names parameter"));
+    }
+}

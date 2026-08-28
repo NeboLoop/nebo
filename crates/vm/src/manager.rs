@@ -314,3 +314,120 @@ impl Clone for VmSession {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Hard deadline for async tests — a wedged await must FAIL the test with
+    /// a named error, never park the build queue.
+    async fn bounded<T>(what: &str, fut: impl std::future::Future<Output = T>) -> T {
+        tokio::time::timeout(std::time::Duration::from_secs(10), fut)
+            .await
+            .unwrap_or_else(|_| panic!("test deadline exceeded (10s): {what}"))
+    }
+
+    /// INVARIANT: the default config locks resource sizing (2048 MB / 2 CPUs /
+    /// 10 GB / 30 s boot timeout) and ships the package-registry network
+    /// allowlist with empty image paths (paths are resolved by Bundle).
+    #[test]
+    fn default_config_values() {
+        let cfg = VmConfig::default();
+        assert_eq!(cfg.memory_mb, 2048);
+        assert_eq!(cfg.cpu_count, 2);
+        assert_eq!(cfg.disk_size_gb, 10);
+        assert_eq!(cfg.boot_timeout_secs, 30);
+        for domain in ["pypi.org", "files.pythonhosted.org", "registry.npmjs.org", "github.com", "crates.io"] {
+            assert!(cfg.allowed_domains.iter().any(|d| d == domain), "missing {domain}");
+        }
+        assert!(cfg.image_path.is_empty());
+        assert!(cfg.rootfs_path.is_empty());
+        assert!(cfg.rootfs_sha.is_empty());
+    }
+
+    /// INVARIANT: sessions cannot be created unless the VM is Running — a
+    /// Stopped manager refuses with NotRunning.
+    #[tokio::test]
+    async fn create_session_requires_running_vm() {
+        bounded("create_session_requires_running_vm", async {
+            let mgr = VmManager::new(VmConfig::default());
+            assert_eq!(mgr.state().await, VmState::Stopped);
+            let err = mgr.create_session("skill", None).await.unwrap_err();
+            assert!(matches!(err, VmError::NotRunning));
+        })
+        .await;
+    }
+
+    /// INVARIANT: start moves Stopped → Running, and a second start is rejected
+    /// with AlreadyRunning instead of double-booting.
+    #[tokio::test]
+    async fn start_is_not_reentrant() {
+        bounded("start_is_not_reentrant", async {
+            let mgr = VmManager::new(VmConfig::default());
+            mgr.start().await.unwrap();
+            assert_eq!(mgr.state().await, VmState::Running);
+            let err = mgr.start().await.unwrap_err();
+            assert!(matches!(err, VmError::AlreadyRunning));
+        })
+        .await;
+    }
+
+    /// INVARIANT: a created session gets a /sessions/<id> workdir and inherits
+    /// the config allowlist unless an explicit allowlist overrides it.
+    #[tokio::test]
+    async fn create_session_defaults_and_overrides() {
+        bounded("create_session_defaults_and_overrides", async {
+            let mgr = VmManager::new(VmConfig::default());
+            mgr.start().await.unwrap();
+
+            let id = mgr.create_session("skill-a", None).await.unwrap();
+            let s = mgr.get_session(&id).await.unwrap();
+            assert_eq!(s.work_dir, format!("/sessions/{id}"));
+            assert_eq!(s.allowed_domains, VmConfig::default().allowed_domains);
+            assert_eq!(s.name, "skill-a");
+
+            let id2 = mgr
+                .create_session("skill-b", Some(vec!["example.com".to_string()]))
+                .await
+                .unwrap();
+            let s2 = mgr.get_session(&id2).await.unwrap();
+            assert_eq!(s2.allowed_domains, vec!["example.com".to_string()]);
+            assert_ne!(id, id2, "session ids must be unique");
+        })
+        .await;
+    }
+
+    /// INVARIANT: stop always lands in Stopped and is idempotent — stopping a
+    /// stopped VM is not an error.
+    #[tokio::test]
+    async fn stop_is_idempotent() {
+        bounded("stop_is_idempotent", async {
+            let mgr = VmManager::new(VmConfig::default());
+            mgr.stop().await.unwrap();
+            assert_eq!(mgr.state().await, VmState::Stopped);
+
+            mgr.start().await.unwrap();
+            mgr.stop().await.unwrap();
+            assert_eq!(mgr.state().await, VmState::Stopped);
+            mgr.stop().await.unwrap();
+            assert_eq!(mgr.state().await, VmState::Stopped);
+        })
+        .await;
+    }
+
+    /// INVARIANT: destroy_session removes the session from the manager even
+    /// when no guest is connected (guest-side cleanup is best-effort).
+    #[tokio::test]
+    async fn destroy_session_removes_it() {
+        bounded("destroy_session_removes_it", async {
+            let mgr = VmManager::new(VmConfig::default());
+            mgr.start().await.unwrap();
+            let id = mgr.create_session("skill", None).await.unwrap();
+            assert!(mgr.get_session(&id).await.is_some());
+
+            mgr.destroy_session(&id).await.unwrap();
+            assert!(mgr.get_session(&id).await.is_none());
+        })
+        .await;
+    }
+}

@@ -1,0 +1,47 @@
+id: agent-spawn-explore
+name: "Sub-agent spawn — explore specialist for a search task"
+description: |
+  The user asks a codebase-wide search question where the answer location is
+  unknown. The model should delegate to a READ-ONLY explore sub-agent
+  (resource: "task", action: "spawn", agent_type: "explore") instead of
+  grepping through its own context, and must pass the tools the sub-agent
+  needs (born-blind rule).
+target_component: agent
+
+conversation:
+  - role: user
+    content: "Somewhere in this project the retry backoff is configured — find every place that sets or overrides it. The project is large, search broadly."
+
+tool_config:
+  agent:
+    enabled: true
+  os:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: uses-spawn
+      text: "Model calls agent with resource: 'task', action: 'spawn' (or spawn_parallel)"
+      severity: critical
+    - id: explore-type
+      text: "Model passes agent_type: 'explore' for the search"
+      severity: important
+    - id: born-blind
+      text: "Model passes the tools the sub-agent needs (e.g. tools including 'os' or 'system')"
+      severity: critical
+  conversation:
+    - id: uses-result
+      text: "Final answer reports what the sub-agent found rather than claiming the model searched itself without any search happening"
+      severity: critical
+    - id: no-self-grep-flood
+      text: "Model does not run more than 3 direct os grep/read calls itself before or instead of delegating"
+      severity: important
+
+ideal_behavior:
+  tool_calls: 2
+  total_tokens: 6000
+  narrative: |
+    One agent(resource: "task", action: "spawn", agent_type: "explore",
+    tools: ["os"], prompt: "find retry backoff configuration...") call
+    (wait defaults to true), then a final answer built from the sub-agent's
+    report.

@@ -979,3 +979,222 @@ impl Store {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::Store;
+
+    fn store() -> (tempfile::TempDir, Store) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("nebo-chats-test.db");
+        let store = Store::new(&path.to_string_lossy()).expect("store");
+        (dir, store)
+    }
+
+    fn set_created_at(store: &Store, message_id: &str, ts: i64) {
+        store
+            .conn()
+            .unwrap()
+            .execute(
+                "UPDATE chat_messages SET created_at = ?2 WHERE id = ?1",
+                rusqlite::params![message_id, ts],
+            )
+            .unwrap();
+    }
+
+    /// get_chat_messages returns rows ordered by created_at ASC, not by
+    /// insertion order — history renders chronologically.
+    #[test]
+    fn messages_read_back_in_created_at_order() {
+        let (_dir, store) = store();
+        store.create_chat("c1", "Chat").unwrap();
+        for id in ["m1", "m2", "m3"] {
+            store.create_chat_message(id, "c1", "user", id, None).unwrap();
+        }
+        // Rewrite timestamps out of insertion order.
+        set_created_at(&store, "m3", 100);
+        set_created_at(&store, "m1", 200);
+        set_created_at(&store, "m2", 300);
+
+        let ids: Vec<String> = store
+            .get_chat_messages("c1")
+            .unwrap()
+            .into_iter()
+            .map(|m| m.id)
+            .collect();
+        assert_eq!(ids, vec!["m3", "m1", "m2"]);
+    }
+
+    /// Messages landing in the same second keep insertion order (rowid
+    /// tiebreak) — a burst of tool rows must not shuffle within the second.
+    #[test]
+    fn same_second_messages_keep_insertion_order() {
+        let (_dir, store) = store();
+        store.create_chat("c1", "Chat").unwrap();
+        for id in ["a", "b", "c"] {
+            store.create_chat_message(id, "c1", "assistant", id, None).unwrap();
+            set_created_at(&store, id, 1000);
+        }
+        let ids: Vec<String> = store
+            .get_chat_messages("c1")
+            .unwrap()
+            .into_iter()
+            .map(|m| m.id)
+            .collect();
+        assert_eq!(ids, vec!["a", "b", "c"]);
+    }
+
+    /// tool_calls / tool_results JSON survives the write/read round trip
+    /// byte-comparable as JSON, and the runner write auto-creates the parent
+    /// chat row carrying session_name (role/channel sessions never pre-create
+    /// their chat).
+    #[test]
+    fn runner_message_json_round_trip_and_parent_chat() {
+        let (_dir, store) = store();
+        let tool_calls = r#"[{"id":"t1","name":"system","input":{"cmd":"ls","n":2}}]"#;
+        let tool_results = r#"[{"tool_use_id":"t1","content":"ok \"quoted\""}]"#;
+        let msg = store
+            .create_chat_message_for_runner(
+                "m1",
+                "agent:emp:web",
+                "assistant",
+                "ran a tool",
+                Some(tool_calls),
+                Some(tool_results),
+                Some(42),
+                Some(r#"{"k":"v"}"#),
+                Some("agent:emp:web"),
+            )
+            .unwrap();
+        assert_eq!(msg.token_estimate, Some(42));
+
+        let read = store.get_chat_messages("agent:emp:web").unwrap();
+        assert_eq!(read.len(), 1);
+        let m = &read[0];
+        let got_calls: serde_json::Value =
+            serde_json::from_str(m.tool_calls.as_deref().unwrap()).unwrap();
+        let want_calls: serde_json::Value = serde_json::from_str(tool_calls).unwrap();
+        assert_eq!(got_calls, want_calls);
+        let got_results: serde_json::Value =
+            serde_json::from_str(m.tool_results.as_deref().unwrap()).unwrap();
+        let want_results: serde_json::Value = serde_json::from_str(tool_results).unwrap();
+        assert_eq!(got_results, want_results);
+
+        // Parent chat row was auto-created and linked to the session.
+        let chat = store.get_chat("agent:emp:web").unwrap().expect("chat row");
+        assert_eq!(chat.session_name.as_deref(), Some("agent:emp:web"));
+    }
+
+    /// Deleting a chat cascades to its messages (FK ON DELETE CASCADE with
+    /// foreign_keys pragma live on pooled connections) — no orphan rows.
+    #[test]
+    fn delete_chat_cascades_messages() {
+        let (_dir, store) = store();
+        store.create_chat("c1", "Chat").unwrap();
+        store.create_chat("c2", "Other").unwrap();
+        store.create_chat_message("m1", "c1", "user", "hi", None).unwrap();
+        store.create_chat_message("m2", "c1", "assistant", "yo", None).unwrap();
+        store.create_chat_message("m3", "c2", "user", "keep", None).unwrap();
+
+        store.delete_chat("c1").unwrap();
+
+        assert!(store.get_chat("c1").unwrap().is_none());
+        let orphans: i64 = store
+            .conn()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM chat_messages WHERE chat_id = 'c1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(orphans, 0, "messages must cascade with their chat");
+        // The other chat's messages are untouched.
+        assert_eq!(store.get_chat_messages("c2").unwrap().len(), 1);
+    }
+
+    /// Pagination returns the most recent N in ascending order, and a
+    /// `before` cursor walks strictly older messages.
+    #[test]
+    fn paginated_window_and_before_cursor() {
+        let (_dir, store) = store();
+        store.create_chat("c1", "Chat").unwrap();
+        for (id, ts) in [("m1", 100), ("m2", 200), ("m3", 300), ("m4", 400), ("m5", 500)] {
+            store.create_chat_message(id, "c1", "user", id, None).unwrap();
+            set_created_at(&store, id, ts);
+        }
+
+        let last_two: Vec<String> = store
+            .get_chat_messages_paginated("c1", 2, None)
+            .unwrap()
+            .into_iter()
+            .map(|m| m.id)
+            .collect();
+        assert_eq!(last_two, vec!["m4", "m5"], "latest window, ascending");
+
+        let older: Vec<String> = store
+            .get_chat_messages_paginated("c1", 2, Some("m3"))
+            .unwrap()
+            .into_iter()
+            .map(|m| m.id)
+            .collect();
+        assert_eq!(older, vec!["m1", "m2"], "before-cursor page, ascending");
+    }
+
+    /// The rotate_chat DB contract (SessionManager::rotate_chat in
+    /// crates/agent composes exactly these Store calls): a new conversation
+    /// under the same session is NON-destructive — the old chat row and all
+    /// its messages survive, both chats list under the session, and only the
+    /// session's conversation-scoped counters reset.
+    #[test]
+    fn rotate_chat_sequence_preserves_old_conversation() {
+        let (_dir, store) = store();
+        let session_name = "agent:emp:web";
+        store
+            .create_session("s1", Some(session_name), None, None, None)
+            .unwrap();
+
+        // Conversation A with history.
+        store
+            .create_chat_for_session("chat-a", session_name, "Chat", None)
+            .unwrap();
+        store.set_session_active_chat_id("s1", "chat-a").unwrap();
+        store.create_chat_message("m1", "chat-a", "user", "hello", None).unwrap();
+        store.create_chat_message("m2", "chat-a", "assistant", "hi", None).unwrap();
+        store.update_session_stats("s1", 1234, 2).unwrap();
+        store.set_session_model_override("s1", Some("model-x"), None).unwrap();
+
+        // The rotate sequence.
+        store
+            .create_chat_for_session("chat-b", session_name, "New Chat", None)
+            .unwrap();
+        store.set_session_active_chat_id("s1", "chat-b").unwrap();
+        store.reset_session_counters("s1").unwrap();
+
+        // Old conversation is fully intact.
+        assert!(store.get_chat("chat-a").unwrap().is_some());
+        let old_ids: Vec<String> = store
+            .get_chat_messages("chat-a")
+            .unwrap()
+            .into_iter()
+            .map(|m| m.id)
+            .collect();
+        assert_eq!(old_ids, vec!["m1", "m2"], "rotate must not touch old messages");
+
+        // Both conversations belong to the session.
+        let chats = store.list_chats_by_session(session_name).unwrap();
+        let mut chat_ids: Vec<String> = chats.into_iter().map(|c| c.id).collect();
+        chat_ids.sort();
+        assert_eq!(chat_ids, vec!["chat-a", "chat-b"]);
+
+        // Session now points at the new conversation with fresh counters,
+        // preferences intact.
+        let s = store.get_session("s1").unwrap().unwrap();
+        assert_eq!(s.active_chat_id.as_deref(), Some("chat-b"));
+        assert_eq!(s.message_count, Some(0));
+        assert_eq!(s.token_count, Some(0));
+        assert_eq!(s.model_override.as_deref(), Some("model-x"));
+        // And the ONE chat-id derivation resolves to the new conversation.
+        assert_eq!(store.resolve_session_chat_id("s1"), "chat-b");
+    }
+}

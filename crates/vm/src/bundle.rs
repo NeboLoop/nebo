@@ -289,3 +289,97 @@ fn sha256_file(path: &Path) -> VmResult<String> {
     let hash = hasher.finalize();
     Ok(hex::encode(hash))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Published SHA-256 test vector for the ASCII string "abc".
+    const SHA_ABC: &str = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+
+    fn bundle_in(dir: &Path, sha: &str) -> Bundle {
+        Bundle::with_dir(dir.to_path_buf(), sha)
+    }
+
+    /// INVARIANT: sha256_file computes the canonical SHA-256 hex digest
+    /// (locked against the published test vector for "abc").
+    #[test]
+    fn sha256_file_matches_known_vector() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("f");
+        std::fs::write(&p, "abc").unwrap();
+        assert_eq!(sha256_file(&p).unwrap(), SHA_ABC);
+    }
+
+    /// INVARIANT: the bundle file layout is fixed — rootfs.img, sessiondata.img,
+    /// rootfs.img.zst, and the dot-file trackers live directly in the bundle dir.
+    #[test]
+    fn bundle_paths_are_stable() {
+        let dir = tempfile::tempdir().unwrap();
+        let b = bundle_in(dir.path(), "sha1");
+        assert_eq!(b.rootfs_path(), dir.path().join("rootfs.img"));
+        assert_eq!(b.sessiondata_path(), dir.path().join("sessiondata.img"));
+        assert_eq!(b.cache_path(), dir.path().join("rootfs.img.zst"));
+        assert_eq!(b.origin_path(), dir.path().join(".rootfs.img.origin"));
+    }
+
+    /// INVARIANT: state resolution order — a present rootfs always wins over the
+    /// cache (Ready when origin matches, Stale otherwise, even with a .zst
+    /// present); cache-only is Cached; nothing local is NeedsDownload.
+    #[test]
+    fn state_resolution_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let b = bundle_in(dir.path(), "sha1");
+
+        assert_eq!(b.state(), BundleState::NeedsDownload);
+
+        std::fs::write(b.cache_path(), "zst").unwrap();
+        assert_eq!(b.state(), BundleState::Cached);
+
+        // rootfs with no origin tracker: Stale, even though the cache exists
+        std::fs::write(b.rootfs_path(), "img").unwrap();
+        assert_eq!(b.state(), BundleState::Stale);
+
+        std::fs::write(b.origin_path(), "sha1").unwrap();
+        assert_eq!(b.state(), BundleState::Ready);
+
+        std::fs::write(b.origin_path(), "other-sha").unwrap();
+        assert_eq!(b.state(), BundleState::Stale);
+    }
+
+    /// INVARIANT: origin comparison trims whitespace so a trailing newline never
+    /// forces a spurious re-download.
+    #[test]
+    fn origin_trims_whitespace() {
+        let dir = tempfile::tempdir().unwrap();
+        let b = bundle_in(dir.path(), "sha1");
+        std::fs::write(b.rootfs_path(), "img").unwrap();
+        std::fs::write(b.origin_path(), "sha1\n").unwrap();
+        assert_eq!(b.state(), BundleState::Ready);
+    }
+
+    /// INVARIANT: attempt_reinstall clears rootfs + origin but PRESERVES
+    /// sessiondata.img, refuses to run a second time while the marker stands,
+    /// and runs again once the marker is cleared.
+    #[test]
+    fn reinstall_preserves_sessiondata_and_runs_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let b = bundle_in(dir.path(), "sha1");
+        std::fs::write(b.rootfs_path(), "img").unwrap();
+        std::fs::write(b.origin_path(), "sha1").unwrap();
+        std::fs::write(b.sessiondata_path(), "userdata").unwrap();
+
+        b.attempt_reinstall().unwrap();
+        assert!(!b.rootfs_path().exists());
+        assert!(!b.origin_path().exists());
+        assert!(b.sessiondata_path().exists(), "sessiondata must survive reinstall");
+        assert_eq!(b.state(), BundleState::NeedsDownload);
+
+        // Second attempt is blocked by the marker (infinite-loop guard)
+        assert!(b.attempt_reinstall().is_err());
+
+        // Clearing the marker (successful boot) re-arms self-healing
+        b.clear_reinstall_marker();
+        assert!(b.attempt_reinstall().is_ok());
+    }
+}

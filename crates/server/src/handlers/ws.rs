@@ -2128,3 +2128,55 @@ mod extension_auth_tests {
         // rejects an empty stored secret via read_extension_secret returning None.
     }
 }
+
+#[cfg(test)]
+mod prompt_image_extraction_tests {
+    use super::extract_images_from_prompt;
+
+    /// A prompt with no image-path tokens comes back byte-identical —
+    /// formatting (newlines, markdown) must never be re-flowed when there is
+    /// nothing to extract.
+    #[test]
+    fn plain_prompts_pass_through_untouched() {
+        let prompt = "Summarize this:\n\n- item  one\n- item two";
+        let (cleaned, images) = extract_images_from_prompt(prompt);
+        assert!(images.is_empty());
+        assert_eq!(cleaned, prompt);
+    }
+
+    /// An image-looking token whose path does not exist on disk is left in
+    /// the prompt verbatim — only real files are lifted into vision content.
+    #[test]
+    fn nonexistent_image_paths_are_left_alone() {
+        let prompt = "look at /definitely/not/here/shot.png please";
+        let (cleaned, images) = extract_images_from_prompt(prompt);
+        assert!(images.is_empty());
+        assert_eq!(cleaned, prompt);
+    }
+
+    /// A real file with an image extension but non-image bytes fails the
+    /// normalization gate and is NOT extracted (the prompt keeps the token) —
+    /// same gate as uploaded attachments.
+    #[test]
+    fn garbage_bytes_behind_an_image_extension_are_not_extracted() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake = dir.path().join("fake.png");
+        std::fs::write(&fake, b"this is not a png").unwrap();
+        let prompt = format!("describe {} now", fake.display());
+        let (cleaned, images) = extract_images_from_prompt(&prompt);
+        assert!(images.is_empty());
+        assert_eq!(cleaned, prompt);
+    }
+
+    /// Existing non-image files (wrong extension) are never treated as images.
+    #[test]
+    fn non_image_extensions_are_ignored_even_when_the_file_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let txt = dir.path().join("notes.txt");
+        std::fs::write(&txt, b"hello").unwrap();
+        let prompt = format!("read {}", txt.display());
+        let (cleaned, images) = extract_images_from_prompt(&prompt);
+        assert!(images.is_empty());
+        assert_eq!(cleaned, prompt);
+    }
+}

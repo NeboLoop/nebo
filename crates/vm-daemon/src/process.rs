@@ -196,3 +196,47 @@ fn shell_escape(s: &str) -> String {
     }
     format!("'{}'", s.replace('\'', "'\\''"))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// INVARIANT: shell_escape leaves safe characters untouched, quotes
+    /// everything else, escapes embedded single quotes, and renders the empty
+    /// string as '' — arguments can never break out of the bash -c command.
+    #[test]
+    fn shell_escape_behavior() {
+        assert_eq!(shell_escape(""), "''");
+        assert_eq!(shell_escape("abc-123_./x"), "abc-123_./x");
+        assert_eq!(shell_escape("a b"), "'a b'");
+        assert_eq!(shell_escape("$(rm -rf /)"), "'$(rm -rf /)'");
+        assert_eq!(shell_escape("`whoami`"), "'`whoami`'");
+        assert_eq!(shell_escape("a;b|c"), "'a;b|c'");
+        assert_eq!(shell_escape("it's"), r#"'it'\''s'"#);
+    }
+
+    /// INVARIANT: SpawnParams needs only id/name/command on the wire — every
+    /// other field defaults (empty args/domains, one_shot false, no cwd/env/
+    /// timeout) instead of failing deserialization.
+    #[test]
+    fn spawn_params_wire_defaults() {
+        let p: SpawnParams = serde_json::from_value(
+            serde_json::json!({"id": "s1", "name": "skill", "command": "echo"}),
+        )
+        .unwrap();
+        assert_eq!(p.id, "s1");
+        assert_eq!(p.name, "skill");
+        assert_eq!(p.command, "echo");
+        assert!(p.args.is_empty());
+        assert!(p.cwd.is_none());
+        assert!(p.env.is_none());
+        assert!(p.timeout_secs.is_none());
+        assert!(p.allowed_domains.is_empty());
+        assert!(!p.one_shot);
+
+        // And a request missing the required fields must fail
+        assert!(
+            serde_json::from_value::<SpawnParams>(serde_json::json!({"id": "s1"})).is_err()
+        );
+    }
+}

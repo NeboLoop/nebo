@@ -46,3 +46,35 @@ impl r2d2::CustomizeConnection<rusqlite::Connection, rusqlite::Error> for Sqlite
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every pooled connection runs with WAL journaling and the recommended
+    /// pragmas (foreign_keys ON is what makes chat_messages' ON DELETE CASCADE
+    /// real; busy_timeout is what keeps concurrent writers from erroring).
+    #[test]
+    fn pool_connections_get_wal_and_pragmas() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // Nested path also proves create_pool creates missing parent dirs.
+        let path = dir.path().join("nested").join("nebo-test.db");
+        let pool = create_pool(&path.to_string_lossy()).expect("pool");
+        let conn = pool.get().expect("conn");
+
+        let journal_mode: String = conn
+            .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(journal_mode.to_lowercase(), "wal");
+
+        let foreign_keys: i64 = conn
+            .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(foreign_keys, 1, "foreign keys must be enforced");
+
+        let busy_timeout: i64 = conn
+            .query_row("PRAGMA busy_timeout", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(busy_timeout, 5000);
+    }
+}

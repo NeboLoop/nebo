@@ -6,6 +6,7 @@ pub mod app_tool;
 pub mod bot_tool;
 pub mod capabilities;
 pub mod channel_bridge;
+pub mod code_tool;
 pub mod coworker;
 
 /// Cap on raw subprocess/tool output surfaced into context (chars). ONE

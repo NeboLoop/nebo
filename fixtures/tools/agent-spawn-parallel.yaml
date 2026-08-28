@@ -1,0 +1,42 @@
+id: agent-spawn-parallel
+name: "Sub-agent batch — parallel independent research"
+description: |
+  Two independent research tasks. The STRAP contract says batch parallel
+  spawn (action: "spawn_parallel" with a tasks array) is preferred for 2+
+  independent tasks — one call, concurrent execution, results collected
+  together. Serial spawns or doing both itself wastes wall-clock.
+target_component: agent
+
+conversation:
+  - role: user
+    content: "Research two things for me at the same time: (1) what CRM systems realtors most commonly use, and (2) what typical transaction-coordination fees look like in the US. Keep the two summaries separate."
+
+tool_config:
+  agent:
+    enabled: true
+  web:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: parallel-action
+      text: "Model calls agent with resource: 'task', action: 'spawn_parallel'"
+      severity: critical
+    - id: two-tasks
+      text: "The tasks array contains exactly 2 entries, one per research topic"
+      severity: critical
+    - id: born-blind-web
+      text: "Each task entry passes tools including 'web'"
+      severity: critical
+  conversation:
+    - id: two-summaries
+      text: "Final answer contains two clearly separated summaries matching the two requests"
+      severity: important
+
+ideal_behavior:
+  tool_calls: 1
+  total_tokens: 8000
+  narrative: |
+    Single agent(resource: "task", action: "spawn_parallel", tasks: [{prompt:
+    "...CRM...", tools: ["web"]}, {prompt: "...fees...", tools: ["web"]}])
+    call, then a two-part answer from the collected results.

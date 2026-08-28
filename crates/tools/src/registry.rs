@@ -848,6 +848,12 @@ impl Registry {
         }
         self.register(Box::new(os_tool)).await;
 
+        // Code tool (tree-sitter outline/symbols/parse_check/query/context) — CORE.
+        // Read-only intel, no capability gate: same tier as os file read/grep
+        // (capabilities::gating_capability's default arm keeps it ungated).
+        self.register(Box::new(crate::code_tool::CodeTool::new()))
+            .await;
+
         // Web tool (HTTP fetch + search + browser) — requires "web" permission
         if allowed("web") {
             let mut web_tool = crate::web_tool::WebTool::new().with_store(store.clone());

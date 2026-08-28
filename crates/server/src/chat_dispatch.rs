@@ -2533,3 +2533,264 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod humanize_tests {
+    use super::{humanize_slug, humanize_tool_call, strap_verb};
+    use serde_json::json;
+
+    /// Service slugs render as the service's own name — dashes/underscores
+    /// become spaces, each word capitalized, empty segments dropped.
+    #[test]
+    fn slugs_render_as_service_names() {
+        assert_eq!(humanize_slug("google-search-console"), "Google Search Console");
+        assert_eq!(humanize_slug("gws_calendar"), "Gws Calendar");
+        assert_eq!(humanize_slug("a--b"), "A B");
+    }
+
+    /// STRAP verbs map to (gerund, past); an unknown verb yields None so the
+    /// caller can show the raw signature honestly instead of guessing.
+    #[test]
+    fn strap_verbs_cover_known_and_refuse_unknown() {
+        assert_eq!(strap_verb("read"), Some(("reading", "Read")));
+        assert_eq!(strap_verb("delete"), Some(("deleting", "Deleted")));
+        assert_eq!(strap_verb("frobnicate"), None);
+    }
+
+    /// MCP tool names (`mcp__slug__tool`) humanize from slug + tool name —
+    /// never leak the raw `mcp__` machinery into the owner's transcript.
+    #[test]
+    fn mcp_tools_humanize_from_slug_and_tool() {
+        let (act, out) = humanize_tool_call("mcp__github__create_issue", &json!({}));
+        assert_eq!(act, "using github (create issue)");
+        assert_eq!(out, "Used github: create issue");
+    }
+
+    /// STRAP signatures (resource + action) read as verb+noun; an unknown
+    /// verb shows the signature honestly rather than a guessed label.
+    #[test]
+    fn strap_signature_reads_as_verb_noun() {
+        let (act, out) =
+            humanize_tool_call("os", &json!({"resource": "file", "action": "read"}));
+        assert_eq!(act, "reading file");
+        assert_eq!(out, "Read file");
+        let (act, out) =
+            humanize_tool_call("os", &json!({"resource": "file", "action": "frobnicate"}));
+        assert_eq!(act, "running frobnicate on file");
+        assert_eq!(out, "Ran frobnicate on file");
+    }
+
+    /// Web fetches/navigations label by host (www. stripped) so a run that
+    /// read four pages doesn't collapse into "Searched the web" for all of it.
+    #[test]
+    fn web_actions_label_by_host_not_generic_search() {
+        let (act, out) = humanize_tool_call(
+            "web",
+            &json!({"action": "fetch", "url": "https://www.example.com/page"}),
+        );
+        assert_eq!(act, "reading example.com");
+        assert_eq!(out, "Read example.com");
+        let (act, _) = humanize_tool_call(
+            "web",
+            &json!({"action": "navigate", "url": "https://docs.rs/x"}),
+        );
+        assert_eq!(act, "opening docs.rs");
+        // No action = search — the default label.
+        let (act, out) = humanize_tool_call("web", &json!({}));
+        assert_eq!(act, "searching the web");
+        assert_eq!(out, "Searched the web");
+    }
+
+    /// Plugin calls must say the SERVICE ("using Gmail"), never the word
+    /// "plugin" — the register the whole install flow protects.
+    #[test]
+    fn plugin_calls_name_the_service_never_the_word_plugin() {
+        let (act, out) =
+            humanize_tool_call("plugin", &json!({"resource": "google-search-console"}));
+        assert_eq!(act, "using Google Search Console");
+        assert_eq!(out, "Used Google Search Console");
+        let (act, _) = humanize_tool_call("plugin", &json!({"action": "discover"}));
+        assert_eq!(act, "browsing the marketplace");
+    }
+
+    /// Known bare tool names use the curated copy; unknown tools are named
+    /// as-is ("using tool search") — honest, never vague filler.
+    #[test]
+    fn bare_tools_use_curated_copy_and_honest_fallback() {
+        let (act, out) = humanize_tool_call("bash", &json!({}));
+        assert_eq!(act, "running a command");
+        assert_eq!(out, "Ran a command");
+        let (act, out) = humanize_tool_call("tool_search", &json!({}));
+        assert_eq!(act, "using tool search");
+        assert_eq!(out, "Used tool search");
+    }
+}
+
+#[cfg(test)]
+mod media_tests {
+    use super::{
+        artifact_ext, artifact_kind, media_bytes_match, mime_from_extension,
+        strip_local_image_markdown,
+    };
+
+    /// Extension→MIME is case-insensitive and unknown extensions fall back to
+    /// octet-stream (never a wrong specific type).
+    #[test]
+    fn mime_from_extension_is_case_insensitive_with_safe_fallback() {
+        let p = |s: &str| mime_from_extension(std::path::Path::new(s));
+        assert_eq!(p("shot.PNG"), "image/png");
+        assert_eq!(p("photo.jpg"), "image/jpeg");
+        assert_eq!(p("report.docx"),
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+        assert_eq!(p("mystery.zzz"), "application/octet-stream");
+        assert_eq!(p("noext"), "application/octet-stream");
+    }
+
+    /// Work-panel kinds mirror the frontend's artifactsToWorkItems mapping;
+    /// artifact_ext lowercases the URL's final extension.
+    #[test]
+    fn artifact_urls_classify_by_extension() {
+        assert_eq!(artifact_ext("/api/v1/files/report.CSV"), "csv");
+        assert_eq!(artifact_kind("csv"), "table");
+        assert_eq!(artifact_kind("pptx"), "slides");
+        assert_eq!(artifact_kind("py"), "code");
+        assert_eq!(artifact_kind("md"), "document");
+    }
+
+    /// A media-extension file whose bytes are NOT that media type is rejected
+    /// — the classic saved-error-page-as-.jpg poisoning a document.
+    #[test]
+    fn media_bytes_gate_catches_html_saved_as_jpg() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake = dir.path().join("photo.jpg");
+        std::fs::write(&fake, b"<html>404 Not Found</html>").unwrap();
+        assert!(!media_bytes_match(&fake));
+
+        let real = dir.path().join("pixel.png");
+        std::fs::write(&real, [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]).unwrap();
+        assert!(media_bytes_match(&real));
+    }
+
+    /// Non-media extensions pass through the gate, and an unreadable path is
+    /// NOT treated as corrupt (serving decides later).
+    #[test]
+    fn media_bytes_gate_only_judges_media_extensions() {
+        let dir = tempfile::tempdir().unwrap();
+        let txt = dir.path().join("notes.txt");
+        std::fs::write(&txt, b"<html>looks like html but is a txt</html>").unwrap();
+        assert!(media_bytes_match(&txt));
+        assert!(media_bytes_match(&dir.path().join("missing.png")));
+    }
+
+    /// Local-path image markdown is stripped (with its surrounding newline);
+    /// remote image markdown is left for the frontend to render.
+    #[test]
+    fn local_image_markdown_stripped_remote_kept() {
+        let mut s = String::from("Before\n![shot](/tmp/a.png)\nAfter");
+        strip_local_image_markdown(&mut s);
+        assert_eq!(s, "BeforeAfter");
+
+        let mut s = String::from("See ![img](https://x.com/a.png) here");
+        strip_local_image_markdown(&mut s);
+        assert_eq!(s, "See ![img](https://x.com/a.png) here");
+
+        let mut s = String::from("![f](file:///Users/x/b.jpg) trailing");
+        strip_local_image_markdown(&mut s);
+        assert_eq!(s, " trailing");
+    }
+}
+
+#[cfg(test)]
+mod session_key_contract_tests {
+    //! Locks the session-key contracts THIS crate builds and parses against.
+    //! The parser itself lives in `types::keyparser` (with its own unit
+    //! tests); these lock the exact shapes server call sites rely on —
+    //! agents.rs thread keys, ws.rs `:thread:` slicing, subagent nesting,
+    //! the workflow-id namespace — so a keyparser change that shifts any of
+    //! them fails HERE, in the crate that would break.
+
+    /// `agent:<id>:<channel>` round-trips through build → parse → extract.
+    #[test]
+    fn agent_web_key_round_trips() {
+        let key = types::keyparser::build_agent_session_key("a1", "web");
+        assert_eq!(key, "agent:a1:web");
+        let info = types::keyparser::parse_session_key(&key);
+        assert_eq!(info.agent_id, "a1");
+        assert_eq!(info.channel, "web");
+        assert_eq!(types::keyparser::extract_agent_id(&key), "a1");
+    }
+
+    /// The deliberate 4th segment (`agent:<id>:<channel>:<ctx>` — matter
+    /// isolation, appended by fork_mention_chat) keeps channel = segment 3
+    /// and carries the ctx in `rest`.
+    #[test]
+    fn isolation_ctx_is_a_fourth_segment_not_a_new_channel() {
+        let info = types::keyparser::parse_session_key("agent:a1:web:matter-9");
+        assert_eq!(info.agent_id, "a1");
+        assert_eq!(info.channel, "web");
+        assert_eq!(info.rest, "web:matter-9");
+    }
+
+    /// `agent:<id>:thread:<chat>` (built by handlers/agents.rs and voice.rs)
+    /// parses with channel == "thread" and is_thread == FALSE — the agent
+    /// prefix returns early, so server code extracts the chat id by slicing
+    /// on ":thread:" (ws.rs), NOT via SessionKeyInfo.is_thread. If the parser
+    /// ever starts setting is_thread here, that slicing convention must be
+    /// revisited — this test is the tripwire.
+    #[test]
+    fn agent_thread_key_reports_thread_as_channel_not_flag() {
+        let info = types::keyparser::parse_session_key("agent:a1:thread:chat-42");
+        assert_eq!(info.agent_id, "a1");
+        assert_eq!(info.channel, "thread");
+        assert!(!info.is_thread);
+        assert_eq!(info.rest, "thread:chat-42");
+    }
+
+    /// Subagent keys nest the parent's FULL key; extract_agent_id must pierce
+    /// any number of wrappers back to the real agent (misattribution bug).
+    #[test]
+    fn subagent_nesting_pierces_to_the_real_agent() {
+        let parent = "agent:a1:thread:chat-42";
+        let key = types::keyparser::build_subagent_session_key(parent, "sa-1");
+        assert_eq!(key, "subagent:agent:a1:thread:chat-42:sa-1");
+        assert_eq!(types::keyparser::extract_agent_id(&key), "a1");
+        assert!(types::keyparser::is_subagent_key(&key));
+    }
+
+    /// `<ch>:group:<id>` round-trips; an empty segment refuses to build a key
+    /// (returns "") rather than emitting a malformed one.
+    #[test]
+    fn group_key_round_trips_and_empty_segments_refuse() {
+        let key = types::keyparser::build_session_key("neboai", "group", "g1");
+        let info = types::keyparser::parse_session_key(&key);
+        assert_eq!(info.channel, "neboai");
+        assert_eq!(info.chat_type, "group");
+        assert_eq!(info.chat_id, "g1");
+        assert_eq!(types::keyparser::build_session_key("neboai", "group", ""), "");
+        assert_eq!(types::keyparser::build_session_key("", "group", "g1"), "");
+    }
+
+    /// Extra colons do NOT round-trip: a chat id containing ':' is split at
+    /// the first segment and the remainder lands in `rest`. Callers must
+    /// never put colon-bearing ids into a key segment — locked here so the
+    /// limitation is explicit, not folklore.
+    #[test]
+    fn colon_bearing_chat_ids_do_not_round_trip() {
+        let key = types::keyparser::build_session_key("neboai", "channel", "conv:extra:bits");
+        assert_eq!(key, "neboai:channel:conv:extra:bits");
+        let info = types::keyparser::parse_session_key(&key);
+        assert_eq!(info.chat_id, "conv");
+        assert_eq!(info.rest, "extra:bits");
+    }
+
+    /// The workflow-id namespace (`agent:<id>`, no trailing segment) is NOT a
+    /// session key: its inverse rejects a bare/empty id.
+    #[test]
+    fn workflow_id_namespace_is_not_a_session_key() {
+        let wf = types::keyparser::agent_workflow_id("a1");
+        assert_eq!(wf, "agent:a1");
+        assert_eq!(types::keyparser::agent_id_from_workflow_id(&wf), Some("a1"));
+        assert_eq!(types::keyparser::agent_id_from_workflow_id("agent:"), None);
+        assert_eq!(types::keyparser::agent_id_from_workflow_id("wf-123"), None);
+    }
+}

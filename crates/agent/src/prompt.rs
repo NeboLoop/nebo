@@ -521,6 +521,7 @@ const STRAP_OS: &str = include_str!("strap/os_macos.txt");
 
 const STRAP_AGENT: &str = include_str!("strap/agent.txt");
 const STRAP_WEB: &str = include_str!("strap/web.txt");
+const STRAP_CODE: &str = include_str!("strap/code.txt");
 const STRAP_EVENT: &str = include_str!("strap/event.txt");
 const STRAP_LOOP: &str = include_str!("strap/loop.txt");
 const STRAP_MESSAGE: &str = include_str!("strap/message.txt");
@@ -555,6 +556,7 @@ pub fn strap_tool_doc(tool_name: &str) -> Option<&'static str> {
         "os" | "system" => Some(STRAP_OS),
         "agent" => Some(STRAP_AGENT),
         "web" => Some(STRAP_WEB),
+        "code" => Some(STRAP_CODE),
         "event" => Some(STRAP_EVENT),
         "loop" => Some(STRAP_LOOP),
         "message" => Some(STRAP_MESSAGE),

@@ -531,3 +531,252 @@ fn base64_decode(input: &str) -> Result<Vec<u8>, String> {
 
     Ok(output)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Hard deadline for async tests — a wedged await must FAIL the test with
+    /// a named error, never park the build queue.
+    async fn bounded<T>(what: &str, fut: impl std::future::Future<Output = T>) -> T {
+        tokio::time::timeout(std::time::Duration::from_secs(10), fut)
+            .await
+            .unwrap_or_else(|_| panic!("test deadline exceeded (10s): {what}"))
+    }
+
+    /// INVARIANT: the wire framing round-trips — a message written with
+    /// write_message is read back identically by read_message.
+    #[tokio::test]
+    async fn wire_round_trip() {
+        bounded("wire_round_trip", async {
+            let (host, guest) = tokio::io::duplex(64 * 1024);
+            let (_hr, mut hw) = tokio::io::split(host);
+            let (mut gr, _gw) = tokio::io::split(guest);
+
+            let msg = serde_json::json!({"method": "spawn", "id": 7, "params": {"x": [1, 2, 3]}});
+            write_message(&mut hw, &msg).await.unwrap();
+            let read = read_message(&mut gr).await.unwrap();
+            assert_eq!(read, msg);
+        })
+        .await;
+    }
+
+    /// INVARIANT: a length header claiming more than 10 MB is rejected before
+    /// any payload is read (MessageTooLarge, not an allocation).
+    #[tokio::test]
+    async fn read_rejects_oversized_header() {
+        bounded("read_rejects_oversized_header", async {
+            let len = (MAX_MESSAGE_SIZE as u32 + 1).to_be_bytes();
+            let mut reader: &[u8] = &len;
+            let err = read_message(&mut reader).await.unwrap_err();
+            assert!(matches!(err, VmError::MessageTooLarge { size, max }
+                if size == MAX_MESSAGE_SIZE + 1 && max == MAX_MESSAGE_SIZE));
+        })
+        .await;
+    }
+
+    /// INVARIANT: write_message refuses payloads over 10 MB instead of framing
+    /// a message the other side will reject.
+    #[tokio::test]
+    async fn write_rejects_oversized_payload() {
+        bounded("write_rejects_oversized_payload", async {
+            let big = "a".repeat(MAX_MESSAGE_SIZE);
+            let mut sink = tokio::io::sink();
+            let err = write_message(&mut sink, &big).await.unwrap_err();
+            assert!(matches!(err, VmError::MessageTooLarge { .. }));
+        })
+        .await;
+    }
+
+    /// INVARIANT: GuestEvent deserializes the guest daemon's event shape —
+    /// "type" maps to event_type and every optional field defaults instead of
+    /// failing on absence.
+    #[test]
+    fn guest_event_parses_daemon_shape() {
+        let ev: GuestEvent =
+            serde_json::from_value(serde_json::json!({"type": "exit", "id": "p1", "exit_code": 3}))
+                .unwrap();
+        assert_eq!(ev.event_type, "exit");
+        assert_eq!(ev.id, "p1");
+        assert_eq!(ev.exit_code, Some(3));
+        assert_eq!(ev.signal, None);
+        assert_eq!(ev.data, None);
+
+        let ready: GuestEvent =
+            serde_json::from_value(serde_json::json!({"type": "ready", "id": ""})).unwrap();
+        assert_eq!(ready.event_type, "ready");
+    }
+
+    /// INVARIANT: RpcResponse tolerates minimal responses — result and error
+    /// default to None rather than being required fields.
+    #[test]
+    fn rpc_response_parses_minimal() {
+        let resp: RpcResponse =
+            serde_json::from_value(serde_json::json!({"id": 1, "success": true})).unwrap();
+        assert_eq!(resp.id, 1);
+        assert!(resp.success);
+        assert!(resp.result.is_none());
+        assert!(resp.error.is_none());
+    }
+
+    /// INVARIANT: SpawnParams omits unset optional fields and empty allowlists
+    /// on the wire (the guest applies its own defaults), while required fields
+    /// and one_shot are always present.
+    #[test]
+    fn spawn_params_skip_serialization() {
+        let params = SpawnParams {
+            id: "s1".to_string(),
+            name: "n".to_string(),
+            command: "echo".to_string(),
+            args: vec![],
+            cwd: None,
+            env: None,
+            timeout_secs: None,
+            allowed_domains: vec![],
+            one_shot: true,
+        };
+        let v = serde_json::to_value(&params).unwrap();
+        let obj = v.as_object().unwrap();
+        for absent in ["cwd", "env", "timeout_secs", "allowed_domains"] {
+            assert!(!obj.contains_key(absent), "{absent} should be skipped");
+        }
+        assert_eq!(v["one_shot"], true);
+        assert_eq!(v["command"], "echo");
+    }
+
+    /// INVARIANT: base64_decode decodes standard base64 (with padding and with
+    /// embedded whitespace) and rejects bad characters and bad lengths.
+    #[test]
+    fn base64_decode_behavior() {
+        assert_eq!(base64_decode("Zm9vYmFy").unwrap(), b"foobar");
+        assert_eq!(base64_decode("aGVsbG8=").unwrap(), b"hello");
+        assert_eq!(base64_decode("aA==").unwrap(), b"h");
+        assert_eq!(base64_decode("Zm9v\nYmFy").unwrap(), b"foobar");
+        assert_eq!(base64_decode("").unwrap(), b"");
+        assert!(base64_decode("a!==").is_err(), "invalid character");
+        assert!(base64_decode("abc").is_err(), "length not a multiple of 4");
+    }
+
+    /// INVARIANT: a request on a client that was never connected fails fast
+    /// with GuestNotConnected instead of hanging until timeout.
+    #[tokio::test]
+    async fn request_without_connection_fails_fast() {
+        bounded("request_without_connection_fails_fast", async {
+            let (client, _events) = VmClient::new();
+            let err = client.request("ping", None).await.unwrap_err();
+            assert!(matches!(err, VmError::GuestNotConnected));
+        })
+        .await;
+    }
+
+    /// INVARIANT: requests are multiplexed by id — a response with the matching
+    /// id resolves the request with its result payload.
+    #[tokio::test]
+    async fn request_response_round_trip() {
+        bounded("request_response_round_trip", async {
+            let (mut client, _events) = VmClient::new();
+            let (host, guest) = tokio::io::duplex(64 * 1024);
+            let (hr, hw) = tokio::io::split(host);
+            let (mut gr, mut gw) = tokio::io::split(guest);
+            client.connect(hr, hw);
+
+            let guest_task = tokio::spawn(async move {
+                let msg = read_message(&mut gr).await.unwrap();
+                assert_eq!(msg["method"], "ping");
+                let id = msg["id"].as_u64().unwrap();
+                write_message(
+                    &mut gw,
+                    &serde_json::json!({"id": id, "success": true, "result": {"pong": true}}),
+                )
+                .await
+                .unwrap();
+                (gr, gw)
+            });
+
+            let result = client
+                .request("ping", Some(serde_json::json!({"x": 1})))
+                .await
+                .unwrap();
+            assert_eq!(result["pong"], true);
+            guest_task.await.unwrap();
+        })
+        .await;
+    }
+
+    /// INVARIANT: a guest failure response surfaces as RpcError carrying the
+    /// guest's error string.
+    #[tokio::test]
+    async fn error_response_maps_to_rpc_error() {
+        bounded("error_response_maps_to_rpc_error", async {
+            let (mut client, _events) = VmClient::new();
+            let (host, guest) = tokio::io::duplex(64 * 1024);
+            let (hr, hw) = tokio::io::split(host);
+            let (mut gr, mut gw) = tokio::io::split(guest);
+            client.connect(hr, hw);
+
+            let guest_task = tokio::spawn(async move {
+                let msg = read_message(&mut gr).await.unwrap();
+                let id = msg["id"].as_u64().unwrap();
+                write_message(
+                    &mut gw,
+                    &serde_json::json!({"id": id, "success": false, "error": "boom"}),
+                )
+                .await
+                .unwrap();
+                (gr, gw)
+            });
+
+            let err = client.request("kill", None).await.unwrap_err();
+            assert!(matches!(err, VmError::RpcError(ref m) if m == "boom"));
+            guest_task.await.unwrap();
+        })
+        .await;
+    }
+
+    /// INVARIANT: a silent guest trips the RPC timeout, reporting the method
+    /// and the timeout that was exceeded.
+    #[tokio::test]
+    async fn silent_guest_times_out() {
+        bounded("silent_guest_times_out", async {
+            let (mut client, _events) = VmClient::new();
+            let (host, guest) = tokio::io::duplex(64 * 1024);
+            let (hr, hw) = tokio::io::split(host);
+            let (_gr, _gw) = tokio::io::split(guest); // keep the guest side open, silent
+            client.connect(hr, hw);
+
+            let err = client
+                .request_with_timeout("ping", None, 0)
+                .await
+                .unwrap_err();
+            assert!(matches!(err, VmError::RpcTimeout { ref method, timeout_secs }
+                if method == "ping" && timeout_secs == 0));
+        })
+        .await;
+    }
+
+    /// INVARIANT: messages without a "success" field are events, routed to the
+    /// event channel rather than the request map.
+    #[tokio::test]
+    async fn guest_events_route_to_event_channel() {
+        bounded("guest_events_route_to_event_channel", async {
+            let (mut client, mut events) = VmClient::new();
+            let (host, guest) = tokio::io::duplex(64 * 1024);
+            let (hr, hw) = tokio::io::split(host);
+            let (_gr, mut gw) = tokio::io::split(guest);
+            client.connect(hr, hw);
+
+            write_message(
+                &mut gw,
+                &serde_json::json!({"type": "stdout", "id": "p1", "data": "hi"}),
+            )
+            .await
+            .unwrap();
+
+            let ev = events.recv().await.unwrap();
+            assert_eq!(ev.event_type, "stdout");
+            assert_eq!(ev.id, "p1");
+            assert_eq!(ev.data.as_deref(), Some("hi"));
+        })
+        .await;
+    }
+}

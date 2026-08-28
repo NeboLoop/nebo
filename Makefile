@@ -545,3 +545,18 @@ endif
 
 $(NEBO_CLI):
 	@echo "Building the test CLI (make build)..." && $(MAKE) build
+
+# ─── Synthetic Replay: poisoned-window recovery ──────────────────────────────
+# Seeds a fully SYNTHETIC poisoned conversation (forged "[os] 0 lines" tool
+# results + stuck-loop narration) into the live server's DB, dispatches one
+# real message over /ws, and asserts the agent recovers instead of spiralling.
+# One short billed LLM conversation per run. REPLAY_RUNS=N for stochastic
+# repeats (pass bar = all runs). REPLAY_DB overrides the DB path.
+#   make test-replay
+.PHONY: test-replay
+test-replay:
+	@curl -sf -m 3 http://$(TEST_SERVER)/health >/dev/null \
+		|| { echo "No Nebo on $(TEST_SERVER) — start one with 'make dev' first."; exit 1; }
+	@command -v websocat >/dev/null \
+		|| { echo "websocat not found — brew install websocat."; exit 1; }
+	@TEST_SERVER=$(TEST_SERVER) bash scripts/test-replay.sh

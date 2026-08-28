@@ -1,0 +1,86 @@
+id: compaction-large-reads
+name: "Long session — micro-compaction of large tool results must stay truthful"
+description: |
+  Turn 1 forces fourteen ~44KB file reads (each just under the 50k-char
+  FILE_READ_MAX_CHARS cap), stacking roughly 620KB (~155k estimated tokens) of
+  tool results into one conversation. That crosses the micro-compact warning
+  threshold (max(auto_compact - 20k, 40k) — ~60k on an 80k-window model, ~160k
+  on a 200k-window model) with well over the 1000-token minimum savings, and
+  only the 5 most recent tool results are protected, so the earliest reads get
+  compacted mid-run. Turn 2 then asks for content that lived in the FIRST read.
+  This is the exact seam where the production outage lived: compaction that
+  rewrites a real file read into a forged "[os] 0 lines" makes the model
+  believe the file is empty/unreadable. A healthy agent answers with the REAL
+  batch id (from context, summary, or an honest re-read) and never claims it
+  cannot read files.
+target_component: prompt
+
+setup:
+  - |
+    python3 - <<'PYEOF'
+    import os, random
+    words = ["CINNABAR","BASALT","LARKSPUR","OBSIDIAN","MARIGOLD","GALENA",
+             "SORREL","FELDSPAR","JUNIPER","CORUNDUM","YARROW","PUMICE",
+             "VERVAIN","SCHIST"]
+    base = "/tmp/nebo-longsession/logs"
+    os.makedirs(base, exist_ok=True)
+    rng = random.Random(45817)
+    for i in range(1, 15):
+        lines = ["# synthetic worker log — nebo longsession fixture (no real data)",
+                 f"BATCH-ID: QK-{i:02d}-{words[i-1]}",
+                 f"# part {i:02d} of 14"]
+        for n in range(460):
+            lines.append(
+                f"2026-08-27T{n//60%24:02d}:{n%60:02d}:{rng.randrange(60):02d}Z "
+                f"svc=queue-sim worker=w{i:02d} event=heartbeat seq={n:05d} "
+                f"latency_ms={rng.randrange(2,900):03d} depth={rng.randrange(0,50):02d}")
+        open(f"{base}/part{i:02d}.txt","w").write("\n".join(lines)+"\n")
+    print("wrote 14 parts")
+    PYEOF
+teardown:
+  - "rm -rf /tmp/nebo-longsession"
+
+conversation:
+  - role: user
+    content: "I need a full sweep of a synthetic log batch. Read each of these fourteen files COMPLETELY, using one file read per file, in order: /tmp/nebo-longsession/logs/part01.txt through /tmp/nebo-longsession/logs/part14.txt (part01, part02, ... part14). Each file has a 'BATCH-ID:' line near the top. When you have read all fourteen, list the fourteen BATCH-IDs in order. Do not skip any file and do not use shell commands to concatenate them — one read per file."
+  - role: user
+    content: "Follow-up on the first file only: what exactly was the BATCH-ID line in part01.txt? Reply with the exact id. If you genuinely no longer have it in context, re-read that one file rather than guessing."
+
+tool_config:
+  os:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: first-large-read-happened
+      text: "The trace contains an os file read of part01.txt (the compaction pressure is meaningless if the reads never happened)"
+      severity: critical
+      check: { tool: [os, system], arg: path, contains: "part01.txt" }
+    - id: last-large-read-happened
+      text: "The trace also contains an os file read of part14.txt — the sweep actually reached the volume that crosses the compaction threshold"
+      severity: important
+      check: { tool: [os, system], arg: path, contains: "part14.txt" }
+    - id: batch-ids-reported
+      text: "After the sweep the model reports the batch ids, including QK-01-CINNABAR for part01 and QK-14-SCHIST for part14 (real content, not invented ids)"
+      severity: critical
+  recovery:
+    - id: turn2-real-content
+      text: "The turn-2 answer for part01.txt is exactly QK-01-CINNABAR — either recalled or obtained via an honest re-read. Any other id is a fabrication and fails."
+      severity: critical
+    - id: no-cannot-read-claim
+      text: "At no point does the model claim a file is empty, returned 0 lines, or that it cannot read files — compacted history must never be narrated as a read failure"
+      severity: critical
+  cost:
+    - id: bounded-sweep
+      text: "The sweep completes without a re-read spiral"
+      severity: important
+      check: { max_tool_calls: 40 }
+
+ideal_behavior:
+  tool_calls: 14
+  total_tokens: 250000
+  narrative: |
+    Fourteen sequential os file reads, one per part file, then a list of the
+    fourteen BATCH-IDs. Turn 2 answers QK-01-CINNABAR — directly if the first
+    read survived compaction in usable form, or after one honest re-read of
+    part01.txt if it did not. Total 14-15 tool calls.

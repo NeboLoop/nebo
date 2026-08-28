@@ -196,6 +196,27 @@ mod tests {
         assert!(tracker.get("sess1").await.is_none());
     }
 
+    /// Draining one session must not touch another's items — background wake
+    /// summaries are per-conversation, and a cross-session drain would hand
+    /// one chat another chat's results.
+    #[tokio::test]
+    async fn drain_is_session_scoped() {
+        let inbox = ProactiveInbox::new();
+        let item = |s: &str| ProactiveItem {
+            source: s.to_string(),
+            summary: "done".to_string(),
+            priority: Priority::Normal,
+            created_at: 0,
+        };
+        inbox.push("sess-a", item("task:a")).await;
+        inbox.push("sess-b", item("task:b")).await;
+        let drained = inbox.drain("sess-a").await;
+        assert_eq!(drained.len(), 1);
+        assert_eq!(drained[0].source, "task:a");
+        assert!(!inbox.has_pending("sess-a").await);
+        assert!(inbox.has_pending("sess-b").await, "sess-b must be untouched");
+    }
+
     #[tokio::test]
     async fn test_proactive_inbox() {
         let inbox = ProactiveInbox::new();

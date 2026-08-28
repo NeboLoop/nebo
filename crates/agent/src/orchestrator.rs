@@ -27,6 +27,17 @@ const WORKER_STALL_MARKER: &str = "[partial — worker stalled after 120s of no 
 /// work itself. Tunable.
 const MAX_SUBAGENT_DEPTH: usize = 2;
 
+/// Acknowledgement for a `wait: false` spawn. The constraint lives HERE, at
+/// the decision point, not only in the distant system prompt: the moment of
+/// temptation is right after spawning, when the model narrates onward as if
+/// the result already exists. Until the wake arrives it knows nothing.
+pub(crate) const BACKGROUND_SPAWN_ACK: &str =
+    "Sub-agent spawned in background. When it finishes or fails you will be woken \
+     automatically to act on the result and report. Until that wake arrives you know \
+     NOTHING about its outcome — do not report, assume, or predict its results. If the \
+     user asks before then, check agent(resource: \"task\", action: \"status\") or say \
+     it is still running.";
+
 /// How deeply a session sits in the sub-agent tree — the number of `subagent:`
 /// prefixes on its key. Top-level (user/channel) agents are depth 0; their
 /// direct sub-agents are depth 1, and so on.
@@ -343,9 +354,7 @@ impl Orchestrator {
             Ok(SpawnResult {
                 task_id,
                 success: true,
-                output: "Sub-agent spawned in background. When it finishes or fails you will \
-                         be woken automatically to act on the result and report."
-                    .to_string(),
+                output: BACKGROUND_SPAWN_ACK.to_string(),
                 error: None,
             })
         }
@@ -1336,6 +1345,32 @@ mod tests {
     // The observed failure: the user pasted an SVG logo, the parent summarised
     // the delegation as one line, and the logo never reached the sub-agent.
     #[test]
+    /// The background-spawn acknowledgement must carry the no-prediction
+    /// constraint AT THE DECISION POINT — a spawn ack that only says "you
+    /// will be woken" invites the model to narrate results it does not have.
+    #[test]
+    fn background_ack_forbids_predicting_results() {
+        assert!(BACKGROUND_SPAWN_ACK.contains("do not report, assume, or predict"));
+        assert!(BACKGROUND_SPAWN_ACK.contains("woken"), "the wake promise must stay");
+        assert!(BACKGROUND_SPAWN_ACK.contains("still running"), "must offer the honest fallback");
+    }
+
+    /// The depth guard counts `subagent:` prefixes in the session key — the
+    /// ONLY thing standing between "work together" prompts and an unbounded
+    /// subagent:subagent:… tree where every node is a full provider run.
+    #[test]
+    fn subagent_depth_counts_nesting_and_hits_the_cap() {
+        assert_eq!(subagent_depth("agent:assistant:web"), 0);
+        assert_eq!(subagent_depth("subagent:agent:assistant:web:sa-1"), 1);
+        assert_eq!(
+            subagent_depth("subagent:subagent:agent:assistant:web:sa-1:sa-2"),
+            2
+        );
+        // At MAX_SUBAGENT_DEPTH the spawn path refuses — the boundary itself.
+        assert!(subagent_depth("subagent:subagent:agent:a:web:x:y") >= MAX_SUBAGENT_DEPTH);
+        assert!(subagent_depth("agent:assistant:web") < MAX_SUBAGENT_DEPTH);
+    }
+
     fn original_request_travels_with_the_spawn() {
         let user = "Make a deck. This is our logo: <svg viewBox=\"0 0 1 1\"><path d=\"M0 0\"/></svg>";
         let prompt = "Create an 8-slide recruiting deck spec using the Bold Split pack.";

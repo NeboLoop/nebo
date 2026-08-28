@@ -247,3 +247,94 @@ pub fn print_config(target: &ConfigTarget) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// INVARIANT: tool lists parse as comma-separated with whitespace trimmed
+    /// and empty segments dropped; an absent flag stays None (no filtering).
+    #[test]
+    fn tool_list_parsing() {
+        let bridge = McpStdioBridge::new(
+            "http://localhost:1".to_string(),
+            Some("system, web ,,bot".to_string()),
+            None,
+        );
+        assert_eq!(
+            bridge.tool_allow,
+            Some(vec!["system".to_string(), "web".to_string(), "bot".to_string()])
+        );
+        assert!(bridge.tool_deny.is_none());
+    }
+
+    /// INVARIANT: tools/list responses are filtered — the allowlist keeps only
+    /// named tools and the denylist removes named tools — while every other
+    /// method's response passes through byte-identical.
+    #[test]
+    fn tools_list_filtering() {
+        let bridge = McpStdioBridge::new(
+            "http://localhost:1".to_string(),
+            Some("system,web".to_string()),
+            Some("web".to_string()),
+        );
+        let request = r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#;
+        let response = r#"{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"system"},{"name":"web"},{"name":"bot"}]}}"#;
+
+        let filtered = bridge.maybe_filter_tools(request, response.to_string());
+        let v: serde_json::Value = serde_json::from_str(&filtered).unwrap();
+        let tools = v["result"]["tools"].as_array().unwrap();
+        assert_eq!(tools.len(), 1, "allow keeps system+web, deny removes web");
+        assert_eq!(tools[0]["name"], "system");
+
+        // Non-tools/list traffic must not be rewritten
+        let call_req = r#"{"jsonrpc":"2.0","id":2,"method":"tools/call"}"#;
+        let untouched = bridge.maybe_filter_tools(call_req, response.to_string());
+        assert_eq!(untouched, response);
+    }
+
+    /// INVARIANT: with no allow/deny configured the response string is returned
+    /// unmodified — filtering never runs.
+    #[test]
+    fn no_filters_passthrough() {
+        let bridge = McpStdioBridge::new("http://localhost:1".to_string(), None, None);
+        let request = r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#;
+        let response = r#"{"result":{"tools":[{"name":"system"}]}}"#;
+        assert_eq!(
+            bridge.maybe_filter_tools(request, response.to_string()),
+            response
+        );
+    }
+
+    /// INVARIANT: extract_request_id pulls the JSON-RPC id (any JSON type) and
+    /// tolerates malformed input by returning None.
+    #[test]
+    fn request_id_extraction() {
+        assert_eq!(
+            extract_request_id(r#"{"id":42,"method":"x"}"#),
+            Some(serde_json::json!(42))
+        );
+        assert_eq!(
+            extract_request_id(r#"{"id":"abc"}"#),
+            Some(serde_json::json!("abc"))
+        );
+        assert_eq!(extract_request_id("not json"), None);
+        assert_eq!(extract_request_id("{}"), None);
+    }
+
+    /// INVARIANT: make_error_response emits valid JSON-RPC 2.0 with the given
+    /// code and message, and a null id when the request id is unknown.
+    #[test]
+    fn error_response_shape() {
+        let s = make_error_response(Some(serde_json::json!(7)), -32000, "nope");
+        let v: serde_json::Value = serde_json::from_str(&s).unwrap();
+        assert_eq!(v["jsonrpc"], "2.0");
+        assert_eq!(v["id"], 7);
+        assert_eq!(v["error"]["code"], -32000);
+        assert_eq!(v["error"]["message"], "nope");
+
+        let s = make_error_response(None, -32603, "boom");
+        let v: serde_json::Value = serde_json::from_str(&s).unwrap();
+        assert!(v["id"].is_null());
+    }
+}

@@ -177,3 +177,26 @@ pub async fn check_requirements() -> Vec<String> {
 
     issues
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// INVARIANT: const_fnv1a implements FNV-1a 64 exactly (locked against
+    /// published test vectors) — recompile detection depends on this hash
+    /// being stable across builds.
+    #[test]
+    fn fnv1a_matches_known_vectors() {
+        assert_eq!(const_fnv1a(b""), 0xcbf29ce484222325);
+        assert_eq!(const_fnv1a(b"a"), 0xaf63dc4c8601ec8c);
+        assert_eq!(const_fnv1a(b"foobar"), 0x85944171f73967e8);
+    }
+
+    /// INVARIANT: different sources hash differently — a changed helper source
+    /// must trigger recompilation.
+    #[test]
+    fn source_hash_detects_changes() {
+        assert_eq!(SOURCE_HASH, const_fnv1a(VM_HELPER_SOURCE.as_bytes()));
+        assert_ne!(const_fnv1a(b"swift v1"), const_fnv1a(b"swift v2"));
+    }
+}

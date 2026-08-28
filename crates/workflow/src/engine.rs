@@ -2487,4 +2487,54 @@ mod engine_tests {
         assert_eq!(strip_mcp_prefix("mcp__monument_sh__project"), "project");
         assert_eq!(strip_mcp_prefix("mcp__only_one"), "mcp__only_one");
     }
+
+    /// Byte-limit truncation must respect UTF-8 boundaries — a slice landing
+    /// inside a multibyte character panicked, killed the run task, and left
+    /// the run stuck in `running`.
+    #[test]
+    fn test_truncate_at_char_boundary_multibyte_safe() {
+        // "aé" = [0x61, 0xC3, 0xA9]; a cut at 2 lands inside 'é'.
+        assert_eq!(truncate_at_char_boundary("aé", 2), "a");
+        assert_eq!(truncate_at_char_boundary("aé", 3), "aé");
+        assert_eq!(truncate_at_char_boundary("plain", 10), "plain");
+        // 4-byte emoji: any cut inside it must back off to the boundary.
+        assert_eq!(truncate_at_char_boundary("📊📊", 5), "📊");
+    }
+
+    /// Tool-only completions synthesize output from the LATEST tool message's
+    /// non-error results — error results are excluded, so a step whose tools
+    /// only failed yields empty output (branch termination) instead of
+    /// feeding an error string downstream as if it were data.
+    #[test]
+    fn test_synthesize_from_tool_results_skips_errors_uses_latest() {
+        let tool_msg = |entries: serde_json::Value| ai::Message {
+            role: "tool".into(),
+            content: String::new(),
+            tool_results: Some(entries),
+            ..Default::default()
+        };
+        let messages = vec![
+            tool_msg(serde_json::json!([
+                {"tool_call_id":"1","content":"stale","is_error":false}
+            ])),
+            ai::Message {
+                role: "assistant".into(),
+                content: "calling more tools".into(),
+                ..Default::default()
+            },
+            tool_msg(serde_json::json!([
+                {"tool_call_id":"2","content":"fresh-A","is_error":false},
+                {"tool_call_id":"3","content":"boom","is_error":true},
+                {"tool_call_id":"4","content":"fresh-B","is_error":false}
+            ])),
+        ];
+        let out = synthesize_from_tool_results(&messages);
+        assert_eq!(out, "fresh-A\n---\nfresh-B");
+
+        // Only-errors: empty output, never the error text as data.
+        let failed = vec![tool_msg(serde_json::json!([
+            {"tool_call_id":"1","content":"boom","is_error":true}
+        ]))];
+        assert_eq!(synthesize_from_tool_results(&failed), "");
+    }
 }

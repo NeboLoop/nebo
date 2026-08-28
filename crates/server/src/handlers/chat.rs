@@ -617,3 +617,139 @@ pub async fn get_chat_messages(
         serde_json::json!({"messages": messages, "totalMessages": total}),
     ))
 }
+#[cfg(test)]
+mod transcript_metadata_tests {
+    use super::{build_message_metadata, build_ui_tool_calls, default_content_blocks};
+    use std::collections::HashMap;
+
+    fn msg(role: &str, content: &str) -> db::models::ChatMessage {
+        db::models::ChatMessage {
+            id: format!("m-{role}-{}", content.len()),
+            chat_id: "chat-1".to_string(),
+            role: role.to_string(),
+            content: content.to_string(),
+            metadata: None,
+            created_at: 0,
+            day_marker: None,
+            tool_calls: None,
+            tool_results: None,
+            token_estimate: None,
+            html: None,
+        }
+    }
+
+    /// Messages stamped `isMeta` (system steering, auto-continue nudges) are
+    /// dropped from the human transcript — the owner never sees the house
+    /// talking to itself.
+    #[test]
+    fn is_meta_messages_never_reach_the_transcript() {
+        let mut meta_msg = msg("user", "system nudge");
+        meta_msg.metadata = Some(r#"{"isMeta":true}"#.to_string());
+        let mut messages = vec![msg("user", "hello"), meta_msg, msg("assistant", "hi")];
+        build_message_metadata(&mut messages);
+        assert_eq!(messages.len(), 2);
+        assert!(messages.iter().all(|m| m.content != "system nudge"));
+    }
+
+    /// An assistant message with a tool_calls column gets UI metadata built:
+    /// per-call status comes from the tool-role results (is_error → "error"),
+    /// and with no persisted block order, blocks default to text→tools.
+    #[test]
+    fn tool_calls_column_builds_ui_metadata_with_result_statuses() {
+        let mut assistant = msg("assistant", "Done.");
+        assistant.tool_calls = Some(
+            r#"[{"id":"t1","name":"os","input":{"resource":"file","action":"read"}},
+                {"id":"t2","name":"web","input":{}}]"#
+                .to_string(),
+        );
+        let mut tool = msg("tool", "");
+        tool.tool_results = Some(
+            r#"[{"tool_call_id":"t1","is_error":true},{"tool_call_id":"t2","is_error":false}]"#
+                .to_string(),
+        );
+        let mut messages = vec![assistant, tool];
+        build_message_metadata(&mut messages);
+
+        let meta: serde_json::Value =
+            serde_json::from_str(messages[0].metadata.as_deref().unwrap()).unwrap();
+        let calls = meta["toolCalls"].as_array().unwrap();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0]["id"], "t1");
+        assert_eq!(calls[0]["status"], "error");
+        assert_eq!(calls[1]["status"], "complete");
+        let blocks = meta["contentBlocks"].as_array().unwrap();
+        assert_eq!(blocks[0]["type"], "text");
+        assert_eq!(blocks[0]["text"], "Done.");
+        assert_eq!(blocks[1]["type"], "tool");
+        assert_eq!(blocks[1]["toolCallIndex"], 0);
+    }
+
+    /// Old metadata that already carries toolCalls keeps its shape but the
+    /// stored outputs are STRIPPED — outputs are fetched lazily, never
+    /// shipped with the transcript.
+    #[test]
+    fn preexisting_tool_call_metadata_has_outputs_stripped() {
+        let mut assistant = msg("assistant", "Done.");
+        assistant.metadata = Some(
+            r#"{"toolCalls":[{"id":"t1","status":"complete","output":"HUGE BLOB"}]}"#.to_string(),
+        );
+        let mut messages = vec![assistant];
+        build_message_metadata(&mut messages);
+        let meta: serde_json::Value =
+            serde_json::from_str(messages[0].metadata.as_deref().unwrap()).unwrap();
+        let call = &meta["toolCalls"][0];
+        assert_eq!(call["id"], "t1");
+        assert_eq!(call["status"], "complete");
+        assert!(call.get("output").is_none());
+    }
+
+    /// Persisted contentBlocks (the streamed block order) win over the
+    /// text→tools fallback, and text blocks are hydrated with the message
+    /// content.
+    #[test]
+    fn persisted_block_order_is_preserved_and_hydrated() {
+        let mut assistant = msg("assistant", "Here's the file.");
+        assistant.tool_calls =
+            Some(r#"[{"id":"t1","name":"os","input":{}}]"#.to_string());
+        assistant.metadata = Some(
+            r#"{"contentBlocks":[{"type":"tool","toolCallIndex":0},{"type":"text"}]}"#.to_string(),
+        );
+        let mut messages = vec![assistant];
+        build_message_metadata(&mut messages);
+        let meta: serde_json::Value =
+            serde_json::from_str(messages[0].metadata.as_deref().unwrap()).unwrap();
+        let blocks = meta["contentBlocks"].as_array().unwrap();
+        assert_eq!(blocks[0]["type"], "tool"); // tool FIRST, as streamed
+        assert_eq!(blocks[1]["type"], "text");
+        assert_eq!(blocks[1]["text"], "Here's the file.");
+    }
+
+    /// build_ui_tool_calls: string inputs pass through raw, object inputs are
+    /// serialized; an empty call list yields None (no metadata invented).
+    #[test]
+    fn ui_tool_calls_normalize_inputs_and_refuse_empty() {
+        let statuses: HashMap<String, bool> = HashMap::new();
+        let (ui, _) = build_ui_tool_calls(
+            r#"[{"id":"t1","name":"bash","input":"ls -la"},
+                {"id":"t2","name":"os","input":{"a":1}}]"#,
+            &statuses,
+        )
+        .unwrap();
+        assert_eq!(ui[0]["input"], "ls -la");
+        assert_eq!(ui[1]["input"], r#"{"a":1}"#);
+        assert!(build_ui_tool_calls("[]", &statuses).is_none());
+        assert!(build_ui_tool_calls("not json", &statuses).is_none());
+    }
+
+    /// default_content_blocks: empty content yields tool blocks only — no
+    /// empty text block padding the transcript.
+    #[test]
+    fn default_blocks_skip_empty_text() {
+        let blocks = default_content_blocks("", 2);
+        assert_eq!(blocks.len(), 2);
+        assert!(blocks.iter().all(|b| b["type"] == "tool"));
+        let blocks = default_content_blocks("hi", 1);
+        assert_eq!(blocks[0]["type"], "text");
+        assert_eq!(blocks[1]["toolCallIndex"], 0);
+    }
+}

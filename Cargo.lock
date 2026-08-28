@@ -5286,7 +5286,7 @@ dependencies = [
 
 [[package]]
 name = "nebo"
-version = "0.13.0"
+version = "0.13.1"
 dependencies = [
  "anyhow",
  "dirs",
@@ -5314,7 +5314,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-agent"
-version = "0.13.0"
+version = "0.13.1"
 dependencies = [
  "a2ui-validation",
  "async-trait",
@@ -5352,7 +5352,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-ai"
-version = "0.13.0"
+version = "0.13.1"
 dependencies = [
  "async-openai",
  "async-trait",
@@ -5381,7 +5381,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-auth"
-version = "0.13.0"
+version = "0.13.1"
 dependencies = [
  "bcrypt",
  "chrono",
@@ -5402,7 +5402,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-browser"
-version = "0.13.0"
+version = "0.13.1"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -5420,7 +5420,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-cli"
-version = "0.13.0"
+version = "0.13.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -5448,7 +5448,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-comm"
-version = "0.13.0"
+version = "0.13.1"
 dependencies = [
  "async-trait",
  "futures",
@@ -5469,7 +5469,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-config"
-version = "0.13.0"
+version = "0.13.1"
 dependencies = [
  "dirs",
  "hex",
@@ -5486,7 +5486,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-db"
-version = "0.13.0"
+version = "0.13.1"
 dependencies = [
  "chrono",
  "nebo-types",
@@ -5496,6 +5496,7 @@ dependencies = [
  "rust-embed",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.18",
  "tracing",
  "uuid",
@@ -5503,7 +5504,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-mcp"
-version = "0.13.0"
+version = "0.13.1"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -5521,7 +5522,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-napp"
-version = "0.13.0"
+version = "0.13.1"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -5553,14 +5554,14 @@ dependencies = [
 
 [[package]]
 name = "nebo-notify"
-version = "0.13.0"
+version = "0.13.1"
 dependencies = [
  "tracing",
 ]
 
 [[package]]
 name = "nebo-proto"
-version = "0.13.0"
+version = "0.13.1"
 dependencies = [
  "prost",
  "tonic",
@@ -5569,7 +5570,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-render"
-version = "0.13.0"
+version = "0.13.1"
 dependencies = [
  "docx-rs",
  "pulldown-cmark",
@@ -5584,7 +5585,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-server"
-version = "0.13.0"
+version = "0.13.1"
 dependencies = [
  "a2ui-core",
  "a2ui-types",
@@ -5646,8 +5647,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "nebo-syntax"
+version = "0.13.1"
+dependencies = [
+ "streaming-iterator",
+ "thiserror 2.0.18",
+ "tree-sitter",
+ "tree-sitter-bash",
+ "tree-sitter-css",
+ "tree-sitter-go",
+ "tree-sitter-html",
+ "tree-sitter-javascript",
+ "tree-sitter-json",
+ "tree-sitter-md",
+ "tree-sitter-python",
+ "tree-sitter-rust",
+ "tree-sitter-toml-ng",
+ "tree-sitter-typescript",
+ "tree-sitter-yaml",
+]
+
+[[package]]
 name = "nebo-tools"
-version = "0.13.0"
+version = "0.13.1"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -5670,6 +5692,7 @@ dependencies = [
  "nebo-napp",
  "nebo-notify",
  "nebo-render",
+ "nebo-syntax",
  "nebo-types",
  "nebo-vm",
  "notify",
@@ -5700,7 +5723,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-types"
-version = "0.13.0"
+version = "0.13.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -5711,7 +5734,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-updater"
-version = "0.13.0"
+version = "0.13.1"
 dependencies = [
  "futures",
  "hex",
@@ -5729,7 +5752,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-vm"
-version = "0.13.0"
+version = "0.13.1"
 dependencies = [
  "dirs",
  "hex",
@@ -5738,6 +5761,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -5761,7 +5785,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-voice"
-version = "0.13.0"
+version = "0.13.1"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -5775,7 +5799,7 @@ dependencies = [
 
 [[package]]
 name = "nebo-workflow"
-version = "0.13.0"
+version = "0.13.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -8275,6 +8299,7 @@ version = "1.0.149"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "83fc039473c5595ace860d8c4fafa220ff474b3fc6bfdb4293327f1a37e94d86"
 dependencies = [
+ "indexmap 2.13.0",
  "itoa",
  "memchr",
  "serde",
@@ -8749,6 +8774,12 @@ dependencies = [
  "num-traits",
  "rand 0.8.5",
 ]
+
+[[package]]
+name = "streaming-iterator"
+version = "0.1.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2b2231b7c3057d5e4ad0156fb3dc807d900806020c5ffa3ee6ff2c8c76fb8520"
 
 [[package]]
 name = "strict-num"
@@ -10276,6 +10307,146 @@ dependencies = [
  "serde",
  "thiserror 2.0.18",
  "windows-sys 0.60.2",
+]
+
+[[package]]
+name = "tree-sitter"
+version = "0.25.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "78f873475d258561b06f1c595d93308a7ed124d9977cb26b148c2084a4a3cc87"
+dependencies = [
+ "cc",
+ "regex",
+ "regex-syntax",
+ "serde_json",
+ "streaming-iterator",
+ "tree-sitter-language",
+]
+
+[[package]]
+name = "tree-sitter-bash"
+version = "0.25.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9e5ec769279cc91b561d3df0d8a5deb26b0ad40d183127f409494d6d8fc53062"
+dependencies = [
+ "cc",
+ "tree-sitter-language",
+]
+
+[[package]]
+name = "tree-sitter-css"
+version = "0.25.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a5cbc5e18f29a2c6d6435891f42569525cf95435a3e01c2f1947abcde178686f"
+dependencies = [
+ "cc",
+ "tree-sitter-language",
+]
+
+[[package]]
+name = "tree-sitter-go"
+version = "0.25.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c8560a4d2f835cc0d4d2c2e03cbd0dde2f6114b43bc491164238d333e28b16ea"
+dependencies = [
+ "cc",
+ "tree-sitter-language",
+]
+
+[[package]]
+name = "tree-sitter-html"
+version = "0.23.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "261b708e5d92061ede329babaaa427b819329a9d427a1d710abb0f67bbef63ee"
+dependencies = [
+ "cc",
+ "tree-sitter-language",
+]
+
+[[package]]
+name = "tree-sitter-javascript"
+version = "0.25.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "68204f2abc0627a90bdf06e605f5c470aa26fdcb2081ea553a04bdad756693f5"
+dependencies = [
+ "cc",
+ "tree-sitter-language",
+]
+
+[[package]]
+name = "tree-sitter-json"
+version = "0.24.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4d727acca406c0020cffc6cf35516764f36c8e3dc4408e5ebe2cb35a947ec471"
+dependencies = [
+ "cc",
+ "tree-sitter-language",
+]
+
+[[package]]
+name = "tree-sitter-language"
+version = "0.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "009994f150cc0cd50ff54917d5bc8bffe8cad10ca10d81c34da2ec421ae61782"
+
+[[package]]
+name = "tree-sitter-md"
+version = "0.5.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2efd398be546456c814598ee56c0f51769a77241511b4a58077815d120afa882"
+dependencies = [
+ "cc",
+ "tree-sitter-language",
+]
+
+[[package]]
+name = "tree-sitter-python"
+version = "0.25.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6bf85fd39652e740bf60f46f4cda9492c3a9ad75880575bf14960f775cb74a1c"
+dependencies = [
+ "cc",
+ "tree-sitter-language",
+]
+
+[[package]]
+name = "tree-sitter-rust"
+version = "0.24.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "439e577dbe07423ec2582ac62c7531120dbfccfa6e5f92406f93dd271a120e45"
+dependencies = [
+ "cc",
+ "tree-sitter-language",
+]
+
+[[package]]
+name = "tree-sitter-toml-ng"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e9adc2c898ae49730e857d75be403da3f92bb81d8e37a2f918a08dd10de5ebb1"
+dependencies = [
+ "cc",
+ "tree-sitter-language",
+]
+
+[[package]]
+name = "tree-sitter-typescript"
+version = "0.23.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6c5f76ed8d947a75cc446d5fccd8b602ebf0cde64ccf2ffa434d873d7a575eff"
+dependencies = [
+ "cc",
+ "tree-sitter-language",
+]
+
+[[package]]
+name = "tree-sitter-yaml"
+version = "0.7.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "53c223db85f05e34794f065454843b0668ebc15d240ada63e2b5939f43ce7c97"
+dependencies = [
+ "cc",
+ "tree-sitter-language",
 ]
 
 [[package]]

@@ -166,9 +166,20 @@ pub fn apply_sliding_window(
 
 /// Micro-compact: trim old tool results to reduce context size.
 /// Returns modified messages and tokens saved.
+
+/// First tool_call_id of a result message — the freeze key. Results without
+/// an id are replaced but never frozen (no stable identity to freeze on).
+fn first_tool_call_id(msg: &ChatMessage) -> Option<String> {
+    let tr = msg.tool_results.as_ref()?;
+    let parsed: Vec<serde_json::Value> = serde_json::from_str(tr).ok()?;
+    let id = parsed.first()?.get("tool_call_id")?.as_str()?;
+    (!id.is_empty()).then(|| id.to_string())
+}
+
 pub fn micro_compact(
     messages: &[ChatMessage],
     warning_threshold: usize,
+    frozen: &mut std::collections::HashMap<String, String>,
 ) -> (Vec<ChatMessage>, usize) {
     let total_tokens = estimate_total_tokens(messages);
     // Below the warning threshold the context fits comfortably — touch nothing.
@@ -242,10 +253,20 @@ pub fn micro_compact(
             continue; // Not worth compacting small results
         }
 
-        // Build informative summary instead of generic "[trimmed: X result]"
+        // Build informative summary instead of generic "[trimmed: X result]".
+        // FROZEN DECISION: the first rendering ever chosen for a tool_use_id
+        // is the rendering forever (per run). Re-deciding each iteration is
+        // how a result rendered fine on pass N became "[os] 0 lines" on pass
+        // N+1 — the model must never watch its own history mutate.
         let (_call_name, call_input) = find_tool_call_for_result(messages, *idx);
-        let trimmed_content =
-            build_tool_summary(tool_name, call_input.as_ref(), &msg.content);
+        let freeze_key = first_tool_call_id(msg);
+        let trimmed_content = freeze_key
+            .as_ref()
+            .and_then(|k| frozen.get(k).cloned())
+            .unwrap_or_else(|| build_tool_summary(tool_name, call_input.as_ref(), &msg.content));
+        if let Some(k) = freeze_key {
+            frozen.entry(k).or_insert_with(|| trimmed_content.clone());
+        }
 
         // Preserve original tool_call_ids so the orphan filter in build_messages
         // can still match compacted results with their corresponding tool_calls.
@@ -324,6 +345,7 @@ pub fn time_based_micro_compact(
     keep_recent: usize,
     gap_threshold_secs: i64,
     warning_threshold: usize,
+    frozen: &mut std::collections::HashMap<String, String>,
 ) -> (Vec<ChatMessage>, usize) {
     // Small contexts re-tokenize for pennies — clearing them saves nothing and
     // deletes working knowledge (loaded skill instructions, fetched data) right
@@ -395,11 +417,22 @@ pub fn time_based_micro_compact(
         // `[cleared]`.
         let resource = tools::OsTool::resolved_resource(&input);
         let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
-        let cleared = if is_read_type(call_name.as_str(), resource, action) {
-            bounded_content(&msg.content)
-        } else {
-            "[cleared]".to_string()
-        };
+        // FROZEN DECISION — same contract as micro_compact: one rendering
+        // per tool_use_id per run, shared across both compaction paths.
+        let freeze_key = first_tool_call_id(msg);
+        let cleared = freeze_key
+            .as_ref()
+            .and_then(|k| frozen.get(k).cloned())
+            .unwrap_or_else(|| {
+                if is_read_type(call_name.as_str(), resource, action) {
+                    bounded_content(&msg.content)
+                } else {
+                    "[cleared]".to_string()
+                }
+            });
+        if let Some(k) = freeze_key {
+            frozen.entry(k).or_insert_with(|| cleared.clone());
+        }
 
         // Preserve tool_call_ids in tool_results JSON
         let compacted_results = if let Some(ref tr_json) = msg.tool_results {
@@ -1215,7 +1248,7 @@ mod tests {
 
         // gap_threshold of 1 second — all messages are old, so gap is huge.
         // warning_threshold 0 opens the pressure gate (this test exercises clearing).
-        let (result, tokens_saved) = time_based_micro_compact(&messages, 1, 1, 0);
+        let (result, tokens_saved) = time_based_micro_compact(&messages, 1, 1, 0, &mut std::collections::HashMap::new());
         assert!(tokens_saved > 0, "should save tokens on stale session");
 
         // Only the most recent tool result (index 6) should keep its content
@@ -1259,7 +1292,7 @@ mod tests {
             make_tool_result_msg(&big, old_ts), // most recent (kept anyway)
         ];
 
-        let (result, _) = time_based_micro_compact(&messages, 1, 1, 0);
+        let (result, _) = time_based_micro_compact(&messages, 1, 1, 0, &mut std::collections::HashMap::new());
         let tool_results: Vec<&ChatMessage> = result.iter().filter(|m| m.role == "tool").collect();
         // Older calendar result kept content despite being stale + not most-recent
         assert!(
@@ -1285,7 +1318,7 @@ mod tests {
         ];
 
         // gap_threshold of 300 seconds — session is active (10s ago)
-        let (_, tokens_saved) = time_based_micro_compact(&messages, 1, 300, 0);
+        let (_, tokens_saved) = time_based_micro_compact(&messages, 1, 300, 0, &mut std::collections::HashMap::new());
         assert_eq!(tokens_saved, 0, "active session should not be compacted");
     }
 
@@ -1312,7 +1345,7 @@ mod tests {
         }
 
         // Threshold below the ~16K estimated total so the pressure gate opens.
-        let (result, tokens_saved) = micro_compact(&messages, 1_000);
+        let (result, tokens_saved) = micro_compact(&messages, 1_000, &mut std::collections::HashMap::new());
         assert!(
             tokens_saved > 0,
             "non-standard tool results should be compactable (universal filter)"
@@ -1353,17 +1386,45 @@ mod tests {
             messages.push(make_tool_result_msg(&big, 1000));
         }
 
-        let (result, saved) = micro_compact(&messages, 100_000);
+        let (result, saved) = micro_compact(&messages, 100_000, &mut std::collections::HashMap::new());
         assert_eq!(saved, 0, "micro_compact must not fire under the threshold");
         assert!(
             result.iter().all(|m| !m.content.contains("[search_emails]")),
             "no result may be summarized under the threshold"
         );
 
-        let (_, tb_saved) = time_based_micro_compact(&messages, 1, 1, 100_000);
+        let (_, tb_saved) = time_based_micro_compact(&messages, 1, 1, 100_000, &mut std::collections::HashMap::new());
         assert_eq!(
             tb_saved, 0,
             "stale-session clear must not fire under the threshold"
+        );
+    }
+
+    /// Once a rendering is chosen for a tool_use_id it NEVER changes within
+    /// the run — even if the underlying message would render differently on a
+    /// later pass. Re-deciding per iteration is how the model watched its own
+    /// history mutate mid-run (the outage's delivery mechanism).
+    #[test]
+    fn frozen_renderings_never_change_within_a_run() {
+        let calls = r#"[{"id":"c1","name":"os","input":{"action":"exec","command":"cargo build"}}]"#;
+        let big = "line\n".repeat(1200);
+        let mut convo = vec![
+            tmsg("user", "go", None, None),
+            tmsg("assistant", "", Some(calls), None),
+            tmsg("tool", &big, None, Some(r#"[{"tool_call_id":"c1","content":"..."}]"#)),
+        ];
+        pad_past_compaction(&mut convo);
+        let mut frozen = std::collections::HashMap::new();
+        let (out1, saved) = micro_compact(&convo, 1_000, &mut frozen);
+        assert!(saved > 0, "the test must actually compact something");
+        let first_rendering = out1[2].content.clone();
+
+        // Mutate the underlying content — a fresh decision would now differ.
+        convo[2].content = "totally different\n".repeat(1500);
+        let (out2, _) = micro_compact(&convo, 1_000, &mut frozen);
+        assert_eq!(
+            out2[2].content, first_rendering,
+            "the rendering for c1 must be frozen, not re-decided"
         );
     }
 
@@ -1472,7 +1533,7 @@ mod tests {
         // compacted and it passed vacuously.
         pad_past_compaction(&mut convo);
 
-        let (compacted, saved) = micro_compact(&convo, 1_000);
+        let (compacted, saved) = micro_compact(&convo, 1_000, &mut std::collections::HashMap::new());
         assert!(saved > 0, "the test must actually compact something");
         let read_result = &compacted[2].content;
         assert_ne!(read_result, &body, "the read must have gone through the summarizer");
@@ -1546,7 +1607,7 @@ mod tests {
             tmsg("tool", &big, None, Some(r#"[{"tool_call_id":"c3","content":"..."}]"#)),
         ];
         pad_past_compaction(&mut convo);
-        let (out, saved) = micro_compact(&convo, 1_000);
+        let (out, saved) = micro_compact(&convo, 1_000, &mut std::collections::HashMap::new());
         assert!(saved > 0, "the test must actually compact something");
 
         // c1 is a read → content kept. c2 is a shell exec → truthful stub
@@ -1572,7 +1633,7 @@ mod tests {
                  Some(r#"[{"tool_call_id":"c1","content":"...","is_error":true}]"#)),
         ];
         pad_past_compaction(&mut convo);
-        let (out, saved) = micro_compact(&convo, 1_000);
+        let (out, saved) = micro_compact(&convo, 1_000, &mut std::collections::HashMap::new());
         assert!(saved > 0, "the test must actually compact something");
         assert_ne!(out[2].content, big, "the failure result must have been compacted");
         let tr: Vec<serde_json::Value> =
@@ -1599,7 +1660,7 @@ mod tests {
             tmsg("assistant", "", Some(r#"[{"id":"c2","name":"os","input":{"action":"exec","command":"ls"}}]"#), None),
             tmsg("tool", "a\nb\n", None, Some(r#"[{"tool_call_id":"c2","content":"..."}]"#)),
         ];
-        let (out, _) = time_based_micro_compact(&convo, 1, 1, 0);
+        let (out, _) = time_based_micro_compact(&convo, 1, 1, 0, &mut std::collections::HashMap::new());
         assert_ne!(out[2].content, "[cleared]", "a read must not be wiped");
         assert!(out[2].content.contains("def f()"), "read keeps content: {}", out[2].content);
     }

@@ -911,3 +911,163 @@ fn run_onboard(cfg: &config::Config) -> anyhow::Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+    use clap::error::ErrorKind;
+
+    /// INVARIANT: the entire clap command tree is internally consistent — no
+    /// conflicting ids, broken defaults, or invalid arg configurations in any
+    /// subcommand.
+    #[test]
+    fn command_tree_is_valid() {
+        Cli::command().debug_assert();
+    }
+
+    /// INVARIANT: bare `nebo` parses with no subcommand and headless off — the
+    /// default run-everything path.
+    #[test]
+    fn bare_invocation_defaults() {
+        let cli = Cli::try_parse_from(["nebo"]).unwrap();
+        assert!(cli.command.is_none());
+        assert!(!cli.headless);
+    }
+
+    /// INVARIANT: --headless is accepted with or without a subcommand.
+    #[test]
+    fn headless_flag_parses() {
+        let cli = Cli::try_parse_from(["nebo", "--headless"]).unwrap();
+        assert!(cli.headless);
+        let cli = Cli::try_parse_from(["nebo", "--headless", "serve"]).unwrap();
+        assert!(cli.headless);
+        assert!(matches!(cli.command, Some(Commands::Serve)));
+    }
+
+    /// INVARIANT: `nebo chat` takes an optional positional prompt plus the
+    /// -i/--interactive and --dangerously flags, all defaulting to off.
+    #[test]
+    fn chat_arguments_parse() {
+        let cli = Cli::try_parse_from(["nebo", "chat", "hello world"]).unwrap();
+        match cli.command {
+            Some(Commands::Chat { interactive, dangerously, prompt }) => {
+                assert!(!interactive);
+                assert!(!dangerously);
+                assert_eq!(prompt.as_deref(), Some("hello world"));
+            }
+            _ => panic!("expected Chat"),
+        }
+
+        let cli = Cli::try_parse_from(["nebo", "chat", "-i", "--dangerously"]).unwrap();
+        match cli.command {
+            Some(Commands::Chat { interactive, dangerously, prompt }) => {
+                assert!(interactive);
+                assert!(dangerously);
+                assert!(prompt.is_none());
+            }
+            _ => panic!("expected Chat"),
+        }
+    }
+
+    /// INVARIANT: `nebo mcp serve` passes the tool allow/deny lists through as
+    /// raw comma-separated strings (splitting happens in the bridge), and
+    /// `nebo mcp config` defaults its target to claude-desktop.
+    #[test]
+    fn mcp_subcommands_parse() {
+        let cli = Cli::try_parse_from([
+            "nebo", "mcp", "serve", "--tools", "system,web", "--exclude-tools", "desktop",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Commands::Mcp { command: McpCommands::Serve { tools, exclude_tools } }) => {
+                assert_eq!(tools.as_deref(), Some("system,web"));
+                assert_eq!(exclude_tools.as_deref(), Some("desktop"));
+            }
+            _ => panic!("expected Mcp Serve"),
+        }
+
+        let cli = Cli::try_parse_from(["nebo", "mcp", "config"]).unwrap();
+        match cli.command {
+            Some(Commands::Mcp { command: McpCommands::Config { target } }) => {
+                assert!(matches!(target, mcp_serve::ConfigTarget::ClaudeDesktop));
+            }
+            _ => panic!("expected Mcp Config"),
+        }
+    }
+
+    /// INVARIANT: `nebo test run` defaults — 1 run, server localhost:27895,
+    /// judge enabled (no_judge off), plain-table output — and repeated
+    /// --override flags accumulate in order.
+    #[test]
+    fn test_run_defaults_and_overrides() {
+        let cli = Cli::try_parse_from(["nebo", "test", "run", "--fixture", "f.yaml"]).unwrap();
+        match cli.command {
+            Some(Commands::Test {
+                command: TestCommands::Run { fixture, runs, server, no_judge, json, .. },
+            }) => {
+                assert_eq!(fixture.as_deref(), Some("f.yaml"));
+                assert_eq!(runs, 1);
+                assert_eq!(server, "localhost:27895");
+                assert!(!no_judge);
+                assert!(!json);
+            }
+            _ => panic!("expected Test Run"),
+        }
+
+        let cli = Cli::try_parse_from([
+            "nebo", "test", "prompt", "--override", "a:b", "--override", "c:d",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Commands::Test { command: TestCommands::Prompt { overrides, .. } }) => {
+                assert_eq!(
+                    overrides.unwrap(),
+                    vec!["a:b".to_string(), "c:d".to_string()]
+                );
+            }
+            _ => panic!("expected Test Prompt"),
+        }
+    }
+
+    /// INVARIANT: `nebo session delete` requires the id positional — omitting
+    /// it is a parse error, not a delete-nothing no-op.
+    #[test]
+    fn session_delete_requires_id() {
+        let err = Cli::try_parse_from(["nebo", "session", "delete"]).map(|_| ()).unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::MissingRequiredArgument);
+
+        let cli = Cli::try_parse_from(["nebo", "session", "delete", "abc-123"]).unwrap();
+        match cli.command {
+            Some(Commands::Session { command: SessionCommands::Delete { id } }) => {
+                assert_eq!(id, "abc-123");
+            }
+            _ => panic!("expected Session Delete"),
+        }
+    }
+
+    /// INVARIANT: unknown subcommands are rejected instead of falling through
+    /// to the default server path.
+    #[test]
+    fn unknown_subcommand_rejected() {
+        let err = Cli::try_parse_from(["nebo", "frobnicate"]).map(|_| ()).unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::InvalidSubcommand);
+    }
+
+    /// INVARIANT: --version reports the crate's own version string.
+    #[test]
+    fn version_flag_reports_crate_version() {
+        let err = Cli::try_parse_from(["nebo", "--version"]).map(|_| ()).unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::DisplayVersion);
+        assert!(err.to_string().contains(VERSION));
+    }
+
+    /// INVARIANT: resolve_fixtures with neither --fixture nor --suite yields an
+    /// empty list (the caller turns that into a usage error), and a missing
+    /// fixture file is an error rather than being silently skipped.
+    #[test]
+    fn resolve_fixtures_behavior() {
+        assert!(resolve_fixtures(None, None).unwrap().is_empty());
+        assert!(resolve_fixtures(Some("/nonexistent/nebo-test-fixture.yaml"), None).is_err());
+    }
+}

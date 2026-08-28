@@ -799,6 +799,15 @@ mod tests {
         assert_eq!(parse_wait_duration("5d"), None); // unsupported unit
     }
 
+    /// A self-edge is the smallest illegal cycle — it must be rejected at
+    /// validation like any other non-loop-body cycle, never left for the
+    /// walker's visit cap to trip on at runtime.
+    #[test]
+    fn test_validate_rejects_self_edge() {
+        let plain = r#"[{"id":"a","intent":"x"}]"#;
+        assert!(wf(plain, r#"[{"from":"a","to":"a"}]"#).is_err());
+    }
+
     #[test]
     fn test_validate_duplicate_activity_id() {
         let json = r#"{

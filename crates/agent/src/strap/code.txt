@@ -1,0 +1,32 @@
+### code — Code Intelligence (read-only)
+USE THIS when: working in source code — before reading a large file blind, to find a symbol by name, to check a file's syntax, or to search code structurally.
+
+Read-only tree-sitter parsing compiled into Nebo (rust, typescript, tsx, javascript, python, go, json, yaml, toml, bash, html, css, markdown). No language servers, no external processes, works offline. Edits stay on os(resource: "file", action: "edit") — its result already appends the same syntax check for these languages.
+
+| action | what it returns | required params | optional |
+|--------|-----------------|-----------------|----------|
+| outline | symbol tree of one file (fn/class/impl/method with [start-end] line ranges) | path | |
+| symbols | symbols matching a name across a directory tree (file:start-end kind name) | path (directory) | name, limit |
+| parse_check | "syntax OK (<lang>)" or each error with line, col, message | path | |
+| query | tree-sitter structural query captures with their lines | path, query | limit |
+| context | enclosing symbol chain + sibling symbols for a line (edit anchoring) | path, line | end_line |
+
+Workflow for a large unfamiliar file:
+1. code(action: "outline", path: "/src/runner.rs") — see the structure first
+2. os(resource: "file", action: "read", path: ..., offset: <start>, limit: <lines>) — read only the symbol you need
+3. os(resource: "file", action: "edit", ...) — the edit result appends "syntax OK (rust)" or the parse errors
+4. If the edit result reports syntax errors, fix them before moving on — the errors name the line.
+
+Rules:
+- Lists cap at 200 entries and END with an explicit "N more omitted" line — trust the stated count.
+- A file whose extension has no compiled-in grammar is refused with the supported list — use os file read/grep for those files.
+- symbols matches a case-insensitive substring; an empty name lists every symbol (capped).
+- query takes a tree-sitter s-expression, e.g. (function_item name: (identifier) @name). An invalid query returns the parser's error, not "0 matches".
+
+Examples:
+- code(action: "outline", path: "/src/lib.rs")
+- code(action: "symbols", name: "handle_read", path: "/src")
+- code(action: "symbols", path: ".")
+- code(action: "parse_check", path: "/src/broken.py")
+- code(action: "query", path: "/src/lib.rs", query: "(function_item name: (identifier) @name)")
+- code(action: "context", path: "/src/lib.rs", line: 120)

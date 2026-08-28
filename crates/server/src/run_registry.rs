@@ -731,3 +731,94 @@ mod tests {
         assert!(cleaned.is_empty());
     }
 }
+
+#[cfg(test)]
+mod cancel_semantics_tests {
+    //! Locks the registry semantics the ws.rs "cancel" handler's precedence
+    //! chain (run_id > entity_id > session_id > cancel-ALL fallback) is built
+    //! on. The chain itself is inline in handle_client_ws; these pin the
+    //! building blocks it calls.
+    use super::*;
+
+    async fn reg(
+        registry: &RunRegistry,
+        session_key: &str,
+        entity_id: &str,
+        token: &CancellationToken,
+    ) -> RunHandle {
+        registry
+            .register(RegisterParams {
+                session_key: session_key.to_string(),
+                entity_id: entity_id.to_string(),
+                entity_name: entity_id.to_string(),
+                origin: "ws".to_string(),
+                channel: "main".to_string(),
+                cancel_token: token.clone(),
+                parent_run_id: None,
+            })
+            .await
+    }
+
+    /// cancel(run_id) on an unknown id returns false and cancels nothing —
+    /// the ws handler relies on this to fall through to the next precedence
+    /// tier instead of silently "succeeding".
+    #[tokio::test]
+    async fn cancel_unknown_run_id_is_a_miss() {
+        let registry = RunRegistry::new();
+        let token = CancellationToken::new();
+        let _h = reg(&registry, "agent:a:main", "a", &token).await;
+        assert!(!registry.cancel("no-such-run").await);
+        assert!(!token.is_cancelled());
+    }
+
+    /// cancel_by_entity cancels EVERY run of that entity (returning the
+    /// count) and leaves other entities' runs alive.
+    #[tokio::test]
+    async fn cancel_by_entity_scopes_to_that_entity_only() {
+        let registry = RunRegistry::new();
+        let (ta, tb, tc) = (
+            CancellationToken::new(),
+            CancellationToken::new(),
+            CancellationToken::new(),
+        );
+        let _h1 = reg(&registry, "agent:x:main", "x", &ta).await;
+        let _h2 = reg(&registry, "agent:x:thread:c1", "x", &tb).await;
+        let _h3 = reg(&registry, "agent:y:main", "y", &tc).await;
+
+        assert_eq!(registry.cancel_by_entity("x").await, 2);
+        assert!(ta.is_cancelled());
+        assert!(tb.is_cancelled());
+        assert!(!tc.is_cancelled());
+        assert_eq!(registry.cancel_by_entity("nobody").await, 0);
+    }
+
+    /// cancel_all (the ws fallback when no key matches — "stop means stop")
+    /// cancels every active run and reports how many.
+    #[tokio::test]
+    async fn cancel_all_stops_everything_and_counts() {
+        let registry = RunRegistry::new();
+        let tokens: Vec<CancellationToken> =
+            (0..3).map(|_| CancellationToken::new()).collect();
+        let _h1 = reg(&registry, "agent:a:main", "a", &tokens[0]).await;
+        let _h2 = reg(&registry, "agent:b:main", "b", &tokens[1]).await;
+        let _h3 = reg(&registry, "neboai:group:g1", "main", &tokens[2]).await;
+
+        assert_eq!(registry.cancel_all().await, 3);
+        assert!(tokens.iter().all(|t| t.is_cancelled()));
+        assert_eq!(registry.cancel_all().await, 3); // idempotent: entries remain until handles drop
+    }
+
+    /// Session activity queries answer by exact session key — the predicate
+    /// the session-tier cancel and stream-status checks depend on.
+    #[tokio::test]
+    async fn session_activity_is_keyed_exactly() {
+        let registry = RunRegistry::new();
+        let token = CancellationToken::new();
+        let _h = reg(&registry, "agent:a:thread:c9", "a", &token).await;
+        assert!(registry.is_session_active("agent:a:thread:c9").await);
+        assert!(!registry.is_session_active("agent:a:thread").await);
+        assert!(!registry.is_session_active("agent:a").await);
+        assert!(registry.find_by_session("agent:a:thread:c9").await.is_some());
+        assert!(registry.find_by_session("agent:a:main").await.is_none());
+    }
+}

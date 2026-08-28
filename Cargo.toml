@@ -26,6 +26,7 @@ members = [
     "crates/vm",
     "crates/render",
     "crates/vm-daemon",
+    "crates/syntax",
 ]
 
 [workspace.package]
@@ -148,6 +149,7 @@ notify_crate = { path = "crates/notify", package = "nebo-notify" }
 updater = { path = "crates/updater", package = "nebo-updater" }
 sandbox-runtime = { git = "https://github.com/NeboLoop/sandbox-runtime.git", branch = "master" }
 vm = { path = "crates/vm", package = "nebo-vm" }
+syntax = { path = "crates/syntax", package = "nebo-syntax" }
 
 # A2UI protocol
 a2ui-types = { path = "crates/a2ui/a2ui-types" }
