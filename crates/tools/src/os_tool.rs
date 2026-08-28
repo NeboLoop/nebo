@@ -681,10 +681,33 @@ impl DynTool for OsTool {
         input: serde_json::Value,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send + 'a>> {
         Box::pin(async move {
+            // Shorthand acceptance (first-call doctrine: fix the API, not the
+            // client). Models trained on bare shell tools call
+            // os({"command": ...}) with no action — observed live 2026-08-28:
+            // seven identical rejections in one run. The intent is
+            // unambiguous, so normalize instead of rejecting.
+            let input = {
+                let mut v = input;
+                if let Some(obj) = v.as_object_mut() {
+                    if !obj.contains_key("action") && obj.contains_key("command") {
+                        obj.insert("action".into(), serde_json::json!("exec"));
+                    }
+                }
+                v
+            };
             let domain_input: DomainInput = match serde_json::from_value(input.clone()) {
                 Ok(v) => v,
                 Err(e) => {
-                    return ToolResult::error(format!("Failed to parse input: {}", e));
+                    let keys = input
+                        .as_object()
+                        .map(|o| o.keys().cloned().collect::<Vec<_>>().join(", "))
+                        .unwrap_or_default();
+                    return ToolResult::error(format!(
+                        "Failed to parse input: {e}. Received fields: [{keys}]. Every `os` \
+                         call needs an `action` (resource is inferred when omitted) — e.g. \
+                         os(resource: \"shell\", action: \"exec\", command: \"ls -la\") or \
+                         os(resource: \"file\", action: \"write\", path: \"...\", content: \"...\")."
+                    ));
                 }
             };
 

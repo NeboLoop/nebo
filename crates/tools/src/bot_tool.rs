@@ -2250,7 +2250,16 @@ impl DynTool for AgentTool {
         Box::pin(async move {
             let domain_input: DomainInput = match serde_json::from_value(input.clone()) {
                 Ok(v) => v,
-                Err(e) => return ToolResult::error(format!("Failed to parse input: {}", e)),
+                Err(e) => {
+                    let keys = input
+                        .as_object()
+                        .map(|o| o.keys().cloned().collect::<Vec<_>>().join(", "))
+                        .unwrap_or_default();
+                    return ToolResult::error(format!(
+                        "Failed to parse input: {e}. Received fields: [{keys}]. Every `agent` \
+                         call needs an `action` field naming the operation."
+                    ));
+                }
             };
 
             let mut input = input;
