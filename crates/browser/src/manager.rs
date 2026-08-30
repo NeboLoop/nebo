@@ -56,7 +56,19 @@ impl Manager {
                     chromium: true,
                 })
             })
-            .map(|cfg| Arc::new(CdpBridge::new(cfg)));
+            .map(|cfg| {
+                let bridge = Arc::new(CdpBridge::new(cfg));
+                // Idle teardown for the built-in browser: without it the
+                // chromium tree stays resident forever once launched
+                // (observed: 6.7 days on a cloud bot). NEBO_BROWSER_IDLE_SECS
+                // overrides the 10-minute default; 0 disables.
+                let idle = std::env::var("NEBO_BROWSER_IDLE_SECS")
+                    .ok()
+                    .and_then(|v| v.parse::<u64>().ok())
+                    .unwrap_or(600);
+                bridge.spawn_idle_reaper(std::time::Duration::from_secs(idle));
+                bridge
+            });
         Self {
             config,
             data_dir,

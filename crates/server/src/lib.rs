@@ -2584,6 +2584,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // Clone comm_manager for the shutdown handler — needs to disconnect NeboAI
     // before the process exits so the gateway sees a clean WebSocket Close frame.
     let shutdown_comm = state.comm_manager.clone();
+    let shutdown_registry = state.run_registry.clone();
     let shutdown_lifecycles = state.app_lifecycles.clone();
 
     if !quiet {
@@ -2628,7 +2629,9 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     axum::serve(listener, app)
         .with_graceful_shutdown(async move {
             shutdown_signal().await;
-            info!("shutdown signal received, draining in-flight extractions...");
+            info!("shutdown signal received — pausing scheduler, draining in-flight runs...");
+            drain_in_flight_runs(&shutdown_registry).await;
+            info!("runs drained, draining in-flight extractions...");
             agent::memory_flush::drain_extractions().await;
             info!("extractions drained, stopping app sidecars...");
             {
@@ -2650,6 +2653,49 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         .map_err(|e| NeboError::Server(format!("server error: {e}")))?;
 
     Ok(())
+}
+
+/// Set once a shutdown signal arrives. The scheduler checks it each tick so no
+/// NEW flows start while in-flight ones drain — the graceful-update contract:
+/// signal -> pause scheduler -> wait for live runs (bounded) -> exit.
+pub static DRAINING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Drain in-flight runs after a shutdown signal: every live run in the
+/// [`RunRegistry`] gets up to `NEBO_DRAIN_TIMEOUT_SECS` (default 60) to
+/// finish. The default is short on purpose: the bot process is the ONLY
+/// scheduler/orchestrator there is, so time spent draining is time nothing
+/// can fire — and an unfinished run resumes from its last completed step on
+/// boot anyway. Runs that outlive the timeout are logged by name and abandoned —
+/// the boot-time recovery sweeps (scheduler + workflow manager) resume them
+/// on the next start, so exiting anyway loses nothing durable.
+async fn drain_in_flight_runs(registry: &run_registry::RunRegistry) {
+    DRAINING.store(true, std::sync::atomic::Ordering::Relaxed);
+    let timeout = std::env::var("NEBO_DRAIN_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(60);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout);
+    loop {
+        let live = registry.list_all().await;
+        if live.is_empty() {
+            info!("drain complete — no in-flight runs");
+            return;
+        }
+        if std::time::Instant::now() >= deadline {
+            for r in &live {
+                warn!(
+                    run_id = %r.run_id,
+                    entity = %r.entity_name,
+                    origin = %r.origin,
+                    elapsed_secs = r.elapsed_secs,
+                    "drain timeout — exiting with this run still in flight (boot recovery will resume it)"
+                );
+            }
+            return;
+        }
+        info!(in_flight = live.len(), "draining — waiting for runs to finish");
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    }
 }
 
 /// Wait for a shutdown signal (SIGTERM on Unix, Ctrl+C everywhere).

@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::net::TcpListener;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use chromiumoxide::{Browser, Page};
@@ -65,6 +65,22 @@ struct CdpCore {
     /// dead core is dropped + relaunched on the next [`CdpBridge::get_core`] call —
     /// this is what stops a wedged Obscura from being trapped forever.
     alive: Arc<AtomicBool>,
+    /// When this core was launched — the epoch `last_used_s` counts from.
+    started: std::time::Instant,
+    /// Seconds-since-launch of the most recent use (touched on every
+    /// [`CdpBridge::get_core`]). Read by the idle reaper.
+    last_used_s: AtomicU64,
+}
+
+impl CdpCore {
+    fn touch(&self) {
+        self.last_used_s
+            .store(self.started.elapsed().as_secs(), Ordering::Relaxed);
+    }
+    fn idle(&self) -> Duration {
+        let last = self.last_used_s.load(Ordering::Relaxed);
+        self.started.elapsed().saturating_sub(Duration::from_secs(last))
+    }
 }
 
 /// Tier-2 backend: the bundled Obscura headless browser driven over CDP. Launches
@@ -97,6 +113,7 @@ impl CdpBridge {
         let mut guard = self.core.lock().await;
         if let Some(core) = guard.as_ref() {
             if core.alive.load(Ordering::Relaxed) {
+                core.touch();
                 return Ok(core.clone());
             }
             // Connection died — drop it (kill_on_drop terminates the old process) and relaunch.
@@ -113,6 +130,37 @@ impl CdpBridge {
     /// operation wedges (e.g. `new_page` times out) — the browser is unhealthy.
     async fn recycle(&self) {
         *self.core.lock().await = None;
+    }
+
+    /// Idle-timeout reaper: tear the tier-2 browser down after `idle_after` with
+    /// no CDP activity (observed live 2026-08-29: a cloud bot's chromium resident
+    /// 6.7 days, holding ~450 MB of guest memory for nothing). Teardown reuses
+    /// the ONE existing pathway — dropping the core, whose `kill_on_drop` child
+    /// dies when the last in-flight reference releases — so a job that is still
+    /// mid-operation finishes safely and the next job just relaunches. Runs for
+    /// the life of the process; `idle_after` = zero disables it.
+    pub fn spawn_idle_reaper(self: &Arc<Self>, idle_after: Duration) {
+        if idle_after.is_zero() {
+            return;
+        }
+        let bridge = Arc::downgrade(self);
+        tokio::spawn(async move {
+            let tick = idle_after.min(Duration::from_secs(30)).max(Duration::from_secs(5));
+            loop {
+                tokio::time::sleep(tick).await;
+                let Some(bridge) = bridge.upgrade() else { return };
+                let mut guard = bridge.core.lock().await;
+                if let Some(core) = guard.as_ref() {
+                    if core.idle() >= idle_after {
+                        info!(
+                            idle_secs = core.idle().as_secs(),
+                            "tier-2 browser idle — shutting it down (relaunches on next use)"
+                        );
+                        *guard = None;
+                    }
+                }
+            }
+        });
     }
 
     /// Spawn a fresh Obscura process and connect over CDP.
@@ -196,6 +244,8 @@ impl CdpBridge {
             browser,
             pages: Mutex::new(HashMap::new()),
             alive,
+            started: std::time::Instant::now(),
+            last_used_s: AtomicU64::new(0),
         })
     }
 

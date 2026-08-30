@@ -169,7 +169,71 @@ enum ProviderCommands {
     Test { id: String },
 }
 
+/// Container-init duty: when nebo is guest PID 1 (Kata/K8s pods run
+/// `nebo-cli serve` as the sole entrypoint), orphaned grandchildren — e.g.
+/// Chromium's double-forked crashpad/zygote helpers after a browser exits —
+/// reparent to PID 1 and become zombies unless someone wait()s them
+/// (observed live 2026-08-29: 504 zombie chromium procs on one cloud bot).
+/// The canonical fix is the tini pattern, built in: fork before the tokio
+/// runtime exists, run the real server in the child (no longer PID 1), and
+/// keep the parent as a minimal reaper that forwards signals and mirrors the
+/// child's exit. Anywhere nebo is not PID 1 (desktop, dev) this is a no-op.
+/// Must run pre-tokio: forking a multi-threaded process is unsafe.
+#[cfg(unix)]
+fn reap_as_pid1() {
+    use std::sync::atomic::{AtomicI32, Ordering};
+
+    if std::process::id() != 1 {
+        return;
+    }
+    static CHILD: AtomicI32 = AtomicI32::new(0);
+    extern "C" fn forward(sig: libc::c_int) {
+        let child = CHILD.load(Ordering::Relaxed);
+        if child > 0 {
+            unsafe { libc::kill(child, sig) };
+        }
+    }
+    unsafe {
+        let pid = libc::fork();
+        if pid < 0 {
+            return; // fork failed — run without a reaper rather than not at all
+        }
+        if pid == 0 {
+            return; // child: continue as the real server
+        }
+        CHILD.store(pid, Ordering::Relaxed);
+        for sig in [libc::SIGTERM, libc::SIGINT, libc::SIGHUP, libc::SIGUSR1, libc::SIGUSR2] {
+            libc::signal(sig, forward as *const () as libc::sighandler_t);
+        }
+        loop {
+            let mut status: libc::c_int = 0;
+            let r = libc::waitpid(-1, &mut status, 0);
+            if r == pid {
+                let code = if libc::WIFEXITED(status) {
+                    libc::WEXITSTATUS(status)
+                } else if libc::WIFSIGNALED(status) {
+                    128 + libc::WTERMSIG(status)
+                } else {
+                    1
+                };
+                libc::_exit(code);
+            }
+            if r < 0 {
+                let err = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+                if err == libc::ECHILD {
+                    // No children left at all — nothing to mirror.
+                    libc::_exit(0);
+                }
+                // EINTR (signal forwarded): loop and keep reaping.
+            }
+        }
+    }
+}
+
 fn main() -> anyhow::Result<()> {
+    #[cfg(unix)]
+    reap_as_pid1();
+
     // rustls-native-certs probes Linux CA paths that don't exist on Android;
     // point it at the platform trust store before any thread can read env.
     #[cfg(target_os = "android")]

@@ -51,6 +51,11 @@ pub fn spawn(
         let mut interval = tokio::time::interval(Duration::from_secs(60));
         loop {
             interval.tick().await;
+            // Shutdown drain: no new flows fire while in-flight ones finish.
+            if crate::DRAINING.load(std::sync::atomic::Ordering::Relaxed) {
+                tracing::info!("scheduler paused — process is draining for shutdown");
+                continue;
+            }
             if let Err(e) = tick(
                 &store,
                 &runner,

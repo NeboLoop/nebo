@@ -25,6 +25,7 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 anyhow = { workspace = true }
+libc = "0.2"
 dotenvy = { workspace = true }
 reqwest = { workspace = true }
 tokio-tungstenite = { workspace = true }
