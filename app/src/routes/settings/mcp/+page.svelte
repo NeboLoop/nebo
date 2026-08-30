@@ -50,6 +50,13 @@
   let newServerUrl = $state('');
   let newServerName = $state('');
   let newApiKey = $state('');
+  // Pre-registered OAuth client (BYO credentials) — for servers with no
+  // dynamic client registration (e.g. Google's Gmail MCP).
+  let newOauthClientId = $state('');
+  let newOauthClientSecret = $state('');
+  let newOauthScopes = $state('');
+  let newOauthAuthEndpoint = $state('');
+  let newOauthTokenEndpoint = $state('');
   let newAuthType = $state<'oauth' | 'api_key' | 'none'>('oauth');
 
   const currentStep = $derived(addStep === 'auth' ? 1 : 2);
@@ -61,6 +68,11 @@
     newServerUrl = '';
     newServerName = '';
     newApiKey = '';
+    newOauthClientId = '';
+    newOauthClientSecret = '';
+    newOauthScopes = '';
+    newOauthAuthEndpoint = '';
+    newOauthTokenEndpoint = '';
     newAuthType = 'oauth';
   }
 
@@ -164,6 +176,16 @@
         serverUrl: newServerUrl,
         authType: newAuthType,
         apiKey: newAuthType === 'api_key' ? newApiKey : undefined,
+        oauth:
+          newAuthType === 'oauth' && newOauthClientId.trim()
+            ? {
+                clientId: newOauthClientId.trim(),
+                clientSecret: newOauthClientSecret.trim() || undefined,
+                scopes: newOauthScopes.trim() || undefined,
+                authorizationEndpoint: newOauthAuthEndpoint.trim(),
+                tokenEndpoint: newOauthTokenEndpoint.trim(),
+              }
+            : undefined,
       });
       if (resp?.integration?.id) {
         const realId = resp.integration.id;
@@ -384,6 +406,13 @@
     if (!newServerUrl.trim()) return true;
     if (!newServerName.trim()) return true;
     if (newAuthType === 'api_key' && !newApiKey.trim()) return true;
+    // A pre-registered OAuth client is unusable without its endpoints.
+    if (
+      newAuthType === 'oauth' &&
+      newOauthClientId.trim() &&
+      (!newOauthAuthEndpoint.trim() || !newOauthTokenEndpoint.trim())
+    )
+      return true;
     return false;
   });
 
@@ -704,6 +733,38 @@
             {:else if newAuthType === 'oauth'}
               <div class="rounded-lg border border-base-300 bg-base-200/50 px-3.5 py-2.5">
                 <div class="text-xs text-base-content/70">{$t('settingsMcp.oauthNote')}</div>
+              </div>
+              <div class="rounded-lg border border-base-300 px-3.5 py-3 flex flex-col gap-3">
+                <div>
+                  <div class="text-sm font-medium">{$t('settingsMcp.preRegisteredTitle')}</div>
+                  <div class="text-xs text-base-content/70 mt-0.5">{$t('settingsMcp.preRegisteredHint')}</div>
+                </div>
+                <label class="block">
+                  <span class="block text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1.5">{$t('settingsMcp.oauthClientId')}</span>
+                  <input type="text" bind:value={newOauthClientId} class="w-full py-[7px] px-2.5 rounded-field border border-base-300 text-sm font-mono bg-base-100 outline-none focus:border-primary/50 transition-colors" />
+                </label>
+                {#if newOauthClientId.trim()}
+                  <label class="block">
+                    <span class="block text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1.5">{$t('settingsMcp.oauthClientSecret')}</span>
+                    <input type="password" bind:value={newOauthClientSecret} class="w-full py-[7px] px-2.5 rounded-field border border-base-300 text-sm font-mono bg-base-100 outline-none focus:border-primary/50 transition-colors" />
+                  </label>
+                  <label class="block">
+                    <span class="block text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1.5">{$t('settingsMcp.oauthScopes')}</span>
+                    <input type="text" bind:value={newOauthScopes} placeholder={$t('settingsMcp.oauthScopesPlaceholder')} class="w-full py-[7px] px-2.5 rounded-field border border-base-300 text-sm font-mono bg-base-100 outline-none focus:border-primary/50 transition-colors" />
+                  </label>
+                  <label class="block">
+                    <span class="block text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1.5">{$t('settingsMcp.oauthAuthEndpoint')}</span>
+                    <input type="url" bind:value={newOauthAuthEndpoint} class="w-full py-[7px] px-2.5 rounded-field border border-base-300 text-sm font-mono bg-base-100 outline-none focus:border-primary/50 transition-colors" />
+                  </label>
+                  <label class="block">
+                    <span class="block text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1.5">{$t('settingsMcp.oauthTokenEndpoint')}</span>
+                    <input type="url" bind:value={newOauthTokenEndpoint} class="w-full py-[7px] px-2.5 rounded-field border border-base-300 text-sm font-mono bg-base-100 outline-none focus:border-primary/50 transition-colors" />
+                  </label>
+                  <div class="text-xs text-base-content/50">
+                    {$t('settingsMcp.oauthRedirectHint')}
+                    <code class="font-mono select-all">{location.origin}/api/v1/integrations/oauth/callback</code>
+                  </div>
+                {/if}
               </div>
             {:else}
               <div class="rounded-lg border border-base-300 bg-base-200/50 px-3.5 py-2.5">

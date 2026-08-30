@@ -614,7 +614,53 @@ pub async fn create_integration(
         }
     });
     let auth_type = body["authType"].as_str().unwrap_or("none");
-    let metadata = body.get("metadata").map(|v| v.to_string());
+    // Pre-registered OAuth client (BYO credentials — servers with no RFC 8414
+    // metadata on the MCP origin and no Dynamic Client Registration, e.g.
+    // Google's Gmail MCP). Non-secret settings land in metadata JSON; the
+    // client secret is encrypted before it touches the row.
+    let mut metadata_val = body.get("metadata").cloned().unwrap_or(serde_json::Value::Null);
+    if let Some(oauth) = body.get("oauth").and_then(|v| v.as_object()) {
+        if let Some(client_id) = oauth
+            .get("clientId")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            let mut o = serde_json::Map::new();
+            o.insert("clientId".into(), serde_json::json!(client_id));
+            for key in ["scopes", "authorizationEndpoint", "tokenEndpoint"] {
+                if let Some(v) = oauth
+                    .get(key)
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                {
+                    o.insert(key.into(), serde_json::json!(v));
+                }
+            }
+            if let Some(secret) = oauth
+                .get("clientSecret")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                let enc = state.bridge.client().encrypt_token(secret).map_err(|e| {
+                    to_error_response(types::NeboError::Internal(format!(
+                        "encrypt client secret: {e}"
+                    )))
+                })?;
+                o.insert("clientSecretEnc".into(), serde_json::json!(enc));
+            }
+            if !metadata_val.is_object() {
+                metadata_val = serde_json::json!({});
+            }
+            metadata_val["oauth"] = serde_json::Value::Object(o);
+        }
+    }
+    let metadata = match &metadata_val {
+        serde_json::Value::Null => None,
+        v => Some(v.to_string()),
+    };
 
     let id = uuid::Uuid::new_v4().to_string();
     let integration = state
@@ -953,82 +999,10 @@ pub async fn reauthenticate_integration(
     let _ = state.store.delete_mcp_credentials(&id, "oauth_token");
     let _ = state.store.clear_mcp_oauth_state(&id);
 
-    // Start a new OAuth flow (same as get_oauth_url but returns the URL directly)
-    let server_url = integration
-        .server_url
-        .as_deref()
-        .ok_or_else(|| to_error_response(types::NeboError::Validation("No server URL".into())))?;
-
-    let metadata = state
-        .bridge
-        .client()
-        .discover_oauth(server_url)
+    // Start a new OAuth flow — ONE pathway, same helper the add-time flow uses.
+    let auth_url = start_oauth_flow(&state, &integration, &headers)
         .await
-        .map_err(|e| {
-            to_error_response(types::NeboError::Internal(format!(
-                "OAuth discovery failed: {e}"
-            )))
-        })?;
-
-    info!(
-        integration = %id,
-        "MCP reauthenticate: discovered OAuth metadata"
-    );
-
-    let redirect_uri = oauth_redirect_uri(&headers, state.config.port);
-    let (client_id, client_secret) = if let Some(ref reg_endpoint) = metadata.registration_endpoint
-    {
-        match do_client_registration(&state, reg_endpoint, &redirect_uri).await {
-            Ok((cid, csec)) => (cid, csec),
-            Err(e) => {
-                warn!("DCR failed during reauth, using fallback: {e}");
-                (format!("nebo-agent-{}", id), None)
-            }
-        }
-    } else {
-        (format!("nebo-agent-{}", id), None)
-    };
-
-    let code_verifier = generate_code_verifier();
-    let code_challenge = compute_code_challenge(&code_verifier);
-    let oauth_state = generate_state();
-
-    let encrypted_verifier = state
-        .bridge
-        .client()
-        .encrypt_token(&code_verifier)
-        .map_err(|e| to_error_response(types::NeboError::Internal(format!("encrypt: {e}"))))?;
-    let encrypted_secret =
-        match &client_secret {
-            Some(s) => Some(state.bridge.client().encrypt_token(s).map_err(|e| {
-                to_error_response(types::NeboError::Internal(format!("encrypt: {e}")))
-            })?),
-            None => None,
-        };
-
-    state
-        .store
-        .set_mcp_oauth_state(
-            &id,
-            &oauth_state,
-            &encrypted_verifier,
-            &client_id,
-            encrypted_secret.as_deref(),
-            &metadata.authorization_endpoint,
-            &metadata.token_endpoint,
-            &redirect_uri,
-        )
         .map_err(to_error_response)?;
-
-    let auth_url = format!(
-        "{}?response_type=code&client_id={}&redirect_uri={}&state={}&code_challenge={}&code_challenge_method=S256&scope={}",
-        metadata.authorization_endpoint,
-        urlencoding::encode(&client_id),
-        urlencoding::encode(&redirect_uri),
-        urlencoding::encode(&oauth_state),
-        urlencoding::encode(&code_challenge),
-        urlencoding::encode(MCP_OAUTH_SCOPE),
-    );
 
     info!(integration = %id, "MCP reauthenticate: OAuth URL generated");
 
@@ -1064,6 +1038,160 @@ fn generate_state() -> String {
 
 // ── OAuth flow ──────────────────────────────────────────────────────
 
+/// A pre-registered OAuth client for servers that publish no RFC 8414
+/// metadata on their origin and support no Dynamic Client Registration
+/// (e.g. Google's Gmail MCP): the owner registers the client with the
+/// provider and pastes its settings when adding the server. Stored in the
+/// integration's metadata JSON under "oauth"; the client secret is encrypted
+/// at rest ("clientSecretEnc").
+struct PreRegisteredOAuth {
+    client_id: String,
+    client_secret: Option<String>,
+    scopes: Option<String>,
+    authorization_endpoint: String,
+    token_endpoint: String,
+}
+
+fn pre_registered_oauth(state: &AppState, metadata: Option<&str>) -> Option<PreRegisteredOAuth> {
+    let meta: serde_json::Value = serde_json::from_str(metadata?).ok()?;
+    let o = meta.get("oauth")?;
+    let client_id = o.get("clientId")?.as_str()?.trim().to_string();
+    if client_id.is_empty() {
+        return None;
+    }
+    Some(PreRegisteredOAuth {
+        client_id,
+        client_secret: o
+            .get("clientSecretEnc")
+            .and_then(|v| v.as_str())
+            .and_then(|enc| state.bridge.client().decrypt_token(enc).ok()),
+        scopes: o
+            .get("scopes")
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty()),
+        authorization_endpoint: o.get("authorizationEndpoint")?.as_str()?.trim().to_string(),
+        token_endpoint: o.get("tokenEndpoint")?.as_str()?.trim().to_string(),
+    })
+}
+
+/// Start an OAuth flow for an integration and return the authorization URL.
+/// The ONE flow-start pathway (add-time connect and reauthenticate both land
+/// here): a pre-registered client from metadata when present, otherwise
+/// RFC 8414 discovery + Dynamic Client Registration.
+async fn start_oauth_flow(
+    state: &AppState,
+    integration: &db::models::McpIntegration,
+    headers: &HeaderMap,
+) -> Result<String, types::NeboError> {
+    let server_url = integration
+        .server_url
+        .as_deref()
+        .ok_or_else(|| types::NeboError::Validation("No server URL".into()))?;
+    let redirect_uri = oauth_redirect_uri(headers, state.config.port);
+
+    let (authorization_endpoint, token_endpoint, client_id, client_secret, scope, pre_registered) =
+        match pre_registered_oauth(state, integration.metadata.as_deref()) {
+            Some(p) => {
+                info!(integration = %integration.id, "MCP OAuth: using pre-registered client");
+                (
+                    p.authorization_endpoint,
+                    p.token_endpoint,
+                    p.client_id,
+                    p.client_secret,
+                    p.scopes.unwrap_or_else(|| MCP_OAUTH_SCOPE.to_string()),
+                    true,
+                )
+            }
+            None => {
+                let metadata = state
+                    .bridge
+                    .client()
+                    .discover_oauth(server_url)
+                    .await
+                    .map_err(|e| {
+                        types::NeboError::Internal(format!("OAuth discovery failed: {e}"))
+                    })?;
+                info!(
+                    integration = %integration.id,
+                    auth_endpoint = %metadata.authorization_endpoint,
+                    token_endpoint = %metadata.token_endpoint,
+                    registration = ?metadata.registration_endpoint,
+                    "discovered MCP OAuth metadata"
+                );
+                let (client_id, client_secret) = if let Some(ref reg_endpoint) =
+                    metadata.registration_endpoint
+                {
+                    match do_client_registration(state, reg_endpoint, &redirect_uri).await {
+                        Ok(pair) => pair,
+                        Err(e) => {
+                            warn!("DCR failed, using fallback client_id: {e}");
+                            (format!("nebo-agent-{}", integration.id), None)
+                        }
+                    }
+                } else {
+                    (format!("nebo-agent-{}", integration.id), None)
+                };
+                (
+                    metadata.authorization_endpoint,
+                    metadata.token_endpoint,
+                    client_id,
+                    client_secret,
+                    MCP_OAUTH_SCOPE.to_string(),
+                    false,
+                )
+            }
+        };
+
+    let code_verifier = generate_code_verifier();
+    let code_challenge = compute_code_challenge(&code_verifier);
+    let oauth_state = generate_state();
+
+    let encrypted_verifier = state
+        .bridge
+        .client()
+        .encrypt_token(&code_verifier)
+        .map_err(|e| types::NeboError::Internal(format!("encrypt: {e}")))?;
+    let encrypted_secret = match &client_secret {
+        Some(s) => Some(
+            state
+                .bridge
+                .client()
+                .encrypt_token(s)
+                .map_err(|e| types::NeboError::Internal(format!("encrypt: {e}")))?,
+        ),
+        None => None,
+    };
+
+    state.store.set_mcp_oauth_state(
+        &integration.id,
+        &oauth_state,
+        &encrypted_verifier,
+        &client_id,
+        encrypted_secret.as_deref(),
+        &authorization_endpoint,
+        &token_endpoint,
+        &redirect_uri,
+    )?;
+
+    let mut auth_url = format!(
+        "{}?response_type=code&client_id={}&redirect_uri={}&state={}&code_challenge={}&code_challenge_method=S256&scope={}",
+        authorization_endpoint,
+        urlencoding::encode(&client_id),
+        urlencoding::encode(&redirect_uri),
+        urlencoding::encode(&oauth_state),
+        urlencoding::encode(&code_challenge),
+        urlencoding::encode(&scope),
+    );
+    if pre_registered {
+        // Google issues a refresh token only with access_type=offline and
+        // re-issues it only under prompt=consent; other providers must ignore
+        // unknown authorize params (RFC 6749 §3.1).
+        auth_url.push_str("&access_type=offline&prompt=consent");
+    }
+    Ok(auth_url)
+}
+
 /// GET /api/v1/integrations/:id/oauth-url — start OAuth flow.
 /// Discovers OAuth metadata, does Dynamic Client Registration, generates PKCE,
 /// stores flow state, and returns the authorization URL.
@@ -1078,89 +1206,9 @@ pub async fn get_oauth_url(
         .map_err(to_error_response)?
         .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
 
-    let server_url = integration
-        .server_url
-        .as_deref()
-        .ok_or_else(|| to_error_response(types::NeboError::Validation("No server URL".into())))?;
-
-    // 1. Discover OAuth metadata
-    let metadata = state
-        .bridge
-        .client()
-        .discover_oauth(server_url)
+    let auth_url = start_oauth_flow(&state, &integration, &headers)
         .await
-        .map_err(|e| {
-            to_error_response(types::NeboError::Internal(format!(
-                "OAuth discovery failed: {e}"
-            )))
-        })?;
-
-    info!(
-        integration = %id,
-        auth_endpoint = %metadata.authorization_endpoint,
-        token_endpoint = %metadata.token_endpoint,
-        registration = ?metadata.registration_endpoint,
-        "discovered MCP OAuth metadata"
-    );
-
-    // 2. Dynamic Client Registration (if supported)
-    let redirect_uri = oauth_redirect_uri(&headers, state.config.port);
-    let (client_id, client_secret) = if let Some(ref reg_endpoint) = metadata.registration_endpoint
-    {
-        match do_client_registration(&state, reg_endpoint, &redirect_uri).await {
-            Ok((cid, csec)) => (cid, csec),
-            Err(e) => {
-                warn!("DCR failed, using fallback client_id: {e}");
-                (format!("nebo-agent-{}", id), None)
-            }
-        }
-    } else {
-        (format!("nebo-agent-{}", id), None)
-    };
-
-    // 3. Generate PKCE
-    let code_verifier = generate_code_verifier();
-    let code_challenge = compute_code_challenge(&code_verifier);
-    let oauth_state = generate_state();
-
-    // 4. Encrypt and store flow state in DB
-    let encrypted_verifier = state
-        .bridge
-        .client()
-        .encrypt_token(&code_verifier)
-        .map_err(|e| to_error_response(types::NeboError::Internal(format!("encrypt: {e}"))))?;
-    let encrypted_secret =
-        match &client_secret {
-            Some(s) => Some(state.bridge.client().encrypt_token(s).map_err(|e| {
-                to_error_response(types::NeboError::Internal(format!("encrypt: {e}")))
-            })?),
-            None => None,
-        };
-
-    state
-        .store
-        .set_mcp_oauth_state(
-            &id,
-            &oauth_state,
-            &encrypted_verifier,
-            &client_id,
-            encrypted_secret.as_deref(),
-            &metadata.authorization_endpoint,
-            &metadata.token_endpoint,
-            &redirect_uri,
-        )
         .map_err(to_error_response)?;
-
-    // 5. Build authorization URL
-    let auth_url = format!(
-        "{}?response_type=code&client_id={}&redirect_uri={}&state={}&code_challenge={}&code_challenge_method=S256&scope={}",
-        metadata.authorization_endpoint,
-        urlencoding::encode(&client_id),
-        urlencoding::encode(&redirect_uri),
-        urlencoding::encode(&oauth_state),
-        urlencoding::encode(&code_challenge),
-        urlencoding::encode(MCP_OAUTH_SCOPE),
-    );
 
     info!(integration = %id, "MCP OAuth URL generated");
 
