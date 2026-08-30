@@ -2534,6 +2534,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // the upgraded socket since it wraps the response body stream.
     let http_routes = Router::new()
         .route("/health", axum::routing::get(health_handler))
+        .route("/ready", axum::routing::get(ready_handler))
         .route("/server.json", axum::routing::get(spa::server_json))
         // MCP endpoint for CLI providers (Claude Code, Codex, Gemini)
         .route(
@@ -5701,6 +5702,31 @@ async fn health_handler() -> Json<HealthResponse> {
         status: "ok".into(),
         version: VERSION.into(),
     })
+}
+
+/// Readiness = the hub gateway actually accepts us, not just process liveness.
+/// A bot whose token went stale boots, gets rejected by the gateway, and used
+/// to report healthy forever — down and invisible (found 2026-08-29). This is
+/// the k8s readinessProbe target for cloud bots: NotReady is the honest state
+/// while the gateway connection is absent. Liveness stays on /health — a
+/// restart cannot fix a stale token, so failing liveness would just crashloop.
+/// Bots not connected to a hub (desktop, dev) simply never probe this route.
+async fn ready_handler(
+    axum::extract::State(state): axum::extract::State<AppState>,
+) -> (axum::http::StatusCode, Json<serde_json::Value>) {
+    let connected = state.comm_manager.is_connected().await;
+    let code = if connected {
+        axum::http::StatusCode::OK
+    } else {
+        axum::http::StatusCode::SERVICE_UNAVAILABLE
+    };
+    (
+        code,
+        Json(serde_json::json!({
+            "status": if connected { "ready" } else { "gateway_disconnected" },
+            "version": VERSION,
+        })),
+    )
 }
 
 fn cors_layer() -> CorsLayer {
