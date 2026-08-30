@@ -664,4 +664,44 @@ mod tests {
             assert!(h.await.expect("task panicked"), "agent {i} got no content");
         }
     }
+
+    /// The idle reaper must tear the browser down after the configured quiet
+    /// period — and a fresh use afterwards must relaunch cleanly. Guards the
+    /// resident-forever regression (a cloud bot held chromium 6.7 days).
+    #[tokio::test]
+    #[ignore = "requires the obscura binary; run with --ignored"]
+    async fn idle_reaper_tears_down_and_relaunches() {
+        let Some(bridge) = try_bridge() else {
+            eprintln!("obscura binary not found — skipping");
+            return;
+        };
+        let bridge = Arc::new(bridge);
+        bridge.spawn_idle_reaper(Duration::from_secs(2));
+
+        let out = bridge
+            .execute("navigate", &json!({"url": "https://example.com"}), "idle-test")
+            .await
+            .expect("navigate through tier-2");
+        assert!(out.is_object() || out.is_string(), "navigate returned: {out}");
+        assert!(bridge.core.lock().await.is_some(), "browser resident after use");
+
+        // idle 2s + reaper tick (min clamp 5s) + slack
+        let mut torn_down = false;
+        for _ in 0..30 {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            if bridge.core.lock().await.is_none() {
+                torn_down = true;
+                break;
+            }
+        }
+        assert!(torn_down, "idle reaper never tore the browser down");
+
+        // next job relaunches transparently
+        let out = bridge
+            .execute("navigate", &json!({"url": "https://example.com"}), "idle-test-2")
+            .await
+            .expect("relaunch after idle teardown");
+        assert!(out.is_object() || out.is_string());
+        assert!(bridge.core.lock().await.is_some(), "browser relaunched");
+    }
 }
