@@ -47,6 +47,7 @@
     { id: 'skills', label: 'settings.navItems.skills' },
     { id: 'channels', label: 'agentSettings.channels' },
     { id: 'accounts', label: 'agentSettings.connectedAccounts' },
+    { id: 'phone', label: 'agentSettings.phone' },
     { id: 'approvals', label: 'agentSettings.approvals' },
     { id: 'memory', label: 'agentSettings.memory' },
   ];

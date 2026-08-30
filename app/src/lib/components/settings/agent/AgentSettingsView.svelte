@@ -82,6 +82,7 @@
     { id: 'skills', label: 'settings.navItems.skills' },
     { id: 'channels', label: 'agentSettings.channels' },
     { id: 'accounts', label: 'agentSettings.connectedAccounts' },
+    { id: 'phone', label: 'agentSettings.phone' },
     { id: 'approvals', label: 'agentSettings.approvals' },
     { id: 'memory', label: 'agentSettings.memory' },
   ];
@@ -553,12 +554,19 @@
   let claimableNumbers = $state<ClaimablePhoneNumber[]>([]);
   let claimableLoading = $state(false);
 
-  $effect(() => { if (section === 'accounts') loadAccounts(); });
+  $effect(() => { if (section === 'accounts' || section === 'phone') loadAccounts(); });
+
+  // Phone gets its own settings section — a phone line reads as a capability
+  // of the employee, not "an account" — but both sections render the SAME
+  // accounts machinery, just filtered: phonecall here, everything else there.
+  const shownPlugins = $derived(
+    accountPlugins.filter((p) => (section === 'phone') === (p.slug === 'phonecall'))
+  );
 
   const accountAuthUnsubs: (() => void)[] = [];
 
   $effect(() => {
-    if (section !== 'accounts') return;
+    if (section !== 'accounts' && section !== 'phone') return;
     const ws = getWebSocketClient();
     accountAuthUnsubs.push(
       // plugin_auth_url is opened once, globally, in listeners.ts — not here.
@@ -1164,21 +1172,26 @@
         <a href="/marketplace/plugins" class="inline-flex items-center gap-1 text-sm text-primary font-medium mt-2">{$t('agentSettings.addFromMarketplace')}</a>
       {/if}
 
-    {:else if section === 'accounts'}
+    {:else if section === 'accounts' || section === 'phone'}
       <div class="mb-1">
-        <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('agentSettings.connectedAccounts')}</div>
-        <div class="text-xs text-base-content/70 mt-1">{$t('agentSettings.accountsDesc', { values: { name: agent?.name ?? '' } })}</div>
+        <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t(section === 'phone' ? 'agentSettings.phone' : 'agentSettings.connectedAccounts')}</div>
+        <div class="text-xs text-base-content/70 mt-1">{$t(section === 'phone' ? 'agentSettings.phoneDesc' : 'agentSettings.accountsDesc', { values: { name: agent?.name ?? '' } })}</div>
       </div>
       {#if accountsLoading}
         <div class="text-xs text-base-content/50 py-6 text-center">{$t('agentSettings.loadingAccounts')}</div>
-      {:else if accountPlugins.length === 0}
+      {:else if shownPlugins.length === 0}
         <div class="py-8 text-center">
-          <div class="text-sm text-base-content/50 mb-2">{$t('agentSettings.noMultiAccountPlugins')}</div>
-          <a href="/marketplace/plugins" class="inline-flex items-center gap-1 text-sm text-primary font-medium">{$t('agentSettings.browseMarketplaceArrow')}</a>
+          {#if section === 'phone'}
+            <div class="text-sm text-base-content/50 mb-2">{$t('agentSettings.noPhonePlugin')}</div>
+            <a href="/marketplace/plugins" class="inline-flex items-center gap-1 text-sm text-primary font-medium">{$t('agentSettings.browseMarketplaceArrow')}</a>
+          {:else}
+            <div class="text-sm text-base-content/50 mb-2">{$t('agentSettings.noMultiAccountPlugins')}</div>
+            <a href="/marketplace/plugins" class="inline-flex items-center gap-1 text-sm text-primary font-medium">{$t('agentSettings.browseMarketplaceArrow')}</a>
+          {/if}
         </div>
       {:else}
         <div class="flex flex-col gap-3">
-          {#each accountPlugins as plugin (plugin.slug)}
+          {#each shownPlugins as plugin (plugin.slug)}
             <div class="rounded-lg border border-base-300 bg-base-100 overflow-hidden">
               <div class="flex items-start gap-3 p-3.5">
                 <div class="flex-1 min-w-0">
