@@ -132,4 +132,14 @@ pub fn routes() -> Router<AppState> {
             "/phone/optout",
             axum::routing::post(handlers::neboai::phone_optout),
         )
+        // Presence: the bridge's "bot X is here" registration credential —
+        // hub-minted, routes every line pointed at this bot.
+        .route(
+            "/phone/presence",
+            axum::routing::get(handlers::neboai::phone_presence),
+        )
+        .route(
+            "/phone/lines",
+            axum::routing::get(handlers::neboai::phone_lines),
+        )
 }

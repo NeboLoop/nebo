@@ -1435,6 +1435,28 @@ impl NeboAIApi {
         .await
     }
 
+    /// The hub-minted presence token the phone bridge registers with —
+    /// "bot X is here", routing every line the hub points at this bot.
+    pub async fn get_phone_presence(&self) -> Result<serde_json::Value, CommError> {
+        self.do_json(
+            reqwest::Method::GET,
+            &format!("/api/v1/bots/{}/phone/presence", self.bot_id),
+            None::<&()>,
+        )
+        .await
+    }
+
+    /// The lines this bot answers — greeting and business identity, read
+    /// live at call time so /manage/phone edits land on the next call.
+    pub async fn list_phone_lines(&self) -> Result<serde_json::Value, CommError> {
+        self.do_json(
+            reqwest::Method::GET,
+            &format!("/api/v1/bots/{}/phone/lines", self.bot_id),
+            None::<&()>,
+        )
+        .await
+    }
+
     /// Fetch license keys for sealed .napp artifacts.
     ///
     /// Returns decryption keys for all artifacts this bot is licensed to access.

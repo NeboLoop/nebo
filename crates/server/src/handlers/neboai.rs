@@ -1564,6 +1564,31 @@ pub async fn phone_optout(
     Ok(Json(resp))
 }
 
+/// GET /api/v1/phone/presence — the hub-minted presence token the bridge
+/// registers with. Proof of "this bot is here"; the gateway routes any of
+/// the bot's lines to a socket registered with it.
+pub async fn phone_presence(
+    State(state): State<AppState>,
+) -> HandlerResult<serde_json::Value> {
+    let api = build_api_client(&state).map_err(to_error_response)?;
+    let resp = api
+        .get_phone_presence()
+        .await
+        .map_err(|e| to_error_response(NeboError::Internal(format!("phone presence: {e}"))))?;
+    Ok(Json(resp))
+}
+
+/// GET /api/v1/phone/lines — the lines this bot answers, greeting included.
+/// Read live so /manage/phone edits land on the very next call.
+pub async fn phone_lines(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
+    let api = build_api_client(&state).map_err(to_error_response)?;
+    let resp = api
+        .list_phone_lines()
+        .await
+        .map_err(|e| to_error_response(NeboError::Internal(format!("phone lines: {e}"))))?;
+    Ok(Json(resp))
+}
+
 /// POST /api/v1/phone/unbind — release a bound number.
 pub async fn phone_unbind(
     State(state): State<AppState>,

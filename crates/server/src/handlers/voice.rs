@@ -6,6 +6,7 @@ use tokio::sync::mpsc;
 use tracing::{error, info, warn};
 
 use super::to_error_response;
+use crate::codes::build_api_client;
 use crate::state::AppState;
 
 /// Voice conversation — speech-to-speech via the xAI Grok realtime API
@@ -785,6 +786,30 @@ async fn handle_conversation_ws(mut socket: WebSocket, state: AppState, mut q: C
                        Never claim to be human; if asked, say plainly that you're an AI \
                        assistant for the business.",
         );
+        // The line's spoken opening, in precedence order: the call tree's
+        // greeting (an explicit design) wins; else the line-level greeting
+        // set at neboai.com/manage/phone, fetched LIVE so an edit lands on
+        // the very next call; else the employee greets naturally with the
+        // business name from the generic prompt above.
+        let line_greeting = match call_tree.as_ref().map(|t| t.greeting.is_empty()) {
+            Some(false) => None, // call tree carries one — it wins
+            _ => match (q.line.as_deref().filter(|s| !s.is_empty()), build_api_client(&state)) {
+                (Some(line), Ok(api)) => api.list_phone_lines().await.ok().and_then(|v| {
+                    v.get("numbers")?.as_array()?.iter().find_map(|n| {
+                        (n.get("number")?.as_str()? == line)
+                            .then(|| n.get("greeting")?.as_str().map(str::to_string))
+                            .flatten()
+                            .filter(|g| !g.is_empty())
+                    })
+                }),
+                _ => None,
+            },
+        };
+        if let Some(g) = line_greeting {
+            instructions.push_str(&format!(
+                "\n\nOpen the call with exactly this greeting: \"{g}\""
+            ));
+        }
         // The line's call tree: greeting + intent vocabulary. Routing is the
         // conversation itself; enforcement is the per-intent allowlists on
         // every delegated run — the tree TELLS the model its jobs, the
