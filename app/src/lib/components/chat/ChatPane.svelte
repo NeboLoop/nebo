@@ -645,6 +645,16 @@
   // summary FOR THE MODEL — but that replacement was stored as the user's
   // message, so the transcript showed internal plumbing ("can be read with
   // os(resource: ...)"). Render it as a clean note + the summary instead.
+  // Attachment pointer notes ("[Attached: x.md (13 KB) — saved at /path...]",
+  // audio variants) are appended to the prompt FOR THE MODEL — the transcript
+  // already renders the real attachment chips, so the pointer text is
+  // plumbing duplicated into the human view. Strip it from display only;
+  // the stored content (the model's context) is untouched.
+  const ATTACHMENT_NOTE_RE = /\n?\[(?:Attached|Audio): [^\]]*\]|\n?\[The audio file is saved at [^\]]*\]/g;
+  function stripAttachmentNotes(content: string): string {
+    return content.replace(ATTACHMENT_NOTE_RE, '').trim();
+  }
+
   const LARGE_INPUT_RE = /^\[This message contained a large [\s\S]*?\((\d+) characters[\s\S]*?Here is a summary:\]\s*/;
   function parseLargeInput(content: string): { chars: string; summary: string } | null {
     const m = content.match(LARGE_INPUT_RE);
@@ -720,6 +730,9 @@
   /// Identity of the latest user message (grouped messages carry no id — key on
   /// position + content so both new sends and edit-resubmits re-arm the room).
   let lastUserMsgKey: string | null = null;
+  /// Identity of the FIRST user message — the prepend detector (see the
+  /// turn effect): older history changes it, a new send never does.
+  let lastFirstUserKey: string | null = null;
   const TURN_TOP_PAD = 18; // matches the scroller's vertical padding
 
   /// Recompute the spacer so (last user msg → end of content + spacer) fills
@@ -744,9 +757,20 @@
   $effect(() => {
     const users = groupedMessages.filter((m) => m.type === 'user');
     const last = users[users.length - 1];
+    const first = users[0];
     const key = last ? `${users.length}:${last.content}` : null;
+    const firstKey = first ? `${first.time ?? ''}:${first.content}` : null;
     if (key === lastUserMsgKey || key === null) return;
+    // Loading OLDER messages also grows the count and changes the key, but a
+    // prepend changes the FIRST user message while a send never does. Treat
+    // it as history arriving, not a new turn — the old check pinned the last
+    // user message to the top on every load-older, yanking the reader from
+    // the top of the transcript back to the bottom (and making the start of a
+    // long conversation unreachable).
+    const prepended = firstKey !== lastFirstUserKey && lastFirstUserKey !== null;
     lastUserMsgKey = key;
+    lastFirstUserKey = firstKey;
+    if (prepended) return;
     if (!initialScrollDone) return; // opening an old chat is not a send
     requestAnimationFrame(() => {
       const scroller = messagesContainer;
@@ -1465,7 +1489,7 @@
                 </div>
                 {@html renderMarkdown(li.summary)}
               {:else}
-                {@html renderMarkdown(msg.content)}
+                {@html renderMarkdown(stripAttachmentNotes(msg.content))}
               {/if}
               {#if msg.attachments?.length}
                 <div class="flex flex-wrap gap-2 mt-2">
