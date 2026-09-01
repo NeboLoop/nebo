@@ -786,30 +786,52 @@ async fn handle_conversation_ws(mut socket: WebSocket, state: AppState, mut q: C
                        Never claim to be human; if asked, say plainly that you're an AI \
                        assistant for the business.",
         );
-        // The line's spoken opening, in precedence order: the call tree's
-        // greeting (an explicit design) wins; else the line-level greeting
-        // set at neboai.com/manage/phone, fetched LIVE so an edit lands on
-        // the very next call; else the employee greets naturally with the
-        // business name from the generic prompt above.
-        let line_greeting = match call_tree.as_ref().map(|t| t.greeting.is_empty()) {
-            Some(false) => None, // call tree carries one — it wins
-            _ => match (q.line.as_deref().filter(|s| !s.is_empty()), build_api_client(&state)) {
-                (Some(line), Ok(api)) => api.list_phone_lines().await.ok().and_then(|v| {
-                    v.get("numbers")?.as_array()?.iter().find_map(|n| {
-                        (n.get("number")?.as_str()? == line)
-                            .then(|| n.get("greeting")?.as_str().map(str::to_string))
-                            .flatten()
-                            .filter(|g| !g.is_empty())
+        // The line's LIVE row from the hub — greeting and business identity
+        // as /app/manage/phone holds them right now, so an edit lands on the
+        // very next call. The endpoint token's biz claim is mint-time-stale
+        // by design (rotating it would strand the bridge's registration);
+        // the token authenticates, this row speaks. The bridge's `line`
+        // param is the line's LABEL, so match label or number — and a
+        // single-line bot needs no match at all.
+        let live_line: Option<serde_json::Value> = match build_api_client(&state) {
+            Ok(api) => api.list_phone_lines().await.ok().and_then(|v| {
+                let rows = v.get("numbers")?.as_array()?.clone();
+                let want = q.line.as_deref().unwrap_or_default();
+                rows.iter()
+                    .find(|n| {
+                        !want.is_empty()
+                            && (n.get("number").and_then(|x| x.as_str()) == Some(want)
+                                || n.get("label").and_then(|x| x.as_str()) == Some(want))
                     })
-                }),
-                _ => None,
-            },
+                    .cloned()
+                    .or_else(|| (rows.len() == 1).then(|| rows[0].clone()))
+            }),
+            Err(_) => None,
         };
-        if let Some(g) = line_greeting {
-            instructions.push_str(&format!(
-                "\n\nOpen the call with exactly this greeting: \"{g}\""
-            ));
+        let live_str = |key: &str| -> Option<String> {
+            live_line
+                .as_ref()?
+                .get(key)?
+                .as_str()
+                .map(str::to_string)
+                .filter(|v| !v.is_empty())
+        };
+        // Spoken opening, in precedence order: the call tree's greeting (an
+        // explicit design) wins; else the line's greeting; else the natural
+        // greeting with the business name below.
+        let tree_has_greeting = call_tree.as_ref().is_some_and(|t| !t.greeting.is_empty());
+        if !tree_has_greeting {
+            if let Some(g) = live_str("greeting") {
+                instructions.push_str(&format!(
+                    "\n\nOpen the call with exactly this greeting: \"{g}\""
+                ));
+            }
         }
+        // Business identity: the live row wins over the token's mint-time
+        // claim ("Thank you for calling Alma Tuck" long after the owner
+        // renamed the line — live 2026-09-01).
+        let live_biz = live_str("businessName");
+        let biz_for_call = live_biz.as_deref().or(q.business.as_deref());
         // The line's call tree: greeting + intent vocabulary. Routing is the
         // conversation itself; enforcement is the per-intent allowlists on
         // every delegated run — the tree TELLS the model its jobs, the
@@ -877,7 +899,7 @@ async fn handle_conversation_ws(mut socket: WebSocket, state: AppState, mut q: C
                  call them back.",
             );
         }
-        if let Some(biz) = q.business.as_deref().filter(|s| !s.is_empty()) {
+        if let Some(biz) = biz_for_call.filter(|s| !s.is_empty()) {
             instructions.push_str(&format!(
                 "\n\nYou are answering for the business \"{biz}\" — greet as {biz} \
                  and stay {biz} for the whole call."
