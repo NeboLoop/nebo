@@ -248,6 +248,7 @@
 		"usedTool": "Used {name}",
 		"workingWithTool": "working with {name}",
 		"moreCount": "+{count} more",
+		"largeInputNote": "Large document \u00b7 {chars} characters \u00b7 full text kept for the agent",
 		"enterToSubmit": "Enter to submit · Esc to cancel",
 		"saveAndSubmit": "Save & Submit",
 		"editResend": "Edit & resend",

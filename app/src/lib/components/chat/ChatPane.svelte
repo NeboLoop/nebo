@@ -641,6 +641,17 @@
     editText = '';
   }
 
+  // The large-input pipeline replaces a huge pasted prompt with a pointer +
+  // summary FOR THE MODEL — but that replacement was stored as the user's
+  // message, so the transcript showed internal plumbing ("can be read with
+  // os(resource: ...)"). Render it as a clean note + the summary instead.
+  const LARGE_INPUT_RE = /^\[This message contained a large [\s\S]*?\((\d+) characters[\s\S]*?Here is a summary:\]\s*/;
+  function parseLargeInput(content: string): { chars: string; summary: string } | null {
+    const m = content.match(LARGE_INPUT_RE);
+    if (!m) return null;
+    return { chars: Number(m[1]).toLocaleString(), summary: content.slice(m[0].length) };
+  }
+
   function handleEditKeydown(e: KeyboardEvent, idx: number) {
     if (e.key === 'Escape') {
       e.preventDefault();
@@ -1447,7 +1458,15 @@
         {:else}
           <div class="max-w-[640px] self-end mt-3" data-user-msg>
             <div class="py-2.5 px-3.5 rounded-xl text-sm leading-relaxed bg-base-200 rounded-br-sm prose prose-sm max-w-none [&_p]:my-0 [&_ul]:my-1 [&_ol]:my-1 [&>:first-child]:mt-0 [&>:last-child]:mb-0">
-              {@html renderMarkdown(msg.content)}
+              {#if parseLargeInput(msg.content)}
+                {@const li = parseLargeInput(msg.content)!}
+                <div class="not-prose mb-2 text-xs text-base-content/50">
+                  {$t('chat.largeInputNote', { values: { chars: li.chars } })}
+                </div>
+                {@html renderMarkdown(li.summary)}
+              {:else}
+                {@html renderMarkdown(msg.content)}
+              {/if}
               {#if msg.attachments?.length}
                 <div class="flex flex-wrap gap-2 mt-2">
                   {#each msg.attachments as att}

@@ -407,3 +407,21 @@
   0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-primary) 30%, transparent); }
   50% { box-shadow: 0 0 0 10px transparent; }
 }
+
+/* Chat transcripts: a pasted URL or unbroken token must WRAP, never widen
+   the bubble into horizontal scroll ("irregular fitting", 2026-09-01).
+   Code blocks keep their own scrollbar; everything else breaks anywhere. */
+.prose {
+	min-width: 0;
+}
+.prose :where(p, li, blockquote, td, th, h1, h2, h3, h4, a, strong, em) {
+	overflow-wrap: anywhere;
+}
+.prose :where(pre) {
+	overflow-x: auto;
+	max-width: 100%;
+}
+[data-user-msg] {
+	min-width: 0;
+	max-width: 100%;
+}
