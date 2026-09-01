@@ -320,13 +320,32 @@
             addFiles(files);
             return true;
           }
+          // A LARGE paste becomes an attachment, not editor content. Pasting
+          // a whole document inline mangles it — the markdown paste parser
+          // (breaks: true) turns its single newlines into hard breaks inside
+          // one paragraph, so headings and blockquotes render as literal
+          // "#"/">" text — and a 20KB bubble is unreadable anyway. As a file
+          // the text travels verbatim, the agent reads it whole, and the
+          // composer stays a composer.
+          const text = event.clipboardData?.getData('text/plain');
+          if (
+            allowAttachments &&
+            text &&
+            (text.length > 2000 || text.split('\n').length > 25)
+          ) {
+            event.preventDefault();
+            const stamp = new Date().toTimeString().slice(0, 8).replaceAll(':', '');
+            addFiles([
+              new File([text], `pasted-text-${stamp}.md`, { type: 'text/markdown' }),
+            ]);
+            return true;
+          }
           // Paste plain, never styled. A copy from a web page or doc carries a
           // text/html flavour, and ProseMirror would faithfully reproduce its
           // bold/italic/colours — formatting the user never typed, which then
           // serializes into the message as markdown. pasteText runs the normal
           // text-paste pipeline, so the deliberate markdown-paste behaviour
           // (Markdown transformPastedText) still applies to what was copied.
-          const text = event.clipboardData?.getData('text/plain');
           if (text && event.clipboardData?.types?.includes('text/html')) {
             event.preventDefault();
             view.pasteText(text);

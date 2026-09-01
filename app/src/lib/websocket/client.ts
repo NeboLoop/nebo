@@ -68,6 +68,11 @@ class WebSocketClient {
 	private closedByUser = false;
 	private reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
 	private reconnectAttempts = 0;
+	// Bumped on every non-user socket close. Lets a caller tell "the socket
+	// broke after my send" apart from "the run is just quiet" — a frame sent
+	// on an OPEN socket can be discarded when it closes ms later, while a
+	// queued frame survives and flushes on reconnect.
+	private disruptions = 0;
 	private visibilityHooked = false;
 	private authToken: string | null = null;
 
@@ -147,6 +152,7 @@ class WebSocketClient {
 
 				// Auto-reconnect if not closed by user
 				if (!this.closedByUser) {
+					this.disruptions++;
 					const delay = Math.min(2000 * Math.pow(2, this.reconnectAttempts), 30000);
 					this.reconnectTimeout = setTimeout(() => {
 						this.reconnectAttempts++;
@@ -377,6 +383,11 @@ class WebSocketClient {
 	 */
 	requestRewrite(request: RewriteRequest): void {
 		this.send('rewrite', request);
+	}
+
+	/** Non-user socket closes so far — see `disruptions`. */
+	getDisruptionCount(): number {
+		return this.disruptions;
 	}
 
 	/**

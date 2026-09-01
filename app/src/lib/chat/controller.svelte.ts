@@ -650,6 +650,7 @@ export function createChatController(config: ChatControllerConfig) {
   // replaying an unacked chat risks a duplicate turn, worse than an honest error.
   const DELIVERY_TIMEOUT_MS = 30_000;
   let deliveryTimer: ReturnType<typeof setTimeout> | null = null;
+  let sentAtDisruptions = 0;
 
   function clearDeliveryTimer() {
     if (deliveryTimer) {
@@ -730,10 +731,26 @@ export function createChatController(config: ChatControllerConfig) {
     ws.send('chat', payload);
 
     clearDeliveryTimer();
+    sentAtDisruptions = ws.getDisruptionCount?.() ?? 0;
+    armDeliveryTimer();
+  }
+
+  // Silence alone is not failure: a long tool run (a subagent, a big build)
+  // legitimately streams nothing for minutes. Only a socket that BROKE after
+  // the send can have discarded the frame — queued frames survive and flush
+  // on reconnect. So on timeout: broke since send → honest error; still
+  // quiet on a healthy socket → keep waiting (live false alarm 2026-09-01:
+  // "connection dropped" toasts over a healthy "using agent…" run).
+  function armDeliveryTimer() {
     deliveryTimer = setTimeout(() => {
       deliveryTimer = null;
       if (!isLoading) return;
-      setError('Message not delivered. The connection dropped, so send it again.');
+      const broke = (ws.getDisruptionCount?.() ?? 0) !== sentAtDisruptions;
+      if (broke) {
+        setError('Message not delivered. The connection dropped, so send it again.');
+      } else {
+        armDeliveryTimer();
+      }
     }, DELIVERY_TIMEOUT_MS);
   }
 
