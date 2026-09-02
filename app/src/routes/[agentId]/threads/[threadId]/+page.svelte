@@ -439,6 +439,7 @@
 
   allAgents={chat.allAgents}
   tokenUsage={chat.tokenUsage}
+  contextStats={chat.contextStats}
   quotaWarning={chat.quotaWarning}
   chatError={chat.chatError}
   activityStatus={chat.activityStatus}

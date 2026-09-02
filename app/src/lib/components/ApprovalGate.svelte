@@ -133,9 +133,22 @@
     session_id?: string;
     tool?: string;
     input?: Record<string, unknown>;
+    batch?: { id: string; tool: string; input?: Record<string, unknown> }[] | null;
   }>('approval_request', async (d) => {
     if (!d?.request_id) return;
-    const described = describe(d.tool ?? '', d.input);
+    // Several gated calls in one step: one card listing each action, one decision.
+    const described =
+      d.batch && d.batch.length > 1
+        ? {
+            actionType: 'batch',
+            actionDetail: d.batch.map((c) => describe(c.tool, c.input).actionDetail).join('\n'),
+            headline: $t('components.approvalGate.batchHeadline', { values: { n: d.batch.length } }),
+            detailRows: d.batch.map((c) => {
+              const one = describe(c.tool, c.input);
+              return { label: one.headline ?? one.actionType, value: one.actionDetail };
+            }),
+          }
+        : describe(d.tool ?? '', d.input);
     const agent =
       d.agentName ??
       (await resolveAgentName(d.session_id)) ??

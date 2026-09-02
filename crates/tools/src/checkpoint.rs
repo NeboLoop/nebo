@@ -82,8 +82,9 @@ fn data_dir() -> PathBuf {
         .join(name)
 }
 
-/// Where a session keeps its checkpoints.
-pub fn root(session_id: &str) -> PathBuf {
+/// A session's private directory under Nebo's data dir (checkpoints,
+/// spilled tool results). Mode 0700: it holds file contents the employee read.
+pub fn session_dir(session_id: &str) -> PathBuf {
     let session = if session_id.trim().is_empty() {
         "default"
     } else {
@@ -94,8 +95,23 @@ pub fn root(session_id: &str) -> PathBuf {
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
         .collect();
-    data_dir().join("sessions").join(safe).join("checkpoints")
+    data_dir().join("sessions").join(safe)
 }
+
+/// Where a session keeps its checkpoints.
+pub fn root(session_id: &str) -> PathBuf {
+    session_dir(session_id).join("checkpoints")
+}
+
+/// Restrict a directory (0700) or file (0600) to the owner. No-op elsewhere.
+#[cfg(unix)]
+pub fn restrict_private(path: &Path, is_dir: bool) {
+    use std::os::unix::fs::PermissionsExt;
+    let mode = if is_dir { 0o700 } else { 0o600 };
+    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode));
+}
+#[cfg(not(unix))]
+pub fn restrict_private(_path: &Path, _is_dir: bool) {}
 
 /// Content fingerprint. xxh3 is stable across Rust releases, which matters
 /// because the value is persisted in `manifest.json` and compared after an

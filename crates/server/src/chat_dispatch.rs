@@ -994,6 +994,17 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                 ),
                             );
                         }
+                        StreamEventType::ContextStats => {
+                            if let Some(ref stats) = event.widgets {
+                                let mut payload = ws_payload!();
+                                if let (Some(obj), Some(src)) = (payload.as_object_mut(), stats.as_object()) {
+                                    for (k, v) in src {
+                                        obj.insert(k.clone(), v.clone());
+                                    }
+                                }
+                                hub.broadcast("context_stats", payload);
+                            }
+                        }
                         StreamEventType::Usage => {
                             if let Some(ref usage) = event.usage {
                                 // The same `usage` event also carries the current Janus
@@ -1025,6 +1036,8 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                         "request_id": tc.id,
                                         "tool": tc.name,
                                         "input": tc.input,
+                                        // Present when several gated calls share this card.
+                                        "batch": event.widgets.as_ref().and_then(|w| w.get("batch").cloned()),
                                     }),
                                 );
                                 // Relay the approval into the loop conversation

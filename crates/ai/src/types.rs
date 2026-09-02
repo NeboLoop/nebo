@@ -51,6 +51,10 @@ pub enum StreamEventType {
     /// accumulated into reply text (`text` is the human-readable status line;
     /// `stop_reason` is the typed machine reason, e.g. "repeated_tool_calls").
     ControlNotice,
+    /// End-of-turn context accounting (files re-read, compaction passes,
+    /// spilled results) so the owner can see where a session's tokens went.
+    /// Carried in `widgets`; never reply text.
+    ContextStats,
 }
 
 /// Token usage statistics from a streaming response.
@@ -299,6 +303,33 @@ impl StreamEvent {
             usage: None,
             rate_limit: Some(meta),
             widgets: None,
+            provider_metadata: None,
+            stop_reason: None,
+            image_url: None,
+        }
+    }
+
+    /// One card for several gated calls in one batch: the first call rides in
+    /// `tool_call` (its id is the request id the answer comes back on) and the
+    /// whole list rides in `widgets.batch`. One decision applies to all.
+    pub fn approval_request_batch(calls: &[ToolCall]) -> Self {
+        let mut ev = Self::approval_request(calls[0].clone());
+        ev.widgets = Some(serde_json::json!({
+            "batch": calls.iter().map(|c| serde_json::json!({"id": c.id, "tool": c.name, "input": c.input})).collect::<Vec<_>>()
+        }));
+        ev
+    }
+
+    pub fn context_stats(stats: serde_json::Value) -> Self {
+        Self { payload: None,
+            provenance: None,
+            event_type: StreamEventType::ContextStats,
+            text: String::new(),
+            tool_call: None,
+            error: None,
+            usage: None,
+            rate_limit: None,
+            widgets: Some(stats),
             provider_metadata: None,
             stop_reason: None,
             image_url: None,

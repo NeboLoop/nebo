@@ -186,6 +186,7 @@
     onstop={() => chat.stop()}
     isLoading={chat.isLoading}
     tokenUsage={chat.tokenUsage}
+  contextStats={chat.contextStats}
     quotaWarning={chat.quotaWarning}
     ondismisswarning={() => chat.dismissWarning()}
     chatError={chat.chatError}

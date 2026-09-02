@@ -33,6 +33,10 @@ pub struct ConcurrencyController {
     backpressure: AtomicBool,
     /// Tool-level concurrency per turn.
     tool_semaphore: Arc<Semaphore>,
+    /// Background LLM work (summaries, objective detection, personality
+    /// synthesis) takes permits here, never from the pool user turns wait on:
+    /// a burst of housekeeping must not queue a person's reply.
+    background_semaphore: Arc<Semaphore>,
     /// Absolute max permits — configured limit, or DEFAULT_MAX_CEILING when auto.
     /// The semaphore is created with this many permits; the resource monitor can
     /// only trim below it (permits can never grow past the initial count).
@@ -58,6 +62,7 @@ impl ConcurrencyController {
             // Tools run locally (processes, files, browser) so a global cap stays,
             // but it scales with run capacity instead of starving a busy fleet.
             tool_semaphore: Arc::new(Semaphore::new((max_ceiling / 4).max(8))),
+            background_semaphore: Arc::new(Semaphore::new((max_ceiling / 4).max(1))),
             max_ceiling,
         };
 
@@ -84,6 +89,17 @@ impl ConcurrencyController {
             .acquire_owned()
             .await
             .expect("llm semaphore closed")
+    }
+
+    /// Acquire a permit for background LLM work. Separate, smaller pool (a
+    /// quarter of the ceiling, at least one) so housekeeping never blocks a
+    /// user's turn; callers do not retry on overload.
+    pub async fn acquire_background_permit(&self) -> OwnedSemaphorePermit {
+        self.background_semaphore
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("background semaphore closed")
     }
 
     /// Acquire a permit for parallel tool execution within a turn.

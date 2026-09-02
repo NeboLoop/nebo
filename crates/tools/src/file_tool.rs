@@ -449,7 +449,7 @@ impl FileTool {
         let mut line_num = 0usize;
         let mut lines_read = 0usize;
         let mut limit_truncated = false;
-        // Spill artifacts (large tool results persisted under nebo-tool-results/)
+        // Spill artifacts (large tool results persisted under <session>/tool-results/)
         // already CONTAIN the line numbers from the read that produced them —
         // numbering them again renders "1  1  #!/usr/bin/env" and the model
         // reads it as "the file is being duplicated" (observed feeding a
@@ -458,7 +458,7 @@ impl FileTool {
         let numbering = std::path::Path::new(&path)
             .parent()
             .and_then(|d| d.file_name())
-            .map(|n| n != "nebo-tool-results")
+            .map(|n| n != "tool-results")
             .unwrap_or(true);
 
         for line_result in reader.lines() {
@@ -1510,7 +1510,7 @@ mod tests {
     #[test]
     fn spill_artifacts_are_read_raw_everything_else_is_numbered() {
         let tmp = tempfile::tempdir().unwrap();
-        let spill_dir = tmp.path().join("nebo-tool-results");
+        let spill_dir = tmp.path().join("tool-results");
         std::fs::create_dir_all(&spill_dir).unwrap();
         let spill = spill_dir.join("abc.txt");
         std::fs::write(&spill, "     1\talready numbered\n").unwrap();

@@ -570,6 +570,20 @@ export function createChatController(config: ChatControllerConfig) {
     }
   }
 
+  // Where the session's tokens went (context_stats, one per turn).
+  let contextStats = $state<{ files: number; filesReread: number; redundantReads: number; compactionPasses: number; evictions: number; spilledResults: number } | null>(null);
+  function handleContextStats(data: any) {
+    if (!isMyEvent(data)) return;
+    contextStats = {
+      files: data.files || 0,
+      filesReread: data.files_reread || 0,
+      redundantReads: data.redundant_reads || 0,
+      compactionPasses: data.compaction_passes || 0,
+      evictions: data.evictions || 0,
+      spilledResults: data.spilled_results || 0,
+    };
+  }
+
   function handleUsage(data: any) {
     if (!isMyEvent(data)) return;
     tokenUsage = {
@@ -692,6 +706,7 @@ export function createChatController(config: ChatControllerConfig) {
   }
   unsubs.push(onServer('research_progress', handleResearchProgress));
   unsubs.push(onServer('usage', handleUsage));
+  unsubs.push(onServer('context_stats', handleContextStats));
   unsubs.push(onServer('quota_warning', handleQuotaWarning));
   unsubs.push(onServer('chat_error', handleChatError));
   unsubs.push(onServer('ask_request', handleAskRequest));
@@ -859,6 +874,7 @@ export function createChatController(config: ChatControllerConfig) {
     get isLoading() { return isLoading; },
     set isLoading(v: boolean) { isLoading = v; },
     get tokenUsage() { return tokenUsage; },
+    get contextStats() { return contextStats; },
     get quotaWarning() { return quotaWarning; },
     get chatError() { return chatError; },
     get activityStatus() { return activityStatus; },

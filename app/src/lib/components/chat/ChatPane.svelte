@@ -79,7 +79,7 @@
 
   type AgentInfo = { id: string; name: string; color: string; initial: string; role: string; status: string; isApp?: boolean };
 
-  let { messages = [], agentName = 'Agent', agentId = '', threadId = '', sessionId = '', headerTitle = '', headerRight = '', placeholder = '', emptyIcon = '', emptyTitle = '', emptyDesc = '', allAgents = [], onteachsent, activityStatus = '', tokenUsage = null, quotaWarning = '', chatError = '', onsend, onstop, onedit, onredo, onasksubmit, onrestoreversion, ondismisswarning, ondismisserror, onloadmore, isLoading = false, isLoadingMore = false, hasMore = false, allowAttachments = true, flowsPane, onopenruns, onsettings, isolated = false, isApp = false, onopenapp, onback, composerPrefill = '', onprefilled }: {
+  let { messages = [], agentName = 'Agent', agentId = '', threadId = '', sessionId = '', headerTitle = '', headerRight = '', placeholder = '', emptyIcon = '', emptyTitle = '', emptyDesc = '', allAgents = [], onteachsent, activityStatus = '', tokenUsage = null, contextStats = null, quotaWarning = '', chatError = '', onsend, onstop, onedit, onredo, onasksubmit, onrestoreversion, ondismisswarning, ondismisserror, onloadmore, isLoading = false, isLoadingMore = false, hasMore = false, allowAttachments = true, flowsPane, onopenruns, onsettings, isolated = false, isApp = false, onopenapp, onback, composerPrefill = '', onprefilled }: {
     messages?: Message[];
     /** Employee-scoped views for the work pane. Omitted on chats with no
      *  employee behind them (channel setup help, the embed), and the matching
@@ -112,6 +112,7 @@
     allAgents?: AgentInfo[];
     activityStatus?: string;
     tokenUsage?: { input: number; output: number; cacheRead?: number; cacheCreation?: number; overhead?: number } | null;
+    contextStats?: { files: number; filesReread: number; redundantReads: number; compactionPasses: number; evictions: number; spilledResults: number } | null;
     quotaWarning?: string;
     chatError?: string;
     onsend?: (text: string, files: { file: File; id: string; previewUrl: string | null; isImage: boolean }[]) => void;
@@ -1709,6 +1710,11 @@
       <div class="max-w-[640px] mt-3 py-2 flex items-center gap-2">
         <span class="loading loading-spinner loading-xs text-primary"></span>
         <span class="text-sm text-base-content/50 animate-pulse">{activityStatus || $t('chat.working')}</span>
+      </div>
+    {/if}
+    {#if !isLoading && contextStats && (contextStats.redundantReads > 0 || contextStats.compactionPasses > 0)}
+      <div class="max-w-[640px] mt-2 text-xs text-base-content/40">
+        {$t('chat.contextStats', { values: { files: contextStats.filesReread, times: contextStats.redundantReads, passes: contextStats.compactionPasses } })}
       </div>
     {/if}
   </div>

@@ -49,7 +49,30 @@ fn fingerprint(content: &str) -> u64 {
     h.finish()
 }
 
+/// What a run's reads added up to, for the owner's context line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize)]
+pub struct LedgerStats {
+    /// Distinct files observed this run.
+    pub files: usize,
+    /// Files observed more than once.
+    pub files_reread: usize,
+    /// Observations beyond the first, summed over all files.
+    pub redundant_observations: usize,
+}
+
 impl ReadLedger {
+    pub fn stats(&self) -> LedgerStats {
+        let mut s = LedgerStats::default();
+        for e in self.entries.values() {
+            s.files += 1;
+            if e.count > 1 {
+                s.files_reread += 1;
+                s.redundant_observations += e.count - 1;
+            }
+        }
+        s
+    }
+
     /// Record a successful content-bearing read of `raw_path` and return the
     /// factual note to append to the result — None on first observation
     /// (nothing to say; the content speaks for itself).
@@ -173,5 +196,24 @@ mod tests {
         assert!(l.observe_read(file.to_str().unwrap(), "a\n").is_none());
         let note = l.observe_read(dotted.to_str().unwrap(), "a\n").unwrap();
         assert!(note.contains("observation #2"), "{note}");
+    }
+}
+
+#[cfg(test)]
+mod stats_tests {
+    use super::*;
+
+    /// The owner's context line counts files re-read and the reads beyond the first.
+    #[test]
+    fn context_stats_event_counts_re_reads_and_compactions() {
+        let mut l = ReadLedger::default();
+        assert_eq!(l.stats(), LedgerStats::default());
+        l.observe_read("/tmp/a.rs", "one");
+        l.observe_read("/tmp/b.rs", "two");
+        assert_eq!(l.stats(), LedgerStats { files: 2, files_reread: 0, redundant_observations: 0 });
+        l.observe_read("/tmp/a.rs", "one");
+        l.observe_read("/tmp/a.rs", "one");
+        l.observe_read("/tmp/b.rs", "two");
+        assert_eq!(l.stats(), LedgerStats { files: 2, files_reread: 2, redundant_observations: 3 });
     }
 }

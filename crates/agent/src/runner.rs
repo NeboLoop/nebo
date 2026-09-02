@@ -291,11 +291,30 @@ async fn ask_tool_approval(
     session_id: &str,
     gate: &str,
 ) -> String {
+    ask_tool_approval_batch(channels, tx, cancel_token, std::slice::from_ref(tool_call), session_id, gate).await
+}
+
+/// The batch form: one card, one decision, for every gated call in a batch
+/// (a person answering five cards in a row for one parallel step was the
+/// hazard). `calls` is never empty.
+async fn ask_tool_approval_batch(
+    channels: &tools::ApprovalChannels,
+    tx: &mpsc::Sender<StreamEvent>,
+    cancel_token: &CancellationToken,
+    calls: &[ai::ToolCall],
+    session_id: &str,
+    gate: &str,
+) -> String {
+    let tool_call = &calls[0];
     let request_id = tool_call.id.clone();
     let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
     channels.lock().await.insert(request_id.clone(), resp_tx);
     let _ = tx
-        .send(StreamEvent::approval_request(tool_call.clone()))
+        .send(if calls.len() > 1 {
+            StreamEvent::approval_request_batch(calls)
+        } else {
+            StreamEvent::approval_request(tool_call.clone())
+        })
         .await;
     info!(
         session_id,
@@ -385,14 +404,45 @@ fn record_action_spiral(
 /// tripped the backstop. Keys that ended a turn hot are carried into the next
 /// turn at half strength: a resumed loop trips the nudge in half the calls, and
 /// a third resumption almost immediately. Success on a key clears it.
-static CROSS_TURN_SPIRAL: std::sync::Mutex<
-    Option<std::collections::HashMap<String, std::collections::HashMap<String, usize>>>,
-> = std::sync::Mutex::new(None);
+/// Sessions remembered at once. Beyond it the least recently saved session
+/// is forgotten, one at a time: a wholesale clear made every hot loop in
+/// every session cold on the same tick.
+const CROSS_TURN_SPIRAL_SESSIONS: usize = 512;
+
+#[derive(Default)]
+struct CrossTurnSpiral {
+    hot: std::collections::HashMap<String, std::collections::HashMap<String, usize>>,
+    /// Save order, oldest first; a re-save moves the session to the back.
+    order: std::collections::VecDeque<String>,
+}
+
+impl CrossTurnSpiral {
+    fn save(&mut self, session_id: &str, hot: std::collections::HashMap<String, usize>) {
+        self.order.retain(|s| s != session_id);
+        if hot.is_empty() {
+            self.hot.remove(session_id);
+            return;
+        }
+        self.hot.insert(session_id.to_string(), hot);
+        self.order.push_back(session_id.to_string());
+        while self.hot.len() > CROSS_TURN_SPIRAL_SESSIONS {
+            match self.order.pop_front() {
+                Some(oldest) => {
+                    self.hot.remove(&oldest);
+                }
+                None => break,
+            }
+        }
+    }
+}
+
+static CROSS_TURN_SPIRAL: std::sync::Mutex<Option<CrossTurnSpiral>> = std::sync::Mutex::new(None);
 
 fn cross_turn_seed(session_id: &str) -> std::collections::HashMap<String, usize> {
     let mut guard = CROSS_TURN_SPIRAL.lock().unwrap_or_else(|p| p.into_inner());
     guard
         .get_or_insert_with(Default::default)
+        .hot
         .get(session_id)
         .cloned()
         .unwrap_or_default()
@@ -404,21 +454,12 @@ fn cross_turn_save(
     limit: usize,
 ) {
     let mut guard = CROSS_TURN_SPIRAL.lock().unwrap_or_else(|p| p.into_inner());
-    let map = guard.get_or_insert_with(Default::default);
-    // ponytail: unbounded-growth backstop — a rare full clear beats an LRU.
-    if map.len() > 512 {
-        map.clear();
-    }
     let hot: std::collections::HashMap<String, usize> = counts
         .iter()
         .filter(|(_, c)| **c * 2 >= limit)
         .map(|(k, c)| (k.clone(), c / 2))
         .collect();
-    if hot.is_empty() {
-        map.remove(session_id);
-    } else {
-        map.insert(session_id.to_string(), hot);
-    }
+    guard.get_or_insert_with(Default::default).save(session_id, hot);
 }
 
 fn extract_file_read_path(call: &ai::ToolCall) -> Option<String> {
@@ -1990,6 +2031,10 @@ async fn run_loop(
     // run one before reporting done (the reference nags its todo list the same
     // way; ours nags for a MEASURED check, not a self-declared tick).
     let mut plan_touch: Option<(usize, String)> = None;
+    // Context accounting for the owner (Stage 8): where this run's tokens went.
+    let mut ctx_compaction_passes: usize = 0;
+    let mut ctx_evictions: usize = 0;
+    let mut ctx_spilled_results: usize = 0;
     let mut read_failures: std::collections::HashMap<String, usize> =
         std::collections::HashMap::new();
     const READ_FAILURE_LIMIT: usize = 3;
@@ -2815,7 +2860,7 @@ async fn run_loop(
             })
             .unwrap_or_default();
         tokio::spawn(async move {
-            let _permit = conc.acquire_llm_permit().await;
+            let _permit = conc.acquire_background_permit().await;
             let session_mgr = SessionManager::new(store);
             detect_objective(&providers, &session_mgr, &session_id, &user_prompt).await;
         });
@@ -3078,6 +3123,9 @@ async fn run_loop(
             debug!(tokens_saved = ms_saved, "Stage 3: message summarization");
             working = summarized;
         }
+        if tb_saved + mc_saved + ms_saved > 0 {
+            ctx_compaction_passes += 1;
+        }
 
         // --- Eviction (last resort) ---
 
@@ -3093,6 +3141,7 @@ async fn run_loop(
         // Quick fallback is used immediately (no LLM call); the LLM-quality
         // summary is generated in the background and stored for next iteration.
         let summary = if !evicted.is_empty() {
+            ctx_evictions += 1;
             // The pre-eviction memory flush gate reads this counter.
             if let Err(e) = store.increment_session_compaction_count(session_id) {
                 warn!(error = %e, "could not record the compaction");
@@ -3123,7 +3172,7 @@ async fn run_loop(
                 let existing = existing_summary.clone();
                 let conc = concurrency.clone();
                 let handle = tokio::spawn(async move {
-                    let _permit = conc.acquire_llm_permit().await;
+                    let _permit = conc.acquire_background_permit().await;
                     match pruning::build_llm_summary(
                         prov.as_ref(),
                         &evicted,
@@ -4135,7 +4184,8 @@ async fn run_loop(
                 StreamEventType::ApprovalRequest
                 | StreamEventType::AskRequest
                 | StreamEventType::PlanApproval
-                | StreamEventType::ControlNotice => {
+                | StreamEventType::ControlNotice
+                | StreamEventType::ContextStats => {
                     // Approval/Ask/Plan/ControlNotice: only sent by runner, not
                     // received from provider.
                 }
@@ -4821,6 +4871,20 @@ async fn run_loop(
             // Per-command allowlist: prefixes the user chose "Approve Always" for.
             // Loaded once; appended on an "always" decision for a shell command.
             let mut approved_cmds: Vec<String> = store.get_approved_commands().unwrap_or_default();
+            // Gated calls in one batch get ONE approval card (Stage 7): the first
+            // pass collects them, one ask covers the lot, the second pass applies
+            // the decision through the same grant code as a single ask.
+            #[derive(Clone, Copy, PartialEq)]
+            enum GatePass { Collect, Apply }
+            let mut to_ask: Vec<usize> = Vec::new();
+            let mut batch_decision: Option<String> = None;
+            for gate_pass in [GatePass::Collect, GatePass::Apply] {
+            if gate_pass == GatePass::Apply {
+                if to_ask.is_empty() { break; }
+                let calls: Vec<ai::ToolCall> = to_ask.iter().map(|&i| tool_calls[i].clone()).collect();
+                let chs = approval_channels.expect("collect pass only records calls with a channel");
+                batch_decision = Some(ask_tool_approval_batch(chs, tx, cancel_token, &calls, session_id, "capability").await);
+            }
             for idx in 0..tool_calls.len() {
                 if blocked_results[idx].is_some() {
                     continue;
@@ -5172,21 +5236,20 @@ async fn run_loop(
                 {
                     continue;
                 }
-                let chs = match approval_channels {
-                    Some(c) => c,
+                if approval_channels.is_none() {
                     // No channel to ask through: leave the category ungranted so
                     // registry Phase 1c hard-blocks (safe).
-                    None => continue,
+                    continue;
+                }
+                // Collect pass: remember the call and move on; the batch is
+                // asked once below and the decision applied in the apply pass.
+                let decision = match gate_pass {
+                    GatePass::Collect => {
+                        to_ask.push(idx);
+                        continue;
+                    }
+                    GatePass::Apply => batch_decision.clone().unwrap_or_else(|| "deny".to_string()),
                 };
-                let decision = ask_tool_approval(
-                    chs,
-                    tx,
-                    cancel_token,
-                    &tool_calls[idx],
-                    session_id,
-                    category,
-                )
-                .await;
                 match decision.as_str() {
                     "always" => {
                         approved_cats.insert(category.to_string());
@@ -5230,6 +5293,7 @@ async fn run_loop(
                         ));
                     }
                 }
+            }
             }
             ctx.approved_categories = approved_cats;
 
@@ -5824,17 +5888,21 @@ async fn run_loop(
                     let total_len = result.content.len();
                     // Persist full result to temp file so agent can Read it if needed
                     let result_id = uuid::Uuid::new_v4().to_string();
-                    #[cfg(not(windows))]
-                    let result_dir = std::path::PathBuf::from("/tmp/nebo-tool-results");
-                    // Windows: no /tmp — use the real temp dir (matches the
-                    // pathres /tmp mapping the read-back path goes through).
-                    #[cfg(windows)]
-                    let result_dir = std::env::temp_dir().join("nebo-tool-results");
-                    let result_dir = result_dir.as_path();
-                    let _ = std::fs::create_dir_all(result_dir);
+                    // Under the session's private dir (0700, files 0600), not a
+                    // world-readable /tmp: a spilled result is the contents of
+                    // something the employee read.
+                    let result_dir = tools::checkpoint::session_dir(session_id).join("tool-results");
+                    if let Err(e) = std::fs::create_dir_all(&result_dir) {
+                        warn!(error = %e, "failed to create the tool-results dir");
+                    }
+                    tools::checkpoint::restrict_private(&result_dir, true);
                     let result_path = result_dir.join(format!("{}.txt", result_id));
-                    if let Err(e) = std::fs::write(&result_path, &result.content) {
-                        warn!(error = %e, "failed to persist large tool result");
+                    match std::fs::write(&result_path, &result.content) {
+                        Ok(()) => {
+                            tools::checkpoint::restrict_private(&result_path, false);
+                            ctx_spilled_results += 1;
+                        }
+                        Err(e) => warn!(error = %e, "failed to persist large tool result"),
                     }
                     let preview = truncate_str(&result.content, 4_000);
                     // Guidance matters: models follow it literally. Telling them to
@@ -6502,7 +6570,7 @@ async fn run_loop(
         let uid = memory_user_id.clone();
         let conc = concurrency.clone();
         let handle = tokio::spawn(async move {
-            let _permit = conc.acquire_llm_permit().await;
+            let _permit = conc.acquire_background_permit().await;
             let prov = prefer_non_gateway(&providers_clone.read().await);
             if let Some(prov) = prov {
                 crate::personality::synthesize_directive(&store_clone, prov.as_ref(), &uid).await;
@@ -6528,6 +6596,23 @@ async fn run_loop(
         &state,
     );
 
+    // Context accounting for the owner: one event per turn, rendered as a
+    // quiet line under the reply (Stage 8), never as reply text.
+    {
+        let ledger = read_ledger.stats();
+        let _ = tx
+            .send(StreamEvent::context_stats(serde_json::json!({
+                "files": ledger.files,
+                "files_reread": ledger.files_reread,
+                "redundant_reads": ledger.redundant_observations,
+                "compaction_passes": ctx_compaction_passes,
+                "evictions": ctx_evictions,
+                "spilled_results": ctx_spilled_results,
+                "input_tokens": state.total_input_tokens,
+                "cache_read_tokens": state.total_cache_read_tokens,
+            })))
+            .await;
+    }
     Ok(turn_exit_reason.label())
 }
 
@@ -7992,6 +8077,30 @@ mod runaway_backstop_tests {
         }
         assert!(summary_due("sess-a", SUMMARY_MIN_EVICTED));
         assert!(summary_due("sess-b", SUMMARY_MIN_EVICTED));
+    }
+}
+
+#[cfg(test)]
+mod cross_turn_lru_tests {
+    use super::*;
+
+    #[test]
+    fn cross_turn_spiral_evicts_lru_per_session() {
+        let mut m = CrossTurnSpiral::default();
+        let hot = |k: &str| std::collections::HashMap::from([(k.to_string(), 4usize)]);
+        for i in 0..CROSS_TURN_SPIRAL_SESSIONS {
+            m.save(&format!("s{i}"), hot("os:glob"));
+        }
+        // Re-saving the oldest makes it the newest.
+        m.save("s0", hot("os:glob"));
+        m.save("extra", hot("web:fetch"));
+        assert_eq!(m.hot.len(), CROSS_TURN_SPIRAL_SESSIONS, "one in, one out");
+        assert!(m.hot.contains_key("s0"), "the re-saved session survives");
+        assert!(!m.hot.contains_key("s1"), "the least recently saved is the one evicted");
+        assert!(m.hot.contains_key("extra"));
+        // A session that cooled off is dropped, not kept as an empty entry.
+        m.save("extra", std::collections::HashMap::new());
+        assert!(!m.hot.contains_key("extra"));
     }
 }
 
