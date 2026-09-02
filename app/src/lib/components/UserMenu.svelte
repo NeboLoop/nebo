@@ -33,7 +33,6 @@
     { href: '/settings/profile', label: 'nav.settings', icon: '⚙' },
     { href: '/settings/account', label: 'settings.navItems.account', icon: '👤' },
     { href: '/settings/billing', label: 'settings.navItems.billing', icon: '💳' },
-    { href: '/pricing', label: 'sidebar.upgrade', icon: '↑' },
     null,
     { href: '/settings/about', label: 'userMenu.aboutNebo', icon: 'ℹ' },
   ];

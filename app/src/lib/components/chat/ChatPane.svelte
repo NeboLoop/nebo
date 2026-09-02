@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { openWebBilling } from '$lib/billing';
   import { t } from 'svelte-i18n';
   import { devMode } from '$lib/stores/devmode.js';
   import ChatComposer from './ChatComposer.svelte';
@@ -1744,7 +1745,7 @@
         </span>
         <div class="flex items-center gap-2 shrink-0">
           {#if isOutOfBalance}
-            <a href="/pricing" class="btn btn-primary btn-xs">{$t('chat.viewPlans')}</a>
+            <button type="button" class="btn btn-primary btn-xs" onclick={openWebBilling}>{$t('chat.topUp')}</button>
           {/if}
           <button class="btn btn-ghost btn-xs" onclick={() => ondismisserror?.()}>x</button>
         </div>
