@@ -215,3 +215,23 @@ Deep-dive reference docs live in `docs/sme/`. Key files:
 ## Release
 
 Tag-triggered CI (`.github/workflows/release.yml`): push `v*` tag → builds all platforms → signs (macOS Developer ID + Windows Azure) → notarizes macOS → GitHub Release + CDN upload → updates Homebrew cask + APT repo.
+
+### Release builds — NEVER move them to GitHub-hosted runners
+
+**Hard rule, no exceptions, no matter what a session is asked to fix:** the Mac and Linux
+release builds run on the house Mac mini ("stadium"), and the Windows build runs on a
+house Windows machine once one is registered. GitHub-hosted runners (`macos-latest`,
+`ubuntu-latest`, `ubuntu-*-arm`) are NOT to be used for release builds. This was undone
+on 2026-08-15/16 by an agent session ("public repo minutes are free") and every release
+then took 70+ minutes on 4-core rented machines. Free minutes are not the point; the
+house machines are faster, ours, and already set up.
+
+- `build-macos`, `notarize-macos`, `publish-macos`: `runs-on: [self-hosted, macOS, stadium-mac]`
+  (runner `stadium-mac-1` on the mini's host, service `~/runner-mac`, toolchain via Homebrew).
+- `build-linux`: `runs-on: [self-hosted, Linux, ARM64, neboloop]` (runner `stadium-org-1` in the
+  mini's Lima VM `ci`); arm64 builds natively, amd64 builds in a `linux/amd64` container under
+  the VM's Rosetta binfmt.
+- `build-windows`: `windows-latest` is tolerated only until a house Windows box is registered.
+- `scripts/check-release-runners.py` enforces this in CI (`release-runners` job). Do not weaken
+  or delete the check; if a runner is down, fix the runner (`ssh stadium`), don't reroute the build.
+- Signing and notarization credentials come from GitHub secrets and work on any runner.

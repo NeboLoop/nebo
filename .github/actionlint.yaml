@@ -1,0 +1,5 @@
+self-hosted-runner:
+  # House runners: the stadium Mac mini (host) and its Lima VM (org runner).
+  labels:
+    - stadium-mac
+    - neboloop

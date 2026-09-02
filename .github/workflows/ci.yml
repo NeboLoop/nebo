@@ -126,3 +126,12 @@ jobs:
         run: |
           df -h
           sudo dmesg --ctime 2>/dev/null | tail -50 || true
+
+  # Release builds live on the house Mac mini. This job fails any change that
+  # moves them back to GitHub-hosted runners — it has happened before, and it
+  # turned a 10-minute release into a 70-minute one. Rule: CLAUDE.md "Release builds".
+  release-runners:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 scripts/check-release-runners.py

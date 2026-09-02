@@ -68,7 +68,7 @@ jobs:
           - target: x86_64-apple-darwin
             arch: amd64
             osx_arch: x86_64
-    runs-on: macos-latest
+    runs-on: [self-hosted, macOS, stadium-mac] # the house Mac mini — see CLAUDE.md "Release builds"
     env:
       HAS_SIGNING_CERT: ${{ secrets.APPLE_CERTIFICATE_P12 != '' && 'true' || 'false' }}
       HAS_CDN_URL: ${{ secrets.NEBOAI_CDN_URL != '' && 'true' || 'false' }}
@@ -309,7 +309,7 @@ jobs:
         include:
           - arch: arm64
           - arch: amd64
-    runs-on: macos-latest
+    runs-on: [self-hosted, macOS, stadium-mac] # the house Mac mini — see CLAUDE.md "Release builds"
     env:
       HAS_NOTARIZE_CREDS: ${{ secrets.APPLE_ID != '' && 'true' || 'false' }}
     steps:
@@ -383,7 +383,7 @@ jobs:
     # Mac must still publish when Mac and Linux themselves succeeded (v0.13.2:
     # this job was skipped and the notarized DMGs never shipped).
     if: ${{ !cancelled() && vars.BUILD_MACOS_IN_CI == 'true' && needs.notarize-macos.result == 'success' && needs.release.result == 'success' }}
-    runs-on: macos-latest
+    runs-on: [self-hosted, macOS, stadium-mac] # the house Mac mini — see CLAUDE.md "Release builds"
     steps:
       - uses: actions/checkout@v4
 
@@ -432,22 +432,37 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: ubuntu-latest
-            arch: amd64
-          - runner: ubuntu-24.04-arm
+          # Both legs run on the house Mac mini's Lima VM (label neboloop):
+          # arm64 natively, amd64 inside a linux/amd64 container that the
+          # VM's Rosetta binfmt executes near-natively. See CLAUDE.md
+          # "Release builds" — never move these back to GitHub-hosted runners.
+          - runner: [self-hosted, Linux, ARM64, neboloop]
             arch: arm64
+            container: ""
+          # ubuntu:24.04 pinned to its linux/amd64 digest: on the arm64 VM a
+          # bare tag would resolve to the arm64 image and build the wrong arch.
+          - runner: [self-hosted, Linux, ARM64, neboloop]
+            arch: amd64
+            container: ubuntu@sha256:1e0a86e57d247923571b75e0aaf48a1449cf8c543d51fb3e07a4a7d7bfa79316
     runs-on: ${{ matrix.runner }}
+    container: ${{ matrix.container }}
     env:
       HAS_CDN_URL: ${{ secrets.NEBOAI_CDN_URL != '' && 'true' || 'false' }}
       RUSTC_WRAPPER: ""
     steps:
+      # A fresh container has no sudo, curl or compilers; the VM itself does.
+      - name: Container prep
+        if: ${{ matrix.container != '' }}
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq sudo curl git ca-certificates build-essential pkg-config protobuf-compiler
       - uses: actions/checkout@v4
 
       # The ubuntu-24.04-arm runner OOMs linking the release binary (LTO + one
       # codegen unit on the big nebo workspace). Swap lets the linker spill
       # instead of getting killed; it's the link step, so the slowdown is bounded.
       - name: Add swap (arm64 LTO link OOMs without it)
-        if: matrix.arch == 'arm64'
+        if: ${{ matrix.arch == 'arm64' && !contains(join(matrix.runner), 'self-hosted') }}
         run: |
           # The runner ships an active /swapfile, so fallocate on it fails
           # "Text file busy" — turn swap off and recreate it larger.
