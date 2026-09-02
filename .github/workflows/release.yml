@@ -378,7 +378,11 @@ jobs:
   # so either order is correct — this just keeps it deterministic).
   publish-macos:
     needs: [notarize-macos, release]
-    if: ${{ vars.BUILD_MACOS_IN_CI == 'true' }}
+    # !cancelled(): the implicit success() looks at the whole dependency chain,
+    # and a failed Windows leg (signing on hold) sits upstream of `release`.
+    # Mac must still publish when Mac and Linux themselves succeeded (v0.13.2:
+    # this job was skipped and the notarized DMGs never shipped).
+    if: ${{ !cancelled() && vars.BUILD_MACOS_IN_CI == 'true' && needs.notarize-macos.result == 'success' && needs.release.result == 'success' }}
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -943,7 +947,9 @@ jobs:
 
   # ─── Update Homebrew cask (cross-repo) ────────────────────────────────
   update-homebrew:
-    if: ${{ vars.HAS_TAP_TOKEN == 'true' }}
+    # !cancelled() for the same reason as publish-macos: a failed Windows leg
+    # upstream of `release` must not skip the cask update.
+    if: ${{ !cancelled() && vars.HAS_TAP_TOKEN == 'true' && needs.notarize-macos.result == 'success' && needs.release.result == 'success' }}
     # Must wait for notarize-macos: it saves the DMG cache this job reads, and
     # `needs: release` alone raced it (release only waits on linux+windows), so
     # the cache-restore missed and the cask never updated. When mac is built
