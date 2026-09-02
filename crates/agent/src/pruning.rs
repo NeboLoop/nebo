@@ -167,6 +167,28 @@ pub fn apply_sliding_window(
 /// Micro-compact: trim old tool results to reduce context size.
 /// Returns modified messages and tokens saved.
 
+/// The text a tool-result row actually carries. In production tool rows keep
+/// `content` EMPTY and the payload in `tool_results[].content`; rendering
+/// from `msg.content` produced empty "bounded slices" and `[os] 0 lines`
+/// summaries, rewriting every earlier file read in the model's history as
+/// "nothing came back" — which the model then believed about fresh reads too
+/// (2026-09-01: "the file appears empty" on files that read fine).
+fn tool_result_text(msg: &ChatMessage) -> String {
+    if let Some(tr) = msg.tool_results.as_deref() {
+        if let Ok(results) = serde_json::from_str::<Vec<serde_json::Value>>(tr) {
+            let joined: Vec<&str> = results
+                .iter()
+                .filter_map(|r| r.get("content").and_then(|c| c.as_str()))
+                .filter(|c| !c.is_empty())
+                .collect();
+            if !joined.is_empty() {
+                return joined.join("\n");
+            }
+        }
+    }
+    msg.content.clone()
+}
+
 /// First tool_call_id of a result message — the freeze key. Results without
 /// an id are replaced but never frozen (no stable identity to freeze on).
 fn first_tool_call_id(msg: &ChatMessage) -> Option<String> {
@@ -263,7 +285,7 @@ pub fn micro_compact(
         let trimmed_content = freeze_key
             .as_ref()
             .and_then(|k| frozen.get(k).cloned())
-            .unwrap_or_else(|| build_tool_summary(tool_name, call_input.as_ref(), &msg.content));
+            .unwrap_or_else(|| build_tool_summary(tool_name, call_input.as_ref(), &tool_result_text(msg)));
         if let Some(k) = freeze_key {
             frozen.entry(k).or_insert_with(|| trimmed_content.clone());
         }
@@ -425,7 +447,7 @@ pub fn time_based_micro_compact(
             .and_then(|k| frozen.get(k).cloned())
             .unwrap_or_else(|| {
                 if is_read_type(call_name.as_str(), resource, action) {
-                    bounded_content(&msg.content)
+                    bounded_content(&tool_result_text(msg))
                 } else {
                     "[cleared]".to_string()
                 }
@@ -1266,6 +1288,45 @@ mod tests {
         assert_eq!(tool_results[1].content, "[cleared]");
     }
 
+    /// Production shape: a tool row keeps `content` EMPTY and its text in
+    /// `tool_results[].content`. Both compaction paths must render from the
+    /// payload — rendering from `content` rewrote every stale file read as
+    /// an empty result and taught the model that files "appear empty".
+    #[test]
+    fn compaction_renders_from_tool_results_when_content_is_empty() {
+        let old_ts = 1000;
+        let file_text: String = (1..=200).map(|i| format!("{i}\tline {i} of the pasted document\n")).collect();
+        let mut read_call = make_assistant_msg("reading the upload", old_ts);
+        read_call.tool_calls = Some(
+            serde_json::json!([{ "name": "os", "id": "call_read",
+                "input": { "action": "read", "path": "/uploads/pasted-text.md" } }]).to_string(),
+        );
+        let mut read_result = make_tool_result_msg("", old_ts); // content EMPTY, like prod
+        read_result.tool_results = Some(
+            serde_json::json!([{ "tool_call_id": "call_read", "content": file_text, "is_error": false }]).to_string(),
+        );
+        let convo = vec![
+            make_msg("user", "here is the file"),
+            read_call,
+            read_result,
+            make_assistant_msg("got it", old_ts),
+            make_tool_result_msg("newest result keeps everything", old_ts),
+        ];
+
+        // Stage 1 (stale session): the read is older than keep_recent=1 → bounded, not emptied.
+        let (tb, _) = time_based_micro_compact(&convo, 1, 1, 0, &mut std::collections::HashMap::new());
+        let tb_read = &tb[2];
+        assert!(tb_read.content.contains("line 1 of the pasted document"), "time-based kept real text: {:?}", &tb_read.content[..60.min(tb_read.content.len())]);
+        assert!(!tb_read.content.is_empty() && tb_read.content != "[cleared]");
+        let tr: Vec<serde_json::Value> = serde_json::from_str(tb_read.tool_results.as_deref().unwrap()).unwrap();
+        assert!(tr[0]["content"].as_str().unwrap().contains("line 1 of"), "payload rendered into tool_results too");
+
+        // Stage 2 (micro-compact): the summary must count the real lines, never "0 lines".
+        let (mc, _) = micro_compact(&convo, 0, &mut std::collections::HashMap::new());
+        let mc_read = &mc[2];
+        assert!(!mc_read.content.contains("0 lines"), "summary saw the payload: {}", mc_read.content);
+    }
+
     #[test]
     fn test_time_based_micro_compact_preserves_read_type_content() {
         // Stale session, but the older tool result is a read-type deliverable
@@ -1525,7 +1586,8 @@ mod tests {
         let mut convo = vec![
             msg("user", "read grabber.py and fix the bugs", None, None),
             msg("assistant", "", Some(call), None),
-            msg("tool", &body, None, Some(r#"[{"tool_call_id":"c1","content":"..."}]"#)),
+            // Production shape: the payload rides tool_results; `content` is empty.
+            msg("tool", "", None, Some(&serde_json::json!([{"tool_call_id":"c1","content":body}]).to_string())),
         ];
         // Bulk it past the compaction threshold AND past the keep-recent
         // protection, so the read under test is a real candidate. The first
@@ -1602,9 +1664,10 @@ mod tests {
         let mut convo = vec![
             tmsg("user", "go", None, None),
             tmsg("assistant", "", Some(calls), None),
-            tmsg("tool", &big, None, Some(r#"[{"tool_call_id":"c1","content":"..."}]"#)),
-            tmsg("tool", &big, None, Some(r#"[{"tool_call_id":"c2","content":"..."}]"#)),
-            tmsg("tool", &big, None, Some(r#"[{"tool_call_id":"c3","content":"..."}]"#)),
+            // Production shape: the payload rides tool_results; `content` is empty.
+            tmsg("tool", "", None, Some(&serde_json::json!([{"tool_call_id":"c1","content":big}]).to_string())),
+            tmsg("tool", "", None, Some(&serde_json::json!([{"tool_call_id":"c2","content":big}]).to_string())),
+            tmsg("tool", "", None, Some(&serde_json::json!([{"tool_call_id":"c3","content":big}]).to_string())),
         ];
         pad_past_compaction(&mut convo);
         let (out, saved) = micro_compact(&convo, 1_000, &mut std::collections::HashMap::new());

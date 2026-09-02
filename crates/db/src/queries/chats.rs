@@ -108,6 +108,13 @@ impl Store {
         metadata: Option<&str>,
     ) -> Result<ChatMessage, NeboError> {
         let conn = self.conn()?;
+        // A message landing IS activity: the chat list orders by updated_at,
+        // so bump it here (both inserters), not only on title edits.
+        conn.execute(
+            "UPDATE chats SET updated_at = unixepoch() WHERE id = ?1",
+            params![chat_id],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
         conn.query_row(
             "INSERT INTO chat_messages (id, chat_id, role, content, metadata, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5, unixepoch()) RETURNING *",
@@ -134,6 +141,11 @@ impl Store {
         conn.execute(
             "INSERT OR IGNORE INTO chats (id, title, session_name, created_at, updated_at) VALUES (?1, ?1, ?2, unixepoch(), unixepoch())",
             params![chat_id, session_name],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        conn.execute(
+            "UPDATE chats SET updated_at = unixepoch() WHERE id = ?1",
+            params![chat_id],
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;
         conn.query_row(

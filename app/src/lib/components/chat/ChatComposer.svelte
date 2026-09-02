@@ -551,9 +551,14 @@
 
   function onComposerDrop(e: DragEvent) {
     e.preventDefault();
-    (e as Event & { _composerHandled?: boolean })._composerHandled = true;
     composerDragOver = false;
     composerDragDepth = 0;
+    // A drop on the editor itself is already attached by ProseMirror's
+    // handleDrop, and the same native event then bubbles here — without this
+    // guard the file attached twice (web only; Tauri's native drop path fires
+    // a single handler, which masked it). Same marker the pane checks.
+    if ((e as Event & { _composerHandled?: boolean })._composerHandled) return;
+    (e as Event & { _composerHandled?: boolean })._composerHandled = true;
     const files = Array.from(e.dataTransfer?.files || []);
     if (files.length) addFiles(files);
   }
