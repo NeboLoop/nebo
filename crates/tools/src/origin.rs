@@ -173,6 +173,10 @@ pub struct ToolContext {
     /// Allowed filesystem paths — if set, file writes and shell commands are restricted
     /// to these directories and their children. Empty = unrestricted.
     pub allowed_paths: Vec<String>,
+    /// Default working directory for shell commands and relative file paths
+    /// (a worktree or scratch copy for isolated sub-agents). None = the
+    /// process cwd, exactly as before.
+    pub cwd: Option<String>,
     /// Cancellation token from the parent run — propagated to sub-agents so that
     /// cancelling the parent also cancels any spawned children.
     pub cancel_token: tokio_util::sync::CancellationToken,

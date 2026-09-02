@@ -64,6 +64,225 @@ impl GuardrailConfig {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Loop exits and guard escalation (coding parity, Stage 2).
+//
+// The reference labels every loop exit and every continuation, and gates a
+// recovery on whether it already fired ("resetting to false here caused an
+// infinite loop: compact → still too long → error → hook → compact → …").
+// Ours: a closed `Exit` set so no site can invent a reason, and guards whose
+// escalation lives WITH the detection — a nudge that did not help is a stop,
+// never a second nudge (2026-08-27: 355 detections, 0 stops; 2026-09-02: the
+// same tool error 49 times with varied arguments, never stopped).
+// ---------------------------------------------------------------------------
+
+/// Why the agentic loop ended. `label()` is the string contract read by
+/// `workflow_loop.rs` and the logs; the variants are the closed set.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Exit {
+    Unknown,
+    AdaptiveLimitNoProgress,
+    UserRequestedStop,
+    OutputBudgetExceeded,
+    /// The same exact call repeated past `IDENTICAL_CALL_ABORT`.
+    RunawayToolLoop,
+    /// The spiral backstop fired twice for one action (or hard-stop is on).
+    RepeatedToolCalls,
+    /// The same tool error came back `SAME_ERROR_NUDGE_AFTER` times after a nudge.
+    SameErrorLoop,
+    TerminalToolError,
+    EmptyResponseExhausted,
+    /// Normal end: the model answered with text. Carries the provider's stop reason.
+    TextResponse(String),
+    MaxIterations { done: usize, max: usize },
+    /// A workflow primitive ended the turn (`workflow_exit:…`, `suspension_failed:…`).
+    Workflow(String),
+}
+
+impl Exit {
+    pub fn label(&self) -> String {
+        match self {
+            Exit::Unknown => "unknown".into(),
+            Exit::AdaptiveLimitNoProgress => "adaptive_limit_no_progress".into(),
+            Exit::UserRequestedStop => "user_requested_stop".into(),
+            Exit::OutputBudgetExceeded => "output_budget_exceeded".into(),
+            Exit::RunawayToolLoop => "runaway_tool_loop".into(),
+            Exit::RepeatedToolCalls => "repeated_tool_calls".into(),
+            Exit::SameErrorLoop => "same_error_loop".into(),
+            Exit::TerminalToolError => "terminal_tool_error".into(),
+            Exit::EmptyResponseExhausted => "empty_response_exhausted".into(),
+            Exit::TextResponse(stop) => format!("text_response(stop_reason={stop})"),
+            Exit::MaxIterations { done, max } => format!("max_iterations_reached({done}/{max})"),
+            Exit::Workflow(reason) => reason.clone(),
+        }
+    }
+    pub fn is_text_response(&self) -> bool {
+        matches!(self, Exit::TextResponse(_))
+    }
+}
+
+impl std::fmt::Display for Exit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.label())
+    }
+}
+
+/// What a guard decided on this firing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Verdict {
+    /// Refuse the call with a corrective error; the turn continues.
+    Nudge,
+    /// End the turn with a ControlNotice.
+    Stop,
+}
+
+/// A nudge is spent once per key per turn. Firing again for the same key
+/// means the nudge did not help, and the answer is a stop, not another nudge.
+#[derive(Debug, Default)]
+pub struct Escalator {
+    nudged: std::collections::HashSet<String>,
+}
+
+impl Escalator {
+    pub fn fire(&mut self, key: &str) -> Verdict {
+        if self.nudged.insert(key.to_string()) {
+            Verdict::Nudge
+        } else {
+            Verdict::Stop
+        }
+    }
+}
+
+/// Identical error texts from one tool before the streak nudges; the same
+/// count again after the nudge is a stop. Arguments are ignored on purpose:
+/// the identical-args block never sees a model that varies its arguments
+/// against the same wall.
+pub const SAME_ERROR_NUDGE_AFTER: usize = 3;
+
+/// Per-turn streaks of one tool returning one error text.
+#[derive(Debug, Default)]
+pub struct ErrorStreak {
+    counts: std::collections::HashMap<(String, u64), usize>,
+    escalator: Escalator,
+}
+
+impl ErrorStreak {
+    /// Stable fingerprint of an error: first 160 chars, lowercased, digits
+    /// dropped so "attempt 3" and "attempt 4" are the same wall.
+    pub fn fingerprint(error: &str) -> u64 {
+        let norm: String = error
+            .chars()
+            .take(160)
+            .filter(|c| !c.is_ascii_digit())
+            .flat_map(char::to_lowercase)
+            .collect();
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        for b in norm.as_bytes() {
+            h ^= *b as u64;
+            h = h.wrapping_mul(0x0100_0000_01b3);
+        }
+        h
+    }
+
+    /// Record one error result. Returns the verdict when the streak reaches
+    /// the threshold (every `SAME_ERROR_NUDGE_AFTER` errors), else None.
+    pub fn record(&mut self, tool: &str, error: &str) -> Option<Verdict> {
+        let key = (tool.to_string(), Self::fingerprint(error));
+        let n = self.counts.entry(key.clone()).or_insert(0);
+        *n += 1;
+        if *n % SAME_ERROR_NUDGE_AFTER == 0 {
+            Some(self.escalator.fire(&format!("{}:{}", key.0, key.1)))
+        } else {
+            None
+        }
+    }
+
+    pub fn count(&self, tool: &str, error: &str) -> usize {
+        self.counts
+            .get(&(tool.to_string(), Self::fingerprint(error)))
+            .copied()
+            .unwrap_or(0)
+    }
+}
+
+#[cfg(test)]
+mod escalation_tests {
+    use super::*;
+
+    #[test]
+    fn a_nudge_that_did_not_help_is_followed_by_a_stop_never_a_second_nudge() {
+        let mut e = Escalator::default();
+        assert_eq!(e.fire("os:glob"), Verdict::Nudge);
+        assert_eq!(e.fire("os:glob"), Verdict::Stop);
+        assert_eq!(e.fire("os:glob"), Verdict::Stop, "never back to a nudge");
+        assert_eq!(e.fire("web:fetch"), Verdict::Nudge, "another key gets its own one nudge");
+    }
+
+    #[test]
+    fn same_error_with_varied_args_stops_after_n() {
+        let mut s = ErrorStreak::default();
+        let err = "restore needs `checkpoint`: the id from checkpoint/checkpoints";
+        for _ in 0..SAME_ERROR_NUDGE_AFTER - 1 {
+            assert_eq!(s.record("os", err), None);
+        }
+        assert_eq!(s.record("os", err), Some(Verdict::Nudge), "third identical error nudges");
+        for _ in 0..SAME_ERROR_NUDGE_AFTER - 1 {
+            assert_eq!(s.record("os", err), None);
+        }
+        assert_eq!(s.record("os", err), Some(Verdict::Stop), "the nudge did not help: stop");
+        // Numbers inside the text do not make it a different wall.
+        assert_eq!(ErrorStreak::fingerprint("attempt 3 failed"), ErrorStreak::fingerprint("attempt 4 failed"));
+        // A different error, or the same error from another tool, is its own streak.
+        assert_eq!(s.record("os", "path not found: /x"), None);
+        assert_eq!(s.record("web", err), None);
+        assert_eq!(s.count("os", err), 2 * SAME_ERROR_NUDGE_AFTER);
+    }
+
+    /// The exit set is closed: no site in the runner may invent a reason
+    /// string, and every label a consumer matches on is produced by a variant.
+    #[test]
+    fn terminal_reasons_are_a_closed_enum() {
+        let runner = include_str!("runner.rs");
+        let offenders: Vec<&str> = runner
+            .lines()
+            .filter(|l| l.contains("turn_exit_reason = \"") || l.contains("turn_exit_reason = format!("))
+            .collect();
+        assert!(offenders.is_empty(), "free-form exit reasons: {offenders:?}");
+        // The strings workflow_loop.rs matches on.
+        for (exit, expected) in [
+            (Exit::TerminalToolError, "terminal_tool_error"),
+            (Exit::RunawayToolLoop, "runaway_tool_loop"),
+            (Exit::OutputBudgetExceeded, "output_budget_exceeded"),
+            (Exit::UserRequestedStop, "user_requested_stop"),
+        ] {
+            assert_eq!(exit.label(), expected);
+        }
+        assert!(Exit::MaxIterations { done: 50, max: 50 }.label().starts_with("max_iterations"));
+        assert!(Exit::Workflow("workflow_exit:done".into()).label().starts_with("workflow_exit:"));
+        assert!(Exit::TextResponse("Some(\"stop\")".into()).is_text_response());
+    }
+
+    /// The overflow-compaction retry counter is reset only when the model
+    /// actually produced content, never by another recovery's continue: a
+    /// compaction that could not recover must not be retried by a nudge.
+    #[test]
+    fn has_attempted_compact_survives_a_continuation() {
+        let runner = include_str!("runner.rs");
+        let resets: Vec<usize> = runner
+            .lines()
+            .enumerate()
+            .filter(|(_, l)| l.trim() == "overflow_retries = 0;")
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(resets.len(), 1, "exactly one reset site");
+        let window: String = runner.lines().skip(resets[0].saturating_sub(6)).take(6).collect::<Vec<_>>().join("\n");
+        assert!(
+            window.contains("stream_error.is_none() && (!assistant_content.is_empty() || !tool_calls.is_empty())"),
+            "the reset is gated on real content:\n{window}"
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

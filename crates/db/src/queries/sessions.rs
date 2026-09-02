@@ -178,6 +178,21 @@ impl Store {
         Ok(())
     }
 
+    /// One more compaction happened (the sliding window evicted messages).
+    /// The pre-eviction memory flush gate compares this against
+    /// `memory_flush_compaction_count`; until 2026-09-02 nothing incremented
+    /// it, so that gate could never open.
+    pub fn increment_session_compaction_count(&self, id: &str) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE sessions SET compaction_count = COALESCE(compaction_count, 0) + 1,
+             last_compacted_at = unixepoch(), updated_at = unixepoch() WHERE id = ?1",
+            params![id],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
+
     pub fn reset_session(&self, id: &str) -> Result<(), NeboError> {
         let conn = self.conn()?;
         conn.execute(
@@ -450,6 +465,25 @@ mod tests {
 #[cfg(test)]
 mod counter_tests {
     use crate::Store;
+
+    /// The eviction site increments the counter that gates the pre-eviction
+    /// memory flush; the flush marks its own count, and the gate reopens only
+    /// on the next compaction.
+    #[test]
+    fn compaction_count_increments_on_eviction_and_opens_the_flush_gate() {
+        let (_dir, store) = store();
+        store.create_session("s1", Some("s1"), None, None, None).unwrap();
+        let count = |s: &Store| s.get_session("s1").unwrap().unwrap().compaction_count.unwrap_or(0);
+        let flushed = |s: &Store| s.get_session("s1").unwrap().unwrap().memory_flush_compaction_count.unwrap_or(0);
+        assert_eq!(count(&store), 0);
+        store.increment_session_compaction_count("s1").unwrap();
+        assert_eq!(count(&store), 1);
+        assert!(count(&store) > flushed(&store), "gate open after the first eviction");
+        store.update_session_memory_flush("s1", count(&store)).unwrap();
+        assert!(count(&store) <= flushed(&store), "gate closed once the flush caught up");
+        store.increment_session_compaction_count("s1").unwrap();
+        assert!(count(&store) > flushed(&store), "and reopens on the next eviction");
+    }
 
     fn store() -> (tempfile::TempDir, Store) {
         let dir = tempfile::tempdir().expect("tempdir");

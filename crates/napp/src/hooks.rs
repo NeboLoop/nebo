@@ -44,6 +44,10 @@ struct HookSubscription {
     disabled: bool,
     disabled_at: Option<Instant>,
     caller: Arc<dyn HookCaller>,
+    /// Per-subscription deadline; None = the dispatcher default (500 ms,
+    /// sized for in-process plugin hooks). A shell hook that runs a build
+    /// needs minutes (the reference's tool-hook default is 10 min).
+    timeout: Option<Duration>,
 }
 
 /// Duration after which a disabled hook is automatically re-enabled.
@@ -74,6 +78,19 @@ impl HookDispatcher {
         priority: i32,
         caller: Arc<dyn HookCaller>,
     ) {
+        self.register_with_timeout(hook_name, app_id, hook_type, priority, caller, None)
+    }
+
+    /// `register` with a per-subscription deadline (see `HookSubscription::timeout`).
+    pub fn register_with_timeout(
+        &self,
+        hook_name: &str,
+        app_id: &str,
+        hook_type: HookType,
+        priority: i32,
+        caller: Arc<dyn HookCaller>,
+        timeout: Option<Duration>,
+    ) {
         if !VALID_HOOKS.contains(&hook_name) {
             warn!(hook = hook_name, "unknown hook name");
             return;
@@ -93,6 +110,7 @@ impl HookDispatcher {
             disabled: false,
             disabled_at: None,
             caller,
+            timeout,
         });
 
         // Sort by priority (lower = first)
@@ -203,7 +221,7 @@ impl HookDispatcher {
         &self,
         hook_name: &str,
         hook_type: HookType,
-    ) -> Vec<(String, Arc<dyn HookCaller>)> {
+    ) -> Vec<(String, Arc<dyn HookCaller>, Duration)> {
         self.recover_disabled();
         let hooks = self.hooks.read().unwrap();
         hooks
@@ -211,7 +229,7 @@ impl HookDispatcher {
             .map(|subs| {
                 subs.iter()
                     .filter(|s| !s.disabled && s.hook_type == hook_type)
-                    .map(|s| (s.app_id.clone(), s.caller.clone()))
+                    .map(|s| (s.app_id.clone(), s.caller.clone(), s.timeout.unwrap_or(self.timeout)))
                     .collect()
             })
             .unwrap_or_default()
@@ -227,8 +245,8 @@ impl HookDispatcher {
         }
 
         let mut current = payload;
-        for (app_id, caller) in subs {
-            match tokio::time::timeout(self.timeout, caller.call_filter(hook_name, current.clone()))
+        for (app_id, caller, deadline) in subs {
+            match tokio::time::timeout(deadline, caller.call_filter(hook_name, current.clone()))
                 .await
             {
                 Ok(Ok((new_payload, handled))) => {
@@ -248,7 +266,7 @@ impl HookDispatcher {
                         app = %app_id,
                         hook = hook_name,
                         "hook filter timed out ({}ms)",
-                        self.timeout.as_millis()
+                        deadline.as_millis()
                     );
                     self.record_failure(hook_name, &app_id);
                 }
@@ -260,8 +278,8 @@ impl HookDispatcher {
     /// Fire an action hook to all action subscribers. Errors logged, not propagated.
     pub async fn do_action(&self, hook_name: &str, payload: Vec<u8>) {
         let subs = self.active_subscribers(hook_name, HookType::Action);
-        for (app_id, caller) in subs {
-            match tokio::time::timeout(self.timeout, caller.call_action(hook_name, payload.clone()))
+        for (app_id, caller, deadline) in subs {
+            match tokio::time::timeout(deadline, caller.call_action(hook_name, payload.clone()))
                 .await
             {
                 Ok(Ok(())) => self.record_success(hook_name, &app_id),
@@ -274,7 +292,7 @@ impl HookDispatcher {
                         app = %app_id,
                         hook = hook_name,
                         "hook action timed out ({}ms)",
-                        self.timeout.as_millis()
+                        deadline.as_millis()
                     );
                     self.record_failure(hook_name, &app_id);
                 }

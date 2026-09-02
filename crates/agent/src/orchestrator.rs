@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
@@ -426,6 +427,8 @@ impl Orchestrator {
                 tools: Vec::new(),
                 parent_stream_tx: None,
                 handoff_depth: 0,
+                isolate: String::new(),
+                workspace: String::new(),
             };
             return self.spawn_internal(req).await;
         }
@@ -676,6 +679,21 @@ impl Orchestrator {
         let parent_task_id = format!("batch-{}", uuid::Uuid::new_v4());
         let total = requests.len();
 
+        // Isolation (P5.3): each child gets its own copy of the project,
+        // fenced by cwd + allowed_paths; merged back after the batch.
+        let isolate = requests.first().is_some_and(|r| r.isolate == "worktree");
+        let workspace: PathBuf = match requests.first().map(|r| r.workspace.as_str()) {
+            Some(w) if !w.is_empty() => PathBuf::from(w),
+            _ => std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+        };
+        if isolate && !workspace.is_dir() {
+            return Err(format!(
+                "workspace {} is not a folder. Pass the project folder to isolate, or leave isolate out.",
+                workspace.display()
+            ));
+        }
+        let mut isolations: Vec<crate::worktree::Isolation> = Vec::new();
+
         // Internal channel for progress from all sub-agents
         let (prog_tx, mut prog_rx) = mpsc::channel::<SubagentProgress>(64);
 
@@ -754,6 +772,22 @@ impl Orchestrator {
                 req.max_iterations,
             );
             apply_spawn_context(&mut run_req, &req);
+            if isolate {
+                match crate::worktree::create(&workspace, &task_id).await {
+                    Ok(iso) => {
+                        let path = iso.path().to_string_lossy().into_owned();
+                        run_req.prompt = format!("{}{}", crate::worktree::preamble(&iso), run_req.prompt);
+                        run_req.cwd = Some(path.clone());
+                        run_req.allowed_paths = vec![path];
+                        isolations.push(iso);
+                    }
+                    Err(e) => {
+                        // Undo what this batch already isolated; nothing ran yet.
+                        let _ = crate::worktree::merge_all(&isolations, "nebo: aborted batch").await;
+                        return Err(format!("could not isolate {}: {e}", workspace.display()));
+                    }
+                }
+            }
 
             running.push(Box::pin(async move {
                 let result = run_and_collect(
@@ -853,13 +887,29 @@ impl Orchestrator {
             }
         }
 
-        let combined = format!(
+        let mut combined = format!(
             "{} sub-agents completed ({} succeeded, {} failed):\n\n{}",
             results.len(),
             results.iter().filter(|(_, _, r)| r.is_ok()).count(),
             results.iter().filter(|(_, _, r)| r.is_err()).count(),
             output_parts.join("\n\n---\n\n"),
         );
+        if !isolations.is_empty() {
+            let outcomes = crate::worktree::merge_all(&isolations, "nebo: parallel batch").await;
+            combined.push_str("\n\n## Worktree merges\n\n");
+            for (tid, outcome) in &outcomes {
+                let desc = results
+                    .iter()
+                    .find(|(t, _, _)| t == tid)
+                    .map(|(_, d, _)| d.as_str())
+                    .unwrap_or(tid.as_str());
+                combined.push_str(&crate::worktree::render_outcome(desc, outcome));
+                combined.push('\n');
+                if matches!(outcome, crate::worktree::MergeOutcome::Conflict { .. } | crate::worktree::MergeOutcome::Failed { .. }) {
+                    all_success = false;
+                }
+            }
+        }
 
         Ok(SpawnResult {
             task_id: parent_task_id,
@@ -885,6 +935,12 @@ impl Orchestrator {
     /// Recover incomplete tasks from previous crash.
     /// Uses completion heuristic to determine whether to mark complete or re-spawn.
     async fn recover_internal(&self) {
+        // Copies a crashed parent left behind (fail-closed: anything with
+        // work in it is kept).
+        let swept = crate::worktree::cleanup_stale(crate::worktree::STALE_AFTER_SECS).await;
+        if !swept.is_empty() {
+            info!(count = swept.len(), "swept stale worktrees/scratch copies");
+        }
         let tasks = match self.store.get_recoverable_tasks() {
             Ok(t) => t,
             Err(e) => {

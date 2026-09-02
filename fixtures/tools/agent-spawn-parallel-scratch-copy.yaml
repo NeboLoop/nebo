@@ -1,0 +1,42 @@
+id: agent-spawn-parallel-scratch-copy
+name: "Parallel edits in a plain folder (no git) — scratch copies, merged back"
+description: |
+  Same as the worktree fixture but the folder is NOT a git repository. The
+  same isolate option must work: each child gets a scratch copy, both files
+  land in the owner's folder, and no .git directory appears.
+target_component: agent
+
+setup:
+  - "rm -rf /tmp/nebo-test/plain && mkdir -p /tmp/nebo-test/plain && printf 'one\n' > /tmp/nebo-test/plain/a.txt && printf 'two\n' > /tmp/nebo-test/plain/b.txt"
+teardown:
+  - "rm -rf /tmp/nebo-test/plain"
+
+conversation:
+  - role: user
+    content: "In the folder /tmp/nebo-test/plain (it is not a git repo, leave it that way), run two sub-agents in parallel with worktree isolation: one changes a.txt to say ONE, the other changes b.txt to say TWO. Then tell me what the merge section said."
+
+tool_config:
+  os:
+    enabled: true
+  agent:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: parallel-isolated
+      text: "The model calls agent task spawn_parallel with isolate: worktree"
+      severity: critical
+      check: { tool: agent, arg: isolate, equals: worktree }
+  recovery:
+    - id: no-git-init
+      text: "No tool call runs git init, and the model does not claim to have created a repository"
+      severity: critical
+    - id: both-merged
+      text: "The reported merge section lists both tasks as merged"
+      severity: critical
+
+ideal_behavior:
+  tool_calls: 1
+  total_tokens: 6000
+  narrative: |
+    spawn_parallel(isolate: worktree, workspace: /tmp/nebo-test/plain, tasks: [...]) → merge section reported.

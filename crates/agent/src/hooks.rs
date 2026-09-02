@@ -105,6 +105,15 @@ pub struct ToolPreExecutePayload {
     pub tool_name: String,
     pub input: serde_json::Value,
     pub session_id: String,
+    /// The reference's hook contract fields; serde defaults keep older
+    /// plugin callers unchanged.
+    #[serde(default)]
+    pub tool_use_id: String,
+    #[serde(default)]
+    pub cwd: String,
+    /// Present only inside a sub-agent (how a hook tells the two apart).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
 }
 
 /// Response from `tool.pre_execute` filter hook.
@@ -120,11 +129,31 @@ pub struct ToolPreExecuteResponse {
     pub input: Option<serde_json::Value>,
 }
 
-/// Payload for `tool.post_execute` action hook.
-#[derive(Debug, Serialize, Deserialize)]
+/// Payload for the `tool.post_execute` hook. Plugins subscribe as an action
+/// (fire-and-forget); shell hooks subscribe as a filter and hand back a
+/// `ToolPostExecuteResponse`, which is how a formatter's or test runner's
+/// verdict reaches the model.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolPostExecutePayload {
     pub tool_name: String,
     pub result: String,
     pub is_error: bool,
     pub session_id: String,
+    #[serde(default)]
+    pub tool_use_id: String,
+    #[serde(default)]
+    pub tool_input: serde_json::Value,
+    #[serde(default)]
+    pub cwd: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+}
+
+/// Response from the `tool.post_execute` filter: the result as the model
+/// will see it. A hook that exits 2 has appended its stderr and set
+/// `is_error`; a hook that exits 0 has appended its stdout as a note.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolPostExecuteResponse {
+    pub result: String,
+    pub is_error: bool,
 }

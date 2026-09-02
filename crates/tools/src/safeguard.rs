@@ -49,9 +49,45 @@ pub fn check_path_scope(
     }
 }
 
+/// The first of `paths` outside `allowed_paths`, as a BLOCKED message, or
+/// None when every path is inside (or there is no fence). Used by the file
+/// tool for checkpoint `paths[]` and for the manifest paths of a restore,
+/// which the input-only scope check below cannot see.
+pub fn outside_allowed(verb: &str, paths: &[String], allowed_paths: &[String]) -> Option<String> {
+    if allowed_paths.is_empty() {
+        return None;
+    }
+    for path in paths {
+        let abs = std::path::absolute(Path::new(path))
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|_| path.clone());
+        if !is_within_allowed(&abs, allowed_paths) {
+            return Some(format!(
+                "BLOCKED: cannot {} {:?} — this agent is restricted to: {}. \
+                 Ask the owner to update the allowed directories in the Configure tab.",
+                verb,
+                path,
+                allowed_paths.join(", ")
+            ));
+        }
+    }
+    None
+}
+
 fn check_file_path_scope(input: &serde_json::Value, allowed_paths: &[String]) -> Option<String> {
     let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
     let path = input.get("path").and_then(|v| v.as_str()).unwrap_or("");
+
+    // checkpoint/restore name their files in `paths[]` (restore may also
+    // carry none and take them from the manifest — the file tool checks that).
+    if matches!(action, "checkpoint" | "restore") {
+        let paths: Vec<String> = input
+            .get("paths")
+            .and_then(|v| v.as_array())
+            .map(|a| a.iter().filter_map(|p| p.as_str().map(String::from)).collect())
+            .unwrap_or_default();
+        return outside_allowed(action, &paths, allowed_paths);
+    }
 
     // Only restrict destructive actions — reads are always allowed
     if action != "write"
@@ -593,6 +629,26 @@ fn nebo_data_dirs() -> Vec<(String, String)> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn path_scope_covers_paths_array_and_checkpoint_ids() {
+        use super::*;
+        let allowed = vec!["/proj".to_string()];
+        // checkpoint names its files in `paths[]`, not `path`.
+        let inside = serde_json::json!({"resource": "file", "action": "checkpoint", "paths": ["/proj/a.rs", "/proj/src/b.rs"]});
+        assert!(check_path_scope("os", &inside, &allowed).is_none());
+        let outside = serde_json::json!({"resource": "file", "action": "checkpoint", "paths": ["/proj/a.rs", "/etc/hosts"]});
+        let msg = check_path_scope("os", &outside, &allowed).expect("blocked");
+        assert!(msg.contains("BLOCKED") && msg.contains("/etc/hosts"), "{msg}");
+        // restore with an explicit subset is fenced the same way; the
+        // manifest-path case (no `paths`) is the file tool's job.
+        let restore = serde_json::json!({"resource": "file", "action": "restore", "checkpoint": "cp-1", "paths": ["/tmp/x"]});
+        assert!(check_path_scope("os", &restore, &allowed).is_some());
+        // The manifest helper: first offender named, no fence = nothing blocked.
+        assert!(outside_allowed("restore", &["/tmp/x".into()], &[]).is_none());
+        let msg = outside_allowed("restore", &["/proj/ok".into(), "/tmp/x".into()], &allowed).expect("blocked");
+        assert!(msg.contains("/tmp/x"), "{msg}");
+    }
+
     use super::*;
 
     #[test]

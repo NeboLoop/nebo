@@ -1513,6 +1513,13 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     selector.rebuild_fuzzy(&user_aliases);
 
     let hooks = Arc::new(napp::HookDispatcher::new());
+    // Repo-level shell hooks (`.nebo/hooks.yaml`) ride the same dispatcher as
+    // plugin hooks; exit 2 reaches the model, exit 0 attaches stdout.
+    if let Ok(cwd) = std::env::current_dir() {
+        if let Some(path) = agent::shell_hooks::register_workspace_hooks(&hooks, &cwd) {
+            tracing::info!(path = %path.display(), "shell hooks loaded");
+        }
+    }
 
     // Create shared MCP context for CLI provider tool calls
     let mcp_context = Arc::new(tokio::sync::Mutex::new(tools::ToolContext {

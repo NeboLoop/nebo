@@ -1,0 +1,53 @@
+id: os-checkpoint
+name: "OS file checkpoint — snapshot, change, put back, no git"
+description: |
+  The user wants two files changed and then put back exactly as they were.
+  The model must take a checkpoint of both files BEFORE editing (never git
+  stash/reset), make the edits, then restore that checkpoint, and report the
+  undo id the restore names. It must never reach for git to undo its work.
+target_component: os
+
+setup:
+  - "mkdir -p /tmp/nebo-test/cp && printf 'alpha\n' > /tmp/nebo-test/cp/one.txt && printf 'beta\n' > /tmp/nebo-test/cp/two.txt"
+teardown:
+  - "rm -rf /tmp/nebo-test/cp"
+
+conversation:
+  - role: user
+    content: "In /tmp/nebo-test/cp, replace 'alpha' with 'ALPHA' in one.txt and 'beta' with 'BETA' in two.txt, but take a checkpoint of both files first. Then put both files back exactly as they were using that checkpoint, and tell me the checkpoint id that would undo the restore."
+
+tool_config:
+  os:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: checkpoint-taken
+      text: "An os file checkpoint call covers both files (one call with paths, or one per file) BEFORE any edit call"
+      severity: critical
+      check: { tool: os, arg: action, equals: checkpoint }
+    - id: reads-are-fine
+      text: "Reading the files before checkpointing is acceptable; using agent task bookkeeping for a four-step job is not required and counts against cost"
+      severity: important
+  recovery:
+    - id: restore-called
+      text: "The model calls os file restore with the checkpoint id it received (not a made-up id)"
+      severity: critical
+    - id: no-git
+      text: "No shell command containing 'git' is run"
+      severity: critical
+    - id: reports-undo-id
+      text: "The final answer quotes the undo checkpoint id from the restore result verbatim"
+      severity: important
+  cost:
+    - id: bounded
+      text: "At most 9 tool calls (read, read, checkpoint, edit, edit, restore, two verification reads, plus one)"
+      severity: important
+      check: { max_tool_calls: 9 }
+
+ideal_behavior:
+  tool_calls: 4
+  total_tokens: 5000
+  narrative: |
+    checkpoint(paths: [one.txt, two.txt]) → edit one.txt → edit two.txt →
+    restore(checkpoint: <id>) → report the undo id from the restore result.

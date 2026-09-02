@@ -73,6 +73,104 @@ impl OsTool {
     /// pure-Rust OOXML writers for docx/xlsx). The one document-conversion
     /// pathway: identical on every platform — never host binaries (wkhtmltopdf
     /// is abandoned upstream) and never the bundled browser (no layout engine).
+    /// Each verify command gets this long; a build that needs more belongs in
+    /// a background shell call, not a plan step.
+    const PLAN_VERIFY_TIMEOUT_SECS: u64 = 120;
+    /// One line of stderr per failing step in the plan document.
+    const PLAN_NOTE_CHARS: usize = 160;
+
+    /// `os(resource: "file", action: "plan_check", path: "plan.md")`: run every
+    /// step's verify command and rewrite the checkboxes from the exit codes.
+    /// The model cannot tick a box; only a passing command can. A check that
+    /// verifies nothing new is reported as an error so a stalled plan never
+    /// counts as progress.
+    async fn handle_plan_check(&self, ctx: &ToolContext, input: &serde_json::Value) -> ToolResult {
+        let path = input.get("path").and_then(|v| v.as_str()).unwrap_or("");
+        if path.is_empty() {
+            return ToolResult::error(
+                "plan_check needs `path`: the plan file written by action: \"plan\"",
+            );
+        }
+        let path = match ctx.cwd.as_deref() {
+            Some(cwd) if std::path::Path::new(path).is_relative() => {
+                std::path::Path::new(cwd).join(path).to_string_lossy().into_owned()
+            }
+            _ => path.to_string(),
+        };
+        let content = match std::fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(e) => return ToolResult::error(format!("read {path}: {e}")),
+        };
+        let plan = match crate::plan::parse(&content) {
+            Ok(p) => p,
+            Err(e) => return ToolResult::error(e),
+        };
+        let dir = std::path::Path::new(&path)
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|| ".".into());
+        let mut results = Vec::with_capacity(plan.steps.len());
+        for step in &plan.steps {
+            // Same policy, same refusals as any shell call; raw mode returns
+            // stdout only on success and an error carrying stderr otherwise.
+            let out = self
+                .shell_tool
+                .execute(
+                    ctx,
+                    serde_json::json!({
+                        "resource": "shell", "action": "exec", "command": step.verify,
+                        "cwd": dir, "timeout": Self::PLAN_VERIFY_TIMEOUT_SECS, "raw": true
+                    }),
+                )
+                .await;
+            // Raw mode reports a failure as "Command exited with code N\n<stderr>";
+            // a policy refusal (destructive git) has no such header: "did not run".
+            let (header, rest) = out.content.split_once('\n').unwrap_or((out.content.as_str(), ""));
+            let exit = header
+                .strip_prefix("Command exited with code ")
+                .and_then(|c| c.trim().parse::<i32>().ok())
+                .or(if out.is_error { None } else { Some(0) });
+            let note = if !out.is_error {
+                String::new()
+            } else if exit.is_some() {
+                crate::plan::first_line(rest, Self::PLAN_NOTE_CHARS)
+            } else {
+                crate::plan::first_line(&out.content, Self::PLAN_NOTE_CHARS)
+            };
+            results.push(crate::plan::StepResult { n: step.n, ok: !out.is_error, exit, note });
+        }
+        let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        let (rewritten, newly) = crate::plan::apply(&content, &results, &now);
+        let write = self.file_tool.write_document(&ctx.session_key, &path, &rewritten);
+        if write.is_error {
+            return write;
+        }
+        let verified = results.iter().filter(|r| r.ok).count();
+        let mut summary = format!(
+            "plan_check {}: {verified}/{} verified ({newly} newly)\n",
+            path,
+            results.len()
+        );
+        for r in &results {
+            let title = plan.steps.iter().find(|s| s.n == r.n).map(|s| s.title.as_str()).unwrap_or("");
+            if r.ok {
+                summary.push_str(&format!("  {}. ✓ {title}\n", r.n));
+            } else {
+                let exit = r.exit.map(|c| format!("exit {c}")).unwrap_or_else(|| "did not run".into());
+                summary.push_str(&format!("  {}. ✗ {title}, {exit}{}\n", r.n, if r.note.is_empty() { String::new() } else { format!(": {}", r.note) }));
+            }
+        }
+        let mut result = if verified == 0 && newly == 0 {
+            summary.push_str("Nothing verified. Fix the failing steps and check again; do not report the task done.");
+            ToolResult::error(summary)
+        } else {
+            ToolResult::ok(summary)
+        };
+        result.payload = Some(serde_json::json!({ "newly_verified": newly, "verified": verified, "steps": results.len() }));
+        result
+    }
+
     async fn handle_convert(&self, input: &serde_json::Value) -> ToolResult {
         let path = input["path"].as_str().unwrap_or("");
         let to = input["to"].as_str().unwrap_or("pdf");
@@ -234,7 +332,8 @@ impl OsTool {
     pub(crate) fn infer_resource(action: &str) -> &str {
         match action {
             // File
-            "read" | "write" | "edit" | "share" | "glob" | "grep" | "convert" => "file",
+            "read" | "write" | "edit" | "share" | "glob" | "grep" | "convert" | "checkpoint"
+            | "checkpoints" | "restore" | "plan" | "plan_check" => "file",
             // Shell
             "exec" | "poll" | "log" => "shell",
             // Input
@@ -376,7 +475,7 @@ impl DynTool for OsTool {
          - glob = find files by NAME pattern (*.md, src/**/*.rs); grep = match text INSIDE files by regex. Do not confuse them.\n\
          - NEVER use sudo without asking the user first; on permission denied, explain and offer alternatives.\n\n\
          Resources:\n\
-         - file: read, write, edit, share, glob, grep, convert — to list a directory, glob its path (pattern defaults to *); share hands an EXISTING file to the user as a download card (a deck/PDF/binary already on disk — never recite its path or copy it to \"trigger\" a card); convert generates documents via embedded engines: .md→pdf/docx, .csv→xlsx, .jsx/.tsx→html (interactive React) (never use host binaries like wkhtmltopdf/pandoc)\n\
+         - file: read, write, edit, share, glob, grep, convert, checkpoint, checkpoints, restore, plan, plan_check — checkpoint snapshots the files you are about to change (paths: [...]) and restore puts them back (never git stash/reset); plan writes a work document whose steps each carry a verify command, and plan_check runs those commands and ticks only the steps that pass; to list a directory, glob its path (pattern defaults to *); share hands an EXISTING file to the user as a download card (a deck/PDF/binary already on disk — never recite its path or copy it to \"trigger\" a card); convert generates documents via embedded engines: .md→pdf/docx, .csv→xlsx, .jsx/.tsx→html (interactive React) (never use host binaries like wkhtmltopdf/pandoc)\n\
          - shell: exec, list, poll, log, write, kill, info\n\
          - window: list, focus, minimize, maximize, resize, close, move\n\
          - input: click, double_click, right_click, type, press, hotkey, move, scroll, drag, paste\n\
@@ -462,6 +561,38 @@ impl DynTool for OsTool {
             prop("integer", "Max lines/results to return"),
         );
         props.insert("append".into(), prop("boolean", "Append to file"));
+        // Checkpoints and plans: declared here so the model can pass them.
+        // A parameter that exists only in prose gets stripped by strict
+        // providers and the model loops on "restore needs `checkpoint`".
+        props.insert(
+            "paths".into(),
+            serde_json::json!({
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "checkpoint: the files you are about to change (absolute paths). restore: optional subset of the checkpoint's files to put back."
+            }),
+        );
+        props.insert("label".into(), prop("string", "checkpoint: a short label, e.g. \"before rename\""));
+        props.insert(
+            "checkpoint".into(),
+            prop("string", "restore: the checkpoint id (cp-…) from the checkpoint or checkpoints result"),
+        );
+        props.insert("title".into(), prop("string", "plan: the plan's title"));
+        props.insert(
+            "steps".into(),
+            serde_json::json!({
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "title": { "type": "string", "description": "what the step achieves" },
+                        "verify": { "type": "string", "description": "shell command that exits 0 only when the step is done" }
+                    },
+                    "required": ["title", "verify"]
+                },
+                "description": "plan: one entry per step; every step needs a verify command"
+            }),
+        );
         // "pattern" is already registered above (used by both glob and grep)
         // "regex" kept on FileInput for backward compat but removed from schema
         props.insert(
@@ -668,7 +799,7 @@ impl DynTool for OsTool {
     fn is_concurrent_safe(&self, input: &serde_json::Value) -> bool {
         let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
         match OsTool::resolved_resource(input) {
-            "file" => matches!(action, "read" | "list" | "glob" | "grep"),
+            "file" => matches!(action, "read" | "list" | "glob" | "grep" | "checkpoints"),
             "search" => true,
             "capture" => matches!(action, "screenshot" | "see"),
             _ => false,
@@ -843,8 +974,29 @@ impl DynTool for OsTool {
                 "file" if input["action"].as_str() == Some("convert") => {
                     self.handle_convert(&input).await
                 }
+                // plan_check needs the shell (each step's verify command) and
+                // the file tool (the rewrite), so it lives here.
+                "file" if input["action"].as_str() == Some("plan_check") => {
+                    self.handle_plan_check(ctx, &input).await
+                }
                 "file" => self.file_tool.execute(ctx, input),
-                "shell" => self.shell_tool.execute(ctx, input).await,
+                "shell" => {
+                    let command = input["command"].as_str().unwrap_or("").to_string();
+                    let cwd = input["cwd"].as_str().map(str::to_string).or_else(|| ctx.cwd.clone());
+                    let result = self.shell_tool.execute(ctx, input).await;
+                    if !result.is_error && !command.is_empty() {
+                        for target in crate::policy::shell_write_targets(&command) {
+                            let path = std::path::Path::new(&target);
+                            let abs = if path.is_relative() {
+                                cwd.as_deref().map(|c| std::path::Path::new(c).join(path)).unwrap_or_else(|| path.to_path_buf())
+                            } else {
+                                path.to_path_buf()
+                            };
+                            self.file_tool.note_shell_write(&ctx.session_key, &abs.to_string_lossy());
+                        }
+                    }
+                    result
+                }
 
                 // Desktop resources — delegate to DesktopTool
                 "window" | "input" | "clipboard" | "capture" | "notification" | "ui" | "menu"
@@ -1003,6 +1155,84 @@ mod tests {
         // "list" with a reminders list name still routes to reminders
         let input = serde_json::json!({"action": "list", "list": "Groceries"});
         assert_eq!(OsTool::infer_resource_from_context(&input), "reminders");
+    }
+
+    fn os() -> OsTool {
+        OsTool::new(
+            crate::policy::Policy::default(),
+            Arc::new(crate::process::ProcessRegistry::new()),
+        )
+    }
+
+    fn write_plan(dir: &std::path::Path, steps: &[(&str, &str)]) -> String {
+        let steps: Vec<(String, String)> = steps.iter().map(|(t, v)| (t.to_string(), v.to_string())).collect();
+        let doc = crate::plan::render("t", &steps).unwrap();
+        let path = dir.join("PLAN.md");
+        std::fs::write(&path, doc).unwrap();
+        path.to_string_lossy().into_owned()
+    }
+
+    // The verify commands run in the plan's directory (relative paths in a
+    // step mean "next to the plan"), through the shell's raw mode.
+    #[tokio::test]
+    async fn plan_check_runs_verify_in_the_plans_directory_with_raw_shell() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("marker"), "x").unwrap();
+        let plan = write_plan(dir.path(), &[("marker is here", "test -f ./marker"), ("and is not elsewhere", "test -f /nonexistent/marker")]);
+        let ctx = ToolContext::new(crate::origin::Origin::User);
+        let r = os().execute_dyn(&ctx, serde_json::json!({"resource": "file", "action": "plan_check", "path": plan})).await;
+        assert!(!r.is_error, "{}", r.content);
+        assert!(r.content.contains("1/2 verified"), "{}", r.content);
+        let doc = std::fs::read_to_string(&plan).unwrap();
+        assert!(doc.contains("- [x] 1."), "{doc}");
+        assert!(doc.contains("- [ ] 2."), "{doc}");
+        assert!(doc.contains("2. ✗ and is not elsewhere, exit 1"), "{doc}");
+    }
+
+    // A destructive verify command is refused like any shell call: the step
+    // stays unticked and reads "did not run" with the refusal's first line.
+    #[tokio::test]
+    async fn plan_check_refuses_a_destructive_verify_command() {
+        let dir = tempfile::tempdir().unwrap();
+        let plan = write_plan(dir.path(), &[("bad", "git stash"), ("good", "true")]);
+        let ctx = ToolContext::new(crate::origin::Origin::User);
+        let r = os().execute_dyn(&ctx, serde_json::json!({"resource": "file", "action": "plan_check", "path": plan})).await;
+        assert!(!r.is_error, "{}", r.content);
+        let doc = std::fs::read_to_string(&plan).unwrap();
+        assert!(doc.contains("1. ✗ bad, did not run: This git command discards work"), "{doc}");
+        assert!(doc.contains("- [x] 2."), "{doc}");
+    }
+
+    // A check that verifies nothing is an error, so a stalled plan never
+    // counts as progress; one newly verified step is not.
+    #[tokio::test]
+    async fn plan_check_sets_is_error_when_nothing_is_verified() {
+        let dir = tempfile::tempdir().unwrap();
+        let plan = write_plan(dir.path(), &[("fails", "false")]);
+        let ctx = ToolContext::new(crate::origin::Origin::User);
+        let r = os().execute_dyn(&ctx, serde_json::json!({"resource": "file", "action": "plan_check", "path": plan})).await;
+        assert!(r.is_error, "{}", r.content);
+        assert!(r.content.contains("Nothing verified"), "{}", r.content);
+        assert_eq!(r.payload.as_ref().and_then(|p| p.get("newly_verified")).and_then(|v| v.as_u64()), Some(0));
+        let sub = dir.path().join("b");
+        std::fs::create_dir_all(&sub).unwrap();
+        let plan2 = write_plan(&sub, &[("passes", "true")]);
+        let r = os().execute_dyn(&ctx, serde_json::json!({"resource": "file", "action": "plan_check", "path": plan2})).await;
+        assert!(!r.is_error, "{}", r.content);
+        assert_eq!(r.payload.as_ref().and_then(|p| p.get("newly_verified")).and_then(|v| v.as_u64()), Some(1));
+    }
+
+    // Every parameter the file actions read must be declared: a parameter that
+    // lives only in prose is stripped by strict providers, and the model then
+    // loops on "restore needs `checkpoint`" (49 calls, live, 2026-09-02).
+    #[test]
+    fn os_schema_declares_every_checkpoint_and_plan_parameter() {
+        let schema = os().schema();
+        let props = schema["properties"].as_object().expect("object schema");
+        for p in ["paths", "label", "checkpoint", "title", "steps"] {
+            assert!(props.contains_key(p), "schema is missing `{p}`");
+        }
+        assert_eq!(schema["properties"]["steps"]["items"]["required"], serde_json::json!(["title", "verify"]));
     }
 
     #[test]

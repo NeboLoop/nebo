@@ -1,0 +1,47 @@
+id: agent-spawn-parallel-worktree
+name: "Parallel edits in one repo — isolate: worktree, merged back"
+description: |
+  Two independent edits to the same git repo. The model spawns them in
+  parallel with isolate: "worktree" and workspace set; each child works in its
+  own worktree; both land on the owner's branch; no nebo/* branch remains.
+target_component: agent
+
+setup:
+  - "rm -rf /tmp/nebo-test/wt && mkdir -p /tmp/nebo-test/wt && cd /tmp/nebo-test/wt && git init -q -b main && git config user.email t@t && git config user.name t && printf 'one\n' > a.txt && printf 'two\n' > b.txt && git add -A && git commit -q -m base"
+teardown:
+  - "rm -rf /tmp/nebo-test/wt"
+
+conversation:
+  - role: user
+    content: "In the repo /tmp/nebo-test/wt, run two sub-agents in parallel with worktree isolation: one changes a.txt to say ONE, the other changes b.txt to say TWO. When both are merged back, tell me what the merge section said."
+
+tool_config:
+  os:
+    enabled: true
+  agent:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: parallel-isolated
+      text: "The model calls agent task spawn_parallel with isolate: worktree"
+      severity: critical
+      check: { tool: agent, arg: isolate, equals: worktree }
+    - id: workspace-set
+      text: "The spawn_parallel call sets workspace to /tmp/nebo-test/wt"
+      severity: important
+      check: { tool: agent, arg: workspace, contains: "/tmp/nebo-test/wt" }
+  recovery:
+    - id: both-merged
+      text: "The reported merge section lists both tasks as merged"
+      severity: critical
+    - id: honest-report
+      text: "The final answer reflects the merge section verbatim (merged / conflict), never a claim beyond it"
+      severity: critical
+
+ideal_behavior:
+  tool_calls: 1
+  total_tokens: 6000
+  narrative: |
+    spawn_parallel(isolate: worktree, workspace, tasks: [edit a.txt, edit b.txt]) →
+    report the Worktree merges section.

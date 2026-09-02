@@ -1465,6 +1465,76 @@ mod tests {
     /// the run — even if the underlying message would render differently on a
     /// later pass. Re-deciding per iteration is how the model watched its own
     /// history mutate mid-run (the outage's delivery mechanism).
+    /// Eight large shell results past the keep-recent floor and the count
+    /// trigger, so every stage has something to do (fixture floor: N+1).
+    fn big_history() -> Vec<ChatMessage> {
+        let big = "line\n".repeat(1200);
+        let mut convo = vec![tmsg("user", "go", None, None)];
+        for i in 0..8 {
+            let calls = format!(
+                r#"[{{"id":"c{i}","name":"os","input":{{"action":"exec","command":"cargo build {i}"}}}}]"#
+            );
+            let results = format!(r#"[{{"tool_call_id":"c{i}","content":"{}","is_error":false}}]"#, "x".repeat(600));
+            convo.push(tmsg("assistant", "", Some(&calls), None));
+            convo.push(tmsg("tool", &big, None, Some(&results)));
+        }
+        pad_past_compaction(&mut convo);
+        convo
+    }
+
+    /// The freeze survives the run: a second run on a fresh map loaded from
+    /// the store renders the same id the same way even though the underlying
+    /// content (and therefore a fresh decision) changed. This is the
+    /// reference's transcript-persisted `replacements` map.
+    #[test]
+    fn a_rendering_is_frozen_per_chat_across_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = db::Store::new(&dir.path().join("t.db").to_string_lossy()).unwrap();
+        store.create_chat("chat-1", "t").unwrap();
+        let mut convo = big_history();
+
+        // Run 1: decide, then persist what was decided (the runner's step).
+        let mut run1 = store.get_chat_renderings("chat-1").unwrap();
+        let (out1, saved) = micro_compact(&convo, 0, &mut run1);
+        assert!(saved > 0);
+        let new: Vec<(String, String)> = run1.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        store.insert_chat_renderings("chat-1", &new).unwrap();
+
+        // Between runs the bytes behind c3 change; a fresh decision would differ.
+        for m in convo.iter_mut() {
+            if m.tool_results.as_deref().is_some_and(|t| t.contains("\"c1\"")) {
+                m.content = "totally different\n".repeat(1500);
+                m.tool_results = Some(format!(
+                    r#"[{{"tool_call_id":"c1","content":"{}","is_error":false}}]"#,
+                    "changed\\n".repeat(50)
+                ));
+            }
+        }
+        // Run 2: a fresh runner loads the frozen map and must agree with run 1.
+        let mut run2 = store.get_chat_renderings("chat-1").unwrap();
+        let (out2, _) = micro_compact(&convo, 0, &mut run2);
+        let idx = convo.iter().position(|m| m.tool_results.as_deref().is_some_and(|t| t.contains("\"c1\""))).unwrap();
+        assert_eq!(out2[idx].tool_results, out1[idx].tool_results, "c1 renders as it first did");
+        // And without the store, run 2 would have decided differently (the test can fail).
+        let mut cold = std::collections::HashMap::new();
+        let (out3, _) = micro_compact(&convo, 0, &mut cold);
+        assert_ne!(out3[idx].tool_results, out1[idx].tool_results, "a cold decision differs");
+    }
+
+    /// A result that returned bytes is never rendered as "0 lines".
+    #[test]
+    fn a_compacted_view_never_shows_zero_lines_for_a_result_whose_bytes_exist() {
+        let history = big_history();
+        let mut frozen = std::collections::HashMap::new();
+        let (view, saved) = micro_compact(&history, 0, &mut frozen);
+        assert!(saved > 0, "the pipeline must have acted for this test to mean anything");
+        for (orig, rendered) in history.iter().zip(view.iter()) {
+            if !tool_result_text(orig).trim().is_empty() {
+                assert!(!tool_result_text(rendered).contains(" 0 lines"), "{}", tool_result_text(rendered));
+            }
+        }
+    }
+
     #[test]
     fn frozen_renderings_never_change_within_a_run() {
         let calls = r#"[{"id":"c1","name":"os","input":{"action":"exec","command":"cargo build"}}]"#;
@@ -1801,6 +1871,7 @@ mod tests {
         );
     }
 
+    #[test]
     fn test_build_tool_summary_calendar_preserves_content() {
         // Calendar reads were collapsing to "[os:calendar] 0 lines" — the bug.
         // Now the real content must be preserved.

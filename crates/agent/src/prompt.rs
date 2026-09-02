@@ -1,5 +1,4 @@
 use chrono::Offset;
-use std::collections::HashMap;
 
 /// Controls how much of the system prompt is assembled.
 #[derive(Debug, Clone, Default)]
@@ -1026,6 +1025,39 @@ pub fn build(pctx: &PromptContext, dctx: &DynamicContext) -> (String, String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
+
+    /// Nothing volatile may be read above CACHE_BOUNDARY. The static prefix is
+    /// built once per run and cached by the provider; a clock, a hostname, a
+    /// random id, or a HashMap iteration in it is a cache miss on every turn.
+    /// The dynamic suffix is the ONE place for per-turn facts, and the date
+    /// line there is deliberate (documented at the builder).
+    #[test]
+    fn an_uncached_section_needs_a_reason() {
+        let src = include_str!("prompt.rs");
+        let start = src.find("pub fn build_static(").expect("build_static");
+        let end = src.find("pub fn build_dynamic_suffix(").expect("build_dynamic_suffix");
+        assert!(start < end, "build_static precedes build_dynamic_suffix");
+        let body = &src[start..end];
+        for volatile in ["Utc::now(", "Local::now(", "get_hostname(", "Uuid::new_v4(", "rand::", "SystemTime::now("] {
+            assert!(!body.contains(volatile), "{volatile} inside the cached static prefix");
+        }
+        let hashmap_iter: Vec<&str> = body
+            .lines()
+            .filter(|l| l.contains("HashMap") && !l.trim_start().starts_with("//"))
+            .collect();
+        assert!(hashmap_iter.is_empty(), "HashMap order reaching the prefix: {hashmap_iter:?}");
+    }
+
+    /// Two consecutive builds from the same context are byte-identical.
+    #[test]
+    fn system_prompt_prefix_is_byte_identical_across_two_iterations() {
+        let pctx = PromptContext { agent_name: "Nebo".to_string(), ..Default::default() };
+        let a = build_static(&pctx);
+        let b = build_static(&pctx);
+        assert_eq!(a, b);
+        assert!(cache_boundary_offset(&a).is_some());
+    }
 
     #[test]
     fn test_build_static_includes_identity() {
@@ -1579,18 +1611,34 @@ mod tests {
         };
         let static_part = build_static(&pctx);
         let dynamic_part = build_dynamic_suffix(&dctx);
-        let total_chars = static_part.len() + dynamic_part.len();
-        // Rough estimate: ~4 chars per token
-        let estimated_tokens = total_chars / 4;
-        // 5500 (was 5000, raised 2026-08-22): the old ceiling had ~40 tokens of
-        // headroom left, forcing every new rule into telegraphic fragments. The
-        // budget still exists to catch runaway growth, not to starve necessary
-        // guidance — revisit pruning when this one nears its ceiling too.
+        // Rough estimate: ~4 chars per token.
+        //
+        // The two halves are bounded SEPARATELY. The dynamic suffix carries the
+        // date, time, timezone, and hostname, so its length depends on the
+        // machine and the day ("Wednesday, September 30" is 8 chars longer than
+        // "Monday, May 1"); a single combined ceiling failed on 2026-09-02 by two
+        // characters with no prompt change at all. The static prefix is the
+        // cached, hand-written part the budget exists to police.
+        //
+        // 5100 static (the old combined 5500 minus the suffix's share; raised
+        // from 5000 on 2026-08-22 because the ceiling had ~40 tokens of headroom
+        // left and forced every new rule into telegraphic fragments). The budget
+        // catches runaway growth, not necessary guidance — revisit pruning when
+        // it nears the ceiling again.
+        const STATIC_BUDGET_TOKENS: usize = 5100;
+        // The suffix on the longest date/hostname this test has seen, plus room.
+        const DYNAMIC_BUDGET_TOKENS: usize = 800;
+        let static_tokens = static_part.len() / 4;
+        let dynamic_tokens = dynamic_part.len() / 4;
         assert!(
-            estimated_tokens < 5500,
-            "Prompt too large: ~{} tokens ({} chars). Budget is 5500 tokens.",
-            estimated_tokens,
-            total_chars
+            static_tokens < STATIC_BUDGET_TOKENS,
+            "Static prompt too large: ~{static_tokens} tokens ({} chars). Budget is {STATIC_BUDGET_TOKENS} tokens.",
+            static_part.len()
+        );
+        assert!(
+            dynamic_tokens < DYNAMIC_BUDGET_TOKENS,
+            "Dynamic suffix too large: ~{dynamic_tokens} tokens ({} chars). Budget is {DYNAMIC_BUDGET_TOKENS} tokens.",
+            dynamic_part.len()
         );
     }
 }

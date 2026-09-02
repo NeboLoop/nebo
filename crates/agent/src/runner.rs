@@ -633,6 +633,9 @@ pub struct RunRequest {
     /// Allowed filesystem paths — restricts file writes and shell commands to these directories.
     /// Empty = unrestricted.
     pub allowed_paths: Vec<String>,
+    /// Default working directory for shell commands and relative file paths
+    /// (an isolated sub-agent's worktree). None = the process cwd.
+    pub cwd: Option<String>,
     /// User presence tracker (shared Arc, for live updates during the run).
     pub presence_tracker: Option<Arc<crate::proactive::PresenceTracker>>,
     /// Proactive inbox (shared Arc, drained once per run).
@@ -1302,6 +1305,7 @@ impl Runner {
         let entity_resource_grants = req.resource_grants.clone();
         let personality_snippet = req.personality_snippet.clone();
         let allowed_paths = req.allowed_paths.clone();
+        let run_cwd = req.cwd.clone();
         let presence_tracker = req.presence_tracker.clone();
         let proactive_inbox = req.proactive_inbox.clone();
         let prompt_mode = req.prompt_mode.clone();
@@ -1404,6 +1408,7 @@ impl Runner {
                         &force_skill,
                         skill_loader.as_deref(),
                         &allowed_paths,
+                        run_cwd.as_deref(),
                         presence_tracker.as_ref(),
                         proactive_inbox.as_ref(),
                         0,
@@ -1505,6 +1510,7 @@ impl Runner {
                 &force_skill,
                 skill_loader.as_deref(),
                 &allowed_paths,
+                run_cwd.as_deref(),
                 presence_tracker.as_ref(),
                 proactive_inbox.as_ref(),
                 min_iterations,
@@ -1609,6 +1615,7 @@ impl Runner {
                     let entity_resource_grants_rf = entity_resource_grants.clone();
                     let skill_loader_rf = skill_loader.clone();
                     let allowed_paths_rf = allowed_paths.clone();
+                    let run_cwd_rf = run_cwd.clone();
                     let embedding_provider_rf = embedding_provider.clone();
                     let hybrid_searcher_rf = hybrid_searcher.clone();
                     let tool_scope_rf = tool_scope.clone();
@@ -1697,6 +1704,7 @@ impl Runner {
                             "",
                             skill_loader_rf.as_deref(),
                             &allowed_paths_rf,
+                            run_cwd_rf.as_deref(),
                             None,
                             None,
                             0,
@@ -1836,6 +1844,15 @@ impl Drop for SubagentTabCleanup {
 
 /// The main agentic loop, running as an async task.
 #[allow(clippy::too_many_arguments)]
+/// Iterations a plan may go unchecked before the runner reminds the model.
+const PLAN_REMINDER_EVERY: usize = 10;
+
+/// The ONE predicate the loop uses for the plan reminder (tested directly;
+/// the live site calls this, it does not re-implement it).
+fn plan_reminder_due(iteration: usize, last_touch: usize) -> bool {
+    iteration.saturating_sub(last_touch) >= PLAN_REMINDER_EVERY
+}
+
 async fn run_loop(
     sessions: &SessionManager,
     tools: &Arc<Registry>,
@@ -1865,6 +1882,7 @@ async fn run_loop(
     force_skill: &str,
     skill_loader: Option<&tools::skills::Loader>,
     allowed_paths: &[String],
+    run_cwd: Option<&str>,
     presence_tracker: Option<&Arc<crate::proactive::PresenceTracker>>,
     proactive_inbox: Option<&Arc<crate::proactive::ProactiveInbox>>,
     min_iterations: usize,
@@ -1937,8 +1955,19 @@ async fn run_loop(
     // Frozen tool-result renderings: one rendering per tool_use_id per run,
     // shared by both compaction paths (pruning::micro_compact and
     // time_based_micro_compact) so the model's history never mutates mid-run.
-    let mut frozen_renderings: std::collections::HashMap<String, String> =
-        std::collections::HashMap::new();
+    // FROZEN DECISIONS, per chat and persisted: the rendering a compacted tool
+    // result was first shown as is its rendering forever, across runs and
+    // restarts (the reference's `seenIds` + `replacements`, written to the
+    // transcript). Loaded here, extended after each compaction pass below.
+    let chat_id_for_renderings = store.resolve_session_chat_id(session_id);
+    let mut frozen_renderings: std::collections::HashMap<String, String> = store
+        .get_chat_renderings(&chat_id_for_renderings)
+        .unwrap_or_else(|e| {
+            warn!(error = %e, "could not load frozen renderings; deciding fresh this run");
+            std::collections::HashMap::new()
+        });
+    let mut persisted_renderings: std::collections::HashSet<String> =
+        frozen_renderings.keys().cloned().collect();
     let mut identical_call_budget = ai::call_budget::CallBudget::new();
     // Per-(name, args) hash of a read-only call's own last result, for the
     // no-progress check: identical read + identical answer = no new information.
@@ -1956,6 +1985,11 @@ async fn run_loop(
     // different methods/args, which the identical-args guard misses — get blocked
     // after a threshold so the agent reports instead of spiraling. NOT a substitute
     // for the file-read fix.
+    // The plan this run wrote or checked last, and at which iteration. After
+    // PLAN_REMINDER_EVERY iterations without a plan_check the model is told to
+    // run one before reporting done (the reference nags its todo list the same
+    // way; ours nags for a MEASURED check, not a self-declared tick).
+    let mut plan_touch: Option<(usize, String)> = None;
     let mut read_failures: std::collections::HashMap<String, usize> =
         std::collections::HashMap::new();
     const READ_FAILURE_LIMIT: usize = 3;
@@ -2006,7 +2040,10 @@ async fn run_loop(
     const MAX_EMPTY_CONTENT_RETRIES: usize = 3;
     // Message-stream steering: per-run cadence for <system-reminder> injection.
     let mut reminder_cadence = steering::ReminderCadence::default();
-    let mut turn_exit_reason = "unknown".to_string();
+    let mut turn_exit_reason = crate::guardrails::Exit::Unknown;
+    // Stage 2 guards with their escalation attached (see guardrails.rs).
+    let mut spiral_escalator = crate::guardrails::Escalator::default();
+    let mut error_streak = crate::guardrails::ErrorStreak::default();
     let mut final_iteration = 0usize;
     let mut last_model_name = String::new();
     // Session-scoped tool schema cache: tool schemas don't change between turns,
@@ -2793,7 +2830,7 @@ async fn run_loop(
 
         if cancel_token.is_cancelled() {
             info!(session_id, "run cancelled before iteration {}", iteration);
-            return Ok(turn_exit_reason);
+            return Ok(turn_exit_reason.label());
         }
 
         // Every consumer drains the event receiver until the run completes, so a
@@ -2804,7 +2841,7 @@ async fn run_loop(
                 session_id,
                 iteration, "event receiver dropped — stopping run"
             );
-            return Ok(turn_exit_reason);
+            return Ok(turn_exit_reason.label());
         }
 
         // Adaptive iteration limit: extend past default only if making genuine progress.
@@ -2816,7 +2853,7 @@ async fn run_loop(
                 )
                 .is_some()
             {
-                turn_exit_reason = "adaptive_limit_no_progress".to_string();
+                turn_exit_reason = crate::guardrails::Exit::AdaptiveLimitNoProgress;
                 let last_tool = recent_tool_names.last().cloned().unwrap_or_default();
                 let worst_read = read_failures
                     .iter()
@@ -3016,6 +3053,20 @@ async fn run_loop(
             working = compacted;
         }
 
+        // Freeze any rendering decided this pass so the next run makes the
+        // same one byte for byte.
+        let newly_frozen: Vec<(String, String)> = frozen_renderings
+            .iter()
+            .filter(|(k, _)| !persisted_renderings.contains(*k))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        if !newly_frozen.is_empty() {
+            match store.insert_chat_renderings(&chat_id_for_renderings, &newly_frozen) {
+                Ok(()) => persisted_renderings.extend(newly_frozen.into_iter().map(|(k, _)| k)),
+                Err(e) => warn!(error = %e, "could not persist frozen renderings"),
+            }
+        }
+
         // Stage 3: Truncate old user/assistant messages
         let (summarized, ms_saved) = pruning::message_summarize(&working, thresholds.warning, 15);
         if ms_saved > 0 {
@@ -3037,6 +3088,10 @@ async fn run_loop(
         // Quick fallback is used immediately (no LLM call); the LLM-quality
         // summary is generated in the background and stored for next iteration.
         let summary = if !evicted.is_empty() {
+            // The pre-eviction memory flush gate reads this counter.
+            if let Err(e) = store.increment_session_compaction_count(session_id) {
+                warn!(error = %e, "could not record the compaction");
+            }
             let existing_summary = sessions.get_summary(session_id).unwrap_or_default();
 
             // Immediate: quick fallback (pure string extraction, no LLM)
@@ -3352,7 +3407,7 @@ async fn run_loop(
             warn!(session_id, iteration, reason = %reason, "circuit breaker triggered");
             // Typed termination: a ControlNotice status event, never assistant
             // prose (the old apology text leaked verbatim into channel replies).
-            turn_exit_reason = "user_requested_stop".to_string();
+            turn_exit_reason = crate::guardrails::Exit::UserRequestedStop;
             let _ = tx
                 .send(StreamEvent::control_notice(
                     "Stopped at your request.",
@@ -3612,7 +3667,7 @@ async fn run_loop(
                 && m.spent_output_before + state.total_output_tokens.max(0) as u32
                     > m.output_budget_max
             {
-                turn_exit_reason = "output_budget_exceeded".to_string();
+                turn_exit_reason = crate::guardrails::Exit::OutputBudgetExceeded;
                 break;
             }
         }
@@ -3664,7 +3719,7 @@ async fn run_loop(
         let _llm_permit = tokio::select! {
             _ = cancel_token.cancelled() => {
                 info!(session_id, "run cancelled waiting for LLM permit");
-                return Ok(turn_exit_reason);
+                return Ok(turn_exit_reason.label());
             }
             permit = concurrency.acquire_llm_permit() => permit,
         };
@@ -3731,7 +3786,7 @@ async fn run_loop(
         let stream_result = tokio::select! {
             _ = cancel_token.cancelled() => {
                 info!(session_id, "run cancelled during provider.stream() call");
-                return Ok(turn_exit_reason);
+                return Ok(turn_exit_reason.label());
             }
             result = provider.stream(&chat_req) => result,
         };
@@ -3879,7 +3934,7 @@ async fn run_loop(
                             info!(session_id, content_len = assistant_content.len(), tool_count = tool_calls.len(), "saved partial assistant message before cancel");
                         }
                     }
-                    return Ok(turn_exit_reason);
+                    return Ok(turn_exit_reason.label());
                 }
                 ev = tokio::time::timeout(STREAM_IDLE_TIMEOUT, rx.recv()) => match ev {
                     Ok(Some(e)) => e,
@@ -4377,7 +4432,7 @@ async fn run_loop(
                     _ = cancel_token.cancelled() => {
                         info!(session_id, "plan approval cancelled");
                         ask_chs.lock().await.remove(&request_id);
-                        return Ok(turn_exit_reason);
+                        return Ok(turn_exit_reason.label());
                     }
                     result = resp_rx => {
                         match result {
@@ -4439,6 +4494,7 @@ async fn run_loop(
                 operation_policy: operation_policy.cloned(),
                 resource_grants: entity_resource_grants.cloned(),
                 allowed_paths: allowed_paths.to_vec(),
+                cwd: run_cwd.map(str::to_string),
                 cancel_token: cancel_token.clone(),
                 stream_tx: Some(tx.clone()),
                 run_id: progress.map(|p| p.run_id.clone()),
@@ -4515,6 +4571,9 @@ async fn run_loop(
                         tool_name: tool_calls[idx].name.clone(),
                         input: tool_calls[idx].input.clone(),
                         session_id: session_id.to_string(),
+                        tool_use_id: tool_calls[idx].id.clone(),
+                        cwd: run_cwd.map(str::to_string).unwrap_or_default(),
+                        agent_id: session_id.strip_prefix("subagent:").map(|_| session_id.to_string()),
                     })
                     .unwrap_or_default();
                     let (result, _handled) = hooks.apply_filter("tool.pre_execute", payload).await;
@@ -4601,7 +4660,7 @@ async fn run_loop(
                     repeats,
                     "runaway backstop: identical call repeated past ceiling — ending turn"
                 );
-                turn_exit_reason = "runaway_tool_loop".to_string();
+                turn_exit_reason = crate::guardrails::Exit::RunawayToolLoop;
                 let _ = tx
                     .send(StreamEvent::control_notice(
                         format!(
@@ -4673,10 +4732,13 @@ async fn run_loop(
                         hard_stop = guard_cfg.hard_stop,
                         "spiral backstop: nudging model off repeated action"
                     );
-                    // Hard-stop opt-in (Settings → Developer): end the turn with
-                    // a typed ControlNotice instead of nudging. Off by default —
-                    // interactive sessions keep the gentle correction.
-                    if guard_cfg.hard_stop {
+                    // Hard-stop opt-in (Settings → Developer) ends the turn on the
+                    // first trip. Otherwise the first trip is a nudge and the
+                    // SECOND trip for the same action is the stop: a nudge that
+                    // did not help is never repeated (guardrails::Escalator).
+                    if guard_cfg.hard_stop
+                        || spiral_escalator.fire(&key) == crate::guardrails::Verdict::Stop
+                    {
                         spiral_hard_stop = Some(key);
                         break;
                     }
@@ -4694,12 +4756,12 @@ async fn run_loop(
                 }
             }
             if let Some(key) = spiral_hard_stop {
-                turn_exit_reason = "repeated_tool_calls".to_string();
+                turn_exit_reason = crate::guardrails::Exit::RepeatedToolCalls;
                 let _ = tx
                     .send(StreamEvent::control_notice(
                         format!(
-                            "Stopped: '{}' was repeated {} times without progress \
-                             (hard stop is enabled in Settings → Developer).",
+                            "Stopped: '{}' was repeated {} times without progress, \
+                             and again after being told to change approach.",
                             key, guard_cfg.same_action_limit
                         ),
                         "repeated_tool_calls",
@@ -5169,7 +5231,7 @@ async fn run_loop(
             // Workflow break (exit primitive / approval park): the turn ends
             // now — nothing in this batch executes.
             if let Some(reason) = wf_break_reason {
-                turn_exit_reason = reason;
+                turn_exit_reason = crate::guardrails::Exit::Workflow(reason);
                 break;
             }
 
@@ -5235,7 +5297,7 @@ async fn run_loop(
                 let item = tokio::select! {
                     _ = cancel_token.cancelled() => {
                         info!(session_id, "run cancelled during tool execution");
-                        return Ok(turn_exit_reason);
+                        return Ok(turn_exit_reason.label());
                     }
                     next = futures.next() => match next {
                         Some(v) => v,
@@ -5277,7 +5339,7 @@ async fn run_loop(
             for &idx in &sequential_indices {
                 if cancel_token.is_cancelled() {
                     info!(session_id, "run cancelled during sequential tool execution");
-                    return Ok(turn_exit_reason);
+                    return Ok(turn_exit_reason.label());
                 }
                 let tc = tool_calls[idx].clone();
                 let _permit = concurrency.acquire_tool_permit().await;
@@ -5360,16 +5422,27 @@ async fn run_loop(
 
             // Fire tool.post_execute action hooks for completed tools.
             if hooks.has_subscribers("tool.post_execute") {
-                for entry in &results {
+                for entry in results.iter_mut() {
                     if let Some((tc, result)) = entry {
                         let payload = serde_json::to_vec(&crate::hooks::ToolPostExecutePayload {
                             tool_name: tc.name.clone(),
                             result: result.content.clone(),
                             is_error: result.is_error,
                             session_id: session_id.to_string(),
+                            tool_use_id: tc.id.clone(),
+                            tool_input: tc.input.clone(),
+                            cwd: run_cwd.map(str::to_string).unwrap_or_default(),
+                            agent_id: session_id.strip_prefix("subagent:").map(|_| session_id.to_string()),
                         })
                         .unwrap_or_default();
-                        hooks.do_action("tool.post_execute", payload).await;
+                        // Plugins listen as actions (fire-and-forget); shell hooks as
+                        // filters whose response is what the model sees.
+                        hooks.do_action("tool.post_execute", payload.clone()).await;
+                        let (bytes, _) = hooks.apply_filter("tool.post_execute", payload).await;
+                        if let Ok(resp) = serde_json::from_slice::<crate::hooks::ToolPostExecuteResponse>(&bytes) {
+                            result.content = resp.result;
+                            result.is_error = resp.is_error;
+                        }
                     }
                 }
             }
@@ -5417,7 +5490,7 @@ async fn run_loop(
                         while let Some((idx, verification)) = tokio::select! {
                             _ = cancel_token.cancelled() => {
                                 info!(session_id, "run cancelled during sidecar verification");
-                                return Ok(turn_exit_reason);
+                                return Ok(turn_exit_reason.label());
                             }
                             next = sidecar_futures.next() => next
                         } {
@@ -5490,6 +5563,7 @@ async fn run_loop(
             // this batch and surface to the user, instead of feeding it back for the
             // model to retry/improvise (the death-spiral fix; FRAMES.md Phase 1).
             let mut terminal_error: Option<String> = None;
+            let mut same_error_stop: Option<(String, String)> = None;
             // Highest-signal rate-limit status seen this iteration (429/403) — feeds the
             // RateLimit reminder so the model backs off instead of hammer-retrying a host.
             let mut iteration_rate_limited: Option<u16> = None;
@@ -5499,6 +5573,13 @@ async fn run_loop(
             for entry in results.into_iter().flatten() {
                 let (tc, mut result) = entry;
                 had_results = true;
+                if tc.name == "os"
+                    && matches!(tc.input.get("action").and_then(|v| v.as_str()), Some("plan" | "plan_check"))
+                {
+                    if let Some(p) = tc.input.get("path").and_then(|v| v.as_str()) {
+                        plan_touch = Some((iteration, p.to_string()));
+                    }
+                }
                 // Terminal error (auth/permission/connection) — narrow, set only by
                 // ToolResult::terminal(). End the run after this batch instead of
                 // letting the model retry/improvise. Critical for autonomous
@@ -5621,6 +5702,30 @@ async fn run_loop(
                     simple_hash(tc.name.as_bytes()),
                     simple_hash(tc.input.to_string().as_bytes()),
                 );
+                // Same-error streak: the identical-args block never sees a model
+                // that varies its arguments against the same wall (2026-09-02:
+                // "restore needs `checkpoint`" 49 times). Three identical error
+                // texts nudge; three more after the nudge stop the turn.
+                if result.is_error && !result.terminal {
+                    match error_streak.record(&tc.name, &result.content) {
+                        Some(crate::guardrails::Verdict::Nudge) => {
+                            result.content.push_str(&format!(
+                                "\n\nThis is the {}th time '{}' has returned this same error this \
+                                 turn. Retrying with different arguments has not changed it. \
+                                 Read the error, use a different tool or approach, or tell the \
+                                 user what is blocking you.",
+                                error_streak.count(&tc.name, &result.content),
+                                tc.name
+                            ));
+                        }
+                        Some(crate::guardrails::Verdict::Stop) => {
+                            same_error_stop.get_or_insert_with(|| {
+                                (tc.name.clone(), tools::plan::first_line(&result.content, 120))
+                            });
+                        }
+                        None => {}
+                    }
+                }
                 let mut no_progress = result.is_error || flagged_redundant;
                 // Read-only per the registry's own classifier — the same verdict
                 // the concurrency scheduler trusts, so there is exactly one
@@ -5822,9 +5927,24 @@ async fn run_loop(
             // Typed termination: emitted as a ControlNotice status event, never Text —
             // the old emit-text-then-break made the notice indistinguishable from
             // assistant prose and it leaked verbatim into channel replies.
+            if let Some((tool, first_line)) = same_error_stop.take() {
+                warn!(session_id, iteration, tool = %tool, "same-error loop — ending run");
+                turn_exit_reason = crate::guardrails::Exit::SameErrorLoop;
+                let _ = tx
+                    .send(StreamEvent::control_notice(
+                        format!(
+                            "Stopped: '{}' kept returning the same error ({}) after being told \
+                             to change approach. Ending the run so it cannot continue indefinitely.",
+                            tool, first_line
+                        ),
+                        "same_error_loop",
+                    ))
+                    .await;
+                break;
+            }
             if let Some(msg) = terminal_error {
                 warn!(session_id, iteration, "terminal tool error — ending run");
-                turn_exit_reason = "terminal_tool_error".to_string();
+                turn_exit_reason = crate::guardrails::Exit::TerminalToolError;
                 let _ = tx
                     .send(StreamEvent::control_notice(msg, "terminal_tool_error"))
                     .await;
@@ -5885,6 +6005,18 @@ async fn run_loop(
                 );
             } else {
                 consecutive_error_iterations = 0;
+            }
+
+            if let Some((at, path)) = plan_touch.as_mut() {
+                if plan_reminder_due(iteration, *at) {
+                    pending_stream_reminders.push(steering::wrap_system_reminder(&format!(
+                        "Plan {path}: {} iterations since its last check. Run os(resource: \"file\", \
+                         action: \"plan_check\", path: \"{path}\") before reporting the task done; \
+                         only a passing verify command ticks a step.",
+                        iteration.saturating_sub(*at)
+                    )));
+                    *at = iteration;
+                }
             }
 
             // Message-stream steering: inject at most one <system-reminder> after
@@ -6121,7 +6253,7 @@ async fn run_loop(
             }
 
             // Exhausted retries — output "(empty)" and break.
-            turn_exit_reason = "empty_response_exhausted".to_string();
+            turn_exit_reason = crate::guardrails::Exit::EmptyResponseExhausted;
             warn!(
                 iteration,
                 session_id,
@@ -6195,7 +6327,7 @@ async fn run_loop(
         // enabling this.
 
         // Conversation turn complete — normal exit with text response
-        turn_exit_reason = format!("text_response(stop_reason={:?})", stop_reason);
+        turn_exit_reason = crate::guardrails::Exit::TextResponse(format!("{stop_reason:?}"));
         info!(iteration, session_id, exit_reason = %turn_exit_reason, "agentic loop complete");
         break;
     }
@@ -6203,7 +6335,7 @@ async fn run_loop(
     // Post-loop: budget exhaustion summary request.
     // If the loop exited because we hit max_iterations without a final text response,
     // make ONE more API call with tools stripped to get a summary.
-    if final_iteration >= max_iterations && !turn_exit_reason.starts_with("text_response") {
+    if final_iteration >= max_iterations && !turn_exit_reason.is_text_response() {
         // Only request summary if the last message is a tool result (mid-task exit)
         let last_msg_is_tool = sessions
             .get_messages(session_id)
@@ -6212,10 +6344,7 @@ async fn run_loop(
             .map(|m| m.role == "tool")
             .unwrap_or(false);
         if last_msg_is_tool {
-            turn_exit_reason = format!(
-                "max_iterations_reached({}/{})",
-                final_iteration, max_iterations
-            );
+            turn_exit_reason = crate::guardrails::Exit::MaxIterations { done: final_iteration, max: max_iterations };
             info!(session_id, exit_reason = %turn_exit_reason, "budget exhausted — requesting summary");
 
             // Append a user message requesting summary, then make one toolless API call
@@ -6394,7 +6523,7 @@ async fn run_loop(
         &state,
     );
 
-    Ok(turn_exit_reason)
+    Ok(turn_exit_reason.label())
 }
 
 /// Persists the finished run's usage. Cost is computed from models.yaml
@@ -7169,6 +7298,19 @@ fn partition_tool_calls(calls: &[(&str, &serde_json::Value, bool)]) -> (Vec<usiz
 /// (ancestor/descendant). Mutations to overlapping paths must not race.
 fn paths_overlap(a: &std::path::Path, b: &std::path::Path) -> bool {
     a.starts_with(b) || b.starts_with(a)
+}
+
+#[cfg(test)]
+mod plan_reminder_tests {
+    use super::*;
+
+    #[test]
+    fn plan_reminder_fires_after_ten_iterations_without_a_check() {
+        assert!(!plan_reminder_due(9, 0), "absent at 9");
+        assert!(!plan_reminder_due(11, 2), "absent at 9 since the touch");
+        assert!(plan_reminder_due(10, 0), "present at 10");
+        assert!(plan_reminder_due(21, 11), "and again 10 after the reminder re-touched it");
+    }
 }
 
 #[cfg(test)]

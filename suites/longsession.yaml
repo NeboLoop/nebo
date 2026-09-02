@@ -8,3 +8,4 @@ name: longsession
 fixtures:
   - ../fixtures/longsession/window-eviction-recall.yaml
   - ../fixtures/longsession/compaction-large-reads.yaml
+  - ../fixtures/longsession/compaction-frozen-across-turns.yaml

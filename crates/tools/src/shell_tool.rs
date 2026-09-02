@@ -89,7 +89,7 @@ impl ShellTool {
         }
 
         match si.resource.as_str() {
-            "bash" | "shell" => self.handle_bash(&si, ctx.trusted_plugin_env).await,
+            "bash" | "shell" => self.handle_bash(&si, ctx.trusted_plugin_env, ctx.cwd.as_deref()).await,
             "process" => self.handle_process(&si).await,
             "session" => self.handle_session(&si).await,
             other => ToolResult::error(format!(
@@ -99,7 +99,7 @@ impl ShellTool {
         }
     }
 
-    async fn handle_bash(&self, input: &ShellInput, trusted_plugin_env: bool) -> ToolResult {
+    async fn handle_bash(&self, input: &ShellInput, trusted_plugin_env: bool, default_cwd: Option<&str>) -> ToolResult {
         if input.command.is_empty() {
             return ToolResult::error(errors::missing_param(
                 "exec",
@@ -161,6 +161,34 @@ impl ShellTool {
             );
         }
 
+        // House git rules: the commands that throw away the owner's work are
+        // refused outright, and the refusal names what to use instead.
+        if crate::policy::is_destructive_git(&input.command) {
+            return ToolResult::error(
+                "This git command discards work (stash, reset --hard, checkout/restore of \
+                 tracked files, clean -f, force push, branch -D) and is not available. \
+                 To be able to undo a change, take a checkpoint first: os(resource: \
+                 \"file\", action: \"checkpoint\", paths: [...]) and restore it with \
+                 action: \"restore\". For parallel edits use a worktree (agent spawn_parallel \
+                 with isolate: \"worktree\"). If the owner truly wants history rewritten, \
+                 tell them the exact command and let them run it."
+                    .to_string(),
+            );
+        }
+
+        // `sed -i` rewrites a file behind the read ledger and the edit
+        // verification chain. The edit action is the supervised way to change
+        // a file; a refusal that names it beats a silent unsupervised write.
+        if crate::policy::is_sed_in_place(&input.command) {
+            return ToolResult::error(
+                "In-place sed is not available: it edits a file outside the supervised edit \
+                 path (no read check, no verification, no ledger). Use os(resource: \"file\", \
+                 action: \"edit\", path, old_string, new_string) for the same change, or \
+                 replace_all: true for every occurrence. Plain `sed` that prints to stdout is fine."
+                    .to_string(),
+            );
+        }
+
         // Handle background execution
         if input.background {
             return self.execute_background(input).await;
@@ -179,18 +207,22 @@ impl ShellTool {
         }
         cmd.arg(&input.command);
 
-        if !input.cwd.is_empty() {
-            let cwd_path = std::path::Path::new(&input.cwd);
+        // The call's own cwd wins; otherwise the run's default (an isolated
+        // sub-agent's worktree), so a bare `cargo test` never runs in the
+        // owner's tree by accident.
+        let cwd = if input.cwd.is_empty() { default_cwd.unwrap_or("") } else { input.cwd.as_str() };
+        if !cwd.is_empty() {
+            let cwd_path = std::path::Path::new(cwd);
             if !cwd_path.exists() {
-                return ToolResult::error(errors::path_not_found(&input.cwd));
+                return ToolResult::error(errors::path_not_found(cwd));
             }
             if !cwd_path.is_dir() {
                 return ToolResult::error(format!(
                     "Not a directory: {}. The cwd parameter must be a directory path.",
-                    input.cwd
+                    cwd
                 ));
             }
-            cmd.current_dir(&input.cwd);
+            cmd.current_dir(cwd);
         }
 
         process::hide_window(&mut cmd);
@@ -200,6 +232,11 @@ impl ShellTool {
         for (k, v) in process::sanitized_env() {
             cmd.env(k, v);
         }
+        // An unattended agent can never answer a credential prompt: a `git
+        // fetch` on an uncached remote would hang the turn until timeout.
+        cmd.env("GIT_TERMINAL_PROMPT", "0");
+        cmd.env("GIT_ASKPASS", "");
+        cmd.env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes");
         if let Some(ref ps) = self.plugin_store {
             for (k, v) in ps.build_env_map() {
                 cmd.env(k, v);
@@ -904,6 +941,36 @@ mod tests {
         assert!(detect_unbounded_follow("docker compose logs --tail 50 web").is_none());
         assert!(detect_unbounded_follow("ls -la /tmp").is_none());
         assert!(detect_unbounded_follow("grep -f patterns.txt input.txt").is_none());
+    }
+
+    // An unattended agent can never answer a credential prompt, so every
+    // shell command runs with git's prompts disabled.
+    #[tokio::test]
+    async fn git_commands_in_the_shell_get_the_no_prompt_env() {
+        let t = tool();
+        let r = t.execute(&ctx(), json!({"resource": "shell", "action": "exec", "command": "env"})).await;
+        assert!(!r.is_error, "{}", r.content);
+        assert!(r.content.contains("GIT_TERMINAL_PROMPT=0"), "{}", r.content);
+        assert!(r.content.lines().any(|l| l == "GIT_ASKPASS="), "{}", r.content);
+        assert!(r.content.contains("GIT_SSH_COMMAND=ssh -o BatchMode=yes"), "{}", r.content);
+    }
+
+    // The run's default cwd (an isolated sub-agent's worktree) is used when
+    // the call names none; the call's own cwd still wins.
+    #[tokio::test]
+    async fn default_cwd_from_run_request_is_used_when_the_call_has_none() {
+        let t = tool();
+        let dir = tempfile::tempdir().unwrap();
+        let want = std::fs::canonicalize(dir.path()).unwrap();
+        let mut c = ctx();
+        c.cwd = Some(dir.path().to_string_lossy().into_owned());
+        let r = t.execute(&c, json!({"resource": "shell", "action": "exec", "command": "pwd -P"})).await;
+        assert_eq!(r.content.trim(), want.to_string_lossy(), "{}", r.content);
+        let other = tempfile::tempdir().unwrap();
+        let r = t
+            .execute(&c, json!({"resource": "shell", "action": "exec", "command": "pwd -P", "cwd": other.path()}))
+            .await;
+        assert_eq!(r.content.trim(), std::fs::canonicalize(other.path()).unwrap().to_string_lossy(), "{}", r.content);
     }
 
     #[tokio::test]

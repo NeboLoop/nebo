@@ -1403,6 +1403,11 @@ impl Reminder for CapabilityUnavailable {
 }
 
 // 15. Task Tracking Nudge — steer the LLM to break complex requests into tracked tasks
+/// Distinct complexity signals in the user's prompt before the task-list
+/// reminder fires. Two was too few: "create a ... and then ..." is a job, not
+/// a project.
+const MULTI_STEP_SIGNALS: usize = 3;
+
 struct TaskTrackingNudge;
 impl Reminder for TaskTrackingNudge {
     fn name(&self) -> &'static str {
@@ -1454,20 +1459,21 @@ impl Reminder for TaskTrackingNudge {
             .filter(|s| lower.contains(*s))
             .count();
 
-        // Also check message length as a proxy for complexity
-        let is_long = ctx.user_prompt.len() > 200;
-
-        if signal_count < 2 && !is_long {
+        // Signals only. Prompt length used to count as complexity, and a
+        // 250-char request for a four-call job got a task list opened,
+        // updated, and closed around every call (live, 2026-09-02: 11 of 20
+        // calls were bookkeeping). A task list must earn its keep.
+        if signal_count < MULTI_STEP_SIGNALS {
             return None;
         }
 
         Some(
-            "This looks like a multi-step request. Break it into trackable tasks so the user \
-             can see your progress:\n\
+            "This looks like a multi-stage request. If it will take many tool calls across \
+             several distinct stages, track it so the user can see progress:\n\
              1. Create tasks: agent(resource: \"task\", action: \"create\", subject: \"...\")\n\
              2. Update as you work: agent(resource: \"task\", action: \"update\", task_id: N, status: \"in_progress\")\n\
              3. Mark complete with output: agent(resource: \"task\", action: \"update\", task_id: N, status: \"completed\", output: \"...\")\n\
-             Create all tasks upfront, then work through them one at a time."
+             If you can finish it in a handful of calls, skip the task list and just do the work."
                 .to_string(),
         )
     }
@@ -2268,13 +2274,24 @@ mod tests {
             TaskTrackingNudge
                 .check(&rctx_prompt(prompt, 1))
                 .unwrap()
-                .contains("trackable tasks"),
+                .contains("Create tasks"),
             "fires on a complex first-turn request"
         );
         // Only at iteration 1.
         assert!(TaskTrackingNudge.check(&rctx_prompt(prompt, 2)).is_none());
         // Simple prompt → no fire.
         assert!(TaskTrackingNudge.check(&rctx_prompt("what time is it?", 1)).is_none());
+        // A long request for a four-call job is not a project. This exact shape
+        // (250 chars, two signals) opened a task list around every call live.
+        let four_calls = "In /tmp/nebo-test/cp, replace 'alpha' with 'ALPHA' in one.txt and 'beta' with \
+                          'BETA' in two.txt, but take a checkpoint of both files first. Then put both \
+                          files back exactly as they were using that checkpoint, and tell me the \
+                          checkpoint id that would undo the restore.";
+        assert!(four_calls.len() > 200);
+        assert!(
+            TaskTrackingNudge.check(&rctx_prompt(four_calls, 1)).is_none(),
+            "length alone never opens a task list"
+        );
     }
 
     #[test]

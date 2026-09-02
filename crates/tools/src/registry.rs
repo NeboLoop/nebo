@@ -409,8 +409,14 @@ impl Registry {
     }
 
     /// List all tools as AI tool definitions.
+    /// Every tool definition, in name order. The order reaches the request's
+    /// `tools` array, which providers hash as part of the cached prefix: a
+    /// HashMap's order is not a contract, and a reordered array is a cache
+    /// miss on every turn (coding parity, Stage 3).
     pub async fn list(&self) -> Vec<ToolDefinition> {
-        self.def_cache.read().await.values().cloned().collect()
+        let mut defs: Vec<ToolDefinition> = self.def_cache.read().await.values().cloned().collect();
+        defs.sort_by(|a, b| a.name.cmp(&b.name));
+        defs
     }
 
     /// Get a single tool's definition by name (for callers that offer a curated tool
@@ -424,11 +430,14 @@ impl Registry {
     pub async fn list_active(&self, activated: &HashSet<String>) -> Vec<ToolDefinition> {
         let deferred = self.deferred.read().await;
         let cache = self.def_cache.read().await;
-        cache
+        let mut defs: Vec<ToolDefinition> = cache
             .values()
             .filter(|def| !deferred.contains(&def.name) || activated.contains(&def.name))
             .cloned()
-            .collect()
+            .collect();
+        // Name order: see `list`.
+        defs.sort_by(|a, b| a.name.cmp(&b.name));
+        defs
     }
 
     /// List deferred tools that haven't been activated yet as compact stubs.
@@ -436,7 +445,7 @@ impl Registry {
     pub async fn list_deferred_stubs(&self, activated: &HashSet<String>) -> Vec<(String, String)> {
         let deferred = self.deferred.read().await;
         let cache = self.def_cache.read().await;
-        deferred
+        let mut stubs: Vec<(String, String)> = deferred
             .iter()
             .filter(|name| !activated.contains(name.as_str()))
             .filter_map(|name| {
@@ -445,7 +454,10 @@ impl Registry {
                     (name.clone(), short)
                 })
             })
-            .collect()
+            .collect();
+        // Name order: this listing is system-prompt bytes (see `list`).
+        stubs.sort();
+        stubs
     }
 
     /// Refresh the cached definition for a tool (e.g. after plugin install/uninstall).
@@ -1229,7 +1241,24 @@ pub fn file_mutation_paths(
         return None;
     }
     let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
-    if !matches!(action, "write" | "edit" | "delete" | "move" | "copy") {
+    // checkpoint snapshots its `paths[]` (a concurrent write would race the
+    // snapshot); restore writes them. A restore with no `paths` takes them
+    // from the manifest, which this input-only view cannot see: None, so the
+    // scheduler runs it alone. plan_check runs arbitrary commands: alone too.
+    if matches!(action, "checkpoint" | "restore") {
+        let paths: Vec<std::path::PathBuf> = input
+            .get("paths")
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|p| p.as_str())
+                    .filter_map(|p| std::path::absolute(std::path::Path::new(p)).ok())
+                    .collect()
+            })
+            .unwrap_or_default();
+        return (!paths.is_empty()).then_some(paths);
+    }
+    if !matches!(action, "write" | "edit" | "delete" | "move" | "copy" | "plan") {
         return None;
     }
     let path = input.get("path").and_then(|v| v.as_str()).unwrap_or("");
@@ -1489,6 +1518,36 @@ mod tests {
         assert_eq!(strip_mcp_prefix("mcp__only_one"), "mcp__only_one");
     }
 
+    /// The request's tool order is a cache key. Two registries built in
+    /// different orders must emit identical definition lists.
+    #[tokio::test]
+    async fn tool_definitions_and_deferred_stubs_are_in_name_order() {
+        let a = Registry::new(crate::policy::Policy::default());
+        let b = Registry::new(crate::policy::Policy::default());
+        let mk = |n: &str| ToolDefinition {
+            name: n.into(),
+            description: format!("{n} first line\nmore"),
+            input_schema: serde_json::json!({"type": "object"}),
+        };
+        for n in ["web", "os", "agent", "skill"] {
+            a.def_cache.write().await.insert(n.into(), mk(n));
+        }
+        for n in ["skill", "agent", "os", "web"] {
+            b.def_cache.write().await.insert(n.into(), mk(n));
+        }
+        for r in [&a, &b] {
+            r.deferred.write().await.insert("web".into());
+            r.deferred.write().await.insert("skill".into());
+        }
+        let names = |defs: Vec<ToolDefinition>| defs.into_iter().map(|d| d.name).collect::<Vec<_>>();
+        assert_eq!(names(a.list().await), vec!["agent", "os", "skill", "web"]);
+        assert_eq!(names(a.list().await), names(b.list().await));
+        let none = std::collections::HashSet::new();
+        assert_eq!(names(a.list_active(&none).await), vec!["agent", "os"]);
+        assert_eq!(a.list_deferred_stubs(&none).await, b.list_deferred_stubs(&none).await);
+        assert_eq!(a.list_deferred_stubs(&none).await[0].0, "skill");
+    }
+
     #[test]
     fn test_file_mutation_paths() {
         // Write with explicit resource → its absolute path.
@@ -1522,6 +1581,15 @@ mod tests {
         // Reads, shell calls, missing paths, and non-os tools are all None.
         let read = serde_json::json!({"resource": "file", "action": "read", "path": "/a/b.txt"});
         assert_eq!(file_mutation_paths("os", &read), None);
+
+        // checkpoint/restore carry their files in `paths[]`; a restore with
+        // none must run alone (None), never as a free-for-all.
+        let cp = serde_json::json!({"resource": "file", "action": "checkpoint", "paths": ["/a/b.txt", "/a/c.txt"]});
+        assert_eq!(file_mutation_paths("os", &cp).map(|p| p.len()), Some(2));
+        let restore_all = serde_json::json!({"resource": "file", "action": "restore", "checkpoint": "cp-1"});
+        assert_eq!(file_mutation_paths("os", &restore_all), None);
+        let plan_check = serde_json::json!({"resource": "file", "action": "plan_check", "path": "/a/plan.md"});
+        assert_eq!(file_mutation_paths("os", &plan_check), None);
         let shell = serde_json::json!({"resource": "shell", "action": "exec", "command": "ls"});
         assert_eq!(file_mutation_paths("os", &shell), None);
         let no_path = serde_json::json!({"resource": "file", "action": "write"});

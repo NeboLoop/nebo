@@ -161,7 +161,7 @@ impl Store {
         let conn = self.conn()?;
         let mut stmt = conn
             .prepare(
-                "SELECT * FROM chat_messages WHERE chat_id = ?1 ORDER BY created_at ASC, rowid ASC",
+                "SELECT * FROM chat_messages WHERE chat_id = ?1 AND rowid > COALESCE((SELECT compacted_below_rowid FROM chats WHERE id = ?1), 0) ORDER BY created_at ASC, rowid ASC",
             )
             .map_err(|e| NeboError::Database(e.to_string()))?;
         let rows = stmt
@@ -187,6 +187,7 @@ impl Store {
             let mut stmt = conn
                 .prepare(
                     "SELECT * FROM chat_messages WHERE chat_id = ?1 AND created_at < ?2
+                     AND rowid > COALESCE((SELECT compacted_below_rowid FROM chats WHERE id = ?1), 0)
                  ORDER BY created_at DESC, id DESC LIMIT ?3",
                 )
                 .map_err(|e| NeboError::Database(e.to_string()))?;
@@ -203,7 +204,7 @@ impl Store {
             let mut stmt = conn
                 .prepare(
                     "SELECT * FROM (
-                    SELECT * FROM chat_messages WHERE chat_id = ?1
+                    SELECT * FROM chat_messages WHERE chat_id = ?1 AND rowid > COALESCE((SELECT compacted_below_rowid FROM chats WHERE id = ?1), 0)
                     ORDER BY created_at DESC, id DESC LIMIT ?2
                 ) ORDER BY created_at ASC, id ASC",
                 )
@@ -246,6 +247,7 @@ impl Store {
                 .prepare(
                     "SELECT * FROM chat_messages WHERE chat_id = ?1
                      AND (created_at < ?2 OR (created_at = ?2 AND id < ?3))
+                     AND rowid > COALESCE((SELECT compacted_below_rowid FROM chats WHERE id = ?1), 0)
                  ORDER BY created_at DESC, id DESC LIMIT ?4",
                 )
                 .map_err(|e| NeboError::Database(e.to_string()))?;
@@ -260,7 +262,7 @@ impl Store {
         } else {
             let mut stmt = conn
                 .prepare(
-                    "SELECT * FROM chat_messages WHERE chat_id = ?1
+                    "SELECT * FROM chat_messages WHERE chat_id = ?1 AND rowid > COALESCE((SELECT compacted_below_rowid FROM chats WHERE id = ?1), 0)
                  ORDER BY created_at DESC, id DESC LIMIT ?2",
                 )
                 .map_err(|e| NeboError::Database(e.to_string()))?;
@@ -430,27 +432,78 @@ impl Store {
     /// Atomically replace all of a chat's messages with a single assistant
     /// summary message (compaction). Delete + insert run in one transaction so
     /// a failure at any point leaves the original conversation intact.
-    pub fn compact_chat_messages(
+    /// Compact a conversation as a projection: every existing row stays on
+    /// disk, the chat's floor moves to the current last row, and the summary
+    /// is inserted above the floor as the first visible message. Every read
+    /// of the conversation (`get_chat_messages*`) starts above the floor, so
+    /// the runner and the UI see [summary, ...new messages] while the bytes
+    /// remain recoverable. Compacting twice moves the floor again; there is
+    /// never more than one visible summary.
+    pub fn compact_chat_history(
         &self,
         chat_id: &str,
         message_id: &str,
-        content: &str,
+        summary: &str,
     ) -> Result<(), NeboError> {
         let mut conn = self.conn()?;
         let tx = conn
             .transaction()
             .map_err(|e| NeboError::Database(e.to_string()))?;
         tx.execute(
-            "DELETE FROM chat_messages WHERE chat_id = ?1",
+            "UPDATE chats SET compacted_below_rowid =
+                 (SELECT COALESCE(MAX(rowid), 0) FROM chat_messages WHERE chat_id = ?1)
+             WHERE id = ?1",
             params![chat_id],
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;
         tx.execute(
             "INSERT INTO chat_messages (id, chat_id, role, content, created_at)
              VALUES (?1, ?2, 'assistant', ?3, unixepoch())",
-            params![message_id, chat_id, content],
+            params![message_id, chat_id, summary],
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;
+        tx.commit()
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Frozen tool-result renderings for a chat (tool_call_id → rendering).
+    pub fn get_chat_renderings(
+        &self,
+        chat_id: &str,
+    ) -> Result<std::collections::HashMap<String, String>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare("SELECT tool_call_id, rendering FROM chat_renderings WHERE chat_id = ?1")
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map(params![chat_id], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        rows.collect::<Result<_, _>>()
+            .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
+    /// Freeze renderings. A rendering already stored for an id is never
+    /// replaced: the first rendering the model saw is the rendering forever.
+    pub fn insert_chat_renderings(
+        &self,
+        chat_id: &str,
+        renderings: &[(String, String)],
+    ) -> Result<(), NeboError> {
+        if renderings.is_empty() {
+            return Ok(());
+        }
+        let mut conn = self.conn()?;
+        let tx = conn
+            .transaction()
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        for (id, rendering) in renderings {
+            tx.execute(
+                "INSERT OR IGNORE INTO chat_renderings (chat_id, tool_call_id, rendering) VALUES (?1, ?2, ?3)",
+                params![chat_id, id, rendering],
+            )
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        }
         tx.commit()
             .map_err(|e| NeboError::Database(e.to_string()))?;
         Ok(())
@@ -807,7 +860,7 @@ impl Store {
         let conn = self.conn()?;
         let mut stmt = conn
             .prepare(
-                "SELECT * FROM chat_messages WHERE chat_id = ?1 AND day_marker = ?2
+                "SELECT * FROM chat_messages WHERE chat_id = ?1 AND day_marker = ?2 AND rowid > COALESCE((SELECT compacted_below_rowid FROM chats WHERE id = ?1), 0)
                  ORDER BY created_at ASC, rowid ASC",
             )
             .map_err(|e| NeboError::Database(e.to_string()))?;
@@ -1016,6 +1069,53 @@ mod tests {
                 rusqlite::params![message_id, ts],
             )
             .unwrap();
+    }
+
+    /// Manual compaction keeps every row and projects the summary: reads
+    /// start above the floor, the summary is the first visible message, a
+    /// second compaction yields one visible summary, and the rows are still
+    /// on disk.
+    #[test]
+    fn manual_compact_keeps_rows_and_projects_the_summary() {
+        let (_dir, store) = store();
+        store.create_chat("c1", "Chat").unwrap();
+        for id in ["m1", "m2", "m3"] {
+            store.create_chat_message(id, "c1", "user", id, None).unwrap();
+        }
+        store.compact_chat_history("c1", "s1", "**Conversation Summary**\nfirst").unwrap();
+        let visible = store.get_chat_messages("c1").unwrap();
+        assert_eq!(visible.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), vec!["s1"]);
+        let on_disk: i64 = store
+            .conn()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM chat_messages WHERE chat_id = 'c1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(on_disk, 4, "rows are kept, not deleted");
+        // New messages land above the floor; the paginated and budgeted reads agree.
+        store.create_chat_message("m4", "c1", "user", "m4", None).unwrap();
+        assert_eq!(store.get_chat_messages_paginated("c1", 10, None).unwrap().len(), 2);
+        assert_eq!(store.get_chat_messages_budgeted("c1", 100_000, None).unwrap().len(), 2);
+        // Compact again: one visible summary, floor moved.
+        store.compact_chat_history("c1", "s2", "**Conversation Summary**\nsecond").unwrap();
+        let visible = store.get_chat_messages("c1").unwrap();
+        assert_eq!(visible.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), vec!["s2"]);
+    }
+
+    /// Frozen renderings round-trip and never overwrite.
+    #[test]
+    fn frozen_map_round_trips_through_the_store() {
+        let (_dir, store) = store();
+        store.create_chat("c1", "Chat").unwrap();
+        store
+            .insert_chat_renderings("c1", &[("call_1".into(), "[os:shell] ls, 40 lines trimmed".into())])
+            .unwrap();
+        store
+            .insert_chat_renderings("c1", &[("call_1".into(), "DIFFERENT".into()), ("call_2".into(), "two".into())])
+            .unwrap();
+        let map = store.get_chat_renderings("c1").unwrap();
+        assert_eq!(map.get("call_1").map(String::as_str), Some("[os:shell] ls, 40 lines trimmed"), "first rendering wins");
+        assert_eq!(map.get("call_2").map(String::as_str), Some("two"));
+        assert!(store.get_chat_renderings("other").unwrap().is_empty());
     }
 
     /// get_chat_messages returns rows ordered by created_at ASC, not by

@@ -26,7 +26,7 @@ pub struct FileTool {
     lsp: Arc<dyn crate::lsp::LspProvider>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Default)]
 struct FileInput {
     action: String,
     #[serde(default)]
@@ -61,6 +61,21 @@ struct FileInput {
     context_before: i64,
     #[serde(default)]
     context_after: i64,
+    /// checkpoint: the files about to change. restore: optional subset.
+    #[serde(default)]
+    paths: Vec<String>,
+    /// checkpoint: a short label; plan: unused.
+    #[serde(default)]
+    label: String,
+    /// restore: the checkpoint id.
+    #[serde(default)]
+    checkpoint: String,
+    /// plan: the plan's title.
+    #[serde(default)]
+    title: String,
+    /// plan: [{title, verify}] — every step names a verify command.
+    #[serde(default)]
+    steps: Vec<serde_json::Value>,
 }
 
 impl FileTool {
@@ -87,12 +102,42 @@ impl FileTool {
         if fi.path.is_empty() && !fi.dir.is_empty() {
             fi.path = std::mem::take(&mut fi.dir);
         }
+        // An isolated sub-agent's relative paths belong to its worktree, not
+        // to the process cwd (which is the owner's tree).
+        if let Some(cwd) = ctx.cwd.as_deref() {
+            if !fi.path.is_empty() && Path::new(&fi.path).is_relative() {
+                fi.path = Path::new(cwd).join(&fi.path).to_string_lossy().into_owned();
+            }
+            fi.paths = fi
+                .paths
+                .iter()
+                .map(|p| {
+                    if Path::new(p).is_relative() {
+                        Path::new(cwd).join(p).to_string_lossy().into_owned()
+                    } else {
+                        p.clone()
+                    }
+                })
+                .collect();
+        }
 
         let session = ctx.session_key.as_str();
         match fi.action.as_str() {
             "read" => self.handle_read(session, &fi),
             "write" => self.handle_write(session, &fi),
             "edit" => self.handle_edit(session, &fi),
+            // Checkpoints without destructive git (P6.2): explicit, listed, reversible.
+            "checkpoint" => self.handle_checkpoint(ctx, &fi),
+            "checkpoints" => match crate::checkpoint::list(&ctx.session_id) {
+                Ok(list) => ToolResult::ok(crate::checkpoint::render_list(&list)),
+                Err(e) => ToolResult::error(e),
+            },
+            "restore" => self.handle_restore(ctx, &fi),
+            // Plan artifacts (P6.1): a plan is a work document written through
+            // the ONE write pathway, so it lands in the Work panel and is
+            // versioned like any other. plan_check lives on OsTool (it needs
+            // the shell).
+            "plan" => self.handle_plan(session, &fi),
             "glob" => self.handle_glob(&fi),
             "grep" => self.handle_grep(&fi),
             // Hand an EXISTING file to the user as a download card. Synonyms the
@@ -103,10 +148,115 @@ impl FileTool {
             // advertised in the schema; glob stays the single documented way.
             "list" | "ls" => self.handle_glob(&fi),
             other => ToolResult::error(format!(
-                "Unknown action: {} (valid: read, write, edit, share, glob, grep)",
+                "Unknown action: {} (valid: read, write, edit, share, glob, grep, checkpoint, checkpoints, restore, plan, plan_check)",
                 other
             )),
         }
+    }
+
+    fn handle_checkpoint(&self, ctx: &ToolContext, fi: &FileInput) -> ToolResult {
+        let mut paths = fi.paths.clone();
+        if paths.is_empty() && !fi.path.is_empty() {
+            paths.push(fi.path.clone());
+        }
+        if let Some(blocked) = crate::safeguard::outside_allowed("checkpoint", &paths, &ctx.allowed_paths) {
+            return ToolResult::error(blocked);
+        }
+        match crate::checkpoint::create(&ctx.session_id, &fi.label, &paths) {
+            Ok(cp) => ToolResult::ok(crate::checkpoint::render_created(&cp)),
+            Err(e) => ToolResult::error(e),
+        }
+    }
+
+    /// Restore is fenced by the checkpoint's OWN paths (the input may name
+    /// none), and it refreshes the read ledger for every file it wrote, so
+    /// the next edit is not warned about a change the agent itself made.
+    fn handle_restore(&self, ctx: &ToolContext, fi: &FileInput) -> ToolResult {
+        let cp = match crate::checkpoint::get(&ctx.session_id, &fi.checkpoint) {
+            Ok(cp) => cp,
+            Err(e) => return ToolResult::error(e),
+        };
+        let targets = if fi.paths.is_empty() { crate::checkpoint::paths(&cp) } else { fi.paths.clone() };
+        if let Some(blocked) = crate::safeguard::outside_allowed("restore", &targets, &ctx.allowed_paths) {
+            return ToolResult::error(blocked);
+        }
+        match crate::checkpoint::restore(&ctx.session_id, &fi.checkpoint, &fi.paths) {
+            Ok(report) => {
+                for (path, action) in &report.actions {
+                    if *action == crate::checkpoint::RestoreAction::Restored {
+                        if let Some(m) = current_mtime_ms(path) {
+                            self.record_read(ctx.session_key.as_str(), path, m);
+                        }
+                    }
+                }
+                ToolResult::ok(crate::checkpoint::render_restore(&report))
+            }
+            Err(e) => ToolResult::error(e),
+        }
+    }
+
+    /// The agent wrote `path` itself through the shell (`tee`, `>`): refresh
+    /// the read ledger so the next edit is not warned about a change it made.
+    pub fn note_shell_write(&self, session: &str, path: &str) {
+        if let Some(m) = current_mtime_ms(path) {
+            self.record_read(session, path, m);
+        }
+    }
+
+    /// Write a document through the ONE write pathway (Work panel, versions,
+    /// overwrite advisory). Used by `plan_check` on OsTool, which rewrites the
+    /// plan it just verified.
+    pub fn write_document(&self, session: &str, path: &str, content: &str) -> ToolResult {
+        let write = FileInput {
+            action: "write".into(),
+            path: path.to_string(),
+            content: content.to_string(),
+            ..Default::default()
+        };
+        self.handle_write(session, &write)
+    }
+
+    fn handle_plan(&self, session: &str, fi: &FileInput) -> ToolResult {
+        if fi.path.is_empty() {
+            return ToolResult::error(
+                "plan needs `path`: where to write the plan (a .md file the owner will see in Work)",
+            );
+        }
+        if !fi.path.ends_with(".md") {
+            return ToolResult::error("plan `path` must end in .md — a plan is a markdown work document");
+        }
+        let steps: Vec<(String, String)> = fi
+            .steps
+            .iter()
+            .map(|s| {
+                (
+                    s.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                    s.get("verify").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                )
+            })
+            .collect();
+        let content = match crate::plan::render(&fi.title, &steps) {
+            Ok(c) => c,
+            Err(e) => return ToolResult::error(e),
+        };
+        let write = FileInput {
+            action: "write".into(),
+            path: fi.path.clone(),
+            content,
+            ..Default::default()
+        };
+        let mut result = self.handle_write(session, &write);
+        if !result.is_error {
+            result.content = format!(
+                "plan written to {} ({} step{}). Verify with os(resource: \"file\", action: \"plan_check\", path: \"{}\") — only a passing verify command ticks a step.\n{}",
+                fi.path,
+                steps.len(),
+                if steps.len() == 1 { "" } else { "s" },
+                fi.path,
+                result.content
+            );
+        }
+        result
     }
 
     fn read_state_key(session: &str, path: &str) -> String {
@@ -1391,6 +1541,38 @@ mod tests {
 
     fn ctx() -> ToolContext {
         ToolContext::new(Origin::User)
+    }
+
+    /// A restore rewrites files the agent itself asked to put back; the read
+    /// ledger must follow, or the very next edit is warned about its own change.
+    #[test]
+    fn restore_refreshes_read_state_so_the_next_edit_has_no_overwrite_warning() {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let home = tempfile::tempdir().unwrap();
+        // SAFETY: serialized by the lock above; checkpoints go under NEBO_HOME.
+        unsafe { std::env::set_var("NEBO_HOME", home.path()) };
+        let work = tempfile::tempdir().unwrap();
+        let path = work.path().join("a.txt");
+        std::fs::write(&path, "one\n").unwrap();
+        let p = path.to_string_lossy().into_owned();
+        let t = FileTool::new();
+        let c = ctx();
+        assert!(!t.execute(&c, serde_json::json!({"action": "read", "path": p})).is_error);
+        let cp = t.execute(&c, serde_json::json!({"action": "checkpoint", "paths": [p]}));
+        assert!(!cp.is_error, "{}", cp.content);
+        let id = cp.content.split_whitespace().find(|w| w.starts_with("cp-")).unwrap().to_string();
+        // Change it (through the tool, so the ledger sees the write), then put it back.
+        assert!(!t.execute(&c, serde_json::json!({"action": "edit", "path": p, "old_string": "one", "new_string": "two"})).is_error);
+        // Make sure the restore lands on a later mtime tick than the edit.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let r = t.execute(&c, serde_json::json!({"action": "restore", "checkpoint": id}));
+        assert!(!r.is_error, "{}", r.content);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "one\n");
+        let e = t.execute(&c, serde_json::json!({"action": "edit", "path": p, "old_string": "one", "new_string": "three"}));
+        assert!(!e.is_error, "{}", e.content);
+        assert!(!e.content.contains("Warning"), "no overwrite warning after a restore:\n{}", e.content);
+        unsafe { std::env::remove_var("NEBO_HOME") };
     }
 
     #[test]

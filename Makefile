@@ -40,7 +40,7 @@ MAC_BIN_DIR = $(if $(MAC_TARGET),target/$(MAC_TARGET)/release,$(TAURI_RELEASE))
 # DMG arch suffix: amd64 for the x86_64 cross, else the host arch (arm64).
 DMG_ARCH = $(if $(MAC_TARGET),$(if $(filter x86_64-apple-darwin,$(MAC_TARGET)),amd64,arm64),$(UNAME_M))
 
-.PHONY: help dev run build build-desktop test test-live test-live-fast clean clean-cache seed-plugins stage-obscura stage-ripgrep bundle-napps plugin-status release release-darwin release-linux release-windows release-macos release-macos-amd64 publish-macos app-bundle dmg notarize install github-release gen
+.PHONY: help dev run build build-desktop test test-live test-live-fast test-tools test-cache-prefix clean clean-cache seed-plugins stage-obscura stage-ripgrep bundle-napps plugin-status release release-darwin release-linux release-windows release-macos release-macos-amd64 publish-macos app-bundle dmg notarize install github-release gen
 
 # Default target
 help:
@@ -57,6 +57,7 @@ help:
 	@echo "  make test           - Run all tests (unit, offline)"
 	@echo "  make test-live      - Run the live fixture suite against a running server (LLM-judged)"
 	@echo "  make test-live-fast - Same, program checks only (no judge, no claude CLI)"
+	@echo "  make test-tools     - Deterministic tool cases over /agent/mcp (no model)"
 	@echo "  make clean          - Clean build artifacts (target/, dist/) — stop the watcher first"
 	@echo "  make clean-cache    - Clear global cargo download cache (~/.cargo) — safe while building"
 	@echo "  make seed-plugins   - Copy plugin binaries from sibling repos"
@@ -545,6 +546,20 @@ ifdef FIXTURE
 else
 	$(NEBO_CLI) test run --suite suites/$(SUITE).yaml --server $(TEST_SERVER)
 endif
+
+# Deterministic tool cases over /agent/mcp — no model, seconds, free. The
+# fastest loop for any tool-shaped change (checkpoint/plan/git refusals).
+#   make test-tools                 # all
+#   make test-tools CASE=os-plan    # id prefix
+.PHONY: test-tools
+test-tools:
+	@TEST_SERVER=$(TEST_SERVER) CASE=$(CASE) bash scripts/test-tools.sh
+
+# L6: prompt-cache read ratio over one multi-iteration fixture (needs the
+# provider to report cached tokens; Janus does).
+.PHONY: test-cache-prefix
+test-cache-prefix:
+	@TEST_SERVER=$(TEST_SERVER) NEBO_CLI=$(NEBO_CLI) bash scripts/test-cache-prefix.sh
 
 test-live-fast: $(NEBO_CLI)
 	@curl -sf -m 3 http://$(TEST_SERVER)/health >/dev/null \

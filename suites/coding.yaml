@@ -1,0 +1,8 @@
+name: coding
+description: Coding harness parity, Stage 0 (checkpoints, plans, git rules, isolation)
+fixtures:
+  - ../fixtures/tools/os-checkpoint.yaml
+  - ../fixtures/tools/os-plan.yaml
+  - ../fixtures/tools/os-git-destructive-refused.yaml
+  - ../fixtures/tools/agent-spawn-parallel-worktree.yaml
+  - ../fixtures/tools/agent-spawn-parallel-scratch-copy.yaml

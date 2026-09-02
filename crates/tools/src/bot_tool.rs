@@ -828,6 +828,8 @@ impl AgentTool {
                     tools,
                     parent_stream_tx: ctx.stream_tx.clone(),
                     handoff_depth: ctx.handoff_depth,
+                    isolate: String::new(),
+                    workspace: String::new(),
                 };
 
                 match orch.spawn(req).await {
@@ -899,6 +901,13 @@ impl AgentTool {
                     }
                 };
 
+                let batch_isolate = input["isolate"].as_str().unwrap_or("").to_string();
+                let batch_workspace = input["workspace"].as_str().unwrap_or("").to_string();
+                if !batch_isolate.is_empty() && batch_isolate != "worktree" {
+                    return ToolResult::error(format!(
+                        "isolate: \"{batch_isolate}\" is not an option. Use isolate: \"worktree\" (each task edits its own copy of the project, merged back when all finish) or leave it out to share the tree."
+                    ));
+                }
                 let requests: Vec<crate::orchestrator::SpawnRequest> = tasks
                     .iter()
                     .map(|t| {
@@ -935,6 +944,8 @@ impl AgentTool {
                             tools: task_tools,
                             parent_stream_tx: ctx.stream_tx.clone(),
                             handoff_depth: ctx.handoff_depth,
+                            isolate: t["isolate"].as_str().map(str::to_string).unwrap_or_else(|| batch_isolate.clone()),
+                            workspace: t["workspace"].as_str().map(str::to_string).unwrap_or_else(|| batch_workspace.clone()),
                         }
                     })
                     .collect();
@@ -2105,14 +2116,14 @@ impl DynTool for AgentTool {
          - agent(resource: \"task\", action: \"spawn\", prompt: \"...\", wait: false) — Background; result delivered when done\n\
          - agent(resource: \"task\", action: \"status\", task_id: \"...\") — Check background agent status\n\
          - agent(resource: \"task\", action: \"cancel\", task_id: \"...\") — Cancel a running sub-agent\n\
-         - agent(resource: \"task\", action: \"spawn_parallel\", tasks: [{\"prompt\": \"...\", \"tools\": [\"web\"]}, ...]) — Run multiple sub-agents concurrently, return all results\n\
+         - agent(resource: \"task\", action: \"spawn_parallel\", tasks: [{\"prompt\": \"...\", \"tools\": [\"web\"]}, ...]) — Run multiple sub-agents concurrently, return all results. Tasks that EDIT files in one project: add isolate: \"worktree\" (+ workspace: \"/path\" if not the current folder) so each runs in its own copy and the changes are merged back; a file two tasks both changed is reported as a conflict with both versions kept\n\
          IMPORTANT: Always pass plugins and tools the sub-agent needs. Sub-agents are born blind — they only know what you tell them.\n\
          - plugins: install codes for plugins the sub-agent should use (from your agent config or current session)\n\
          - tools: STRAP tool names the sub-agent needs (\"web\", \"loop\", \"message\", \"system\", etc.)\n\
          - skills: skill names for SKILL.md instructions pre-loaded into context\n\
          ALWAYS spawn when: comparing across multiple websites, researching independent topics, any task with 2+ independent web lookups.\n\
          Spawn when: multiple independent tasks, long-running research, skill-heavy work. Do it yourself when: simple task, dependent results.\n\n\
-         Work tracking:\n\
+         Work tracking (only for work spanning MANY tool calls in several distinct stages; never for a small job you can finish in a handful of calls, a single request, or a quick fix — every create/update is a paid call):\n\
          - agent(resource: \"task\", action: \"create\", subject: \"Test shell tool\") — Create a trackable step\n\
          - agent(resource: \"task\", action: \"update\", task_id: \"1\", status: \"completed\") — Mark done\n\
          - agent(resource: \"task\", action: \"list\") — See all tasks and sub-agents\n\n\
@@ -2190,6 +2201,8 @@ impl DynTool for AgentTool {
                 "gaps": { "type": "array", "items": { "type": "string" }, "description": "Array of gaps (unanswered questions) from research worker" },
                 "max_iterations": { "type": "integer", "description": "Max iterations for sub-agent (default: 100)" },
                 "tasks": { "type": "array", "items": { "type": "object", "properties": { "prompt": { "type": "string" }, "description": { "type": "string" }, "tools": { "type": "array", "items": { "type": "string" } }, "plugins": { "type": "array", "items": { "type": "string" } }, "skills": { "type": "array", "items": { "type": "string" } } }, "required": ["prompt"] }, "description": "Array of tasks for spawn_parallel — each runs as a concurrent sub-agent" },
+                "isolate": { "type": "string", "enum": ["worktree"], "description": "spawn_parallel: give each task its own copy of the project (a git worktree when the folder is a repo, a scratch copy otherwise) and merge the changes back when all finish. Use it whenever two or more tasks edit files in the same project. Omit for read-only tasks." },
+                "workspace": { "type": "string", "description": "spawn_parallel with isolate: the project folder to copy (default: the current folder)." },
                 "name": { "type": "string", "description": "Name (registry agent name, or profile update bot name)" },
                 "role": { "type": "string", "description": "For profile update: the bot's role/description" },
                 "automations": {

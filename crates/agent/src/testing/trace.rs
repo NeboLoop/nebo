@@ -46,6 +46,12 @@ pub struct TraceMetrics {
     pub input_tokens: usize,
     pub output_tokens: usize,
     pub total_latency_ms: u64,
+    /// Prompt-cache reads and writes across the run (provider-reported).
+    /// `cache_read / (input + cache_read)` is the L6 cache-read ratio.
+    #[serde(default)]
+    pub cache_read_tokens: usize,
+    #[serde(default)]
+    pub cache_creation_tokens: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

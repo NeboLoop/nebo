@@ -39,6 +39,12 @@ pub struct SpawnRequest {
     /// Parent run's agent-to-agent hop count — inherited so a sub-agent cannot
     /// restart the coworker chain cap at zero.
     pub handoff_depth: u8,
+    /// spawn_parallel only: "worktree" gives each child its own copy of the
+    /// project (a git worktree when `workspace` is a repo, a scratch copy
+    /// otherwise) and merges the results back. Empty = share the tree.
+    pub isolate: String,
+    /// The project folder to isolate (empty = the process cwd).
+    pub workspace: String,
 }
 
 /// Result from a sub-agent or DAG execution.

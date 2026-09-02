@@ -187,6 +187,8 @@ async fn run_single(
     let mut all_text: Vec<String> = Vec::new();
     let mut tool_seq = 0usize;
     let mut total_input_tokens = 0usize;
+    let mut total_cache_read = 0usize;
+    let mut total_cache_creation = 0usize;
     let mut total_output_tokens = 0usize;
 
     // Send each conversation turn
@@ -243,11 +245,13 @@ async fn run_single(
                         Err(_) => continue,
                     };
 
-                    // Filter events by our session to avoid cross-talk
-                    if let Some(ev_sid) = event["data"]["session_id"].as_str() {
-                        if ev_sid != session_id {
-                            continue;
-                        }
+                    // Filter events by our session to avoid cross-talk. The
+                    // hub broadcasts to every client, and a scheduled
+                    // workflow's completion carries `chatId`, not
+                    // `session_id`; it ended fixture runs early as "Empty run"
+                    // while the server kept running the fixture's turn.
+                    if !event_belongs_to_session(&event, &session_id) {
+                        continue;
                     }
 
                     match event["type"].as_str() {
@@ -301,20 +305,33 @@ async fn run_single(
                             if let Some(output) = event["data"]["output_tokens"].as_u64() {
                                 total_output_tokens += output as usize;
                             }
+                            if let Some(n) = event["data"]["cache_read_input_tokens"].as_u64() {
+                                total_cache_read += n as usize;
+                            }
+                            if let Some(n) = event["data"]["cache_creation_input_tokens"].as_u64() {
+                                total_cache_creation += n as usize;
+                            }
                         }
                         Some("chat_complete") => break,
                         Some("chat_error") => {
                             let err = event["data"]["error"]
                                 .as_str()
                                 .unwrap_or("unknown error");
+                            cancel_run(&mut ws, &session_id).await;
                             return Err(format!("Chat error: {}", err));
                         }
                         _ => {}
                     }
                 }
-                Ok(Some(Err(e))) => return Err(format!("WS error: {}", e)),
+                Ok(Some(Err(e))) => {
+                    cancel_run(&mut ws, &session_id).await;
+                    return Err(format!("WS error: {}", e));
+                }
                 Ok(None) => break,
-                Err(_) => return Err("Timeout waiting for response".into()),
+                Err(_) => {
+                    cancel_run(&mut ws, &session_id).await;
+                    return Err("Timeout waiting for response".into());
+                }
             }
         }
     }
@@ -325,6 +342,7 @@ async fn run_single(
     // empties (transient provider errors that still emit chat_complete) used to
     // produce valid-looking zero-call traces that skewed results.
     if final_text.trim().is_empty() && all_tool_calls.is_empty() {
+        cancel_run(&mut ws, &session_id).await;
         return Err(
             "Empty run: chat completed with no response text and no tool calls \
              (likely a transient provider error) — treat as failed and re-run"
@@ -354,6 +372,8 @@ async fn run_single(
             input_tokens: total_input_tokens,
             output_tokens: total_output_tokens,
             total_latency_ms: total_latency,
+            cache_read_tokens: total_cache_read,
+            cache_creation_tokens: total_cache_creation,
         },
         grade: None,
     })
@@ -473,5 +493,51 @@ fn print_annotated_prompt(prompt: &str, overrides: &HashMap<String, String>) {
         }
         println!("{}", line);
         printed_header = false;
+    }
+}
+
+/// True when a hub event is ours: a terminal event (`chat_complete`,
+/// `chat_error`) must name our session; any other event is ours unless it
+/// names a different session (or a different chat via `chatId`).
+fn event_belongs_to_session(event: &Value, session_id: &str) -> bool {
+    let data = &event["data"];
+    let named = data["session_id"].as_str().or_else(|| data["chatId"].as_str());
+    match event["type"].as_str() {
+        Some("chat_complete") | Some("chat_error") => named == Some(session_id),
+        _ => named.is_none_or(|s| s == session_id),
+    }
+}
+
+/// A fixture that gives up (timeout, empty run, error) must not leave its
+/// turn running on the server, burning tokens against the next fixture.
+async fn cancel_run<S>(ws: &mut S, session_id: &str)
+where
+    S: SinkExt<Message> + Unpin,
+{
+    let msg = json!({ "type": "cancel", "data": { "session_id": session_id } });
+    // Best effort: the socket may already be gone, and the run's own caps end it then.
+    if ws.send(Message::Text(msg.to_string().into())).await.is_err() {
+        warn!(session_id, "could not send cancel for an abandoned fixture run");
+    }
+}
+
+#[cfg(test)]
+mod session_filter_tests {
+    use super::*;
+
+    #[test]
+    fn a_foreign_completion_never_ends_our_run() {
+        let mine = "eval:os-checkpoint:run-1:1";
+        let workflow_done = json!({"type": "chat_complete", "data": {"chatId": "wf-daily", "content": "x"}});
+        assert!(!event_belongs_to_session(&workflow_done, mine));
+        let anonymous_done = json!({"type": "chat_complete", "data": {"content": "x"}});
+        assert!(!event_belongs_to_session(&anonymous_done, mine));
+        let ours = json!({"type": "chat_complete", "data": {"session_id": mine}});
+        assert!(event_belongs_to_session(&ours, mine));
+        // Non-terminal events without an id still flow (usage, presence).
+        let usage = json!({"type": "usage", "data": {"input_tokens": 5}});
+        assert!(event_belongs_to_session(&usage, mine));
+        let other_stream = json!({"type": "chat_stream", "data": {"session_id": "someone-else", "content": "y"}});
+        assert!(!event_belongs_to_session(&other_stream, mine));
     }
 }

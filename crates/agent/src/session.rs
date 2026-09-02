@@ -369,9 +369,9 @@ impl SessionManager {
         Ok(())
     }
 
-    /// Compact the current conversation: atomically replace all messages with a
-    /// single assistant summary message. Stays in the same conversation; a
-    /// failure leaves the original messages untouched.
+    /// Compact the current conversation as a projection: the rows stay, the
+    /// chat's floor moves, and the summary becomes the first visible message.
+    /// Stays in the same conversation; a failure leaves everything untouched.
     pub fn compact_current_messages(
         &self,
         session_id: &str,
@@ -380,7 +380,7 @@ impl SessionManager {
         let chat_id = self.resolve_chat_id(session_id);
         let msg_id = uuid::Uuid::new_v4().to_string();
         self.store
-            .compact_chat_messages(&chat_id, &msg_id, summary)?;
+            .compact_chat_history(&chat_id, &msg_id, summary)?;
         self.store.reset_session_counters(session_id)?;
         Ok(())
     }

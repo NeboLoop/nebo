@@ -360,7 +360,7 @@ impl ActivityLoop for RunnerActivityLoop {
         let mut notice = String::new();
         let mut error: Option<String> = None;
         let mut exit_reason = String::new();
-        let mut commit = |ci: &mut i32, co: &mut i32, ti: &mut u32, to: &mut u32| {
+        let commit = |ci: &mut i32, co: &mut i32, ti: &mut u32, to: &mut u32| {
             *ti += (*ci).max(0) as u32;
             *to += (*co).max(0) as u32;
             *ci = 0;

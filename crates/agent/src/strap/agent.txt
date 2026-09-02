@@ -16,6 +16,8 @@ Spawn sub-agents for independent work. Two modes:
 - agent(resource: task, action: spawn_parallel, tasks: [{prompt: "Search site A", tools: ["web"]}, {prompt: "Search site B", tools: ["web"]}])
 - All tasks run concurrently, results collected and returned together
 - Each sub-agent gets its own browser session — no tab conflicts
+- Tasks that EDIT files in the same project: add isolate: "worktree" (and workspace: "/path/to/project" if it is not the current folder). Each hand works in its own copy (a git worktree when the folder is a repo, a scratch copy otherwise) and the results are merged back for you; a file two hands both changed is reported as a conflict with both versions kept. Read-only fan-out never needs it.
+  agent(resource: task, action: spawn_parallel, isolate: "worktree", workspace: "/proj", tasks: [{prompt: "Rename foo→bar in src/a.rs"}, {prompt: "Add tests for bar in tests/"}])
 
 **Searching with an explore sub-agent (agent_type: "explore"):**
 - agent(resource: task, action: spawn, prompt: "Find where X is configured across the repo", agent_type: "explore") — a fast, READ-ONLY search specialist that issues parallel greps/reads and reports back. Keeps bulky search output out of your context.
@@ -28,7 +30,7 @@ Spawn sub-agents for independent work. Two modes:
 If you use plugins or specific tools, you MUST pass them to any sub-agent that will need them too.
 
 **Work tracking (keep yourself on task):**
-For multi-step work, create tasks to track your progress. This prevents you from losing focus or repeating steps.
+A task list is for work that will take MANY tool calls across several distinct stages, where you could lose the thread. It is not a ritual. Do NOT open one for: a single straightforward request; a small fix or edit; a job you can finish in a handful of calls (read, checkpoint, edit, restore is four calls, not four tasks); or anything you can answer directly. Every create/update is a tool call the owner pays for and the user waits on. When a task list does earn its keep:
 - agent(resource: task, action: create, subject: "Test shell tool") — Create a trackable step
 - agent(resource: task, action: update, task_id: "1", status: "in_progress") — Mark a task in_progress BEFORE you begin it; keep only ONE task in_progress at a time
 - agent(resource: task, action: update, task_id: "1", status: "completed") — Mark a task completed as soon as you finish it; don't batch completions (pending → in_progress → completed)

@@ -319,6 +319,119 @@ pub fn is_dangerous(cmd: &str) -> bool {
     false
 }
 
+/// House git rules, enforced: the commands that throw away the owner's work.
+/// Nebo has checkpoints (`os file checkpoint/restore`) and worktrees for
+/// parallel edits, so none of these is ever the right tool. The shell refuses
+/// them outright, like privilege escalation — an approval card would only
+/// teach the model to ask for the wrong thing.
+pub fn is_destructive_git(cmd: &str) -> bool {
+    // Every command segment: `a && git stash`, `x; git reset --hard`, `$(git ...)`.
+    // Only a segment that STARTS with git counts — `echo git stash` and
+    // `grep "git stash" notes.md` are not git.
+    let segments = cmd
+        .replace("$(", " ")
+        .replace('`', " ")
+        .replace('\n', ";")
+        .replace("||", ";")
+        .replace("&&", ";")
+        .replace('|', ";")
+        .replace(')', " ");
+    for seg in segments.split(';') {
+        let toks: Vec<&str> = seg
+            .split_whitespace()
+            .skip_while(|t| t.contains('=') && !t.starts_with('-')) // FOO=bar git ...
+            .collect();
+        let Some(first) = toks.first() else { continue };
+        if *first != "git" && !first.ends_with("/git") {
+            continue;
+        }
+        // Skip `-C dir` / `-c k=v` style globals before the subcommand.
+        let mut j = 1;
+        while j < toks.len() && toks[j].starts_with('-') {
+            j += if matches!(toks[j], "-C" | "-c" | "--git-dir" | "--work-tree") { 2 } else { 1 };
+        }
+        let Some(sub) = toks.get(j) else { continue };
+        let args: Vec<&str> = toks[j + 1..].to_vec();
+        let has = |flag: &str| args.iter().any(|a| *a == flag);
+        let destructive = match *sub {
+            "stash" => !args.first().is_some_and(|a| matches!(*a, "list" | "show")),
+            "reset" => has("--hard") || has("--merge") || has("--keep"),
+            "checkout" => args.iter().any(|a| *a == "." || *a == "--" || a.starts_with("--source")) && !has("-b"),
+            // `git restore <path>` discards the working-tree change of a tracked
+            // file, the same loss as `checkout -- <path>`. Only an unstage
+            // (`--staged` without `--worktree`/`-W`) leaves the owner's edits alone.
+            "restore" => !(has("--staged") || has("-S")) || has("--worktree") || has("-W"),
+            // A dry run (`-n`/`--dry-run`) only prints what it would delete.
+            "clean" => {
+                !args.iter().any(|a| *a == "--dry-run" || (a.starts_with('-') && !a.starts_with("--") && a.contains('n')))
+                    && args.iter().any(|a| a.starts_with('-') && (a.contains('f') || a.contains('x')))
+            }
+            "push" => has("--force") || has("-f") || args.iter().any(|a| a.starts_with("--force-with-lease")),
+            "branch" => has("-D") || (has("--delete") && has("--force")),
+            _ => false,
+        };
+        if destructive {
+            return true;
+        }
+    }
+    false
+}
+
+/// Files a shell command writes outside the supervised edit path: `sed -i`
+/// targets, `tee` targets, and `>`/`>>` redirections. The reference applies
+/// `sed -i` in-process so what the user previews is what gets written; ours
+/// refuses `sed -i` (the edit action exists for that) and, for the rest,
+/// refreshes the read ledger so the agent's own shell write is not later
+/// reported to it as someone else's change.
+pub fn shell_write_targets(cmd: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let flat = cmd.replace('\n', " ");
+    for seg in flat.split(|c| c == ';' || c == '|' || c == '&') {
+        let toks: Vec<&str> = seg.split_whitespace().collect();
+        let mut i = 0;
+        while i < toks.len() {
+            let t = toks[i];
+            if t == ">" || t == ">>" || t == "1>" || t == "2>" || t == "&>" {
+                if let Some(target) = toks.get(i + 1) {
+                    out.push(target.trim_matches(|c| c == '"' || c == '\'').to_string());
+                }
+                i += 2;
+                continue;
+            }
+            if let Some(rest) = t.strip_prefix(">>").or_else(|| t.strip_prefix('>')) {
+                if !rest.is_empty() && !rest.starts_with('&') {
+                    out.push(rest.trim_matches(|c| c == '"' || c == '\'').to_string());
+                }
+            }
+            if t == "tee" {
+                for target in toks[i + 1..].iter().filter(|a| !a.starts_with('-')) {
+                    out.push(target.trim_matches(|c| c == '"' || c == '\'').to_string());
+                }
+                break;
+            }
+            i += 1;
+        }
+    }
+    out.retain(|p| p != "/dev/null" && !p.is_empty());
+    out
+}
+
+/// `sed -i` (in-place, any suffix form) on a file. The edit action exists for
+/// exactly this and keeps the read ledger honest.
+pub fn is_sed_in_place(cmd: &str) -> bool {
+    for seg in cmd.replace('\n', ";").split(|c| c == ';' || c == '|' || c == '&') {
+        let toks: Vec<&str> = seg.split_whitespace().collect();
+        let Some(first) = toks.first() else { continue };
+        if *first != "sed" && !first.ends_with("/sed") {
+            continue;
+        }
+        if toks[1..].iter().any(|t| *t == "-i" || t.starts_with("-i") && !t.starts_with("-in") || *t == "--in-place" || t.starts_with("--in-place=")) {
+            return true;
+        }
+    }
+    false
+}
+
 /// Check if a command invokes privilege escalation (sudo/doas/su) anywhere —
 /// as the command itself, after a pipe/separator, or inside a substitution.
 ///
@@ -773,6 +886,76 @@ mod tests {
         // User/System origins are unrestricted.
         assert!(!p.is_denied_for_origin(Origin::User, "os", Some("shell")));
         assert!(!p.is_denied_for_origin(Origin::System, "os", Some("shell")));
+    }
+
+    #[test]
+    fn destructive_git_is_named_and_the_safe_forms_pass() {
+        for cmd in [
+            "git stash",
+            "git stash push -m wip",
+            "cd repo && git reset --hard HEAD~1",
+            "git checkout .",
+            "git checkout -- src/main.rs",
+            "git restore --source=HEAD~2 src/",
+            "git clean -fd",
+            "git push --force origin main",
+            "git push -f",
+            "git -C /tmp/x branch -D feature",
+            "git branch --delete --force feature",
+            "git branch --force --delete feature",
+            "git clean -x -f",
+            "git push --force-with-lease=main",
+            "a && git stash",
+            "$(git stash)",
+            "FOO=1 git stash",
+            "/usr/bin/git stash",
+            "git -c user.name=x stash",
+            "git reset --merge",
+            "git restore .",
+            "git restore f.txt",
+            "git restore --staged --worktree f.txt",
+            "git restore -S -W f.txt",
+        ] {
+            assert!(is_destructive_git(cmd), "{cmd} should be refused");
+        }
+        for cmd in [
+            "git status",
+            "git stash list",
+            "git reset HEAD~1",
+            "git reset --soft HEAD~1",
+            "git checkout -b feature",
+            "git checkout main",
+            "git restore --staged src/main.rs",
+            "git restore -S src/main.rs",
+            "git clean -n",
+            "git clean -fn",
+            "git clean -nfd",
+            "git clean --dry-run -f",
+            "git stash show",
+            "git push origin main",
+            "git branch -d merged",
+            "echo git stash",
+            "grep \"git reset --hard\" notes.md",
+        ] {
+            assert!(!is_destructive_git(cmd), "{cmd} is fine");
+        }
+    }
+
+    #[test]
+    fn shell_write_targets_and_sed_in_place_are_recognised() {
+        assert_eq!(shell_write_targets("cargo build 2>&1 | tee build.log"), vec!["build.log"]);
+        assert_eq!(shell_write_targets("echo hi > out.txt && cat out.txt"), vec!["out.txt"]);
+        assert_eq!(shell_write_targets("printf x >>notes.md"), vec!["notes.md"]);
+        assert_eq!(shell_write_targets("cat <<EOF > a.html\n<p>hi</p>\nEOF"), vec!["a.html"]);
+        assert!(shell_write_targets("ls -la > /dev/null").is_empty());
+        assert!(shell_write_targets("grep -r foo . | head").is_empty());
+        assert!(is_sed_in_place("sed -i 's/a/b/' f.txt"));
+        assert!(is_sed_in_place("sed -i.bak 's/a/b/' f.txt"));
+        assert!(is_sed_in_place("sed -i '' 's/a/b/' f.txt"));
+        assert!(is_sed_in_place("/usr/bin/sed --in-place=.orig -e 's/a/b/' f.txt"));
+        assert!(!is_sed_in_place("sed 's/a/b/' f.txt > g.txt"));
+        assert!(!is_sed_in_place("sed -n '1,5p' f.txt"));
+        assert!(!is_sed_in_place("echo sed -i"));
     }
 
     #[test]
