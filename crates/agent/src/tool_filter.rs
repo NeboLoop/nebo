@@ -206,7 +206,62 @@ const CONTEXTUAL_GROUPS: &[(&str, &[&str])] = &[
 ];
 
 /// Context names that correspond to actual registered tools (not os sub-contexts).
-const TOOL_CONTEXTS: &[&str] = &["web", "event", "loop", "work", "execute", "emit"];
+const TOOL_CONTEXTS: &[&str] = &["web", "event", "loop", "work", "execute", "emit", "code"];
+
+/// Tokens that mean "software" in any human language: tool and language
+/// names are spelled the same in Spanish or Japanese text, and plain-English
+/// words are deliberately absent. "code" fires on "zip code", "discount
+/// code", and every install code we hand out; "function", "bug", and "debug"
+/// have everyday readings; "repo" is inside "report", "rust" inside "trust".
+/// Matching is whole-word.
+const CODING_TOKENS: &[&str] = &[
+    "cargo", "npm", "pnpm", "yarn", "pytest", "rustc", "gcc", "clang", "javac", "dotnet",
+    "python", "typescript", "javascript", "rust", "golang", "kotlin", "swift", "sqlite",
+    "codebase", "refactor", "compile", "compiler", "stacktrace", "traceback", "segfault",
+    "unittest", "jest", "vitest", "eslint", "clippy", "makefile", "dockerfile", "kubectl",
+];
+/// Two-word forms, matched after whitespace is collapsed.
+const CODING_PHRASES: &[&str] = &[
+    "source code", "pull request", "stack trace", "syntax error", "unit test", "test suite",
+    "git commit", "git branch", "git diff", "git merge", "git rebase", "merge conflict",
+    "type error", "null pointer", "write code", "let's code", "lets code",
+];
+/// A filename with one of these extensions is a coding signal on its own
+/// ("hay un error en main.rs" needs no English).
+const CODING_EXTENSIONS: &[&str] = &[
+    "rs", "ts", "tsx", "js", "jsx", "mjs", "py", "go", "rb", "java", "kt", "swift", "c", "cc",
+    "cpp", "h", "hpp", "cs", "php", "scala", "ex", "exs", "erl", "hs", "lua", "sh", "zsh",
+    "sql", "toml", "svelte", "vue", "proto",
+];
+
+/// Does the text carry a language-independent coding signal? Whole-word
+/// tokens, two-word phrases, or a filename with a source extension. Never a
+/// single plain-English word: a realtor's "discount code" must not summon the
+/// coding tool, and a Spanish "error en main.rs" must.
+pub fn coding_signal(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    let collapsed: String = lower.split_whitespace().collect::<Vec<_>>().join(" ");
+    if CODING_PHRASES.iter().any(|p| collapsed.contains(p)) {
+        return true;
+    }
+    for raw in lower.split(|c: char| c.is_whitespace() || matches!(c, ',' | ';' | ':' | '(' | ')' | '"' | '\'' | '`' | '<' | '>' | '[' | ']' | '{' | '}')) {
+        let tok = raw.trim_matches(|c: char| matches!(c, '.' | '!' | '?'));
+        if tok.is_empty() {
+            continue;
+        }
+        if CODING_TOKENS.contains(&tok) {
+            return true;
+        }
+        // `main.rs`, `src/app.ts`, `script.py?` — a stem, a dot, a source extension.
+        if let Some((stem, ext)) = tok.rsplit_once('.') {
+            let stem = stem.rsplit('/').next().unwrap_or(stem);
+            if !stem.is_empty() && CODING_EXTENSIONS.contains(&ext) {
+                return true;
+            }
+        }
+    }
+    false
+}
 
 /// Tools always included in the schema list regardless of context.
 /// These are core agent capabilities that should never be filtered out.
@@ -362,6 +417,16 @@ pub fn filter_tools_with_context(
         .collect::<Vec<_>>()
         .join(" ");
 
+    // The coding tool (tree-sitter outlines and symbol lookup) is invisible
+    // unless the conversation is about software: an English keyword list
+    // would miss every other language, so the signal is tooling names,
+    // language names, and source filenames (see `coding_signal`). A coding
+    // employee pre-activates it and never needs the signal; any employee can
+    // still reach it through tool_search.
+    if coding_signal(&recent_text) || called_tools.iter().any(|ct| ct == "code") {
+        active_contexts.push("code".to_string());
+    }
+
     for (context_name, keywords) in CONTEXTUAL_GROUPS {
         // A context's prose docs activate on a keyword match, or when its own tool
         // was called (loop/work/etc.). Previously, calling `os` for ANYTHING also
@@ -497,6 +562,45 @@ mod tests {
         assert!(names.contains(&"os"), "os is a core tool, always included");
         // Non-core tools without matching context are filtered out
         assert!(!names.contains(&"loop"), "loop should be filtered without keywords");
+    }
+
+    /// The coding tool appears for software talk in any language and never
+    /// for the everyday meanings of "code".
+    #[test]
+    fn coding_tool_appears_for_source_files_and_tooling_never_for_discount_codes() {
+        for text in [
+            "there's a bug in main.rs, the test suite fails",
+            "hay un error en src/app.ts, ¿puedes verlo?",
+            "cargo build says E0502",
+            "the pull request is failing on lint",
+            "写一个 python 脚本",
+            "let's code up the parser",
+        ] {
+            assert!(coding_signal(text), "should signal: {text}");
+        }
+        for text in [
+            "what is the discount code for the September open house",
+            "that's a code word we use with buyers",
+            "send me the install code for the new employee",
+            "the zip code is 84604",
+            "I trust the report from the function on Friday",
+            "debug the printer, it keeps jamming",
+            "there's a bug in the kitchen",
+            "the rest of the tour",
+        ] {
+            assert!(!coding_signal(text), "must not signal: {text}");
+        }
+        let tools = vec![make_tool("os"), make_tool("code")];
+        let coding = vec![make_msg("user", "hay un error en main.rs")];
+        let (result, contexts) = filter_tools_with_context(&tools, &coding, &[], &HashSet::new());
+        assert!(result.iter().any(|t| t.name == "code"));
+        assert!(contexts.contains(&"code".to_string()));
+        let plain = vec![make_msg("user", "what is the discount code for the open house")];
+        let (result, _) = filter_tools_with_context(&tools, &plain, &[], &HashSet::new());
+        assert!(!result.iter().any(|t| t.name == "code"), "no coding tool for a discount code");
+        // Once called, it stays for the session like any other tool.
+        let (result, _) = filter_tools_with_context(&tools, &plain, &["code".to_string()], &HashSet::new());
+        assert!(result.iter().any(|t| t.name == "code"));
     }
 
     #[test]

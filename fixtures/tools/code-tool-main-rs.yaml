@@ -1,0 +1,53 @@
+id: code-tool-main-rs
+name: "Coding tool appears when a source file is named"
+description: |
+  A user names main.rs and a failing test. The filename is a language-
+  independent coding signal, so the code tool is in the schema from the first
+  turn and the model uses it (outline or symbols) before reading blind.
+target_component: prompt
+
+setup:
+  - |
+    mkdir -p /tmp/nebo-test/rs/src && cat > /tmp/nebo-test/rs/src/main.rs <<'RS'
+    fn area(w: u32, h: u32) -> u32 { w + h }
+    fn perimeter(w: u32, h: u32) -> u32 { 2 * (w + h) }
+    fn main() { println!("{} {}", area(2, 3), perimeter(2, 3)); }
+    #[cfg(test)]
+    mod tests { #[test] fn area_is_product() { assert_eq!(super::area(2, 3), 6); } }
+    RS
+teardown:
+  - "rm -rf /tmp/nebo-test/rs"
+
+conversation:
+  - role: user
+    content: "There's a bug in /tmp/nebo-test/rs/src/main.rs: the area_is_product test fails. Find the function that's wrong and tell me the one-line fix. Don't edit anything."
+
+tool_config:
+  os:
+    enabled: true
+  code:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: code-tool-used
+      text: "The model calls the code tool (outline or symbol lookup) on main.rs"
+      severity: critical
+      check: { tool: code, arg: path, contains: "main.rs" }
+  recovery:
+    - id: names-the-fix
+      text: "The answer names `area` and says it should multiply (w * h) instead of add"
+      severity: critical
+    - id: no-edit
+      text: "No write or edit call is made"
+      severity: critical
+  cost:
+    - id: bounded
+      text: "At most 4 tool calls"
+      severity: important
+      check: { max_tool_calls: 4 }
+
+ideal_behavior:
+  tool_calls: 2
+  total_tokens: 4000
+  narrative: "code outline main.rs → read the area fn → 'change w + h to w * h'"

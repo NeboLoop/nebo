@@ -1,0 +1,53 @@
+id: code-tool-spanish-discovery
+name: "A non-English coding request reaches the tool through discovery"
+description: |
+  The request is in Spanish and names no file or tool, so no keyword can
+  carry it. The code tool is listed among the deferred stubs; the model finds
+  it with tool_search (or calls it directly) once it decides it needs code
+  intelligence. What matters is that the answer is right and the model never
+  says it lacks a way to inspect code.
+target_component: prompt
+
+setup:
+  - |
+    mkdir -p /tmp/nebo-test/es && cat > /tmp/nebo-test/es/calc.py <<'PY'
+    def area(w, h):
+        return w + h
+
+    def perimetro(w, h):
+        return 2 * (w + h)
+    PY
+teardown:
+  - "rm -rf /tmp/nebo-test/es"
+
+conversation:
+  - role: user
+    content: "Revisa el archivo /tmp/nebo-test/es/calc.py y dime qué función calcula mal el área. Responde en español, sin editar nada."
+
+tool_config:
+  os:
+    enabled: true
+  code:
+    enabled: true
+
+prompt_assertions:
+  recovery:
+    - id: correct-answer
+      text: "The answer, in Spanish, says `area` is wrong because it adds instead of multiplies"
+      severity: critical
+    - id: no-capability-claim
+      text: "The model never says it cannot inspect or read code"
+      severity: critical
+    - id: no-edit
+      text: "No write or edit call is made"
+      severity: critical
+  cost:
+    - id: bounded
+      text: "At most 4 tool calls"
+      severity: important
+      check: { max_tool_calls: 4 }
+
+ideal_behavior:
+  tool_calls: 1
+  total_tokens: 3500
+  narrative: "read calc.py (or code outline) → 'area suma en vez de multiplicar'"

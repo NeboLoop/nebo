@@ -1,0 +1,9 @@
+{
+  "id": "developer",
+  "name": "Developer",
+  "version": "1.0.0",
+  "type": "agent",
+  "description": "Builds and fixes software with you. Reads a codebase before touching it, proves every change with a test, and never throws work away.",
+  "author": "nebo",
+  "tags": ["employee", "developer", "coding"]
+}

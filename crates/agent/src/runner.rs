@@ -2512,6 +2512,11 @@ async fn run_loop(
                         "pre-activating plugin tool for agent-declared dependencies"
                     );
                 }
+                // Tools the employee's definition names outright (`requires.tools`):
+                // part of its job, present from turn 1, no keyword or discovery needed.
+                for tool in &cfg.requires.tools {
+                    set.insert(tool.clone());
+                }
             }
         }
         set

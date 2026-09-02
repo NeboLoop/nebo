@@ -39,6 +39,12 @@ use crate::NappError;
 pub struct AgentRequires {
     #[serde(default)]
     pub plugins: Vec<String>,
+    /// Tool names this employee has from turn 1, regardless of what the
+    /// conversation says (a coding employee declares `code`; a general
+    /// employee gets it only when the talk is about software). Bypasses the
+    /// keyword filter, never the permission gates.
+    #[serde(default)]
+    pub tools: Vec<String>,
     /// Typed capability interfaces the seat binds (e.g. `["ledger", "mail"]`).
     /// Each interface's gated operations become the items in the seat's
     /// per-operation approval policy. Was previously dropped on parse.

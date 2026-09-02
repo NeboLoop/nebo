@@ -1,0 +1,47 @@
+id: code-tool-discount-code
+name: "Coding tool stays out of everyday talk about a 'code'"
+description: |
+  A realtor asks about a discount code. The word "code" must not summon the
+  coding tool: the tool filter keys on tooling names, language names, and
+  source filenames, never on the plain-English word. The model answers from
+  the file with a read and never calls the code tool.
+target_component: prompt
+
+setup:
+  - "mkdir -p /tmp/nebo-test/codes && printf 'September open house discount code: FALL25\n' > /tmp/nebo-test/codes/promos.txt"
+teardown:
+  - "rm -rf /tmp/nebo-test/codes"
+
+conversation:
+  - role: user
+    content: "What's the discount code for the September open house? It's in /tmp/nebo-test/codes/promos.txt."
+
+tool_config:
+  os:
+    enabled: true
+  code:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: reads-the-file
+      text: "The model reads promos.txt with os file read"
+      severity: critical
+      check: { tool: os, arg: path, contains: "promos.txt" }
+  recovery:
+    - id: no-code-tool
+      text: "The model never calls the code tool (tree-sitter outline/symbols) for this request"
+      severity: critical
+    - id: answers
+      text: "The answer is FALL25"
+      severity: critical
+  cost:
+    - id: bounded
+      text: "At most 2 tool calls"
+      severity: important
+      check: { max_tool_calls: 2 }
+
+ideal_behavior:
+  tool_calls: 1
+  total_tokens: 3000
+  narrative: "read promos.txt → FALL25"
