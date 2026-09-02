@@ -58,16 +58,29 @@ if [ -n "$AKEY" ] && [ -n "$SKEY" ] && command -v aws >/dev/null 2>&1; then
   unset AWS_PROFILE AWS_DEFAULT_PROFILE
   EP="https://nyc3.digitaloceanspaces.com"
 
-  # version.json — the auto-updater's "latest" pointer. Generated from the tag so
-  # it is always correct/idempotent regardless of whether CI's release job also
-  # wrote it. Same schema the CI release job emits.
-  cat > "$work/version.json" <<EOFJ
-{
-  "version": "${TAG}",
-  "release_url": "https://github.com/${REPO}/releases/tag/${TAG}",
-  "published_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-}
-EOFJ
+  # version.json — the auto-updater's "latest" pointer. Same schema the CI
+  # release job emits: `version` is the newest tag, `platforms.<os>` the newest
+  # tag with assets for that platform. This publish proves darwin; the other
+  # platforms keep whatever the current pointer says (never regressed).
+  PREV=$(curl -sf https://cdn.neboai.com/releases/version.json || echo '{}')
+  PREV="$PREV" TAG="$TAG" REPO="$REPO" python3 - <<'EOFP' > "$work/version.json"
+import json, os, datetime
+prev = {}
+try:
+    prev = json.loads(os.environ["PREV"] or "{}")
+except Exception:
+    pass
+pp = prev.get("platforms") or {}
+tag = os.environ["TAG"]
+def keep(name):
+    return pp.get(name) or prev.get("version") or tag
+print(json.dumps({
+    "version": tag,
+    "release_url": f"https://github.com/{os.environ['REPO']}/releases/tag/{tag}",
+    "published_at": datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+    "platforms": {"darwin": tag, "linux": keep("linux"), "windows": keep("windows")},
+}, indent=2))
+EOFP
 
   for f in "${MAC_ASSETS[@]}" "$work/checksums.txt"; do
     aws s3 cp "$f" "s3://neboloop/releases/${TAG}/$(basename "$f")" \

@@ -944,7 +944,7 @@
     style="left: {ctxMenu.x}px; top: {ctxMenu.y}px;"
   >
     {#if ctxAgent?.isApp}
-      <button class="flex items-center gap-2.5 w-full px-3 py-1.5 text-sm text-left cursor-pointer bg-transparent border-none hover:bg-base-200 transition-colors font-medium" onclick={() => ctxAction('open-app')}>
+      <button class="flex items-center gap-2.5 w-full px-3 py-1.5 text-sm text-left cursor-pointer bg-transparent border-none hover:bg-base-200 font-medium" onclick={() => ctxAction('open-app')}>
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-base-content/50"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
         {$t('agent.openApp')}
       </button>
@@ -1121,17 +1121,25 @@
         {@const isPinned = drilledAgent?.id === a.id}
         <div
           transition:slide={{ duration: motionMs(200) }}
-          class="group/agent flex items-center gap-2.5 py-2 px-2.5 mx-1.5 cursor-pointer transition-colors text-left {!isPinned && agentId === a.id
+          class="group/agent flex items-center gap-2.5 pr-2.5 mx-1.5 cursor-pointer text-left {!isPinned && agentId === a.id
             ? 'rounded-box border border-primary/30 bg-primary/10 shadow-sm'
             : 'rounded-box border border-transparent hover:bg-base-100/70'}"
         >
+          <!-- Padding lives on the button, not the row, so the whole row is
+               clickable — with it on the wrapper, the gap between rows was
+               dead space that swallowed clicks. -->
           <button
-            class="flex items-center gap-2.5 flex-1 min-w-0 bg-transparent border-none cursor-pointer p-0 text-left"
+            class="flex items-center gap-2.5 flex-1 min-w-0 bg-transparent border-none cursor-pointer py-2 pl-2.5 text-left"
             onclick={() => (isPinned ? showList('1') : openAgentRow(a.id))}
             oncontextmenu={(e) => handleAgentContext(e, a.id)}
             data-context-menu
             title={isPinned ? $t('common.back') : undefined}
           >
+            {#if isPinned}
+              <!-- Return chevron leads the header (the macOS/iOS "back"
+                   position): this row is the way back to the employee list. -->
+              <svg class="shrink-0 text-base-content/70" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="10 3 5 8 10 13"/></svg>
+            {/if}
             <div class="relative shrink-0">
               <div class="w-8 h-8 rounded-field flex items-center justify-center font-mono text-sm font-semibold {ac.bgClass} {ac.inkClass} {st === 'paused' ? 'opacity-50' : ''}">
                 {#if a.isApp}
@@ -1143,27 +1151,22 @@
             <div class="flex-1 min-w-0">
               <div class="flex items-baseline gap-2">
                 <span class="text-sm font-medium truncate min-w-0">{a.name}</span>
-                {#if a.isolated}
-                  <!-- Sealed-conversations employee: the same glyph the chat
-                       header shows (MessageSquareLock, not the Settings Lock). -->
-                  <span class="self-center text-warning/70 shrink-0 tooltip tooltip-right" data-tip={$t('agentIsolation.isolated')}>
-                    <MessageSquareLock class="w-2.5 h-2.5" />
-                  </span>
-                {/if}
                 {#if a.isApp}
                   <span class="text-[9px] uppercase tracking-wider px-1 py-px rounded bg-info/15 text-info font-semibold shrink-0">{$t('agent.appBadge')}</span>
                 {/if}
                 <span class="flex-1"></span>
-                {#if isPinned}
-                  <!-- Open-disclosure chevron: this row is the way back. -->
-                  <svg class="self-center text-base-content/50" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 8 11 13 6"/></svg>
-                {/if}
                 <!-- No per-row time here: employees without chats have none,
                      and a column where only some rows carry a time reads as
                      noise. Times live on the conversations themselves. -->
               </div>
               <div class="text-xs text-base-content/60 truncate">{latest?.preview || a.role}</div>
             </div>
+            {#if !isPinned && a.isolated}
+              <!-- Drill chevron: an isolated employee opens its list of sealed
+                   conversations rather than one chat — the row IS navigation.
+                   This replaces the lock glyph: one signal per row. -->
+              <svg class="shrink-0 text-base-content/70" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 3 11 8 6 13"/></svg>
+            {/if}
           </button>
           {#if isPinned}
             <!-- The employee's settings must be reachable from the drilled
@@ -1199,7 +1202,7 @@
           {#each apiThreads[drilledAgent.id] ?? [] as c (c.id)}
             <a
               href={`/${drilledAgent.id}/threads/${c.id}`}
-              class="block py-2 px-2.5 mx-1.5 rounded-box transition-colors {$page.params.threadId === c.id
+              class="block py-2 px-2.5 mx-1.5 rounded-box {$page.params.threadId === c.id
                 ? 'bg-primary/10 border border-primary/30 shadow-sm'
                 : 'border border-transparent hover:bg-base-100/70'}"
             >
@@ -1229,7 +1232,7 @@
                  scrollbar on hover (the row "jump"). -->
             <div class="mx-1.5">
             <button
-              class="group/room w-full flex items-center gap-2.5 py-2 px-2.5 cursor-pointer transition-colors text-left bg-transparent {roomParam === room.channelId
+              class="group/room w-full flex items-center gap-2.5 py-2 px-2.5 cursor-pointer text-left bg-transparent {roomParam === room.channelId
                 ? 'rounded-box border border-primary/30 bg-primary/10 shadow-sm'
                 : 'rounded-box border border-transparent hover:bg-base-100/70'}"
               onclick={() => openRoom(room.channelId)}

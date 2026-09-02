@@ -291,7 +291,14 @@ pub async fn update_provider(
 
     let name = body["name"].as_str().unwrap_or(&existing.name);
     let api_key = body["apiKey"].as_str().unwrap_or(&existing.api_key);
-    let model = body["model"].as_str().or(existing.model.as_deref());
+    // Absent key = keep the stored value; explicit null or "" = CLEAR the
+    // model pin (writes NULL). Before this, a model could be set but never
+    // unset — a bot-profile pin would shadow account-level routing policy
+    // forever (found 2026-09-01 clearing redundant glm pins).
+    let model = match body.get("model") {
+        None => existing.model.as_deref(),
+        Some(v) => v.as_str().filter(|s| !s.trim().is_empty()),
+    };
     let base_url = body["baseUrl"].as_str().or(existing.base_url.as_deref());
     let priority = body["priority"]
         .as_i64()

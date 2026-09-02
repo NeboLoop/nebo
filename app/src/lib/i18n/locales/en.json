@@ -263,6 +263,7 @@
 		"tokenTooltip": "{total} total prompt · {overhead} system+tools · {cacheRead} cache read",
 		"outOfBalance": "You're out of usage balance — your plan limits, gift tokens, and credits are used up.",
 		"viewPlans": "View plans",
+		"topUp": "Top up",
 		"documents": "Documents",
 		"versions": "Versions",
 		"latest": "Latest",
@@ -911,6 +912,8 @@
 	},
 	"settingsBilling": {
 		"title": "Billing",
+		"manageOnWeb": "Manage billing on neboai.com",
+		"webOnly": "Plans, top-ups, payment methods and receipts live on neboai.com. This app shows what you have left.",
 		"description": "Subscription, payment, and invoices",
 		"loadingBilling": "Loading billing...",
 		"connectForBilling": "Connect your NeboAI account to manage billing.",

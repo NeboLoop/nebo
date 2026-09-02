@@ -871,15 +871,40 @@ jobs:
           S3_ENDPOINT: https://nyc3.digitaloceanspaces.com
           TAG: ${{ github.ref_name }}
         run: |
-          # Generate version.json
-          cat > version.json << EOFJ
-          {
-            "version": "${TAG}",
-            "release_url": "https://github.com/NeboLoop/nebo/releases/tag/${TAG}",
-            "published_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          }
-          EOFJ
-          sed -i 's/^          //' version.json
+          # Generate version.json. `version` is the newest tag; `platforms`
+          # names the newest tag that actually has assets for each platform,
+          # so a platform this run did not produce (e.g. Windows while
+          # signing is blocked) keeps pointing at its last good release
+          # instead of a 404. Readers pick platforms.<os> and fall back to
+          # `version` (older clients only know `version`).
+          PREV=$(curl -sf https://cdn.neboai.com/releases/version.json || echo '{}')
+          has() { ls artifacts/$1 >/dev/null 2>&1; }
+          has 'Nebo-*.dmg'       && DARWIN="$TAG"  || DARWIN=""
+          has 'nebo-linux-amd64' && LINUX="$TAG"   || LINUX=""
+          has 'Nebo-*-setup.exe' && WINDOWS="$TAG" || WINDOWS=""
+          PREV="$PREV" TAG="$TAG" DARWIN="$DARWIN" LINUX="$LINUX" WINDOWS="$WINDOWS" python3 - << 'EOFP' > version.json
+          import json, os, datetime
+          prev = {}
+          try:
+              prev = json.loads(os.environ["PREV"] or "{}")
+          except Exception:
+              pass
+          pp = prev.get("platforms") or {}
+          def keep(name, built):
+              return built or pp.get(name) or prev.get("version") or os.environ["TAG"]
+          tag = os.environ["TAG"]
+          print(json.dumps({
+              "version": tag,
+              "release_url": f"https://github.com/NeboLoop/nebo/releases/tag/{tag}",
+              "published_at": datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+              "platforms": {
+                  "darwin": keep("darwin", os.environ["DARWIN"]),
+                  "linux": keep("linux", os.environ["LINUX"]),
+                  "windows": keep("windows", os.environ["WINDOWS"]),
+              },
+          }, indent=2))
+          EOFP
+          cat version.json
 
           # Upload latest version pointer. Short TTL on purpose: this object is
           # MUTABLE and is how the download site and every desktop update check

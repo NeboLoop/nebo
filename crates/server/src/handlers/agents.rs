@@ -131,6 +131,31 @@ struct AgentPricing {
 }
 
 /// GET /agents
+/// The ONE folder name for an employee: its display name with path
+/// separators (and other filesystem-hostile characters) replaced. A name like
+/// "Frontend Designer/Coder Agent" used to become a NESTED directory the
+/// loader could not find, so the employee showed as failed-to-load forever.
+fn agent_dir_name(name: &str) -> String {
+    name.chars()
+        .map(|c| match c {
+            '/' | '\\' | ':' | '\0' => '-',
+            c => c,
+        })
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
+/// memory.context_isolated as the runtime enforces it — the DB frontmatter is
+/// the ONE source of truth for the toggle (the owner flips it in the DB; the
+/// file is not rewritten). Both list branches derive from here.
+fn isolated_from_frontmatter(frontmatter: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(frontmatter)
+        .ok()
+        .and_then(|fm| fm.pointer("/memory/context_isolated").and_then(|v| v.as_bool()))
+        .unwrap_or(false)
+}
+
 pub async fn list_agents(
     State(state): State<AppState>,
     Query(_q): Query<ListQuery>,
@@ -234,10 +259,7 @@ pub async fn list_agents(
             // runtime enforces. No filesystem fallback when a DB row exists —
             // a lock that overstates enforcement would lie to the owner.
             "isolated": match db_row {
-                Some(r) => serde_json::from_str::<serde_json::Value>(&r.frontmatter)
-                    .ok()
-                    .and_then(|fm| fm.pointer("/memory/context_isolated").and_then(|v| v.as_bool()))
-                    .unwrap_or(false),
+                Some(r) => isolated_from_frontmatter(&r.frontmatter),
                 None => loaded.config.as_ref().map(|c| c.memory.context_isolated).unwrap_or(false),
             },
         });
@@ -303,7 +325,11 @@ pub async fn list_agents(
             "loopExposed": r.loop_exposed != 0,
             "voice": r.voice,
             "nappPath": r.napp_path,
-            "isolated": false,
+            // Same DB-owned truth as the loaded branch. Hardcoding false here
+            // hid every sealed employee whose files failed to load (a name
+            // with "/" nests its folder and the loader misses it) — the rail
+            // then showed no drill affordance until a click resolved it.
+            "isolated": isolated_from_frontmatter(&r.frontmatter),
             "needsSetup": false,
             "loadError": "agent files failed to load — this employee cannot run correctly; delete it or repair its files",
         }));
@@ -349,7 +375,7 @@ fn write_user_agent_files(
     let Ok(user_dir) = config::user_dir() else {
         return;
     };
-    let agent_dir = user_dir.join("agents").join(name);
+    let agent_dir = user_dir.join("agents").join(agent_dir_name(name));
     if std::fs::create_dir_all(&agent_dir).is_err() {
         return;
     }
@@ -1854,7 +1880,7 @@ pub async fn reload_agent(
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| {
             let data = config::data_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-            data.join("user").join("agents").join(&agent.name)
+            data.join("user").join("agents").join(agent_dir_name(&agent.name))
         });
 
     if !agent_dir.exists() {

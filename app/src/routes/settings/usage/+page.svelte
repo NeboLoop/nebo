@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { openWebBilling } from '$lib/billing';
   import SettingsHeader from '$lib/components/settings/SettingsHeader.svelte';
   import { onMount } from 'svelte';
   import { t } from 'svelte-i18n';
@@ -153,7 +154,7 @@
               {/if}
             {/if}
           </div>
-          <a href="/pricing" class="text-sm text-primary font-medium hover:brightness-110 transition-all">{$t('settingsUsage.changePlanTitle')}</a>
+          <button type="button" onclick={openWebBilling} class="text-sm text-primary font-medium hover:brightness-110 transition-all cursor-pointer bg-transparent border-none">{$t('settingsUsage.changePlanTitle')}</button>
         </div>
       </section>
     {/if}

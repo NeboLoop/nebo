@@ -34,6 +34,26 @@ struct VersionManifest {
     version: String,
     release_url: Option<String>,
     published_at: Option<String>,
+    /// Newest tag that has assets for each platform ("darwin", "linux",
+    /// "windows"). A platform can lag the others (Windows while signing is
+    /// blocked); this client follows its own platform's entry and falls back
+    /// to `version` for pointers written before the field existed.
+    #[serde(default)]
+    platforms: std::collections::HashMap<String, String>,
+}
+
+impl VersionManifest {
+    fn latest_for_this_platform(&self) -> String {
+        let key = match std::env::consts::OS {
+            "macos" => "darwin",
+            other => other,
+        };
+        self.platforms
+            .get(key)
+            .filter(|v| !v.is_empty())
+            .cloned()
+            .unwrap_or_else(|| self.version.clone())
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -62,7 +82,8 @@ pub async fn check(current_version: &str) -> Result<CheckResult, UpdateError> {
     }
 
     let manifest: VersionManifest = resp.json().await?;
-    let latest = normalize_version(&manifest.version);
+    let latest_tag = manifest.latest_for_this_platform();
+    let latest = normalize_version(&latest_tag);
     let current = normalize_version(current_version);
 
     let available = latest != current && current != "dev" && is_newer(&latest, &current);
@@ -71,7 +92,7 @@ pub async fn check(current_version: &str) -> Result<CheckResult, UpdateError> {
     Ok(CheckResult {
         available,
         current_version: current_version.to_string(),
-        latest_version: manifest.version,
+        latest_version: latest_tag,
         release_url: manifest.release_url,
         published_at: manifest.published_at,
         install_method: method.to_string(),
