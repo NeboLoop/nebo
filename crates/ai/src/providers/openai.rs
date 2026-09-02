@@ -543,12 +543,11 @@ impl OpenAIProvider {
                                 .as_ref()
                                 .and_then(|d| d.cached_tokens)
                                 .unwrap_or(0) as i32;
-                            latest_usage = Some(UsageInfo {
-                                input_tokens: usage.prompt_tokens as i32,
-                                output_tokens: usage.completion_tokens as i32,
-                                cache_read_input_tokens: cached,
-                                ..Default::default()
-                            });
+                            latest_usage = Some(usage_from_openai(
+                                usage.prompt_tokens as i32,
+                                usage.completion_tokens as i32,
+                                cached,
+                            ));
                         }
 
                         // Break after processing this chunk if we saw finish_reason.
@@ -1068,6 +1067,44 @@ struct SessionToolResult {
     is_error: bool,
     #[serde(default)]
     image_url: Option<String>,
+}
+
+/// OpenAI-protocol usage into Nebo's `UsageInfo`.
+///
+/// OpenAI counts cached tokens as a SUBSET of `prompt_tokens`; Anthropic (and
+/// everything downstream in Nebo: cost math, the usage panel, the runner's
+/// context calibration that sums input + cache_read + cache_creation) treats
+/// them as DISJOINT. Convert at the boundary, once, or a 74% cache hit reads
+/// as a context 74% larger than it is and compaction fires early.
+fn usage_from_openai(prompt_tokens: i32, completion_tokens: i32, cached_tokens: i32) -> UsageInfo {
+    let cached = cached_tokens.clamp(0, prompt_tokens.max(0));
+    UsageInfo {
+        input_tokens: prompt_tokens - cached,
+        output_tokens: completion_tokens,
+        cache_read_input_tokens: cached,
+        ..Default::default()
+    }
+}
+
+#[cfg(test)]
+mod usage_semantics_tests {
+    use super::*;
+
+    /// A provider reporting 183,008 prompt tokens of which 136,064 were cached
+    /// sent 46,944 uncached tokens, not 319,072.
+    #[test]
+    fn openai_cached_tokens_are_a_subset_of_prompt_tokens() {
+        let u = usage_from_openai(183_008, 20, 136_064);
+        assert_eq!(u.input_tokens, 46_944);
+        assert_eq!(u.cache_read_input_tokens, 136_064);
+        assert_eq!(u.input_tokens + u.cache_read_input_tokens, 183_008, "the sum is the prompt");
+        // Providers without a breakdown are unchanged.
+        let u = usage_from_openai(100, 5, 0);
+        assert_eq!((u.input_tokens, u.cache_read_input_tokens), (100, 0));
+        // A malformed breakdown never goes negative.
+        let u = usage_from_openai(10, 1, 50);
+        assert_eq!((u.input_tokens, u.cache_read_input_tokens), (0, 10));
+    }
 }
 
 #[cfg(test)]
