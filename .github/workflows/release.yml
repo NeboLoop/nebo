@@ -896,7 +896,12 @@ jobs:
           # signing is blocked) keeps pointing at its last good release
           # instead of a 404. Readers pick platforms.<os> and fall back to
           # `version` (older clients only know `version`).
-          PREV=$(curl -sf https://cdn.neboai.com/releases/version.json || echo '{}')
+          # Read the current pointer from the storage ORIGIN, never the CDN edge:
+          # the edge served an 18-minute-old copy to the mac publish on v0.13.3
+          # and Linux was written back a release. Falls back to the CDN with a
+          # cache-buster only if the origin read fails.
+          PREV=$(aws s3 cp s3://neboloop/releases/version.json - --endpoint-url "$S3_ENDPOINT" 2>/dev/null \
+                 || curl -sf "https://cdn.neboai.com/releases/version.json?t=$(date +%s)" || echo '{}')
           has() { ls artifacts/$1 >/dev/null 2>&1; }
           has 'Nebo-*.dmg'       && DARWIN="$TAG"  || DARWIN=""
           has 'nebo-linux-amd64' && LINUX="$TAG"   || LINUX=""

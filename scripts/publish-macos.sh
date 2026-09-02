@@ -62,7 +62,9 @@ if [ -n "$AKEY" ] && [ -n "$SKEY" ] && command -v aws >/dev/null 2>&1; then
   # release job emits: `version` is the newest tag, `platforms.<os>` the newest
   # tag with assets for that platform. This publish proves darwin; the other
   # platforms keep whatever the current pointer says (never regressed).
-  PREV=$(curl -sf https://cdn.neboai.com/releases/version.json || echo '{}')
+  # From the storage ORIGIN, never the CDN edge (stale-edge regression, v0.13.3).
+  PREV=$(aws s3 cp s3://neboloop/releases/version.json - --endpoint-url "$EP" 2>/dev/null \
+         || curl -sf "https://cdn.neboai.com/releases/version.json?t=$(date +%s)" || echo '{}')
   PREV="$PREV" TAG="$TAG" REPO="$REPO" python3 - <<'EOFP' > "$work/version.json"
 import json, os, datetime
 prev = {}
