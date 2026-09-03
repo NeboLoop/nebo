@@ -820,8 +820,8 @@
                 <div class="text-xs text-base-content/70 mb-1">{$t('agent.packagedDeleteWhy', { values: { name: agent?.name ?? '' } })}</div>
                 <div class="text-xs text-base-content/70 mb-3">{$t('agent.packagedDeleteConsequences')}</div>
                 <label class="block mb-3">
-                  <span class="block text-xs font-semibold uppercase tracking-wider mb-1.5">{$t('agent.typeNameToConfirm', { values: { name: agent?.name ?? '' } })}</span>
-                  <input type="text" bind:value={deleteTyped} placeholder={agent?.name ?? ''} autocomplete="off" class="w-full py-[7px] px-2.5 rounded-md border border-error/40 text-sm bg-base-100 outline-none font-body" />
+                  <span class="block text-xs font-semibold uppercase tracking-wider mb-1.5">{$t('agent.typeNameToConfirmPrefix')} <span class="normal-case font-mono tracking-normal text-base-content">{agent?.name ?? ''}</span> {$t('agent.typeNameToConfirmSuffix')}</span>
+                  <input type="text" bind:value={deleteTyped} autocomplete="off" class="w-full py-[7px] px-2.5 rounded-md border border-error/40 text-sm bg-base-100 outline-none font-body" />
                 </label>
               {:else}
                 <div class="text-xs text-base-content/70 mb-3">{$t('agentSettings.deleteWarning')}</div>

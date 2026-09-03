@@ -1026,8 +1026,8 @@
           <p class="text-sm text-base-content/70">{$t('agent.packagedDeleteWhy', { values: { name: deleteTarget.name } })}</p>
           <p class="text-sm text-base-content/70 mt-2">{$t('agent.packagedDeleteConsequences')}</p>
           <label class="block mt-4">
-            <span class="block text-xs font-semibold uppercase tracking-wider mb-1.5">{$t('agent.typeNameToConfirm', { values: { name: deleteTarget.name } })}</span>
-            <input type="text" bind:value={deleteTyped} placeholder={deleteTarget.name} autocomplete="off" class="w-full py-[7px] px-2.5 rounded-md border border-error/40 text-sm bg-base-100 outline-none" />
+            <span class="block text-xs font-semibold uppercase tracking-wider mb-1.5">{$t('agent.typeNameToConfirmPrefix')} <span class="normal-case font-mono tracking-normal text-base-content">{deleteTarget.name}</span> {$t('agent.typeNameToConfirmSuffix')}</span>
+            <input type="text" bind:value={deleteTyped} autocomplete="off" class="w-full py-[7px] px-2.5 rounded-md border border-error/40 text-sm bg-base-100 outline-none" />
           </label>
         {:else}
           <p class="text-sm text-base-content/70">{$t('agent.deleteWarning')}</p>
@@ -1035,7 +1035,7 @@
       </div>
       <div class="flex items-center justify-end gap-2 px-5 py-4 border-t border-base-content/10">
         <button class="px-4 py-2 rounded-lg border border-base-content/10 text-sm font-medium cursor-pointer hover:bg-base-200 transition-colors bg-transparent" onclick={() => { deleteTarget = null; }} disabled={deleting}>{$t('common.cancel')}</button>
-        <button class="px-4 py-2 rounded-lg bg-error text-error-content text-sm font-bold cursor-pointer hover:brightness-110 transition-all border-none" onclick={confirmDeleteAgent} disabled={deleting || !deleteArmed}>
+        <button class="px-4 py-2 rounded-lg bg-error text-error-content text-sm font-bold cursor-pointer hover:brightness-110 transition-all border-none disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:brightness-100" onclick={confirmDeleteAgent} disabled={deleting || !deleteArmed}>
           {#if deleting}
             <span class="loading loading-spinner loading-xs"></span>
           {:else}
