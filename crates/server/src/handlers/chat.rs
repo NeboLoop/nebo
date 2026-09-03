@@ -6,6 +6,8 @@ use serde::Deserialize;
 
 use super::{HandlerResult, to_error_response};
 use crate::state::AppState;
+use db::models::ChatMessage;
+use types::api::ActiveTurnStatus;
 
 #[derive(Debug, Deserialize)]
 pub struct ListChatsQuery {
@@ -317,6 +319,18 @@ pub struct CompanionQuery {
     pub max_chars: i64,
 }
 
+/// GET /api/v1/chats/:id/messages. `active_run` is present while a turn is
+/// running on this thread, so a page opening it mid-run shows "working" at
+/// once instead of after the next event.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatMessagesResponse {
+    pub messages: Vec<ChatMessage>,
+    pub total_messages: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_run: Option<ActiveTurnStatus>,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct ChatMessagesQuery {
     #[serde(default = "default_char_budget")]
@@ -586,7 +600,7 @@ pub async fn get_chat_messages(
     State(state): State<AppState>,
     Path(id): Path<String>,
     Query(query): Query<ChatMessagesQuery>,
-) -> HandlerResult<serde_json::Value> {
+) -> HandlerResult<ChatMessagesResponse> {
     // The caller may pass a session key (e.g. "agent:UUID:web") instead of a raw
     // chat_id.  Resolve via the session's active_chat_id when possible so we
     // always load from the correct (possibly rotated) conversation.
@@ -613,9 +627,15 @@ pub async fn get_chat_messages(
         .store
         .count_chat_messages(&resolved_id)
         .unwrap_or(messages.len() as i64);
-    Ok(Json(
-        serde_json::json!({"messages": messages, "totalMessages": total}),
-    ))
+    // The chat's session name is the key the runner admits turns under.
+    let active_run = state
+        .store
+        .get_chat(&resolved_id)
+        .ok()
+        .flatten()
+        .and_then(|c| c.session_name)
+        .and_then(|key| state.runner.active_turn_status(&key));
+    Ok(Json(ChatMessagesResponse { messages, total_messages: total, active_run }))
 }
 #[cfg(test)]
 mod transcript_metadata_tests {

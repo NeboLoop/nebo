@@ -76,7 +76,7 @@ export interface ToolUse {
 }
 
 export type ChatMessage =
-  | { type: 'user'; content: string; time?: string; id?: string; attachments?: UploadedAttachment[]; note?: string }
+  | { type: 'user'; content: string; time?: string; id?: string; attachments?: UploadedAttachment[]; pending?: boolean }
   | { type: 'thinking'; content: string; duration: string }
   | { type: 'ask'; requestId: string; prompt: string; widgets: AskWidgetDef[]; response?: string }
   | { type: 'assistant'; content: string; time?: string; delegateAgentId?: string; delegateAgentName?: string; id?: string; attachments?: UploadedAttachment[]; workItems?: WorkItem[]; tools?: ToolUse[]; streaming?: boolean };
@@ -431,6 +431,8 @@ export function createChatController(config: ChatControllerConfig) {
       isLoading = false;
       phaseStartTime = 0;
       activityStatus = '';
+      // The turn a queued message waited on is over: it is in the thread now.
+      messages = messages.map((m) => (m.type === 'user' && m.pending ? { ...m, pending: false } : m));
       if (usageClearTimer) clearTimeout(usageClearTimer);
       usageClearTimer = setTimeout(() => { tokenUsage = null; }, 5000);
     }
@@ -604,15 +606,16 @@ export function createChatController(config: ChatControllerConfig) {
   }
 
   // Sent while the employee was still working: the server appended it to the
-  // thread for the running turn's next step and answered with a status line.
-  // Keep the spinner (the first turn is still running) and hang the status
-  // under the message as a note; it is not a reply.
+  // thread for the running turn's next step. The message itself shows as
+  // pending (italic) until that turn completes; the employee says nothing
+  // about it, and the spinner stays because the first turn is still running.
   const QUEUED_INTO_RUNNING_TURN = 'queued_into_running_turn';
-  function noteLastUserMessage(note: string) {
+  function setLastUserPending(pending: boolean) {
     for (let i = messages.length - 1; i >= 0; i--) {
       const m = messages[i];
       if (m.type === 'user') {
-        messages[i] = { ...m, note };
+        if (!!m.pending === pending) return;
+        messages[i] = { ...m, pending };
         messages = [...messages];
         return;
       }
@@ -622,7 +625,7 @@ export function createChatController(config: ChatControllerConfig) {
   function handleChatError(data: any) {
     if (!isMyEvent(data)) return;
     if (data.stop_reason === QUEUED_INTO_RUNNING_TURN) {
-      noteLastUserMessage(data.error || '');
+      setLastUserPending(true);
       return;
     }
     isLoading = false;
@@ -900,6 +903,7 @@ export function createChatController(config: ChatControllerConfig) {
     get quotaWarning() { return quotaWarning; },
     get chatError() { return chatError; },
     get activityStatus() { return activityStatus; },
+    set activityStatus(v: string) { activityStatus = v; },
     get allAgents() { return allAgents; },
 
     send,

@@ -88,3 +88,15 @@ pub struct HealthResponse {
     pub status: String,
     pub version: String,
 }
+
+/// The live counters of a turn running on a session, for a page that opens
+/// the thread mid-run and must show "working" at once instead of waiting for
+/// the next event. Filled by the runner, carried on the thread's history
+/// response, read by the app: one shape for all three.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActiveTurnStatus {
+    pub elapsed_secs: u64,
+    pub tool_calls: u32,
+    pub current_tool: String,
+}

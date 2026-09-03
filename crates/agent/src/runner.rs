@@ -810,6 +810,18 @@ pub fn session_is_busy(turns: &ActiveTurns, session_key: &str) -> bool {
     turns.lock().unwrap_or_else(|p| p.into_inner()).contains_key(session_key)
 }
 
+pub use types::api::ActiveTurnStatus;
+
+pub fn active_turn_status(turns: &ActiveTurns, session_key: &str) -> Option<ActiveTurnStatus> {
+    let map = turns.lock().unwrap_or_else(|p| p.into_inner());
+    let active = map.get(session_key)?;
+    Some(ActiveTurnStatus {
+        elapsed_secs: active.started.elapsed().as_secs(),
+        tool_calls: active.progress.tool_call_count.load(std::sync::atomic::Ordering::Relaxed),
+        current_tool: active.progress.current_tool.lock().map(|t| t.clone()).unwrap_or_default(),
+    })
+}
+
 /// What a second caller hears while a turn is busy. Built from the live
 /// counters, no model call; read aloud by voice, shown as status in chat.
 pub fn busy_status_line(active: &ActiveTurn) -> String {
@@ -827,10 +839,14 @@ pub fn busy_status_line(active: &ActiveTurn) -> String {
         .map(|t| t.clone())
         .unwrap_or_default();
     let doing = if tool.is_empty() { "thinking".to_string() } else { format!("running {tool}") };
+    let calls_part = match calls {
+        0 => String::new(),
+        1 => ", 1 tool call so far".to_string(),
+        n => format!(", {n} tool calls so far"),
+    };
     format!(
-        "Still working on it: {elapsed} in, {calls} tool calls so far, currently {doing}. \
-         Your message is in the thread where that work reads it at its next step; if the \
-         work finishes first, you will see your message waiting there."
+        "Still on the last thing, {elapsed} in{calls_part}, currently {doing}. I'll pick this \
+         up at my next step; if that work finishes first, your message is waiting in the thread."
     )
 }
 
@@ -1055,6 +1071,11 @@ impl Runner {
     /// Whether a turn is running on `session_key` (see `ActiveTurn`).
     pub fn is_session_busy(&self, session_key: &str) -> bool {
         session_is_busy(&self.active_turns, session_key)
+    }
+
+    /// The running turn's live counters for `session_key`, if any.
+    pub fn active_turn_status(&self, session_key: &str) -> Option<ActiveTurnStatus> {
+        active_turn_status(&self.active_turns, session_key)
     }
 
     pub fn set_ask_channels(mut self, channels: tools::AskChannels) -> Self {
@@ -3049,10 +3070,19 @@ async fn run_loop(
         // since is surfaced once with its changed lines, so the model builds on
         // the change instead of reverting it. The ledger outlives the turn, so
         // the first iteration of a later turn catches edits made in between.
+        // In the same pass: diagnostics a language server published for files
+        // the employee did not just touch (an edit in one file that broke
+        // another), delivered once with the reference's caps.
         {
             let tools = tools.clone();
             let session_key = session_key.clone();
-            match tokio::task::spawn_blocking(move || tools.external_edit_notes(&session_key)).await {
+            let sweep = tokio::task::spawn_blocking(move || {
+                let mut notes = tools.external_edit_notes(&session_key);
+                notes.extend(tools.new_diagnostics_note());
+                notes
+            })
+            .await;
+            match sweep {
                 Ok(notes) => {
                     for note in notes {
                         pending_stream_reminders.push(steering::wrap_system_reminder(&note));
@@ -7651,6 +7681,9 @@ mod tests {
         assert!(!status.contains('\u{2014}'), "no em dash in owner copy");
         assert!(!status.contains("stop") && !status.contains("will answer"), "promises only what the code does: {status}");
         assert!(session_is_busy(&turns, "agent:a:thread:t"));
+        let st = active_turn_status(&turns, "agent:a:thread:t").expect("status while busy");
+        assert_eq!((st.tool_calls, st.current_tool.as_str()), (3, "os: exec"));
+        assert!(active_turn_status(&turns, "agent:a:thread:other").is_none());
         assert!(admit_turn(&turns, "agent:a:thread:other", progress()).is_ok(), "other sessions are unaffected");
         drop(first);
         assert!(!session_is_busy(&turns, "agent:a:thread:t"));

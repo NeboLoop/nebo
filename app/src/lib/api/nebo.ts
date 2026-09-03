@@ -667,7 +667,7 @@ export function deleteChat(id: string) {
  * @description "Get chat messages"
  */
 export function getChatMessages(id: string, max_chars?: number, before?: string) {
-	return webapi.get<components.GetChatMessagesResponse>(`/api/v1/chats/${id}/messages`, { max_chars, before })
+	return webapi.get<components.ChatMessagesResponse>(`/api/v1/chats/${id}/messages`, { max_chars, before })
 }
 
 /**
@@ -1259,10 +1259,24 @@ export function neboAIPhoneClaimable() {
 }
 
 /**
+ * @description "Nebo a i phone lines"
+ */
+export function neboAIPhoneLines() {
+	return webapi.get<unknown>(`/api/v1/phone/lines`)
+}
+
+/**
  * @description "Nebo a i phone optout"
  */
 export function neboAIPhoneOptout(req: Record<string, unknown> = {}) {
 	return webapi.post<unknown>(`/api/v1/phone/optout`, req)
+}
+
+/**
+ * @description "Nebo a i phone presence"
+ */
+export function neboAIPhonePresence() {
+	return webapi.get<unknown>(`/api/v1/phone/presence`)
 }
 
 /**

@@ -34,6 +34,9 @@ const CALL_BUDGET: Duration = Duration::from_secs(2);
 
 /// A server idle longer than this is shut down (shutdown/exit, then killed).
 const IDLE_SHUTDOWN: Duration = Duration::from_secs(5 * 60);
+/// How long a between-calls drain may pump: enough to take what the reader
+/// thread already queued, never enough to wait for a server to think.
+const DRAIN_BUDGET: Duration = Duration::from_millis(50);
 
 // ── Public API ──────────────────────────────────────────────────────
 
@@ -65,7 +68,7 @@ impl Severity {
         }
     }
 
-    fn label(self) -> &'static str {
+    pub fn label(self) -> &'static str {
         match self {
             Severity::Error => "error",
             Severity::Warning => "warning",
@@ -650,6 +653,29 @@ impl Server {
         }
     }
 
+    fn did_save(&mut self, path: &str) -> Result<(), Crash> {
+        self.send(&json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didSave",
+            "params": {"textDocument": {"uri": to_uri(Path::new(path))}}
+        }))
+    }
+
+    /// Take every publish that landed since the last call, for any file. Pumps
+    /// only what is already queued ([`DRAIN_BUDGET`]); never waits on a server.
+    fn drain_fresh(&mut self) -> Result<Vec<(String, Vec<Diag>)>, Crash> {
+        let deadline = Instant::now() + DRAIN_BUDGET;
+        while !matches!(self.pump_one(deadline)?, Pumped::Deadline) {}
+        let paths: Vec<String> = self.fresh.drain().collect();
+        Ok(paths
+            .into_iter()
+            .map(|p| {
+                let diags = self.diags.get(&p).cloned().unwrap_or_default();
+                (p, diags)
+            })
+            .collect())
+    }
+
     /// Best-effort graceful stop before the killing Drop: shutdown request +
     /// exit notification. Never waited on — Drop reaps.
     fn stop(&mut self) {
@@ -866,6 +892,42 @@ impl LspManager {
     }
 }
 
+/// Diagnostics a server published for one file since the last drain.
+#[derive(Debug, Clone)]
+pub struct FileDiags {
+    pub path: String,
+    pub server: String,
+    pub diagnostics: Vec<Diag>,
+}
+
+impl LspManager {
+    /// Everything every live server published since the last call, for any
+    /// file: the cross-file half of passive diagnostics (an edit in `a.rs`
+    /// that breaks `b.rs`). Spawns nothing, waits for nothing; a server that
+    /// died is latched as crashed like on any other call.
+    pub fn pending_diagnostics(&self) -> Vec<FileDiags> {
+        let mut inner = self.inner.lock().expect("lsp lock");
+        let mut out = Vec::new();
+        let mut crashed: Vec<(PathBuf, String)> = Vec::new();
+        for (key, entry) in inner.servers.iter_mut() {
+            let Entry::Live(server) = entry else { continue };
+            match server.drain_fresh() {
+                Ok(list) => {
+                    for (path, diagnostics) in list {
+                        out.push(FileDiags { path, server: server.bin.clone(), diagnostics });
+                    }
+                }
+                Err(Crash) => crashed.push(key.clone()),
+            }
+        }
+        for key in crashed {
+            let bin = key.1.clone();
+            inner.servers.insert(key, Entry::Crashed { bin });
+        }
+        out
+    }
+}
+
 impl Default for LspManager {
     fn default() -> Self {
         Self::new()
@@ -879,6 +941,9 @@ impl LspProvider for LspManager {
             server_name = server.bin.clone();
             server.fresh.remove(doc_path);
             server.open_or_update(doc_path, lang_id, text)?;
+            // didSave is load-bearing: several servers (tsserver, rust-analyzer's
+            // cargo check) only publish, and only re-check dependents, on save.
+            server.did_save(doc_path)?;
             // Pump until the server publishes for THIS document or the
             // budget runs out. What it publishes is what we report.
             while !server.fresh.contains(doc_path) {
@@ -886,6 +951,9 @@ impl LspProvider for LspManager {
                     return Ok(None);
                 }
             }
+            // Consumed here; publishes for OTHER files stay fresh for the
+            // between-calls drain (`pending_diagnostics`).
+            server.fresh.remove(doc_path);
             Ok(Some(server.diags.get(doc_path).cloned().unwrap_or_default()))
         })?;
         Ok(DiagReport { server: server_name, diagnostics: diags })
@@ -1101,6 +1169,56 @@ mod tests {
         assert!(line.contains("line 40: mismatched types"), "errors sort first: {line}");
         assert!(line.contains("; 1 more omitted"), "cap must be stated: {line}");
         assert!(!line.contains("unused import"), "{line}");
+    }
+
+    /// The cross-file half against a real server: `b` calls a function in
+    /// `a`; changing the signature in `a` must surface an error in `b`
+    /// through `pending_diagnostics`, without touching `b`. gopls first (it
+    /// re-checks the whole package on a change), clangd as the fallback (it
+    /// re-checks open dependents of a changed header). Skips when neither is
+    /// on PATH. Run with `cargo test -p nebo-tools --lib lsp -- --ignored`.
+    #[test]
+    #[ignore = "requires gopls or clangd on PATH"]
+    fn edit_in_one_file_surfaces_the_break_in_another() {
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = LspManager::with_table(default_table(), Duration::from_secs(60), IDLE_SHUTDOWN);
+        let (changed, broken, dependent) = if find_server("gopls", None).is_some() {
+            std::fs::write(dir.path().join("go.mod"), "module probe\n\ngo 1.22\n").unwrap();
+            let a = dir.path().join("a.go");
+            let b = dir.path().join("b.go");
+            std::fs::write(&a, "package probe\n\nfunc Add(x, y int) int { return x + y }\n").unwrap();
+            std::fs::write(&b, "package probe\n\nfunc UseIt() int { return Add(1, 2) }\n").unwrap();
+            (a, "package probe\n\nfunc Add(x, y, z int) int { return x + y + z }\n", b)
+        } else if find_server("clangd", None).is_some() {
+            let h = dir.path().join("a.h");
+            let c = dir.path().join("b.c");
+            std::fs::write(&h, "int add(int a, int b);\n").unwrap();
+            std::fs::write(&c, "#include \"a.h\"\nint use_it(void) { return add(1, 2); }\n").unwrap();
+            // clangd only re-checks OPEN dependents: open b.c the way a session
+            // that read it would have.
+            let text = std::fs::read_to_string(&c).unwrap();
+            let _ = mgr.diagnostics(&c, &text);
+            (h, "int add(int a, int b, int c);\n", c)
+        } else {
+            return;
+        };
+        let warm = std::fs::read_to_string(&changed).unwrap();
+        let _ = mgr.diagnostics(&changed, &warm);
+        std::fs::write(&changed, broken).unwrap();
+        let _ = mgr.diagnostics(&changed, broken);
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let mut seen = false;
+        while Instant::now() < deadline && !seen {
+            for f in mgr.pending_diagnostics() {
+                if Path::new(&f.path) == dependent
+                    && f.diagnostics.iter().any(|d| d.severity == Severity::Error)
+                {
+                    seen = true;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
+        assert!(seen, "the break in {} must arrive through pending_diagnostics", dependent.display());
     }
 
     // ── Real server (env-gated) ─────────────────────────────────────

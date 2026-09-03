@@ -6,6 +6,7 @@ const server = process.env.TEST_SERVER || 'localhost:27895';
 const session = `probe:busy:${Date.now()}`;
 const ws = new WebSocket(`ws://${server}/ws`);
 const t0 = Date.now();
+console.log(`session=${session}`);
 const log = (m) => console.log(`${String(Date.now() - t0).padStart(6)}ms ${m}`);
 let completes = 0;
 let statusSeen = false;
@@ -26,7 +27,7 @@ ws.onmessage = (ev) => {
   } else if (msg.type === 'chat_error') {
     // The busy answer arrives on the status channel with its typed reason,
     // so the app can keep the spinner and show a note instead of a reply.
-    if (d.stop_reason === 'queued_into_running_turn' && String(d.error).includes('Still working on it')) statusSeen = true;
+    if (d.stop_reason === 'queued_into_running_turn') statusSeen = true;
     log(`status: reason=${d.stop_reason || ''} ${String(d.error).slice(0, 100)}`);
   }
 };

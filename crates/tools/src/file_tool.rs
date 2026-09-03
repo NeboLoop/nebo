@@ -185,6 +185,7 @@ impl FileTool {
                 for (path, action) in &report.actions {
                     if *action == crate::checkpoint::RestoreAction::Restored {
                         self.record_read(ctx.session_key.as_str(), path);
+                        crate::diagnostics_feed::clear_delivered(path);
                     }
                 }
                 ToolResult::ok(crate::checkpoint::render_restore(&report))
@@ -197,6 +198,7 @@ impl FileTool {
     /// the read ledger so the next edit is not warned about a change it made.
     pub fn note_shell_write(&self, session: &str, path: &str) {
         self.record_read(session, path);
+        crate::diagnostics_feed::clear_delivered(path);
     }
 
     /// Write a document through the ONE write pathway (Work panel, versions,
@@ -665,6 +667,7 @@ impl FileTool {
                 // Refresh read-state to the file we just wrote, so a subsequent edit/write
                 // in this session isn't wrongly flagged stale against our own write.
                 self.record_read(session, &path);
+                crate::diagnostics_feed::clear_delivered(&path);
                 let action = if input.append { "Appended" } else { "Wrote" };
                 let mut msg = format!("{} {} bytes to {}", action, input.content.len(), path);
                 // Edit-verification chain step 1 (PRD P4.4): parse what is now
@@ -783,6 +786,7 @@ impl FileTool {
         // Refresh read-state to the post-edit file so a follow-up edit in this session
         // isn't wrongly flagged stale against our own edit.
         self.record_read(session, &path);
+        crate::diagnostics_feed::clear_delivered(&path);
 
         let mut msg = if input.replace_all && count > 1 {
             format!("Replaced {} occurrences in {}", count, path)

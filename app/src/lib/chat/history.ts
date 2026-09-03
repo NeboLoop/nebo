@@ -70,6 +70,11 @@ export function parseMessages(rawMessages: ApiChatMessage[]): ChatMessage[] {
       }
     } catch {}
   }
+  type AssistantMsg = Extract<ChatMessage, { type: 'assistant' }>;
+  // The bubble still open from the previous assistant row of this turn: a
+  // tool-only row appends to it the way the live stream does; a user row
+  // ends the turn. Mirrors the live controller's ensureReply/startReply.
+  let open: AssistantMsg | null = null;
   for (const m of rawMessages) {
     let meta: MessageMeta | null = null;
     if (m.metadata) {
@@ -80,6 +85,7 @@ export function parseMessages(rawMessages: ApiChatMessage[]): ChatMessage[] {
     if (meta?.hidden) continue;
 
     if (m.role === 'user') {
+      open = null;
       result.push({
         type: 'user' as const,
         id: m.id,
@@ -97,13 +103,13 @@ export function parseMessages(rawMessages: ApiChatMessage[]): ChatMessage[] {
     // the tools that followed it (tools live ON the message, never as sibling
     // entries — so they can't orphan). The persisted contentBlocks preserve the
     // exact text/tool interleaving; this mirrors the live controller + NeboLoop.
-    type AssistantMsg = Extract<ChatMessage, { type: 'assistant' }>;
     const bubbles: AssistantMsg[] = [];
-    let cur: AssistantMsg | null = null;
+    let cur: AssistantMsg | null = open;
     let seq = 0;
     const newBubble = (content: string): AssistantMsg => {
       const b: AssistantMsg = { type: 'assistant', id: `${m.id}-${seq++}`, content, time: formatTime(m.createdAt) };
       bubbles.push(b);
+      result.push(b);
       return b;
     };
     // The message-level toolCalls column carries the call ids (metadata
@@ -146,24 +152,25 @@ export function parseMessages(rawMessages: ApiChatMessage[]): ChatMessage[] {
         }
       }
     } else if (toolCalls.length) {
-      cur = newBubble(m.content || '');
+      if (!cur || m.content) cur = newBubble(m.content || '');
       toolCalls.forEach((tc, i) => { pushTool(cur!, tc, i); });
     } else if (m.content) {
       cur = newBubble(m.content);
     }
+    // A bubble that absorbed a later row shows that row's time, as live does.
+    if (cur) cur.time = formatTime(m.createdAt);
 
     // Persisted run artifacts (metadata.artifacts, written at chat_complete)
     // re-attach to the turn's LAST bubble so Work cards and inline media survive
     // history reload.
-    if (meta?.artifacts?.length && bubbles.length) {
+    const last = bubbles[bubbles.length - 1] ?? cur;
+    if (meta?.artifacts?.length && last) {
       const workItems = artifactsToWorkItems(meta.artifacts);
       const attachments = artifactsToAttachments(meta.artifacts);
-      const last = bubbles[bubbles.length - 1];
       if (workItems.length) last.workItems = workItems;
       if (attachments.length) last.attachments = attachments;
     }
-
-    result.push(...bubbles);
+    open = cur;
   }
   return result;
 }

@@ -72,7 +72,7 @@
   }
 
   type Message =
-    | { type: 'user'; content: string; time?: string; attachments?: UploadedAttachment[]; note?: string }
+    | { type: 'user'; content: string; time?: string; attachments?: UploadedAttachment[]; pending?: boolean }
     | { type: 'thinking'; content: string; duration: string }
     | { type: 'ask'; requestId: string; prompt: string; widgets: AskWidgetDef[]; response?: string }
     | { type: 'assistant'; content: string; time?: string; delegateAgentId?: string; delegateAgentName?: string; id?: string; attachments?: UploadedAttachment[]; tools?: ToolMsg[]; streaming?: boolean };
@@ -1483,7 +1483,7 @@
           </div>
         {:else}
           <div class="max-w-[640px] self-end mt-3" data-user-msg>
-            <div class="py-2.5 px-3.5 rounded-xl text-sm leading-relaxed bg-base-200 rounded-br-sm prose prose-sm max-w-none [&_p]:my-0 [&_ul]:my-1 [&_ol]:my-1 [&>:first-child]:mt-0 [&>:last-child]:mb-0">
+            <div class="py-2.5 px-3.5 rounded-xl text-sm leading-relaxed bg-base-200 rounded-br-sm prose prose-sm max-w-none {msg.pending ? 'italic text-base-content/60' : ''} [&_p]:my-0 [&_ul]:my-1 [&_ol]:my-1 [&>:first-child]:mt-0 [&>:last-child]:mb-0">
               {#if parseLargeInput(msg.content)}
                 {@const li = parseLargeInput(msg.content)!}
                 <div class="not-prose mb-2 text-xs text-base-content/50">
@@ -1532,11 +1532,10 @@
                 </div>
               {/if}
             </div>
-            {#if msg.note}
-              <div class="mt-1 text-xs text-base-content/50 text-right">{msg.note}</div>
-            {/if}
             <div class="flex items-center gap-1 justify-end mt-1.5">
-              {#if msg.time}
+              {#if msg.pending}
+                <span class="text-xs text-base-content/50 italic mr-1">{$t('chat.pending')}</span>
+              {:else if msg.time}
                 <span class="text-xs text-base-content/50 font-mono mr-1">{msg.time}</span>
               {/if}
               <button

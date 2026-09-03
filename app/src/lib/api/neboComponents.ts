@@ -26,6 +26,12 @@ export interface AccountStatusResponse {
 	plan?: string
 }
 
+export interface ActiveTurnStatus {
+	elapsedSecs: number
+	toolCalls: number
+	currentTool: string
+}
+
 export interface Advisor {
 	id: number
 	name: string
@@ -235,6 +241,12 @@ export interface ChatMessage {
 	toolResults?: string
 	tokenEstimate?: number
 	html?: string
+}
+
+export interface ChatMessagesResponse {
+	messages: ChatMessage[]
+	totalMessages: number
+	activeRun?: ActiveTurnStatus
 }
 
 export interface ChatStreamResponse {
@@ -1184,11 +1196,6 @@ export interface GetChannelMessagesResponse {
 
 export interface GetChatHistoryByDayResponse {
 	messages: ChatMessage[]
-}
-
-export interface GetChatMessagesResponse {
-	messages: ChatMessage[]
-	totalMessages: number
 }
 
 export interface GetCompanionChatResponse {

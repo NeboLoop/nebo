@@ -221,6 +221,12 @@
         oldestMessageId = resp.messages[0]?.id ?? null;
         chat.setMessages(parseMessages(resp.messages));
       }
+      // The thread is still working: show it now, not at the next event.
+      const run = resp.activeRun;
+      if (run) {
+        chat.isLoading = true;
+        chat.activityStatus = run.currentTool ? $t('chat.resumedActivity', { values: { tool: run.currentTool } }) : $t('chat.working');
+      }
     } catch (e) {
       console.warn('[nebo] Failed to load messages for thread', threadId, e);
     }

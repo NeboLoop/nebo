@@ -322,6 +322,13 @@ impl Registry {
         *self.agent_loader.write().unwrap() = Some(loader);
     }
 
+    /// Cross-file diagnostics the language servers published since the last
+    /// call, deduplicated and capped (`diagnostics_feed`), or `None`. Costs
+    /// nothing while no server is running.
+    pub fn new_diagnostics_note(&self) -> Option<String> {
+        crate::diagnostics_feed::take_new(crate::lsp::global().pending_diagnostics())
+    }
+
     /// Files `session_key` has seen that someone else changed since, one
     /// reminder each, each reported once. Empty until the os tool is registered.
     pub fn external_edit_notes(&self, session_key: &str) -> Vec<String> {
