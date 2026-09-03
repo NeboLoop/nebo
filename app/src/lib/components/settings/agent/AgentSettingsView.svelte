@@ -729,12 +729,7 @@
       <div class="flex items-start gap-4 pb-5 border-b border-base-300">
         <div class="w-12 h-12 rounded-field flex items-center justify-center font-mono text-base font-semibold shrink-0 {gc?.bgClass} {gc?.inkClass}">{agent?.initial}</div>
         <div class="flex-1 min-w-0">
-          <div class="flex items-center gap-2">
-            <div class="text-sm font-semibold">{agent?.name}</div>
-            {#if !agent?.editable}
-              <span class="py-0.5 px-2 rounded bg-base-200 font-mono text-xs text-base-content/70">{$t('agentSettings.readOnly')}</span>
-            {/if}
-          </div>
+          <div class="text-sm font-semibold">{agent?.name}</div>
           <div class="text-xs text-base-content/70">{agent?.role}</div>
           <div class="flex items-center gap-2 mt-1.5">
             <div class="w-[7px] h-[7px] rounded-full shrink-0 {ctx.agentStatus(agentId) === 'online' ? 'bg-success' : ctx.agentStatus(agentId) === 'running' ? 'bg-warning animate-pulse' : 'bg-base-content/30'}"></div>

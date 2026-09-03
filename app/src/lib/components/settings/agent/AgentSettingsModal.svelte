@@ -16,6 +16,7 @@
     open,
     section = 'general',
     agentName = '',
+    readOnly = false,
     avatarInitial = '',
     avatarClass = '',
     onsection,
@@ -24,6 +25,7 @@
     open: boolean;
     section?: string;
     agentName?: string;
+    readOnly?: boolean;
     /** The employee's roster identity chip — same avatar/color as the sidebar. */
     avatarInitial?: string;
     avatarClass?: string;
@@ -69,6 +71,11 @@
 </script>
 
 <ShelfModal {open} {title} {avatarInitial} {avatarClass} {onclose}>
+  {#snippet actions()}
+    {#if readOnly}
+      <span class="py-0.5 px-2 rounded bg-base-200 font-mono text-xs text-base-content/70" title={$t('agentSettings.identityManagedNote')}>{$t('agentSettings.readOnly')}</span>
+    {/if}
+  {/snippet}
   <nav class="w-52 shrink-0 border-r border-base-300 bg-base-200/40 overflow-y-auto p-1.5 flex flex-col gap-0.5 max-md:w-full max-md:border-r-0 max-md:bg-transparent max-md:p-2.5 {mobileDetail ? 'max-md:hidden' : ''}">
     {#each sections as sec (sec.id)}
       <button

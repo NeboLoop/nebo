@@ -1429,6 +1429,7 @@
         </button>
       {/each}
     </div>
+  readOnly={agent ? !agent.editable : false}
     <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
     <div class="flex-1 min-h-0 flex" onclickcapture={interceptMarketClick}>
       <!-- Same category rail as the /marketplace page — its plain /marketplace
