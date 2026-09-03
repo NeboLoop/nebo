@@ -5,7 +5,8 @@
   schedules). Chat stays where it is; each card links back into it.
 -->
 <script lang="ts">
-  import { onMount, onDestroy } from 'svelte';
+  import { onMount, onDestroy, getContext } from 'svelte';
+  import type { AgentPageContext } from '$lib/types/agentPage';
   import { t } from 'svelte-i18n';
   import { goto } from '$lib/nav';
   import * as api from '$lib/api/nebo';
@@ -13,6 +14,10 @@
   import { getWebSocketClient } from '$lib/websocket/client';
   import { AGENT_COLORS_MAP, assignAgentColors } from '$lib/tokens';
   import { formatTime, formatRelative } from '$lib/time';
+
+  // The phone has no sidebar on screen: the header's back chevron opens the
+  // employee list the way every thread page does.
+  const shell = getContext<AgentPageContext>('agentPage');
 
   /** How often the page re-reads when no event has arrived. */
   const REFRESH_MS = 15_000;
@@ -142,10 +147,13 @@
   }
 </script>
 
-<div class="flex-1 flex flex-col min-w-0 min-h-0 bg-base-100">
-  <div class="flex items-center gap-2.5 h-11 px-5 border-b border-base-300 shrink-0">
-    <span class="font-semibold text-sm">{$t('dashboard.title')}</span>
-    <span class="text-[13px] text-base-content/60 truncate">{today}</span>
+<div class="flex-1 flex flex-col min-w-0 min-h-0 w-full max-w-full overflow-x-hidden bg-base-100">
+  <div class="flex items-center gap-2.5 h-11 px-3 md:px-5 border-b border-base-300 shrink-0 min-w-0">
+    <button class="md:hidden shrink-0 -ml-1 p-1 text-base-content/70" onclick={() => shell?.openList?.()} aria-label={$t('nav.agents')}>
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 6l-6 6 6 6"/></svg>
+    </button>
+    <span class="font-semibold text-sm shrink-0">{$t('dashboard.title')}</span>
+    <span class="text-[13px] text-base-content/60 truncate hidden sm:inline">{today}</span>
     <label class="ml-auto flex items-center gap-2 text-xs text-base-content/60 cursor-pointer shrink-0">
       <input type="checkbox" class="checkbox checkbox-xs" checked={startHere} onchange={(ev) => setStartPage((ev.currentTarget as HTMLInputElement).checked)} />
       {$t('dashboard.openHere')}
@@ -153,31 +161,33 @@
   </div>
 
   <div class="flex-1 overflow-auto">
-    <div class="max-w-[1120px] mx-auto px-5 py-4 grid gap-4">
+    <!-- One explicit minmax(0,1fr) track: an implicit auto track lets a two-column
+         section size itself to its content and run past a phone screen. -->
+    <div class="max-w-[1120px] w-full min-w-0 mx-auto px-3 md:px-5 py-3 md:py-4 grid grid-cols-[minmax(0,1fr)] gap-3 md:gap-4">
       {#if error}
         <div class="rounded-box border border-error/30 bg-error/5 px-4 py-3 text-sm">{$t('dashboard.loadError')} <span class="text-base-content/60">{error}</span></div>
       {/if}
 
       {#if data}
         <!-- Counts -->
-        <section class="grid grid-cols-2 lg:grid-cols-4 gap-3">
-          <div class="rounded-box border border-base-300 px-4 py-3.5">
-            <div class="text-[26px] font-semibold leading-tight tracking-tight tabular-nums">{data.counts.working}</div>
+        <section class="grid grid-cols-2 lg:grid-cols-4 gap-2 md:gap-3 min-w-0">
+          <div class="rounded-box border border-base-300 px-3 py-3 md:px-4 md:py-3.5 min-w-0">
+            <div class="text-[22px] md:text-[26px] font-semibold leading-tight tracking-tight tabular-nums">{data.counts.working}</div>
             <div class="text-[13px] font-medium mt-1">{$t('dashboard.workingNow')}</div>
             <div class="text-xs text-base-content/50 mt-0.5">{$t('dashboard.ofEmployees', { values: { n: data.counts.employees, paused: data.counts.paused } })}</div>
           </div>
-          <div class="rounded-box border border-base-300 px-4 py-3.5">
-            <div class="text-[26px] font-semibold leading-tight tracking-tight tabular-nums">{data.counts.waiting}</div>
+          <div class="rounded-box border border-base-300 px-3 py-3 md:px-4 md:py-3.5 min-w-0">
+            <div class="text-[22px] md:text-[26px] font-semibold leading-tight tracking-tight tabular-nums">{data.counts.waiting}</div>
             <div class="text-[13px] font-medium mt-1">{$t('dashboard.waitingOnYou')}</div>
             <div class="text-xs text-base-content/50 mt-0.5 truncate">{data.approvals[0] ? `${data.approvals[0].agentName}, ${data.approvals[0].summary}` : $t('dashboard.nothingWaiting')}</div>
           </div>
-          <div class="rounded-box border border-base-300 px-4 py-3.5">
-            <div class="text-[26px] font-semibold leading-tight tracking-tight tabular-nums">{data.counts.runsToday}</div>
+          <div class="rounded-box border border-base-300 px-3 py-3 md:px-4 md:py-3.5 min-w-0">
+            <div class="text-[22px] md:text-[26px] font-semibold leading-tight tracking-tight tabular-nums">{data.counts.runsToday}</div>
             <div class="text-[13px] font-medium mt-1">{$t('dashboard.runsToday')}</div>
             <div class="text-xs text-base-content/50 mt-0.5">{$t('dashboard.runsTodayDetail', { values: { done: data.counts.doneToday, skipped: data.counts.skippedToday, chats: data.counts.chatTurnsToday, stopped: data.counts.stoppedToday } })}</div>
           </div>
-          <div class="rounded-box border border-base-300 px-4 py-3.5">
-            <div class="text-[26px] font-semibold leading-tight tracking-tight capitalize">{plan?.plan || $t('dashboard.planUnknown')}</div>
+          <div class="rounded-box border border-base-300 px-3 py-3 md:px-4 md:py-3.5 min-w-0">
+            <div class="text-[22px] md:text-[26px] font-semibold leading-tight tracking-tight capitalize truncate">{plan?.plan || $t('dashboard.planUnknown')}</div>
             <div class="text-[13px] font-medium mt-1">{$t('dashboard.plan')}</div>
             <div class="text-xs text-base-content/50 mt-0.5">{renewsIn || $t('dashboard.workIncluded')}</div>
           </div>
@@ -204,10 +214,10 @@
           <div class="flex items-baseline gap-2.5 mb-2">
             <h2 class="text-[13px] font-semibold uppercase tracking-wider text-base-content/50">{$t('dashboard.employees')}</h2>
           </div>
-          <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+          <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3 min-w-0">
             {#each data.employees as e (e.id)}
               {@const ac = colorOf(e.id)}
-              <div class="rounded-box border px-3.5 py-3 grid gap-2.5 content-start {e.status === 'working' ? 'border-primary/30 bg-primary/5' : 'border-base-300'}">
+              <div class="rounded-box border px-3.5 py-3 grid gap-2.5 content-start min-w-0 {e.status === 'working' ? 'border-primary/30 bg-primary/5' : 'border-base-300'}">
                 <div class="flex items-center gap-2.5">
                   <div class="w-[26px] h-[26px] rounded-field flex items-center justify-center font-mono text-xs font-semibold shrink-0 {ac.bgClass} {ac.inkClass}">{initialOf(e.name)}</div>
                   <span class="font-medium text-sm truncate">{e.name}</span>
@@ -229,8 +239,8 @@
         </section>
 
         <!-- Charts -->
-        <section class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-          <div class="rounded-box border border-base-300 px-3.5 py-3">
+        <section class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3 min-w-0">
+          <div class="rounded-box border border-base-300 px-3.5 py-3 min-w-0">
             <h3 class="text-[13px] font-semibold">{$t('dashboard.runsChart')}</h3>
             <div class="text-xs text-base-content/50 mb-2.5">{$t('dashboard.last14Days')}</div>
             <div class="grid grid-cols-14 gap-1 items-end" style:height="{BAR_PX}px">
@@ -251,7 +261,7 @@
               <span><i class="inline-block w-2 h-2 rounded-full bg-error mr-1"></i>{$t('dashboard.stopped')}</span>
             </div>
           </div>
-          <div class="rounded-box border border-base-300 px-3.5 py-3">
+          <div class="rounded-box border border-base-300 px-3.5 py-3 min-w-0">
             <h3 class="text-[13px] font-semibold">{$t('dashboard.runsByEmployee')}</h3>
             <div class="text-xs text-base-content/50 mb-2.5">{$t('dashboard.last14Days')}</div>
             <div class="grid gap-[7px]">
@@ -266,7 +276,7 @@
               {/each}
             </div>
           </div>
-          <div class="rounded-box border border-base-300 px-3.5 py-3">
+          <div class="rounded-box border border-base-300 px-3.5 py-3 min-w-0">
             <h3 class="text-[13px] font-semibold">{$t('dashboard.howRunsEnded')}</h3>
             <div class="text-xs text-base-content/50 mb-2.5">{$t('dashboard.last14DaysCount', { values: { n: ended.total } })}</div>
             <div class="flex items-center gap-4">
@@ -292,8 +302,8 @@
           <div class="flex items-baseline gap-2.5 mb-2">
             <h2 class="text-[13px] font-semibold uppercase tracking-wider text-base-content/50">{$t('dashboard.recentRuns')}</h2>
           </div>
-          <div class="overflow-x-auto">
-            <table class="w-full border-collapse text-[13px]">
+          <div class="overflow-x-auto min-w-0 -mx-3 px-3 md:mx-0 md:px-0">
+            <table class="w-full min-w-[640px] border-collapse text-[13px]">
               <thead>
                 <tr class="text-left text-[11px] font-semibold uppercase tracking-wider text-base-content/50">
                   <th class="py-2 pr-2 border-b border-base-300">{$t('dashboard.colTime')}</th>

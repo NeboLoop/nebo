@@ -463,6 +463,7 @@
       typeof window !== 'undefined' &&
       !window.matchMedia('(min-width: 768px)').matches &&
       !$page.params.threadId &&
+      !onDashboard &&
       !$page.url.searchParams.has('list')
     ) {
       showList('1', true);
