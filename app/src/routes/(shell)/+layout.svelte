@@ -1026,7 +1026,7 @@
           <p class="text-sm text-base-content/70">{$t('agent.packagedDeleteWhy', { values: { name: deleteTarget.name } })}</p>
           <p class="text-sm text-base-content/70 mt-2">{$t('agent.packagedDeleteConsequences')}</p>
           <label class="block mt-4">
-            <span class="block text-xs font-semibold uppercase tracking-wider mb-1.5">{$t('agent.typeNameToConfirmPrefix')} <span class="normal-case font-mono tracking-normal text-base-content">{deleteTarget.name}</span> {$t('agent.typeNameToConfirmSuffix')}</span>
+            <span class="block text-xs font-semibold uppercase tracking-wider mb-1.5">{$t('agent.typeNameToConfirmPrefix')} <code class="normal-case font-mono tracking-normal font-medium text-[12px] text-base-content bg-base-200 border border-base-300 rounded px-1.5 py-0.5">{deleteTarget.name}</code> {$t('agent.typeNameToConfirmSuffix')}</span>
             <input type="text" bind:value={deleteTyped} autocomplete="off" class="w-full py-[7px] px-2.5 rounded-md border border-error/40 text-sm bg-base-100 outline-none" />
           </label>
         {:else}
