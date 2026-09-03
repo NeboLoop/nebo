@@ -106,7 +106,8 @@
     goto(e.chatId ? `/${e.id}/threads/${e.chatId}` : `/${e.id}/threads`);
   }
   function openRuns(agentId: string) {
-    goto(`/${agentId}/runs`);
+    // The runs panel is a shelf over the employee's threads.
+    goto(`/${agentId}/threads?runs=1`);
   }
   async function answer(a: components.DashboardApproval, approved: boolean) {
     if (a.kind === 'tool') {
