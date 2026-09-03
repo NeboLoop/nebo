@@ -120,6 +120,45 @@ pub fn stall_notice() -> String {
     )
 }
 
+/// The next event of a run's stream, or `Stalled` once nothing has arrived
+/// for [`RUN_IDLE_LIMIT`] since `last_event`. The ONE idle bound for every
+/// loop that drains a run (both chat dispatchers and voice), so a third copy
+/// of the select arm cannot drift. Cancel-safe: both arms are.
+pub enum Next<T> {
+    Event(T),
+    Closed,
+    Stalled,
+}
+
+pub async fn next_event<T>(
+    rx: &mut tokio::sync::mpsc::Receiver<T>,
+    last_event: tokio::time::Instant,
+) -> Next<T> {
+    tokio::select! {
+        _ = tokio::time::sleep_until(last_event + RUN_IDLE_LIMIT) => Next::Stalled,
+        ev = rx.recv() => match ev {
+            Some(e) => Next::Event(e),
+            None => Next::Closed,
+        },
+    }
+}
+
+#[cfg(test)]
+mod next_event_tests {
+    use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn stalls_only_when_nothing_arrives() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<u8>(1);
+        tx.send(7).await.expect("channel open");
+        assert!(matches!(next_event(&mut rx, tokio::time::Instant::now()).await, Next::Event(7)));
+        // Sender alive, nothing sent: paused time jumps straight to the limit.
+        assert!(matches!(next_event(&mut rx, tokio::time::Instant::now()).await, Next::Stalled));
+        drop(tx);
+        assert!(matches!(next_event(&mut rx, tokio::time::Instant::now()).await, Next::Closed));
+    }
+}
+
 impl Exit {
     pub fn label(&self) -> String {
         match self {

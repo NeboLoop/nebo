@@ -297,8 +297,8 @@ impl ShellTool {
                 if input.raw {
                     if !output.status.success() {
                         return ToolResult::error(format!(
-                            "Command exited with code {}\n{}",
-                            output.status.code().unwrap_or(-1),
+                            "{}\n{}",
+                            exit_header(&output.status),
                             String::from_utf8_lossy(&output.stderr)
                         ));
                     }
@@ -999,5 +999,47 @@ mod tests {
             .await;
         assert!(!res.is_error, "plain echo failed: {}", res.content);
         assert!(res.content.contains("nebo-ok"));
+    }
+}
+
+/// "Command exited with code N", or the signal that killed it. "code -1"
+/// hid that a dev-server restart had taken the child with it (2026-09-03).
+fn exit_header(status: &std::process::ExitStatus) -> String {
+    #[cfg(unix)]
+    if let Some(sig) = std::os::unix::process::ExitStatusExt::signal(status) {
+        return format!("Command was killed by signal {sig} ({})", signal_name(sig));
+    }
+    match status.code() {
+        Some(code) => format!("Command exited with code {code}"),
+        None => "Command ended without an exit code".to_string(),
+    }
+}
+
+#[cfg(unix)]
+fn signal_name(sig: i32) -> &'static str {
+    match sig {
+        1 => "SIGHUP",
+        2 => "SIGINT",
+        6 => "SIGABRT",
+        7 => "SIGBUS",
+        9 => "SIGKILL",
+        11 => "SIGSEGV",
+        13 => "SIGPIPE",
+        15 => "SIGTERM",
+        _ => "unknown signal",
+    }
+}
+
+#[cfg(all(test, unix))]
+mod exit_header_tests {
+    use super::*;
+    use std::os::unix::process::ExitStatusExt;
+
+    #[test]
+    fn a_signal_is_named_and_a_code_is_kept() {
+        let killed = std::process::ExitStatus::from_raw(9);
+        assert_eq!(exit_header(&killed), "Command was killed by signal 9 (SIGKILL)");
+        let failed = std::process::ExitStatus::from_raw(3 << 8);
+        assert_eq!(exit_header(&failed), "Command exited with code 3");
     }
 }

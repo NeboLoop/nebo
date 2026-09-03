@@ -22,7 +22,7 @@ use tools::Origin;
 use crate::run_registry::RegisterParams;
 use crate::state::AppState;
 
-fn resolve_full_access(state: &AppState) -> bool {
+pub(crate) fn resolve_full_access(state: &AppState) -> bool {
     state
         .store
         .get_settings()
@@ -214,7 +214,7 @@ type EntityRunParams = (
     Vec<String>,
     Option<tools::policy::OperationPolicy>,
 );
-fn entity_run_params(
+pub(crate) fn entity_run_params(
     entity_config: Option<&crate::entity_config::ResolvedEntityConfig>,
 ) -> EntityRunParams {
     match entity_config {
@@ -519,19 +519,19 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                             }
                             continue;
                         }
-                        // Nothing has moved for the idle limit: end the run with a typed
-                        // reason the owner can read, and cancel whatever is still holding it.
-                        _ = tokio::time::sleep_until(last_event + agent::guardrails::RUN_IDLE_LIMIT) => {
-                            let notice = agent::guardrails::stall_notice();
-                            tracing::warn!(session_id = %sid, "run stalled: no event for {}s", agent::guardrails::RUN_IDLE_LIMIT.as_secs());
-                            control_stop = Some((agent::guardrails::Exit::Stalled.label(), notice.clone()));
-                            hub.broadcast("chat_error", ws_payload!("error": &notice,));
-                            cancel_token.cancel();
-                            break;
-                        }
-                        ev = rx.recv() => match ev {
-                            Some(e) => e,
-                            None => break,
+                        next = agent::guardrails::next_event(&mut rx, last_event) => match next {
+                            agent::guardrails::Next::Event(e) => e,
+                            agent::guardrails::Next::Closed => break,
+                            // Nothing has moved for the idle limit: end the run with a typed
+                            // reason the owner can read, and cancel whatever is still holding it.
+                            agent::guardrails::Next::Stalled => {
+                                let notice = agent::guardrails::stall_notice();
+                                tracing::warn!(session_id = %sid, "run stalled: no event for {}s", agent::guardrails::RUN_IDLE_LIMIT.as_secs());
+                                control_stop = Some((agent::guardrails::Exit::Stalled.label(), notice.clone()));
+                                hub.broadcast("chat_error", ws_payload!("error": &notice,));
+                                cancel_token.cancel();
+                                break;
+                            }
                         }
                     };
 
@@ -1693,19 +1693,23 @@ pub async fn run_chat_events(
             Ok(mut events) => loop {
                 let event = tokio::select! {
                     _ = cancel_token.cancelled() => break,
-                    _ = tokio::time::sleep_until(last_event + agent::guardrails::RUN_IDLE_LIMIT) => {
-                        let _ = tx
-                            .send(ai::StreamEvent::control_notice(
-                                agent::guardrails::stall_notice(),
-                                agent::guardrails::Exit::Stalled.label(),
-                            ))
-                            .await;
-                        cancel_token.cancel();
-                        break;
-                    }
-                    ev = events.recv() => match ev {
-                        Some(e) => e,
-                        None => break,
+                    next = agent::guardrails::next_event(&mut events, last_event) => match next {
+                        agent::guardrails::Next::Event(e) => e,
+                        agent::guardrails::Next::Closed => break,
+                        agent::guardrails::Next::Stalled => {
+                            if tx
+                                .send(ai::StreamEvent::control_notice(
+                                    agent::guardrails::stall_notice(),
+                                    agent::guardrails::Exit::Stalled.label(),
+                                ))
+                                .await
+                                .is_err()
+                            {
+                                tracing::debug!("stall notice: receiver gone");
+                            }
+                            cancel_token.cancel();
+                            break;
+                        }
                     }
                 };
                 _run_handle.touch();

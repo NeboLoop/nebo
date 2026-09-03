@@ -6,7 +6,9 @@ use tokio::sync::mpsc;
 use tracing::{error, info, warn};
 
 use super::to_error_response;
+use crate::chat_dispatch::{entity_run_params, resolve_full_access};
 use crate::codes::build_api_client;
+use crate::run_registry::RegisterParams;
 use crate::state::AppState;
 
 /// Voice conversation — speech-to-speech via the xAI Grok realtime API
@@ -246,13 +248,28 @@ fn voice_tools(transfer: bool, telephony: bool, intents: &[String]) -> Vec<serde
     let mut tools = vec![serde_json::json!({
         "type": "function",
         "name": "nebo",
-        "description": "Hand a task to your Nebo employee brain — use this for ANYTHING that \
-                        needs real data or action: files, printers, email, calendar, web, apps, \
-                        documents, system info. Pass the user's request restated with all spoken \
-                        context needed to complete it. It runs the full toolchain and returns the \
-                        completed result for you to relay aloud.",
+        "description": "Do a task the user asked you to do: anything that needs real data or \
+                        action (files, printers, email, calendar, web, apps, documents, system \
+                        info). Only for a request addressed to you. Never for the user thinking \
+                        aloud, describing what they see, asking how it is going (use `status`), \
+                        or your own words read back to you. Pass the request restated with the \
+                        spoken context needed to complete it. It runs the full toolchain and \
+                        returns the result for you to relay aloud. If the result says the last \
+                        task is still running and this message is waiting, say exactly that.",
         "parameters": nebo_params
     })];
+    if !telephony {
+        // "How's it going" is a question, not a job: it reads the live
+        // counters of the running turn and never starts work.
+        tools.push(serde_json::json!({
+            "type": "function",
+            "name": "status",
+            "description": "How the current work is going: time elapsed, tool calls, what is \
+                            running now. Use for 'how is it going', 'are you done', 'what are \
+                            you doing'. Never starts work.",
+            "parameters": {"type": "object", "properties": {}}
+        }));
+    }
     if telephony {
         // A phone employee must be able to put the receiver down — without
         // this tool, every call ended only when the CALLER gave up and hung
@@ -513,6 +530,10 @@ async fn run_delegated_task(
         // "agent:{id}:…" keys; leaving this empty resolved every owner voice
         // run to the raw owner memory scope (isolation audit 2026-08-22).
         agent_id: types::keyparser::extract_agent_id(session_key),
+        // The task is the voice model's restatement of what was said; the
+        // spoken words are already the thread's user row. The model reads
+        // the task, the owner never sees it twice.
+        hidden_prompt: true,
         ..Default::default()
     };
     if let Some(c) = caller {
@@ -530,38 +551,245 @@ async fn run_delegated_task(
             if c.line.is_empty() { "phone" } else { &c.line },
             if c.business.is_empty() { "the business" } else { &c.business },
         ));
-        if let Some(ec) =
-            crate::entity_config::resolve_for_chat(&state.store, "agent", &c.agent_id)
-        {
-            req.permissions = Some(ec.permissions.clone());
-            req.resource_grants = Some(ec.resource_grants.clone());
-            req.operation_policy = ec
-                .operation_policy
-                .as_deref()
-                .map(|j| tools::policy::OperationPolicy::from_json(Some(j)));
-            req.allowed_paths = ec.allowed_paths.clone();
-        }
+    } else {
+        req.full_access = resolve_full_access(state);
     }
+    // The employee's own configuration, resolved the way a chat run resolves
+    // it. Owner voice runs used to skip this and ran with no permissions,
+    // grants, model preference or path limits (live 2026-09-03: a Developer
+    // employee reached an operations MCP server from a voice task).
+    let ec = crate::entity_config::resolve_for_chat(&state.store, "agent", &req.agent_id);
+    let (permissions, resource_grants, model_preference, personality_snippet, allowed_paths, operation_policy) =
+        entity_run_params(ec.as_ref());
+    req.permissions = permissions;
+    req.resource_grants = resource_grants;
+    req.model_preference = model_preference;
+    req.personality_snippet = personality_snippet;
+    req.allowed_paths = allowed_paths;
+    req.operation_policy = operation_policy;
+    // On the rails like a chat run: visible in the runs panel, cancellable,
+    // and bounded by the same idle limit.
+    let entity_name = state
+        .agent_registry
+        .read()
+        .await
+        .get(&req.agent_id)
+        .map(|r| r.name.clone())
+        .unwrap_or_default();
+    let run_handle = state
+        .run_registry
+        .register(RegisterParams {
+            session_key: session_key.to_string(),
+            entity_id: req.agent_id.clone(),
+            entity_name,
+            origin: format!("{:?}", req.origin).to_lowercase(),
+            channel: "voice".into(),
+            cancel_token: req.cancel_token.clone(),
+            parent_run_id: None,
+        })
+        .await;
+    req.progress = Some(agent::RunProgress {
+        run_id: run_handle.run_id.clone(),
+        iteration_count: run_handle.iteration_count.clone(),
+        tool_call_count: run_handle.tool_call_count.clone(),
+        current_tool: run_handle.current_tool.clone(),
+    });
+    let cancel_token = req.cancel_token.clone();
     match state.runner.run(req).await {
         Ok(mut rx) => {
             let mut out = String::new();
-            while let Some(event) = rx.recv().await {
-                // Reply text, and typed run status (a busy session's "still
-                // working on it" line) which the caller needs to hear too.
-                if matches!(
-                    event.event_type,
-                    ai::StreamEventType::Text | ai::StreamEventType::ControlNotice
-                ) {
-                    out.push_str(&event.text);
+            // Typed run status (a busy session's "still on the last thing",
+            // a stall) stands in for a reply only when there is none;
+            // progress notices are superseded by the text that follows.
+            let mut last_notice = String::new();
+            let mut last_event = tokio::time::Instant::now();
+            loop {
+                let event = match agent::guardrails::next_event(&mut rx, last_event).await {
+                    agent::guardrails::Next::Event(e) => e,
+                    agent::guardrails::Next::Closed => break,
+                    agent::guardrails::Next::Stalled => {
+                        warn!(
+                            session_key,
+                            "voice run stalled: no event for {}s",
+                            agent::guardrails::RUN_IDLE_LIMIT.as_secs()
+                        );
+                        last_notice = agent::guardrails::stall_notice();
+                        cancel_token.cancel();
+                        break;
+                    }
+                };
+                last_event = tokio::time::Instant::now();
+                run_handle.touch();
+                match event.event_type {
+                    ai::StreamEventType::Text => out.push_str(&event.text),
+                    ai::StreamEventType::ControlNotice => last_notice = event.text,
+                    _ => {}
                 }
             }
-            if out.trim().is_empty() {
-                "The task completed but produced no text summary.".into()
-            } else {
+            if !out.trim().is_empty() {
                 out
+            } else if !last_notice.is_empty() {
+                last_notice
+            } else {
+                "The task completed but produced no text summary.".into()
             }
         }
         Err(e) => format!("The task failed: {e}"),
+    }
+}
+
+/// How long after its last activity a thread still counts as the one the
+/// owner is in, for a voice session that names no thread.
+const VOICE_RESUME_WINDOW: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+/// How many of the employee's newest threads are checked for a running turn.
+const VOICE_RECENT_CHATS: usize = 8;
+
+/// The thread a voice session with no chat id joins: this employee's thread
+/// with a turn running, else its newest thread active within
+/// VOICE_RESUME_WINDOW, else a fresh id whose row waits for the first turn.
+/// Live 2026-09-03: three voice sessions on one employee minted three
+/// threads, and the third knew nothing of the scaffold the first started.
+async fn resolve_voice_chat(state: &AppState, agent_id: &str) -> String {
+    let store = state.store.clone();
+    let agent = agent_id.to_string();
+    let recent = tokio::task::spawn_blocking(move || store.list_recent_agent_chats(&agent, VOICE_RECENT_CHATS))
+        .await
+        .map_err(|e| types::NeboError::Internal(e.to_string()))
+        .and_then(|r| r)
+        .unwrap_or_else(|e| {
+            warn!(error = %e, "voice: could not list recent threads, minting");
+            Vec::new()
+        });
+    let now = chrono::Utc::now().timestamp();
+    match pick_voice_chat(&recent, now, |key| state.runner.is_session_busy(key)) {
+        Some(id) => {
+            info!(chat = %id, "voice attached to an existing thread");
+            id
+        }
+        None => uuid::Uuid::new_v4().to_string(),
+    }
+}
+
+/// Pure choice over (thread, last activity in unix seconds), newest first.
+fn pick_voice_chat(
+    recent: &[(db::models::Chat, i64)],
+    now: i64,
+    busy: impl Fn(&str) -> bool,
+) -> Option<String> {
+    if let Some((c, _)) = recent
+        .iter()
+        .find(|(c, _)| c.session_name.as_deref().is_some_and(&busy))
+    {
+        return Some(c.id.clone());
+    }
+    let (c, last) = recent.first()?;
+    (now - last <= VOICE_RESUME_WINDOW.as_secs() as i64).then(|| c.id.clone())
+}
+
+/// What the `status` voice tool answers, from the live counters.
+fn voice_status_line(st: Option<&agent::runner::ActiveTurnStatus>) -> String {
+    match st {
+        Some(st) => format!("Still working: {}.", agent::runner::progress_phrase(st)),
+        None => "Nothing is running right now.".to_string(),
+    }
+}
+
+/// What a voice turn writes to the thread, decided in one place. The owner's
+/// speech is one user row, written when the employee acts on it (the `nebo`
+/// call) or, with no call, when the model starts replying. The realtime
+/// model's own speech is one assistant row per turn, and none at all when a
+/// delegated run answered the turn: the run's reply is the row, and "On it"
+/// plus a spoken paraphrase of that reply were the duplicates in the thread.
+#[derive(Default)]
+struct TurnLedger {
+    /// Cumulative transcript of the utterance in progress.
+    user: String,
+    /// The model's spoken text since the last user row.
+    assistant: String,
+    /// A `nebo` run answered the current turn.
+    delegated: bool,
+}
+
+enum Row {
+    User(String),
+    Assistant(String),
+}
+
+impl TurnLedger {
+    /// The model acted on the utterance (`delegating`) or started replying to
+    /// it: the utterance is final. Closes the previous turn's model speech
+    /// first, so rows land in spoken order.
+    fn user_final(&mut self, delegating: bool) -> Vec<Row> {
+        let pending = !self.user.trim().is_empty();
+        if !pending && !delegating {
+            return Vec::new();
+        }
+        let mut rows = Vec::new();
+        if pending {
+            rows.extend(self.close_assistant());
+            rows.push(Row::User(std::mem::take(&mut self.user).trim().to_string()));
+        }
+        if delegating {
+            self.delegated = true;
+        }
+        rows
+    }
+
+    fn close_assistant(&mut self) -> Vec<Row> {
+        let text = std::mem::take(&mut self.assistant);
+        let delegated = std::mem::take(&mut self.delegated);
+        if delegated || text.trim().is_empty() {
+            return Vec::new();
+        }
+        vec![Row::Assistant(text.trim().to_string())]
+    }
+
+    /// Session over: whatever is still open, in order.
+    fn flush(&mut self) -> Vec<Row> {
+        let mut rows = self.user_final(false);
+        rows.extend(self.close_assistant());
+        rows
+    }
+}
+
+/// Where a session's rows go: the thread (created on the first row), the
+/// loop relay, and the client's one `chat_bound` announcement.
+struct TurnSink {
+    chat_id: Option<String>,
+    session_key: String,
+    phone_title: Option<String>,
+    loop_relay: Option<(String, String)>,
+    chat_bound_announced: bool,
+}
+
+impl TurnSink {
+    async fn write(&mut self, state: &AppState, socket: &mut WebSocket, rows: Vec<Row>) {
+        for row in rows {
+            let (role, text) = match &row {
+                Row::User(t) => ("user", t.as_str()),
+                Row::Assistant(t) => ("assistant", t.as_str()),
+            };
+            if let Some(cid) = self.chat_id.as_deref()
+                && ensure_voice_chat(state, cid, &self.session_key, self.phone_title.as_deref())
+            {
+                if !self.chat_bound_announced {
+                    self.chat_bound_announced = true;
+                    let bound = serde_json::json!({"type": "chat_bound", "chatId": cid});
+                    if socket.send(Message::Text(bound.to_string().into())).await.is_err() {
+                        warn!(chat = %cid, "chat_bound frame not delivered");
+                    }
+                }
+                persist_voice_turn(state, cid, role, text);
+                if role == "assistant" {
+                    // Voice turns never pass through Runner::run, so trigger the
+                    // ONE title generator here; its own 1st/3rd-turn gates apply.
+                    state.runner.spawn_title_generation(&self.session_key, cid);
+                }
+            }
+            if let Some((conv, stream)) = self.loop_relay.as_ref() {
+                relay_loop_turn(state, conv, stream, role, text);
+            }
+        }
     }
 }
 
@@ -673,9 +901,10 @@ async fn handle_conversation_ws(mut socket: WebSocket, state: AppState, mut q: C
         return;
     }
     if q.chat_id.as_deref().unwrap_or_default().is_empty() {
-        // Fresh call from the composer's empty state: mint the id now (the
-        // session key and tool scope need it) — the row waits for a turn.
-        q.chat_id = Some(uuid::Uuid::new_v4().to_string());
+        // Fresh call from the composer's empty state: join the employee's
+        // working or recent thread, else mint an id now (the session key and
+        // tool scope need it) and let the row wait for a turn.
+        q.chat_id = Some(resolve_voice_chat(&state, q.agent_id.as_deref().unwrap_or_default()).await);
     }
 
     let Some((endpoint, bearer)) = resolve_realtime_leg(&state) else {
@@ -929,13 +1158,17 @@ async fn handle_conversation_ws(mut socket: WebSocket, state: AppState, mut q: C
     } else {
         instructions.push_str(
             "You are speaking with the user by voice. \
-                       Be concise and conversational — short sentences, no markdown, no lists. \
-                       For ANYTHING that needs real data or action (files, printers, email, \
-                       calendar, web, documents, system info), call the `nebo` tool with the \
-                       task and relay its result aloud — never guess and never claim you can't \
-                       act. While it works, tell the user you're on it. If the result says \
-                       something needs approval or a permission, say so plainly and point them \
-                       to the Nebo desktop app.",
+             Be concise and conversational: short sentences, no markdown, no lists. \
+             When the user asks you to do something that needs real data or action \
+             (files, printers, email, calendar, web, documents, system info), call the \
+             `nebo` tool with the task and relay its result aloud; never guess and never \
+             claim you can't act. Only a request addressed to you is a task: the user \
+             thinking aloud, describing what they see, or asking how it is going is not. \
+             For progress questions call `status` and read it back. While a task runs, \
+             say you are on it once. If a result says the last task is still running and \
+             the message is waiting, say that instead of on it. If the result says \
+             something needs approval or a permission, say so plainly and point them to \
+             the Nebo desktop app.",
         );
     }
     // A phone call is its own conversation — replaying desktop chat history
@@ -1305,11 +1538,26 @@ async fn handle_conversation_session(
     // cumulative (replace), the agent transcript arrives as deltas (join).
     // The user turn is final once the model starts responding; the agent turn
     // once playback ends. Anything left at session end is flushed.
-    let mut user_partial = String::new();
-    let mut agent_partial = String::new();
-    // `chat_bound` announced to the client exactly once, when the lazily
-    // created chat first actually exists (see ensure_voice_chat).
-    let mut chat_bound_announced = false;
+    let mut ledger = TurnLedger::default();
+    let mut sink = TurnSink {
+        chat_id: chat_id.clone(),
+        session_key: ctx.session_key.clone(),
+        phone_title: phone_title.clone(),
+        loop_relay: loop_relay.clone(),
+        // `chat_bound` announced to the client exactly once: now, when joining
+        // a thread that already exists, else when the lazily created chat
+        // first actually exists (see ensure_voice_chat).
+        chat_bound_announced: false,
+    };
+    if let Some(cid) = chat_id.as_deref()
+        && matches!(state.store.get_chat(cid), Ok(Some(_)))
+    {
+        sink.chat_bound_announced = true;
+        let bound = serde_json::json!({"type": "chat_bound", "chatId": cid});
+        if socket.send(Message::Text(bound.to_string().into())).await.is_err() {
+            return;
+        }
+    }
 
     // Completed tool executions flow back through this channel so the select
     // loop below owns all rt_tx sends (all outputs before one continuation).
@@ -1331,7 +1579,7 @@ async fn handle_conversation_session(
                         Some(serde_json::json!({"type": "transcription_start"})),
                     // Cumulative transcript — the client replaces, never appends.
                     ConversationEvent::TranscriptionText(text) => {
-                        user_partial = text.clone();
+                        ledger.user = text.clone();
                         Some(serde_json::json!({"type": "transcription_text", "text": text}))
                     }
                     ConversationEvent::TranscriptionEnd =>
@@ -1339,51 +1587,16 @@ async fn handle_conversation_session(
                     ConversationEvent::PlaybackStart => {
                         // Model turn started ⇒ the user's utterance is final
                         // (late transcript corrections have landed by now).
-                        if let Some(cid) = chat_id.as_deref()
-                            && !user_partial.trim().is_empty()
-                            && ensure_voice_chat(&state, cid, &ctx.session_key, phone_title.as_deref())
-                        {
-                            if !chat_bound_announced {
-                                chat_bound_announced = true;
-                                let bound = serde_json::json!({"type": "chat_bound", "chatId": cid});
-                                let _ = socket.send(Message::Text(bound.to_string().into())).await;
-                            }
-                            persist_voice_turn(&state, cid, "user", &user_partial);
-                        }
-                        if let Some((conv, stream)) = loop_relay.as_ref()
-                            && !user_partial.trim().is_empty()
-                        {
-                            relay_loop_turn(&state, conv, stream, "user", user_partial.trim());
-                        }
-                        user_partial.clear();
+                        let rows = ledger.user_final(false);
+                        sink.write(&state, &mut socket, rows).await;
                         Some(serde_json::json!({"type": "playback_start"}))
                     }
-                    ConversationEvent::PlaybackEnd => {
-                        if let Some(cid) = chat_id.as_deref()
-                            && !agent_partial.trim().is_empty()
-                            && ensure_voice_chat(&state, cid, &ctx.session_key, phone_title.as_deref())
-                        {
-                            if !chat_bound_announced {
-                                chat_bound_announced = true;
-                                let bound = serde_json::json!({"type": "chat_bound", "chatId": cid});
-                                let _ = socket.send(Message::Text(bound.to_string().into())).await;
-                            }
-                            persist_voice_turn(&state, cid, "assistant", &agent_partial);
-                            // Voice turns never pass through Runner::run, so
-                            // trigger the ONE title generator here — same 1st/3rd
-                            // user-turn gates apply inside it.
-                            state.runner.spawn_title_generation(&ctx.session_key, cid);
-                        }
-                        if let Some((conv, stream)) = loop_relay.as_ref()
-                            && !agent_partial.trim().is_empty()
-                        {
-                            relay_loop_turn(&state, conv, stream, "assistant", agent_partial.trim());
-                        }
-                        agent_partial.clear();
-                        Some(serde_json::json!({"type": "playback_end"}))
-                    }
+                    // The model's speech stays open until the turn closes (next
+                    // utterance or session end): only then is it known whether
+                    // a delegated run answered, which makes it noise.
+                    ConversationEvent::PlaybackEnd => Some(serde_json::json!({"type": "playback_end"})),
                     ConversationEvent::ResponseText(text) => {
-                        join_transcript(&mut agent_partial, &text);
+                        join_transcript(&mut ledger.assistant, &text);
                         Some(serde_json::json!({"type": "response_text", "text": text}))
                     }
                     ConversationEvent::ConversationId(id) =>
@@ -1438,6 +1651,23 @@ async fn handle_conversation_session(
                                 .await;
                             continue;
                         }
+                        if name == "status" && caller_ctx.is_none() {
+                            pending_tools += 1;
+                            let line = voice_status_line(
+                                state.runner.active_turn_status(&ctx.session_key).as_ref(),
+                            );
+                            if tool_done_tx
+                                .send((
+                                    call_id,
+                                    serde_json::json!({"ok": true, "content": line}).to_string(),
+                                ))
+                                .await
+                                .is_err()
+                            {
+                                break;
+                            }
+                            continue;
+                        }
                         if name == "transfer_call" && caller_ctx.is_some() {
                             let summary = decode_tool_arguments(&arguments)
                                 .get("summary")
@@ -1468,6 +1698,12 @@ async fn handle_conversation_session(
                                 break;
                             }
                             continue;
+                        }
+                        if name == "nebo" {
+                            // The spoken request is the thread's user row, and
+                            // it lands before the run's rows, not after them.
+                            let rows = ledger.user_final(true);
+                            sink.write(&state, &mut socket, rows).await;
                         }
                         pending_tools += 1;
                         let state = state.clone();
@@ -1575,6 +1811,9 @@ async fn handle_conversation_session(
                                 // push-to-talk end marker is a no-op kept for
                                 // wire-protocol compatibility.
                                 Some("manual_input_end") => {}
+                                // The client's hello; the agent is already bound
+                                // from the query string.
+                                Some("Start") => {}
                                 Some("text_input") => {
                                     if let Some(t) = parsed.get("text").and_then(|v| v.as_str())
                                         && rt_tx.send(RealtimeCommand::Text(t.to_string())).await.is_err()
@@ -1606,21 +1845,13 @@ async fn handle_conversation_session(
 
     // Session over (hangup / barge-out / error): flush any half-finished turn
     // so the transcript in the chat never loses the last exchange.
+    let rows = ledger.flush();
+    sink.write(&state, &mut socket, rows).await;
     if let Some(cid) = chat_id.as_deref() {
-        persist_voice_turn(&state, cid, "user", &user_partial);
-        persist_voice_turn(&state, cid, "assistant", &agent_partial);
-        // A short call can end before any PlaybackEnd fired — last chance to
-        // name the chat (the generator's own gates make this a no-op when the
-        // chat is already titled or mid-window).
+        // A short call can end before any assistant row was written: last
+        // chance to name the chat (the generator's own gates make this a
+        // no-op when the chat is already titled or mid-window).
         state.runner.spawn_title_generation(&ctx.session_key, cid);
-    }
-    if let Some((conv, stream)) = loop_relay.as_ref() {
-        if !user_partial.trim().is_empty() {
-            relay_loop_turn(&state, conv, stream, "user", user_partial.trim());
-        }
-        if !agent_partial.trim().is_empty() {
-            relay_loop_turn(&state, conv, stream, "assistant", agent_partial.trim());
-        }
     }
 }
 
@@ -1644,6 +1875,81 @@ fn clip_at_char_boundary(s: &str, cap: usize) -> &str {
 #[cfg(test)]
 mod voice_prompt_tests {
     use super::*;
+
+    fn chat(id: &str, key: &str) -> db::models::Chat {
+        db::models::Chat {
+            id: id.into(),
+            title: String::new(),
+            created_at: 0,
+            updated_at: 0,
+            user_id: None,
+            session_name: Some(key.into()),
+            title_custom: false,
+        }
+    }
+
+    /// A working thread wins even when a newer one exists; a quiet thread
+    /// counts only inside the window; otherwise mint.
+    #[test]
+    fn voice_joins_busy_then_recent_then_mints() {
+        let now = 10_000;
+        let fresh = (chat("new", "agent:a:thread:new"), now - 60);
+        let old = (chat("old", "agent:a:thread:old"), now - 3 * 60 * 60);
+        let busy = |key: &str| key.ends_with(":old");
+        assert_eq!(pick_voice_chat(&[fresh.clone(), old.clone()], now, busy).as_deref(), Some("old"));
+        assert_eq!(pick_voice_chat(&[fresh.clone()], now, |_| false).as_deref(), Some("new"));
+        assert_eq!(pick_voice_chat(&[old.clone()], now, |_| false), None);
+        assert_eq!(pick_voice_chat(&[], now, |_| true), None);
+    }
+
+    fn shape(rows: &[Row]) -> Vec<String> {
+        rows.iter()
+            .map(|r| match r {
+                Row::User(t) => format!("user:{t}"),
+                Row::Assistant(t) => format!("assistant:{t}"),
+            })
+            .collect()
+    }
+
+    /// The decision table: one user row per utterance, the model's own
+    /// speech kept only for turns it answered itself.
+    #[test]
+    fn ledger_writes_one_row_per_utterance_and_drops_delegated_filler() {
+        let mut l = TurnLedger::default();
+        // Turn 1: a plain answer.
+        l.user = "hi there".into();
+        assert_eq!(shape(&l.user_final(false)), ["user:hi there"]);
+        l.assistant = "Hello.".into();
+        // Turn 2: "On it" spoken, then the nebo call, then the run's relay.
+        l.user = "make the repo".into();
+        assert_eq!(shape(&l.user_final(false)), ["assistant:Hello.", "user:make the repo"]);
+        l.assistant = "On it.".into();
+        assert!(l.user_final(true).is_empty());
+        l.assistant.push_str(" Done, the repo exists.");
+        // The model speaking the result is not a new turn.
+        assert!(l.user_final(false).is_empty());
+        // Turn 3 closes turn 2 without its filler.
+        l.user = "thanks".into();
+        assert_eq!(shape(&l.user_final(false)), ["user:thanks"]);
+        l.assistant = "Any time.".into();
+        assert_eq!(shape(&l.flush()), ["assistant:Any time."]);
+        assert!(l.flush().is_empty());
+        // A call made before any speech still writes the user row first.
+        l.user = "list files".into();
+        assert_eq!(shape(&l.user_final(true)), ["user:list files"]);
+        l.assistant = "Here they are.".into();
+        assert!(l.flush().is_empty());
+    }
+
+    #[test]
+    fn status_line_reads_the_counters_or_says_idle() {
+        let st = agent::runner::ActiveTurnStatus { elapsed_secs: 200, tool_calls: 2, current_tool: "os: exec".into() };
+        assert_eq!(
+            voice_status_line(Some(&st)),
+            "Still working: 3 minutes in, 2 tool calls so far, currently running os: exec."
+        );
+        assert_eq!(voice_status_line(None), "Nothing is running right now.");
+    }
 
     #[test]
     fn clip_never_splits_a_code_point() {

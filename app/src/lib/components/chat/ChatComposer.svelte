@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
   import { storage } from '$lib/storage';
+  import { replaceState } from '$app/navigation';
   import { t } from 'svelte-i18n';
   import { Editor, Extension, Mark } from '@tiptap/core';
   import StarterKit from '@tiptap/starter-kit';
@@ -472,9 +473,19 @@
   let voiceChatId = $state('');
 
   function handleStartConversation() {
-    voiceChatId = threadId; // may be '' — the server mints an id lazily
+    voiceChatId = threadId; // may be '': the server joins or mints a thread
     showVoiceOverlay = true;
   }
+
+  // The call bound to a thread: put its id in the address now, so a refresh
+  // lands in that thread. Navigating here would unmount the overlay and end
+  // the call; the page itself moves when the overlay closes.
+  $effect(() => {
+    const bound = $voiceSession.boundChatId;
+    if (showVoiceOverlay && !threadId && bound && agentId) {
+      replaceState(`/${agentId}/threads/${bound}`, {});
+    }
+  });
 
   function handleCloseConversation() {
     showVoiceOverlay = false;

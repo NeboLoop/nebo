@@ -813,20 +813,36 @@ impl Store {
     /// DMs with the agent's current local conversation. Ordered by last message
     /// activity because chats.updated_at is set at creation, not per message.
     pub fn get_latest_agent_chat(&self, agent_id: &str) -> Result<Option<Chat>, NeboError> {
+        Ok(self.list_recent_agent_chats(agent_id, 1)?.into_iter().next().map(|(c, _)| c))
+    }
+
+    /// This employee's threads, newest activity first, each with that
+    /// activity's time in unix seconds (last message, else the row's update).
+    pub fn list_recent_agent_chats(
+        &self,
+        agent_id: &str,
+        limit: usize,
+    ) -> Result<Vec<(Chat, i64)>, NeboError> {
         let conn = self.conn()?;
-        conn.query_row(
-            "SELECT * FROM chats
-             WHERE session_name LIKE 'agent:' || ?1 || ':%'
-             ORDER BY COALESCE(
-                 (SELECT MAX(m.created_at) FROM chat_messages m WHERE m.chat_id = chats.id),
-                 updated_at
-             ) DESC
-             LIMIT 1",
-            params![agent_id],
-            row_to_chat,
-        )
-        .optional()
-        .map_err(|e| NeboError::Database(e.to_string()))
+        let mut stmt = conn
+            .prepare(
+                "SELECT chats.*, COALESCE(
+                     (SELECT MAX(m.created_at) FROM chat_messages m WHERE m.chat_id = chats.id),
+                     updated_at
+                 ) AS last_activity
+                 FROM chats
+                 WHERE session_name LIKE 'agent:' || ?1 || ':%'
+                 ORDER BY last_activity DESC
+                 LIMIT ?2",
+            )
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map(params![agent_id, limit as i64], |row| {
+                Ok((row_to_chat(row)?, row.get::<_, i64>("last_activity")?))
+            })
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| NeboError::Database(e.to_string()))
     }
 
     pub fn list_chat_days(

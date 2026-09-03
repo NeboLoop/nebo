@@ -53,6 +53,37 @@ const TOOL_EXECUTION_TIMEOUT: Duration = Duration::from_secs(300);
 // tool-call arguments make healthy streams go silent for minutes. TCP
 // keepalive surfaces dead sockets as read errors long before this fires.
 const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
+/// A first token this long in coming gets a status line, repeated at the
+/// same interval until it arrives, so a slow model is never minutes of
+/// silence (live 2026-09-03: 294 s with nothing shown).
+const SLOW_FIRST_TOKEN: Duration = Duration::from_secs(30);
+
+/// Status for a retry the owner would otherwise never see. With partial
+/// text on screen the retry resumes it; before any text it is a fresh try.
+pub fn retry_notice(had_partial: bool, retry: usize) -> String {
+    if had_partial {
+        "Connection dropped mid-response, reconnecting to resume where it left off.".to_string()
+    } else {
+        format!("The model connection dropped before it replied; retry {retry} starting.")
+    }
+}
+
+pub fn slow_first_token_notice(waited_secs: u64) -> String {
+    format!("Still waiting on the model, {waited_secs} seconds with no reply yet.")
+}
+
+#[cfg(test)]
+mod notice_tests {
+    use super::*;
+
+    #[test]
+    fn retry_notice_says_which_kind_of_retry() {
+        assert!(retry_notice(true, 1).contains("resume"));
+        let fresh = retry_notice(false, 3);
+        assert!(fresh.contains("retry 3") && !fresh.contains("resume"));
+        assert!(slow_first_token_notice(60).contains("60 seconds"));
+    }
+}
 
 /// Retry backoff: exponential 500ms × 2^(n−1) capped at 32s, plus 0–25% jitter.
 /// An explicit provider Retry-After wins outright.
@@ -814,39 +845,48 @@ pub use types::api::ActiveTurnStatus;
 
 pub fn active_turn_status(turns: &ActiveTurns, session_key: &str) -> Option<ActiveTurnStatus> {
     let map = turns.lock().unwrap_or_else(|p| p.into_inner());
-    let active = map.get(session_key)?;
-    Some(ActiveTurnStatus {
-        elapsed_secs: active.started.elapsed().as_secs(),
-        tool_calls: active.progress.tool_call_count.load(std::sync::atomic::Ordering::Relaxed),
-        current_tool: active.progress.current_tool.lock().map(|t| t.clone()).unwrap_or_default(),
-    })
+    map.get(session_key).map(ActiveTurn::status)
+}
+
+impl ActiveTurn {
+    fn status(&self) -> ActiveTurnStatus {
+        ActiveTurnStatus {
+            elapsed_secs: self.started.elapsed().as_secs(),
+            tool_calls: self.progress.tool_call_count.load(std::sync::atomic::Ordering::Relaxed),
+            current_tool: self.progress.current_tool.lock().map(|t| t.clone()).unwrap_or_default(),
+        }
+    }
+}
+
+/// The live counters as one phrase ("3 minutes in, 12 tool calls so far,
+/// currently running os: exec"). The busy line below and voice's `status`
+/// tool both read it, so they never describe the same run differently.
+pub fn progress_phrase(st: &ActiveTurnStatus) -> String {
+    let elapsed = if st.elapsed_secs < 90 {
+        format!("{} seconds", st.elapsed_secs)
+    } else {
+        format!("{} minutes", st.elapsed_secs / 60)
+    };
+    let doing = if st.current_tool.is_empty() {
+        "thinking".to_string()
+    } else {
+        format!("running {}", st.current_tool)
+    };
+    let calls_part = match st.tool_calls {
+        0 => String::new(),
+        1 => ", 1 tool call so far".to_string(),
+        n => format!(", {n} tool calls so far"),
+    };
+    format!("{elapsed} in{calls_part}, currently {doing}")
 }
 
 /// What a second caller hears while a turn is busy. Built from the live
 /// counters, no model call; read aloud by voice, shown as status in chat.
 pub fn busy_status_line(active: &ActiveTurn) -> String {
-    let secs = active.started.elapsed().as_secs();
-    let elapsed = if secs < 90 {
-        format!("{secs} seconds")
-    } else {
-        format!("{} minutes", secs / 60)
-    };
-    let calls = active.progress.tool_call_count.load(std::sync::atomic::Ordering::Relaxed);
-    let tool = active
-        .progress
-        .current_tool
-        .lock()
-        .map(|t| t.clone())
-        .unwrap_or_default();
-    let doing = if tool.is_empty() { "thinking".to_string() } else { format!("running {tool}") };
-    let calls_part = match calls {
-        0 => String::new(),
-        1 => ", 1 tool call so far".to_string(),
-        n => format!(", {n} tool calls so far"),
-    };
     format!(
-        "Still on the last thing, {elapsed} in{calls_part}, currently {doing}. I'll pick this \
-         up at my next step; if that work finishes first, your message is waiting in the thread."
+        "Still on the last thing, {}. I'll pick this up at my next step; if that work \
+         finishes first, your message is waiting in the thread.",
+        progress_phrase(&active.status())
     )
 }
 
@@ -4114,6 +4154,18 @@ async fn run_loop(
                     if transient_retries > MAX_TRANSIENT_RETRIES {
                         return Err(format!("Too many transient errors: {}", e));
                     }
+                    // The owner sees the retry, not a silent gap (voice said
+                    // "on it" and went quiet for five minutes, 2026-09-03).
+                    if tx
+                        .send(StreamEvent::control_notice(
+                            retry_notice(false, transient_retries),
+                            "stream_reconnecting",
+                        ))
+                        .await
+                        .is_err()
+                    {
+                        debug!(session_id, "retry notice: receiver gone");
+                    }
                     // Try next provider on transient error — but never
                     // silently fall from CLI to Janus (burns Nebo credits).
                     let prov_lock = providers.read().await;
@@ -4176,6 +4228,7 @@ async fn run_loop(
         let mut last_retry_after: Option<u64> = None;
         let mut stop_reason: Option<String> = None;
         let mut t_first_token: Option<std::time::Instant> = None;
+        let mut slow_notice_at = tokio::time::Instant::now() + SLOW_FIRST_TOKEN;
         // Track the order of content blocks (text vs tool) for correct rehydration.
         // Each entry is either "text" (coalesced) or a tool index.
         let mut block_order: Vec<(&str, Option<usize>)> = Vec::new();
@@ -4203,6 +4256,21 @@ async fn run_loop(
                         }
                     }
                     return Ok(turn_exit_reason.label());
+                }
+                _ = tokio::time::sleep_until(slow_notice_at), if t_first_token.is_none() => {
+                    let waited = t_stream_start.elapsed().as_secs();
+                    if tx
+                        .send(StreamEvent::control_notice(
+                            slow_first_token_notice(waited),
+                            "slow_first_token",
+                        ))
+                        .await
+                        .is_err()
+                    {
+                        debug!(session_id, "slow first token notice: receiver gone");
+                    }
+                    slow_notice_at += SLOW_FIRST_TOKEN;
+                    continue;
                 }
                 ev = tokio::time::timeout(STREAM_IDLE_TIMEOUT, rx.recv()) => match ev {
                     Ok(Some(e)) => e,
@@ -4453,9 +4521,9 @@ async fn run_loop(
             // Without a status line the dead bubble reads as the model giving
             // up; with one, the retry reads as what it is — a reconnect.
             let had_partial = !assistant_content.is_empty();
-            let reconnect_notice = || {
+            let reconnect_notice = |retry: usize| {
                 tx.send(StreamEvent::control_notice(
-                    "Connection dropped mid-response — reconnecting to resume where it left off.",
+                    retry_notice(had_partial, retry),
                     "stream_reconnecting",
                 ))
             };
@@ -4507,8 +4575,8 @@ async fn run_loop(
                 transient_retries += 1;
                 if transient_retries <= MAX_TRANSIENT_RETRIES {
                     queue_cutoff_continuation();
-                    if had_partial {
-                        let _ = reconnect_notice().await;
+                    if reconnect_notice(transient_retries).await.is_err() {
+                        debug!(session_id, "retry notice: receiver gone");
                     }
                     let prov_count = providers.read().await.len();
                     if prov_count > 1 {
@@ -4549,8 +4617,8 @@ async fn run_loop(
                     retryable_retries, "retryable stream error, trying next provider"
                 );
                 queue_cutoff_continuation();
-                if had_partial {
-                    let _ = reconnect_notice().await;
+                if reconnect_notice(retryable_retries).await.is_err() {
+                    debug!(session_id, "retry notice: receiver gone");
                 }
                 let prov_count = providers.read().await.len();
                 if prov_count > 1 {
