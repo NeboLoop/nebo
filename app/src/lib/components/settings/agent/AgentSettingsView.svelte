@@ -214,8 +214,14 @@
     identitySaveTimer = setTimeout(() => saveIdentity(), 800);
   }
 
+  // A packaged employee (installed from the marketplace or a folder with an
+  // AGENT.md) keeps its role, persona, soul and rules in the package: the
+  // boot sync re-reads AGENT.md, so an edit here would not survive a restart.
+  // Name, voice and color are stored on this machine and never re-read, so
+  // they are the owner's to change on every employee.
+  const managed = $derived(!agent?.editable);
+
   function selectColor(color: string) {
-    if (!agent?.editable) return;
     // Clicking the already-selected swatch clears the override back to the
     // default — same toggle interaction as the Approvals controls.
     editColor = editColor === color ? '' : color;
@@ -223,7 +229,6 @@
   }
 
   function selectVoice(voiceId: string) {
-    if (!agent?.editable) return;
     editVoice = voiceId;
     debounceIdentitySave();
   }
@@ -245,7 +250,7 @@
   }
 
   async function saveIdentity() {
-    if (!agentId || !agent?.editable) return;
+    if (!agentId) return;
     try {
       const api = await import('$lib/api/nebo');
       await api.updateAgent(agentId, {
@@ -824,12 +829,15 @@
           <span class="absolute right-0 top-0 text-xs text-success flex items-center gap-1"><Check class="w-3 h-3" /> {$t('common.saved')}</span>
         {/if}
       </div>
-      {#if !agent?.editable}
-        <div class="rounded-lg border border-base-300 bg-base-200/50 px-3.5 py-2.5 text-xs text-base-content/70">{$t('agentSettings.managedByPrefix')} <span class="font-mono">AGENT.md</span> {$t('agentSettings.managedReadOnlySuffix')}</div>
+      {#if managed}
+        <div class="rounded-lg border border-base-300 bg-base-200/50 px-3.5 py-2.5 text-xs text-base-content/70 flex items-start gap-3">
+          <span class="flex-1">{$t('agentSettings.identityManagedNote')}</span>
+          <button class="btn btn-xs btn-outline shrink-0" onclick={openDuplicate}>{$t('agentSettings.duplicateAgent')}</button>
+        </div>
       {/if}
       <label class="block">
         <span class="block text-xs font-semibold uppercase tracking-wider mb-1.5">{$t('agentSettings.agentName')}</span>
-        <input type="text" bind:value={editName} oninput={debounceIdentitySave} disabled={!agent?.editable} class="w-full py-[7px] px-2.5 rounded-md border border-base-300 text-sm bg-base-100 outline-none font-body disabled:opacity-60 disabled:cursor-not-allowed" />
+        <input type="text" bind:value={editName} oninput={debounceIdentitySave} class="w-full py-[7px] px-2.5 rounded-md border border-base-300 text-sm bg-base-100 outline-none font-body disabled:opacity-60 disabled:cursor-not-allowed" />
       </label>
       <div>
         <div class="text-xs font-semibold uppercase tracking-wider mb-1.5">{$t('agentSettings.voice')}</div>
@@ -840,8 +848,7 @@
               class="flex items-center rounded-md border transition-colors {(editVoice || 'eve') === v.id ? 'border-base-content bg-base-200' : 'border-base-300 bg-base-100 hover:bg-base-200/50'}"
             >
               <button
-                class="pl-3 pr-1.5 py-1.5 text-sm font-medium bg-transparent border-none {agent?.editable ? 'cursor-pointer' : 'opacity-60 cursor-not-allowed'}"
-                disabled={!agent?.editable}
+                class="pl-3 pr-1.5 py-1.5 text-sm font-medium bg-transparent border-none cursor-pointer"
                 onclick={() => selectVoice(v.id)}
               >{v.label}</button>
               <button
@@ -860,8 +867,8 @@
         </div>
       </div>
       <label class="block">
-        <span class="block text-xs font-semibold uppercase tracking-wider mb-1.5">{$t('agentSettings.role')}</span>
-        <textarea bind:value={editRole} oninput={debounceIdentitySave} disabled={!agent?.editable} rows="3" class="w-full py-[7px] px-2.5 rounded-md border border-base-300 text-sm bg-base-100 outline-none font-body disabled:opacity-60 disabled:cursor-not-allowed resize-none"></textarea>
+        <span class="block text-xs font-semibold uppercase tracking-wider mb-1.5">{$t('agentSettings.role')}{#if managed} <span class="normal-case tracking-normal font-normal text-base-content/50">· {$t('agentSettings.fromPackage')}</span>{/if}</span>
+        <textarea bind:value={editRole} oninput={debounceIdentitySave} disabled={managed} rows="3" class="w-full py-[7px] px-2.5 rounded-md border border-base-300 text-sm bg-base-100 outline-none font-body disabled:opacity-60 disabled:cursor-not-allowed resize-none"></textarea>
       </label>
       <div>
         <div class="text-xs font-semibold uppercase tracking-wider mb-1.5">{$t('agentSettings.color')}</div>
@@ -869,9 +876,8 @@
           {#each ['violet', 'green', 'sky', 'amber', 'rose', 'mint', 'slate', 'peach'] as color}
             {@const c = AGENT_COLORS_MAP[color]}
             <button
-              class="w-7 h-7 rounded-md border-2 transition-colors {c.bgClass} {editColor === color ? 'border-base-content' : 'border-transparent'} {agent?.editable ? 'cursor-pointer' : 'opacity-60 cursor-not-allowed'}"
+              class="w-7 h-7 rounded-md border-2 transition-colors {c.bgClass} {editColor === color ? 'border-base-content' : 'border-transparent'} cursor-pointer"
               title={color}
-              disabled={!agent?.editable}
               onclick={() => selectColor(color)}
             ></button>
           {/each}
@@ -899,7 +905,10 @@
         <div class="text-xs text-base-content/70 mt-1">{$t('agentSettings.personaDesc')}</div>
       </div>
       {#if !agent?.editable}
-        <div class="shrink-0 rounded-lg border border-base-300 bg-base-200/50 px-3.5 py-2.5 text-xs text-base-content/70">{$t('agentSettings.managedByPrefix')} <span class="font-mono">AGENT.md</span> {$t('agentSettings.managedReadOnlySuffix')}</div>
+        <div class="shrink-0 rounded-lg border border-base-300 bg-base-200/50 px-3.5 py-2.5 text-xs text-base-content/70 flex items-start gap-3">
+          <span class="flex-1">{$t('agentSettings.packageManagedNote')}</span>
+          <button class="btn btn-xs btn-outline shrink-0" onclick={openDuplicate}>{$t('agentSettings.duplicateAgent')}</button>
+        </div>
       {/if}
       <textarea
         bind:value={editPersona}
@@ -925,7 +934,10 @@
         <div class="text-xs text-base-content/70 mt-1">{$t('agentSettings.soulDesc')}</div>
       </div>
       {#if !agent?.editable}
-        <div class="shrink-0 rounded-lg border border-base-300 bg-base-200/50 px-3.5 py-2.5 text-xs text-base-content/70">{$t('agentSettings.managedExternally')}</div>
+        <div class="shrink-0 rounded-lg border border-base-300 bg-base-200/50 px-3.5 py-2.5 text-xs text-base-content/70 flex items-start gap-3">
+          <span class="flex-1">{$t('agentSettings.packageManagedNote')}</span>
+          <button class="btn btn-xs btn-outline shrink-0" onclick={openDuplicate}>{$t('agentSettings.duplicateAgent')}</button>
+        </div>
       {/if}
       <textarea
         bind:value={editSoul}
@@ -956,7 +968,10 @@
         {/if}
       </div>
       {#if !agent?.editable}
-        <div class="rounded-lg border border-base-300 bg-base-200/50 px-3.5 py-2.5 text-xs text-base-content/70">{$t('agentSettings.managedExternally')}</div>
+        <div class="shrink-0 rounded-lg border border-base-300 bg-base-200/50 px-3.5 py-2.5 text-xs text-base-content/70 flex items-start gap-3">
+          <span class="flex-1">{$t('agentSettings.packageManagedNote')}</span>
+          <button class="btn btn-xs btn-outline shrink-0" onclick={openDuplicate}>{$t('agentSettings.duplicateAgent')}</button>
+        </div>
       {/if}
       <textarea rows="20"
         bind:value={editRules}
