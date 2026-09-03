@@ -260,7 +260,7 @@ fn voice_tools(transfer: bool, telephony: bool, intents: &[String]) -> Vec<serde
         tools.push(serde_json::json!({
             "type": "function",
             "name": "end_call",
-            "description": "Hang up this call. Use it AFTER your goodbye has been said —                             when the conversation is complete, the caller says goodbye,                             you've finished leaving a voicemail, or nothing remains to do.                             Never leave the line open waiting for the caller to hang up.",
+            "description": "Hang up this call. Use it AFTER your goodbye has been said — when the conversation is complete, the caller says goodbye, you've finished leaving a voicemail, or nothing remains to do. Never leave the line open waiting for the caller to hang up.",
             "parameters": {
                 "type": "object",
                 "properties": {

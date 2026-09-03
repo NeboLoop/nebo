@@ -1617,7 +1617,6 @@ mod tests {
         assert!(!summary.contains("lines"));
     }
 
-    #[test]
     /// END-TO-END guard for the 2026-08-28 outage class.
     ///
     /// `build_tool_summary` unit tests were not enough — the defect only shows

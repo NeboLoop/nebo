@@ -756,7 +756,6 @@ mod tests {
         assert!(p.allowlist.contains("git status"));
     }
 
-    #[test]
     /// A read-only AI employee: KB search still runs, KB writes are refused.
     /// This is the whole read/write split for the knowledge base plugin — it has
     /// no capability toggle of its own (plugin tools are exempt from

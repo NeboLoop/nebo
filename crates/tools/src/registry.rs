@@ -227,6 +227,9 @@ pub struct Registry {
     bridge: std::sync::RwLock<Option<Arc<mcp::Bridge>>>,
     plugin_store: std::sync::RwLock<Option<Arc<napp::plugin::PluginStore>>>,
     agent_loader: std::sync::RwLock<Option<Arc<napp::AgentLoader>>>,
+    /// The file tool's snapshot ledger, kept here so the runner can sweep it
+    /// for outside edits without reaching into the tool.
+    read_state: std::sync::RwLock<Option<crate::file_tool::ReadState>>,
     /// DB store for MCP proxy tools (OAuth token refresh during tool calls).
     store: std::sync::RwLock<Option<Arc<db::Store>>>,
     /// Browser manager, for closing a session's tab/page when a sub-agent finishes.
@@ -257,6 +260,7 @@ impl Registry {
             bridge: std::sync::RwLock::new(None),
             plugin_store: std::sync::RwLock::new(None),
             agent_loader: std::sync::RwLock::new(None),
+            read_state: std::sync::RwLock::new(None),
             store: std::sync::RwLock::new(None),
             browser_manager: std::sync::RwLock::new(None),
             code_installer: Arc::new(std::sync::RwLock::new(None)),
@@ -316,6 +320,18 @@ impl Registry {
     /// Set the agent loader for PersonaTool filesystem access.
     pub fn set_agent_loader(&self, loader: Arc<napp::AgentLoader>) {
         *self.agent_loader.write().unwrap() = Some(loader);
+    }
+
+    /// Files `session_key` has seen that someone else changed since, one
+    /// reminder each, each reported once. Empty until the os tool is registered.
+    pub fn external_edit_notes(&self, session_key: &str) -> Vec<String> {
+        let state = match self.read_state.read() {
+            Ok(guard) => guard.clone(),
+            Err(_) => None, // poisoned: a panic elsewhere; no notes this pass
+        };
+        state
+            .map(|state| crate::file_tool::external_edit_notes(&state, session_key))
+            .unwrap_or_default()
     }
 
     /// Register a tool.
@@ -589,7 +605,7 @@ impl Registry {
             if obj.len() == 1 {
                 if let Some(raw) = obj.get("_raw").and_then(|v| v.as_str()) {
                     return ToolResult::error(format!(
-                        "Your tool call's arguments were CUT OFF mid-stream at the output                          limit ({} characters arrived, JSON incomplete). Do NOT retry the                          same call — it will be cut off again. Produce large content in                          PARTS instead: first `os(resource: \"file\", action: \"write\",                          path: ..., content: <first portion>)`, then repeat with                          `append: true` for each following portion. Keep each call's                          content under ~15,000 characters.",
+                        "Your tool call's arguments were CUT OFF mid-stream at the output limit ({} characters arrived, JSON incomplete). Do NOT retry the same call — it will be cut off again. Produce large content in PARTS instead: first `os(resource: \"file\", action: \"write\", path: ..., content: <first portion>)`, then repeat with `append: true` for each following portion. Keep each call's content under ~15,000 characters.",
                         raw.len()
                     ));
                 }
@@ -783,6 +799,8 @@ impl Registry {
         if let Some(ps) = ps_opt {
             os_tool = os_tool.with_plugin_store(ps);
         }
+        // Startup: a poisoned lock here is a bug to surface, not a state to handle.
+        *self.read_state.write().unwrap() = Some(os_tool.file_tool().read_state());
         self.register(Box::new(os_tool)).await;
     }
 
@@ -877,6 +895,8 @@ impl Registry {
         if let Some(ps) = ps_opt {
             os_tool = os_tool.with_plugin_store(ps);
         }
+        // Startup: a poisoned lock here is a bug to surface, not a state to handle.
+        *self.read_state.write().unwrap() = Some(os_tool.file_tool().read_state());
         self.register(Box::new(os_tool)).await;
 
         // Code tool (tree-sitter outline/symbols/parse_check/query/context) — CORE.

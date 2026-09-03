@@ -23,11 +23,11 @@ pass=0; fail=0; skipped=0; current=""; LAST=""
 case_() { current="$1"; if [ -n "$ONLY" ] && [[ "$1" != "$ONLY"* ]]; then skipped=$((skipped+1)); return 1; fi; printf '%-46s %s\n' "$1" "$2"; return 0; }
 die()   { echo "  FAIL [$current]: $*"; fail=$((fail+1)); echo "  last result: ${LAST:0:600}"; exit 1; }
 ok()    { pass=$((pass+1)); }
-# call '<arguments json>' — os tool; stores the result text in LAST and is_error in LAST_ERR
+# call '<arguments json>' [tool] — os tool by default; stores the result text in LAST and is_error in LAST_ERR
 call() {
-  local args="$1"
+  local args="$1" tool="${2:-os}"
   local body
-  body=$(jq -cn --argjson a "$args" '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"os",arguments:$a}}')
+  body=$(jq -cn --argjson a "$args" --arg t "$tool" '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:$t,arguments:$a}}')
   local resp
   resp=$(curl -s -m 180 -X POST "http://$TEST_SERVER/agent/mcp" -H 'Content-Type: application/json' -d "$body")
   LAST=$(echo "$resp" | jq -r '.result.content[0].text // .error.message // .')
@@ -137,6 +137,22 @@ if case_ os-plan-06 "a destructive verify command is refused and stays unticked"
   call "{\"resource\":\"file\",\"action\":\"plan\",\"path\":\"$WORK/P4.md\",\"title\":\"t\",\"steps\":[{\"title\":\"bad\",\"verify\":\"git stash\"},{\"title\":\"good\",\"verify\":\"true\"}]}"; expect_ok
   call "{\"resource\":\"file\",\"action\":\"plan_check\",\"path\":\"$WORK/P4.md\"}"
   expect_ok "1/2 verified"; grep -q '1\. ✗ bad, did not run' "$WORK/P4.md" || die "refused step reads 'did not run'"
+  ok
+fi
+
+# ---- sub-agent continuation (Stage 9) ---------------------------------------
+# The live continuation itself is fixtures/tools/agent-send-continuation.yaml
+# (a model in the loop). Here: the verb exists and its two refusals say what
+# to do next, so a model never spirals on them.
+if case_ agent-send-01 "send without a message names the missing parameter"; then
+  call '{"resource":"task","action":"send","task_id":"sa-x"}' agent
+  expect_error "message"; echo "$LAST" | grep -q 'action: "send"' || die "usage example shown"
+  ok
+fi
+
+if case_ agent-send-02 "send to an unknown task says to spawn afresh"; then
+  call '{"resource":"task","action":"send","task_id":"sa-nope","message":"more"}' agent
+  expect_error "No sub-agent sa-nope to continue"; echo "$LAST" | grep -q "Spawn a new one" || die "recovery named"
   ok
 fi
 

@@ -247,8 +247,6 @@ async fn run_flush_inner(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn test_chars_per_token() {
         assert_eq!(crate::CHARS_PER_TOKEN, 4);

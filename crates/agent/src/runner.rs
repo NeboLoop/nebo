@@ -2878,6 +2878,23 @@ async fn run_loop(
                 .store(iteration as u32, std::sync::atomic::Ordering::Relaxed);
         }
 
+        // A file this session saw that the owner, a formatter, or a hook changed
+        // since is surfaced once with its changed lines, so the model builds on
+        // the change instead of reverting it. The ledger outlives the turn, so
+        // the first iteration of a later turn catches edits made in between.
+        {
+            let tools = tools.clone();
+            let session_key = session_key.clone();
+            match tokio::task::spawn_blocking(move || tools.external_edit_notes(&session_key)).await {
+                Ok(notes) => {
+                    for note in notes {
+                        pending_stream_reminders.push(steering::wrap_system_reminder(&note));
+                    }
+                }
+                Err(e) => warn!(error = %e, "outside-edit sweep panicked; skipped this iteration"),
+            }
+        }
+
         if cancel_token.is_cancelled() {
             info!(session_id, "run cancelled before iteration {}", iteration);
             return Ok(turn_exit_reason.label());

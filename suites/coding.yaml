@@ -9,3 +9,5 @@ fixtures:
   - ../fixtures/tools/code-tool-discount-code.yaml
   - ../fixtures/tools/code-tool-main-rs.yaml
   - ../fixtures/tools/code-tool-spanish-discovery.yaml
+  - ../fixtures/tools/agent-send-continuation.yaml
+  - ../fixtures/tools/os-outside-edit-preserved.yaml

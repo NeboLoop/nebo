@@ -708,7 +708,7 @@ pub async fn oauth_token(
     let Some(bot_id) = config::read_bot_id() else {
         return err(
             axum::http::StatusCode::SERVICE_UNAVAILABLE,
-            "not connected to NeboAI — this plugin's OAuth app is managed by the hub,              which requires a connected instance (or set the plugin's client secret              locally to use your own OAuth app)"
+            "not connected to NeboAI — this plugin's OAuth app is managed by the hub, which requires a connected instance (or set the plugin's client secret locally to use your own OAuth app)"
                 .to_string(),
         );
     };

@@ -86,6 +86,18 @@ pub trait SubAgentOrchestrator: Send + Sync {
         task_id: &str,
     ) -> Pin<Box<dyn Future<Output = Result<String, String>> + Send + '_>>;
 
+    /// Continue a finished sub-agent with a follow-up. It keeps its session
+    /// (everything it read and did), runs again the way it was spawned, and
+    /// answers the same way. Fails while it is still running, or once its
+    /// context has been released.
+    fn send(
+        &self,
+        task_id: &str,
+        message: &str,
+        parent_cancel: Option<CancellationToken>,
+        parent_stream_tx: Option<mpsc::Sender<ai::StreamEvent>>,
+    ) -> Pin<Box<dyn Future<Output = Result<SpawnResult, String>> + Send + '_>>;
+
     /// List all active sub-agents: (task_id, description, status).
     fn list_active(
         &self,

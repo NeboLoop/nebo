@@ -1,0 +1,45 @@
+id: os-outside-edit-preserved
+name: "An outside edit between tool calls is kept, not reverted"
+description: |
+  The model reads a file, then a detached background process rewrites one
+  line while the model is doing something else. The next iteration's sweep
+  tells the model what changed; its own later edit must build on the new
+  content rather than writing the stale version back.
+target_component: os
+
+setup:
+  - "rm -rf /tmp/nebo-test/outside && mkdir -p /tmp/nebo-test/outside && printf 'one\\ntwo\\nthree\\n' > /tmp/nebo-test/outside/a.txt"
+teardown:
+  - "rm -rf /tmp/nebo-test/outside"
+
+conversation:
+  - role: user
+    content: "Do these steps in order with the os tool. 1) Read /tmp/nebo-test/outside/a.txt. 2) Run this exact shell command, which starts a detached background job and returns at once: nohup sh -c 'sleep 4; printf \"one\\nTWO\\nthree\\n\" > /tmp/nebo-test/outside/a.txt' >/dev/null 2>&1 & 3) Run the shell command: sleep 8. 4) WITHOUT reading the file again, use a file edit (not the shell) to append one line to a.txt with the text 'second line is: X', where X is what you know the file's second line to be right now. 5) Only now read the file and show me its exact final content."
+
+tool_config:
+  os:
+    enabled: true
+
+prompt_assertions:
+  recovery:
+    - id: outside-change-kept
+      text: "The final file content shown starts one, TWO, three: the background job's TWO survives the model's edit"
+      severity: critical
+    - id: sweep-informed-the-edit
+      text: "The appended line reads 'second line is: TWO' (uppercase). The model did not read the file between the sleep and the edit, so the only way it could know TWO is the outside-edit note; 'two' lowercase means the note did not fire"
+      severity: critical
+    - id: no-stale-writeback
+      text: "No write or edit call sends the old line 'two' (lowercase) back into the file, and there is no file read between the sleep and the edit"
+      severity: critical
+  cost:
+    - id: bounded
+      text: "At most 7 tool calls"
+      severity: important
+      check: { max_tool_calls: 7 }
+
+ideal_behavior:
+  tool_calls: 5
+  total_tokens: 6000
+  narrative: |
+    read → shell (detached job) → shell sleep 8 → edit appends 'four' onto the
+    CURRENT content, naming TWO from the outside-edit note → read → report.

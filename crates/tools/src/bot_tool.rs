@@ -201,6 +201,17 @@ pub struct AgentTool {
     notify_fn: Arc<std::sync::RwLock<Option<crate::message_tool::NotifyFn>>>,
 }
 
+/// Appended to a sub-agent's result so the model knows the child is still
+/// there to be continued, and when a fresh spawn is the wrong move.
+fn continuation_hint(task_id: &str) -> String {
+    format!(
+        "\n\n<usage>To refine, extend, or correct this result, continue the same sub-agent \
+         (it keeps its context and the files it read): agent(resource: \"task\", action: \
+         \"send\", task_id: \"{task_id}\", message: \"...\"). Spawn a new sub-agent only \
+         for unrelated work.</usage>"
+    )
+}
+
 impl AgentTool {
     pub fn new(store: Arc<Store>, orchestrator: OrchestratorHandle) -> Self {
         Self {
@@ -279,8 +290,8 @@ impl AgentTool {
         }
         match action {
             "store" | "save" | "recall" | "search" => "memory",
-            "spawn" | "spawn_parallel" | "orchestrate" | "status" | "cancel" | "create"
-            | "update" | "delete" => "task",
+            "spawn" | "spawn_parallel" | "orchestrate" | "status" | "cancel" | "send"
+            | "create" | "update" | "delete" => "task",
             "research" | "deep_research" | "submit_findings" => "research",
             "open_billing" => "profile",
             "history" | "query" => "session",
@@ -315,7 +326,7 @@ impl AgentTool {
         // tool reads entirely closes indirect elicitation through the tool.
         if ctx.audience_restricted && matches!(action, "recall" | "search" | "list") {
             return ToolResult::error(
-                "Memory lookup is disabled while replying to a coworker who is not granted                  access to this scope. Answer from the context you already have, or tell                  them the information isn't shared with their role. Do not retry.",
+                "Memory lookup is disabled while replying to a coworker who is not granted access to this scope. Answer from the context you already have, or tell them the information isn't shared with their role. Do not retry.",
             );
         }
 
@@ -836,8 +847,10 @@ impl AgentTool {
                     Ok(result) => {
                         if result.success {
                             ToolResult::ok(format!(
-                                "Sub-agent [{}] completed:\n\n{}",
-                                result.task_id, result.output
+                                "Sub-agent [{}] completed:\n\n{}{}",
+                                result.task_id,
+                                result.output,
+                                continuation_hint(&result.task_id)
                             ))
                         } else {
                             ToolResult::error(format!(
@@ -864,7 +877,7 @@ impl AgentTool {
                                 .map(|e| e.to_string())
                                 .unwrap_or_else(|| "not a JSON array".into());
                             return ToolResult::error(format!(
-                                "`tasks` arrived as a STRING that is not valid JSON ({parse_err}).                                  Send `tasks` as a real JSON array — not a quoted string — and make                                  sure newlines inside prompt text are escaped as \\n.                                  Example: tasks: [{{\"prompt\": \"task 1\"}}, {{\"prompt\": \"task 2\"}}]"
+                                "`tasks` arrived as a STRING that is not valid JSON ({parse_err}). Send `tasks` as a real JSON array — not a quoted string — and make sure newlines inside prompt text are escaped as \\n. Example: tasks: [{{\"prompt\": \"task 1\"}}, {{\"prompt\": \"task 2\"}}]"
                             ));
                         }
                         return ToolResult::error(errors::missing_param(
@@ -1038,6 +1051,40 @@ impl AgentTool {
                 match orch.cancel(task_id).await {
                     Ok(()) => ToolResult::ok(format!("Cancelled task: {}", task_id)),
                     Err(e) => ToolResult::error(format!("Failed to cancel: {}", e)),
+                }
+            }
+            "send" => {
+                let task_id = input["task_id"].as_str().unwrap_or("").trim();
+                let message = input["message"].as_str().unwrap_or("").trim();
+                if task_id.is_empty() || message.is_empty() {
+                    return ToolResult::error(errors::missing_param(
+                        "send",
+                        if task_id.is_empty() { "task_id" } else { "message" },
+                        "agent(resource: \"task\", action: \"send\", task_id: \"abc123\", message: \"Now also cover the edge cases\")",
+                    ));
+                }
+                let Some(orch) = self.orchestrator.get() else {
+                    return ToolResult::error(
+                        "Sub-agent orchestrator not ready. The server may still be starting up. \
+                         Try again in a moment, or do the work directly.",
+                    );
+                };
+                match orch
+                    .send(task_id, message, Some(ctx.cancel_token.clone()), ctx.stream_tx.clone())
+                    .await
+                {
+                    Ok(result) if result.success => ToolResult::ok(format!(
+                        "Sub-agent [{}] continued:\n\n{}{}",
+                        result.task_id,
+                        result.output,
+                        continuation_hint(&result.task_id)
+                    )),
+                    Ok(result) => ToolResult::error(format!(
+                        "Sub-agent [{}] failed: {}",
+                        result.task_id,
+                        result.error.unwrap_or_default()
+                    )),
+                    Err(e) => ToolResult::error(e),
                 }
             }
             "status" => {
@@ -2116,6 +2163,7 @@ impl DynTool for AgentTool {
          - agent(resource: \"task\", action: \"spawn\", prompt: \"...\", wait: false) — Background; result delivered when done\n\
          - agent(resource: \"task\", action: \"status\", task_id: \"...\") — Check background agent status\n\
          - agent(resource: \"task\", action: \"cancel\", task_id: \"...\") — Cancel a running sub-agent\n\
+         - agent(resource: \"task\", action: \"send\", task_id: \"...\", message: \"...\") — Continue a FINISHED sub-agent with a follow-up. It keeps its context and the files it read, so use this to refine, extend, or correct its result; spawn a new one only for unrelated work\n\
          - agent(resource: \"task\", action: \"spawn_parallel\", tasks: [{\"prompt\": \"...\", \"tools\": [\"web\"]}, ...]) — Run multiple sub-agents concurrently, return all results. Tasks that EDIT files in one project: add isolate: \"worktree\" (+ workspace: \"/path\" if not the current folder) so each runs in its own copy and the changes are merged back; a file two tasks both changed is reported as a conflict with both versions kept\n\
          IMPORTANT: Always pass plugins and tools the sub-agent needs. Sub-agents are born blind — they only know what you tell them.\n\
          - plugins: install codes for plugins the sub-agent should use (from your agent config or current session)\n\
@@ -2183,7 +2231,8 @@ impl DynTool for AgentTool {
                 "limit": { "type": "integer", "description": "Max results" },
                 "subject": { "type": "string", "description": "Task subject" },
                 "status": { "type": "string", "description": "Task status: pending, in_progress, completed" },
-                "task_id": { "type": "string", "description": "Task ID for updates" },
+                "task_id": { "type": "string", "description": "Task ID for updates, status, cancel, and send" },
+                "message": { "type": "string", "description": "Follow-up for a finished sub-agent (action send)" },
                 "prompt": { "type": "string", "description": "Sub-agent prompt or orchestration task description" },
                 "description": { "type": "string", "description": "Short description (sub-agent task, or the agent's description for registry create/update)" },
                 "agent_type": { "type": "string", "description": "Sub-agent type: general, explore, plan" },

@@ -136,6 +136,39 @@ pub struct Orchestrator {
     /// into `wake::deliver`. The row is durable either way — a dropped
     /// notification is recovered by the boot sweep.
     wake_notify: Option<tokio::sync::mpsc::UnboundedSender<String>>,
+    /// Spawn requests of recent children, newest last, so `send` can relaunch
+    /// one on its own session with the same skills, tools, and plugins.
+    resumable: Arc<RwLock<std::collections::VecDeque<(String, SpawnRequest)>>>,
+}
+
+/// Prefixed to a `send` follow-up so the child knows it is the addressee. Its
+/// own transcript carries the parent's original request (which may say "send
+/// the sub-agent a follow-up"), and a bare follow-up read as an instruction to
+/// delegate onward instead of doing the work (live, 2026-09-02).
+pub const CONTINUATION_FRAME: &str = "[Follow-up for you, the sub-agent that did the task \
+above. Do it yourself with your tools; do not delegate it.]\n";
+
+/// How many recent children stay continuable. Older ones are forgotten;
+/// their sessions remain in the store, only the relaunch context is gone.
+pub const MAX_RESUMABLE: usize = 64;
+
+/// The copy of a spawn request kept for `send`. The parent's stream sender
+/// and cancel token are stripped: `send` supplies the current turn's, and a
+/// kept sender holds the parent's event channel open after its turn ended, so
+/// the run never completes (live, 2026-09-02: 38 minutes, then killed).
+fn resumable_copy(req: &SpawnRequest) -> SpawnRequest {
+    SpawnRequest { parent_stream_tx: None, parent_cancel: None, ..req.clone() }
+}
+
+fn remember_resumable<T>(
+    ring: &mut std::collections::VecDeque<(String, T)>,
+    task_id: String,
+    value: T,
+) {
+    ring.push_back((task_id, value));
+    while ring.len() > MAX_RESUMABLE {
+        ring.pop_front();
+    }
 }
 
 impl Orchestrator {
@@ -151,6 +184,7 @@ impl Orchestrator {
             active: Arc::new(RwLock::new(HashMap::new())),
             lanes: None,
             wake_notify: None,
+            resumable: Arc::new(RwLock::new(std::collections::VecDeque::new())),
         }
     }
 
@@ -202,13 +236,6 @@ impl Orchestrator {
         }
         let task_id = format!("sa-{}", uuid::Uuid::new_v4());
         let session_key = format!("subagent:{}:{}", req.parent_session_key, task_id);
-        // Derive a child token from the parent so cancelling the parent cascades.
-        let cancel = req
-            .parent_cancel
-            .as_ref()
-            .map(|p| p.child_token())
-            .unwrap_or_else(CancellationToken::new);
-
         // Persist to pending_tasks
         let agent_type = AgentType::from_str(&req.agent_type);
         let _ = self.store.create_pending_task(
@@ -223,9 +250,73 @@ impl Orchestrator {
             0,
         );
 
-        // Register in active map
+        let task_prefix = task_prefix_for_type(&agent_type);
+        let prefixed_prompt = format!(
+            "{}{}{}",
+            task_prefix,
+            req.prompt,
+            self.original_request_block(&req.parent_session_id, &req.prompt)
+        );
+        remember_resumable(&mut *self.resumable.write().await, task_id.clone(), resumable_copy(&req));
+        self.launch(task_id, req, prefixed_prompt).await
+    }
+
+    /// `agent(task, send)`: continue a finished child on its own session. The
+    /// follow-up goes in as the next user turn, with no task prefix and no
+    /// original-request block: the child already has both.
+    async fn send_internal(
+        &self,
+        task_id: &str,
+        message: &str,
+        parent_cancel: Option<CancellationToken>,
+        parent_stream_tx: Option<mpsc::Sender<ai::StreamEvent>>,
+    ) -> Result<SpawnResult, String> {
+        let remembered = self
+            .resumable
+            .read()
+            .await
+            .iter()
+            .find(|(id, _)| id == task_id)
+            .map(|(_, req)| req.clone());
+        let Some(mut req) = remembered else {
+            return Err(format!(
+                "No sub-agent {task_id} to continue: it was not spawned from here, or it is not among \
+                 the last {MAX_RESUMABLE} sub-agents spawned here. Spawn a new one with the \
+                 full task in the prompt."
+            ));
+        };
+        let follow_up = format!("{CONTINUATION_FRAME}{message}");
+        req.prompt = follow_up.clone();
+        req.parent_cancel = parent_cancel;
+        req.parent_stream_tx = parent_stream_tx;
+        self.launch(task_id.to_string(), req, follow_up).await
+    }
+
+    /// Run `req` as `task_id` in the mode it asked for: blocking returns the
+    /// output, background returns the ack and wakes the parent when done.
+    /// Shared by a first spawn and a `send` continuation.
+    async fn launch(
+        &self,
+        task_id: String,
+        req: SpawnRequest,
+        prefixed_prompt: String,
+    ) -> Result<SpawnResult, String> {
+        // Derive a child token from the parent so cancelling the parent cascades.
+        let cancel = req
+            .parent_cancel
+            .as_ref()
+            .map(|p| p.child_token())
+            .unwrap_or_else(CancellationToken::new);
         {
+            // One check-and-insert under the lock: two `send`s for the same child
+            // cannot both start a run on its session. A fresh spawn never collides.
             let mut active = self.active.write().await;
+            if active.contains_key(&task_id) {
+                return Err(format!(
+                    "Sub-agent {task_id} is still running. Check it with status, or cancel \
+                     it, before sending a follow-up."
+                ));
+            }
             active.insert(
                 task_id.clone(),
                 ActiveAgent {
@@ -236,15 +327,6 @@ impl Orchestrator {
                 },
             );
         }
-
-        let task_prefix = task_prefix_for_type(&agent_type);
-        let prefixed_prompt = format!(
-            "{}{}{}",
-            task_prefix,
-            req.prompt,
-            self.original_request_block(&req.parent_session_id, &req.prompt)
-        );
-
         if req.wait {
             // Blocking: run and return result
             let result = self
@@ -1375,6 +1457,21 @@ impl SubAgentOrchestrator for Orchestrator {
         Box::pin(async move { self.status_internal(&task_id).await })
     }
 
+    fn send(
+        &self,
+        task_id: &str,
+        message: &str,
+        parent_cancel: Option<CancellationToken>,
+        parent_stream_tx: Option<mpsc::Sender<ai::StreamEvent>>,
+    ) -> Pin<Box<dyn Future<Output = Result<SpawnResult, String>> + Send + '_>> {
+        let task_id = task_id.to_string();
+        let message = message.to_string();
+        Box::pin(async move {
+            self.send_internal(&task_id, &message, parent_cancel, parent_stream_tx)
+                .await
+        })
+    }
+
     fn list_active(
         &self,
     ) -> Pin<Box<dyn Future<Output = Vec<(String, String, String)>> + Send + '_>> {
@@ -1398,12 +1495,52 @@ impl SubAgentOrchestrator for Orchestrator {
 mod tests {
     use super::*;
 
-    // The observed failure: the user pasted an SVG logo, the parent summarised
-    // the delegation as one line, and the logo never reached the sub-agent.
-    #[test]
     /// The background-spawn acknowledgement must carry the no-prediction
     /// constraint AT THE DECISION POINT — a spawn ack that only says "you
     /// will be woken" invites the model to narrate results it does not have.
+    #[tokio::test]
+    async fn remembered_child_does_not_hold_the_parent_stream_open() {
+        let (tx, mut rx) = mpsc::channel::<ai::StreamEvent>(1);
+        let req = SpawnRequest {
+            prompt: "p".into(),
+            description: "d".into(),
+            agent_type: "general".into(),
+            model_override: String::new(),
+            parent_session_id: "s".into(),
+            parent_session_key: "k".into(),
+            user_id: "u".into(),
+            wait: true,
+            parent_cancel: Some(CancellationToken::new()),
+            max_iterations: 1,
+            skills: vec![],
+            plugins: vec![],
+            tools: vec![],
+            parent_stream_tx: Some(tx),
+            handoff_depth: 0,
+            isolate: String::new(),
+            workspace: String::new(),
+        };
+        let kept = resumable_copy(&req);
+        drop(req);
+        // With the turn's sender gone the channel must close; a kept clone
+        // would leave recv() pending forever, which is exactly the live hang.
+        let closed = tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv()).await;
+        assert!(matches!(closed, Ok(None)), "parent stream still open: {closed:?}");
+        assert!(kept.parent_stream_tx.is_none() && kept.parent_cancel.is_none());
+    }
+
+    #[test]
+    fn resumable_ring_keeps_the_newest_and_drops_the_oldest() {
+        let mut ring = std::collections::VecDeque::new();
+        for i in 0..MAX_RESUMABLE + 3 {
+            remember_resumable(&mut ring, format!("sa-{i}"), i);
+        }
+        assert_eq!(ring.len(), MAX_RESUMABLE);
+        assert_eq!(ring.front().map(|(id, _)| id.as_str()), Some("sa-3"));
+        let newest = format!("sa-{}", MAX_RESUMABLE + 2);
+        assert!(ring.iter().any(|(id, _)| *id == newest));
+    }
+
     #[test]
     fn background_ack_forbids_predicting_results() {
         assert!(BACKGROUND_SPAWN_ACK.contains("do not report, assume, or predict"));
@@ -1427,6 +1564,9 @@ mod tests {
         assert!(subagent_depth("agent:assistant:web") < MAX_SUBAGENT_DEPTH);
     }
 
+    // The observed failure: the user pasted an SVG logo, the parent summarised
+    // the delegation as one line, and the logo never reached the sub-agent.
+    #[test]
     fn original_request_travels_with_the_spawn() {
         let user = "Make a deck. This is our logo: <svg viewBox=\"0 0 1 1\"><path d=\"M0 0\"/></svg>";
         let prompt = "Create an 8-slide recruiting deck spec using the Bold Split pack.";

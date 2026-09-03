@@ -18,7 +18,7 @@ pub struct FileTool {
     /// useful half of a read-state cache while deliberately omitting content
     /// dedup, whose "refer to the earlier read" stub turns into a blank once that earlier
     /// read is evicted by compaction.
-    read_state: Arc<Mutex<HashMap<String, i64>>>,
+    read_state: ReadState,
     /// LSP diagnostics source for the edit-verification chain's step 2
     /// (PRD_CODING_HARNESS P4.4). Production wires the process-global client;
     /// unit tests get `NoServers` by default and inject mocks explicitly —
@@ -184,9 +184,7 @@ impl FileTool {
             Ok(report) => {
                 for (path, action) in &report.actions {
                     if *action == crate::checkpoint::RestoreAction::Restored {
-                        if let Some(m) = current_mtime_ms(path) {
-                            self.record_read(ctx.session_key.as_str(), path, m);
-                        }
+                        self.record_read(ctx.session_key.as_str(), path);
                     }
                 }
                 ToolResult::ok(crate::checkpoint::render_restore(&report))
@@ -198,9 +196,7 @@ impl FileTool {
     /// The agent wrote `path` itself through the shell (`tee`, `>`): refresh
     /// the read ledger so the next edit is not warned about a change it made.
     pub fn note_shell_write(&self, session: &str, path: &str) {
-        if let Some(m) = current_mtime_ms(path) {
-            self.record_read(session, path, m);
-        }
+        self.record_read(session, path);
     }
 
     /// Write a document through the ONE write pathway (Work panel, versions,
@@ -263,10 +259,19 @@ impl FileTool {
         format!("{session}\u{1f}{path}")
     }
 
-    /// Record that `path` was read in `session` at the file's current mtime.
-    fn record_read(&self, session: &str, path: &str, mtime_ms: i64) {
+    /// The session-keyed snapshot ledger, shared with whoever sweeps it for
+    /// outside edits between iterations (`external_edit_notes`).
+    pub fn read_state(&self) -> ReadState {
+        self.read_state.clone()
+    }
+
+    /// Snapshot `path` as this session now sees it (after a read, our own
+    /// write, a restore, or a noted shell write): mtime, and the content when
+    /// it is small enough to diff later. A file we cannot stat is not tracked.
+    fn record_read(&self, session: &str, path: &str) {
+        let Some(entry) = snapshot(path) else { return };
         if let Ok(mut m) = self.read_state.lock() {
-            m.insert(Self::read_state_key(session, path), mtime_ms);
+            m.insert(Self::read_state_key(session, path), entry);
         }
     }
 
@@ -288,11 +293,11 @@ impl FileTool {
                  changed it without you having seen what was there. If that content \
                  mattered, read the file now to confirm the result is what you intended."
             )),
-            Some(&read_mtime) => {
+            Some(entry) => {
                 // Warn only when the file is demonstrably newer than the recorded
                 // read. If we can't stat it, stay quiet — don't alarm on our own
                 // bookkeeping.
-                if current_mtime_ms(path).is_some_and(|cur| cur > read_mtime) {
+                if current_mtime_ms(path).is_some_and(|cur| cur > entry.mtime_ms) {
                     Some(format!(
                         "Warning: {path} was modified since you last read it (by the user, \
                          a linter, or another process), and your {verb} overwrote those \
@@ -566,15 +571,9 @@ impl FileTool {
             callback(&path);
         }
 
-        // Record the read so a later Edit/Write of this path can require a prior read
-        // and detect on-disk changes since now. Metadata only — content is never cached.
-        let mtime_ms = metadata
-            .modified()
-            .ok()
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| d.as_millis() as i64)
-            .unwrap_or(0);
-        self.record_read(session, &path, mtime_ms);
+        // Record the read so a later edit/write of this path can require a prior
+        // read, and so an outside change since now can be surfaced as a diff.
+        self.record_read(session, &path);
 
         ToolResult::ok(result)
     }
@@ -665,9 +664,7 @@ impl FileTool {
             Ok(()) => {
                 // Refresh read-state to the file we just wrote, so a subsequent edit/write
                 // in this session isn't wrongly flagged stale against our own write.
-                if let Some(m) = current_mtime_ms(&path) {
-                    self.record_read(session, &path, m);
-                }
+                self.record_read(session, &path);
                 let action = if input.append { "Appended" } else { "Wrote" };
                 let mut msg = format!("{} {} bytes to {}", action, input.content.len(), path);
                 // Edit-verification chain step 1 (PRD P4.4): parse what is now
@@ -785,9 +782,7 @@ impl FileTool {
 
         // Refresh read-state to the post-edit file so a follow-up edit in this session
         // isn't wrongly flagged stale against our own edit.
-        if let Some(m) = current_mtime_ms(&path) {
-            self.record_read(session, &path, m);
-        }
+        self.record_read(session, &path);
 
         let mut msg = if input.replace_all && count > 1 {
             format!("Replaced {} occurrences in {}", count, path)
@@ -1499,6 +1494,115 @@ fn current_mtime_ms(path: &str) -> Option<i64> {
         .map(|d| d.as_millis() as i64)
 }
 
+
+/// One file as this session last saw it. `content` is `None` past
+/// [`MAX_TRACKED_CONTENT_BYTES`]: the change is still reported, without lines.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReadEntry {
+    pub mtime_ms: i64,
+    pub content: Option<String>,
+}
+
+/// Session-keyed file snapshots (`session\u{1f}path` → entry). Shared by the
+/// file tool that fills it and the runner that sweeps it.
+pub type ReadState = Arc<Mutex<HashMap<String, ReadEntry>>>;
+
+/// Files above this size are tracked by mtime alone.
+pub const MAX_TRACKED_CONTENT_BYTES: u64 = 256 * 1024;
+
+/// Lines shown per side of an outside-edit snippet before it is elided.
+pub const EDIT_SNIPPET_LINES: usize = 40;
+
+fn snapshot(path: &str) -> Option<ReadEntry> {
+    let meta = std::fs::metadata(path).ok()?;
+    let mtime_ms = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as i64)?;
+    let content = (meta.len() <= MAX_TRACKED_CONTENT_BYTES)
+        .then(|| std::fs::read_to_string(path).ok())
+        .flatten();
+    Some(ReadEntry { mtime_ms, content })
+}
+
+/// Sweep `session`'s snapshots for files changed on disk by someone else (the
+/// owner, a formatter, a hook) and return one reminder per changed file. Each
+/// change is reported once: the snapshot is refreshed as it is reported. A
+/// touch that left the bytes alone is refreshed silently.
+pub fn external_edit_notes(state: &ReadState, session: &str) -> Vec<String> {
+    let prefix = format!("{session}\u{1f}");
+    // Snapshot-then-release: the ledger lock is never held across file I/O.
+    let tracked: Vec<(String, ReadEntry)> = match state.lock() {
+        Ok(m) => m
+            .iter()
+            .filter(|(key, _)| key.starts_with(&prefix))
+            .map(|(key, entry)| (key.clone(), entry.clone()))
+            .collect(),
+        Err(_) => return Vec::new(), // poisoned: a panic elsewhere; no notes this pass
+    };
+    let mut notes = Vec::new();
+    let mut refreshed: Vec<(String, ReadEntry)> = Vec::new();
+    for (key, entry) in tracked {
+        let path = &key[prefix.len()..];
+        let Some(now) = snapshot(path) else { continue };
+        if now.mtime_ms == entry.mtime_ms {
+            continue;
+        }
+        if now.content != entry.content {
+            let snippet = match (&entry.content, &now.content) {
+                (Some(old), Some(new)) => edit_snippet(old, new),
+                _ => "(file too large to show the changed lines)".to_string(),
+            };
+            notes.push(format!(
+                "Note: {path} was modified, either by the user or by a linter. This change was \
+                 intentional, so make sure to take it into account as you proceed (ie. don't \
+                 revert it unless the user asks you to). Don't tell the user this, since they \
+                 are already aware. Here are the relevant changes (shown with line numbers):\n\
+                 {snippet}"
+            ));
+        }
+        refreshed.push((key, now));
+    }
+    if let Ok(mut m) = state.lock() {
+        for (key, entry) in refreshed {
+            m.insert(key, entry);
+        }
+    }
+    notes
+}
+
+/// The lines that differ between two versions, numbered per side, with the
+/// unchanged head and tail trimmed off. Not a minimal diff: a moved block shows
+/// as the whole span between the first and last changed line, which is still
+/// exactly what the model must not revert.
+pub fn edit_snippet(old: &str, new: &str) -> String {
+    let a: Vec<&str> = old.lines().collect();
+    let b: Vec<&str> = new.lines().collect();
+    let head = a.iter().zip(&b).take_while(|(x, y)| x == y).count();
+    let max_tail = a.len().min(b.len()) - head;
+    let tail = a
+        .iter()
+        .rev()
+        .zip(b.iter().rev())
+        .take(max_tail)
+        .take_while(|(x, y)| x == y)
+        .count();
+    let mut out = String::new();
+    let mut side = |sign: char, lines: &[&str], first: usize| {
+        for (i, line) in lines.iter().enumerate() {
+            if i == EDIT_SNIPPET_LINES {
+                out.push_str(&format!("{sign} ... {} more lines\n", lines.len() - i));
+                break;
+            }
+            out.push_str(&format!("{sign}{}: {line}\n", first + i + 1));
+        }
+    };
+    side('-', &a[head..a.len() - tail], head);
+    side('+', &b[head..b.len() - tail], head);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1573,6 +1677,60 @@ mod tests {
         assert!(!e.is_error, "{}", e.content);
         assert!(!e.content.contains("Warning"), "no overwrite warning after a restore:\n{}", e.content);
         unsafe { std::env::remove_var("NEBO_HOME") };
+    }
+
+    #[test]
+    fn outside_edit_is_reported_once_with_the_changed_lines() {
+        let work = tempfile::tempdir().unwrap();
+        let path = work.path().join("a.txt");
+        std::fs::write(&path, "one\ntwo\nthree\n").unwrap();
+        let p = path.to_string_lossy().into_owned();
+        let t = FileTool::new();
+        let c = ctx();
+        assert!(!t.execute(&c, json!({"action": "read", "path": p})).is_error);
+        assert!(external_edit_notes(&t.read_state(), &c.session_key).is_empty(), "nothing changed yet");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&path, "one\n2\nthree\n").unwrap();
+        let notes = external_edit_notes(&t.read_state(), &c.session_key);
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert!(notes[0].contains("don't revert it"), "{}", notes[0]);
+        assert!(notes[0].contains("-2: two\n+2: 2\n"), "{}", notes[0]);
+        assert!(!notes[0].contains("one"), "unchanged lines are trimmed:\n{}", notes[0]);
+        assert!(external_edit_notes(&t.read_state(), &c.session_key).is_empty(), "reported once");
+        // Our own edit afterwards is not an outside change.
+        assert!(!t.execute(&c, json!({"action": "edit", "path": p, "old_string": "2", "new_string": "deux"})).is_error);
+        assert!(external_edit_notes(&t.read_state(), &c.session_key).is_empty(), "own edits are not outside edits");
+    }
+
+    #[test]
+    fn touch_that_leaves_bytes_alone_is_silent_and_other_sessions_are_not_swept() {
+        let work = tempfile::tempdir().unwrap();
+        let path = work.path().join("a.txt");
+        std::fs::write(&path, "same\n").unwrap();
+        let p = path.to_string_lossy().into_owned();
+        let t = FileTool::new();
+        let c = ctx();
+        assert!(!t.execute(&c, json!({"action": "read", "path": p})).is_error);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&path, "same\n").unwrap();
+        assert!(external_edit_notes(&t.read_state(), &c.session_key).is_empty(), "a touch is not an edit");
+        // The sweep is gated on mtime, so land the real change on a later tick.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&path, "changed\n").unwrap();
+        assert!(external_edit_notes(&t.read_state(), "some-other-session").is_empty());
+        assert_eq!(external_edit_notes(&t.read_state(), &c.session_key).len(), 1);
+    }
+
+    #[test]
+    fn edit_snippet_trims_common_head_and_tail_and_elides_long_runs() {
+        assert_eq!(edit_snippet("a\nb\nc\n", "a\nB\nc\n"), "-2: b\n+2: B\n");
+        assert_eq!(edit_snippet("a\n", "a\nb\n"), "+2: b\n");
+        assert_eq!(edit_snippet("a\nb\n", "a\n"), "-2: b\n");
+        assert_eq!(edit_snippet("x\n", "x\n"), "");
+        let long: String = (0..EDIT_SNIPPET_LINES + 5).map(|i| format!("l{i}\n")).collect();
+        let s = edit_snippet("", &long);
+        assert!(s.contains("+ ... 5 more lines"), "{s}");
+        assert_eq!(s.lines().count(), EDIT_SNIPPET_LINES + 1);
     }
 
     #[test]
@@ -1786,7 +1944,6 @@ mod tests {
     // A read MUST always return the file's content. We deliberately removed the old
     // path-keyed "contents unchanged" cache — it was unverifiable across compaction and
     // gaslit the model into a retry spiral (the #research read-loop incident).
-    #[test]
     /// A file with content must NEVER read back as empty.
     ///
     /// Live 2026-08-28: `read` returned no content for a 651-line / 23KB Python
