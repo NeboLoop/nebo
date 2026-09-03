@@ -95,7 +95,7 @@ Nebo is **the operating system for AI employees** — it turns the user's comput
 - **Backend:** Rust (edition 2024), 18 workspace crates under `crates/` + `src-tauri/`
 - **Frontend:** SvelteKit 2 + Svelte 5, Tailwind CSS 4 + DaisyUI 5, TypeScript 5.9
 - **Desktop:** Tauri 2 (native window + system tray)
-- **Database:** SQLite via rusqlite + r2d2 (WAL mode), stored at `~/.nebo/data/nebo.db`
+- **Database:** SQLite via rusqlite + r2d2 (WAL mode), stored at `<data_dir>/data/nebo.db`
 - **HTTP:** Axum 0.8 with tower middleware
 - **AI Providers:** Anthropic, OpenAI, Gemini, Ollama, DeepSeek, CLI wrappers
 
@@ -190,7 +190,12 @@ Format: `agent:<id>:<channel>`, `subagent:<parent>:<child>`, `acp:<id>`, `<ch>:g
 
 ### Configuration
 - `etc/nebo.yaml` — embedded config (server host/port, NeboAI URLs, auth placeholders)
-- `~/.nebo/settings.json` — user auth, API keys (runtime)
+- `<data_dir>/settings.json` — user auth, API keys (runtime)
+- **`<data_dir>`** is the platform-native Nebo root, resolved by the ONE helper
+  `config::data_dir()` (`crates/config/src/defaults.rs`) — never `~/.nebo`:
+  `~/Library/Application Support/Nebo` (macOS), `%APPDATA%\Nebo` (Windows), `~/.local/share/nebo` (Linux).
+  `NEBO_HOME` overrides it (`NEBO_DATA_DIR` is the deprecated spelling and now
+  means a per-artifact data directory)
 - Env var overrides: `NEBOAI_API_URL`, `NEBOAI_JANUS_URL`, `NEBOAI_COMMS_URL`
 
 ## Code Rules

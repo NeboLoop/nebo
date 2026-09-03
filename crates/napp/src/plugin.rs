@@ -1165,7 +1165,7 @@ impl PluginStore {
     ///
     /// The path is derived from `installed_dir` (`<data_dir>/nebo/plugins/`) by going
     /// Persistent data directory for a plugin, separated from the code tree.
-    /// Returns `~/.nebo/appdata/plugins/<slug>/` — survives all upgrades.
+    /// Returns `<data_dir>/appdata/plugins/<slug>/` — survives all upgrades.
     pub fn plugin_data_dir(&self, slug: &str) -> PathBuf {
         config::appdata_dir()
             .map(|d| d.join("plugins").join(slug))

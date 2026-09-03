@@ -15,7 +15,6 @@ tracing = { workspace = true }
 uuid = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
-dirs = { workspace = true }
 config = { workspace = true }
 reqwest = { workspace = true }
 zstd = { workspace = true }

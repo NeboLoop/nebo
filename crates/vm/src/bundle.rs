@@ -2,7 +2,7 @@
 //!
 //! Mirrors the Cowork pattern:
 //! ```text
-//! Bundle directory: ~/.nebo/vm/bundles/
+//! Bundle directory: <data_dir>/vm/bundles/
 //!   rootfs.img              ← Linux root filesystem (downloaded per version SHA)
 //!   .rootfs.img.origin      ← SHA version tracker
 //!   rootfs.img.zst          ← Compressed cache for faster reinstalls
@@ -28,7 +28,7 @@ const CDN_BASE: &str = "https://cdn.neboai.com/vm";
 
 /// Bundle directory layout.
 pub struct Bundle {
-    /// Root of the bundle directory (~/.nebo/vm/bundles/).
+    /// Root of the bundle directory (`<data_dir>/vm/bundles/`).
     dir: PathBuf,
     /// Expected SHA-256 of the rootfs image.
     expected_sha: String,
@@ -274,11 +274,14 @@ impl Bundle {
     }
 }
 
-/// Default bundle directory: ~/.nebo/vm/bundles/
+/// Default bundle directory: `<data_dir>/vm/bundles/`, under the
+/// platform-native Nebo root (`~/Library/Application Support/Nebo`,
+/// `%APPDATA%\Nebo`, `~/.local/share/nebo`) — not `~/.nebo`, which is no
+/// platform's convention and, on a cloud pod, is not on the mounted volume.
 fn bundle_dir() -> VmResult<PathBuf> {
-    let home = dirs::home_dir()
-        .ok_or_else(|| VmError::ImageNotFound("cannot determine home directory".to_string()))?;
-    Ok(home.join(".nebo").join("vm").join("bundles"))
+    config::data_dir()
+        .map(|d| d.join("vm").join("bundles"))
+        .map_err(|e| VmError::ImageNotFound(format!("cannot determine data directory: {e}")))
 }
 
 /// Compute SHA-256 of a file.

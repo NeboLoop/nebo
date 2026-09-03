@@ -2,7 +2,7 @@
 //!
 //! All content is embedded via `include_str!()` and loaded directly from
 //! memory at startup. Nothing is extracted to disk — this eliminates
-//! the `~/.nebo/bundled/` filesystem attack surface.
+//! the `<data_dir>/bundled/` filesystem attack surface.
 
 // ── Bundled Skills ──────────────────────────────────────────────────
 

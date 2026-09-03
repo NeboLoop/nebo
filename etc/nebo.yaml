@@ -15,14 +15,15 @@ Log:
   Level: info # info = important events, debug = verbose, error = errors only
   Stat: false # Disable stat logs
 
-# Auth settings are overridden by local settings (~/.nebo/settings.json)
+# Auth settings are overridden by local settings (<data_dir>/settings.json,
+# e.g. ~/Library/Application Support/Nebo on macOS — see config::data_dir)
 # These are just placeholders to satisfy the config parser
 Auth:
   AccessSecret: placeholder-replaced-at-runtime
   AccessExpire: 31536000
   RefreshTokenExpire: 31536000
 
-# Database uses ~/.nebo/data/nebo.db by default (shared with agent)
+# Database uses <data_dir>/data/nebo.db by default (shared with agent)
 Database: {}
 
 # Agent runtime limits

@@ -498,7 +498,7 @@ impl PluginTool {
     /// Handles both layouts:
     ///   - Installed plugins: `<data>/plugins/<slug>/<version>/{binary,skills/}`
     ///     (skills/ is sibling of binary, 1 level up)
-    ///   - Symlinked dev plugins: `~/.nebo/user/plugins/<slug>/{target/release/binary,skills/}`
+    ///   - Symlinked dev plugins: `<data_dir>/user/plugins/<slug>/{target/release/binary,skills/}`
     ///     (skills/ is 3 levels up — past `target/release/`)
     fn skills_dir(&self, slug: &str) -> Option<PathBuf> {
         let binary_path = self.plugin_store.resolve(slug, "*")?;

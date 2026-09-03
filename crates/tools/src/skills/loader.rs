@@ -1614,7 +1614,7 @@ fn read_artifact_id_from_napp(napp_path: &Path) -> Option<String> {
     }
 
     // Fallback: try to derive artifact_id from the directory structure
-    // e.g., ~/.nebo/data/nebo/skills/@acme/skill-name/1.0.0.napp
+    // e.g., <data_dir>/nebo/skills/@acme/skill-name/1.0.0.napp
     // The artifact_id would need to come from the manifest inside the sealed .napp.
     // Since we can't read inside without a key, and the key lookup needs the artifact_id,
     // we use the napp filename/path as a key lookup hint.

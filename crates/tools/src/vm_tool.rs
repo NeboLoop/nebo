@@ -400,8 +400,8 @@ async fn resolve_rootfs() -> Result<String, String> {
     // Production: use bundle manager (CDN download + cache + SHA verify)
     if ROOTFS_SHA.is_empty() {
         // No SHA configured — check for any local rootfs in bundle dir
-        if let Some(home) = dirs::home_dir() {
-            let bundle_rootfs = home.join(".nebo").join("vm").join("bundles").join("rootfs.img");
+        if let Ok(data) = config::data_dir() {
+            let bundle_rootfs = data.join("vm").join("bundles").join("rootfs.img");
             if bundle_rootfs.exists() {
                 return Ok(bundle_rootfs.to_string_lossy().to_string());
             }
@@ -427,7 +427,7 @@ async fn resolve_rootfs() -> Result<String, String> {
 
 /// Find the sidecar image (nebo-vm.{arch}.img) on disk. Checks:
 /// 1. vm/build/ directory (development builds)
-/// 2. ~/.nebo/vm/ (installed images)
+/// 2. <data_dir>/vm/ (installed images)
 /// 3. Bundled with app (Tauri resource)
 fn find_sidecar_image() -> Option<String> {
     let arch = if cfg!(target_arch = "aarch64") {
@@ -442,9 +442,9 @@ fn find_sidecar_image() -> Option<String> {
         return Some(dev_path);
     }
 
-    // Installed: ~/.nebo/vm/
-    if let Some(home) = dirs::home_dir() {
-        let installed = home.join(".nebo").join("vm").join(format!("nebo-vm.{arch}.img"));
+    // Installed: <data_dir>/vm/
+    if let Ok(data) = config::data_dir() {
+        let installed = data.join("vm").join(format!("nebo-vm.{arch}.img"));
         if installed.exists() {
             return Some(installed.to_string_lossy().to_string());
         }

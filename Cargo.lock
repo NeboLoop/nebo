@@ -5755,7 +5755,6 @@ dependencies = [
 name = "nebo-vm"
 version = "0.13.3"
 dependencies = [
- "dirs",
  "hex",
  "nebo-config",
  "reqwest 0.12.28",
