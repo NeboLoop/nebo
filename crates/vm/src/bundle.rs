@@ -326,6 +326,18 @@ mod tests {
         assert_eq!(b.origin_path(), dir.path().join(".rootfs.img.origin"));
     }
 
+    /// INVARIANT: the bundle dir hangs off the platform-native Nebo root, never
+    /// a hand-rolled `~/.nebo`. Guards the regression this replaced — on a cloud
+    /// pod only `<data_dir>` is on the mounted volume, so a `$HOME`-derived path
+    /// is ephemeral scratch wiped on every restart.
+    #[test]
+    fn bundle_dir_is_under_the_nebo_data_dir() {
+        assert_eq!(
+            bundle_dir().unwrap(),
+            config::data_dir().unwrap().join("vm").join("bundles")
+        );
+    }
+
     /// INVARIANT: state resolution order — a present rootfs always wins over the
     /// cache (Ready when origin matches, Stale otherwise, even with a .zst
     /// present); cache-only is Cached; nothing local is NeedsDownload.
