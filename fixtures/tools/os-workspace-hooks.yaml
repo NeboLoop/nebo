@@ -1,0 +1,41 @@
+id: os-workspace-hooks
+name: "A project's own .nebo/hooks.yaml runs after the employee's edit there (per workspace)"
+description: |
+  The project folder is created by the fixture and is NOT the server's own
+  folder, so this only passes if hooks are resolved from the folder the call
+  touches (Stage 10). The post-tool hook prints a line that only it knows; the
+  model must see it in the edit result and repeat it. H-F1 from the plan.
+target_component: os
+
+setup:
+  - "rm -rf /tmp/nebo-test/hooks-proj && mkdir -p /tmp/nebo-test/hooks-proj/.nebo /tmp/nebo-test/hooks-proj/.git && printf 'alpha\\n' > /tmp/nebo-test/hooks-proj/notes.txt && printf 'post_tool:\\n  - name: stamp\\n    tool: os\\n    action: [edit, write]\\n    command: echo HOOK-STAMP-7731 saw $(cat notes.txt | wc -l | tr -d \" \") line\\n' > /tmp/nebo-test/hooks-proj/.nebo/hooks.yaml"
+teardown:
+  - "rm -rf /tmp/nebo-test/hooks-proj"
+
+conversation:
+  - role: user
+    content: "In the folder /tmp/nebo-test/hooks-proj, read notes.txt and then use a file edit to change the word alpha to beta. The project has a check that runs after edits; when it prints something, quote its exact output back to me word for word."
+
+tool_config:
+  os:
+    enabled: true
+
+prompt_assertions:
+  recovery:
+    - id: hook-output-reached-the-model
+      text: "The final answer contains the exact string HOOK-STAMP-7731. Judge the final answer only: the model made just two tool calls (a read and an edit) and never ran the check itself, so that string can only have come from the edit result, which carried the hook's output"
+      severity: critical
+    - id: edit-not-shell
+      text: "The change is made with a file edit (not a shell sed or echo), and the model does not run the check by hand"
+      severity: important
+  cost:
+    - id: bounded
+      text: "At most 4 tool calls"
+      severity: important
+      check: { max_tool_calls: 4 }
+
+ideal_behavior:
+  tool_calls: 2
+  total_tokens: 6000
+  narrative: |
+    read notes.txt → edit alpha→beta (result carries "[hook stamp]\nHOOK-STAMP-7731 saw 1 line") → quote it.

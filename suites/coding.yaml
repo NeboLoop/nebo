@@ -11,3 +11,4 @@ fixtures:
   - ../fixtures/tools/code-tool-spanish-discovery.yaml
   - ../fixtures/tools/agent-send-continuation.yaml
   - ../fixtures/tools/os-outside-edit-preserved.yaml
+  - ../fixtures/tools/os-workspace-hooks.yaml

@@ -1,0 +1,50 @@
+id: repo-sveltestrap-fanout
+name: "Real repo: seven parallel workers restyle seven components in worktrees"
+description: |
+  sveltestrap (MIT) from the probe clone, a git repo with one Svelte file per
+  component. Seven sub-agents, one per component, each adds one CSS class to
+  its component's root element in its own worktree; the merge brings all seven
+  back with no conflicts. scripts/test-repo.sh verifies the seven files, the
+  absence of .nebo-conflict files, and that nothing else changed.
+target_component: agent
+
+setup:
+  - "rm -rf /tmp/nebo-test/sveltestrap && cp -Rc /tmp/nebo-test/probe/sveltestrap /tmp/nebo-test/sveltestrap"
+teardown:
+  - "true"
+
+conversation:
+  - role: user
+    content: "In the project at /tmp/nebo-test/sveltestrap (a git repo), restyle seven components in parallel with worktree isolation, one sub-agent per component: Alert, Badge, Button, Card, Col, Container, Dropdown. Each sub-agent edits only src/<Name>/<Name>.svelte and adds the CSS class nb-restyled to that component's root element class list, changing nothing else. Give each sub-agent the os tool. When they are done, tell me what the merge section said."
+
+tool_config:
+  os:
+    enabled: true
+  agent:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: parallel-isolated
+      text: "The first call is agent task spawn_parallel with isolate: worktree and workspace: /tmp/nebo-test/sveltestrap"
+      severity: critical
+      check: { tool: agent, arg: isolate, equals: worktree }
+  recovery:
+    - id: seven-tasks
+      text: "The spawn_parallel call carries exactly seven tasks, one per named component, each with the os tool"
+      severity: critical
+    - id: merge-reported
+      text: "The final answer quotes a merge section listing the seven tasks as merged with no conflicts"
+      severity: critical
+  cost:
+    - id: bounded
+      text: "At most 5 tool calls (one spawn_parallel is ideal; a malformed first attempt corrected from the error text is tolerated, a third is not)"
+      severity: important
+      check: { max_tool_calls: 5 }
+
+ideal_behavior:
+  tool_calls: 1
+  total_tokens: 30000
+  narrative: |
+    spawn_parallel(isolate: worktree, workspace: /tmp/nebo-test/sveltestrap,
+    tasks: [7]) → merge section reported verbatim.

@@ -425,3 +425,14 @@
 	min-width: 0;
 	max-width: 100%;
 }
+
+/* An open tool timeline keeps its header pinned while its steps scroll past,
+   so closing it never means scrolling to the bottom first. */
+.tool-timeline-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  width: 100%;
+  background: var(--color-base-100);
+  padding-block: 0.25rem;
+}

@@ -1,0 +1,57 @@
+id: repo-fd-planted-bug
+name: "Real repo: find and fix a planted bug in fd from a failing test name"
+description: |
+  fd (sharkdp/fd, MIT/Apache) copied from a warmed probe clone with one planted
+  bug: the size filter maps "+" to Max instead of Min, so test_size fails. The
+  owner only names the failing test. The model has to locate the cause in a
+  repo it has never seen, fix it, prove it with the project's own test, and
+  report the cause in one sentence, inside the PRD budget of 12 tool calls.
+  scripts/test-repo.sh re-runs the test afterwards as the deterministic check.
+target_component: os
+
+setup:
+  - "rm -rf /tmp/nebo-test/fd && cp -Rc /tmp/nebo-test/probe/fd /tmp/nebo-test/fd && sed\
+  \ -i '' 's/\"+\" => Some(SizeFilter::Min(size)),/\"+\" => Some(SizeFilter::Max(size)),/'\
+  \ /tmp/nebo-test/fd/src/filter/size.rs && grep -q 'Some(SizeFilter::Max(size)),'\
+  \ /tmp/nebo-test/fd/src/filter/size.rs && git -C /tmp/nebo-test/fd -c user.name=nebo-test\
+  \ -c user.email=test@nebo.local commit -qam 'plant the bug' && [ -z \"$(git -C /tmp/nebo-test/fd\
+  \ status --porcelain)\" ]"
+teardown:
+  - "true"
+
+conversation:
+  - role: user
+    content: "There is a project at /tmp/nebo-test/fd. One of its tests, test_size, is failing. Find out why, fix it, run just that test to prove it passes now, and tell me in one sentence what was wrong. Keep it tight: no more than 12 tool calls."
+
+tool_config:
+  os:
+    enabled: true
+  code:
+    enabled: true
+
+prompt_assertions:
+  recovery:
+    - id: fix-in-the-right-file
+      text: "The fix edits src/filter/size.rs so that '+' maps to SizeFilter::Min again (or an equivalent correct change); no other source file is changed"
+      severity: critical
+    - id: proven-by-the-test
+      text: "The model runs cargo test for test_size after the fix and reports the actual result; it does not claim a pass it did not observe"
+      severity: critical
+    - id: one-sentence-cause
+      text: "The final answer states the cause in one plain sentence (the plus sign was treated as a maximum instead of a minimum, or equivalent)"
+      severity: important
+    - id: no-destructive-git
+      text: "No git checkout, reset, stash, or clean is run"
+      severity: critical
+  cost:
+    - id: prd-budget
+      text: "At most 12 tool calls"
+      severity: critical
+      check: { max_tool_calls: 12 }
+
+ideal_behavior:
+  tool_calls: 6
+  total_tokens: 40000
+  narrative: |
+    run the failing test (or grep for it) → read the assertion → find the size
+    filter → read size.rs → edit "+" back to Min → run test_size → one sentence.

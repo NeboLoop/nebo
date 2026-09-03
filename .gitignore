@@ -38,3 +38,4 @@ src-tauri/binaries/
 /*.png
 /target-linux-amd64
 appimage-build.log
+target-check/

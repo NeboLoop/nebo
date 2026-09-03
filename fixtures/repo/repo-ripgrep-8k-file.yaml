@@ -1,0 +1,56 @@
+id: repo-ripgrep-8k-file
+name: "Real repo: fix a bug inside an 7,700-line file the model has never seen"
+description: |
+  ripgrep 14.1.1 (MIT/Unlicense) from a warmed probe clone. The planted bug is
+  in crates/core/flags/defs.rs (7,675 lines): --max-count stores n+1. The owner
+  names the failing test and how to run it. The PRD one-sentence test: fix a
+  bug in an unseen 5k+ line file in under 12 tool calls with an honest report.
+target_component: os
+
+setup:
+  - "rm -rf /tmp/nebo-test/ripgrep && cp -Rc /tmp/nebo-test/probe/ripgrep /tmp/nebo-test/ripgrep\
+  \ && sed -i '' 's/args.max_count = Some(convert::u64(&v.unwrap_value())?);/args.max_count\
+  \ = Some(convert::u64(\\&v.unwrap_value())? + 1);/' /tmp/nebo-test/ripgrep/crates/core/flags/defs.rs\
+  \ && grep -q 'unwrap_value())? + 1);' /tmp/nebo-test/ripgrep/crates/core/flags/defs.rs\
+  \ && git -C /tmp/nebo-test/ripgrep -c user.name=nebo-test -c user.email=test@nebo.local\
+  \ commit -qam 'plant the bug' && [ -z \"$(git -C /tmp/nebo-test/ripgrep status --porcelain)\"\
+  \ ]"
+teardown:
+  - "true"
+
+conversation:
+  - role: user
+    content: "There is a project at /tmp/nebo-test/ripgrep. The test called test_max_count fails (you can run it with: cargo test --bin rg flags::defs::test_max_count). Find the cause, fix it, run that test to prove it passes, and tell me in one sentence what was wrong. No more than 12 tool calls."
+
+tool_config:
+  os:
+    enabled: true
+  code:
+    enabled: true
+
+prompt_assertions:
+  recovery:
+    - id: fix-in-the-right-place
+      text: "The fix is in crates/core/flags/defs.rs, in the MaxCount flag's update, removing the '+ 1'; no other change is made"
+      severity: critical
+    - id: proven-by-the-test
+      text: "The model runs the named test after the fix and reports the actual result"
+      severity: critical
+    - id: no-whole-file-dump
+      text: "The model does not read the entire 7,700-line file in one call; it locates the flag by search or symbol lookup and reads a bounded range"
+      severity: important
+    - id: no-destructive-git
+      text: "No git checkout, reset, stash, or clean is run"
+      severity: critical
+  cost:
+    - id: prd-budget
+      text: "At most 12 tool calls"
+      severity: critical
+      check: { max_tool_calls: 12 }
+
+ideal_behavior:
+  tool_calls: 6
+  total_tokens: 45000
+  narrative: |
+    run the test → read the failure (expected 5, got 6) → grep max_count in
+    defs.rs → read the update fn → remove + 1 → re-run → one sentence.

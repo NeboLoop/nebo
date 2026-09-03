@@ -40,7 +40,7 @@ MAC_BIN_DIR = $(if $(MAC_TARGET),target/$(MAC_TARGET)/release,$(TAURI_RELEASE))
 # DMG arch suffix: amd64 for the x86_64 cross, else the host arch (arm64).
 DMG_ARCH = $(if $(MAC_TARGET),$(if $(filter x86_64-apple-darwin,$(MAC_TARGET)),amd64,arm64),$(UNAME_M))
 
-.PHONY: help dev run build build-desktop test test-live test-live-fast test-tools test-cache-prefix clean clean-cache seed-plugins stage-obscura stage-ripgrep bundle-napps plugin-status release release-darwin release-linux release-windows release-macos release-macos-amd64 publish-macos app-bundle dmg notarize install github-release gen
+.PHONY: help dev run build build-desktop test test-live test-live-fast test-tools test-cache-prefix test-repo test-repo-probes test-busy-session clean clean-cache seed-plugins stage-obscura stage-ripgrep bundle-napps plugin-status release release-darwin release-linux release-windows release-macos release-macos-amd64 publish-macos app-bundle dmg notarize install github-release gen
 
 # Default target
 help:
@@ -558,6 +558,15 @@ test-tools:
 # L6: prompt-cache read ratio over one multi-iteration fixture (needs the
 # provider to report cached tokens; Janus does).
 .PHONY: test-cache-prefix
+test-repo: ## Real open-source repos: PRD one-sentence test + seven-way fan-out (L4); needs make dev and the probes
+	@bash scripts/test-repo.sh
+
+test-repo-probes: ## Clone and warm the probe repos test-repo copies from (network, once)
+	@bash scripts/test-repo-probes.sh
+
+test-busy-session: ## Live: a second message on a busy session gets a status line, not a second run (needs make dev, node)
+	@TEST_SERVER=$(TEST_SERVER) node scripts/probe-busy-session.mjs
+
 test-cache-prefix:
 	@TEST_SERVER=$(TEST_SERVER) NEBO_CLI=$(NEBO_CLI) bash scripts/test-cache-prefix.sh
 

@@ -97,6 +97,27 @@ pub enum Exit {
     MaxIterations { done: usize, max: usize },
     /// A workflow primitive ended the turn (`workflow_exit:…`, `suspension_failed:…`).
     Workflow(String),
+    /// Nothing moved for [`RUN_IDLE_LIMIT`]: no event reached the dispatcher.
+    /// Raised outside the loop, by the dispatcher, so it also covers a run
+    /// whose loop has already returned but whose channel never closed.
+    Stalled,
+}
+
+/// How long a run may go without a single stream event before the dispatcher
+/// ends it as [`Exit::Stalled`]. Must outlast the longest thing that is
+/// silent while it works: a blocking child (`SUBAGENT_INACTIVITY_TIMEOUT`)
+/// and a shell command at its own timeout. Live 2026-09-02: a run whose turn
+/// had ended sat "active" for 38 minutes with nothing bounding it.
+pub const RUN_IDLE_LIMIT: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+
+/// The owner-facing line for a stalled run. States what was observed and what
+/// was done; never guesses at a cause.
+pub fn stall_notice() -> String {
+    format!(
+        "Stopped: nothing happened for {} minutes (no reply text and no tool activity), \
+         so the run was ended instead of left hanging. Ask again to continue.",
+        RUN_IDLE_LIMIT.as_secs() / 60
+    )
 }
 
 impl Exit {
@@ -114,6 +135,7 @@ impl Exit {
             Exit::TextResponse(stop) => format!("text_response(stop_reason={stop})"),
             Exit::MaxIterations { done, max } => format!("max_iterations_reached({done}/{max})"),
             Exit::Workflow(reason) => reason.clone(),
+            Exit::Stalled => "stalled".into(),
         }
     }
     pub fn is_text_response(&self) -> bool {
@@ -259,6 +281,7 @@ mod escalation_tests {
         }
         assert!(Exit::MaxIterations { done: 50, max: 50 }.label().starts_with("max_iterations"));
         assert!(Exit::Workflow("workflow_exit:done".into()).label().starts_with("workflow_exit:"));
+        assert_eq!(Exit::Stalled.label(), "stalled");
         assert!(Exit::TextResponse("Some(\"stop\")".into()).is_text_response());
     }
 
@@ -286,6 +309,16 @@ mod escalation_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A blocking child's stall must fire before its parent's: otherwise the
+    /// parent is ended as stalled while the child is about to report.
+    #[test]
+    fn run_idle_limit_outlasts_a_child_stall_and_the_notice_states_the_window() {
+        assert!(RUN_IDLE_LIMIT > crate::orchestrator::SUBAGENT_INACTIVITY_TIMEOUT);
+        let n = stall_notice();
+        assert!(n.contains("15 minutes"), "{n}");
+        assert!(!n.contains('\u{2014}'), "no em dash in owner copy");
+    }
 
     #[test]
     fn defaults_when_empty_or_invalid() {

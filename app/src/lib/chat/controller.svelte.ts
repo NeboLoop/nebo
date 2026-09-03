@@ -76,7 +76,7 @@ export interface ToolUse {
 }
 
 export type ChatMessage =
-  | { type: 'user'; content: string; time?: string; id?: string; attachments?: UploadedAttachment[] }
+  | { type: 'user'; content: string; time?: string; id?: string; attachments?: UploadedAttachment[]; note?: string }
   | { type: 'thinking'; content: string; duration: string }
   | { type: 'ask'; requestId: string; prompt: string; widgets: AskWidgetDef[]; response?: string }
   | { type: 'assistant'; content: string; time?: string; delegateAgentId?: string; delegateAgentName?: string; id?: string; attachments?: UploadedAttachment[]; workItems?: WorkItem[]; tools?: ToolUse[]; streaming?: boolean };
@@ -400,6 +400,8 @@ export function createChatController(config: ChatControllerConfig) {
 
   function handleChatComplete(data: any) {
     if (!isMyEvent(data)) return;
+    // The queued message's own completion: the first turn is still running.
+    if (data.stop_reason === QUEUED_INTO_RUNNING_TURN) return;
     const aid = data.agentId || agentId;
     // Flush any buffered streamed text into the open reply before finalizing.
     flushPending(aid);
@@ -552,7 +554,7 @@ export function createChatController(config: ChatControllerConfig) {
         response,
         outcome: data.outcome,
         ...(data.payload && typeof data.payload === 'object' ? { payload: data.payload } : {}),
-        durationMs: started ? Date.now() - started : undefined,
+        durationMs: typeof data.duration_ms === 'number' ? data.duration_ms : (started ? Date.now() - started : undefined),
       };
       messages[i] = { ...m, tools };
       return;
@@ -601,8 +603,28 @@ export function createChatController(config: ChatControllerConfig) {
     quotaWarning = data.message || data.text || '';
   }
 
+  // Sent while the employee was still working: the server appended it to the
+  // thread for the running turn's next step and answered with a status line.
+  // Keep the spinner (the first turn is still running) and hang the status
+  // under the message as a note; it is not a reply.
+  const QUEUED_INTO_RUNNING_TURN = 'queued_into_running_turn';
+  function noteLastUserMessage(note: string) {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      if (m.type === 'user') {
+        messages[i] = { ...m, note };
+        messages = [...messages];
+        return;
+      }
+    }
+  }
+
   function handleChatError(data: any) {
     if (!isMyEvent(data)) return;
+    if (data.stop_reason === QUEUED_INTO_RUNNING_TURN) {
+      noteLastUserMessage(data.error || '');
+      return;
+    }
     isLoading = false;
     resetStreaming();
     phaseStartTime = 0;

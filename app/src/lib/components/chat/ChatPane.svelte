@@ -72,7 +72,7 @@
   }
 
   type Message =
-    | { type: 'user'; content: string; time?: string; attachments?: UploadedAttachment[] }
+    | { type: 'user'; content: string; time?: string; attachments?: UploadedAttachment[]; note?: string }
     | { type: 'thinking'; content: string; duration: string }
     | { type: 'ask'; requestId: string; prompt: string; widgets: AskWidgetDef[]; response?: string }
     | { type: 'assistant'; content: string; time?: string; delegateAgentId?: string; delegateAgentName?: string; id?: string; attachments?: UploadedAttachment[]; tools?: ToolMsg[]; streaming?: boolean };
@@ -1272,7 +1272,7 @@
       {@const isOpen = !!collapsedToolGroups[keyId]}
       <div class="max-w-[640px] my-1">
         <button
-          class="flex items-center gap-1.5 text-xs text-base-content/50 cursor-pointer bg-transparent border-none p-0 hover:text-base-content/70 transition-colors"
+          class="flex items-center gap-1.5 text-xs text-base-content/50 cursor-pointer border-none p-0 hover:text-base-content/70 transition-colors {isOpen ? 'tool-timeline-head' : 'bg-transparent'}"
           onclick={() => toggleToolGroup(keyId)}
         >
           {#if hasRunning}
@@ -1532,6 +1532,9 @@
                 </div>
               {/if}
             </div>
+            {#if msg.note}
+              <div class="mt-1 text-xs text-base-content/50 text-right">{msg.note}</div>
+            {/if}
             <div class="flex items-center gap-1 justify-end mt-1.5">
               {#if msg.time}
                 <span class="text-xs text-base-content/50 font-mono mr-1">{msg.time}</span>

@@ -578,6 +578,13 @@ struct ToolResultRow {
     /// renders the same rich cards as the live stream.
     #[serde(skip_serializing_if = "Option::is_none")]
     payload: Option<serde_json::Value>,
+    /// The past-tense outcome the live stream showed ("Ran shell"), persisted
+    /// so a reloaded thread reads the same as the live one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    outcome: Option<String>,
+    /// Wall-clock milliseconds the call took, for the same reason.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    duration_ms: Option<u64>,
 }
 
 /// Workflow-mode configuration for a run — the ONE-loop convergence: workflow
@@ -753,6 +760,80 @@ pub struct RunRequest {
     pub workflow: Option<WorkflowMode>,
 }
 
+/// A turn in flight on one session. The runner admits ONE per session key: a
+/// second request while it runs is appended to the session as the owner's next
+/// message (the loop reloads history every iteration, so the model hears it at
+/// its next step) and the caller gets a status line instead of a second worker
+/// on the same job. Live 2026-09-03: four voice "status?" calls started four
+/// more runs on one thread; they fought over one file for five minutes.
+pub struct ActiveTurn {
+    pub started: std::time::Instant,
+    pub progress: RunProgress,
+}
+
+pub type ActiveTurns = Arc<std::sync::Mutex<HashMap<String, ActiveTurn>>>;
+
+/// Admit a turn on `session_key`, or say why not. Check and insert are one
+/// step under the lock so two callers cannot both pass.
+pub fn admit_turn(turns: &ActiveTurns, session_key: &str, progress: RunProgress) -> Result<TurnGuard, String> {
+    let mut map = turns.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some(active) = map.get(session_key) {
+        return Err(busy_status_line(active));
+    }
+    map.insert(session_key.to_string(), ActiveTurn { started: std::time::Instant::now(), progress });
+    Ok(TurnGuard { turns: turns.clone(), session_key: session_key.to_string() })
+}
+
+/// The typed stop reason a busy session answers with. Consumers render it as
+/// status (chat: a note under the message, spinner kept; voice: read aloud),
+/// never as the employee's reply.
+pub const QUEUED_INTO_RUNNING_TURN: &str = "queued_into_running_turn";
+
+/// Releases the session when the run's task ends, however it ends.
+pub struct TurnGuard {
+    turns: ActiveTurns,
+    session_key: String,
+}
+
+impl Drop for TurnGuard {
+    fn drop(&mut self) {
+        // Recover a poisoned lock: a panic elsewhere must not leave the session
+        // marked busy, which would queue every later message forever.
+        self.turns.lock().unwrap_or_else(|p| p.into_inner()).remove(&self.session_key);
+    }
+}
+
+/// ONE answer to "is a turn running on this session": the same map the
+/// admission check uses, so callers that never register with the server's
+/// run registry (voice, MCP) are seen too.
+pub fn session_is_busy(turns: &ActiveTurns, session_key: &str) -> bool {
+    turns.lock().unwrap_or_else(|p| p.into_inner()).contains_key(session_key)
+}
+
+/// What a second caller hears while a turn is busy. Built from the live
+/// counters, no model call; read aloud by voice, shown as status in chat.
+pub fn busy_status_line(active: &ActiveTurn) -> String {
+    let secs = active.started.elapsed().as_secs();
+    let elapsed = if secs < 90 {
+        format!("{secs} seconds")
+    } else {
+        format!("{} minutes", secs / 60)
+    };
+    let calls = active.progress.tool_call_count.load(std::sync::atomic::Ordering::Relaxed);
+    let tool = active
+        .progress
+        .current_tool
+        .lock()
+        .map(|t| t.clone())
+        .unwrap_or_default();
+    let doing = if tool.is_empty() { "thinking".to_string() } else { format!("running {tool}") };
+    format!(
+        "Still working on it: {elapsed} in, {calls} tool calls so far, currently {doing}. \
+         Your message is in the thread where that work reads it at its next step; if the \
+         work finishes first, you will see your message waiting there."
+    )
+}
+
 /// Shared atomic counters for live run progress reporting.
 /// Created by the server's RunRegistry and threaded into the runner.
 #[derive(Clone, Debug)]
@@ -910,6 +991,7 @@ pub struct Runner {
     hybrid_searcher: Option<Arc<dyn tools::HybridSearcher>>,
     /// Optional broadcast/loop-push sink for auto-generated chat titles.
     title_sink: std::sync::OnceLock<Arc<dyn ChatTitleSink>>,
+    active_turns: ActiveTurns,
 }
 
 impl Runner {
@@ -940,6 +1022,7 @@ impl Runner {
             embedding_provider: None,
             hybrid_searcher: None,
             title_sink: std::sync::OnceLock::new(),
+            active_turns: Arc::new(std::sync::Mutex::new(HashMap::new())),
         }
     }
 
@@ -969,6 +1052,11 @@ impl Runner {
     }
 
     /// Set the shared ask channels so tools can prompt the user via `ctx.ask_user()`.
+    /// Whether a turn is running on `session_key` (see `ActiveTurn`).
+    pub fn is_session_busy(&self, session_key: &str) -> bool {
+        session_is_busy(&self.active_turns, session_key)
+    }
+
     pub fn set_ask_channels(mut self, channels: tools::AskChannels) -> Self {
         self.ask_channels = Some(channels);
         self
@@ -1052,6 +1140,48 @@ impl Runner {
 
         let session_id = session.id.clone();
         info!(session_id = %session_id, ms = t_run_entry.elapsed().as_millis() as u64, "[telemetry] session ready");
+
+        // One turn per session (see `ActiveTurn`). Callers without a registry
+        // handle (voice, MCP) still get live counters for the status line.
+        let progress = req.progress.clone().unwrap_or_else(|| RunProgress {
+            run_id: uuid::Uuid::new_v4().to_string(),
+            iteration_count: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            tool_call_count: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            current_tool: Arc::new(std::sync::Mutex::new(String::new())),
+        });
+        let turn_guard = match admit_turn(&self.active_turns, &session_key, progress.clone()) {
+            Ok(guard) => guard,
+            Err(status) => {
+                // The owner's words reach the running turn as its next message,
+                // framed so the model knows they arrived mid-work. Untrusted
+                // caller framing (phone lines) rides along.
+                let mut queued = format!(
+                    "[Arrived while you were working, via {}] {}",
+                    if req.channel.is_empty() { "chat" } else { req.channel.as_str() },
+                    req.prompt
+                );
+                if let Some(ctx) = req.mention_context.as_deref() {
+                    queued.push_str("\n");
+                    queued.push_str(ctx);
+                }
+                if let Err(e) = self.sessions.append_message(&session_id, "user", &queued, None, None, None) {
+                    warn!(session_id = %session_id, error = %e, "could not queue a message into the running turn");
+                }
+                info!(session_id = %session_id, channel = %req.channel, "second request on a busy session queued into the running turn");
+                // ponytail: no follow-up turn is started if the running loop ends
+                // before its next history reload; the message stays in the thread
+                // (the status line says so). Add a queued-turn hand-off to the
+                // dispatcher if that shows up as a real gap.
+                let (tx, rx) = mpsc::channel(4);
+                // A send fails only if the caller already dropped the receiver;
+                // there is nobody left to tell.
+                let _ = tx
+                    .send(StreamEvent::control_notice(status, QUEUED_INTO_RUNNING_TURN))
+                    .await;
+                let _ = tx.send(StreamEvent::done()).await;
+                return Ok(rx);
+            }
+        };
 
         // Pre-load skills into the sub-agent's conversation.
         // Each skill becomes a user message with isMeta metadata so the UI doesn't
@@ -1350,7 +1480,7 @@ impl Runner {
         let presence_tracker = req.presence_tracker.clone();
         let proactive_inbox = req.proactive_inbox.clone();
         let prompt_mode = req.prompt_mode.clone();
-        let progress = req.progress.clone();
+        let progress = Some(progress);
         let ask_channels = self.ask_channels.clone();
         let approval_channels = self.approval_channels.clone();
         let full_access = req.full_access;
@@ -1381,6 +1511,8 @@ impl Runner {
         let mcp_context = self.mcp_context.clone();
 
         tokio::spawn(async move {
+            // Releases the session for the next turn when this task ends.
+            let _turn = turn_guard;
             // Sub-agent runs close their own browser tab/page when the run ends
             // (normal, error, or cancellation). Top-level runs are cleaned up by
             // their dispatcher, so gate on the subagent session key.
@@ -1892,6 +2024,41 @@ const PLAN_REMINDER_EVERY: usize = 10;
 /// the live site calls this, it does not re-implement it).
 fn plan_reminder_due(iteration: usize, last_touch: usize) -> bool {
     iteration.saturating_sub(last_touch) >= PLAN_REMINDER_EVERY
+}
+
+/// Post-tool hooks, applied to a result BEFORE it is streamed or persisted, so
+/// the owner's transcript and the trace carry exactly what the model was
+/// given (a formatter's note, a test runner's verdict). Plugins listen as
+/// actions (fire-and-forget); shell hooks as filters whose response is the
+/// result. Live 2026-09-02: the hook note reached the model but not the trace,
+/// because the event went out first.
+async fn apply_post_tool_hooks(
+    hooks: &napp::HookDispatcher,
+    tc: &ai::ToolCall,
+    result: &mut ToolResult,
+    session_id: &str,
+    run_cwd: Option<&str>,
+) {
+    if !hooks.has_subscribers("tool.post_execute") {
+        return;
+    }
+    let payload = serde_json::to_vec(&crate::hooks::ToolPostExecutePayload {
+        tool_name: tc.name.clone(),
+        result: result.content.clone(),
+        is_error: result.is_error,
+        session_id: session_id.to_string(),
+        tool_use_id: tc.id.clone(),
+        tool_input: tc.input.clone(),
+        cwd: run_cwd.map(str::to_string).unwrap_or_default(),
+        agent_id: session_id.strip_prefix("subagent:").map(|_| session_id.to_string()),
+    })
+    .unwrap_or_default();
+    hooks.do_action("tool.post_execute", payload.clone()).await;
+    let (bytes, _) = hooks.apply_filter("tool.post_execute", payload).await;
+    if let Ok(resp) = serde_json::from_slice::<crate::hooks::ToolPostExecuteResponse>(&bytes) {
+        result.content = resp.result;
+        result.is_error = resp.is_error;
+    }
 }
 
 async fn run_loop(
@@ -5358,6 +5525,7 @@ async fn run_loop(
                         .execution_timeout(&tc.name, &tc.input)
                         .await
                         .unwrap_or(TOOL_EXECUTION_TIMEOUT);
+                    let started = std::time::Instant::now();
                     let result = tokio::time::timeout(
                         budget,
                         tools.execute(&ctx, &tc.name, tc.input.clone()),
@@ -5371,14 +5539,17 @@ async fn run_loop(
                             budget.as_secs()
                         )),
                     };
+                    let duration_ms = started.elapsed().as_millis() as u64;
                     let result_log = truncate_str(&result.content, 300);
                     info!(tool = %tc.name, id = %tc.id, is_error = result.is_error, result = %result_log, "tool result");
-                    (idx, tc, result)
+                    (idx, tc, result, duration_ms)
                 });
             }
 
             // Collect results as they complete, send events immediately
             let mut results: Vec<Option<(ai::ToolCall, ToolResult)>> = vec![None; tool_calls.len()];
+            // The call's wall-clock time per tool id; persisted with the result.
+            let mut durations: HashMap<String, u64> = HashMap::new();
             loop {
                 let item = tokio::select! {
                     _ = cancel_token.cancelled() => {
@@ -5390,7 +5561,8 @@ async fn run_loop(
                         None => break,
                     }
                 };
-                let (idx, tc, result) = item;
+                let (idx, tc, mut result, duration_ms) = item;
+                apply_post_tool_hooks(hooks, &tc, &mut result, session_id, run_cwd).await;
                 // Send tool result event immediately as each completes
                 let _ = tx
                     .send(StreamEvent { payload: result.payload.clone(),
@@ -5412,12 +5584,15 @@ async fn run_loop(
                         },
                         usage: None,
                         rate_limit: None,
-                        widgets: None,
+                        // The call's wall-clock time rides in the widgets slot so the
+                        // live timeline and the reloaded one show the same duration.
+                        widgets: Some(serde_json::json!({ "duration_ms": duration_ms })),
                         provider_metadata: None,
                         stop_reason: None,
                         image_url: result.image_url.clone(),
                     })
                     .await;
+                durations.insert(tc.id.clone(), duration_ms);
                 results[idx] = Some((tc, result));
             }
 
@@ -5436,12 +5611,13 @@ async fn run_loop(
                     .execution_timeout(&tc.name, &tc.input)
                     .await
                     .unwrap_or(TOOL_EXECUTION_TIMEOUT);
+                let started = std::time::Instant::now();
                 let result = tokio::time::timeout(
                     budget,
                     tools.execute(&ctx, &tc.name, tc.input.clone()),
                 )
                 .await;
-                let result = match result {
+                let mut result = match result {
                     Ok(r) => r,
                     Err(_) => ToolResult::error(format!(
                         "Tool '{}' timed out after {}s",
@@ -5449,6 +5625,8 @@ async fn run_loop(
                         budget.as_secs()
                     )),
                 };
+                let duration_ms = started.elapsed().as_millis() as u64;
+                apply_post_tool_hooks(hooks, &tc, &mut result, session_id, run_cwd).await;
                 let result_log = truncate_str(&result.content, 300);
                 info!(tool = %tc.name, id = %tc.id, is_error = result.is_error, result = %result_log, "tool result");
                 let _ = tx
@@ -5471,12 +5649,15 @@ async fn run_loop(
                         },
                         usage: None,
                         rate_limit: None,
-                        widgets: None,
+                        // The call's wall-clock time rides in the widgets slot so the
+                        // live timeline and the reloaded one show the same duration.
+                        widgets: Some(serde_json::json!({ "duration_ms": duration_ms })),
                         provider_metadata: None,
                         stop_reason: None,
                         image_url: result.image_url.clone(),
                     })
                     .await;
+                durations.insert(tc.id.clone(), duration_ms);
                 results[idx] = Some((tc, result));
             }
 
@@ -5503,33 +5684,6 @@ async fn run_loop(
                         })
                         .await;
                     results[idx] = Some((tc, result));
-                }
-            }
-
-            // Fire tool.post_execute action hooks for completed tools.
-            if hooks.has_subscribers("tool.post_execute") {
-                for entry in results.iter_mut() {
-                    if let Some((tc, result)) = entry {
-                        let payload = serde_json::to_vec(&crate::hooks::ToolPostExecutePayload {
-                            tool_name: tc.name.clone(),
-                            result: result.content.clone(),
-                            is_error: result.is_error,
-                            session_id: session_id.to_string(),
-                            tool_use_id: tc.id.clone(),
-                            tool_input: tc.input.clone(),
-                            cwd: run_cwd.map(str::to_string).unwrap_or_default(),
-                            agent_id: session_id.strip_prefix("subagent:").map(|_| session_id.to_string()),
-                        })
-                        .unwrap_or_default();
-                        // Plugins listen as actions (fire-and-forget); shell hooks as
-                        // filters whose response is what the model sees.
-                        hooks.do_action("tool.post_execute", payload.clone()).await;
-                        let (bytes, _) = hooks.apply_filter("tool.post_execute", payload).await;
-                        if let Ok(resp) = serde_json::from_slice::<crate::hooks::ToolPostExecuteResponse>(&bytes) {
-                            result.content = resp.result;
-                            result.is_error = resp.is_error;
-                        }
-                    }
                 }
             }
 
@@ -5993,6 +6147,8 @@ async fn run_loop(
 
                 let row = ToolResultRow {
                     tool_call_id: tc.id.clone(),
+                    outcome: Some(tools::humanize::tool_call(&tc.name, &tc.input).1),
+                    duration_ms: durations.get(&tc.id).copied(),
                     content: result.content,
                     is_error: result.is_error,
                     image_url: result.image_url,
@@ -7469,6 +7625,37 @@ mod named_invocation_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn progress() -> RunProgress {
+        RunProgress {
+            run_id: "r".into(),
+            iteration_count: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            tool_call_count: Arc::new(std::sync::atomic::AtomicU32::new(3)),
+            current_tool: Arc::new(std::sync::Mutex::new("os: exec".into())),
+        }
+    }
+
+    /// The live failure: a second request on a busy session must not become a
+    /// second worker. It is refused with a status line, and the session opens
+    /// again the moment the first turn's guard drops.
+    #[test]
+    fn one_turn_per_session_and_the_guard_reopens_it() {
+        let turns: ActiveTurns = Arc::new(std::sync::Mutex::new(HashMap::new()));
+        let first = admit_turn(&turns, "agent:a:thread:t", progress()).expect("first turn admitted");
+        let second = admit_turn(&turns, "agent:a:thread:t", progress());
+        let status = match second {
+            Err(s) => s,
+            Ok(_) => panic!("a second turn was admitted on a busy session"),
+        };
+        assert!(status.contains("3 tool calls") && status.contains("running os: exec"), "{status}");
+        assert!(!status.contains('\u{2014}'), "no em dash in owner copy");
+        assert!(!status.contains("stop") && !status.contains("will answer"), "promises only what the code does: {status}");
+        assert!(session_is_busy(&turns, "agent:a:thread:t"));
+        assert!(admit_turn(&turns, "agent:a:thread:other", progress()).is_ok(), "other sessions are unaffected");
+        drop(first);
+        assert!(!session_is_busy(&turns, "agent:a:thread:t"));
+        assert!(admit_turn(&turns, "agent:a:thread:t", progress()).is_ok(), "released when the guard drops");
+    }
 
     /// Spiral tests exercise the counting mechanics at the shipped default.
     const SAME_ACTION_LIMIT: usize = crate::guardrails::DEFAULT_SAME_ACTION_LIMIT;

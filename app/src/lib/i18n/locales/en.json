@@ -313,6 +313,7 @@
 	"chatInput": {
 		"placeholder": "Reply...",
 		"loadingPlaceholder": "Type to queue your next message...",
+		"sendWhileWorking": "Send now. It reaches the work at its next step.",
 		"listening": "Listening...",
 		"attachFile": "Attach file (inserts path)",
 		"newSession": "New session",

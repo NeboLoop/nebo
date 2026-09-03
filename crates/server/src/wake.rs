@@ -61,7 +61,7 @@ pub fn enqueue(
 /// Drain a session's pending wakes into ONE wake run. No-op when the session
 /// is busy (its run's completion drains) or a wake run is already in flight.
 pub async fn deliver(state: &AppState, session_key: &str) {
-    if state.run_registry.find_by_session(session_key).await.is_some() {
+    if state.runner.is_session_busy(session_key) {
         // Busy (R3): hand the payloads to the live run's steering stream —
         // the agent hears them mid-work. Rows stamp delivered at injection
         // (runner-side); a run that ends without draining loses nothing —

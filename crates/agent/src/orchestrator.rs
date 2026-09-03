@@ -19,7 +19,19 @@ const WORKER_INACTIVITY_TIMEOUT: std::time::Duration = std::time::Duration::from
 /// Prefix on the partial output returned when a worker is aborted for
 /// inactivity. Callers match on it to record the task as failed for telemetry
 /// while still handing the accumulated output to the parent.
-const WORKER_STALL_MARKER: &str = "[partial — worker stalled after 120s of no activity]";
+/// A blocking or background child that emits nothing for this long is ended
+/// with a stall marker; the parent gets the partial output. Longer than the
+/// fan-out window because one child may run a whole build, shorter than the
+/// dispatcher's [`crate::guardrails::RUN_IDLE_LIMIT`] so the child reports
+/// before the parent is ended.
+pub const SUBAGENT_INACTIVITY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+/// Every stall marker starts with this; the window follows so the text is
+/// true for whichever bound fired.
+const STALL_MARKER_PREFIX: &str = "[partial: worker stalled after ";
+
+fn stall_marker(window: std::time::Duration) -> String {
+    format!("{STALL_MARKER_PREFIX}{}s of no activity]", window.as_secs())
+}
 
 /// Max sub-agent nesting depth. Without this, a weak model told to "work
 /// together" delegates, and each spawned agent re-delegates — nesting
@@ -396,8 +408,15 @@ impl Orchestrator {
                 );
                 apply_spawn_context(&mut run_req, &spawn_req);
 
-                let result =
-                    run_and_collect(&runner, run_req, cancel, None, parent_stream_tx, None).await;
+                let result = run_and_collect(
+                    &runner,
+                    run_req,
+                    cancel,
+                    None,
+                    parent_stream_tx,
+                    Some(SUBAGENT_INACTIVITY_TIMEOUT),
+                )
+                .await;
 
                 let wake_payload = match &result {
                     Ok(output) => format!(
@@ -474,7 +493,7 @@ impl Orchestrator {
             max_iterations,
         );
         apply_spawn_context(&mut req, spawn_req);
-        run_and_collect(&self.runner, req, cancel, None, parent_stream_tx, None).await
+        run_and_collect(&self.runner, req, cancel, None, parent_stream_tx, Some(SUBAGENT_INACTIVITY_TIMEOUT)).await
     }
 
     /// Execute a DAG of sub-tasks with reactive scheduling.
@@ -883,9 +902,9 @@ impl Orchestrator {
                 match &result {
                     // Stalled worker: the partial output still flows to the parent,
                     // but the task is recorded as failed so telemetry sees the stall.
-                    Ok(output) if output.starts_with(WORKER_STALL_MARKER) => {
+                    Ok(output) if output.starts_with(STALL_MARKER_PREFIX) => {
                         warn!(task_id = %tid, "worker stalled: no activity for {}s; keeping partial output", WORKER_INACTIVITY_TIMEOUT.as_secs());
-                        let _ = store.update_task_failed(&tid, WORKER_STALL_MARKER);
+                        let _ = store.update_task_failed(&tid, &stall_marker(WORKER_INACTIVITY_TIMEOUT));
                     }
                     Ok(output) => {
                         let _ = store.update_task_completed(&tid, Some(output.as_str()));
@@ -1225,7 +1244,7 @@ pub struct SubagentProgress {
 /// Accepts an optional progress sender for tracking tool counts and current operations.
 /// When `inactivity_timeout` is set, the run is aborted (token cancelled) after that
 /// long with no stream activity, and the accumulated output is returned as `Ok`
-/// prefixed with [`WORKER_STALL_MARKER`] — any event resets the window.
+/// prefixed with the stall marker (`stall_marker`) — any event resets the window.
 async fn run_and_collect(
     runner: &Arc<Runner>,
     req: RunRequest,
@@ -1345,9 +1364,9 @@ async fn run_and_collect(
         // Return what was accumulated instead of discarding it; the marker
         // prefix lets the caller record the task as stalled for telemetry.
         output = if output.is_empty() {
-            format!("{WORKER_STALL_MARKER} (no output produced)")
+            format!("{} (no output produced)", stall_marker(inactivity_timeout.unwrap_or_default()))
         } else {
-            format!("{WORKER_STALL_MARKER}\n\n{output}")
+            format!("{}\n\n{output}", stall_marker(inactivity_timeout.unwrap_or_default()))
         };
     }
 

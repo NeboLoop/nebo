@@ -6,6 +6,7 @@ pub mod app_tool;
 pub mod bot_tool;
 pub mod capabilities;
 pub mod checkpoint;
+pub mod humanize;
 pub mod channel_bridge;
 pub mod code_tool;
 pub mod coworker;

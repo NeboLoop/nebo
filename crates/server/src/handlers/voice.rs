@@ -546,7 +546,12 @@ async fn run_delegated_task(
         Ok(mut rx) => {
             let mut out = String::new();
             while let Some(event) = rx.recv().await {
-                if event.event_type == ai::StreamEventType::Text {
+                // Reply text, and typed run status (a busy session's "still
+                // working on it" line) which the caller needs to hear too.
+                if matches!(
+                    event.event_type,
+                    ai::StreamEventType::Text | ai::StreamEventType::ControlNotice
+                ) {
                     out.push_str(&event.text);
                 }
             }

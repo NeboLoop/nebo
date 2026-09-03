@@ -39,6 +39,9 @@ use tracing::{debug, warn};
 
 /// Default per-hook deadline. Sized for a build, not a linter.
 pub const DEFAULT_TIMEOUT_SECS: u64 = 600;
+/// The most a hook may ask for; the dispatcher's own deadline sits just above
+/// it, and a file asking for more is clamped (and told so in the log).
+pub const MAX_HOOK_TIMEOUT_SECS: u64 = 900;
 /// Stdout attached to a result is capped here; a hook that wants the model
 /// to see less should print less.
 pub const NOTE_CAP_CHARS: usize = 4_000;
@@ -128,9 +131,14 @@ pub fn find_hooks_file(start: &Path) -> Option<PathBuf> {
 pub fn load(path: &Path) -> Result<HooksFile, String> {
     let raw = std::fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
     let file: HooksFile = serde_yaml::from_str(&raw).map_err(|e| format!("parse {}: {e}", path.display()))?;
-    for h in file.pre_tool.iter().chain(file.post_tool.iter()) {
+    let mut file = file;
+    for h in file.pre_tool.iter_mut().chain(file.post_tool.iter_mut()) {
         if h.name.trim().is_empty() || h.command.trim().is_empty() {
             return Err(format!("{}: every hook needs `name` and `command`", path.display()));
+        }
+        if h.timeout_secs > MAX_HOOK_TIMEOUT_SECS {
+            warn!(hook = %h.name, asked = h.timeout_secs, "hook timeout clamped to {MAX_HOOK_TIMEOUT_SECS}s");
+            h.timeout_secs = MAX_HOOK_TIMEOUT_SECS;
         }
     }
     Ok(file)
@@ -197,48 +205,93 @@ fn cap(s: &str) -> String {
 }
 
 /// The dispatcher-facing caller: one per hooks file, filtering by hook name.
+/// Runs a folder's `.nebo/hooks.yaml` around the tool calls that touch that
+/// folder. Registered once, unconditionally; the hooks file is looked up per
+/// call from the folder the call works in, so an employee that moves to another
+/// project mid-session gets that project's hooks, and a folder without a file
+/// gets nothing.
 pub struct ShellHookCaller {
-    file: HooksFile,
-    cwd: PathBuf,
+    /// Parsed files by path, with the mtime they were read at.
+    cache: std::sync::Mutex<std::collections::HashMap<PathBuf, (std::time::SystemTime, Arc<HooksFile>)>>,
+}
+
+impl Default for ShellHookCaller {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ShellHookCaller {
-    pub fn new(file: HooksFile, cwd: PathBuf) -> Self {
-        Self { file, cwd }
+    pub fn new() -> Self {
+        Self { cache: std::sync::Mutex::new(std::collections::HashMap::new()) }
     }
 
-    /// Longest deadline among the hooks, so the dispatcher never cuts a
-    /// build short; each hook still runs under its own `timeout_secs`.
-    pub fn deadline(&self) -> Duration {
-        let max = self
-            .file
-            .pre_tool
-            .iter()
-            .chain(self.file.post_tool.iter())
-            .map(|h| h.timeout_secs)
-            .max()
-            .unwrap_or(DEFAULT_TIMEOUT_SECS);
-        Duration::from_secs(max + 5)
+    /// The folder a call works in: its own `cwd` (shell), the folder of its
+    /// `path` (file actions; a not-yet-written file still has a folder), else
+    /// the run's cwd, else the process cwd. Relative paths resolve against
+    /// the run's cwd.
+    pub fn workspace_for(input: &serde_json::Value, run_cwd: &str) -> PathBuf {
+        let base = if run_cwd.is_empty() {
+            std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+        } else {
+            PathBuf::from(run_cwd)
+        };
+        if let Some(cwd) = input.get("cwd").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+            return base.join(cwd);
+        }
+        if let Some(path) = input.get("path").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+            let full = base.join(path);
+            return if full.is_dir() { full } else { full.parent().map(Path::to_path_buf).unwrap_or(base) };
+        }
+        base
+    }
+
+    /// The hooks file for a workspace and the project root to run hooks in
+    /// (the folder holding `.nebo`). Re-read when the file's mtime changes.
+    fn resolve(&self, workspace: &Path) -> Option<(Arc<HooksFile>, PathBuf)> {
+        let path = find_hooks_file(workspace)?;
+        let root = path.parent()?.parent()?.to_path_buf();
+        let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok()?;
+        if let Ok(cache) = self.cache.lock() {
+            if let Some((seen, file)) = cache.get(&path) {
+                if *seen == mtime {
+                    return Some((file.clone(), root));
+                }
+            }
+        }
+        let file = match load(&path) {
+            Ok(f) => Arc::new(f),
+            Err(e) => {
+                warn!(error = %e, "hooks file ignored");
+                return None;
+            }
+        };
+        if let Ok(mut cache) = self.cache.lock() {
+            cache.insert(path, (mtime, file.clone()));
+        }
+        Some((file, root))
     }
 
     async fn pre(&self, payload: Vec<u8>) -> Result<(Vec<u8>, bool), String> {
         let p: crate::hooks::ToolPreExecutePayload = serde_json::from_slice(&payload).map_err(|e| e.to_string())?;
         let mut resp = crate::hooks::ToolPreExecuteResponse { blocked: false, blocked_message: None, input: None };
+        let Some((file, root)) = self.resolve(&Self::workspace_for(&p.input, &p.cwd)) else {
+            return Ok((serde_json::to_vec(&resp).map_err(|e| e.to_string())?, false));
+        };
         let mut current_input = p.input.clone();
-        for hook in &self.file.pre_tool {
+        for hook in &file.pre_tool {
             if !hook.matches(&p.tool_name, &current_input) {
                 continue;
             }
             let body = serde_json::to_vec(&crate::hooks::ToolPreExecutePayload { input: current_input.clone(), ..clone_pre(&p) })
                 .map_err(|e| e.to_string())?;
-            match run(hook, &body, &self.cwd).await {
+            match run(hook, &body, &root).await {
                 Outcome::Blocking(stderr) => {
                     resp.blocked = true;
                     resp.blocked_message = Some(format!("[hook {}]: {stderr}", hook.name));
                     break;
                 }
                 Outcome::Note(stdout) => {
-                    // Exit 0 with a JSON object carrying `input` rewrites the call.
                     if let Ok(v) = serde_json::from_str::<serde_json::Value>(&stdout) {
                         if let Some(input) = v.get("input").filter(|i| i.is_object()) {
                             current_input = input.clone();
@@ -257,8 +310,11 @@ impl ShellHookCaller {
     async fn post(&self, payload: Vec<u8>) -> Result<(Vec<u8>, bool), String> {
         let p: crate::hooks::ToolPostExecutePayload = serde_json::from_slice(&payload).map_err(|e| e.to_string())?;
         let mut resp = crate::hooks::ToolPostExecuteResponse { result: p.result.clone(), is_error: p.is_error };
-        for hook in self.file.post_tool.iter().filter(|h| h.matches(&p.tool_name, &p.tool_input)) {
-            match run(hook, &payload, &self.cwd).await {
+        let Some((file, root)) = self.resolve(&Self::workspace_for(&p.tool_input, &p.cwd)) else {
+            return Ok((serde_json::to_vec(&resp).map_err(|e| e.to_string())?, false));
+        };
+        for hook in file.post_tool.iter().filter(|h| h.matches(&p.tool_name, &p.tool_input)) {
+            match run(hook, &payload, &root).await {
                 Outcome::Note(stdout) if !stdout.is_empty() => {
                     resp.result.push_str(&format!("\n\n[hook {}]\n{stdout}", hook.name));
                 }
@@ -301,28 +357,15 @@ impl napp::hooks::HookCaller for ShellHookCaller {
     }
 }
 
-/// Load the workspace's hooks file (if any) and register it on the shared
-/// dispatcher. Called once at server start; `app_id` keeps it distinct from
-/// plugin subscriptions.
-pub fn register_workspace_hooks(dispatcher: &napp::HookDispatcher, cwd: &Path) -> Option<PathBuf> {
-    let path = find_hooks_file(cwd)?;
-    let file = match load(&path) {
-        Ok(f) => f,
-        Err(e) => {
-            warn!(error = %e, "hooks file ignored");
-            return None;
-        }
-    };
-    let caller = Arc::new(ShellHookCaller::new(file.clone(), cwd.to_path_buf()));
-    let deadline = Some(caller.deadline());
-    if !file.pre_tool.is_empty() {
-        dispatcher.register_with_timeout("tool.pre_execute", "shell-hooks", napp::hooks::HookType::Filter, 100, caller.clone(), deadline);
-    }
-    if !file.post_tool.is_empty() {
-        dispatcher.register_with_timeout("tool.post_execute", "shell-hooks", napp::hooks::HookType::Filter, 100, caller, deadline);
-    }
-    debug!(path = %path.display(), pre = file.pre_tool.len(), post = file.post_tool.len(), "shell hooks registered");
-    Some(path)
+/// Register the shell-hook caller on the ONE dispatcher plugins use. Called
+/// once at startup with no folder in hand: which `.nebo/hooks.yaml` applies is
+/// decided per call from the folder that call works in.
+pub fn register_workspace_hooks(dispatcher: &napp::HookDispatcher) {
+    let caller = Arc::new(ShellHookCaller::new());
+    let deadline = Some(Duration::from_secs(MAX_HOOK_TIMEOUT_SECS + 5));
+    dispatcher.register_with_timeout("tool.pre_execute", "shell-hooks", napp::hooks::HookType::Filter, 100, caller.clone(), deadline);
+    dispatcher.register_with_timeout("tool.post_execute", "shell-hooks", napp::hooks::HookType::Filter, 100, caller, deadline);
+    debug!("shell hooks registered; .nebo/hooks.yaml is resolved per call");
 }
 
 #[cfg(test)]
@@ -333,6 +376,29 @@ mod tests {
         Hook { name: "t".into(), command: cmd.into(), tool: None, resource: vec![], action: vec![], timeout_secs: 5 }
     }
 
+    /// A project folder with a `.nebo/hooks.yaml` (and a `.git` so the walk
+    /// stops there, never at some stray file above the temp dir).
+    fn project(yaml: &str) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".git")).unwrap();
+        std::fs::create_dir_all(dir.path().join(".nebo")).unwrap();
+        std::fs::write(dir.path().join(".nebo/hooks.yaml"), yaml).unwrap();
+        dir
+    }
+
+    fn post_payload(cwd: &str, input: serde_json::Value) -> Vec<u8> {
+        serde_json::to_vec(&crate::hooks::ToolPostExecutePayload {
+            tool_name: "os".into(), result: "Edited a.rs".into(), is_error: false, session_id: "s".into(),
+            tool_use_id: "c1".into(), tool_input: input, cwd: cwd.into(), agent_id: None,
+        }).unwrap()
+    }
+
+    fn pre_payload(cwd: &str, input: serde_json::Value) -> Vec<u8> {
+        serde_json::to_vec(&crate::hooks::ToolPreExecutePayload {
+            tool_name: "os".into(), input, session_id: "s".into(), tool_use_id: "c".into(), cwd: cwd.into(), agent_id: None,
+        }).unwrap()
+    }
+
     #[tokio::test]
     async fn exit_zero_appends_stdout_as_a_note() {
         let out = run(&hook("echo 'tests: 12 passed'"), b"{}", Path::new(".")).await;
@@ -341,13 +407,9 @@ mod tests {
 
     #[tokio::test]
     async fn exit_two_reaches_the_model_and_sets_is_error() {
-        let file = HooksFile { pre_tool: vec![], post_tool: vec![hook("echo 'FAILED: 1 test' >&2; exit 2")] };
-        let caller = ShellHookCaller::new(file, PathBuf::from("."));
-        let payload = serde_json::to_vec(&crate::hooks::ToolPostExecutePayload {
-            tool_name: "os".into(), result: "Edited a.rs".into(), is_error: false, session_id: "s".into(),
-            tool_use_id: "c1".into(), tool_input: serde_json::json!({"action": "edit"}), cwd: ".".into(), agent_id: None,
-        }).unwrap();
-        let (bytes, _) = caller.post(payload).await.unwrap();
+        let p = project("post_tool:\n  - name: t\n    command: \"echo 'FAILED: 1 test' >&2; exit 2\"\n");
+        let caller = ShellHookCaller::new();
+        let (bytes, _) = caller.post(post_payload(p.path().to_str().unwrap(), serde_json::json!({"action": "edit"}))).await.unwrap();
         let resp: crate::hooks::ToolPostExecuteResponse = serde_json::from_slice(&bytes).unwrap();
         assert!(resp.is_error);
         assert!(resp.result.starts_with("Edited a.rs"), "the tool's own result stays first");
@@ -356,40 +418,81 @@ mod tests {
 
     #[tokio::test]
     async fn other_exits_are_owner_only() {
-        let file = HooksFile { pre_tool: vec![], post_tool: vec![hook("echo boom >&2; exit 1")] };
-        let caller = ShellHookCaller::new(file, PathBuf::from("."));
-        let payload = serde_json::to_vec(&crate::hooks::ToolPostExecutePayload {
-            tool_name: "os".into(), result: "Edited".into(), is_error: false, session_id: "s".into(),
-            tool_use_id: String::new(), tool_input: serde_json::Value::Null, cwd: String::new(), agent_id: None,
-        }).unwrap();
-        let (bytes, _) = caller.post(payload).await.unwrap();
+        let p = project("post_tool:\n  - name: t\n    command: \"echo boom >&2; exit 1\"\n");
+        let caller = ShellHookCaller::new();
+        let (bytes, _) = caller.post(post_payload(p.path().to_str().unwrap(), serde_json::Value::Null)).await.unwrap();
         let resp: crate::hooks::ToolPostExecuteResponse = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(resp.result, "Edited", "the model sees nothing from an exit-1 hook");
+        assert_eq!(resp.result, "Edited a.rs", "the model sees nothing from an exit-1 hook");
         assert!(!resp.is_error);
     }
 
     #[tokio::test]
     async fn pre_tool_exit_two_is_a_refusal_and_exit_zero_json_rewrites_input() {
-        let file = HooksFile {
-            pre_tool: vec![
-                Hook { name: "lock".into(), command: r#"echo '{"input":{"action":"exec","command":"cargo build --locked"}}'"#.into(), tool: Some("os".into()), resource: vec![], action: vec!["exec".into()], timeout_secs: 5 },
-                Hook { name: "deny".into(), command: "echo 'not here' >&2; exit 2".into(), tool: Some("os".into()), resource: vec![], action: vec!["delete".into()], timeout_secs: 5 },
-            ],
-            post_tool: vec![],
-        };
-        let caller = ShellHookCaller::new(file, PathBuf::from("."));
-        let pre = |action: &str, command: &str| serde_json::to_vec(&crate::hooks::ToolPreExecutePayload {
-            tool_name: "os".into(), input: serde_json::json!({"action": action, "command": command}), session_id: "s".into(),
-            tool_use_id: "c".into(), cwd: ".".into(), agent_id: None,
-        }).unwrap();
-        let (bytes, handled) = caller.pre(pre("exec", "cargo build")).await.unwrap();
+        let p = project(concat!(
+            "pre_tool:\n",
+            "  - name: lock\n    tool: os\n    action: exec\n",
+            "    command: \"echo '{\\\"input\\\":{\\\"action\\\":\\\"exec\\\",\\\"command\\\":\\\"cargo build --locked\\\"}}'\"\n",
+            "  - name: deny\n    tool: os\n    action: delete\n    command: \"echo 'not here' >&2; exit 2\"\n",
+        ));
+        let cwd = p.path().to_str().unwrap();
+        let caller = ShellHookCaller::new();
+        let (bytes, handled) = caller.pre(pre_payload(cwd, serde_json::json!({"action": "exec", "command": "cargo build"}))).await.unwrap();
         let resp: crate::hooks::ToolPreExecuteResponse = serde_json::from_slice(&bytes).unwrap();
         assert!(!handled && !resp.blocked);
         assert_eq!(resp.input.unwrap()["command"], "cargo build --locked");
-        let (bytes, handled) = caller.pre(pre("delete", "")).await.unwrap();
+        let (bytes, handled) = caller.pre(pre_payload(cwd, serde_json::json!({"action": "delete", "command": ""}))).await.unwrap();
         let resp: crate::hooks::ToolPreExecuteResponse = serde_json::from_slice(&bytes).unwrap();
         assert!(handled && resp.blocked);
         assert_eq!(resp.blocked_message.as_deref(), Some("[hook deny]: not here"));
+    }
+
+    /// The gap this closes (Stage 4 known limit): hooks used to load once from
+    /// the server's folder. Now the folder a call touches decides, so two
+    /// projects in one session each get their own file, a call whose `path`
+    /// lies in another project follows the path, and a folder with no file
+    /// runs nothing. One caller serves all of them.
+    #[tokio::test]
+    async fn hooks_follow_the_folder_the_call_touches() {
+        let a = project("post_tool:\n  - name: which\n    command: echo project-A\n");
+        let b = project("post_tool:\n  - name: which\n    command: echo project-B\n");
+        let none = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(none.path().join(".git")).unwrap();
+        let caller = ShellHookCaller::new();
+        let note = |bytes: Vec<u8>| -> String {
+            let r: crate::hooks::ToolPostExecuteResponse = serde_json::from_slice(&bytes).unwrap();
+            r.result
+        };
+        // run cwd in A, relative path: A's hook
+        let (bytes, _) = caller.post(post_payload(a.path().to_str().unwrap(), serde_json::json!({"action": "edit", "path": "src/lib.rs"}))).await.unwrap();
+        assert!(note(bytes).ends_with("[hook which]\nproject-A"));
+        // run cwd still A, but the call's path is inside B: B's hook
+        let in_b = b.path().join("src/main.rs");
+        let (bytes, _) = caller.post(post_payload(a.path().to_str().unwrap(), serde_json::json!({"action": "write", "path": in_b}))).await.unwrap();
+        assert!(note(bytes).ends_with("[hook which]\nproject-B"));
+        // a shell call with its own cwd in B
+        let (bytes, _) = caller.post(post_payload(a.path().to_str().unwrap(), serde_json::json!({"action": "exec", "cwd": b.path()}))).await.unwrap();
+        assert!(note(bytes).ends_with("[hook which]\nproject-B"));
+        // a folder with no hooks file: untouched result
+        let (bytes, _) = caller.post(post_payload(none.path().to_str().unwrap(), serde_json::json!({"action": "edit", "path": "x.rs"}))).await.unwrap();
+        assert_eq!(note(bytes), "Edited a.rs");
+    }
+
+    #[tokio::test]
+    async fn an_edited_hooks_file_is_reread_and_an_oversized_timeout_is_clamped() {
+        let p = project("post_tool:\n  - name: which\n    command: echo one\n    timeout_secs: 99999\n");
+        let caller = ShellHookCaller::new();
+        let cwd = p.path().to_str().unwrap();
+        let (bytes, _) = caller.post(post_payload(cwd, serde_json::json!({"action": "edit", "path": "a"}))).await.unwrap();
+        let r: crate::hooks::ToolPostExecuteResponse = serde_json::from_slice(&bytes).unwrap();
+        assert!(r.result.ends_with("one"));
+        let (file, _) = caller.resolve(p.path()).unwrap();
+        assert_eq!(file.post_tool[0].timeout_secs, MAX_HOOK_TIMEOUT_SECS);
+        // Land the rewrite on a later mtime tick so the cache sees a change.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(p.path().join(".nebo/hooks.yaml"), "post_tool:\n  - name: which\n    command: echo two\n").unwrap();
+        let (bytes, _) = caller.post(post_payload(cwd, serde_json::json!({"action": "edit", "path": "a"}))).await.unwrap();
+        let r: crate::hooks::ToolPostExecuteResponse = serde_json::from_slice(&bytes).unwrap();
+        assert!(r.result.ends_with("two"), "{}", r.result);
     }
 
     #[tokio::test]

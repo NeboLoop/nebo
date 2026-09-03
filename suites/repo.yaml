@@ -1,0 +1,6 @@
+name: repo
+description: Real open-source repos (L4 of the parity test plan) - the PRD one-sentence test and the seven-way fan-out
+fixtures:
+  - ../fixtures/repo/repo-fd-planted-bug.yaml
+  - ../fixtures/repo/repo-ripgrep-8k-file.yaml
+  - ../fixtures/repo/repo-sveltestrap-fanout.yaml
