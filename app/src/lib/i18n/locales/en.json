@@ -1953,6 +1953,9 @@
 		"noRunsYet": "No runs yet",
 		"appBadge": "App"
 	},
+		"packagedDeleteWhy": "{name} was installed from a package, so its role, persona and rules live in that package rather than in your edits.",
+		"packagedDeleteConsequences": "Deleting it uninstalls the package from this computer and permanently removes every chat, run and memory it has. Reinstalling from the marketplace brings back the employee, not the history.",
+		"typeNameToConfirm": "Type {name} to confirm",
 	"agentLearning": {
 		"title": "Self-improvement",
 		"auto": "Learn freely",

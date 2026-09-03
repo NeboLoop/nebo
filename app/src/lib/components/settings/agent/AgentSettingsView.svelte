@@ -97,8 +97,21 @@
     }
   });
 
+  // A packaged employee (installed from the marketplace or a folder with an
+  // AGENT.md) keeps its role, persona, soul and rules in the package: the
+  // boot sync re-reads AGENT.md, so an edit here would not survive a restart.
+  // Name, voice and color are stored on this machine and never re-read, so
+  // they are the owner's to change on every employee.
+  const managed = $derived(!agent?.editable);
+
+  // A packaged employee is deleted only after the owner types its name: the
+  // action uninstalls the package and erases its history, and the name is
+  // the one thing an accidental click cannot supply.
+  let deleteTyped = $state('');
+  const deleteArmed = $derived(!managed || deleteTyped.trim() === (agent?.name ?? '').trim());
+
   async function handleDeleteAgent() {
-    if (!agentId || deleting) return;
+    if (!agentId || deleting || !deleteArmed) return;
     deleting = true;
     try {
       const api = await import('$lib/api/nebo');
@@ -213,13 +226,6 @@
     if (identitySaveTimer) clearTimeout(identitySaveTimer);
     identitySaveTimer = setTimeout(() => saveIdentity(), 800);
   }
-
-  // A packaged employee (installed from the marketplace or a folder with an
-  // AGENT.md) keeps its role, persona, soul and rules in the package: the
-  // boot sync re-reads AGENT.md, so an edit here would not survive a restart.
-  // Name, voice and color are stored on this machine and never re-read, so
-  // they are the owner's to change on every employee.
-  const managed = $derived(!agent?.editable);
 
   function selectColor(color: string) {
     // Clicking the already-selected swatch clears the override back to the
@@ -802,17 +808,27 @@
         {/if}
       </div>
 
-      <!-- Danger zone -->
-      {#if agent?.editable}
+      <!-- Danger zone. Every employee can be let go, packaged or not: deleting a
+           packaged one uninstalls it, and the server tears it down either way. -->
+      {#if agent}
         <div class="border-t border-base-300 pt-5 mt-3">
           <div class="text-xs font-semibold uppercase tracking-wider text-error mb-2">{$t('agentSettings.dangerZone')}</div>
           {#if showDeleteConfirm}
             <div class="rounded-lg border border-error/30 bg-error/5 p-4">
               <div class="text-sm font-medium mb-1">{$t('agent.deleteTitle', { values: { name: agent?.name ?? '' } })}</div>
-              <div class="text-xs text-base-content/70 mb-3">{$t('agentSettings.deleteWarning')}</div>
+              {#if managed}
+                <div class="text-xs text-base-content/70 mb-1">{$t('agent.packagedDeleteWhy', { values: { name: agent?.name ?? '' } })}</div>
+                <div class="text-xs text-base-content/70 mb-3">{$t('agent.packagedDeleteConsequences')}</div>
+                <label class="block mb-3">
+                  <span class="block text-xs font-semibold uppercase tracking-wider mb-1.5">{$t('agent.typeNameToConfirm', { values: { name: agent?.name ?? '' } })}</span>
+                  <input type="text" bind:value={deleteTyped} placeholder={agent?.name ?? ''} autocomplete="off" class="w-full py-[7px] px-2.5 rounded-md border border-error/40 text-sm bg-base-100 outline-none font-body" />
+                </label>
+              {:else}
+                <div class="text-xs text-base-content/70 mb-3">{$t('agentSettings.deleteWarning')}</div>
+              {/if}
               <div class="flex items-center gap-2">
-                <button class="btn btn-error btn-sm" onclick={handleDeleteAgent} disabled={deleting}>{deleting ? $t('agentSettings.deleting') : $t('agentSettings.deleteAgent')}</button>
-                <button class="btn btn-ghost btn-sm" onclick={() => showDeleteConfirm = false}>{$t('common.cancel')}</button>
+                <button class="btn btn-error btn-sm" onclick={handleDeleteAgent} disabled={deleting || !deleteArmed}>{deleting ? $t('agentSettings.deleting') : $t('agentSettings.deleteAgent')}</button>
+                <button class="btn btn-ghost btn-sm" onclick={() => { showDeleteConfirm = false; deleteTyped = ''; }}>{$t('common.cancel')}</button>
               </div>
             </div>
           {:else}

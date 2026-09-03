@@ -834,11 +834,14 @@
   let ctxMenu = $state<{ x: number; y: number; agentId: string } | null>(null);
 
   // Delete confirmation
-  let deleteTarget = $state<{ id: string; name: string } | null>(null);
+  let deleteTarget = $state<{ id: string; name: string; managed: boolean } | null>(null);
+  // A packaged employee is deleted only after the owner types its name.
+  let deleteTyped = $state('');
+  const deleteArmed = $derived(!deleteTarget?.managed || deleteTyped.trim() === deleteTarget.name.trim());
   let deleting = $state(false);
 
   async function confirmDeleteAgent() {
-    if (!deleteTarget || deleting) return;
+    if (!deleteTarget || deleting || !deleteArmed) return;
     const targetId = deleteTarget.id;
     deleting = true;
     try {
@@ -881,7 +884,8 @@
       launchApp(id, a?.name || 'App');
     } else if (action === 'delete') {
       const a = allAgents.find(ag => ag.id === id);
-      deleteTarget = { id, name: a?.name || '' };
+      deleteTyped = '';
+      deleteTarget = { id, name: a?.name || '', managed: !a?.editable };
     }
   }
 
@@ -966,7 +970,7 @@
       {$t('nav.settings')}
     </button>
     <div class="h-px bg-base-300 my-1"></div>
-    {#if ctxAgent?.editable}
+    {#if ctxAgent}
       <button class="flex items-center gap-2.5 w-full px-3 py-1.5 text-sm text-left cursor-pointer bg-transparent border-none hover:bg-error/10 text-error transition-colors" onclick={() => ctxAction('delete')}>
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
         {$t('common.delete')}
@@ -1018,11 +1022,20 @@
         </div>
       </div>
       <div class="px-5 py-4">
-        <p class="text-sm text-base-content/70">{$t('agent.deleteWarning')}</p>
+        {#if deleteTarget.managed}
+          <p class="text-sm text-base-content/70">{$t('agent.packagedDeleteWhy', { values: { name: deleteTarget.name } })}</p>
+          <p class="text-sm text-base-content/70 mt-2">{$t('agent.packagedDeleteConsequences')}</p>
+          <label class="block mt-4">
+            <span class="block text-xs font-semibold uppercase tracking-wider mb-1.5">{$t('agent.typeNameToConfirm', { values: { name: deleteTarget.name } })}</span>
+            <input type="text" bind:value={deleteTyped} placeholder={deleteTarget.name} autocomplete="off" class="w-full py-[7px] px-2.5 rounded-md border border-error/40 text-sm bg-base-100 outline-none" />
+          </label>
+        {:else}
+          <p class="text-sm text-base-content/70">{$t('agent.deleteWarning')}</p>
+        {/if}
       </div>
       <div class="flex items-center justify-end gap-2 px-5 py-4 border-t border-base-content/10">
         <button class="px-4 py-2 rounded-lg border border-base-content/10 text-sm font-medium cursor-pointer hover:bg-base-200 transition-colors bg-transparent" onclick={() => { deleteTarget = null; }} disabled={deleting}>{$t('common.cancel')}</button>
-        <button class="px-4 py-2 rounded-lg bg-error text-error-content text-sm font-bold cursor-pointer hover:brightness-110 transition-all border-none" onclick={confirmDeleteAgent} disabled={deleting}>
+        <button class="px-4 py-2 rounded-lg bg-error text-error-content text-sm font-bold cursor-pointer hover:brightness-110 transition-all border-none" onclick={confirmDeleteAgent} disabled={deleting || !deleteArmed}>
           {#if deleting}
             <span class="loading loading-spinner loading-xs"></span>
           {:else}
