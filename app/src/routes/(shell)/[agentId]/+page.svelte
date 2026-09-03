@@ -1,20 +1,5 @@
-<script lang="ts">
-  import { page } from '$app/stores';
-  import { goto } from '$lib/nav';
-  import { getContext } from 'svelte';
-  import type { AgentPageContext } from '$lib/types/agentPage';
-
-  const ctx = getContext<AgentPageContext>('agentPage');
-
-  $effect(() => {
-    const id = $page.params.agentId;
-    if (!id) return;
-    // Wait for roster to load so we know if agent is an app
-    if (ctx.agentsLoading) return;
-    if (ctx.agent?.isApp) {
-      goto(`/${id}/overview`, { replaceState: true });
-    } else {
-      goto(`/${id}/threads`, { replaceState: true });
-    }
-  });
-</script>
+<!-- Never painted for long: +page.ts resolves where this employee opens and
+     redirects there. The spinner covers the one round trip. -->
+<div class="flex-1 flex items-center justify-center h-full">
+  <span class="loading loading-spinner loading-md"></span>
+</div>

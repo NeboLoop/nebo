@@ -1,6 +1,6 @@
 <script lang="ts">
   import { page } from '$app/stores';
-  import { goto } from '$lib/nav';
+  import { goto, withBase } from '$lib/nav';
   import { t } from 'svelte-i18n';
   import { setContext, onMount } from 'svelte';
   import { getWebSocketClient } from '$lib/websocket/client';
@@ -65,25 +65,10 @@
    * is a list of matters and you pick one. Isolation off — one memory across
    * every chat, so there is one continuous conversation and we open it.
    */
-  async function openAgentRow(id: string) {
-    let a = allAgents.find((x) => x.id === id);
-    // Isolation decides whether this tap lands on the matter list, and the
-    // flag is lazy (the list endpoint has no frontmatter). Unknown → resolve
-    // it FIRST, then navigate once — a tap must not guess and correct itself.
-    if (a && a.isolated === undefined) {
-      try {
-        const api = await import('$lib/api/nebo');
-        const resp = (await api.getAgent(id)) as { agent?: { frontmatter?: string } };
-        const iso = JSON.parse(resp.agent?.frontmatter || '{}')?.memory?.context_isolated === true;
-        const idx = allAgents.findIndex((x) => x.id === id);
-        if (idx !== -1) {
-          const next = [...allAgents];
-          next[idx] = { ...next[idx], isolated: iso };
-          allAgents = next;
-          a = next[idx];
-        }
-      } catch { /* unknown stays unknown; fall through to plain open */ }
-    }
+  function openAgentRow(id: string) {
+    // The roster carries the isolation flag; when it is unknown the /{id}
+    // route resolves it in its load. Either way the click only navigates.
+    const a = allAgents.find((x) => x.id === id);
     selectAgent(id, a?.isolated ? id : null);
   }
 
@@ -819,19 +804,21 @@
     // a row click there stranded every employee who had exactly one
     // conversation — no drill chevron, and their chat unreachable.
     // The `+` button is what creates a new one.
-    let latest = apiThreads[id]?.[0];
-    if (!latest) {
-      // Never visited, so we have no preview for them yet. One request, which
-      // also fills in their row's preview.
-      const api = await import('$lib/api/nebo');
-      const r = await api.listAgentChats(id).catch(() => null);
-      if (r?.chats?.length) {
-        apiThreads[id] = r.chats as EnrichedChat[];
-        latest = apiThreads[id][0];
-      }
-    }
-    const suffix = list ? `?list=${encodeURIComponent(list)}` : '';
-    goto((latest ? `/${id}/threads/${latest.id}` : `/${id}/threads`) + suffix);
+    // Navigate at once. A thread we already know opens directly; otherwise
+    // the /{id} route resolves the latest one in its own load, after the
+    // URL has changed, so the click never waits on a request.
+    const latest = apiThreads[id]?.[0];
+    if (list) return goto(`/${id}/threads?list=${encodeURIComponent(list)}`);
+    goto(latest ? `/${id}/threads/${latest.id}` : `/${id}`);
+  }
+
+  /** Where a sidebar row points: the matter list for an isolated employee,
+   *  the latest thread when the roster already knows it (no round trip at
+   *  all), else /{id}, whose load resolves it. */
+  function rowHref(a: { id: string; isolated?: boolean }): string {
+    if (a.isolated) return `/${a.id}/threads?list=${encodeURIComponent(a.id)}`;
+    const latest = apiThreads[a.id]?.[0];
+    return latest ? `/${a.id}/threads/${latest.id}` : `/${a.id}`;
   }
 
   // Returns an i18n key — translate with $t at the call site.
@@ -1150,9 +1137,14 @@
           <!-- Padding lives on the button, not the row, so the whole row is
                clickable — with it on the wrapper, the gap between rows was
                dead space that swallowed clicks. -->
-          <button
-            class="flex items-center gap-2.5 flex-1 min-w-0 bg-transparent border-none cursor-pointer py-2 pl-2.5 text-left"
-            onclick={() => (isPinned ? showList('1') : openAgentRow(a.id))}
+          <!-- A real link: the URL changes on the click and the route preloads
+               on hover. Where the employee opens is decided by the /{id}
+               route's load, not here. The pinned row is the way back, so it
+               keeps its button behaviour. -->
+          <a
+            href={withBase(rowHref(a))}
+            class="flex items-center gap-2.5 flex-1 min-w-0 bg-transparent border-none cursor-pointer py-2 pl-2.5 text-left no-underline text-inherit"
+            onclick={(e) => { if (isPinned) { e.preventDefault(); showList('1'); } }}
             oncontextmenu={(e) => handleAgentContext(e, a.id)}
             data-context-menu
             title={isPinned ? $t('common.back') : undefined}
@@ -1189,7 +1181,7 @@
                    This replaces the lock glyph: one signal per row. -->
               <svg class="shrink-0 text-base-content/70" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 3 11 8 6 13"/></svg>
             {/if}
-          </button>
+          </a>
           {#if isPinned}
             <!-- The employee's settings must be reachable from the drilled
                  list too — not only from inside an open chat. Same canonical
