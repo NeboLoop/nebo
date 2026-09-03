@@ -222,7 +222,7 @@ impl Store {
         let conn = self.conn()?;
         match conn.query_row(
             "SELECT user_id, email_notifications, marketing_emails, timezone,
-                    language, theme, updated_at, inapp_notifications
+                    language, theme, updated_at, inapp_notifications, start_page
              FROM user_preferences LIMIT 1",
             [],
             |row| {
@@ -235,6 +235,7 @@ impl Store {
                     theme: row.get(5)?,
                     updated_at: row.get(6)?,
                     inapp_notifications: row.get(7)?,
+                    start_page: row.get(8)?,
                 })
             },
         ) {
@@ -251,6 +252,7 @@ impl Store {
         timezone: Option<&str>,
         email_notifications: Option<bool>,
         inapp_notifications: Option<bool>,
+        start_page: Option<&str>,
     ) -> Result<(), NeboError> {
         let conn = self.conn()?;
         let user_id = self.ensure_local_user_id()?;
@@ -277,6 +279,10 @@ impl Store {
         if let Some(v) = email_notifications {
             let val: i64 = if v { 1 } else { 0 };
             conn.execute("UPDATE user_preferences SET email_notifications = ?1, updated_at = unixepoch() WHERE user_id = ?2", params![val, user_id])
+                .map_err(|e| NeboError::Database(e.to_string()))?;
+        }
+        if let Some(v) = start_page {
+            conn.execute("UPDATE user_preferences SET start_page = ?1, updated_at = unixepoch() WHERE user_id = ?2", params![v, user_id])
                 .map_err(|e| NeboError::Database(e.to_string()))?;
         }
         if let Some(v) = inapp_notifications {

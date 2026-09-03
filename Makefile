@@ -85,7 +85,13 @@ gen:
 
 # ─── Development ─────────────────────────────────────────────────────────────
 
-dev: stage-obscura stage-ripgrep
+# app/build is what the backend serves (the tunnel included); the Tauri
+# window uses Vite, so without this the phone sees the last build.
+frontend:
+	@echo "Building frontend into app/build..."
+	@cd app && pnpm build
+
+dev: stage-obscura stage-ripgrep frontend
 	@echo "Starting Nebo (Tauri + Vite)..."
 	@echo "  Vite HMR for frontend, Tauri watch for backend"
 	@echo "  Proxy errors during Rust build are normal — Tauri window waits for build."

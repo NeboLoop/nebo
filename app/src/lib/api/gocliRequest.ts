@@ -78,6 +78,83 @@ function getAuthToken(): string | null {
 	}
 }
 
+/**
+ * A read that has not answered in this long is treated as hung and retried
+ * once. Over the management tunnel a request can stay open forever with no
+ * error (a phone's first load sat on the startup spinner, 2026-09-03), and
+ * an unbounded fetch turns that into a page that never resolves. Writes are
+ * never retried and get a generous bound instead.
+ */
+export const READ_TIMEOUT_MS = 10_000;
+export const WRITE_TIMEOUT_MS = 120_000;
+export const RETRY_DELAY_MS = 200;
+
+/**
+ * Fetch and read the body under one abort timer, so a stalled body counts
+ * the same as stalled headers. Reads (GET) get one retry after the timeout;
+ * the stall is reported to the backend log so it can be seen from the server.
+ */
+export async function fetchBounded(
+	apiUrl: string,
+	init: RequestInit,
+	fetchImpl: typeof fetch = fetch
+): Promise<{ response: Response; text: string }> {
+	const isRead = (init.method ?? 'GET').toUpperCase() === 'GET';
+	// Set by the timer, so a stall can be told apart from a read that failed
+	// outright (a socket reset mid-reconnect fails in milliseconds).
+	let timedOut = false;
+	const attempt = async () => {
+		const controller = new AbortController();
+		const outer = init.signal;
+		if (outer) outer.addEventListener('abort', () => controller.abort(), { once: true });
+		const timer = setTimeout(() => {
+			timedOut = true;
+			controller.abort();
+		}, isRead ? READ_TIMEOUT_MS : WRITE_TIMEOUT_MS);
+		try {
+			const response = await fetchImpl(apiUrl, { ...init, signal: controller.signal });
+			const text = await response.text();
+			return { response, text };
+		} finally {
+			clearTimeout(timer);
+		}
+	};
+	const started = Date.now();
+	try {
+		return await attempt();
+	} catch (err) {
+		if (!isRead || init.signal?.aborted) throw err;
+		sendClientEvent(timedOut ? 'api_read_stalled' : 'api_read_failed', {
+			detail: `${apiUrl.replace(getBaseUrl(), '')} ${timedOut ? '' : String(err)}`.trim(),
+			durationMs: Date.now() - started
+		});
+		await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
+		return attempt();
+	}
+}
+
+/**
+ * One line in the backend log for a client-side connection event. Sits in
+ * the transport layer (not the generated client) because the generated
+ * client imports this module; a plain fetch here is the one exception.
+ * Never throws and never retries: telemetry must not cause what it reports.
+ */
+export function sendClientEvent(
+	event: string,
+	fields: { detail?: string; durationMs?: number; code?: number } = {}
+): void {
+	if (typeof window === 'undefined') return;
+	const body = JSON.stringify({ event, page: window.location.pathname, ...fields });
+	const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+	const token = getAuthToken();
+	if (token) headers['Authorization'] = `Bearer ${token}`;
+	fetch(`${getBaseUrl()}/api/v1/client/events`, { method: 'POST', credentials: 'include', headers, body, keepalive: true }).catch(
+		() => {
+			/* the log line is best-effort */
+		}
+	);
+}
+
 export async function request({
 	method,
 	url,
@@ -102,7 +179,7 @@ export async function request({
 		headers['Authorization'] = `Bearer ${token}`;
 	}
 
-	const response = await fetch(apiUrl, {
+	const { response, text } = await fetchBounded(apiUrl, {
 		method: method.toLocaleUpperCase(),
 		credentials: 'include',
 		headers,
@@ -111,7 +188,6 @@ export async function request({
 		...config
 	});
 
-	const text = await response.text();
 	let parsedData;
 	try {
 		parsedData = text ? JSON.parse(text) : {};

@@ -381,6 +381,54 @@ impl Store {
         .db_err("has_running_run")
     }
 
+    /// Runs across every workflow that started at or after `since` (unix
+    /// seconds), newest first. The dashboard's recent-runs table.
+    pub fn list_workflow_runs_since(
+        &self,
+        since: i64,
+        limit: i64,
+    ) -> Result<Vec<WorkflowRun>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, workflow_id, trigger_type, trigger_detail, status, inputs,
+                        current_activity, total_tokens_used, error, error_activity,
+                        session_key, output, started_at, completed_at
+                 FROM workflow_runs WHERE started_at >= ?1
+                 ORDER BY started_at DESC LIMIT ?2",
+            )
+            .db_err("list_workflow_runs_since prepare")?;
+        let rows = stmt
+            .query_map(params![since, limit], row_to_workflow_run)
+            .db_err("list_workflow_runs_since query")?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .db_err("list_workflow_runs_since collect")
+    }
+
+    /// (local day, workflow_id, status, count) for runs started at or after
+    /// `since`. Days are the machine's local calendar, the same one the
+    /// scheduler fires on.
+    pub fn count_workflow_runs_by_day(
+        &self,
+        since: i64,
+    ) -> Result<Vec<(String, String, String, i64)>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT date(started_at, 'unixepoch', 'localtime') AS day, workflow_id, status, COUNT(*)
+                 FROM workflow_runs WHERE started_at >= ?1
+                 GROUP BY day, workflow_id, status",
+            )
+            .db_err("count_workflow_runs_by_day prepare")?;
+        let rows = stmt
+            .query_map(params![since], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })
+            .db_err("count_workflow_runs_by_day query")?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .db_err("count_workflow_runs_by_day collect")
+    }
+
     pub fn count_workflow_runs(&self, workflow_id: &str) -> Result<i64, NeboError> {
         let conn = self.conn()?;
         conn.query_row(

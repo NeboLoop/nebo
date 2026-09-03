@@ -253,6 +253,8 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
     let plugin_store = state.plugin_store.clone();
     let pending_comm_asks = state.pending_comm_asks.clone();
     let pending_comm_approvals = state.pending_comm_approvals.clone();
+    let pending_tool_approvals = state.pending_tool_approvals.clone();
+    let approvals_agent_id = config.agent_id.clone();
     let comm_manager = if config.comm_reply.is_some() {
         Some(state.comm_manager.clone())
     } else {
@@ -863,6 +865,16 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                         }
                         StreamEventType::ApprovalRequest => {
                             if let Some(ref tc) = event.tool_call {
+                                let (summary, _) = tools::humanize::tool_call(&tc.name, &tc.input);
+                                pending_tool_approvals.lock().await.insert(
+                                    tc.id.clone(),
+                                    crate::state::PendingToolApproval {
+                                        session_key: sid.to_string(),
+                                        agent_id: approvals_agent_id.clone(),
+                                        summary,
+                                        since: chrono::Utc::now().timestamp(),
+                                    },
+                                );
                                 hub.broadcast(
                                     "approval_request",
                                     serde_json::json!({
@@ -1393,6 +1405,8 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                     complete_payload["stop_reason"] = serde_json::json!(reason);
                     complete_payload["stop_notice"] = serde_json::json!(notice);
                 }
+                // The run is over: nothing it asked can still be answered.
+                pending_tool_approvals.lock().await.retain(|_, a| a.session_key != sid);
                 hub.broadcast("chat_complete", complete_payload);
 
                 // Persist the artifacts onto the turn's final assistant message so

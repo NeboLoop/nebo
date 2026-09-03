@@ -671,6 +671,13 @@ export function getChatMessages(id: string, max_chars?: number, before?: string)
 }
 
 /**
+ * @description "Client event"
+ */
+export function clientEvent(req: Record<string, unknown> = {}) {
+	return webapi.post<components.ClientEventResponse>(`/api/v1/client/events`, req)
+}
+
+/**
  * @description "Submit code"
  */
 export function submitCode(req: Record<string, unknown> = {}) {
@@ -731,6 +738,13 @@ export function updateTeam(id: string, req: Record<string, unknown> = {}) {
  */
 export function deleteTeam(id: string) {
 	return webapi.delete<components.DeleteTeamResponse>(`/api/v1/commander/teams/${id}`)
+}
+
+/**
+ * @description "Dashboard"
+ */
+export function dashboard() {
+	return webapi.get<components.DashboardResponse>(`/api/v1/dashboard`)
 }
 
 /**

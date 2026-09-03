@@ -55,6 +55,8 @@ pub struct UserPreference {
     pub updated_at: i64,
     #[serde(serialize_with = "i64_as_bool")]
     pub inapp_notifications: i64,
+    /// Where Nebo opens: "chat" (the assistant's latest thread) or "dashboard".
+    pub start_page: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -23,6 +23,8 @@ mod plugins;
 mod provider;
 mod roles;
 mod setup;
+mod telemetry;
+mod dashboard;
 mod skills;
 mod store;
 mod tasks;
@@ -48,6 +50,8 @@ pub fn api_routes(jwt_secret: JwtSecret) -> Router<AppState> {
     let public = Router::new()
         .merge(auth::public_routes())
         .merge(setup::routes())
+        .merge(telemetry::routes())
+        .merge(dashboard::routes())
         .merge(chat::routes())
         .merge(agent::routes())
         .merge(memory::routes())

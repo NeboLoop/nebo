@@ -96,6 +96,11 @@ pub struct AppState {
     /// string ("once" | "always" | "deny") carries the ApprovalModal's choice
     /// including the "Approve Always" flag. See `tools::ApprovalChannels`.
     pub approval_channels: tools::ApprovalChannels,
+    /// What each pending tool approval is about, keyed by request id, so the
+    /// dashboard can show "Support Agent wants to send mail" without asking
+    /// the runner. Written where the request is announced, removed where it
+    /// is answered or when the run ends.
+    pub pending_tool_approvals: Arc<Mutex<HashMap<String, PendingToolApproval>>>,
     /// Pending ask requests: question_id -> sender
     pub ask_channels: tools::AskChannels,
     /// Asks forwarded to a loop/channel conversation, keyed by session key →
@@ -190,4 +195,13 @@ impl AppState {
                 .as_secs(),
         });
     }
+}
+
+/// A gated tool call waiting on the owner (see `AppState::pending_tool_approvals`).
+#[derive(Debug, Clone)]
+pub struct PendingToolApproval {
+    pub session_key: String,
+    pub agent_id: String,
+    pub summary: String,
+    pub since: i64,
 }

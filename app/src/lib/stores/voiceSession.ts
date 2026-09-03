@@ -19,6 +19,7 @@
  */
 
 import { writable, derived } from 'svelte/store';
+import { finishUserTranscript } from './voiceTranscript';
 import { backendWsBase } from '$lib/api/base';
 import { startPcmCapture, type AudioCaptureHandle } from '$lib/stores/audio';
 import { deviceManager } from '$lib/stores/devices';
@@ -101,6 +102,9 @@ function createVoiceSessionStore() {
 	// Whether the current trailing transcript entry is the agent's in-progress
 	// streamed response (deltas append to it; playback_end closes it).
 	let agentEntryOpen = false;
+	// Whether the trailing entry is the user's just-finished utterance, which a
+	// late correction may still replace (see finishUserTranscript).
+	let userEntryOpen = false;
 	// Mic chunks captured before the WS finishes opening (parallel init).
 	let preOpenAudio: ArrayBuffer[] = [];
 	// Screen wake lock held for the duration of a call. Without it, mobile
@@ -324,9 +328,8 @@ function createVoiceSessionStore() {
 					// Finalize the user's transcript and transition to processing
 					update((s) => {
 						const userText = s.interimTranscript || msg.text || '';
-						const newTranscripts = userText
-							? [...s.transcripts, { speaker: 'user' as const, text: userText }]
-							: s.transcripts;
+						const newTranscripts = finishUserTranscript(s.transcripts, userText, userEntryOpen);
+						if (userText) userEntryOpen = true;
 						return {
 							...s,
 							status: 'processing',
@@ -337,6 +340,7 @@ function createVoiceSessionStore() {
 					break;
 
 				case 'playback_start':
+					userEntryOpen = false;
 					update((s) => ({ ...s, status: 'speaking' }));
 					break;
 
@@ -366,6 +370,7 @@ function createVoiceSessionStore() {
 								};
 							} else {
 								agentEntryOpen = true;
+								userEntryOpen = false;
 								t.push({ speaker: 'agent', text: msg.text });
 							}
 							return { ...s, transcripts: t };
@@ -427,6 +432,7 @@ function createVoiceSessionStore() {
 				boundChatId: null
 			}));
 			agentEntryOpen = false;
+			userEntryOpen = false;
 			preOpenAudio = [];
 
 			// Keep the screen awake for the whole call — auto-lock suspends the

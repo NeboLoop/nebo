@@ -54,8 +54,32 @@
 					sessionStorage.setItem(KEY, String(n + 1));
 					setTimeout(function () { location.reload(); }, 1500 * (n + 1));
 				}
-				addEventListener('unhandledrejection', function (e) { onFail(e.reason); });
-				addEventListener('error', function (e) { onFail(e.error || e.message); }, true);
+				// Every script error from the first byte on, with its stack, so an
+				// error thrown while a chunk evaluates (before the app can listen)
+				// is not lost. The root layout ships them on mount; if the app never
+				// mounts, the watchdog below ships them itself.
+				window.__NEBO_ERRORS = [];
+				function record(reason, extra) {
+					var stack = String((reason && reason.stack) || '').slice(0, 600);
+					var msg = String((reason && reason.message) || reason || '');
+					window.__NEBO_ERRORS.push({ at: Date.now(), msg: msg + (extra || ''), stack: stack });
+				}
+				function base() {
+					var m = location.pathname.match(/^\/t\/[0-9a-fA-F-]{36}/);
+					return m ? m[0] : '';
+				}
+				function ship(tag) {
+					var errs = window.__NEBO_ERRORS.splice(0);
+					if (!errs.length) return;
+					try {
+						fetch(base() + '/api/v1/client/events', { method: 'POST', keepalive: true, headers: { 'Content-Type': 'application/json' },
+							body: JSON.stringify({ event: 'client_error', page: location.pathname, detail: tag + ' ' + JSON.stringify(errs).slice(0, 1800) }) });
+					} catch (e) { /* the report is best-effort */ }
+				}
+				window.__NEBO_SHIP_ERRORS = ship;
+				addEventListener('unhandledrejection', function (e) { record(e.reason, ' (unhandled)'); onFail(e.reason); });
+				addEventListener('error', function (e) { record(e.error || e.message, ' @ ' + e.filename + ':' + e.lineno); onFail(e.error || e.message); }, true);
+				setTimeout(function () { if (!window.__NEBO_BOOTED) ship('shell-unbooted'); }, 8000);
 				// Watchdog: mounted apps set __NEBO_BOOTED (root layout onMount).
 				// If nothing mounts — any silent death, matched or not — the
 				// recovery screen appears instead of an endless blank.

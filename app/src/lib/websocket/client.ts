@@ -7,6 +7,7 @@ import { storage } from '$lib/storage';
  */
 
 import { logger } from '$lib/monitoring/logger';
+import { sendClientEvent } from '$lib/api/gocliRequest';
 
 const log = logger.child({ component: 'WebSocket' });
 
@@ -103,6 +104,7 @@ class WebSocketClient {
 		if (typeof document !== 'undefined' && !this.visibilityHooked) {
 			this.visibilityHooked = true;
 			document.addEventListener('visibilitychange', () => {
+				sendClientEvent('visibility', { detail: document.visibilityState, code: this.ws?.readyState ?? -1 });
 				if (document.visibilityState === 'visible' && this.ws?.readyState !== WebSocket.OPEN) {
 					this.connect();
 				}
@@ -121,6 +123,8 @@ class WebSocketClient {
 
 		const url = getWebSocketUrl();
 		log.info('Connecting to WS at: ' + url);
+		const attemptStarted = Date.now();
+		sendClientEvent('ws_connect', { code: this.reconnectAttempts, detail: this.disruptions ? 'reconnect' : 'first' });
 
 		try {
 			this.ws = new WebSocket(url);
@@ -147,6 +151,11 @@ class WebSocketClient {
 
 			this.ws.onclose = (event) => {
 				log.info('WS onclose: code=' + event.code + ' reason=' + event.reason + ' wasClean=' + event.wasClean);
+				sendClientEvent('ws_close', {
+					code: event.code,
+					detail: `${event.reason || ''} clean=${event.wasClean} byUser=${this.closedByUser} visible=${document.visibilityState}`,
+					durationMs: Date.now() - attemptStarted
+				});
 				this.setStatus('disconnected');
 				this.ws = null;
 
@@ -180,6 +189,7 @@ class WebSocketClient {
 						// Handle auth_ok — server confirmed our token
 						if (message.type === 'auth_ok') {
 							log.info('WebSocket authenticated');
+							sendClientEvent('ws_auth_ok', { durationMs: Date.now() - attemptStarted, code: this.disruptions });
 							this.setStatus('connected');
 							this.reconnectAttempts = 0;
 

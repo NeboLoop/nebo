@@ -90,7 +90,12 @@ pub async fn client_ws_handler(
         return axum::http::StatusCode::FORBIDDEN.into_response();
     }
     info!("ws upgrade request received");
-    ws.on_upgrade(move |socket| handle_client_ws(socket, state))
+    let ua = headers
+        .get(axum::http::header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    ws.on_upgrade(move |socket| handle_client_ws(socket, state, ua))
 }
 
 /// GET /ws/app/{agent_id} — App frontend WebSocket endpoint.
@@ -320,8 +325,13 @@ async fn handle_app_ws_message(state: &AppState, agent_id: &str, text: &str) {
     }
 }
 
-async fn handle_client_ws(mut socket: WebSocket, state: AppState) {
-    info!("ws client connected — starting handle_client_ws");
+async fn handle_client_ws(mut socket: WebSocket, state: AppState, ua: String) {
+    info!(ua = %ua, "ws client connected");
+    // One line per socket at the end says how long it lived and how much it
+    // was sent, so a phone that keeps dropping can be told from a quiet one.
+    let connected_at = std::time::Instant::now();
+    let mut sent: u64 = 0;
+    let mut lagged: u64 = 0;
     let mut hub_rx = state.hub.subscribe();
     let seen_ids: Arc<tokio::sync::Mutex<HashSet<String>>> = Default::default();
 
@@ -406,8 +416,10 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState) {
                         {
                             break;
                         }
+                        sent += 1;
                     }
                     Err(broadcast::error::RecvError::Lagged(n)) => {
+                        lagged += n;
                         warn!("ws client lagged by {} messages, continuing", n);
                     }
                     Err(broadcast::error::RecvError::Closed) => {
@@ -731,6 +743,7 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState) {
                                     } else {
                                         "once"
                                     };
+                                    state.pending_tool_approvals.lock().await.remove(&request_id);
                                     let mut channels = state.approval_channels.lock().await;
                                     if let Some(tx) = channels.remove(&request_id) {
                                         let _ = tx.send(decision.to_string());
@@ -943,7 +956,13 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState) {
     }
 
     cleanup_token.cancel();
-    info!("ws client disconnected");
+    info!(
+        ua = %ua,
+        secs = connected_at.elapsed().as_secs(),
+        sent,
+        lagged,
+        "ws client disconnected"
+    );
 }
 
 /// Scan prompt text for image file paths, read them, and return (cleaned_prompt, images).

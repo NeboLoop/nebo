@@ -894,16 +894,18 @@ impl WorkflowManager for WorkflowManagerImpl {
                         info!(workflow = %wf_id, run_id = %run_id_clone, "workflow completed");
                     }
                     Err(e) => {
-                        let err_msg = e.to_string();
-                        if let Err(e) = store.update_workflow_run(
-                            &run_id_clone,
-                            Some("failed"),
-                            None,
-                            None,
-                            Some(&err_msg),
-                            None,
-                        ) {
-                            warn!(run_id = %run_id_clone, error = %e, "failed to mark workflow run failed");
+                        let end = RunEnd::of(&e);
+                        let err_msg = end.message().to_string();
+                        record_run_end(&store, &run_id_clone, &end);
+                        if let RunEnd::Exited(reason) = &end {
+                            hub.broadcast(
+                                "workflow_run_exited",
+                                serde_json::json!({ "workflowId": wf_id, "runId": run_id_clone, "reason": reason }),
+                            );
+                            info!(workflow = %wf_id, run_id = %run_id_clone, %reason, "workflow exited: nothing more to do");
+                            let mut runs = active_runs.lock().unwrap();
+                            runs.remove(&run_id_clone);
+                            return;
                         }
                         notify_workflow_failure(
                             &store,
@@ -1776,16 +1778,25 @@ impl WorkflowManager for WorkflowManagerImpl {
                         info!(role = %agent_id_owned, run_id = %run_id_clone, %operation, "inline workflow awaiting approval");
                     }
                     Err(e) => {
-                        let err_msg = e.to_string();
-                        let _ = store.update_workflow_run(
-                            &run_id_clone,
-                            Some("failed"),
-                            None,
-                            None,
-                            Some(&err_msg),
-                            None,
-                        );
-
+                        let end = RunEnd::of(&e);
+                        let err_msg = end.message().to_string();
+                        record_run_end(&store, &run_id_clone, &end);
+                        if let RunEnd::Exited(reason) = &end {
+                            record_run_outcome(&store, &agent_id_owned, &binding_name, "exited", reason);
+                            hub.broadcast(
+                                "workflow_run_exited",
+                                serde_json::json!({
+                                    "agentId": agent_id_owned,
+                                    "runId": run_id_clone,
+                                    "bindingName": binding_name,
+                                    "reason": reason,
+                                }),
+                            );
+                            info!(role = %agent_id_owned, run_id = %run_id_clone, %reason, "inline workflow exited: nothing more to do");
+                            let mut runs = active_runs.lock().unwrap();
+                            runs.remove(&run_id_clone);
+                            return;
+                        }
                         // Post failure message to agent chat
                         post_automation_message(
                             &store,
@@ -1830,9 +1841,8 @@ impl WorkflowManager for WorkflowManagerImpl {
                         // outcomes worth remembering.
                         match &e {
                             workflow::WorkflowError::Cancelled => {}
-                            workflow::WorkflowError::Exited(reason) => {
-                                record_run_outcome(&store, &agent_id_owned, &binding_name, "exited", reason);
-                            }
+                            // Exits returned above, before any failure handling.
+                            workflow::WorkflowError::Exited(_) => {}
                             _ => {
                                 record_run_outcome(&store, &agent_id_owned, &binding_name, "failed", &err_msg);
                                 // Workflow review fork (fork-lite): genuine
@@ -2090,6 +2100,45 @@ fn workflow_memory_scope(store: &db::Store, agent_id: &str) -> (String, bool) {
         agent::memory::agent_memory_scope(&owner, agent_id),
         agent_context_isolated(store, agent_id),
     )
+}
+
+/// How a run that ended with an error is recorded. An evaluator's exit is the
+/// workflow choosing to stop ("no meetings in the next 24 hours"): that is
+/// the automation working, so it is stored as `exited` with the reason where
+/// the runs panel shows it as information, and it raises no failure message,
+/// no notification and no review. Everything else is `failed`. ONE decision
+/// for the scheduled and the inline runner; before this, every exit was
+/// stored as a failure and painted red hourly (live 2026-09-03).
+pub(crate) enum RunEnd {
+    Exited(String),
+    Failed(String),
+}
+
+impl RunEnd {
+    pub(crate) fn of(e: &workflow::WorkflowError) -> RunEnd {
+        match e {
+            workflow::WorkflowError::Exited(reason) => RunEnd::Exited(reason.clone()),
+            other => RunEnd::Failed(other.to_string()),
+        }
+    }
+    pub(crate) fn status(&self) -> &'static str {
+        match self {
+            RunEnd::Exited(_) => "exited",
+            RunEnd::Failed(_) => "failed",
+        }
+    }
+    pub(crate) fn message(&self) -> &str {
+        match self {
+            RunEnd::Exited(m) | RunEnd::Failed(m) => m,
+        }
+    }
+}
+
+/// Write the run's terminal status and message.
+fn record_run_end(store: &db::Store, run_id: &str, end: &RunEnd) {
+    if let Err(e) = store.update_workflow_run(run_id, Some(end.status()), None, None, Some(end.message()), None) {
+        warn!(run_id, status = end.status(), error = %e, "failed to record how the workflow run ended");
+    }
 }
 
 fn record_run_outcome(store: &db::Store, agent_id: &str, binding: &str, status: &str, detail: &str) {
@@ -3022,5 +3071,19 @@ mod trigger_tests {
         let def = serde_json::json!({"trigger": {"type": "heartbeat", "interval": "30m"}});
         let (ty, _) = resolve_tool_trigger(&def).unwrap();
         assert_eq!(ty, "heartbeat");
+    }
+}
+
+#[cfg(test)]
+mod run_end_tests {
+    use super::*;
+
+    #[test]
+    fn an_evaluator_exit_is_not_a_failure() {
+        let exit = RunEnd::of(&workflow::WorkflowError::Exited("nothing to do".into()));
+        assert_eq!((exit.status(), exit.message()), ("exited", "nothing to do"));
+        let failed = RunEnd::of(&workflow::WorkflowError::ActivityFailed("triage".into(), "boom".into()));
+        assert_eq!(failed.status(), "failed");
+        assert!(failed.message().contains("boom"));
     }
 }

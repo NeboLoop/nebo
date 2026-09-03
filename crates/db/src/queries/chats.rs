@@ -816,6 +816,43 @@ impl Store {
         Ok(self.list_recent_agent_chats(agent_id, 1)?.into_iter().next().map(|(c, _)| c))
     }
 
+    /// How many threads this employee has (an isolated employee's matters).
+    pub fn count_agent_chats(&self, agent_id: &str) -> Result<i64, NeboError> {
+        let conn = self.conn()?;
+        conn.query_row(
+            "SELECT COUNT(*) FROM chats WHERE session_name LIKE 'agent:' || ?1 || ':%'",
+            params![agent_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
+    /// (local day, agent id, count) of owner messages in employee threads at
+    /// or after `since` (unix seconds): one chat turn per message the owner
+    /// sent. The agent id is the segment after "agent:" in the session name.
+    pub fn count_chat_turns_by_day(
+        &self,
+        since: i64,
+    ) -> Result<Vec<(String, String, i64)>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT date(m.created_at, 'unixepoch', 'localtime') AS day,
+                        substr(c.session_name, 7, instr(substr(c.session_name, 7), ':') - 1) AS agent_id,
+                        COUNT(*)
+                 FROM chat_messages m JOIN chats c ON c.id = m.chat_id
+                 WHERE m.role = 'user' AND m.created_at >= ?1
+                   AND c.session_name LIKE 'agent:%:%'
+                 GROUP BY day, agent_id",
+            )
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map(params![since], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
     /// This employee's threads, newest activity first, each with that
     /// activity's time in unix seconds (last message, else the row's update).
     pub fn list_recent_agent_chats(

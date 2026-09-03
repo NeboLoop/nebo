@@ -718,6 +718,8 @@
   const listedAgents = $derived([...sortedAgents, ...sortedAppAgents]);
 
   const agentId = $derived($page.params.agentId ?? '');
+  const onDashboard = $derived(($page.route.id ?? '').endsWith('/dashboard'));
+  const workingCount = $derived(Object.values(agentStatuses).filter((s) => s === 'running').length);
   const agent = $derived(allAgents.find(a => a.id === agentId));
   // A stale deep link — the employee was reinstalled (new id) or deleted from
   // another surface — must not strand the owner on a half-broken page fanning
@@ -1113,6 +1115,26 @@
            the siblings collapse (transition:slide) — the container-transform
            feel: the row you clicked BECOMES the header, nothing teleports.
            Clicking the pinned row slides everyone back. -->
+      {#if !drilledAgent}
+        <!-- The Dashboard: the whole workforce on one page. Sits above the
+             employees as a row of the same shape, highlighted like one. -->
+        <div class="flex items-center gap-2.5 pr-2.5 mx-1.5 mb-1 cursor-pointer text-left {onDashboard
+            ? 'rounded-box border border-primary/30 bg-primary/10 shadow-sm'
+            : 'rounded-box border border-transparent hover:bg-base-100/70'}">
+          <button
+            class="flex items-center gap-2.5 flex-1 min-w-0 bg-transparent border-none cursor-pointer py-2 pl-2.5 text-left"
+            onclick={() => goto('/dashboard')}
+          >
+            <div class="w-8 h-8 rounded-field flex items-center justify-center shrink-0 bg-base-100 border border-base-300 text-primary">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="8" height="8" rx="2"/><rect x="13" y="3" width="8" height="5" rx="2"/><rect x="13" y="10" width="8" height="11" rx="2"/><rect x="3" y="13" width="8" height="8" rx="2"/></svg>
+            </div>
+            <div class="flex-1 min-w-0">
+              <div class="text-sm font-medium truncate">{$t('dashboard.title')}</div>
+              <div class="text-xs text-base-content/60 truncate">{$t('dashboard.sidebarLine', { values: { working: workingCount } })}</div>
+            </div>
+          </button>
+        </div>
+      {/if}
       {#each (drilledAgent ? [drilledAgent] : listedAgents) as a (a.id)}
         {@const st = agentStatus(a.id)}
         {@const ac = AGENT_COLORS_MAP[a.color] ?? AGENT_COLORS_MAP['teal']}
@@ -1277,6 +1299,13 @@
 
   {#snippet collapsed()}
     <div class="flex flex-col items-center gap-1 py-2">
+      <button
+        class="w-8 h-8 rounded-field flex items-center justify-center shrink-0 cursor-pointer border {onDashboard ? 'border-primary/30 bg-primary/10 text-primary' : 'border-base-300 bg-base-100 text-primary'}"
+        onclick={() => goto('/dashboard')}
+        title={$t('dashboard.title')}
+      >
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="8" height="8" rx="2"/><rect x="13" y="3" width="8" height="5" rx="2"/><rect x="13" y="10" width="8" height="11" rx="2"/><rect x="3" y="13" width="8" height="8" rx="2"/></svg>
+      </button>
       {#each sortedAgents.concat(sortedAppAgents) as a (a.id)}
         {@const st = agentStatus(a.id)}
         {@const ac = AGENT_COLORS_MAP[a.color] ?? AGENT_COLORS_MAP['teal']}

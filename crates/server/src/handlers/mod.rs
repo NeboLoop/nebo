@@ -18,6 +18,8 @@ pub mod notification;
 pub mod plugins;
 pub mod provider;
 pub mod setup;
+pub mod telemetry;
+pub mod dashboard;
 pub mod skills;
 pub mod store;
 pub mod tasks;

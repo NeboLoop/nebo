@@ -313,6 +313,78 @@ export interface CronJob {
 	channelCtxJson?: string
 }
 
+export interface DashboardApproval {
+	id: string
+	kind: string
+	agentId: string
+	agentName: string
+	summary: string
+	since: number
+	chatId?: string
+}
+
+export interface DashboardCounts {
+	employees: number
+	working: number
+	paused: number
+	waiting: number
+	runsToday: number
+	doneToday: number
+	skippedToday: number
+	stoppedToday: number
+	chatTurnsToday: number
+}
+
+export interface DashboardDay {
+	day: string
+	done: number
+	skipped: number
+	stopped: number
+	waiting: number
+	chatTurns: number
+}
+
+export interface DashboardEmployee {
+	id: string
+	name: string
+	color?: string
+	status: string
+	task: string
+	activity: string
+	lastActivityAt?: number
+	chatId?: string
+	toolCalls: number
+	elapsedSecs: number
+	isolated: boolean
+	matters: number
+}
+
+export interface DashboardEmployeeRuns {
+	agentId: string
+	agentName: string
+	runs: number
+}
+
+export interface DashboardResponse {
+	employees: DashboardEmployee[]
+	counts: DashboardCounts
+	approvals: DashboardApproval[]
+	recentRuns: DashboardRun[]
+	runsByDay: DashboardDay[]
+	runsByEmployee: DashboardEmployeeRuns[]
+}
+
+export interface DashboardRun {
+	id: string
+	agentId: string
+	agentName: string
+	title: string
+	startedAt: number
+	endedAt?: number
+	outcome: string
+	detail: string
+}
+
 export interface DetectInstallsResponse {
 	installs: DetectedInstall[]
 }
@@ -763,6 +835,7 @@ export interface UserPreference {
 	theme: string
 	updatedAt: number
 	inappNotifications: boolean
+	startPage: string
 }
 
 export interface UserProfile {
@@ -984,6 +1057,10 @@ export interface CheckUpdatesResponse {
 export interface ChristenPrimaryResponse {
 	name: string
 	threadId: string
+}
+
+export interface ClientEventResponse {
+	ok: boolean
 }
 
 export interface CompleteResponse {

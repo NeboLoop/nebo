@@ -4,7 +4,8 @@
   import { t } from 'svelte-i18n';
   import { page } from '$app/stores';
   import { goto, appPath } from '$lib/nav';
-  import { beforeNavigate } from '$app/navigation';
+  import { beforeNavigate, afterNavigate } from '$app/navigation';
+  import { sendClientEvent } from '$lib/api/gocliRequest';
   import { base } from '$app/paths';
   import { storage } from '$lib/storage';
   import { onMount } from 'svelte';
@@ -20,6 +21,35 @@
     if (to.origin !== location.origin || to.pathname.startsWith(base)) return;
     nav.cancel();
     goto(to.pathname + to.search + to.hash);
+  });
+
+  // What the phone actually shows. Every route change reports its route and,
+  // PAINT_CHECK_MS later, whether anything but a spinner is on screen; script
+  // errors and the splash state are reported too. Read them with
+  // grep "client event" in the server log. A first load that sat on a spinner
+  // for a minute (2026-09-03) left no trace on either side without this.
+  const PAINT_CHECK_MS = 10_000;
+  function splashState(): string {
+    if (!$backendReady && !$onboardingChecked) return 'connecting';
+    if (!$onboardingChecked) return 'checking';
+    if (!$onboardingComplete) return 'redirect';
+    return 'app';
+  }
+  afterNavigate((nav) => {
+    const route = nav.to?.route.id ?? '';
+    const started = Date.now();
+    sendClientEvent('route', { detail: `${nav.type} ${route}` });
+    setTimeout(() => {
+      const spinners = document.querySelectorAll('.loading').length;
+      const text = document.body.innerText.trim().length;
+      sendClientEvent('painted', {
+        detail: `${route} spinners=${spinners} text=${text} splash=${splashState()}`,
+        durationMs: Date.now() - started
+      });
+    }, PAINT_CHECK_MS);
+  });
+  $effect(() => {
+    sendClientEvent('splash', { detail: splashState() });
   });
   import { onWsEvent } from '$lib/websocket/subscribe';
   import { theme } from '$lib/stores/theme.js';
@@ -51,7 +81,17 @@
     // disarm the blank-page watchdog (both in app.html).
     (window as any).__NEBO_BOOTED = true;
     sessionStorage.removeItem('nebo:boot-retries');
+    // Errors the shell recorded before this layout could listen (app.html).
+    (window as any).__NEBO_SHIP_ERRORS?.('early');
     checkOnboardingStatus();
+    const onError = (e: ErrorEvent) =>
+      sendClientEvent('client_error', {
+        detail: `${e.message} @ ${e.filename}:${e.lineno} :: ${String(e.error?.stack ?? '').slice(0, 600)}`
+      });
+    const onRejection = (e: PromiseRejectionEvent) =>
+      sendClientEvent('client_error', { detail: `unhandled: ${String(e.reason).slice(0, 300)}` });
+    window.addEventListener('error', onError);
+    window.addEventListener('unhandledrejection', onRejection);
 
     // Self-healing splash. Two ways a phone gets a forever-spinner with no
     // error to catch: (1) iOS restores a snapshot of a dead page — no JS
@@ -90,6 +130,8 @@
 
     return () => {
       unsub();
+      window.removeEventListener('error', onError);
+      window.removeEventListener('unhandledrejection', onRejection);
       window.removeEventListener('pageshow', onPageShow);
       clearInterval(splashWatchdog);
       delete (window as any).__NEBO_CHECK_UPDATE__;

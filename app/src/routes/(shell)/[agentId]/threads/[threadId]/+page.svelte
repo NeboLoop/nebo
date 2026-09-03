@@ -3,6 +3,7 @@
   import FlowsPane from '$lib/components/flows/FlowsPane.svelte';
   import { goto } from '$lib/nav';
   import { getContext, onMount, onDestroy } from 'svelte';
+  import { sendClientEvent } from '$lib/api/gocliRequest';
   import { t } from 'svelte-i18n';
   import { page } from '$app/stores';
   import { replaceState } from '$app/navigation';
@@ -137,10 +138,28 @@
     });
   });
 
+  // The socket came back after a drop (a phone in the background, a tunnel
+  // blip): whatever streamed while it was down is gone from the view, since
+  // the server keeps no backlog. Reload the thread the way a fresh open does.
+  let wsStatusUnsub: (() => void) | null = null;
+  onMount(() => {
+    const ws = getWebSocketClient();
+    let seenDisruptions = ws.getDisruptionCount();
+    wsStatusUnsub = ws.onStatus((status) => {
+      if (status !== 'connected') return;
+      const now = ws.getDisruptionCount();
+      if (now === seenDisruptions) return;
+      seenDisruptions = now;
+      sendClientEvent('thread_resync', { detail: threadId, code: now });
+      loadMessages();
+    });
+  });
+
   onDestroy(() => {
     for (const off of activeRunUnsubs) off();
     activeRunUnsubs = [];
     voiceMsgUnsub?.();
+    wsStatusUnsub?.();
     chat.destroy();
   });
 

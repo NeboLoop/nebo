@@ -184,6 +184,7 @@ pub async fn update_preferences(
             body["timezone"].as_str(),
             body["emailNotifications"].as_i64().map(|v| v != 0),
             body["inappNotifications"].as_i64().map(|v| v != 0),
+            body["startPage"].as_str().filter(|v| *v == "chat" || *v == "dashboard"),
         )
         .map_err(to_error_response)?;
     let prefs = state

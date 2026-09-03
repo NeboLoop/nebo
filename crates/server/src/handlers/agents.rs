@@ -1493,7 +1493,7 @@ pub async fn list_active_agents(State(state): State<AppState>) -> HandlerResult<
 }
 
 /// Compute the earliest next fire timestamp across all active bindings for an agent.
-fn compute_next_fire(
+pub(crate) fn compute_next_fire(
     store: &db::Store,
     agent_id: &str,
     now: &chrono::DateTime<chrono::Local>,
