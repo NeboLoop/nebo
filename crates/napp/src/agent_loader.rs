@@ -314,38 +314,19 @@ impl AgentLoader {
                             }
                         }
 
-                        // Diff old cache vs new scan and emit events
-                        {
+                        // Decide every event under the read guard, then RELEASE it
+                        // before sending: the receiver finalizes each Added agent,
+                        // and finalize reloads this loader — which needs the write
+                        // lock. Sending on the bounded channel while still holding
+                        // the read guard deadlocks the moment a burst fills it (a
+                        // collection install, a .napp bundle): sender awaits a
+                        // drain, receiver awaits the write, neither yields.
+                        let events = {
                             let old = agents.read().await;
-                            for (key, new_agent) in &loaded {
-                                match old.get(key) {
-                                    None => {
-                                        let _ = event_tx
-                                            .send(AgentFsEvent::Added(new_agent.clone()))
-                                            .await;
-                                    }
-                                    Some(old_agent) => {
-                                        if old_agent.agent_md != new_agent.agent_md
-                                            || old_agent.frontmatter != new_agent.frontmatter
-                                            || old_agent.theme_css != new_agent.theme_css
-                                        {
-                                            let _ = event_tx
-                                                .send(AgentFsEvent::Changed(new_agent.clone()))
-                                                .await;
-                                        }
-                                    }
-                                }
-                            }
-                            for (key, old_agent) in old.iter() {
-                                if !loaded.contains_key(key) {
-                                    let _ = event_tx
-                                        .send(AgentFsEvent::Removed {
-                                            name_key: key.clone(),
-                                            agent: old_agent.clone(),
-                                        })
-                                        .await;
-                                }
-                            }
+                            diff_scans(&old, &loaded)
+                        };
+                        for event in events {
+                            let _ = event_tx.send(event).await;
                         }
 
                         let count = loaded.len();
@@ -856,9 +837,72 @@ pub fn scan_user_agents(dir: &Path) -> Vec<LoadedAgent> {
     agents
 }
 
+/// The watcher's diff: what changed between the cached roster and a fresh scan.
+/// Pure so the watcher can compute it under the loader's read guard and send
+/// after releasing it (see `watch`). Added = not in the cache; Changed = same
+/// key, different content; Removed = in the cache, gone from the scan.
+fn diff_scans(
+    old: &HashMap<String, LoadedAgent>,
+    new: &HashMap<String, LoadedAgent>,
+) -> Vec<AgentFsEvent> {
+    let mut events = Vec::new();
+    for (key, new_agent) in new {
+        match old.get(key) {
+            None => events.push(AgentFsEvent::Added(new_agent.clone())),
+            Some(old_agent) => {
+                if old_agent.agent_md != new_agent.agent_md
+                    || old_agent.frontmatter != new_agent.frontmatter
+                    || old_agent.theme_css != new_agent.theme_css
+                {
+                    events.push(AgentFsEvent::Changed(new_agent.clone()));
+                }
+            }
+        }
+    }
+    for (key, old_agent) in old {
+        if !new.contains_key(key) {
+            events.push(AgentFsEvent::Removed {
+                name_key: key.clone(),
+                agent: old_agent.clone(),
+            });
+        }
+    }
+    events
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // The watcher's diff is the one decision the receiver acts on — and the
+    // receiver now finalizes every Added agent, so a lost or spurious event
+    // is a lost or doubled finalize. One case per event class, and one for
+    // "identical content is not a change". Mutation check: dropping the
+    // Removed branch fails the last assertion.
+    #[test]
+    fn diff_scans_reports_added_changed_and_removed_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("AGENT.md"), "---\nname: Jim\n---\n# Jim").unwrap();
+        let jim = load_from_dir(tmp.path(), AgentSource::Installed).expect("load agent");
+        let key = jim.agent_def.name.to_lowercase();
+        let roster = |a: &LoadedAgent| HashMap::from([(key.clone(), a.clone())]);
+
+        let added = diff_scans(&HashMap::new(), &roster(&jim));
+        assert!(matches!(added.as_slice(), [AgentFsEvent::Added(_)]), "new key is Added");
+
+        let mut edited = jim.clone();
+        edited.agent_md.push_str("\nnow with a rule");
+        let changed = diff_scans(&roster(&jim), &roster(&edited));
+        assert!(matches!(changed.as_slice(), [AgentFsEvent::Changed(_)]), "different content is Changed");
+
+        assert!(diff_scans(&roster(&jim), &roster(&jim)).is_empty(), "identical content is not an event");
+
+        let removed = diff_scans(&roster(&jim), &HashMap::new());
+        assert!(
+            matches!(removed.as_slice(), [AgentFsEvent::Removed { name_key, .. }] if *name_key == key),
+            "missing key is Removed"
+        );
+    }
 
     // An app is an agent with a UI and sidecar. The loader must recognize it
     // from manifest.json "type":"app" (NeboLoop buildManifest spelling) — not

@@ -578,13 +578,11 @@ pub async fn create_agent(
         }
     }
 
-    // Refresh agent loader cache so the new agent appears in GET /agents immediately.
-    state.agent_loader.load_all().await;
-
-    state.hub.broadcast(
-        "agent_installed",
-        serde_json::json!({ "agentId": agent.id, "name": agent.name }),
-    );
+    // The ONE post-persist routine (Rule 8.1): loader reload, workflow
+    // materialization, approval-policy and learning-mode seeds, the
+    // agent_installed broadcast, and the agent.installed lifecycle. Same call
+    // the install code path, the deps cascade, and the fs watcher make.
+    crate::codes::finalize_agent_install(&state, &id, &agent.name).await;
 
     // Cascade: resolve skill dependencies. Only marketplace-referenced skills are
     // separate installs — bare names are plugin-provided tool bindings (see
@@ -1378,10 +1376,9 @@ async fn create_blank_agent(
         .insert(id.clone(), active);
     state.agent_workers.start_agent(&id, &agent.name, None).await;
 
-    state.hub.broadcast(
-        "agent_installed",
-        serde_json::json!({ "agentId": &id, "name": &agent.name }),
-    );
+    // The ONE post-persist routine (Rule 8.1) — it owns the agent_installed
+    // broadcast and the seeds; activation is a separate event, kept here.
+    crate::codes::finalize_agent_install(&state, &id, &agent.name).await;
     state.hub.broadcast(
         "agent_activated",
         serde_json::json!({ "agentId": &id, "name": &agent.name }),
@@ -2564,9 +2561,6 @@ pub async fn duplicate_agent(
         let _ = state.store.upsert_entity_config("agent", &new_id, &patch);
     }
 
-    // Reload the loader so the copy enumerates immediately (filesystem source).
-    state.agent_loader.load_all().await;
-
     // Auto-activate (use the source's soul/rules — the fresh agent row has none yet
     // in this in-memory snapshot).
     let active = tools::ActiveAgent {
@@ -2589,10 +2583,11 @@ pub async fn duplicate_agent(
         .start_agent(&new_id, &new_name, None)
         .await;
 
-    state.hub.broadcast(
-        "agent_installed",
-        serde_json::json!({ "agentId": &new_id, "name": &new_name }),
-    );
+    // The ONE post-persist routine (Rule 8.1): reloads the loader so the copy
+    // enumerates immediately, and owns the agent_installed broadcast. The copy
+    // carried the source's entity_config above, so seed-if-absent leaves it
+    // alone — and, as before, a duplicate raises no agent.installed lifecycle.
+    crate::codes::finalize_agent_install(&state, &new_id, &new_name).await;
     state.hub.broadcast(
         "agent_activated",
         serde_json::json!({ "agentId": &new_id, "name": &new_name }),

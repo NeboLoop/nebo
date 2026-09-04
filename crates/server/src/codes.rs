@@ -774,36 +774,61 @@ pub(crate) async fn finalize_agent_install(state: &AppState, artifact_id: &str, 
                     }
                 }
 
-                // Seed learning_mode = "staged" for newly hired employees: the
-                // self-improvement loop is on from day one but every learned
-                // skill goes through the owner's Inbox. Seed-if-absent —
-                // existing employees stay as the customer set them (NULL=off).
-                let has_mode = state
-                    .store
-                    .get_entity_config("agent", artifact_id)
-                    .ok()
-                    .flatten()
-                    .and_then(|c| c.learning_mode)
-                    .is_some();
-                if !has_mode {
-                    let patch = serde_json::json!({ "learningMode": "staged" });
-                    if let Err(e) = state.store.upsert_entity_config("agent", artifact_id, &patch) {
-                        tracing::warn!(agent = artifact_id, error = %e, "failed to seed learning mode");
-                    }
-                }
             }
         }
     }
 
-    // Lifecycle event: agent installed — fires from BOTH install paths, since this shared
-    // finalizer is called by handle_agent_code and the deps cascade. Onboarding workflows
-    // subscribe via an `event` trigger on "agent.installed"; per-account onboarding keys
-    // off "account.connected".
-    state.emit_lifecycle(
-        "agent.installed",
-        serde_json::json!({ "agent_id": artifact_id, "name": name }),
-        format!("install:agent:{artifact_id}"),
-    );
+    // The learning-mode seed runs for every employee — not only those with
+    // automations — and doubles as the finalizer's first-time signal. See
+    // seed_learning_mode.
+    let first_time = seed_learning_mode(&state.store, artifact_id);
+
+    // Lifecycle event: agent installed — fires from EVERY install path, since this
+    // shared finalizer is called by handle_agent_code, the deps cascade, and the
+    // fs watcher (which is how an employee the agent tool wrote to disk gets
+    // finalized; the tool cannot call server code). Two of those can finalize
+    // the same employee seconds apart: an explicit path writes the dir, and the
+    // watcher may scan it before that path's load_all() refreshes the cache.
+    // Everything above is seed-if-absent; this event is the one thing that must
+    // not fire twice, so it keys off the first-time seed. Onboarding workflows
+    // subscribe via an `event` trigger on "agent.installed"; per-account
+    // onboarding keys off "account.connected".
+    if first_time {
+        state.emit_lifecycle(
+            "agent.installed",
+            serde_json::json!({ "agent_id": artifact_id, "name": name }),
+            format!("install:agent:{artifact_id}"),
+        );
+    }
+}
+
+/// Seed `learning_mode = "staged"` for a newly hired employee: the
+/// self-improvement loop is on from day one but every learned skill goes
+/// through the owner's Inbox. Seed-if-absent — an employee the customer has
+/// already set stays as they set it (NULL = off).
+///
+/// Returns whether it seeded. That is also `finalize_agent_install`'s "first
+/// time for this employee" signal: every other step there is idempotent, and
+/// this is the one the lifecycle event keys on. A failed write returns false
+/// so the event waits for the finalize that actually seeds.
+pub(crate) fn seed_learning_mode(store: &db::Store, agent_id: &str) -> bool {
+    let has_mode = store
+        .get_entity_config("agent", agent_id)
+        .ok()
+        .flatten()
+        .and_then(|c| c.learning_mode)
+        .is_some();
+    if has_mode {
+        return false;
+    }
+    let patch = serde_json::json!({ "learningMode": "staged" });
+    match store.upsert_entity_config("agent", agent_id, &patch) {
+        Ok(_) => true,
+        Err(e) => {
+            tracing::warn!(agent = agent_id, error = %e, "failed to seed learning mode");
+            false
+        }
+    }
 }
 
 async fn handle_agent_code(state: &AppState, code: &str) -> Result<CodeHandlerResult, NeboError> {
@@ -2635,6 +2660,25 @@ pub(crate) async fn refresh_license_keys(state: &AppState) -> Result<(), NeboErr
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Rule 8.1 / 13.1: every creation path converges on finalize, so the
+    /// finalizer may run twice for one employee (an explicit install, then
+    /// the fs watcher). The learning-mode seed is its first-time signal: it
+    /// seeds once and reports true once. Mutation check: with the `has_mode`
+    /// early return removed, the second assertion fails.
+    #[test]
+    fn learning_mode_seeds_once_and_is_the_first_time_signal() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = db::Store::new(&dir.path().join("t.db").to_string_lossy()).expect("store");
+
+        assert!(seed_learning_mode(&store, "emp-1"), "first finalize seeds");
+        let cfg = store.get_entity_config("agent", "emp-1").unwrap().unwrap();
+        assert_eq!(cfg.learning_mode.as_deref(), Some("staged"));
+
+        assert!(!seed_learning_mode(&store, "emp-1"), "second finalize must not re-fire");
+        let cfg = store.get_entity_config("agent", "emp-1").unwrap().unwrap();
+        assert_eq!(cfg.learning_mode.as_deref(), Some("staged"));
+    }
 
     #[test]
     fn test_workflow_targets_plugin() {

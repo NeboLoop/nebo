@@ -2830,9 +2830,15 @@ async fn handle_agent_fs_events(
                     );
                 }
 
-                // Sync workflow bindings
+                // The ONE post-persist routine — the same one handle_agent_code
+                // and the dependency cascade call (Rule 8.1). It reloads the
+                // loader, materializes workflows, seeds the approval policy and
+                // learning mode, broadcasts agent_installed, and fires the
+                // agent.installed lifecycle once. This is where an employee the
+                // agent tool wrote to disk gets finalized: the tool cannot call
+                // server code, so its creation converges here.
+                crate::codes::finalize_agent_install(&state, &final_id, &loaded.agent_def.name).await;
                 if let Some(ref config) = loaded.config {
-                    sync_agent_workflows(&state.store, &final_id, config);
                     notify_skipped_workflows(
                         &state.store,
                         &state.hub,
@@ -2868,10 +2874,6 @@ async fn handle_agent_fs_events(
                 }
 
                 info!(name = %loaded.agent_def.name, id = %final_id, "fs watcher: agent added");
-                state.hub.broadcast(
-                    "agent_installed",
-                    serde_json::json!({ "agentId": final_id, "name": loaded.agent_def.name }),
-                );
             }
 
             napp::AgentFsEvent::Changed(loaded) => {
