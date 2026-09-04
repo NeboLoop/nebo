@@ -48,7 +48,8 @@ describe('parseMessages', () => {
   it('maps rows written before outcomes were persisted', () => {
     const msgs = parseMessages([base, result({})] as never);
     const tool = (msgs[0] as { tools?: { outcome?: string; label?: string }[] }).tools?.[0];
-    expect(tool?.outcome).toBeUndefined();
-    expect(tool?.label).toBeTruthy();
+    // Client-side humanize fills the gap so refresh never shows "shell: exec".
+    expect(tool?.outcome).toBe('Ran shell');
+    expect(tool?.label).toBe('running shell');
   });
 });

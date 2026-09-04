@@ -1,7 +1,8 @@
 // History reload for a thread: the persisted rows become the same ChatMessage
 // shapes the live controller builds, so a reloaded thread reads like the live
 // one (same bubbles, same tool timeline, same outcome words and durations).
-import { toolDisplayName, artifactsToWorkItems, artifactsToAttachments } from '$lib/chat/controller.svelte';
+import { artifactsToWorkItems, artifactsToAttachments } from '$lib/chat/controller.svelte';
+import { humanizeToolCall } from '$lib/chat/humanize';
 import type { ChatMessage } from '$lib/chat/controller.svelte';
 import { formatTime } from '$lib/time';
 import type { ChatMessage as ApiChatMessage } from '$lib/api/neboComponents';
@@ -64,7 +65,11 @@ export function parseMessages(rawMessages: ApiChatMessage[]): ChatMessage[] {
               payloadsById.set(r.tool_call_id, r.payload);
             }
             if (typeof r.outcome === 'string' && r.outcome) outcomesById.set(r.tool_call_id, r.outcome);
-            if (typeof r.duration_ms === 'number') durationsById.set(r.tool_call_id, r.duration_ms);
+            // Tolerate camelCase if a proxy ever rewrites the JSON blob.
+            else if (typeof r.Outcome === 'string' && r.Outcome) outcomesById.set(r.tool_call_id, r.Outcome);
+            const dur = typeof r.duration_ms === 'number' ? r.duration_ms
+              : typeof r.durationMs === 'number' ? r.durationMs : undefined;
+            if (typeof dur === 'number') durationsById.set(r.tool_call_id, dur);
           }
         }
       }
@@ -124,13 +129,13 @@ export function parseMessages(rawMessages: ApiChatMessage[]): ChatMessage[] {
     const pushTool = (target: AssistantMsg, tc: ToolCallMeta, callIdx: number) => {
       const request = parseToolInput(tc.input);
       const callId = callIds[callIdx] ?? '';
+      const happy = humanizeToolCall(tc.name || 'tool', request);
       (target.tools ??= []).push({
-        // Raw name so the display formats the signature. The persisted outcome
-        // is the same past-tense line the live stream showed; older rows without
-        // one fall back to the static display name.
+        // Raw name for signature expanders; label/outcome are the owner-facing
+        // happy names (same vocabulary as the live stream / humanize.rs).
         name: tc.name || 'tool',
-        label: toolDisplayName(tc.name || 'tool', request),
-        ...(outcomesById.has(callId) ? { outcome: outcomesById.get(callId) } : {}),
+        label: happy.label,
+        outcome: outcomesById.get(callId) ?? happy.outcome,
         ...(durationsById.has(callId) ? { durationMs: durationsById.get(callId) } : {}),
         status: tc.status === 'error' ? 'error' : 'success',
         request,
