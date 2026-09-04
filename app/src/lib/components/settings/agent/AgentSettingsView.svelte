@@ -421,7 +421,24 @@
     // IS adding an account. The old credentials modal here was a dead end
     // that could never configure them; send the user to the real flow.
     if (ch.pluginSlug === 'phonecall') {
-      goto(`/${agentId}/settings/accounts`);
+      // Phone lives under the Phone settings section, not Connected Accounts
+      // (phonecall is filtered out of accounts). Opening the attach modal
+      // here is what "Connect" should do — navigating to /settings/accounts
+      // left users on an empty accounts page with nothing to click.
+      void (async () => {
+        if (accountPlugins.length === 0) await loadAccounts();
+        let phonePlugin = accountPlugins.find((p) => p.slug === 'phonecall');
+        if (!phonePlugin) {
+          phonePlugin = {
+            slug: 'phonecall',
+            name: ch.name,
+            description: ch.description || '',
+            accounts: [],
+          };
+          accountPlugins = [...accountPlugins, phonePlugin];
+        }
+        openAddAccount(phonePlugin);
+      })();
       return;
     }
     channelAuthModal = ch;
@@ -1827,7 +1844,18 @@
           {:else if claimableNumbers.length === 0}
             <div class="rounded-lg bg-base-200 p-3 text-xs text-base-content/70">
               No numbers are free to attach. Buy a number (or park one from another employee) at
-              <span class="font-mono">neboai.com/manage/phone</span>, then come back here.
+              <button
+                type="button"
+                class="font-mono text-primary underline cursor-pointer bg-transparent border-none p-0"
+                onclick={() => {
+                  import('$lib/api/nebo')
+                    .then((api) => api.neboAIOpenNeboai({ path: '/manage/phone' }))
+                    .catch((err: unknown) => {
+                      const message = err instanceof Error ? err.message : 'Failed to open NeboAI';
+                      window.alert(`Couldn't open NeboAI phone management:\n${message}`);
+                    });
+                }}
+              >neboai.com/manage/phone</button>, then come back here.
             </div>
           {:else}
             <div class="flex flex-col gap-1.5">

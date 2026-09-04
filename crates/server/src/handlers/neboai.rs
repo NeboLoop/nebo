@@ -660,12 +660,82 @@ pub async fn janus_usage_refresh(
 
 // --- Open NeboAI in browser ---
 
-/// GET /api/v1/neboai/open — Open NeboAI dashboard in system browser.
-pub async fn open_neboai(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
+/// Query for `GET /api/v1/neboai/open`.
+///
+/// Callers may pass `path` (e.g. `/manage/phone`, `/app/billing`) or a full
+/// `url` on the NeboAI frontend. Ignoring these always opened the homepage,
+/// so agent/UI deep links (phone setup, billing) looked like "nothing
+/// popped up."
+#[derive(Debug, Default, serde::Deserialize)]
+pub struct OpenParams {
+    /// Relative path on the NeboAI frontend, e.g. `/manage/phone`.
+    pub path: Option<String>,
+    /// Full NeboAI URL (optional).
+    pub url: Option<String>,
+}
+
+/// Build the browser target from the configured frontend base + optional
+/// `path` / `url`. Rejects off-site targets (open-redirect guard).
+fn resolve_neboai_open_url(frontend_base: &str, params: &OpenParams) -> Result<String, String> {
+    let base = url::Url::parse(frontend_base)
+        .map_err(|e| format!("invalid NeboAI frontend URL: {e}"))?;
+
+    if let Some(full) = params.url.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        let candidate =
+            url::Url::parse(full).map_err(|e| format!("invalid url parameter: {e}"))?;
+        if !is_allowed_neboai_open_target(&base, &candidate) {
+            return Err("url must be on NeboAI".into());
+        }
+        return Ok(candidate.to_string());
+    }
+
+    if let Some(path) = params.path.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        if path.contains("://") {
+            return Err("path must be a relative NeboAI path, not a full URL".into());
+        }
+        let joined = base
+            .join(path)
+            .map_err(|e| format!("invalid path parameter: {e}"))?;
+        if !is_allowed_neboai_open_target(&base, &joined) {
+            return Err("path must stay on NeboAI".into());
+        }
+        return Ok(joined.to_string());
+    }
+
+    Ok(frontend_base.trim_end_matches('/').to_string())
+}
+
+fn is_allowed_neboai_open_target(frontend_base: &url::Url, candidate: &url::Url) -> bool {
+    if !matches!(candidate.scheme(), "http" | "https") {
+        return false;
+    }
+    let Some(host) = candidate.host_str() else {
+        return false;
+    };
+    if frontend_base.host_str() == Some(host) {
+        return true;
+    }
+    host == "neboai.com" || host.ends_with(".neboai.com")
+}
+
+/// GET /api/v1/neboai/open — Open NeboAI (optionally a deep link) in the
+/// system browser.
+pub async fn open_neboai(
+    State(state): State<AppState>,
+    Query(params): Query<OpenParams>,
+) -> HandlerResult<serde_json::Value> {
     let frontend_url = neboai_frontend_url(&state.config.neboai.api_url);
-    // Best-effort: open browser, may fail in headless environments
-    let _ = open::that(&frontend_url);
-    Ok(Json(serde_json::json!({"ok": true})))
+    let target = resolve_neboai_open_url(&frontend_url, &params)
+        .map_err(|e| to_error_response(NeboError::Validation(e)))?;
+
+    info!("Opening NeboAI URL in system browser: {target}");
+    if let Err(e) = open::that(&target) {
+        warn!("Failed to open browser for {target}: {e}");
+        return Err(to_error_response(NeboError::Internal(format!(
+            "Failed to open browser: {e}"
+        ))));
+    }
+    Ok(Json(serde_json::json!({"ok": true, "url": target})))
 }
 
 // --- Account disconnect ---
@@ -1669,4 +1739,67 @@ pub async fn phone_unbind(
         .map_err(|e| to_error_response(NeboError::Internal(format!("phone unbind: {e}"))))?;
     info!(number = %req.number, "phone number released via NeboAI");
     Ok(Json(resp))
+}
+
+#[cfg(test)]
+mod open_url_tests {
+    use super::*;
+
+    #[test]
+    fn open_url_defaults_to_frontend_root() {
+        let url = resolve_neboai_open_url("https://neboai.com", &OpenParams::default()).unwrap();
+        assert_eq!(url, "https://neboai.com");
+    }
+
+    #[test]
+    fn open_url_honors_path_deep_link() {
+        let url = resolve_neboai_open_url(
+            "https://neboai.com",
+            &OpenParams {
+                path: Some("/manage/phone".into()),
+                url: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(url, "https://neboai.com/manage/phone");
+    }
+
+    #[test]
+    fn open_url_honors_full_url_on_neboai() {
+        let url = resolve_neboai_open_url(
+            "https://neboai.com",
+            &OpenParams {
+                path: None,
+                url: Some("https://neboai.com/app/billing".into()),
+            },
+        )
+        .unwrap();
+        assert_eq!(url, "https://neboai.com/app/billing");
+    }
+
+    #[test]
+    fn open_url_rejects_offsite_url() {
+        let err = resolve_neboai_open_url(
+            "https://neboai.com",
+            &OpenParams {
+                path: None,
+                url: Some("https://evil.example/phish".into()),
+            },
+        )
+        .unwrap_err();
+        assert!(err.contains("NeboAI"), "{err}");
+    }
+
+    #[test]
+    fn open_url_rejects_scheme_in_path() {
+        let err = resolve_neboai_open_url(
+            "https://neboai.com",
+            &OpenParams {
+                path: Some("https://evil.example/phish".into()),
+                url: None,
+            },
+        )
+        .unwrap_err();
+        assert!(err.contains("relative"), "{err}");
+    }
 }

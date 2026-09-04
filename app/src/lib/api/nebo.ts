@@ -1218,9 +1218,10 @@ export function neboAIOauthStatus(state?: string) {
 
 /**
  * @description "Nebo a i open neboai"
+ * @param params Optional deep-link `path` or full `url` on the NeboAI frontend.
  */
-export function neboAIOpenNeboai() {
-	return webapi.get<components.NeboAIOpenNeboaiResponse>(`/api/v1/neboai/open`)
+export function neboAIOpenNeboai(params?: { path?: string; url?: string }) {
+	return webapi.get<components.NeboAIOpenNeboaiResponse>(`/api/v1/neboai/open`, params)
 }
 
 /**
