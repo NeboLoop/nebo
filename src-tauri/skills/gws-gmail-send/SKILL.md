@@ -57,6 +57,7 @@ gws gmail +send --to alice@example.com --subject 'Hello' --body 'Hi!' --draft
 - Use -a/--attach to add file attachments. Can be specified multiple times. Total size limit: 25MB.
 - With --html, use fragment tags (<p>, <b>, <a>, <br>, etc.) — no <html>/<body> wrapper needed.
 - Use --draft to save the message as a draft instead of sending it immediately.
+- **Not for meeting invites:** do not use gmail +send to invite people to a meeting. Use `gws calendar +insert` with `--attendee` (and `--meet` if needed) so the event lands on calendars. A plain email does not create a calendar event.
 
 > [!CAUTION]
 > This is a **write** command — confirm with the user before executing.
