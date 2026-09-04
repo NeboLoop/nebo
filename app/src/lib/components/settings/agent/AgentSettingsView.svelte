@@ -1223,9 +1223,13 @@
         <div class="flex flex-col gap-2">
           {#each phoneLines as line (line.number)}
             <div class="flex items-center gap-2 rounded-lg border border-base-300 bg-base-100 px-3.5 py-2.5">
-              <Check class="w-3.5 h-3.5 text-success shrink-0" />
+              {#if shownPlugins.length > 0}
+                <Check class="w-3.5 h-3.5 text-success shrink-0" />
+              {:else}
+                <AlertTriangle class="w-3.5 h-3.5 text-warning shrink-0" />
+              {/if}
               <span class="text-sm font-medium">{fmtPhone(line.number)}</span>
-              <span class="text-xs text-base-content/50 truncate flex-1">{line.status}{line.businessName ? ` · ${line.businessName}` : ''}</span>
+              <span class="text-xs text-base-content/50 truncate flex-1">{shownPlugins.length > 0 ? line.status : $t('agentSettings.phoneNotAnsweringHere')}{line.businessName ? ` · ${line.businessName}` : ''}</span>
               <a href="https://neboai.com/manage/phone" target="_blank" rel="noopener" class="text-xs text-primary font-medium shrink-0">{$t('agentSettings.managePhone')}</a>
             </div>
           {/each}

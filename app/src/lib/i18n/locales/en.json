@@ -2049,6 +2049,7 @@
 		"noPhonePlugin": "Install the Phone plugin to give {name} a line.",
 		"phoneNeedsPlugin": "Install the Phone plugin so {name} can answer this line on this computer.",
 		"managePhone": "Manage",
+		"phoneNotAnsweringHere": "goes to voicemail — no Phone plugin here",
 		"memory": "Memory",
 		"readOnly": "Read-only",
 		"configManagedPrefix": "This agent's configuration is managed by its",
