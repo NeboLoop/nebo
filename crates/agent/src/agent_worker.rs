@@ -2295,6 +2295,19 @@ async fn channel_loop(
                                 continue;
                             }
 
+                            // The phone bridge's only inbound is its post-call
+                            // "Took a phone call from …" note. The call already
+                            // lives in its own thread with the full transcript,
+                            // so running the employee on the note would only
+                            // start a second, empty conversation (and it did).
+                            if channel_name == "phonecall" {
+                                debug!(
+                                    agent = %agent_id,
+                                    "channel inbound: phone call note — transcript already persisted, skipping"
+                                );
+                                continue;
+                            }
+
                             // Respond-scope rule (see channel_message_in_scope):
                             // in multi-party surfaces, only DMs, direct
                             // @mentions of THIS bot, and replies in threads the
