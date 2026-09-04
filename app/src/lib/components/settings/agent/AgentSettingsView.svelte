@@ -21,6 +21,7 @@
   import type { AgentInputField } from '$lib/types/agentPage';
   import { installFlow } from '$lib/stores/installFlow';
   import { addToast } from '$lib/stores/toast';
+  import { pendingPluginAuthUrl } from '$lib/stores/pluginAuth';
 
   const ctx = getContext<AgentPageContext>('agentPage');
   const agentId = $derived(ctx.agentId);
@@ -765,6 +766,7 @@
           addAccountPlugin = null;
           addAccountLabel = '';
           addAccountError = null;
+          pendingPluginAuthUrl.set(null);
         }
         if (slug) refreshPluginAccounts(slug);
       }),
@@ -773,6 +775,7 @@
         if (slug === addAccountConnectingSlug) {
           addAccountConnectingSlug = null;
           addAccountError = (data.error as string) || $t('agentSettings.signInFailedRetry');
+          pendingPluginAuthUrl.set(null);
         }
       }),
     );
@@ -858,6 +861,7 @@
     addAccountLabel = '';
     addAccountError = null;
     claimableError = null;
+    pendingPluginAuthUrl.set(null);
   }
 
   // Re-run the OAuth login for an account whose token expired. Same pathway as
@@ -900,6 +904,7 @@
     if (!label || (isPhone && claimableNumbers.length > 0 && !addAccountNumber)) return;
     addAccountConnectingSlug = p.slug;
     addAccountError = null;
+    pendingPluginAuthUrl.set(null);
     try {
       const api = await import('$lib/api/nebo');
       await api.authLoginAccount(p.slug, { agentId, accountLabel: label, accountNumber: addAccountNumber });
@@ -1938,7 +1943,20 @@
         {/if}
 
         {#if connecting}
-          <div class="rounded-lg bg-primary/5 border border-primary/30 p-3 text-xs text-base-content/70">{plugin.slug === 'phonecall' ? 'Attaching the number to this employee…' : $t('agentSettings.signInWindowOpened')}</div>
+          <div class="rounded-lg bg-primary/5 border border-primary/30 p-3 text-xs text-base-content/70 space-y-2">
+            <div>{plugin.slug === 'phonecall' ? 'Attaching the number to this employee…' : $t('agentSettings.signInWindowOpened')}</div>
+            {#if plugin.slug === 'gws'}
+              <div class="text-base-content/60">{$t('agentSettings.googleWorkspaceSignInHint')}</div>
+            {/if}
+            {#if $pendingPluginAuthUrl && plugin.slug !== 'phonecall'}
+              <a
+                class="inline-flex text-primary underline font-medium"
+                href={$pendingPluginAuthUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+              >{$t('agentSettings.openSignInLink')}</a>
+            {/if}
+          </div>
         {/if}
 
         {#if addAccountError}

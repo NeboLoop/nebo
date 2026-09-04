@@ -2199,6 +2199,8 @@
 		"accountLabelPlaceholder": "work@acme.com",
 		"accountLabelHint": "Usually the email address or username for the account.",
 		"signInWindowOpened": "A sign-in window opened in your browser. Finish there — this connects automatically when it completes. Changed your mind? Cancel sign-in to close this and ignore the window.",
+		"googleWorkspaceSignInHint": "Google may show “This app hasn’t been verified.” That’s expected for Nebo — click Advanced, then Go to NeboAI Gmail (unsafe), and finish sign-in. Leave this dialog open until it connects.",
+		"openSignInLink": "Open sign-in link",
 		"cancelSignIn": "Cancel sign-in",
 		"signIn": "Sign in",
 		"signingIn": "Signing in...",
