@@ -1995,7 +1995,8 @@
 		"isolatedHint": "Each conversation keeps its own sealed memory — one case, client, or matter never bleeds into another",
 		"confirmOffTitle": "Turn off memory isolation?",
 		"confirmOffBody": "Your separate conversations stay saved, but they'll no longer appear as a list of matters — this employee returns to one continuous conversation. What was learned inside each sealed conversation stays sealed: future chats won't draw on it. Nothing is deleted, and turning isolation back on restores the list and each conversation's own memory.",
-		"confirmOffAction": "Turn off isolation"
+		"confirmOffAction": "Turn off isolation",
+		"lockedByPhone": "Isolated while a phone line is attached — every caller gets sealed memory. Remove the line at neboai.com/manage/phone to change this."
 	},
 	"agentApprovals": {
 		"title": "Approvals",

@@ -954,6 +954,13 @@ pub async fn update_agent(
         .cloned()
         .unwrap_or(serde_json::json!({}));
     if let Some(iso) = body["contextIsolated"].as_bool() {
+        // A phone line forces isolation: callers must never share memory.
+        // Checked live against the hub so removing the line is the only key.
+        if !iso && super::neboai::agent_has_phone_line(&state, &id).await {
+            return Err(to_error_response(types::NeboError::Validation(
+                "Memory isolation stays on while a phone line is attached to this employee. Remove the line at neboai.com/manage/phone first.".into(),
+            )));
+        }
         memory_cfg["context_isolated"] = serde_json::json!(iso);
     }
 

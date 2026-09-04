@@ -248,7 +248,7 @@ impl DynTool for MessageTool {
                     let nf = self.notify_fn.read().unwrap().clone();
                     handle_notify(&self.store, nf.as_ref(), &domain_input.action, &input, agent_id.as_deref()).await
                 }
-                "sms" => handle_sms(&domain_input.action, &input).await,
+                "sms" => handle_sms(&self.store, agent_id.as_deref(), &domain_input.action, &input).await,
                 other => ToolResult::error(format!(
                     "Resource {:?} not available. Available: coworker, owner, notify, sms",
                     other
@@ -448,9 +448,12 @@ async fn handle_dnd_status() -> ToolResult {
 // SMS resource handlers (macOS Messages.app via chat.db)
 // ---------------------------------------------------------------------------
 
-async fn handle_sms(action: &str, input: &serde_json::Value) -> ToolResult {
+async fn handle_sms(store: &Store, agent_id: Option<&str>, action: &str, input: &serde_json::Value) -> ToolResult {
     match action {
-        "send" => handle_sms_send(input).await,
+        "send" => match send_from_phone_line(store, agent_id, input).await {
+            Some(r) => r,
+            None => handle_sms_send(input).await,
+        },
         "conversations" => handle_sms_conversations(input).await,
         "read" => handle_sms_read(input).await,
         "search" => handle_sms_search(input).await,
@@ -459,6 +462,33 @@ async fn handle_sms(action: &str, input: &serde_json::Value) -> ToolResult {
             other
         )),
     }
+}
+
+/// An employee with a texting-enabled phone line texts from that line — the
+/// business number the caller already knows — through the hub. `None` means
+/// this employee has no such line, and the send falls through to the
+/// owner's Messages.app (the pre-existing personal-device path).
+async fn send_from_phone_line(store: &Store, agent_id: Option<&str>, input: &serde_json::Value) -> Option<ToolResult> {
+    let agent_id = agent_id?;
+    let text = input["text"].as_str().unwrap_or("");
+    let phone = input["phone"].as_str().unwrap_or("");
+    let api = crate::build_neboai_api(store).ok()?;
+    let lines = api.list_phone_lines().await.ok()?;
+    let line = lines["numbers"]
+        .as_array()?
+        .iter()
+        .find(|l| l["agentId"].as_str() == Some(agent_id) && l["smsEnabled"].as_bool() == Some(true))?;
+    let from = line["number"].as_str()?.to_string();
+    if text.is_empty() {
+        return Some(ToolResult::error(errors::missing_param("send", "text", "message(resource: \"sms\", action: \"send\", phone: \"+15551234567\", text: \"Hello!\")")));
+    }
+    if phone.is_empty() {
+        return Some(ToolResult::error(errors::missing_param("send", "phone", "message(resource: \"sms\", action: \"send\", phone: \"+15551234567\", text: \"Hello!\")")));
+    }
+    Some(match api.send_phone_sms(&from, phone, text).await {
+        Ok(_) => ToolResult::ok(format!("Sent by text from your line {from} to {phone}.")),
+        Err(e) => ToolResult::error(format!("Could not text from line {from}: {e}. Do not retry with a different resource; tell the owner if this persists.")),
+    })
 }
 
 #[cfg(not(target_os = "macos"))]

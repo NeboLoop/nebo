@@ -1457,6 +1457,17 @@ impl NeboAIApi {
         .await
     }
 
+    /// Text from one of this bot's lines. The hub refuses unless the line's
+    /// carrier registration is approved — unregistered traffic gets filtered.
+    pub async fn send_phone_sms(&self, from: &str, to: &str, body: &str) -> Result<serde_json::Value, CommError> {
+        self.do_json(
+            reqwest::Method::POST,
+            &format!("/api/v1/bots/{}/phone/sms", self.bot_id),
+            Some(&serde_json::json!({ "from": from, "to": to, "body": body })),
+        )
+        .await
+    }
+
     /// Fetch license keys for sealed .napp artifacts.
     ///
     /// Returns decryption keys for all artifacts this bot is licensed to access.

@@ -1627,7 +1627,34 @@ pub async fn phone_answer(
     super::agents::bind_channel(&state, &req.agent_id, SLUG)
         .await
         .map_err(to_error_response)?;
+    // A line means strangers talk to this employee: every caller gets sealed
+    // memory from here on, and update_agent refuses to unseal while the
+    // line is attached.
+    let fm = state
+        .store
+        .set_agent_context_isolated(&req.agent_id, true)
+        .map_err(to_error_response)?;
+    if let Ok(Some(agent)) = state.store.get_agent(&req.agent_id) {
+        super::agents::write_agent_json_to_fs(&agent.napp_path, &fm);
+    }
+    state.hub.broadcast("agent_updated", serde_json::json!({ "agentId": req.agent_id }));
     Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+/// Does the hub have an active line assigned to this employee? Live, not
+/// cached: the answer gates un-isolating memory, and a stale yes would lock
+/// an owner out of their own setting.
+pub(crate) async fn agent_has_phone_line(state: &AppState, agent_id: &str) -> bool {
+    let Ok(api) = build_api_client(state) else { return false };
+    let Ok(lines) = api.list_phone_lines().await else { return false };
+    lines["numbers"]
+        .as_array()
+        .map(|ns| {
+            ns.iter().any(|l| {
+                l["agentId"].as_str() == Some(agent_id) && l["status"].as_str() == Some("active")
+            })
+        })
+        .unwrap_or(false)
 }
 
 /// POST /api/v1/phone/unbind — release a bound number.

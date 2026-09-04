@@ -901,10 +901,26 @@ async fn handle_conversation_ws(mut socket: WebSocket, state: AppState, mut q: C
         return;
     }
     if q.chat_id.as_deref().unwrap_or_default().is_empty() {
-        // Fresh call from the composer's empty state: join the employee's
-        // working or recent thread, else mint an id now (the session key and
-        // tool scope need it) and let the row wait for a turn.
-        q.chat_id = Some(resolve_voice_chat(&state, q.agent_id.as_deref().unwrap_or_default()).await);
+        let agent_id = q.agent_id.as_deref().unwrap_or_default();
+        // A phone call on a multi-chat employee is its own thread: one
+        // caller, one transcript, never appended to whoever rang before.
+        let per_call = q.telephony.is_some()
+            && state
+                .store
+                .get_entity_config("agent", agent_id)
+                .ok()
+                .flatten()
+                .and_then(|c| c.multi_chat)
+                .unwrap_or(0)
+                != 0;
+        q.chat_id = Some(if per_call {
+            uuid::Uuid::new_v4().to_string()
+        } else {
+            // Fresh call from the composer's empty state: join the employee's
+            // working or recent thread, else mint an id now (the session key and
+            // tool scope need it) and let the row wait for a turn.
+            resolve_voice_chat(&state, agent_id).await
+        });
     }
 
     let Some((endpoint, bearer)) = resolve_realtime_leg(&state) else {

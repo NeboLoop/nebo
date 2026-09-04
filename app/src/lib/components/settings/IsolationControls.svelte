@@ -23,6 +23,9 @@
   let loading = $state(true);
   let saving = $state(false);
   let isolated = $state(false);
+  // A phone line forces isolation (callers must never share memory); the
+  // server refuses to unseal while one is attached, so the toggle says so.
+  let phoneLocked = $state(false);
 
   const options: { value: boolean; labelKey: string; hintKey: string; icon: typeof Lock; active: string }[] = [
     {
@@ -49,6 +52,12 @@
       const resp = (await api.getAgent(agentId)) as { agent?: { frontmatter?: string } };
       const fm = JSON.parse(resp.agent?.frontmatter || '{}');
       isolated = fm?.memory?.context_isolated === true;
+      try {
+        const lines = (await api.neboAIPhoneLines()) as { numbers?: { agentId?: string; status?: string }[] };
+        phoneLocked = (lines.numbers ?? []).some((l) => l.agentId === agentId && l.status === 'active');
+      } catch {
+        phoneLocked = false;
+      }
     } catch {
       isolated = false;
     } finally {
@@ -65,7 +74,7 @@
   let confirmOff = $state(false);
 
   function requestIsolated(value: boolean) {
-    if (saving || value === isolated) return;
+    if (saving || value === isolated || (phoneLocked && !value)) return;
     if (!value && isolated) {
       confirmOff = true;
       return;
@@ -98,14 +107,14 @@
             ? o.active
             : 'bg-base-100 border-base-content/10 text-base-content/40 hover:text-base-content/70 hover:bg-base-200'}"
           aria-pressed={isolated === o.value}
-          disabled={saving}
+          disabled={saving || (phoneLocked && !o.value)}
           onclick={() => requestIsolated(o.value)}
         >
           <o.icon class="w-3.5 h-3.5" />{$t(o.labelKey)}
         </button>
       {/each}
     </div>
-    <p class="text-xs text-base-content/60 mt-1.5">{$t(currentHint)}</p>
+    <p class="text-xs text-base-content/60 mt-1.5">{$t(phoneLocked ? 'agentIsolation.lockedByPhone' : currentHint)}</p>
   {/if}
 </div>
 

@@ -179,6 +179,36 @@ impl Store {
         Ok(())
     }
 
+    /// Flip `memory.context_isolated` in the DB frontmatter and return the
+    /// merged frontmatter so the caller can mirror it to agent.json. Used
+    /// when a phone line is attached: a receptionist's callers must never
+    /// share memory, so the line forces isolation on.
+    pub fn set_agent_context_isolated(&self, id: &str, isolated: bool) -> Result<serde_json::Value, NeboError> {
+        let conn = self.conn()?;
+        let current: String = conn
+            .query_row("SELECT frontmatter FROM agents WHERE id = ?1", params![id], |r| r.get(0))
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        let mut fm: serde_json::Value = serde_json::from_str(&current).unwrap_or(serde_json::json!({}));
+        if !fm.is_object() {
+            fm = serde_json::json!({});
+        }
+        let mem = fm
+            .as_object_mut()
+            .unwrap()
+            .entry("memory")
+            .or_insert_with(|| serde_json::json!({}));
+        if !mem.is_object() {
+            *mem = serde_json::json!({});
+        }
+        mem.as_object_mut().unwrap().insert("context_isolated".into(), serde_json::json!(isolated));
+        conn.execute(
+            "UPDATE agents SET frontmatter = ?2, updated_at = unixepoch() WHERE id = ?1",
+            params![id, fm.to_string()],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(fm)
+    }
+
     /// Sync display name and description from the manifest.
     /// Only updates if the manifest provides non-empty values, and never
     /// overwrites an owner-renamed (name_locked) name — the boot FS→DB sync
