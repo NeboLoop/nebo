@@ -20,6 +20,7 @@
   import IsolationControls from '$lib/components/settings/IsolationControls.svelte';
   import type { AgentInputField } from '$lib/types/agentPage';
   import { installFlow } from '$lib/stores/installFlow';
+  import { addToast } from '$lib/stores/toast';
 
   const ctx = getContext<AgentPageContext>('agentPage');
   const agentId = $derived(ctx.agentId);
@@ -496,7 +497,9 @@
         await api.enableAgentChannel(agentId, slug);
       }
       channelList = channelList.map(ch => ch.pluginSlug === slug ? { ...ch, enabled: !currentlyEnabled } : ch);
-    } catch { /* silent */ }
+    } catch (e) {
+      addToast((e as Error)?.message || 'Couldn’t update that channel. Try again.', 'error');
+    }
     finally { channelTogglingSlug = null; }
   }
 
@@ -529,7 +532,9 @@
         } catch { /* first visit */ }
         helpChatOpen = true;
       }
-    } catch { /* silent */ }
+    } catch (e) {
+      addToast((e as Error)?.message || 'Couldn’t open help chat. Try again.', 'error');
+    }
     finally { helpChatLoading = false; }
   }
 
@@ -555,6 +560,7 @@
   type AccountPlugin = { slug: string; name: string; description: string; accounts: PluginAccount[] };
   let accountPlugins = $state<AccountPlugin[]>([]);
   let accountsLoading = $state(false);
+  let accountsLoadError = $state<string | null>(null);
   let addAccountPlugin = $state<AccountPlugin | null>(null);
   let addAccountLabel = $state('');
   let addAccountConnectingSlug = $state<string | null>(null);
@@ -565,6 +571,7 @@
   type ClaimablePhoneNumber = { number: string; label?: string; status: string };
   let claimableNumbers = $state<ClaimablePhoneNumber[]>([]);
   let claimableLoading = $state(false);
+  let claimableError = $state<string | null>(null);
 
   $effect(() => { if (section === 'accounts' || section === 'phone') loadAccounts(); });
 
@@ -774,6 +781,7 @@
 
   async function loadAccounts() {
     accountsLoading = true;
+    accountsLoadError = null;
     try {
       const api = await import('$lib/api/nebo');
       const resp = await api.listPlugins() as { plugins: { slug: string; name?: string; description?: string; hasAuth?: boolean; multiAccount?: boolean }[] };
@@ -792,7 +800,10 @@
       // Surface plugins that already have connected accounts first; keep the
       // rest so the user can add a first account to a multi-account plugin.
       accountPlugins = loaded.sort((a, b) => b.accounts.length - a.accounts.length || a.name.localeCompare(b.name));
-    } catch { accountPlugins = []; }
+    } catch (e) {
+      accountPlugins = [];
+      accountsLoadError = (e as Error)?.message || 'Couldn’t load accounts. Try again.';
+    }
     finally { accountsLoading = false; }
   }
 
@@ -803,7 +814,9 @@
       accountPlugins = accountPlugins.map(p =>
         p.slug === slug ? { ...p, accounts: (r.accounts ?? []) as PluginAccount[] } : p
       );
-    } catch { /* silent */ }
+    } catch (e) {
+      addToast((e as Error)?.message || 'Account attached, but the list didn’t refresh. Reopen settings to see it.', 'warning', 6000);
+    }
   }
 
   function openAddAccount(p: AccountPlugin) {
@@ -812,6 +825,7 @@
     addAccountError = null;
     addAccountNumber = '';
     claimableNumbers = [];
+    claimableError = null;
     // ponytail: phonecall is first-party — its "account" is a phone line, so
     // the modal shows a picker of the owner's attachable numbers instead of
     // a free-text label guessing game. Generalize via a manifest field when
@@ -822,9 +836,15 @@
         .then((api) => api.neboAIPhoneClaimable())
         .then((res) => {
           claimableNumbers = (res as { numbers?: ClaimablePhoneNumber[] })?.numbers ?? [];
+          claimableError = null;
           if (claimableNumbers.length === 1) addAccountNumber = claimableNumbers[0].number;
         })
-        .catch(() => { claimableNumbers = []; })
+        .catch((e: unknown) => {
+          claimableNumbers = [];
+          // Distinguish load failure from a real empty inventory — otherwise
+          // API errors look like “go buy a number.”
+          claimableError = e instanceof Error ? e.message : 'Couldn’t load your phone numbers.';
+        })
         .finally(() => { claimableLoading = false; });
     }
   }
@@ -837,6 +857,7 @@
     addAccountPlugin = null;
     addAccountLabel = '';
     addAccountError = null;
+    claimableError = null;
   }
 
   // Re-run the OAuth login for an account whose token expired. Same pathway as
@@ -848,8 +869,9 @@
     try {
       const api = await import('$lib/api/nebo');
       await api.authLoginAccount(slug, { agentId, accountLabel: label, accountNumber: '' });
-    } catch {
+    } catch (e) {
       addAccountConnectingSlug = null;
+      addToast((e as Error)?.message || $t('agentSettings.startSignInFailed'), 'error');
     }
   }
 
@@ -862,7 +884,9 @@
       accountPlugins = accountPlugins.map(p =>
         p.slug === slug ? { ...p, accounts: p.accounts.filter(a => a.accountLabel !== label) } : p
       );
-    } catch { /* leave list; user can retry */ }
+    } catch (e) {
+      addToast((e as Error)?.message || 'Couldn’t disconnect that account. Try again.', 'error');
+    }
   }
 
   async function submitAddAccount() {
@@ -1610,6 +1634,11 @@
       {/if}
       {#if accountsLoading}
         <div class="text-xs text-base-content/50 py-6 text-center">{$t('agentSettings.loadingAccounts')}</div>
+      {:else if accountsLoadError}
+        <div class="py-8 text-center space-y-3">
+          <div class="text-sm text-error">{accountsLoadError}</div>
+          <button type="button" class="btn btn-sm btn-outline" onclick={() => loadAccounts()}>Try again</button>
+        </div>
       {:else if shownPlugins.length === 0}
         <div class="py-8 text-center">
           {#if section === 'phone'}
@@ -1841,6 +1870,16 @@
         {#if plugin.slug === 'phonecall'}
           {#if claimableLoading}
             <div class="flex items-center gap-2 text-xs text-base-content/60"><span class="loading loading-spinner loading-xs"></span> Loading your numbers…</div>
+          {:else if claimableError}
+            <div class="rounded-lg bg-error/5 border border-error/30 p-3 space-y-2">
+              <div class="text-xs text-error">{claimableError}</div>
+              <button
+                type="button"
+                class="btn btn-xs btn-outline"
+                disabled={connecting}
+                onclick={() => openAddAccount(plugin)}
+              >Try again</button>
+            </div>
           {:else if claimableNumbers.length === 0}
             <div class="rounded-lg bg-base-200 p-3 text-xs text-base-content/70">
               No numbers are free to attach. Buy a number (or park one from another employee) at
@@ -1852,7 +1891,7 @@
                     .then((api) => api.neboAIOpenNeboai({ path: '/manage/phone' }))
                     .catch((err: unknown) => {
                       const message = err instanceof Error ? err.message : 'Failed to open NeboAI';
-                      window.alert(`Couldn't open NeboAI phone management:\n${message}`);
+                      addToast(`Couldn't open NeboAI phone management: ${message}`, 'error', 6000);
                     });
                 }}
               >neboai.com/manage/phone</button>, then come back here.

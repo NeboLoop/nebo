@@ -129,7 +129,10 @@ export function attachWebSocketListeners(): void {
   unsubs.push(
     ws.on('plugin_auth_url', (data: any) => {
       if (typeof window !== 'undefined' && data?.url) {
-        window.open(data.url, '_blank');
+        const win = window.open(data.url, '_blank');
+        if (!win) {
+          addToast('Sign-in window was blocked. Allow popups for Nebo, then try again.', 'error', 8000);
+        }
       }
     })
   );
