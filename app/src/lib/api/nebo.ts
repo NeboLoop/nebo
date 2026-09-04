@@ -1252,6 +1252,13 @@ export function markRead(id: string, req: Record<string, unknown> = {}) {
 }
 
 /**
+ * @description "Nebo a i phone answer"
+ */
+export function neboAIPhoneAnswer(req: Record<string, unknown> = {}) {
+	return webapi.post<components.NeboAIPhoneAnswerResponse>(`/api/v1/phone/answer`, req)
+}
+
+/**
  * @description "Nebo a i phone bind"
  */
 export function neboAIPhoneBind(req: Record<string, unknown> = {}) {

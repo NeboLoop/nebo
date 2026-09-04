@@ -1589,6 +1589,47 @@ pub async fn phone_lines(State(state): State<AppState>) -> HandlerResult<serde_j
     Ok(Json(resp))
 }
 
+#[derive(serde::Deserialize)]
+pub struct PhoneAnswerRequest {
+    #[serde(rename = "agentId")]
+    pub agent_id: String,
+}
+
+/// POST /api/v1/phone/answer — make one employee able to answer calls on
+/// this computer: install the Phone plugin if it is missing, then bind its
+/// channel to the employee so the bridge runs. The hub calls this right
+/// after assigning a line at /manage/phone; the Phone settings tab offers
+/// it as a retry. Without the binding the plugin is just a binary on disk
+/// and every call falls to voicemail.
+pub async fn phone_answer(
+    State(state): State<AppState>,
+    Json(req): Json<PhoneAnswerRequest>,
+) -> HandlerResult<serde_json::Value> {
+    const SLUG: &str = "phonecall";
+    if state
+        .store
+        .get_agent(&req.agent_id)
+        .map_err(to_error_response)?
+        .is_none()
+    {
+        return Err(to_error_response(NeboError::NotFound));
+    }
+    if state.plugin_store.get_channel_def(SLUG).is_none() {
+        let api = build_api_client(&state).map_err(to_error_response)?;
+        crate::codes::fetch_and_install_plugin(&state, &api, SLUG, "Phonecall")
+            .await
+            .map_err(to_error_response)?;
+        state
+            .hub
+            .broadcast("plugin_installed", serde_json::json!({ "plugin": "Phonecall" }));
+        info!(agent = %req.agent_id, "installed the Phone plugin for a hub-assigned line");
+    }
+    super::agents::bind_channel(&state, &req.agent_id, SLUG)
+        .await
+        .map_err(to_error_response)?;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
 /// POST /api/v1/phone/unbind — release a bound number.
 pub async fn phone_unbind(
     State(state): State<AppState>,

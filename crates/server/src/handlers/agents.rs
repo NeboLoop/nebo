@@ -3642,21 +3642,30 @@ pub async fn enable_agent_channel(
         ))));
     }
 
-    state
-        .store
-        .enable_channel_binding(&agent_id, &plugin_slug)
+    bind_channel(&state, &agent_id, &plugin_slug)
+        .await
         .map_err(to_error_response)?;
 
-    // Restart agent worker so the channel loop starts
-    if let Ok(Some(agent)) = state.store.get_agent(&agent_id) {
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+/// Bind a channel plugin to an agent and restart its worker so the channel
+/// loop (the plugin's bridge process) starts. The ONE place a binding is
+/// created: the Channels toggle and the phone line setup both come here.
+pub(crate) async fn bind_channel(
+    state: &AppState,
+    agent_id: &str,
+    plugin_slug: &str,
+) -> Result<(), types::NeboError> {
+    state.store.enable_channel_binding(agent_id, plugin_slug)?;
+    if let Ok(Some(agent)) = state.store.get_agent(agent_id) {
         let cfg = napp::agent::parse_agent_config(&agent.frontmatter).ok();
         state
             .agent_workers
-            .start_agent(&agent_id, &agent.name, cfg)
+            .start_agent(agent_id, &agent.name, cfg)
             .await;
     }
-
-    Ok(Json(serde_json::json!({ "ok": true })))
+    Ok(())
 }
 
 /// POST /agents/{id}/channels/{plugin_slug}/disable — disable a channel for this agent.

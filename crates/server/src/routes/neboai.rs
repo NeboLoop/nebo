@@ -142,4 +142,8 @@ pub fn routes() -> Router<AppState> {
             "/phone/lines",
             axum::routing::get(handlers::neboai::phone_lines),
         )
+        .route(
+            "/phone/answer",
+            axum::routing::post(handlers::neboai::phone_answer),
+        )
 }

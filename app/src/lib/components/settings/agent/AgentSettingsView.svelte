@@ -580,6 +580,21 @@
       phoneLines = (r.numbers ?? []).filter((l) => l.agentId === agentId);
     } catch { phoneLines = []; }
   }
+  // Retry of what the hub does on Assign: install the Phone plugin if
+  // missing and bind it to this employee so the bridge runs.
+  let phoneAnswerBusy = $state(false);
+  let phoneAnswerError = $state<string | null>(null);
+  async function answerPhoneHere() {
+    phoneAnswerBusy = true;
+    phoneAnswerError = null;
+    try {
+      const api = await import('$lib/api/nebo');
+      await api.neboAIPhoneAnswer({ agentId });
+      await loadAccounts();
+    } catch (e) {
+      phoneAnswerError = e instanceof Error ? e.message : String(e);
+    } finally { phoneAnswerBusy = false; }
+  }
   // ponytail: US-only pretty print; anything else shows as stored.
   const fmtPhone = (n: string) => n.replace(/^\+1(\d{3})(\d{3})(\d{4})$/, '($1) $2-$3');
 
@@ -1241,7 +1256,12 @@
         <div class="py-8 text-center">
           {#if section === 'phone'}
             <div class="text-sm text-base-content/50 mb-2">{$t(phoneLines.length > 0 ? 'agentSettings.phoneNeedsPlugin' : 'agentSettings.noPhonePlugin', { values: { name: agent?.name ?? '' } })}</div>
-            <a href="/marketplace/plugins" class="inline-flex items-center gap-1 text-sm text-primary font-medium">{$t('agentSettings.browseMarketplaceArrow')}</a>
+            {#if phoneLines.length > 0}
+              <button class="btn btn-sm btn-primary" onclick={answerPhoneHere} disabled={phoneAnswerBusy}>{$t(phoneAnswerBusy ? 'agentSettings.phoneAnswerHereBusy' : 'agentSettings.phoneAnswerHere')}</button>
+              {#if phoneAnswerError}<div class="text-xs text-error mt-2">{phoneAnswerError}</div>{/if}
+            {:else}
+              <a href="/marketplace/plugins" class="inline-flex items-center gap-1 text-sm text-primary font-medium">{$t('agentSettings.browseMarketplaceArrow')}</a>
+            {/if}
           {:else}
             <div class="text-sm text-base-content/50 mb-2">{$t('agentSettings.noMultiAccountPlugins')}</div>
             <a href="/marketplace/plugins" class="inline-flex items-center gap-1 text-sm text-primary font-medium">{$t('agentSettings.browseMarketplaceArrow')}</a>

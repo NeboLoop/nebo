@@ -2050,6 +2050,8 @@
 		"phoneNeedsPlugin": "Install the Phone plugin so {name} can answer this line on this computer.",
 		"managePhone": "Manage",
 		"phoneNotAnsweringHere": "goes to voicemail — no Phone plugin here",
+		"phoneAnswerHere": "Answer here",
+		"phoneAnswerHereBusy": "Setting up…",
 		"memory": "Memory",
 		"readOnly": "Read-only",
 		"configManagedPrefix": "This agent's configuration is managed by its",

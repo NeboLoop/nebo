@@ -1661,6 +1661,10 @@ export interface NeboAIOpenNeboaiResponse {
 	ok: boolean
 }
 
+export interface NeboAIPhoneAnswerResponse {
+	ok: boolean
+}
+
 export interface NeboAIShareArtifactResponse {
 	shared: boolean
 }

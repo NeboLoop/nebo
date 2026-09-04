@@ -1325,7 +1325,18 @@ fn ensure_voice_chat(
     title: Option<&str>,
 ) -> bool {
     match state.store.get_chat(chat_id) {
-        Ok(Some(_)) => true,
+        Ok(Some(chat)) => {
+            // The channel loop may have created the row first, untitled — a
+            // phone call still gets its caller-ID name, and the auto-namer
+            // must not retitle it from the caller's first sentence.
+            if let Some(t) = title
+                && !chat.title_custom
+                && let Err(e) = state.store.update_chat_title(chat_id, t, true)
+            {
+                warn!(error = %e, chat = %chat_id, "failed to protect phone chat title");
+            }
+            true
+        }
         Ok(None) => match state.store.create_chat_for_session(
             chat_id,
             session_key,
