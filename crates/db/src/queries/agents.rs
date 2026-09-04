@@ -85,9 +85,14 @@ impl Store {
         voice: Option<&str>,
     ) -> Result<(), NeboError> {
         let conn = self.conn()?;
+        // A blank name is never written and never locks: locking one would leave
+        // the row nameless with no way back, since sync_agent_identity only
+        // restores the manifest name while name_locked = 0. Same guard shape the
+        // sync uses, so the two agree on what counts as a name.
         conn.execute(
-            "UPDATE agents SET name_locked = CASE WHEN ?1 != name THEN 1 ELSE name_locked END,
-                    name = ?1, description = ?2, agent_md = ?3,
+            "UPDATE agents SET name_locked = CASE WHEN TRIM(?1) != '' AND ?1 != name THEN 1 ELSE name_locked END,
+                    name = CASE WHEN TRIM(?1) != '' THEN ?1 ELSE name END,
+                    description = ?2, agent_md = ?3,
                     frontmatter = ?4, pricing_model = ?5, pricing_cost = ?6,
                     soul = COALESCE(?7, soul),
                     rules = COALESCE(?8, rules),

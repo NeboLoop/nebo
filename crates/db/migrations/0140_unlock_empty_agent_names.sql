@@ -1,0 +1,12 @@
+-- Repair agents left permanently nameless.
+--
+-- update_agent locked any name that differed from the current one — a blank
+-- included — so an empty name could be written and locked in the same statement.
+-- After that, sync_agent_identity (which only writes when name_locked = 0) could
+-- never put the manifest name back: the row stayed nameless forever, the owner
+-- surface had no name to correct, and the dashboard drew the card as "?".
+--
+-- Unlock those rows so boot's manifest sync restores the real name on the next
+-- start. update_agent no longer writes or locks a blank name, so this is a
+-- one-time repair, not a recurring sweep.
+UPDATE agents SET name_locked = 0 WHERE TRIM(name) = '';
