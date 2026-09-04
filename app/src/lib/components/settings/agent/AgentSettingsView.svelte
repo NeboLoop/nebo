@@ -567,6 +567,22 @@
 
   $effect(() => { if (section === 'accounts' || section === 'phone') loadAccounts(); });
 
+  // Lines the hub has assigned to this employee at neboai.com/manage/phone.
+  // Assignment lives hub-side (a number is an account asset), so this is a
+  // receipt — the local phonecall plugin is only the bridge that answers.
+  type PhoneLine = { number: string; status: string; agentId?: string; businessName?: string };
+  let phoneLines = $state<PhoneLine[]>([]);
+  $effect(() => { if (section === 'phone') loadPhoneLines(); });
+  async function loadPhoneLines() {
+    try {
+      const api = await import('$lib/api/nebo');
+      const r = await api.neboAIPhoneLines() as { numbers?: PhoneLine[] };
+      phoneLines = (r.numbers ?? []).filter((l) => l.agentId === agentId);
+    } catch { phoneLines = []; }
+  }
+  // ponytail: US-only pretty print; anything else shows as stored.
+  const fmtPhone = (n: string) => n.replace(/^\+1(\d{3})(\d{3})(\d{4})$/, '($1) $2-$3');
+
   // Phone gets its own settings section — a phone line reads as a capability
   // of the employee, not "an account" — but both sections render the SAME
   // accounts machinery, just filtered: phonecall here, everything else there.
@@ -1203,12 +1219,24 @@
         <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t(section === 'phone' ? 'agentSettings.phone' : 'agentSettings.connectedAccounts')}</div>
         <div class="text-xs text-base-content/70 mt-1">{$t(section === 'phone' ? 'agentSettings.phoneDesc' : 'agentSettings.accountsDesc', { values: { name: agent?.name ?? '' } })}</div>
       </div>
+      {#if section === 'phone' && phoneLines.length > 0}
+        <div class="flex flex-col gap-2">
+          {#each phoneLines as line (line.number)}
+            <div class="flex items-center gap-2 rounded-lg border border-base-300 bg-base-100 px-3.5 py-2.5">
+              <Check class="w-3.5 h-3.5 text-success shrink-0" />
+              <span class="text-sm font-medium">{fmtPhone(line.number)}</span>
+              <span class="text-xs text-base-content/50 truncate flex-1">{line.status}{line.businessName ? ` · ${line.businessName}` : ''}</span>
+              <a href="https://neboai.com/manage/phone" target="_blank" rel="noopener" class="text-xs text-primary font-medium shrink-0">{$t('agentSettings.managePhone')}</a>
+            </div>
+          {/each}
+        </div>
+      {/if}
       {#if accountsLoading}
         <div class="text-xs text-base-content/50 py-6 text-center">{$t('agentSettings.loadingAccounts')}</div>
       {:else if shownPlugins.length === 0}
         <div class="py-8 text-center">
           {#if section === 'phone'}
-            <div class="text-sm text-base-content/50 mb-2">{$t('agentSettings.noPhonePlugin')}</div>
+            <div class="text-sm text-base-content/50 mb-2">{$t(phoneLines.length > 0 ? 'agentSettings.phoneNeedsPlugin' : 'agentSettings.noPhonePlugin', { values: { name: agent?.name ?? '' } })}</div>
             <a href="/marketplace/plugins" class="inline-flex items-center gap-1 text-sm text-primary font-medium">{$t('agentSettings.browseMarketplaceArrow')}</a>
           {:else}
             <div class="text-sm text-base-content/50 mb-2">{$t('agentSettings.noMultiAccountPlugins')}</div>

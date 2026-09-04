@@ -2047,6 +2047,8 @@
 		"phone": "Phone",
 		"phoneDesc": "The phone lines {name} answers and calls from. Attach a number you own, or get one at neboai.com/manage/phone.",
 		"noPhonePlugin": "Install the Phone plugin to give {name} a line.",
+		"phoneNeedsPlugin": "Install the Phone plugin so {name} can answer this line on this computer.",
+		"managePhone": "Manage",
 		"memory": "Memory",
 		"readOnly": "Read-only",
 		"configManagedPrefix": "This agent's configuration is managed by its",
