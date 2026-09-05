@@ -144,6 +144,9 @@ pub struct AppState {
     pub agent_loader: Arc<napp::AgentLoader>,
     /// User presence tracker — per-session focused/unfocused/away state
     pub presence: Arc<agent::PresenceTracker>,
+    /// True while the management tunnel to the hub is up — the switchboard
+    /// can reach this Nebo. Set by the tunnel itself, nothing else.
+    pub tunnel_online: Arc<std::sync::atomic::AtomicBool>,
     /// Proactive inbox — in-memory queue for background task results
     pub proactive_inbox: Arc<agent::ProactiveInbox>,
     /// Auto-continuation budget/state tracker for judge-gated persistent goals

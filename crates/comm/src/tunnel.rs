@@ -45,7 +45,21 @@ pub enum TunnelError {
 /// Returns `Ok(())` on a clean close by the hub and an error on dial/auth/mux
 /// failure; the caller owns reconnect and backoff (the watcher in
 /// `crates/server`, mirroring the comms reconnect watcher).
-pub async fn run(hub_url: &str, token: &str, local_addr: &str) -> Result<(), TunnelError> {
+pub async fn run(
+    hub_url: &str,
+    token: &str,
+    local_addr: &str,
+    online: &std::sync::atomic::AtomicBool,
+) -> Result<(), TunnelError> {
+    // `online` is true exactly while the hub holds this session — the
+    // switchboard can reach us — and false the moment it does not.
+    struct Offline<'a>(&'a std::sync::atomic::AtomicBool);
+    impl Drop for Offline<'_> {
+        fn drop(&mut self) {
+            self.0.store(false, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+    let _offline = Offline(online);
     verify_hub_url(hub_url)?;
     let mut request = hub_url
         .into_client_request()
@@ -59,6 +73,7 @@ pub async fn run(hub_url: &str, token: &str, local_addr: &str) -> Result<(), Tun
         .await
         .map_err(|e| TunnelError::Dial(e.to_string()))?;
     info!(hub = %hub_url, "tunnel: connected to hub");
+    online.store(true, std::sync::atomic::Ordering::Relaxed);
 
     let mut conn = yamux::Connection::new(
         WsIo::new(ws, HUB_SILENCE),

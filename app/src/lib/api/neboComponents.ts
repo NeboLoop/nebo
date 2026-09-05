@@ -1481,7 +1481,10 @@ export interface ListAdvisorsResponse {
 
 export interface ListAgentApiKeysResponse {
 	keys: ApiKey[]
-	baseUrl: string
+	models: unknown[]
+	localUrl: string
+	switchboardUrl: string
+	switchboardOnline: unknown
 }
 
 export interface ListAgentChannelsResponse {

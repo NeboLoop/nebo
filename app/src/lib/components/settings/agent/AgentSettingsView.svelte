@@ -624,8 +624,16 @@
   // API keys — the OpenAI-shaped door. A key calls this employee (and the
   // workflows it names) as a model from any OpenAI client.
   type ApiKeyRow = import('$lib/api/neboComponents').ApiKey;
+  type ApiModel = { id: string; kind: 'employee' | 'workflow'; name: string; memory: 'shared' | 'isolated' };
   let apiKeys = $state<ApiKeyRow[]>([]);
-  let apiBase = $state('');
+  let apiModels = $state<ApiModel[]>([]);
+  let apiLocalUrl = $state('');
+  let apiSwitchboardUrl = $state('');
+  let apiSwitchboardOnline = $state(false);
+  // The address a client should use: the switchboard when this Nebo is
+  // paired (it works from anywhere the Nebo is online), else this computer.
+  const apiBase = $derived(apiSwitchboardUrl || apiLocalUrl);
+  let showNewKey = $state(false);
   let apiKeysError = $state<string | null>(null);
   let mintedKey = $state<{ key: ApiKeyRow; secret: string } | null>(null);
   let keyLabel = $state('');
@@ -638,7 +646,10 @@
       const api = await import('$lib/api/nebo');
       const r = await api.listAgentApiKeys(agentId);
       apiKeys = r.keys ?? [];
-      apiBase = r.baseUrl ?? '';
+      apiModels = (r.models ?? []) as ApiModel[];
+      apiLocalUrl = r.localUrl ?? '';
+      apiSwitchboardUrl = r.switchboardUrl ?? '';
+      apiSwitchboardOnline = r.switchboardOnline === true;
     } catch (e) {
       apiKeys = [];
       apiKeysError = e instanceof Error ? e.message : String(e);
@@ -654,6 +665,7 @@
       mintedKey = { key: r.key, secret: String(r.secret) };
       keyLabel = '';
       keyWorkflows = [];
+      showNewKey = false;
       await loadApiKeys();
     } catch (e) {
       apiKeysError = e instanceof Error ? e.message : String(e);
@@ -675,7 +687,10 @@
     keyWorkflows = keyWorkflows.includes(name) ? keyWorkflows.filter((w) => w !== name) : [...keyWorkflows, name];
   }
   const curlForKey = (m: { key: ApiKeyRow; secret: string }) =>
-    `curl ${apiBase}/chat/completions -H "Authorization: Bearer ${m.secret}" -H "Content-Type: application/json" -d '{"model":"${m.key.models[0] ?? ''}","stream":true,"user":"customer-42","messages":[{"role":"user","content":"Hello"}]}'`;
+    `curl ${apiBase}/chat/completions \\\n  -H "Authorization: Bearer ${m.secret}" \\\n  -H "Content-Type: application/json" \\\n  -d '{"model":"${m.key.models[0] ?? ''}","user":"customer-42","stream":true,\n       "messages":[{"role":"user","content":"Hello"}]}'`;
+  const pythonForKey = (m: { key: ApiKeyRow; secret: string }) =>
+    `from openai import OpenAI\nclient = OpenAI(base_url="${apiBase}", api_key="${m.secret}")\nr = client.chat.completions.create(\n    model="${m.key.models[0] ?? ''}", user="customer-42",\n    messages=[{"role": "user", "content": "Hello"}])\nprint(r.choices[0].message.content)`;
+  let snippetLang = $state<'curl' | 'python'>('curl');
 
   // Retry of what the hub does on Assign: install the Phone plugin if
   // missing and bind it to this employee so the bridge runs.
@@ -1402,44 +1417,106 @@
         <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('agentSettings.apiKeys')}</div>
         <div class="text-xs text-base-content/70 mt-1">{$t('agentSettings.apiKeysDesc', { values: { name: agent?.name ?? '' } })}</div>
       </div>
-      <div class="rounded-lg border border-base-300 bg-base-100 p-3.5 flex flex-col gap-2">
-        <div class="text-sm font-medium">{$t('agentSettings.apiKeyNew')}</div>
-        <label class="flex flex-col gap-1">
-          <span class="text-xs text-base-content/60">{$t('agentSettings.apiKeyLabelField')}</span>
-          <div class="flex gap-2">
-            <input class="input input-sm input-bordered flex-1" placeholder={$t('agentSettings.apiKeyLabelPlaceholder')} bind:value={keyLabel} onkeydown={(e) => { if (e.key === 'Enter') mintApiKey(); }} />
-            <button class="btn btn-sm btn-primary" onclick={mintApiKey} disabled={!keyLabel.trim() || !!keyBusy}>{keyBusy === 'mint' ? $t('agentSettings.webhookMinting') : $t('agentSettings.webhookMint')}</button>
+
+      <!-- Endpoint -->
+      <div class="rounded-lg border border-base-300 bg-base-100 divide-y divide-base-content/10">
+        {#if apiSwitchboardUrl}
+          <div class="px-3.5 py-2.5 flex items-center gap-3">
+            <div class="flex-1 min-w-0">
+              <div class="text-xs text-base-content/50 flex items-center gap-1.5">
+                <span class="inline-block w-2 h-2 rounded-full {apiSwitchboardOnline ? 'bg-success' : 'bg-base-content/30'}"></span>
+                {$t(apiSwitchboardOnline ? 'agentSettings.apiSwitchboardOnline' : 'agentSettings.apiSwitchboardOffline')}
+              </div>
+              <code class="text-sm font-mono break-all">{apiSwitchboardUrl}</code>
+            </div>
+            <button class="btn btn-xs btn-ghost shrink-0" onclick={() => copyHook('sb', apiSwitchboardUrl)}>{copiedHook === 'sb' ? $t('agentSettings.copied') : $t('agentSettings.copy')}</button>
           </div>
-        </label>
-        {#if workflowEntries.length > 0}
-          <div class="flex flex-wrap items-center gap-2 text-xs">
-            <span class="text-base-content/50">{$t('agentSettings.apiKeyWorkflows')}</span>
-            {#each workflowEntries as [wfName] (wfName)}
-              <label class="inline-flex items-center gap-1 cursor-pointer">
-                <input type="checkbox" class="checkbox checkbox-xs" checked={keyWorkflows.includes(wfName)} onchange={() => toggleKeyWorkflow(wfName)} />
-                <span class="font-mono">{wfName}</span>
+        {/if}
+        <div class="px-3.5 py-2.5 flex items-center gap-3">
+          <div class="flex-1 min-w-0">
+            <div class="text-xs text-base-content/50">{$t('agentSettings.apiLocalUrl')}</div>
+            <code class="text-sm font-mono break-all">{apiLocalUrl}</code>
+          </div>
+          <button class="btn btn-xs btn-ghost shrink-0" onclick={() => copyHook('local', apiLocalUrl)}>{copiedHook === 'local' ? $t('agentSettings.copied') : $t('agentSettings.copy')}</button>
+        </div>
+      </div>
+
+      <!-- Models -->
+      <div class="mt-3 mb-1 text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('agentSettings.apiModels')}</div>
+      <div class="rounded-lg border border-base-300 bg-base-100 divide-y divide-base-content/10">
+        {#each apiModels as m (m.id)}
+          <div class="px-3.5 py-2.5 flex items-center gap-3">
+            <div class="flex-1 min-w-0">
+              <code class="text-sm font-mono break-all">{m.id}</code>
+              <div class="text-xs text-base-content/50">
+                {m.kind === 'employee' ? $t('agentSettings.apiModelEmployee', { values: { name: m.name } }) : $t('agentSettings.apiModelWorkflow', { values: { name: m.name } })}
+                · {$t(m.memory === 'isolated' ? 'agentSettings.apiMemoryIsolated' : 'agentSettings.apiMemoryShared')}
+              </div>
+            </div>
+            <button class="btn btn-xs btn-ghost shrink-0" onclick={() => copyHook(m.id, m.id)}>{copiedHook === m.id ? $t('agentSettings.copied') : $t('agentSettings.copy')}</button>
+          </div>
+        {/each}
+      </div>
+      <div class="text-xs text-base-content/50 mt-1">{$t('agentSettings.apiModelsHint')}</div>
+
+      <!-- Keys -->
+      <div class="mt-4 mb-1 flex items-center justify-between gap-3">
+        <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('agentSettings.apiKeysList')}</div>
+        {#if !showNewKey}
+          <button class="btn btn-xs btn-primary" onclick={() => (showNewKey = true)}>{$t('agentSettings.apiKeyNew')}</button>
+        {/if}
+      </div>
+      {#if showNewKey}
+        <div class="rounded-lg border border-base-300 bg-base-100 p-3.5 flex flex-col gap-2">
+          <label class="flex flex-col gap-1">
+            <span class="text-xs text-base-content/60">{$t('agentSettings.apiKeyLabelField')}</span>
+            <input class="input input-sm input-bordered w-full" placeholder={$t('agentSettings.apiKeyLabelPlaceholder')} bind:value={keyLabel} onkeydown={(e) => { if (e.key === 'Enter') mintApiKey(); }} />
+          </label>
+          <div class="text-xs text-base-content/60">{$t('agentSettings.apiKeyModelsField')}</div>
+          <div class="flex flex-col gap-1 text-xs">
+            {#each apiModels as m (m.id)}
+              <label class="inline-flex items-center gap-2 {m.kind === 'employee' ? 'opacity-70' : 'cursor-pointer'}">
+                <input type="checkbox" class="checkbox checkbox-xs" checked={m.kind === 'employee' || keyWorkflows.includes(m.name)} disabled={m.kind === 'employee'} onchange={() => toggleKeyWorkflow(m.name)} />
+                <code class="font-mono">{m.id}</code>
               </label>
             {/each}
           </div>
-        {/if}
-        <div class="text-xs text-base-content/50">{$t('agentSettings.apiKeyHint')}</div>
-      </div>
+          <div class="text-xs text-base-content/50">{$t('agentSettings.apiKeyHint')}</div>
+          <div class="flex gap-2 justify-end">
+            <button class="btn btn-sm btn-ghost" onclick={() => { showNewKey = false; keyLabel = ''; keyWorkflows = []; }}>{$t('agentSettings.cancel')}</button>
+            <button class="btn btn-sm btn-primary" onclick={mintApiKey} disabled={!keyLabel.trim() || !!keyBusy}>{keyBusy === 'mint' ? $t('agentSettings.webhookMinting') : $t('agentSettings.webhookMint')}</button>
+          </div>
+        </div>
+      {/if}
 
       {#if mintedKey}
-        <div class="rounded-lg border border-warning/40 bg-warning/5 p-3.5 flex flex-col gap-2">
-          <div class="text-sm font-medium">{mintedKey.key.label}</div>
-          <div class="text-xs text-warning">{$t('agentSettings.webhookKeyOnce')}</div>
-          <div class="flex items-center gap-1.5">
-            <code class="text-xs font-mono bg-base-200 rounded px-2 py-1 flex-1 min-w-0 truncate">{apiBase}</code>
-            <button class="btn btn-xs btn-ghost shrink-0" onclick={() => copyHook('base', apiBase)}>{copiedHook === 'base' ? $t('agentSettings.copied') : $t('agentSettings.copy')}</button>
+        <div class="rounded-lg border border-base-300 bg-base-100 p-3.5 flex flex-col gap-3">
+          <div>
+            <div class="text-sm font-medium">{$t('agentSettings.apiKeyReady', { values: { label: mintedKey.key.label } })}</div>
+            <div class="text-xs text-base-content/60 mt-0.5">{$t('agentSettings.apiKeyOnce')}</div>
           </div>
-          <div class="flex items-center gap-1.5">
-            <code class="text-xs font-mono bg-base-200 rounded px-2 py-1 flex-1 min-w-0 truncate">{mintedKey.secret}</code>
-            <button class="btn btn-xs btn-ghost shrink-0" onclick={() => copyHook('secret', mintedKey?.secret ?? '')}>{copiedHook === 'secret' ? $t('agentSettings.copied') : $t('agentSettings.copy')}</button>
+          <div>
+            <div class="text-xs text-base-content/50 mb-1">{$t('agentSettings.apiKeySecret')}</div>
+            <div class="flex items-start gap-1.5">
+              <code class="text-sm font-mono bg-base-200 rounded px-2 py-1.5 flex-1 min-w-0 break-all">{mintedKey.secret}</code>
+              <button class="btn btn-xs btn-ghost shrink-0" onclick={() => copyHook('secret', mintedKey?.secret ?? '')}>{copiedHook === 'secret' ? $t('agentSettings.copied') : $t('agentSettings.copy')}</button>
+            </div>
           </div>
-          <div class="flex items-start gap-1.5">
-            <code class="text-xs font-mono bg-base-200 rounded px-2 py-1 flex-1 min-w-0 whitespace-pre-wrap break-all">{curlForKey(mintedKey)}</code>
-            <button class="btn btn-xs btn-ghost shrink-0" onclick={() => copyHook('kcurl', curlForKey(mintedKey!))}>{copiedHook === 'kcurl' ? $t('agentSettings.copied') : $t('agentSettings.copy')}</button>
+          <div>
+            <div class="flex items-center gap-2 mb-1">
+              <div class="text-xs text-base-content/50">{$t('agentSettings.apiQuickStart')}</div>
+              <div class="join">
+                <button class="join-item btn btn-xs {snippetLang === 'curl' ? 'btn-active' : 'btn-ghost'}" onclick={() => (snippetLang = 'curl')}>curl</button>
+                <button class="join-item btn btn-xs {snippetLang === 'python' ? 'btn-active' : 'btn-ghost'}" onclick={() => (snippetLang = 'python')}>Python</button>
+              </div>
+            </div>
+            <div class="flex items-start gap-1.5">
+              <pre class="text-xs font-mono bg-base-200 rounded px-2 py-1.5 flex-1 min-w-0 overflow-x-auto whitespace-pre">{snippetLang === 'curl' ? curlForKey(mintedKey) : pythonForKey(mintedKey)}</pre>
+              <button class="btn btn-xs btn-ghost shrink-0" onclick={() => copyHook('snippet', snippetLang === 'curl' ? curlForKey(mintedKey!) : pythonForKey(mintedKey!))}>{copiedHook === 'snippet' ? $t('agentSettings.copied') : $t('agentSettings.copy')}</button>
+            </div>
+          </div>
+          <div class="flex justify-end">
+            <button class="btn btn-xs btn-ghost" onclick={() => (mintedKey = null)}>{$t('agentSettings.apiKeyStored')}</button>
           </div>
         </div>
       {/if}
@@ -1450,15 +1527,15 @@
       {#if apiKeys.length === 0}
         <div class="text-xs text-base-content/50 py-6 text-center">{$t('agentSettings.apiKeysNone')}</div>
       {:else}
-        <div class="flex flex-col gap-2">
+        <div class="rounded-lg border border-base-300 bg-base-100 divide-y divide-base-content/10">
           {#each apiKeys as k (k.id)}
-            <div class="rounded-lg border border-base-300 bg-base-100 px-3.5 py-2.5 flex items-center gap-3">
+            <div class="px-3.5 py-2.5 flex items-center gap-3">
               <div class="flex-1 min-w-0">
-                <div class="text-sm font-medium truncate">{k.label}</div>
+                <div class="text-sm font-medium truncate">{k.label} <span class="font-mono text-xs text-base-content/50">{k.keyPrefix}…</span></div>
                 <div class="text-xs text-base-content/50 truncate">
-                  <span class="font-mono">{k.keyPrefix}…</span>
-                  · {k.models.join(', ')}
+                  {k.models.length === 1 ? $t('agentSettings.apiKeyOneModel') : $t('agentSettings.apiKeyModelsCount', { values: { n: k.models.length } })}
                   · {k.lastUsedAt ? $t('agentSettings.webhookLastUsed', { values: { when: new Date(k.lastUsedAt * 1000).toLocaleString() } }) : $t('agentSettings.webhookNeverUsed')}
+                  · {$t('agentSettings.apiKeyCreated', { values: { when: new Date(k.createdAt * 1000).toLocaleDateString() } })}
                 </div>
               </div>
               <button class="btn btn-xs btn-ghost text-error shrink-0" disabled={keyBusy === k.id} onclick={() => revokeApiKey(k.id)}>{$t('agentSettings.webhookRevoke')}</button>

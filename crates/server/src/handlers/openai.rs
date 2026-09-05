@@ -538,10 +538,49 @@ pub struct CreateApiKeyRequest {
     pub tools: Vec<String>,
 }
 
-/// GET /agents/{id}/api-keys
+/// GET /agents/{id}/api-keys — everything the API page shows: where to
+/// point a client (the switchboard address when this Nebo is paired, and
+/// whether it is reachable right now; always the local address), the models
+/// this employee exposes, and the live keys.
 pub async fn list_agent_api_keys(State(state): State<AppState>, Path(id): Path<String>) -> HandlerResult<serde_json::Value> {
+    let agent = state
+        .store
+        .get_agent(&id)
+        .map_err(to_error_response)?
+        .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
     let keys = state.store.list_api_keys_for_agent(&id).map_err(to_error_response)?;
-    Ok(Json(serde_json::json!({ "keys": keys, "baseUrl": format!("http://127.0.0.1:{}/v1", state.config.port) })))
+    let isolated = crate::workflow_manager::agent_context_isolated(&state.store, &id);
+    let memory = if isolated { "isolated" } else { "shared" };
+    let mut models = vec![serde_json::json!({
+        "id": employee_model(&id),
+        "kind": "employee",
+        "name": agent.name,
+        "memory": memory,
+    })];
+    if let Ok(config) = napp::agent::parse_agent_config(&agent.frontmatter) {
+        let mut names: Vec<&String> = config.workflows.keys().collect();
+        names.sort();
+        for w in names {
+            models.push(serde_json::json!({
+                "id": workflow_model(&id, w),
+                "kind": "workflow",
+                "name": w,
+                "memory": memory,
+            }));
+        }
+    }
+    let local_url = format!("http://127.0.0.1:{}/v1", state.config.port);
+    let switchboard_url = config::read_bot_id()
+        .filter(|_| state.config.is_neboai_enabled())
+        .map(|bot| format!("{}/t/{bot}/v1", state.config.neboai.api_url.trim_end_matches('/')));
+    let online = state.tunnel_online.load(std::sync::atomic::Ordering::Relaxed);
+    Ok(Json(serde_json::json!({
+        "keys": keys,
+        "models": models,
+        "localUrl": local_url,
+        "switchboardUrl": switchboard_url,
+        "switchboardOnline": online,
+    })))
 }
 
 /// POST /agents/{id}/api-keys — mint. The raw key is in this response and

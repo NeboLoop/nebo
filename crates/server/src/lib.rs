@@ -1961,6 +1961,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         plugin_store,
         agent_loader,
         presence: Arc::new(agent::PresenceTracker::new()),
+        tunnel_online: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         proactive_inbox: Arc::new(agent::ProactiveInbox::new()),
         run_registry: run_registry::RunRegistry::new(),
         personal_loop_id: Arc::new(tokio::sync::RwLock::new(personal_loop_id_seed)),
@@ -2366,7 +2367,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
                 };
                 let started = std::time::Instant::now();
                 let hub_url = tunnel_state.config.neboai.tunnel_url.clone();
-                match comm::tunnel::run(&hub_url, &token, &local_addr).await {
+                match comm::tunnel::run(&hub_url, &token, &local_addr, &tunnel_state.tunnel_online).await {
                     Ok(()) => info!("tunnel: closed by hub, redialing"),
                     Err(e) => info!("tunnel: {e}"),
                 }
