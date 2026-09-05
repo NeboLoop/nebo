@@ -17,9 +17,10 @@ export const agentSettingsSections = [
 	{ id: 'channels', label: 'agentSettings.channels' },
 	{ id: 'accounts', label: 'agentSettings.connectedAccounts' },
 	{ id: 'phone', label: 'agentSettings.phone' },
-	// Connect: webhooks and API keys — every way an outside system reaches
-	// this employee, minted and revoked in one place.
+	// Two doors for outside systems: webhooks push into the employee, the
+	// API lets a client call it as a model. Each is its own page.
 	{ id: 'webhooks', label: 'agentSettings.webhooks' },
+	{ id: 'api', label: 'agentSettings.apiKeys' },
 	{ id: 'approvals', label: 'agentSettings.approvals' },
 	{ id: 'memory', label: 'agentSettings.memory' }
 ] as const;

@@ -631,7 +631,7 @@
   let keyLabel = $state('');
   let keyWorkflows = $state<string[]>([]);
   let keyBusy = $state<string | null>(null);
-  $effect(() => { if (section === 'webhooks') loadApiKeys(); });
+  $effect(() => { if (section === 'api') loadApiKeys(); });
   async function loadApiKeys() {
     apiKeysError = null;
     try {
@@ -1393,7 +1393,9 @@
         </div>
       {/if}
 
-      <div class="mt-4 mb-1">
+
+    {:else if section === 'api'}
+      <div class="mb-1">
         <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('agentSettings.apiKeys')}</div>
         <div class="text-xs text-base-content/70 mt-1">{$t('agentSettings.apiKeysDesc', { values: { name: agent?.name ?? '' } })}</div>
       </div>

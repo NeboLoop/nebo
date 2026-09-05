@@ -2078,7 +2078,7 @@
 		"phoneNotAnsweringHere": "goes to voicemail — no Phone plugin here",
 		"phoneAnswerHere": "Answer here",
 		"phoneAnswerHereBusy": "Setting up…",
-		"webhooks": "Connect",
+		"webhooks": "Webhooks",
 		"webhooksDesc": "Ways outside systems reach {name}: a form, a CRM, a payment processor, your own code. Each POST runs {name} or one of its workflows.",
 		"webhookNew": "Mint a webhook",
 		"webhookLabelPlaceholder": "What sends to it, e.g. Website form",
