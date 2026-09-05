@@ -74,6 +74,33 @@ pub fn slow_first_token_notice(waited_secs: u64) -> String {
 
 #[cfg(test)]
 mod notice_tests {
+    /// The outside fence: a run whose words come from a stranger (a QR scan,
+    /// an embedded widget, a phone line) never keeps Full Access and always
+    /// carries an allowlist — empty when the channel enables nothing — so the
+    /// model is shown no tools and every gate below refuses the rest.
+    #[test]
+    fn outside_origins_lose_full_access_and_get_a_closed_allowlist() {
+        use tools::Origin;
+        let mut req = RunRequest { origin: Origin::Visitor, full_access: true, ..Default::default() };
+        restrict_outside_origin(&mut req);
+        assert!(!req.full_access, "Full Access is an owner-surface concept; a visitor never has it");
+        assert_eq!(req.tool_allowlist.as_ref().map(|s| s.len()), Some(0), "no channel policy = zero tools");
+        assert!(req.tool_denial_hint.as_deref().unwrap_or("").contains("conversation"));
+
+        // A channel that enabled something keeps exactly that.
+        let mut caller = RunRequest { origin: Origin::Caller, full_access: true, ..Default::default() };
+        caller.tool_allowlist = Some(["agent:memory".to_string()].into_iter().collect());
+        restrict_outside_origin(&mut caller);
+        assert!(!caller.full_access);
+        assert_eq!(caller.tool_allowlist.as_ref().map(|s| s.len()), Some(1));
+
+        // The owner's own surfaces are untouched.
+        let mut owner = RunRequest { origin: Origin::User, full_access: true, ..Default::default() };
+        restrict_outside_origin(&mut owner);
+        assert!(owner.full_access);
+        assert!(owner.tool_allowlist.is_none());
+    }
+
     use super::*;
 
     #[test]
@@ -668,6 +695,30 @@ pub struct WorkflowPark<'a> {
 }
 
 /// Input parameters for a run.
+/// The outside fence. A run whose words come from a stranger — a phone
+/// caller, a visitor from a QR scan or an embedded chat — never keeps Full
+/// Access (that is an owner-surface concept) and always carries a tool
+/// allowlist: the channel's policy when the owner enabled something, empty
+/// otherwise. An empty allowlist means the model is shown no tools at all and
+/// the runner gate and the registry choke point refuse anything it invents.
+/// This is the ONE place the rule is applied; every ingress benefits.
+pub(crate) fn restrict_outside_origin(req: &mut RunRequest) {
+    if !req.origin.is_outside() {
+        return;
+    }
+    req.full_access = false;
+    if req.tool_allowlist.is_none() {
+        req.tool_allowlist = Some(std::collections::HashSet::new());
+    }
+    if req.tool_denial_hint.is_none() {
+        req.tool_denial_hint = Some(
+            "Nothing else is available in this conversation. Answer from what you know, \
+             or offer to pass a message to the owner."
+                .to_string(),
+        );
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct RunRequest {
     pub session_key: String,
@@ -1165,7 +1216,8 @@ impl Runner {
 
     /// Run the agentic loop: prompt -> stream -> tool calls -> loop.
     /// Returns a receiver of streaming events.
-    pub async fn run(&self, req: RunRequest) -> Result<mpsc::Receiver<StreamEvent>, ProviderError> {
+    pub async fn run(&self, mut req: RunRequest) -> Result<mpsc::Receiver<StreamEvent>, ProviderError> {
+        restrict_outside_origin(&mut req);
         let t_run_entry = std::time::Instant::now();
         info!(
             session_key = %req.session_key,

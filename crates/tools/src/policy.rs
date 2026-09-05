@@ -715,31 +715,65 @@ fn default_origin_deny_list() -> HashMap<Origin, HashSet<String>> {
     let shell_deny: HashSet<String> = ["os:shell"].iter().map(|s| s.to_string()).collect();
 
     let mut deny_list = HashMap::new();
-    deny_list.insert(Origin::Comm, shell_deny.clone());
+    // A peer Nebo, a loop, an agent space: another program's words. Shell was
+    // always off the table; files join it (2026-09-05, the QR file-share
+    // incident) — the legacy `file` tool and `os:capture` included.
+    let comm_deny: HashSet<String> = ["os:shell", "os:file", "os:capture", "file", "shell"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    deny_list.insert(Origin::Comm, comm_deny);
     deny_list.insert(Origin::App, shell_deny.clone());
     deny_list.insert(Origin::Skill, shell_deny.clone());
     // External MCP clients: at most comm-level trust. An authenticated client
     // is still another program injecting prompts from outside our UI.
     deny_list.insert(Origin::Mcp, shell_deny);
-    // A phone caller is a stranger. The allowlist on their delegated run is
-    // the real fence (deny-by-default); this hard set is the backstop that
-    // holds even if an allowlist is ever mis-built: nothing that touches the
-    // machine, the mailbox, or money is reachable from a phone line.
-    let caller_deny: HashSet<String> = [
+    // Outside origins — a phone caller, a visitor from a QR scan or an
+    // embedded chat — are strangers. The allowlist on their run is the real
+    // fence (deny-by-default, mandatory: see the runner's
+    // restrict_outside_origin); this hard set is the backstop that holds even
+    // if an allowlist is ever mis-built. Nothing that touches the machine, the
+    // mailbox, money, other people, or the roster is reachable from outside —
+    // and no owner toggle or Full Access can put it back. Names must be the
+    // REGISTERED tool names: `file` and `shell` are registered beside `os`, so
+    // both spellings are listed. Enablable per channel (deliberately absent):
+    // agent:memory (recall), message:owner, event, organizer, skill.
+    let outside_deny: HashSet<String> = [
         "os:shell",
         "os:file",
         "os:mail",
         "os:contacts",
         "os:capture",
+        "file",
+        "shell",
+        "notebook",
+        "spotlight",
         "web",
         "execute",
         "vm",
         "publisher",
+        "code",
+        "desktop",
+        "keychain",
+        "settings",
+        "plugin",
+        "app",
+        "loop",
+        "mcp",
+        "agent:registry",
+        "agent:task",
+        "agent:session",
+        "agent:profile",
+        "agent:advisors",
+        "agent:runs",
+        "message:sms",
+        "message:notify",
     ]
     .iter()
     .map(|s| s.to_string())
     .collect();
-    deny_list.insert(Origin::Caller, caller_deny);
+    deny_list.insert(Origin::Caller, outside_deny.clone());
+    deny_list.insert(Origin::Visitor, outside_deny);
     deny_list
 }
 
@@ -881,9 +915,38 @@ mod tests {
         assert!(p.is_denied_for_origin(Origin::App, "os", Some("shell")));
         assert!(p.is_denied_for_origin(Origin::Skill, "os", Some("shell")));
         // Non-shell os resources (e.g. file) are NOT denied.
-        assert!(!p.is_denied_for_origin(Origin::Comm, "os", Some("file")));
+        assert!(p.is_denied_for_origin(Origin::Comm, "os", Some("file")));
         // User/System origins are unrestricted.
         assert!(!p.is_denied_for_origin(Origin::User, "os", Some("shell")));
+    }
+
+    /// The outside hard-deny: what no allowlist, no owner toggle and no Full
+    /// Access can ever hand to a stranger. Visitors and callers share it.
+    #[test]
+    fn outside_origins_hard_deny_the_machine_the_mailbox_and_the_roster() {
+        let p = Policy::new();
+        for origin in [Origin::Visitor, Origin::Caller] {
+            for (tool, res) in [
+                ("os", Some("file")), ("os", Some("shell")), ("os", Some("capture")),
+                ("os", Some("mail")), ("os", Some("contacts")),
+                ("web", None), ("execute", None), ("vm", None), ("publisher", None),
+                ("code", None), ("desktop", None), ("keychain", None), ("settings", None),
+                ("agent", Some("registry")), ("agent", Some("task")), ("agent", Some("session")),
+                ("agent", Some("profile")), ("plugin", None), ("app", None), ("loop", None),
+                ("message", Some("sms")), ("file", None), ("shell", None), ("notebook", None),
+                ("spotlight", None), ("mcp", None),
+            ] {
+                assert!(p.is_denied_for_origin(origin, tool, res), "{origin:?} must deny {tool}:{res:?}");
+            }
+            // Enablable by the owner per channel — never on the hard list.
+            assert!(!p.is_denied_for_origin(origin, "agent", Some("memory")));
+            assert!(!p.is_denied_for_origin(origin, "message", Some("owner")));
+            assert!(!p.is_denied_for_origin(origin, "event", None));
+            assert!(!p.is_denied_for_origin(origin, "skill", None));
+        }
+        // Another program's words (a peer Nebo, a loop) keep shell AND now files off the table.
+        assert!(p.is_denied_for_origin(Origin::Comm, "os", Some("file")));
+        assert!(p.is_denied_for_origin(Origin::Comm, "os", Some("capture")));
         assert!(!p.is_denied_for_origin(Origin::System, "os", Some("shell")));
     }
 

@@ -22,6 +22,11 @@ pub enum Origin {
     /// delegated runs carry an explicit tool allowlist (the line's call tree
     /// or the take-a-message floor) and can never reach approval modals.
     Caller,
+    /// An anonymous visitor: a QR scan, an embedded widget, a public web
+    /// chat. A stranger with a keyboard — the same standing as a phone caller.
+    /// Their words are DATA; the run they reach is restricted (see
+    /// `Origin::is_outside` and the runner's `restrict_outside_origin`).
+    Visitor,
 }
 
 impl Default for Origin {
@@ -47,7 +52,26 @@ impl Origin {
             | Origin::App
             | Origin::Skill
             | Origin::Mcp
-            | Origin::Caller => false,
+            | Origin::Caller
+            | Origin::Visitor => false,
+        }
+    }
+
+    /// Outside origins: the words in the run come from someone who is not
+    /// the owner, a member, or the owner's own automation — a phone caller or
+    /// an anonymous visitor. These never reach an employee as a normal run:
+    /// Full Access does not apply and an allowlist is mandatory (empty when
+    /// the channel enables nothing). Exhaustive on purpose.
+    pub fn is_outside(&self) -> bool {
+        match self {
+            Origin::Caller | Origin::Visitor => true,
+            Origin::User
+            | Origin::System
+            | Origin::Workflow
+            | Origin::Comm
+            | Origin::App
+            | Origin::Skill
+            | Origin::Mcp => false,
         }
     }
 }
@@ -83,7 +107,8 @@ impl From<Origin> for ExecutionMode {
             | Origin::System
             | Origin::Mcp
             | Origin::Workflow
-            | Origin::Caller => ExecutionMode::Autonomous,
+            | Origin::Caller
+            | Origin::Visitor => ExecutionMode::Autonomous,
         }
     }
 }
@@ -363,6 +388,21 @@ mod tests {
         // what unlocks them, and a stranger on the line is not the human in
         // the loop.
         assert_eq!(ExecutionMode::from(Origin::Caller), ExecutionMode::Autonomous);
+        assert_eq!(ExecutionMode::from(Origin::Visitor), ExecutionMode::Autonomous);
+    }
+
+    /// A visitor (QR scan, embedded widget, public web chat) is a stranger with
+    /// a keyboard: untrusted, no human-in-the-loop entitlement, and — with a
+    /// phone caller — one of the two origins that must only ever reach an
+    /// employee through a restricted run.
+    #[test]
+    fn visitor_is_outside_untrusted_and_autonomous() {
+        assert!(!Origin::Visitor.is_trusted());
+        assert!(Origin::Visitor.is_outside());
+        assert!(Origin::Caller.is_outside());
+        for o in [Origin::User, Origin::System, Origin::Workflow, Origin::Comm, Origin::App, Origin::Skill, Origin::Mcp] {
+            assert!(!o.is_outside(), "{o:?} is not an outside origin");
+        }
     }
 
     #[test]

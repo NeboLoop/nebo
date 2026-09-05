@@ -3840,7 +3840,11 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
             system: String::new(),
             user_id: String::new(),
             channel: "neboai".to_string(),
-            origin: tools::Origin::Comm,
+            // A QR scan, an embedded widget, a public web chat: whoever typed
+            // this is a stranger. Visitor makes the run restricted — no Full
+            // Access, an allowlist that is empty until the channel's policy
+            // says otherwise — enforced in the runner, not by prompt.
+            origin: tools::Origin::Visitor,
             agent_id: agent_id.clone(),
             cancel_token: tokio_util::sync::CancellationToken::new(),
             lane: types::constants::lanes::COMM.to_string(),
