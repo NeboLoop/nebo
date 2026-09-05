@@ -101,6 +101,26 @@ mod notice_tests {
         assert!(owner.tool_allowlist.is_none());
     }
 
+    /// A restricted run whose allowlist left the roster empty must be TOLD
+    /// it has no tools — otherwise the model narrates tool calls as prose
+    /// (2026-09-05: a visitor saw `os(resource: "file", path: "/Users/…")`
+    /// echoed into a public chat). The notice exists only for that case.
+    #[test]
+    fn empty_allowlist_tells_the_model_it_has_no_tools() {
+        use std::collections::HashSet;
+        let empty: HashSet<String> = HashSet::new();
+        let some: HashSet<String> = ["agent:memory".to_string()].into_iter().collect();
+        let n = restricted_run_notice(true, Some(&empty), Some("Offer to take a message.")).expect("notice");
+        assert!(n.contains("no tools"), "{n}");
+        assert!(n.contains("Offer to take a message."), "the channel's own hint rides along");
+        assert!(n.to_lowercase().contains("file path"), "must forbid naming paths");
+        assert!(n.contains("don't refuse") && n.contains("pass a note"), "benign deflection, not a locked door");
+        // Tools were enabled: the model sees them natively, no notice.
+        assert!(restricted_run_notice(false, Some(&some), None).is_none());
+        // Not a restricted run at all: never.
+        assert!(restricted_run_notice(true, None, None).is_none());
+    }
+
     use super::*;
 
     #[test]
@@ -695,6 +715,38 @@ pub struct WorkflowPark<'a> {
 }
 
 /// Input parameters for a run.
+/// What a restricted run is told when its allowlist left it no tools.
+/// Not a trust instruction — the fences do the enforcing — but the truth
+/// about capability, so the model neither narrates tool syntax nor promises
+/// to read, fetch, share or run anything it cannot. `None` when tools were
+/// enabled (the model reads them natively) or when the run isn't restricted.
+pub(crate) fn restricted_run_notice(
+    roster_is_empty: bool,
+    allowlist: Option<&std::collections::HashSet<String>>,
+    hint: Option<&str>,
+) -> Option<String> {
+    if !roster_is_empty || allowlist.is_none() {
+        return None;
+    }
+    let mut s = String::from(
+        "## This conversation has no tools\n\
+         You have no tools in this conversation: no files, no web, no desktop, no memory, \
+         no messaging, nothing that runs. Never write tool syntax or a function call as text. \
+         Never say you will read, open, fetch, look up, share, send or run anything. Never \
+         mention a file path, a folder, or anything about the machine. Answer from what you \
+         already know, in your role.\n\
+         When someone asks for something this conversation can't do, don't announce a limit \
+         and don't refuse. Stay kind and light, steer back to what this conversation is for, \
+         and, if it seems to matter to them, offer to pass a note along to the owner. Never \
+         say \"I can't\", \"not allowed\", \"no access\", or \"I don't have tools\".",
+    );
+    if let Some(h) = hint {
+        s.push(' ');
+        s.push_str(h);
+    }
+    Some(s)
+}
+
 /// The outside fence. A run whose words come from a stranger — a phone
 /// caller, a visitor from a QR scan or an embedded chat — never keeps Full
 /// Access (that is an owner-surface concept) and always carries a tool
@@ -712,8 +764,9 @@ pub(crate) fn restrict_outside_origin(req: &mut RunRequest) {
     }
     if req.tool_denial_hint.is_none() {
         req.tool_denial_hint = Some(
-            "Nothing else is available in this conversation. Answer from what you know, \
-             or offer to pass a message to the owner."
+            "That isn't part of this conversation. Don't mention a limit or refuse; answer kindly \
+             from what you know, steer back to what this chat is for, and offer to pass a note \
+             to the owner if it matters to them."
                 .to_string(),
         );
     }
@@ -3649,6 +3702,13 @@ async fn run_loop(
                 });
             }
         }
+        // Told, not merely fenced: a restricted run with nothing left to
+        // declare hears it in the system prompt, or it narrates tool calls.
+        let restricted_notice = if review_fork.is_none() {
+            restricted_run_notice(tool_defs.is_empty(), tool_allowlist, tool_denial_hint.as_deref())
+        } else {
+            None
+        };
 
         // Workflow mode: the activity's scoped set is the declaration —
         // rebuild from the full registry (deferred included: a declared MCP
@@ -3934,6 +3994,10 @@ async fn run_loop(
                 "{}\n\n{}\n\n{}{}",
                 static_system, strap_section, deferred_listing, dynamic_suffix
             )
+        };
+        let full_system = match &restricted_notice {
+            Some(notice) => format!("{full_system}\n\n{notice}"),
+            None => full_system,
         };
 
         // Log prompt component sizes for debugging token bloat

@@ -1545,6 +1545,15 @@ fn maybe_auto_continue(
         if !goals::enabled() {
             return;
         }
+        // An outside conversation (a QR scan, an embedded chat, a phone
+        // caller) never earns owner-paid continuation turns: the judge read
+        // a visitor's fake tool narration as "an unfinished commitment" and
+        // re-dispatched twice (2026-09-05). Strangers get one answer per
+        // message, full stop.
+        if p.origin.is_outside() {
+            tracing::debug!(session = %p.session_key, "auto-continue: outside origin, not judged");
+            return;
+        }
         if !goals::eligible_for_judging(&p.session_key, &assistant_response, saw_error, cancelled)
         {
             return;
