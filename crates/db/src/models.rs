@@ -149,6 +149,22 @@ pub struct AuthProfile {
     pub auth_type: Option<String>,
 }
 
+/// An API key: the OpenAI-shaped door to one employee. `models` are the
+/// model ids it may call; `tools` the allowlist a run it starts is given.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApiKey {
+    pub id: String,
+    pub label: String,
+    pub key_prefix: String,
+    pub agent_id: String,
+    pub models: Vec<String>,
+    pub tools: Vec<String>,
+    pub created_at: i64,
+    pub last_used_at: Option<i64>,
+    pub revoked_at: Option<i64>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Chat {

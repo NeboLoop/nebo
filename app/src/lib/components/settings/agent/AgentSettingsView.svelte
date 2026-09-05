@@ -639,6 +639,62 @@
   }
   const curlFor = (h: MintedWebhook) => `curl -X POST ${h.url} -H "Authorization: Bearer ${h.key}" -H "Content-Type: application/json" -d '{"text":"..."}'`;
 
+  // API keys — the OpenAI-shaped door. A key calls this employee (and the
+  // workflows it names) as a model from any OpenAI client.
+  type ApiKeyRow = import('$lib/api/neboComponents').ApiKey;
+  let apiKeys = $state<ApiKeyRow[]>([]);
+  let apiBase = $state('');
+  let apiKeysError = $state<string | null>(null);
+  let mintedKey = $state<{ key: ApiKeyRow; secret: string } | null>(null);
+  let keyLabel = $state('');
+  let keyWorkflows = $state<string[]>([]);
+  let keyBusy = $state<string | null>(null);
+  $effect(() => { if (section === 'webhooks') loadApiKeys(); });
+  async function loadApiKeys() {
+    apiKeysError = null;
+    try {
+      const api = await import('$lib/api/nebo');
+      const r = await api.listAgentApiKeys(agentId);
+      apiKeys = r.keys ?? [];
+      apiBase = r.baseUrl ?? '';
+    } catch (e) {
+      apiKeys = [];
+      apiKeysError = e instanceof Error ? e.message : String(e);
+    }
+  }
+  async function mintApiKey() {
+    if (!keyLabel.trim() || keyBusy) return;
+    keyBusy = 'mint';
+    apiKeysError = null;
+    try {
+      const api = await import('$lib/api/nebo');
+      const r = await api.createAgentApiKey(agentId, { label: keyLabel.trim(), workflows: keyWorkflows });
+      mintedKey = { key: r.key, secret: String(r.secret) };
+      keyLabel = '';
+      keyWorkflows = [];
+      await loadApiKeys();
+    } catch (e) {
+      apiKeysError = e instanceof Error ? e.message : String(e);
+    } finally { keyBusy = null; }
+  }
+  async function revokeApiKey(id: string) {
+    keyBusy = id;
+    apiKeysError = null;
+    try {
+      const api = await import('$lib/api/nebo');
+      await api.revokeAgentApiKey(agentId, id);
+      if (mintedKey?.key.id === id) mintedKey = null;
+      await loadApiKeys();
+    } catch (e) {
+      apiKeysError = e instanceof Error ? e.message : String(e);
+    } finally { keyBusy = null; }
+  }
+  function toggleKeyWorkflow(name: string) {
+    keyWorkflows = keyWorkflows.includes(name) ? keyWorkflows.filter((w) => w !== name) : [...keyWorkflows, name];
+  }
+  const curlForKey = (m: { key: ApiKeyRow; secret: string }) =>
+    `curl ${apiBase}/chat/completions -H "Authorization: Bearer ${m.secret}" -H "Content-Type: application/json" -d '{"model":"${m.key.models[0] ?? ''}","stream":true,"user":"customer-42","messages":[{"role":"user","content":"Hello"}]}'`;
+
   // Retry of what the hub does on Assign: install the Phone plugin if
   // missing and bind it to this employee so the bridge runs.
   let phoneAnswerBusy = $state(false);
@@ -1350,6 +1406,72 @@
               </div>
               <button class="btn btn-xs btn-ghost shrink-0" onclick={() => copyHook(h.id, h.url)}>{copiedHook === h.id ? $t('agentSettings.copied') : $t('agentSettings.copyUrl')}</button>
               <button class="btn btn-xs btn-ghost text-error shrink-0" disabled={hookBusy === h.id} onclick={() => revokeWebhook(h.id)}>{$t('agentSettings.webhookRevoke')}</button>
+            </div>
+          {/each}
+        </div>
+      {/if}
+
+      <div class="mt-4 mb-1">
+        <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('agentSettings.apiKeys')}</div>
+        <div class="text-xs text-base-content/70 mt-1">{$t('agentSettings.apiKeysDesc', { values: { name: agent?.name ?? '' } })}</div>
+      </div>
+      <div class="rounded-lg border border-base-300 bg-base-100 p-3.5 flex flex-col gap-2">
+        <div class="text-sm font-medium">{$t('agentSettings.apiKeyNew')}</div>
+        <div class="flex flex-col sm:flex-row gap-2">
+          <input class="input input-sm input-bordered flex-1" placeholder={$t('agentSettings.apiKeyLabelPlaceholder')} bind:value={keyLabel} onkeydown={(e) => { if (e.key === 'Enter') mintApiKey(); }} />
+          <button class="btn btn-sm btn-primary" onclick={mintApiKey} disabled={!keyLabel.trim() || !!keyBusy}>{keyBusy === 'mint' ? $t('agentSettings.webhookMinting') : $t('agentSettings.webhookMint')}</button>
+        </div>
+        {#if workflowEntries.length > 0}
+          <div class="flex flex-wrap items-center gap-2 text-xs">
+            <span class="text-base-content/50">{$t('agentSettings.apiKeyWorkflows')}</span>
+            {#each workflowEntries as [wfName] (wfName)}
+              <label class="inline-flex items-center gap-1 cursor-pointer">
+                <input type="checkbox" class="checkbox checkbox-xs" checked={keyWorkflows.includes(wfName)} onchange={() => toggleKeyWorkflow(wfName)} />
+                <span class="font-mono">{wfName}</span>
+              </label>
+            {/each}
+          </div>
+        {/if}
+        <div class="text-xs text-base-content/50">{$t('agentSettings.apiKeyHint')}</div>
+      </div>
+
+      {#if mintedKey}
+        <div class="rounded-lg border border-warning/40 bg-warning/5 p-3.5 flex flex-col gap-2">
+          <div class="text-sm font-medium">{mintedKey.key.label}</div>
+          <div class="text-xs text-warning">{$t('agentSettings.webhookKeyOnce')}</div>
+          <div class="flex items-center gap-1.5">
+            <code class="text-xs font-mono bg-base-200 rounded px-2 py-1 flex-1 min-w-0 truncate">{apiBase}</code>
+            <button class="btn btn-xs btn-ghost shrink-0" onclick={() => copyHook('base', apiBase)}>{copiedHook === 'base' ? $t('agentSettings.copied') : $t('agentSettings.copy')}</button>
+          </div>
+          <div class="flex items-center gap-1.5">
+            <code class="text-xs font-mono bg-base-200 rounded px-2 py-1 flex-1 min-w-0 truncate">{mintedKey.secret}</code>
+            <button class="btn btn-xs btn-ghost shrink-0" onclick={() => copyHook('secret', mintedKey?.secret ?? '')}>{copiedHook === 'secret' ? $t('agentSettings.copied') : $t('agentSettings.copy')}</button>
+          </div>
+          <div class="flex items-start gap-1.5">
+            <code class="text-xs font-mono bg-base-200 rounded px-2 py-1 flex-1 min-w-0 whitespace-pre-wrap break-all">{curlForKey(mintedKey)}</code>
+            <button class="btn btn-xs btn-ghost shrink-0" onclick={() => copyHook('kcurl', curlForKey(mintedKey!))}>{copiedHook === 'kcurl' ? $t('agentSettings.copied') : $t('agentSettings.copy')}</button>
+          </div>
+        </div>
+      {/if}
+
+      {#if apiKeysError}
+        <div class="text-xs text-error">{apiKeysError}</div>
+      {/if}
+      {#if apiKeys.length === 0}
+        <div class="text-xs text-base-content/50 py-6 text-center">{$t('agentSettings.apiKeysNone')}</div>
+      {:else}
+        <div class="flex flex-col gap-2">
+          {#each apiKeys as k (k.id)}
+            <div class="rounded-lg border border-base-300 bg-base-100 px-3.5 py-2.5 flex items-center gap-3">
+              <div class="flex-1 min-w-0">
+                <div class="text-sm font-medium truncate">{k.label}</div>
+                <div class="text-xs text-base-content/50 truncate">
+                  <span class="font-mono">{k.keyPrefix}…</span>
+                  · {k.models.join(', ')}
+                  · {k.lastUsedAt ? $t('agentSettings.webhookLastUsed', { values: { when: new Date(k.lastUsedAt * 1000).toLocaleString() } }) : $t('agentSettings.webhookNeverUsed')}
+                </div>
+              </div>
+              <button class="btn btn-xs btn-ghost text-error shrink-0" disabled={keyBusy === k.id} onclick={() => revokeApiKey(k.id)}>{$t('agentSettings.webhookRevoke')}</button>
             </div>
           {/each}
         </div>

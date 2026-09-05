@@ -320,7 +320,7 @@ fn voice_tools(transfer: bool, telephony: bool, intents: &[String]) -> Vec<serde
 /// call tree is bound to the line: look things up in the agent's own
 /// memory/knowledge, and take a message for the owner. `tool:resource`
 /// entries — bare `agent` or `message` would expose far more than intended.
-fn caller_floor_allowlist() -> std::collections::HashSet<String> {
+pub(crate) fn caller_floor_allowlist() -> std::collections::HashSet<String> {
     ["agent:memory", "message:owner", "message:notify"]
         .iter()
         .map(|s| s.to_string())
@@ -781,7 +781,7 @@ const VOICE_RECENT_CHATS: usize = 8;
 /// VOICE_RESUME_WINDOW, else a fresh id whose row waits for the first turn.
 /// Live 2026-09-03: three voice sessions on one employee minted three
 /// threads, and the third knew nothing of the scaffold the first started.
-async fn resolve_voice_chat(state: &AppState, agent_id: &str) -> String {
+pub(crate) async fn resolve_voice_chat(state: &AppState, agent_id: &str) -> String {
     let store = state.store.clone();
     let agent = agent_id.to_string();
     let recent = tokio::task::spawn_blocking(move || store.list_recent_agent_chats(&agent, VOICE_RECENT_CHATS))

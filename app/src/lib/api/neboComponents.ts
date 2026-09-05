@@ -131,6 +131,18 @@ export interface AgentWorkflowStats {
 	lastError?: string
 }
 
+export interface ApiKey {
+	id: string
+	label: string
+	keyPrefix: string
+	agentId: string
+	models: string[]
+	tools: string[]
+	createdAt: number
+	lastUsedAt?: number
+	revokedAt?: number
+}
+
 export interface ApplyInstallResponse {
 	outcome: ImportOutcome
 }
@@ -1106,6 +1118,11 @@ export interface CreateAdminResponse {
 	token: string
 }
 
+export interface CreateAgentApiKeyResponse {
+	key: ApiKey
+	secret: unknown
+}
+
 export interface CreateAgentResponse {
 	agent: Agent
 	installReport: unknown
@@ -1462,6 +1479,11 @@ export interface ListAdvisorsResponse {
 	advisors: Advisor[]
 }
 
+export interface ListAgentApiKeysResponse {
+	keys: ApiKey[]
+	baseUrl: string
+}
+
 export interface ListAgentChannelsResponse {
 	channels: unknown
 }
@@ -1760,6 +1782,10 @@ export interface ResolveLearningResponse {
 export interface ResolveWorkflowApprovalResponse {
 	status: string
 	runId: unknown
+}
+
+export interface RevokeAgentApiKeyResponse {
+	ok: boolean
 }
 
 export interface RunAgentWorkflowResponse {

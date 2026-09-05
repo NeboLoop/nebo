@@ -2,6 +2,7 @@ mod a2ui_surfaces;
 mod advisors;
 mod agent_profile;
 mod agents;
+mod api_keys;
 mod channel_bindings;
 mod artifact_updates;
 mod auth_profiles;

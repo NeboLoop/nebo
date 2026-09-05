@@ -141,6 +141,15 @@ pub fn routes() -> Router<AppState> {
             axum::routing::delete(handlers::agents::delete_agent_webhook),
         )
         .route(
+            "/agents/{id}/api-keys",
+            axum::routing::get(handlers::openai::list_agent_api_keys)
+                .post(handlers::openai::create_agent_api_key),
+        )
+        .route(
+            "/agents/{id}/api-keys/{key_id}",
+            axum::routing::delete(handlers::openai::revoke_agent_api_key),
+        )
+        .route(
             "/agents/{id}/surfaces",
             axum::routing::get(handlers::agents::get_agent_surfaces),
         )

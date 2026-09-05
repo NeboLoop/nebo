@@ -2558,6 +2558,19 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
             axum::routing::post(handlers::mcp_server::agent_mcp_handler)
                 .layer(axum::middleware::from_fn(middleware::mcp_api_key_auth)),
         )
+        // The OpenAI-shaped door: employees and workflows as models, behind a
+        // key minted on the employee's Connect tab. Root-level because every
+        // OpenAI client expects `<base>/v1/chat/completions`.
+        .route(
+            "/v1/chat/completions",
+            axum::routing::post(handlers::openai::openai_chat_completions)
+                .layer(axum::middleware::from_fn_with_state(state.clone(), handlers::openai::api_key_auth)),
+        )
+        .route(
+            "/v1/models",
+            axum::routing::get(handlers::openai::openai_list_models)
+                .layer(axum::middleware::from_fn_with_state(state.clone(), handlers::openai::api_key_auth)),
+        )
         // NeboAI OAuth callback — top-level because the browser navigates here directly
         .route(
             "/auth/neboai/callback",

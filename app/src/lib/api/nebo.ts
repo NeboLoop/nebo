@@ -258,6 +258,27 @@ export function activateAgent(id: string, req: Record<string, unknown> = {}) {
 }
 
 /**
+ * @description "List agent api keys"
+ */
+export function listAgentApiKeys(id: string) {
+	return webapi.get<components.ListAgentApiKeysResponse>(`/api/v1/agents/${id}/api-keys`)
+}
+
+/**
+ * @description "Create agent api key"
+ */
+export function createAgentApiKey(id: string, req: Record<string, unknown> = {}) {
+	return webapi.post<components.CreateAgentApiKeyResponse>(`/api/v1/agents/${id}/api-keys`, req)
+}
+
+/**
+ * @description "Revoke agent api key"
+ */
+export function revokeAgentApiKey(id: string, keyId: string) {
+	return webapi.delete<components.RevokeAgentApiKeyResponse>(`/api/v1/agents/${id}/api-keys/${keyId}`)
+}
+
+/**
  * @description "Apply agent update"
  */
 export function applyAgentUpdate(id: string, req: Record<string, unknown> = {}) {
