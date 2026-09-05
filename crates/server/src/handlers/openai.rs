@@ -375,6 +375,31 @@ impl Segmenter {
     }
 }
 
+/// One grantable tool as the API page shows it: its resources (from the
+/// schema's `resource` enum) as entries, or the bare tool when it has none.
+fn tool_row(t: &ai::ToolDefinition, floor: &HashSet<String>) -> serde_json::Value {
+    let resources: Vec<String> = t.input_schema["properties"]["resource"]["enum"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+        .unwrap_or_default();
+    let entries: Vec<serde_json::Value> = if resources.is_empty() {
+        vec![serde_json::json!({ "id": t.name, "label": t.name, "floor": floor.contains(&t.name) })]
+    } else {
+        resources
+            .iter()
+            .map(|r| {
+                let id = format!("{}:{}", t.name, r);
+                serde_json::json!({ "id": id, "label": r, "floor": floor.contains(&id) })
+            })
+            .collect()
+    };
+    serde_json::json!({
+        "name": t.name,
+        "description": t.description.lines().next().unwrap_or("").chars().take(140).collect::<String>(),
+        "entries": entries,
+    })
+}
+
 fn completion_id() -> String {
     format!("chatcmpl-{}", uuid::Uuid::new_v4().simple())
 }
@@ -635,34 +660,29 @@ pub async fn list_agent_api_keys(State(state): State<AppState>, Path(id): Path<S
     // actually exists. The floor (memory, message the owner, notify) is what
     // every restricted run gets regardless.
     let floor = super::voice::caller_floor_allowlist();
-    let tools: Vec<serde_json::Value> = state
-        .tools
-        .list()
-        .await
-        .into_iter()
-        .map(|t| {
-            let resources: Vec<String> = t.input_schema["properties"]["resource"]["enum"]
-                .as_array()
-                .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
-                .unwrap_or_default();
-            let entries: Vec<serde_json::Value> = if resources.is_empty() {
-                vec![serde_json::json!({ "id": t.name, "label": t.name, "floor": floor.contains(&t.name) })]
-            } else {
-                resources
-                    .iter()
-                    .map(|r| {
-                        let id = format!("{}:{}", t.name, r);
-                        serde_json::json!({ "id": id, "label": r, "floor": floor.contains(&id) })
-                    })
-                    .collect()
-            };
-            serde_json::json!({
-                "name": t.name,
-                "description": t.description.lines().next().unwrap_or("").chars().take(140).collect::<String>(),
-                "entries": entries,
-            })
-        })
-        .collect();
+    let defs = state.tools.list().await;
+    // MCP servers register one tool per function (mcp__server__fn). Those
+    // read as one row per server with a checkbox per function.
+    let mut mcp: std::collections::BTreeMap<String, Vec<serde_json::Value>> = Default::default();
+    let mut tools: Vec<serde_json::Value> = Vec::new();
+    for t in defs {
+        if let Some(rest) = t.name.strip_prefix("mcp__") {
+            if let Some((server, func)) = rest.split_once("__") {
+                mcp.entry(server.to_string()).or_default().push(serde_json::json!({
+                    "id": t.name, "label": func, "floor": false,
+                }));
+                continue;
+            }
+        }
+        tools.push(tool_row(&t, &floor));
+    }
+    for (server, entries) in mcp {
+        tools.push(serde_json::json!({
+            "name": format!("{server} (MCP)"),
+            "description": "",
+            "entries": entries,
+        }));
+    }
     let local_url = format!("http://127.0.0.1:{}/v1", state.config.port);
     let switchboard_url = config::read_bot_id()
         .filter(|_| state.config.is_neboai_enabled())
