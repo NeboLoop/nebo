@@ -1468,6 +1468,37 @@ impl NeboAIApi {
         .await
     }
 
+    /// Inbound webhooks bound to this bot's employees (hub-minted keys).
+    pub async fn list_webhooks(&self) -> Result<serde_json::Value, CommError> {
+        self.do_json(reqwest::Method::GET, "/api/v1/bots/self/webhooks", None::<&()>)
+            .await
+    }
+
+    /// Mint a webhook for one of this bot's hub-registered employees. The
+    /// key in the response is shown once; the hub keeps only its hash.
+    pub async fn create_webhook(
+        &self,
+        hub_agent_id: &str,
+        label: &str,
+        workflow_name: &str,
+    ) -> Result<serde_json::Value, CommError> {
+        self.do_json(
+            reqwest::Method::POST,
+            "/api/v1/bots/self/webhooks",
+            Some(&serde_json::json!({ "agentId": hub_agent_id, "label": label, "workflowName": workflow_name })),
+        )
+        .await
+    }
+
+    pub async fn delete_webhook(&self, id: &str) -> Result<(), CommError> {
+        self.do_void(
+            reqwest::Method::DELETE,
+            &format!("/api/v1/bots/self/webhooks/{id}"),
+            None::<&()>,
+        )
+        .await
+    }
+
     /// Fetch license keys for sealed .napp artifacts.
     ///
     /// Returns decryption keys for all artifacts this bot is licensed to access.

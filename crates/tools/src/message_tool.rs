@@ -165,6 +165,7 @@ impl DynTool for MessageTool {
                 "wait": { "type": "boolean", "description": "Coworker send: wait for their reply (default true). false = fire-and-forget; their reply wakes you automatically.", "default": true },
                 "title": { "type": "string", "description": "Notification or alert title" },
                 "phone": { "type": "string", "description": "Phone number or contact for SMS" },
+                "from": { "type": "string", "description": "SMS send: which of your phone lines to text from (E.164). Omit to use your first texting line." },
                 "query": { "type": "string", "description": "Search query for SMS search" },
                 "limit": { "type": "integer", "description": "Max number of results to return", "default": 20 }
             },
@@ -187,7 +188,7 @@ impl DynTool for MessageTool {
                 Some(types::keyparser::extract_agent_id(&ctx.session_key)).filter(|s| !s.is_empty());
             let domain_input: DomainInput = match serde_json::from_value(input.clone()) {
                 Ok(v) => v,
-                Err(e) => return ToolResult::error(format!("Failed to parse input: {}. Do not retry — this is a schema error.", e)),
+                Err(e) => return ToolResult::error(format!("Input did not match the schema: {}. Every call needs resource (coworker, owner, notify or sms) and action; fix the call and send it again.", e)),
             };
 
             let mut input = input;
@@ -346,51 +347,59 @@ async fn handle_alert(store: &Store, notify_fn: Option<&NotifyFn>, title: &str, 
 async fn handle_dnd_status() -> ToolResult {
     #[cfg(target_os = "macos")]
     {
-        // Try Focus Modes first (macOS 12+), fall back to legacy DND prefs
-        let output = tokio::process::Command::new("defaults")
-            .args([
-                "read",
-                "com.apple.controlcenter",
-                "NSStatusItem Visible FocusModes",
-            ])
-            .output()
-            .await;
-
-        match output {
-            Ok(o) if o.status.success() => {
-                let stdout = String::from_utf8_lossy(&o.stdout).trim().to_string();
-                let enabled = stdout == "1";
-                return ToolResult::ok(
+        // Focus (macOS 12+) records every active mode as an assertion in
+        // ~/Library/DoNotDisturb/DB/Assertions.json; an empty record list
+        // means no Focus is on. That is the state itself, not a menu-bar
+        // preference.
+        let assertions = dirs::home_dir().map(|h| h.join("Library/DoNotDisturb/DB/Assertions.json"));
+        let read = match assertions {
+            Some(ref p) => tokio::fs::read_to_string(p).await.map_err(|e| e.to_string()),
+            None => Err("home directory unknown".to_string()),
+        };
+        match read.map(|s| focus_assertions(&s)) {
+            Ok(Some(modes)) => ToolResult::ok(
+                serde_json::json!({
+                    "dnd_enabled": !modes.is_empty(),
+                    "active_focus_modes": modes,
+                    "source": "~/Library/DoNotDisturb/DB/Assertions.json",
+                })
+                .to_string(),
+            ),
+            Ok(None) => ToolResult::ok(
+                serde_json::json!({
+                    "dnd_enabled": null,
+                    "note": "DND state unknown: ~/Library/DoNotDisturb/DB/Assertions.json was read but is not in the expected shape",
+                })
+                .to_string(),
+            ),
+            Err(e) => {
+                // Legacy (pre-Focus) preference, still a real DND flag on
+                // old systems; on new ones the key is absent.
+                let legacy = tokio::process::Command::new("defaults")
+                    .args(["read", "com.apple.ncprefs", "dnd_prefs"])
+                    .output()
+                    .await;
+                if let Ok(o) = legacy
+                    && o.status.success()
+                {
+                    let stdout = String::from_utf8_lossy(&o.stdout);
+                    let enabled = stdout.contains("dndDisplayLock = 1") || stdout.contains("dndMirrored = 1");
+                    return ToolResult::ok(
+                        serde_json::json!({
+                            "dnd_enabled": enabled,
+                            "source": "defaults read com.apple.ncprefs dnd_prefs (legacy)",
+                        })
+                        .to_string(),
+                    );
+                }
+                ToolResult::ok(
                     serde_json::json!({
-                        "dnd_enabled": enabled,
-                        "raw": stdout,
+                        "dnd_enabled": null,
+                        "note": format!("DND state unknown: could not read ~/Library/DoNotDisturb/DB/Assertions.json ({}); ask the owner to grant Nebo Full Disk Access if this persists", e),
                     })
                     .to_string(),
-                );
+                )
             }
-            _ => {}
-        }
-
-        // Fallback: legacy dnd_prefs
-        let output = tokio::process::Command::new("defaults")
-            .args(["read", "com.apple.ncprefs", "dnd_prefs"])
-            .output()
-            .await;
-
-        match output {
-            Ok(o) => {
-                let stdout = String::from_utf8_lossy(&o.stdout).trim().to_string();
-                let enabled =
-                    stdout.contains("dndDisplayLock = 1") || stdout.contains("dndMirrored = 1");
-                return ToolResult::ok(
-                    serde_json::json!({
-                        "dnd_enabled": enabled,
-                        "raw": stdout,
-                    })
-                    .to_string(),
-                );
-            }
-            Err(e) => return ToolResult::error(format!("Failed to read DND status: {}. Do not retry — this is a system error.", e)),
         }
     }
 
@@ -417,16 +426,26 @@ async fn handle_dnd_status() -> ToolResult {
                 return ToolResult::ok(
                     serde_json::json!({
                         "dnd_enabled": enabled,
-                        "raw": stdout,
+                        "source": "org.freedesktop.Notifications DoNotDisturb property via dbus-send",
                     })
                     .to_string(),
                 );
             }
-            _ => {
+            Ok(o) => {
+                let stderr = String::from_utf8_lossy(&o.stderr).trim().to_string();
                 return ToolResult::ok(
                     serde_json::json!({
-                        "dnd_enabled": false,
-                        "note": "Could not query D-Bus; assuming DND is off",
+                        "dnd_enabled": null,
+                        "note": format!("DND state unknown: D-Bus query failed (dbus-send exited {}: {})", o.status.code().unwrap_or(-1), stderr),
+                    })
+                    .to_string(),
+                );
+            }
+            Err(e) => {
+                return ToolResult::ok(
+                    serde_json::json!({
+                        "dnd_enabled": null,
+                        "note": format!("DND state unknown: D-Bus query failed (dbus-send could not run: {})", e),
                     })
                     .to_string(),
                 );
@@ -474,10 +493,23 @@ async fn send_from_phone_line(store: &Store, agent_id: Option<&str>, input: &ser
     let phone = input["phone"].as_str().unwrap_or("");
     let api = crate::build_neboai_api(store).ok()?;
     let lines = api.list_phone_lines().await.ok()?;
-    let line = lines["numbers"]
+    let wanted = input["from"].as_str().filter(|s| !s.is_empty());
+    let mine: Vec<&serde_json::Value> = lines["numbers"]
         .as_array()?
         .iter()
-        .find(|l| l["agentId"].as_str() == Some(agent_id) && l["smsEnabled"].as_bool() == Some(true))?;
+        .filter(|l| l["agentId"].as_str() == Some(agent_id) && l["smsEnabled"].as_bool() == Some(true))
+        .collect();
+    let line = match wanted {
+        Some(w) => mine.iter().copied().find(|l| l["number"].as_str() == Some(w)),
+        None => mine.first().copied(),
+    };
+    if wanted.is_some() && line.is_none() {
+        return Some(ToolResult::error(format!(
+            "{} is not one of your texting lines. Omit `from` to use your first texting line.",
+            wanted.unwrap_or("")
+        )));
+    }
+    let line = line?;
     let from = line["number"].as_str()?.to_string();
     if text.is_empty() {
         return Some(ToolResult::error(errors::missing_param("send", "text", "message(resource: \"sms\", action: \"send\", phone: \"+15551234567\", text: \"Hello!\")")));
@@ -623,7 +655,69 @@ async fn handle_sms_search(input: &serde_json::Value) -> ToolResult {
         escaped_query, limit
     );
 
-    run_sqlite3(&db_path, &query).await
+    run_sqlite3(
+        &db_path,
+        &query,
+        &format!("No messages whose text contains '{}' (plain substring).", query_text),
+    )
+    .await
+}
+
+// ---------------------------------------------------------------------------
+// Helper: macOS Focus assertions
+// ---------------------------------------------------------------------------
+
+/// Active Focus mode identifiers from the contents of
+/// `~/Library/DoNotDisturb/DB/Assertions.json`: every `storeAssertionRecords`
+/// entry under `data` is one active mode. `None` when the document is not in
+/// that shape (so the caller reports "unknown", never a guessed boolean).
+#[cfg(target_os = "macos")]
+fn focus_assertions(json: &str) -> Option<Vec<String>> {
+    let v: serde_json::Value = serde_json::from_str(json).ok()?;
+    let data = v.get("data")?.as_array()?;
+    let mut modes = Vec::new();
+    for entry in data {
+        let records = entry
+            .get("storeAssertionRecords")
+            .and_then(|r| r.as_array())
+            .map(|r| r.as_slice())
+            .unwrap_or(&[]);
+        for record in records {
+            let mode = record
+                .get("assertionDetails")
+                .and_then(|d| d.get("assertionDetailsModeIdentifier"))
+                .and_then(|m| m.as_str())
+                .unwrap_or("unknown");
+            modes.push(mode.to_string());
+        }
+    }
+    Some(modes)
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod focus_tests {
+    use super::focus_assertions;
+
+    #[test]
+    fn active_focus_lists_mode_identifiers() {
+        let json = r#"{"data":[{"storeAssertionRecords":[{"assertionDetails":{"assertionDetailsModeIdentifier":"com.apple.donotdisturb.mode.default"}}]}]}"#;
+        assert_eq!(
+            focus_assertions(json),
+            Some(vec!["com.apple.donotdisturb.mode.default".to_string()])
+        );
+    }
+
+    #[test]
+    fn no_focus_is_empty_not_unknown() {
+        let json = r#"{"data":[{"storeAssertionRecords":[]}]}"#;
+        assert_eq!(focus_assertions(json), Some(vec![]));
+    }
+
+    #[test]
+    fn unexpected_shape_is_unknown() {
+        assert_eq!(focus_assertions("not json"), None);
+        assert_eq!(focus_assertions(r#"{"other":1}"#), None);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -652,14 +746,25 @@ async fn run_sqlite3(db_path: &str, query: &str) -> ToolResult {
         Ok(o) if o.status.success() => {
             let stdout = String::from_utf8_lossy(&o.stdout).trim().to_string();
             if stdout.is_empty() {
-                ToolResult::ok("No results found.")
+                ToolResult::ok(empty.to_string())
             } else {
                 ToolResult::ok(stdout)
             }
         }
         Ok(o) => {
             let stderr = String::from_utf8_lossy(&o.stderr).trim().to_string();
-            ToolResult::error(format!("sqlite3 error: {}. Do not retry — this is a database error.", stderr))
+            let hint = if stderr.contains("unable to open database file") || stderr.contains("authorization denied") {
+                " Nebo cannot open chat.db: ask the owner to grant Nebo Full Disk Access (System Settings > Privacy & Security > Full Disk Access)."
+            } else {
+                ""
+            };
+            ToolResult::error(format!(
+                "sqlite3 exited {} reading {}: {}.{}",
+                o.status.code().unwrap_or(-1),
+                db_path,
+                stderr,
+                hint
+            ))
         }
         Err(e) => ToolResult::error(format!("Failed to run sqlite3: {}. Do not retry — this is a system error.", e)),
     }
@@ -669,8 +774,10 @@ async fn run_sqlite3(db_path: &str, query: &str) -> ToolResult {
 // Helper: run osascript (macOS)
 // ---------------------------------------------------------------------------
 
+/// Run an AppleScript from stdin. `ok_text` is the result when the script
+/// exits 0 without printing anything (what was handed off, to whom).
 #[cfg(target_os = "macos")]
-async fn run_osascript_stdin(script: &str) -> ToolResult {
+async fn run_osascript_stdin(script: &str, ok_text: &str) -> ToolResult {
     use tokio::io::AsyncWriteExt;
     let mut child = match tokio::process::Command::new("osascript")
         .stdin(std::process::Stdio::piped())
@@ -691,7 +798,7 @@ async fn run_osascript_stdin(script: &str) -> ToolResult {
         Ok(o) if o.status.success() => {
             let stdout = String::from_utf8_lossy(&o.stdout).trim().to_string();
             if stdout.is_empty() {
-                ToolResult::ok("SMS sent successfully")
+                ToolResult::ok(ok_text.to_string())
             } else {
                 ToolResult::ok(stdout)
             }

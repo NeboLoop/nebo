@@ -654,7 +654,7 @@
       phoneAnswerError = e instanceof Error ? e.message : String(e);
     } finally { phoneAnswerBusy = false; }
   }
-  // ponytail: US-only pretty print; anything else shows as stored.
+  // Lines are US numbers today (the hub sells US inventory); anything else shows as stored.
   const fmtPhone = (n: string) => n.replace(/^\+1(\d{3})(\d{3})(\d{4})$/, '($1) $2-$3');
 
   // Phone gets its own settings section — a phone line reads as a capability

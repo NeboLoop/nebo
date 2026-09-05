@@ -904,15 +904,21 @@ async fn handle_conversation_ws(mut socket: WebSocket, state: AppState, mut q: C
         let agent_id = q.agent_id.as_deref().unwrap_or_default();
         // A phone call on a multi-chat employee is its own thread: one
         // caller, one transcript, never appended to whoever rang before.
-        let per_call = q.telephony.is_some()
-            && state
-                .store
-                .get_entity_config("agent", agent_id)
-                .ok()
-                .flatten()
-                .and_then(|c| c.multi_chat)
-                .unwrap_or(0)
-                != 0;
+        let per_call = q.telephony.is_some() && {
+            let store = state.store.clone();
+            let agent = agent_id.to_string();
+            tokio::task::spawn_blocking(move || {
+                store
+                    .get_entity_config("agent", &agent)
+                    .ok()
+                    .flatten()
+                    .and_then(|c| c.multi_chat)
+                    .unwrap_or(0)
+                    != 0
+            })
+            .await
+            .unwrap_or(false)
+        };
         q.chat_id = Some(if per_call {
             uuid::Uuid::new_v4().to_string()
         } else {
