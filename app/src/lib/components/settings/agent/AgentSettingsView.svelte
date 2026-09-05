@@ -627,6 +627,13 @@
   type ApiModel = { id: string; kind: 'employee' | 'workflow'; name: string; memory: 'shared' | 'isolated' };
   let apiKeys = $state<ApiKeyRow[]>([]);
   let apiModels = $state<ApiModel[]>([]);
+  type ApiToolEntry = { id: string; label: string; floor: boolean };
+  type ApiTool = { name: string; description: string; entries: ApiToolEntry[] };
+  let apiTools = $state<ApiTool[]>([]);
+  let keyTools = $state<string[]>([]);
+  function toggleKeyTool(id: string) {
+    keyTools = keyTools.includes(id) ? keyTools.filter((t) => t !== id) : [...keyTools, id];
+  }
   let apiLocalUrl = $state('');
   let apiSwitchboardUrl = $state('');
   let apiSwitchboardOnline = $state(false);
@@ -647,6 +654,7 @@
       const r = await api.listAgentApiKeys(agentId);
       apiKeys = r.keys ?? [];
       apiModels = (r.models ?? []) as ApiModel[];
+      apiTools = (r.tools ?? []) as ApiTool[];
       apiLocalUrl = r.localUrl ?? '';
       apiSwitchboardUrl = r.switchboardUrl ?? '';
       apiSwitchboardOnline = r.switchboardOnline === true;
@@ -661,10 +669,11 @@
     apiKeysError = null;
     try {
       const api = await import('$lib/api/nebo');
-      const r = await api.createAgentApiKey(agentId, { label: keyLabel.trim(), workflows: keyWorkflows });
+      const r = await api.createAgentApiKey(agentId, { label: keyLabel.trim(), workflows: keyWorkflows, tools: keyTools });
       mintedKey = { key: r.key, secret: String(r.secret) };
       keyLabel = '';
       keyWorkflows = [];
+      keyTools = [];
       showNewKey = false;
       await loadApiKeys();
     } catch (e) {
@@ -1481,9 +1490,25 @@
               </label>
             {/each}
           </div>
+          <div class="text-xs text-base-content/60">{$t('agentSettings.apiKeyToolsField')}</div>
+          <div class="rounded-lg border border-base-300 divide-y divide-base-content/10 max-h-64 overflow-y-auto">
+            {#each apiTools as tool (tool.name)}
+              <div class="px-3 py-2">
+                <div class="text-xs font-medium"><code class="font-mono">{tool.name}</code> <span class="text-base-content/50 font-normal">{tool.description}</span></div>
+                <div class="flex flex-wrap gap-x-3 gap-y-1 mt-1 text-xs">
+                  {#each tool.entries as e (e.id)}
+                    <label class="inline-flex items-center gap-1 {e.floor ? 'opacity-70' : 'cursor-pointer'}">
+                      <input type="checkbox" class="checkbox checkbox-xs" checked={e.floor || keyTools.includes(e.id)} disabled={e.floor} onchange={() => toggleKeyTool(e.id)} />
+                      <span class="font-mono">{e.label}</span>
+                    </label>
+                  {/each}
+                </div>
+              </div>
+            {/each}
+          </div>
           <div class="text-xs text-base-content/50">{$t('agentSettings.apiKeyHint')}</div>
           <div class="flex gap-2 justify-end">
-            <button class="btn btn-sm btn-ghost" onclick={() => { showNewKey = false; keyLabel = ''; keyWorkflows = []; }}>{$t('agentSettings.cancel')}</button>
+            <button class="btn btn-sm btn-ghost" onclick={() => { showNewKey = false; keyLabel = ''; keyWorkflows = []; keyTools = []; }}>{$t('agentSettings.cancel')}</button>
             <button class="btn btn-sm btn-primary" onclick={mintApiKey} disabled={!keyLabel.trim() || !!keyBusy}>{keyBusy === 'mint' ? $t('agentSettings.webhookMinting') : $t('agentSettings.webhookMint')}</button>
           </div>
         </div>
@@ -1534,6 +1559,7 @@
                 <div class="text-sm font-medium truncate">{k.label} <span class="font-mono text-xs text-base-content/50">{k.keyPrefix}…</span></div>
                 <div class="text-xs text-base-content/50 truncate">
                   {k.models.length === 1 ? $t('agentSettings.apiKeyOneModel') : $t('agentSettings.apiKeyModelsCount', { values: { n: k.models.length } })}
+                  · {$t('agentSettings.apiKeyToolsCount', { values: { n: k.tools.length } })}
                   · {k.lastUsedAt ? $t('agentSettings.webhookLastUsed', { values: { when: new Date(k.lastUsedAt * 1000).toLocaleString() } }) : $t('agentSettings.webhookNeverUsed')}
                   · {$t('agentSettings.apiKeyCreated', { values: { when: new Date(k.createdAt * 1000).toLocaleDateString() } })}
                 </div>

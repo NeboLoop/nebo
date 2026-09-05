@@ -623,13 +623,46 @@ pub async fn list_agent_api_keys(State(state): State<AppState>, Path(id): Path<S
         names.sort();
         for w in names {
             models.push(serde_json::json!({
-                "id": workflow_model(&id, w),
+                "id": workflow_model(&agent, w),
                 "kind": "workflow",
                 "name": w,
                 "memory": memory,
             }));
         }
     }
+    // The tools a key can be granted: every registered tool, with the
+    // resources its schema declares, so a key's allowlist is picked from what
+    // actually exists. The floor (memory, message the owner, notify) is what
+    // every restricted run gets regardless.
+    let floor = super::voice::caller_floor_allowlist();
+    let tools: Vec<serde_json::Value> = state
+        .tools
+        .list()
+        .await
+        .into_iter()
+        .map(|t| {
+            let resources: Vec<String> = t.input_schema["properties"]["resource"]["enum"]
+                .as_array()
+                .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+                .unwrap_or_default();
+            let entries: Vec<serde_json::Value> = if resources.is_empty() {
+                vec![serde_json::json!({ "id": t.name, "label": t.name, "floor": floor.contains(&t.name) })]
+            } else {
+                resources
+                    .iter()
+                    .map(|r| {
+                        let id = format!("{}:{}", t.name, r);
+                        serde_json::json!({ "id": id, "label": r, "floor": floor.contains(&id) })
+                    })
+                    .collect()
+            };
+            serde_json::json!({
+                "name": t.name,
+                "description": t.description.lines().next().unwrap_or("").chars().take(140).collect::<String>(),
+                "entries": entries,
+            })
+        })
+        .collect();
     let local_url = format!("http://127.0.0.1:{}/v1", state.config.port);
     let switchboard_url = config::read_bot_id()
         .filter(|_| state.config.is_neboai_enabled())
@@ -638,6 +671,7 @@ pub async fn list_agent_api_keys(State(state): State<AppState>, Path(id): Path<S
     Ok(Json(serde_json::json!({
         "keys": keys,
         "models": models,
+        "tools": tools,
         "localUrl": local_url,
         "switchboardUrl": switchboard_url,
         "switchboardOnline": online,
