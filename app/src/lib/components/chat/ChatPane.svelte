@@ -27,6 +27,7 @@
   import { getAttachmentType, formatFileSize, attachmentMediaUrl } from '$lib/types/attachment';
   import { NEAR_BOTTOM_PX, distanceFromBottom } from '$lib/chat/scroll';
   import { threadKey } from '$lib/chat/sessionKey';
+  import { humanizeToolCall } from '$lib/chat/humanize';
 
   interface Artifact {
     /** Stable container id — same across every version of this document. */
@@ -1019,8 +1020,17 @@
   function stepOutcome(tool: ToolMsg): string {
     // A failed step says so. "Used agent" for a call that was refused hid a
     // model retrying the same bad call four times in a row.
-    if (tool.status === 'error') return $t('chat.stepFailed', { values: { name: tool.name } });
-    return tool.outcome ?? tool.label ?? $t('chat.usedTool', { values: { name: tool.name } });
+    const req = (tool.request && typeof tool.request === 'object' ? tool.request : {}) as Record<string, unknown>;
+    if (tool.status === 'error') {
+      return $t('chat.stepFailed', { values: { name: humanizeToolCall(tool.name, req).outcome } });
+    }
+    if (tool.outcome || tool.label) return tool.outcome ?? tool.label!;
+    return humanizeToolCall(tool.name, req).outcome;
+  }
+  function stepLabel(tool: ToolMsg): string {
+    if (tool.label) return tool.label;
+    const req = (tool.request && typeof tool.request === 'object' ? tool.request : {}) as Record<string, unknown>;
+    return humanizeToolCall(tool.name, req).label;
   }
   function anyFailed(tools: ToolMsg[]): boolean {
     return tools.some((t) => t.status === 'error');
@@ -1038,7 +1048,7 @@
     const running = tools.filter((t) => t.status === 'running');
     if (running.length) {
       const cur = running[running.length - 1];
-      return `${cur.label ?? $t('chat.workingWithTool', { values: { name: cur.name } })}…`;
+      return `${stepLabel(cur)}…`;
     }
     // Group completed steps by outcome, preserving first-seen order.
     const groups = new Map<string, number>();
@@ -1319,7 +1329,7 @@
                 </div>
                 <div class="flex-1 min-w-0 pb-3">
                   <div class="flex items-baseline gap-2 text-xs">
-                    <span class="truncate {tool.status === 'running' ? 'text-base-content/70' : ''}">{tool.status === 'running' ? (tool.label ?? tool.name) : stepOutcome(tool)}{#if tool.status === 'running' && tool.statusText}<span class="text-base-content/50 ml-1">{tool.statusText}</span>{/if}</span>
+                    <span class="truncate {tool.status === 'running' ? 'text-base-content/70' : ''}">{tool.status === 'running' ? stepLabel(tool) : stepOutcome(tool)}{#if tool.status === 'running' && tool.statusText}<span class="text-base-content/50 ml-1">{tool.statusText}</span>{/if}</span>
                     {#if $devMode}<span class="font-mono text-base-content/40 shrink-0">{strapSig(tool)}</span>{/if}
                     {#if tool.durationMs}<span class="text-base-content/40 shrink-0">{fmtDuration(tool.durationMs)}</span>{/if}
                   </div>

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { openWebBilling } from '$lib/billing';
+  import { openWebBilling, formatPlanName } from '$lib/billing';
   import SettingsHeader from '$lib/components/settings/SettingsHeader.svelte';
   import { onMount } from 'svelte';
   import { t } from 'svelte-i18n';
@@ -46,7 +46,7 @@
   let connected = $state(false);
 
   const currentPlan = $derived((subscription?.plan || accountStatus?.plan || 'free').toLowerCase());
-  const planName = $derived(currentPlan.charAt(0).toUpperCase() + currentPlan.slice(1));
+  const planName = $derived(formatPlanName(currentPlan));
 
   const hasBudget = $derived(
     usage?.budget && ((usage.budget.giftAvailable ?? 0) > 0 || (usage.budget.creditsCents ?? 0) > 0 || (usage.budget.freeAvailable ?? 0) > 0 || !!usage.budget.activePool)

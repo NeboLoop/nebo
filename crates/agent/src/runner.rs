@@ -1047,8 +1047,9 @@ impl ActiveTurn {
 }
 
 /// The live counters as one phrase ("3 minutes in, 12 tool calls so far,
-/// currently running os: exec"). The busy line below and voice's `status`
-/// tool both read it, so they never describe the same run differently.
+/// currently running reading a file"). `current_tool` is already a happy
+/// label from humanize. The busy line below and voice's `status` tool both
+/// read it, so they never describe the same run differently.
 pub fn progress_phrase(st: &ActiveTurnStatus) -> String {
     let elapsed = if st.elapsed_secs < 90 {
         format!("{} seconds", st.elapsed_secs)
@@ -1058,7 +1059,9 @@ pub fn progress_phrase(st: &ActiveTurnStatus) -> String {
     let doing = if st.current_tool.is_empty() {
         "thinking".to_string()
     } else {
-        format!("running {}", st.current_tool)
+        // current_tool is already gerund-form ("reading a file") — don't
+        // wrap as "running {raw}" which used to leak "os" / "file: read".
+        st.current_tool.clone()
     };
     let calls_part = match st.tool_calls {
         0 => String::new(),
@@ -5206,7 +5209,11 @@ async fn run_loop(
                 if let Ok(mut ct) = p.current_tool.lock() {
                     ct.clear();
                     if tool_calls.len() == 1 {
-                        ct.push_str(&tool_calls[0].name);
+                        // Happy name for resume/dashboard/voice — not raw "os".
+                        ct.push_str(&tools::humanize::tool_call(
+                            &tool_calls[0].name,
+                            &tool_calls[0].input,
+                        ).0);
                     } else {
                         ct.push_str(&format!("{} tools", tool_calls.len()));
                     }
@@ -8255,7 +8262,7 @@ mod tests {
             run_id: "r".into(),
             iteration_count: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             tool_call_count: Arc::new(std::sync::atomic::AtomicU32::new(3)),
-            current_tool: Arc::new(std::sync::Mutex::new("os: exec".into())),
+            current_tool: Arc::new(std::sync::Mutex::new("running a command".into())),
         }
     }
 
@@ -8271,12 +8278,12 @@ mod tests {
             Err(s) => s,
             Ok(_) => panic!("a second turn was admitted on a busy session"),
         };
-        assert!(status.contains("3 tool calls") && status.contains("running os: exec"), "{status}");
+        assert!(status.contains("3 tool calls") && status.contains("running a command"), "{status}");
         assert!(!status.contains('\u{2014}'), "no em dash in owner copy");
         assert!(!status.contains("stop") && !status.contains("will answer"), "promises only what the code does: {status}");
         assert!(session_is_busy(&turns, "agent:a:thread:t"));
         let st = active_turn_status(&turns, "agent:a:thread:t").expect("status while busy");
-        assert_eq!((st.tool_calls, st.current_tool.as_str()), (3, "os: exec"));
+        assert_eq!((st.tool_calls, st.current_tool.as_str()), (3, "running a command"));
         assert!(active_turn_status(&turns, "agent:a:thread:other").is_none());
         assert!(admit_turn(&turns, "agent:a:thread:other", progress()).is_ok(), "other sessions are unaffected");
         drop(first);

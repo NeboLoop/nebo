@@ -57,6 +57,7 @@
 
   // ── Humanizing helpers (deterministic — computed from the real args) ──
   import { operationLabel } from '$lib/utils/operationLabels';
+  import { humanizeToolCall } from '$lib/chat/humanize';
 
   /** camelCase → "Title Case"; trailing Id/Key dropped ("vendorId" → "Vendor"). */
   function fieldLabel(key: string): string {
@@ -120,8 +121,10 @@
     if (tool === 'web') {
       return { actionType: 'http_request', actionDetail: str(input?.url) ?? JSON.stringify(input ?? {}) };
     }
+    // Catch-all: happy label, never raw "os" / "mcp__…" in the modal chrome.
+    const friendly = humanizeToolCall(tool || 'action', input ?? {});
     return {
-      actionType: tool || 'action',
+      actionType: friendly.label,
       actionDetail:
         str(input?.command) ?? str(input?.path) ?? str(input?.url) ?? JSON.stringify(input ?? {}),
     };

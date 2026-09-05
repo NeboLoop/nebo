@@ -62,36 +62,11 @@ use ai::{StreamEventType, ToolCall};
 use db::Store;
 use tools::{SpawnRequest, SpawnResult, SubAgentOrchestrator};
 
-/// Build a human-readable description from a tool call.
-///
-/// For STRAP tools, extracts resource/action from the input JSON so
-/// the progress heartbeat shows "persona: create" instead of just "agent".
+/// Build a human-readable description from a tool call for heartbeats /
+/// subagent progress. Uses the same happy vocabulary as the chat timeline
+/// (`tools::humanize`) — never leak STRAP signatures like "file: read".
 fn describe_tool_call(tc: &ToolCall) -> String {
-    let input = &tc.input;
-    let resource = input.get("resource").and_then(|v| v.as_str()).unwrap_or("");
-    let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
-
-    // Plugin tool: show slug + command prefix
-    if tc.name == "plugin" {
-        let command = input.get("command").and_then(|v| v.as_str()).unwrap_or("");
-        let cmd_prefix = command.split_whitespace().next().unwrap_or("");
-        if !resource.is_empty() && !cmd_prefix.is_empty() {
-            return format!("{}: {}", resource, cmd_prefix);
-        }
-        if !resource.is_empty() {
-            return resource.to_string();
-        }
-        return tc.name.clone();
-    }
-
-    // STRAP tools: show resource + action
-    if !resource.is_empty() && !action.is_empty() {
-        return format!("{}: {}", resource, action);
-    }
-    if !resource.is_empty() {
-        return resource.to_string();
-    }
-    tc.name.clone()
+    tools::humanize::tool_call(&tc.name, &tc.input).0
 }
 
 use crate::concurrency::ConcurrencyController;

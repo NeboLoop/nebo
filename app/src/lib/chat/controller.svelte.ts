@@ -17,6 +17,7 @@ import { sendInstallCode } from '$lib/marketplace/installCodes';
 import { formatTime } from '$lib/time';
 import { get } from 'svelte/store';
 import { t } from 'svelte-i18n';
+import { humanizeToolCall } from '$lib/chat/humanize';
 
 export interface TokenUsage {
   input: number;
@@ -101,50 +102,9 @@ export interface SendOptions {
   silent?: boolean;
 }
 
-/** Build a display-friendly name for a tool call. */
-export function toolDisplayName(tool: string, input: Record<string, unknown>): string {
-  const resource = input.resource as string | undefined;
-  const action = input.action as string | undefined;
-  if (tool === 'plugin') {
-    const command = input.command as string | undefined;
-    const cmdPrefix = command?.split(/[\s+]/)[0];
-    if (resource && cmdPrefix) return `${resource}: ${cmdPrefix}`;
-    return resource || 'plugin';
-  }
-  if (tool === 'app' && action && input.app) return `${action} ${input.app}`;
-  // Sub-agent spawn: show description or truncated prompt instead of "task: spawn"
-  if (tool === 'agent' && resource === 'task' && action === 'spawn') {
-    const desc = input.description as string | undefined;
-    if (desc) return desc;
-    const prompt = input.prompt as string | undefined;
-    if (prompt) return prompt.length > 60 ? prompt.slice(0, 57) + '...' : prompt;
-    return 'spawning sub-agent';
-  }
-  if (resource && action) return `${resource}: ${action}`;
-  if (resource) return resource;
-  if (['event', 'skill'].includes(tool) && action) return action;
-  return tool;
-}
-
-function toolActivityLabel(toolName: string): string {
-  const labels: Record<string, string> = {
-    bash:    'running a command',
-    grep:    'searching files',
-    glob:    'finding files',
-    read:    'reading a file',
-    write:   'writing a file',
-    edit:    'editing a file',
-
-    web:     'searching the web',
-    browser: 'reading a page',
-    bot:     'thinking it through',
-    desktop: 'using the desktop',
-    event:   'checking the schedule',
-    loop:    'sending a message',
-
-    os:      'checking the workspace',
-  };
-  return labels[toolName] || 'working';
+/** Build a display-friendly name for a tool call (gerund form). */
+export function toolDisplayName(tool: string, input: Record<string, unknown> = {}): string {
+  return humanizeToolCall(tool, input).label;
 }
 
 const IMAGE_VIDEO_EXTS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'mp4', 'webm', 'mov'];
@@ -383,7 +343,11 @@ export function createChatController(config: ChatControllerConfig) {
     const STATUS_RE = /\n?_Working[^_]*_\n?/g;
     const statusMatch = chunk.match(STATUS_RE);
     if (statusMatch) {
-      activityStatus = statusMatch[statusMatch.length - 1].replace(/_/g, '').trim();
+      // Orchestrator already humanizes ("reading a file"); strip the wrapper.
+      activityStatus = statusMatch[statusMatch.length - 1]
+        .replace(/_/g, '')
+        .trim()
+        .replace(/^Working on:\s*/i, '');
       chunk = chunk.replace(STATUS_RE, '');
     }
     if (!chunk) return;
@@ -518,12 +482,12 @@ export function createChatController(config: ChatControllerConfig) {
     } catch { /* keep empty */ }
     const m = messages[idx];
     if (m.type === 'assistant') {
+      const fallback = humanizeToolCall(data.tool || 'tool', request);
       const tool: ToolUse = {
         toolId: data.tool_id,
-        // Raw tool name so the display formats the signature (MCP → "slug · tool",
-        // STRAP → "name · resource.action"); label + outcome come from the backend.
+        // Raw name kept for dev-mode signature; label is owner-facing.
         name: data.tool || 'tool',
-        label: data.label,
+        label: data.label || fallback.label,
         status: 'running',
         request,
         response: '',
@@ -532,8 +496,8 @@ export function createChatController(config: ChatControllerConfig) {
       messages[idx] = { ...m, tools: [...(m.tools ?? []), tool] };
     }
     // Prefer the backend's humanized label so the live indicator and the
-    // persisted timeline speak the same vocabulary; static map is the fallback.
-    activityStatus = data.label || toolActivityLabel(data.tool || '');
+    // persisted timeline speak the same vocabulary; client humanize is fallback.
+    activityStatus = data.label || humanizeToolCall(data.tool || '', request).label;
   }
 
   function handleToolResult(data: any) {
@@ -567,10 +531,15 @@ export function createChatController(config: ChatControllerConfig) {
     const idx = ensureReply(data.agentId || agentId);
     const m = messages[idx];
     if (m.type === 'assistant') {
+      const name = data.tool_name || 'tool';
+      const friendly = humanizeToolCall(name, {});
       messages[idx] = {
         ...m,
         tools: [...(m.tools ?? []), {
-          toolId, name: data.tool_name || 'tool', status, outcome: data.outcome, request: {}, response,
+          toolId, name, status,
+          label: data.label || friendly.label,
+          outcome: data.outcome || friendly.outcome,
+          request: {}, response,
         }],
       };
     }

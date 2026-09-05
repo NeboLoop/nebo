@@ -2108,10 +2108,10 @@ mod voice_prompt_tests {
 
     #[test]
     fn status_line_reads_the_counters_or_says_idle() {
-        let st = agent::runner::ActiveTurnStatus { elapsed_secs: 200, tool_calls: 2, current_tool: "os: exec".into() };
+        let st = agent::runner::ActiveTurnStatus { elapsed_secs: 200, tool_calls: 2, current_tool: "running a command".into() };
         assert_eq!(
             voice_status_line(Some(&st)),
-            "Still working: 3 minutes in, 2 tool calls so far, currently running os: exec."
+            "Still working: 3 minutes in, 2 tool calls so far, currently running a command."
         );
         assert_eq!(voice_status_line(None), "Nothing is running right now.");
     }

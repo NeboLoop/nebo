@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { humanizeToolCall } from './humanize';
+import { formatServiceName, humanizeToolCall } from './humanize';
 
 describe('humanizeToolCall', () => {
 	it('humanizes STRAP signatures as verb + noun', () => {
@@ -25,5 +25,12 @@ describe('humanizeToolCall', () => {
 			label: 'using github (create issue)',
 			outcome: 'Used github: create issue',
 		});
+	});
+});
+
+describe('formatServiceName', () => {
+	it('title-cases slugs', () => {
+		expect(formatServiceName('google-drive')).toBe('Google Drive');
+		expect(formatServiceName('gws')).toBe('Gws');
 	});
 });

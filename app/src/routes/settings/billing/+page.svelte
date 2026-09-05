@@ -7,7 +7,7 @@
   import * as api from '$lib/api/nebo';
   import type { AccountStatusResponse } from '$lib/api/neboComponents';
   import Spinner from '$lib/components/ui/Spinner.svelte';
-  import { openWebBilling } from '$lib/billing';
+  import { openWebBilling, formatPlanName } from '$lib/billing';
 
   let isLoading = $state(true);
   let status = $state<AccountStatusResponse | null>(null);
@@ -29,7 +29,7 @@
   });
 
   const currentPlan = $derived((status?.plan || 'free').toLowerCase());
-  const planName = $derived(currentPlan.charAt(0).toUpperCase() + currentPlan.slice(1));
+  const planName = $derived(formatPlanName(currentPlan));
 </script>
 
 <SettingsHeader title={$t('settingsBilling.title')} description={$t('settingsBilling.webOnly')} />

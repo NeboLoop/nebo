@@ -85,12 +85,17 @@ const STRAP_VERB: Record<string, [string, string]> = {
 	alert: ['notifying', 'Notified'],
 };
 
-function serviceName(slug: string): string {
+/** Title-case a plugin/channel slug: `gws` → `Gws`, `google-drive` → `Google Drive`. */
+export function formatServiceName(slug: string): string {
 	return slug
 		.split(/[-_]/)
 		.filter(Boolean)
 		.map((w) => w.charAt(0).toUpperCase() + w.slice(1))
 		.join(' ');
+}
+
+function serviceName(slug: string): string {
+	return formatServiceName(slug);
 }
 
 function rawName(toolName: string): [string, string] {

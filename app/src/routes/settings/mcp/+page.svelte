@@ -585,7 +585,7 @@
                   <div class="flex items-center gap-3 py-2 flex-wrap">
                     <div class="flex-1 min-w-0">
                       <div class="flex items-center gap-1.5">
-                        <span class="text-xs font-mono truncate">{row.name}</span>
+                        <span class="text-xs truncate">{row.name.replaceAll('_', ' ')}</span>
                         {#if !row.override}
                           <span class="text-xs text-base-content/50 shrink-0">{$t('settingsMcp.viaDefault')}</span>
                         {/if}

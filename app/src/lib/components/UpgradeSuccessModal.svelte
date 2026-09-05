@@ -6,6 +6,7 @@
 <script lang="ts">
   import { t } from 'svelte-i18n';
   import CheckCircle from 'lucide-svelte/icons/check-circle';
+  import { formatPlanName } from '$lib/billing';
 
   interface Props {
     show?: boolean;
@@ -24,7 +25,7 @@
     onclose?.();
   }
 
-  const planDisplay = $derived(plan ? plan.charAt(0).toUpperCase() + plan.slice(1) : 'new');
+  const planDisplay = $derived(plan ? formatPlanName(plan) : 'new');
 </script>
 
 {#if show}

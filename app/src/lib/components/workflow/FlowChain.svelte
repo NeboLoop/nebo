@@ -23,6 +23,7 @@
   import { getActivityType } from '$lib/utils/workflowTypes';
   import { describeSchedule } from '$lib/utils/schedule';
   import type { WorkflowConfig, WorkflowActivity } from '$lib/types/agentPage';
+  import { humanizeToolCall } from '$lib/chat/humanize';
 
   const TRIGGER_NODE = '__trigger__';
   const EMIT_NODE = '__emit__';
@@ -287,7 +288,7 @@
 
       {#if a.tool || a.steps?.length}
         <div class="flex items-center gap-2 mt-1.5">
-          {#if a.tool}<span class="text-[11px] font-mono text-base-content/50">{a.tool}</span>{/if}
+          {#if a.tool}<span class="text-[11px] text-base-content/50">{humanizeToolCall(a.tool).outcome}</span>{/if}
           {#if a.steps?.length}
             <span class="text-[11px] font-mono text-base-content/40">{a.steps.length} steps</span>
           {/if}

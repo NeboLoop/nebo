@@ -56,6 +56,11 @@
 	import Download from 'lucide-svelte/icons/download';
 	import { getWebSocketClient } from '$lib/websocket/client';
 	import { authLoginAccount, submitCode } from '$lib/api/nebo';
+	import { formatServiceName } from '$lib/chat/humanize';
+
+	function pluginTitle(w: AskWidgetDef): string {
+		return w.name ?? w.label ?? (w.plugin ? formatServiceName(w.plugin) : '');
+	}
 
 	// connect_account: run the same OAuth pathway as Settings → Connected
 	// Accounts, then answer the parked ask_request so the tool call resumes.
@@ -191,7 +196,7 @@
 				{#if installDone}<Check class="w-5 h-5 text-success" />{:else}<Download class="w-5 h-5" />{/if}
 			</div>
 			<div class="flex-1 min-w-0">
-				<div class="text-sm font-medium truncate">{widget.name ?? widget.plugin}</div>
+				<div class="text-sm font-medium truncate">{pluginTitle(widget)}</div>
 				{#if installError}
 					<div class="text-xs text-error">{installError}</div>
 				{:else if widget.description}
@@ -217,7 +222,7 @@
 				{#if connectDone}<Check class="w-5 h-5 text-success" />{:else}<Plug class="w-5 h-5" />{/if}
 			</div>
 			<div class="flex-1 min-w-0">
-				<div class="text-sm font-medium truncate">{widget.label ?? widget.plugin}</div>
+				<div class="text-sm font-medium truncate">{pluginTitle(widget)}</div>
 				{#if connectError}
 					<div class="text-xs text-error">{connectError}</div>
 				{:else}

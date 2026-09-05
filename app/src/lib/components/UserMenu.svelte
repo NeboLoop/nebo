@@ -2,6 +2,7 @@
   import { t } from 'svelte-i18n';
   import { onMount } from 'svelte';
   import UpdateBanner from '$lib/components/UpdateBanner.svelte';
+  import { formatPlanName } from '$lib/billing';
 
   let displayName = $state('');
   let planName = $state('Free');
@@ -22,7 +23,9 @@
       }
       const sub = subsResp as Record<string, unknown> | null;
       if (sub?.plan) {
-        planName = String(sub.plan);
+        planName = formatPlanName(String(sub.plan));
+      } else if (account?.plan) {
+        planName = formatPlanName(String(account.plan));
       }
     } catch {
       // Keep mock data
