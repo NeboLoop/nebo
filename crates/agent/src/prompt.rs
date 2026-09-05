@@ -55,6 +55,11 @@ pub struct PromptContext {
     pub research_prompt: Option<String>,
     /// Workspace context loaded from `.nebo.md` or `NEBO.md` in the project directory.
     pub context_file: Option<String>,
+    /// A restricted run whose allowlist left no tools: the prompt must not
+    /// teach the call syntax or list "core tools (always available)" — a
+    /// flash model followed that lesson over a closing notice and narrated
+    /// `os(resource: "file", …)` into a public chat (2026-09-05).
+    pub no_tools: bool,
 }
 
 /// Per-iteration inputs that change between agentic loop iterations.
@@ -683,6 +688,38 @@ pub fn build_deferred_listing(stubs: &[(String, String)]) -> String {
 /// Prompt assembly varies by `PromptMode`:
 /// - `Full`: All sections (identity, memory docs, tool routing, behavior, etiquette, etc.)
 /// - `Minimal`: Core sections only (identity, capabilities, behavior). ~2.7k tokens smaller.
+/// The core section with its "## Tools — STRAP" block removed: everything
+/// from that heading up to the next one. Used only for runs that have no
+/// tools; the block is the lesson the model would otherwise imitate.
+fn without_tools_section(core: &str) -> String {
+    const START: &str = "## Tools — STRAP";
+    const NEXT: &str = "## This Conversation";
+    let mut out = match (core.find(START), core.find(NEXT)) {
+        (Some(s), Some(e)) if e > s => format!("{}{}", &core[..s], &core[e..]),
+        _ => core.to_string(),
+    };
+    // "A named tool call is an instruction — run it" is guidance for a run
+    // that has tools. Drop that paragraph (both mode variants carry it).
+    const PARA: &str = "**A named tool call is an instruction, not a topic.**";
+    while let Some(s) = out.find(PARA) {
+        let e = out[s..].find("\n\n").map(|i| s + i + 2).unwrap_or(out.len());
+        out.replace_range(s..e, "");
+    }
+    out
+}
+
+/// Drop every line that shows tool-call syntax. For a run that has no
+/// tools, any example — in a section, a placeholder fill, or the dynamic
+/// suffix — is a lesson the model imitates. Applied at the end of
+/// `build_static` and, in the runner, to the fully assembled system prompt.
+pub fn strip_call_syntax(prompt: &str) -> String {
+    prompt
+        .lines()
+        .filter(|l| !l.contains("(resource:") && !l.contains("(action:"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 pub fn build_static(pctx: &PromptContext) -> String {
     let is_minimal = matches!(pctx.mode, PromptMode::Minimal);
     let mut parts: Vec<String> = Vec::new();
@@ -697,7 +734,7 @@ pub fn build_static(pctx: &PromptContext) -> String {
     // and forces re-processing of the entire prompt on every turn.
 
     // 1. Core: identity, voice, execution discipline, tools/STRAP, conversation awareness.
-    parts.push(SECTION_CORE.to_string());
+    parts.push(if pctx.no_tools { without_tools_section(SECTION_CORE) } else { SECTION_CORE.to_string() });
     // 1b. Conduct: register + message economy. Stable by design — edit only
     // as a deliberate block change (cache: this sits in the cached prefix).
     parts.push(SECTION_CONDUCT.to_string());
@@ -728,7 +765,8 @@ pub fn build_static(pctx: &PromptContext) -> String {
     }
 
     // Full mode: extended sections (web research, memory, shared computer, verification, media)
-    if !is_minimal {
+    // Web/research and media both teach tool calls; a no-tools run hears neither.
+    if !is_minimal && !pctx.no_tools {
         parts.push(SECTION_EXTENDED.to_string());
         parts.push(SECTION_MEDIA.to_string());
     }
@@ -751,12 +789,12 @@ pub fn build_static(pctx: &PromptContext) -> String {
     }
 
     // Agent-required plugin context (focused details for this agent's declared plugins)
-    if !pctx.agent_plugin_context.is_empty() {
+    if !pctx.agent_plugin_context.is_empty() && !pctx.no_tools {
         parts.push(pctx.agent_plugin_context.clone());
     }
 
     // Agent self-awareness (workflows, skills, capabilities)
-    if !pctx.agent_self_context.is_empty() {
+    if !pctx.agent_self_context.is_empty() && !pctx.no_tools {
         parts.push(pctx.agent_self_context.clone());
     }
 
@@ -810,7 +848,8 @@ pub fn build_static(pctx: &PromptContext) -> String {
     // Replace {agent_name} placeholder
     prompt = prompt.replace("{agent_name}", &pctx.agent_name);
 
-    prompt
+    // After every fill: a no-tools prompt shows no call syntax anywhere.
+    if pctx.no_tools { strip_call_syntax(&prompt) } else { prompt }
 }
 
 /// Build the per-iteration dynamic suffix appended after the static prompt.
@@ -1024,6 +1063,22 @@ pub fn build(pctx: &PromptContext, dctx: &DynamicContext) -> (String, String) {
 
 #[cfg(test)]
 mod tests {
+    /// A run with no tools gets no tools lesson: no call syntax, no "core
+    /// tools (always available)" list. Everything after the block survives.
+    #[test]
+    fn no_tools_prompt_drops_the_strap_lesson() {
+        let with = build_static(&PromptContext { agent_name: "Nebo".to_string(), ..Default::default() });
+        assert!(with.contains("## Tools — STRAP") && with.contains("Core tools"));
+        let without = build_static(&PromptContext { agent_name: "Nebo".to_string(), no_tools: true, ..Default::default() });
+        assert!(!without.contains("STRAP"), "no syntax lesson");
+        assert!(!without.contains("Core tools"), "no roster claim");
+        assert!(!without.contains("os(resource:"), "no example call");
+        assert!(!without.contains("(resource:"), "no call syntax anywhere: {without}");
+        assert!(!without.contains("named tool call"), "no 'run the tool they named' guidance");
+        assert!(!without.contains("## Web & Research") && !without.contains("## Inline Media"), "no tool-teaching sections");
+        assert!(without.contains("## This Conversation"), "the rest of core survives");
+    }
+
     use super::*;
     use std::collections::HashMap;
 

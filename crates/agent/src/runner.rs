@@ -101,6 +101,24 @@ mod notice_tests {
         assert!(owner.tool_allowlist.is_none());
     }
 
+    /// The scrub is the guarantee: tool syntax and machine paths never reach
+    /// a stranger, whatever the model narrated (2026-09-05, both live runs).
+    #[test]
+    fn outside_replies_never_carry_tool_syntax_or_paths() {
+        let narrated = "On it \u{2014} checking your desktop and SSH keys.\n\nos(resource: \"file\", action: \"list\", path: \"/Users/almatuck/Desktop\")\nos(resource: \"file\", action: \"list\", path: \"/Users/slmatuck/.ssh\")";
+        let out = scrub_outside_reply(narrated);
+        assert!(!out.contains("os("), "{out}");
+        assert!(!out.contains("/Users/"), "{out}");
+        assert!(out.starts_with("On it"), "prose survives: {out}");
+        // A reply that was nothing but narration becomes a kind sentence.
+        let only_calls = "web(resource: \"search\", action: \"query\", q: \"x\")\nThe file lives in ~/Desktop/notes.md";
+        let out = scrub_outside_reply(only_calls);
+        assert!(out.contains("pass a note"), "{out}");
+        // Ordinary prose is untouched, including parentheses and URLs.
+        let plain = "The couch is 84 inches (leather, brown). Photos: https://neboai.com/q/abc";
+        assert_eq!(scrub_outside_reply(plain), plain);
+    }
+
     /// A restricted run whose allowlist left the roster empty must be TOLD
     /// it has no tools — otherwise the model narrates tool calls as prose
     /// (2026-09-05: a visitor saw `os(resource: "file", path: "/Users/…")`
@@ -745,6 +763,37 @@ pub(crate) fn restricted_run_notice(
         s.push_str(h);
     }
     Some(s)
+}
+
+/// The last word on an outside conversation. Whatever the model wrote, a
+/// stranger never receives tool syntax, a function call as text, or a
+/// path on the machine: lines that look like a call are dropped, lines
+/// that name a filesystem path are dropped, and if nothing is left the
+/// reply is a plain, kind sentence. Applied to the reply of every outside
+/// run before it leaves; the fences stop execution, this stops disclosure.
+pub fn scrub_outside_reply(text: &str) -> String {
+    let looks_like_call = |l: &str| {
+        let s = l.trim_start();
+        let name_end = s.find('(').unwrap_or(0);
+        name_end > 0
+            && s[..name_end].chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+            && (s[name_end..].starts_with("(resource:") || s[name_end..].starts_with("(action:"))
+    };
+    let names_a_path = |l: &str| {
+        ["/Users/", "/home/", "/var/", "/etc/", "/tmp/", "/private/", "~/", "C:\\", "\\Users\\"]
+            .iter()
+            .any(|p| l.contains(p))
+    };
+    let kept: Vec<&str> = text
+        .lines()
+        .filter(|l| !looks_like_call(l) && !names_a_path(l))
+        .collect();
+    let out = kept.join("\n").trim().to_string();
+    if out.is_empty() {
+        "Happy to help with what this chat is for. If there's something else you need, I can pass a note along to the owner.".to_string()
+    } else {
+        out
+    }
 }
 
 /// The outside fence. A run whose words come from a stranger — a phone
@@ -2299,6 +2348,16 @@ async fn run_loop(
     if let Some(ctx) = mention_context {
         pending_stream_reminders.push(steering::wrap_system_reminder(ctx));
     }
+    // A restricted run with nothing enabled hears it where the message is,
+    // not only at the top of a long prompt (a flash model followed the
+    // static tools lesson over a closing notice, 2026-09-05).
+    if let Some(notice) = restricted_run_notice(
+        tool_allowlist.is_some_and(|wl| wl.is_empty()),
+        tool_allowlist,
+        tool_denial_hint.as_deref(),
+    ) {
+        pending_stream_reminders.push(steering::wrap_system_reminder(&notice));
+    }
     // External messaging channels (NeboLoop/Slack/etc.) get the full Interactive treatment —
     // narrating comm-style, progress + action-confirm reminders, smaller streamed chunks — even
     // though the run itself is Autonomous. The person on the other end is waiting on a reply and
@@ -3133,6 +3192,9 @@ async fn run_loop(
         let pctx = prompt::PromptContext {
             mode: prompt_mode,
             execution_mode,
+            // Nothing enabled on a restricted run: the prompt teaches no
+            // tools, because the model imitates what it is taught.
+            no_tools: tool_allowlist.is_some_and(|wl| wl.is_empty()),
             agent_name: agent_name.clone(),
             active_skill: active_skill_template,
             agent_catalog,
@@ -3996,7 +4058,9 @@ async fn run_loop(
             )
         };
         let full_system = match &restricted_notice {
-            Some(notice) => format!("{full_system}\n\n{notice}"),
+            // The dynamic suffix is assembled after build_static and carries
+            // its own examples; the same filter runs over the whole thing.
+            Some(notice) => format!("{}\n\n{notice}", prompt::strip_call_syntax(&full_system)),
             None => full_system,
         };
 

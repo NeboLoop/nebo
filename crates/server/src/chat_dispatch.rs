@@ -606,10 +606,14 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                 // paints the opening text the instant the model
                                 // produces it (matches the local-chat feel);
                                 // coalesce subsequent chunks at COMM_COALESCE_MS.
-                                let should_flush = match last_comm_flush {
-                                    None => true,
-                                    Some(t) => t.elapsed().as_millis() as u64 >= COMM_COALESCE_MS,
-                                };
+                                // An outside conversation never sees a partial
+                                // reply: it is held and sent once, scrubbed
+                                // (see the final segment below).
+                                let should_flush = !origin.is_outside()
+                                    && match last_comm_flush {
+                                        None => true,
+                                        Some(t) => t.elapsed().as_millis() as u64 >= COMM_COALESCE_MS,
+                                    };
                                 if should_flush {
                                     if let Some(cfg) = &comm_reply {
                                         send_comm_msg(
@@ -1173,7 +1177,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                         };
 
                         // Flush any remaining streamed text
-                        if !comm_buffer.is_empty() {
+                        if !comm_buffer.is_empty() && !origin.is_outside() {
                             let chunk = comm::CommMessage {
                                 id: comm_stream_id.clone(),
                                 from: String::new(),
@@ -1227,7 +1231,15 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                             topic: reply_config.topic.clone(),
                             conversation_id: reply_config.conversation_id.clone(),
                             msg_type: comm::CommMessageType::Message,
-                            content: strip_progress_heartbeats(&comm_segment),
+                            // A stranger gets prose only: no tool syntax, no
+                            // machine paths (scrubbed whatever the model wrote),
+                            // and never a file — the fences stop execution, this
+                            // stops disclosure.
+                            content: if origin.is_outside() {
+                                agent::runner::scrub_outside_reply(&strip_progress_heartbeats(&comm_segment))
+                            } else {
+                                strip_progress_heartbeats(&comm_segment)
+                            },
                             metadata: reply_meta,
                             timestamp: 0,
                             human_injected: false,
@@ -1237,7 +1249,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                             task_status: None,
                             artifacts: vec![],
                             error: None,
-                            attachments: reply_attachments,
+                            attachments: if origin.is_outside() { vec![] } else { reply_attachments },
                         };
                         // Our own outbound never echoes back from the hub. For a
                         // reply into a registered workroom that silence would
@@ -1301,7 +1313,8 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                         } else {
                             Vec::new()
                         };
-                        if reply_attachments.is_empty() {
+                        // A stranger never receives a file, with or without prose.
+                        if reply_attachments.is_empty() || origin.is_outside() {
                             warn!(
                                 topic = %reply_config.topic,
                                 conv_id = %reply_config.conversation_id,
