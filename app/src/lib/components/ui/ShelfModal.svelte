@@ -103,6 +103,15 @@
         </div>
 
         <div class="h-12 max-md:h-10 px-4 border-b border-base-300 flex items-center gap-2">
+        <button
+          type="button"
+          class="w-7 h-7 max-md:w-9 max-md:h-9 -ml-1 rounded-md flex items-center justify-center hover:bg-base-200 cursor-pointer bg-transparent border-none text-base-content/70 shrink-0"
+          onclick={onclose}
+          title={$t('common.back')}
+          aria-label={$t('common.back')}
+        >
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 6l-6 6 6 6"/></svg>
+        </button>
         {#if avatarInitial}
           <span class="w-7 h-7 rounded-lg flex items-center justify-center text-[10px] font-semibold tracking-wide shrink-0 {avatarClass}">{avatarInitial}</span>
         {/if}

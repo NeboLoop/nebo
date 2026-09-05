@@ -953,7 +953,7 @@
     openRuns,
     openSettings,
     openInbox,
-    openList: () => showList(agent?.isolated ? agentId : '1'),
+    openList: () => showList('1'),
     askEmployee,
     openCanvas,
     triggerSummary,
@@ -1094,10 +1094,18 @@
     <div class="absolute inset-0 bg-black/40" role="presentation"></div>
     <div class="relative flex flex-col flex-1 m-4 rounded-2xl bg-base-100 border border-base-300 shadow-2xl z-10 overflow-hidden">
       <div class="flex items-center justify-between px-5 py-3 border-b border-base-content/10 shrink-0">
-        <div class="flex items-center gap-3">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-primary"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="8" y="14" width="7" height="7" rx="1"/><line x1="6.5" y1="10" x2="11.5" y2="14"/><line x1="17.5" y1="10" x2="11.5" y2="14"/></svg>
-          <div>
-            <div class="text-sm font-semibold">{$t('agent.workflowBuilder', { values: { name: agent?.name ?? '' } })}</div>
+        <div class="flex items-center gap-3 min-w-0">
+          <button
+            type="button"
+            class="w-8 h-8 -ml-1 rounded-lg flex items-center justify-center hover:bg-base-200 cursor-pointer bg-transparent border-none text-base-content/70 shrink-0"
+            aria-label={$t('common.back')}
+            onclick={() => showCanvasModal = false}
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 6l-6 6 6 6"/></svg>
+          </button>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-primary shrink-0"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="8" y="14" width="7" height="7" rx="1"/><line x1="6.5" y1="10" x2="11.5" y2="14"/><line x1="17.5" y1="10" x2="11.5" y2="14"/></svg>
+          <div class="min-w-0">
+            <div class="text-sm font-semibold truncate">{$t('agent.workflowBuilder', { values: { name: agent?.name ?? '' } })}</div>
             <div class="text-xs text-base-content/50">{$t('agent.workflowsActivitiesCount', { values: { workflows: workflowEntries.length, activities: workflowEntries.reduce((sum, [, wf]) => sum + (wf.activities?.length ?? 0), 0) } })}</div>
           </div>
         </div>

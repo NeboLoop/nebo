@@ -322,6 +322,7 @@
   quotaWarning={chat.quotaWarning}
   chatError={chat.chatError}
   activityStatus={chat.activityStatus}
+  askQueueLength={chat.askQueueLength}
   {hasMore}
   {isLoadingMore}
   onloadmore={loadOlderMessages}
