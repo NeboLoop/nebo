@@ -132,6 +132,15 @@ pub fn routes() -> Router<AppState> {
             axum::routing::post(handlers::agents::publish_agent_workflow),
         )
         .route(
+            "/agents/{id}/webhooks",
+            axum::routing::get(handlers::agents::list_agent_webhooks)
+                .post(handlers::agents::create_agent_webhook),
+        )
+        .route(
+            "/agents/{id}/webhooks/{hook_id}",
+            axum::routing::delete(handlers::agents::delete_agent_webhook),
+        )
+        .route(
             "/agents/{id}/surfaces",
             axum::routing::get(handlers::agents::get_agent_surfaces),
         )

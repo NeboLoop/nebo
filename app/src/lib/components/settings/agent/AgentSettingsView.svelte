@@ -83,6 +83,7 @@
     { id: 'channels', label: 'agentSettings.channels' },
     { id: 'accounts', label: 'agentSettings.connectedAccounts' },
     { id: 'phone', label: 'agentSettings.phone' },
+    { id: 'webhooks', label: 'agentSettings.webhooks' },
     { id: 'approvals', label: 'agentSettings.approvals' },
     { id: 'memory', label: 'agentSettings.memory' },
   ];
@@ -580,6 +581,64 @@
       phoneLines = (r.numbers ?? []).filter((l) => l.agentId === agentId);
     } catch { phoneLines = []; }
   }
+  // Webhooks — the ways outside systems reach this employee. Minted and
+  // revoked on the hub; this is the only place they are managed.
+  type AgentWebhook = { id: string; label: string; workflowName?: string; keyPrefix: string; url: string; createdAt: string; lastUsedAt?: string };
+  type MintedWebhook = AgentWebhook & { key: string };
+  let webhooks = $state<AgentWebhook[]>([]);
+  let webhooksLoading = $state(false);
+  let webhooksError = $state<string | null>(null);
+  let minted = $state<MintedWebhook | null>(null);
+  let hookLabel = $state('');
+  let hookWorkflow = $state('');
+  let hookBusy = $state<string | null>(null);
+  let copiedHook = $state('');
+  $effect(() => { if (section === 'webhooks') loadWebhooks(); });
+  async function loadWebhooks() {
+    webhooksLoading = true;
+    webhooksError = null;
+    try {
+      const api = await import('$lib/api/nebo');
+      const r = await api.listAgentWebhooks(agentId);
+      webhooks = (r.endpoints ?? []) as AgentWebhook[];
+    } catch (e) {
+      webhooks = [];
+      webhooksError = e instanceof Error ? e.message : String(e);
+    } finally { webhooksLoading = false; }
+  }
+  async function mintWebhook() {
+    if (!hookLabel.trim() || hookBusy) return;
+    hookBusy = 'mint';
+    webhooksError = null;
+    try {
+      const api = await import('$lib/api/nebo');
+      minted = (await api.createAgentWebhook(agentId, { label: hookLabel.trim(), workflowName: hookWorkflow })) as MintedWebhook;
+      hookLabel = '';
+      hookWorkflow = '';
+      await loadWebhooks();
+    } catch (e) {
+      webhooksError = e instanceof Error ? e.message : String(e);
+    } finally { hookBusy = null; }
+  }
+  async function revokeWebhook(id: string) {
+    hookBusy = id;
+    webhooksError = null;
+    try {
+      const api = await import('$lib/api/nebo');
+      await api.deleteAgentWebhook(agentId, id);
+      if (minted?.id === id) minted = null;
+      await loadWebhooks();
+    } catch (e) {
+      webhooksError = e instanceof Error ? e.message : String(e);
+    } finally { hookBusy = null; }
+  }
+  function copyHook(field: string, text: string) {
+    navigator.clipboard.writeText(text);
+    copiedHook = field;
+    setTimeout(() => { copiedHook = ''; }, 2000);
+  }
+  const curlFor = (h: MintedWebhook) => `curl -X POST ${h.url} -H "Authorization: Bearer ${h.key}" -H "Content-Type: application/json" -d '{"text":"..."}'`;
+
   // Retry of what the hub does on Assign: install the Phone plugin if
   // missing and bind it to this employee so the bridge runs.
   let phoneAnswerBusy = $state(false);
@@ -1227,6 +1286,73 @@
           {/each}
         </div>
         <a href="/marketplace/plugins" class="inline-flex items-center gap-1 text-sm text-primary font-medium mt-2">{$t('agentSettings.addFromMarketplace')}</a>
+      {/if}
+
+    {:else if section === 'webhooks'}
+      <div class="mb-1">
+        <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('agentSettings.webhooks')}</div>
+        <div class="text-xs text-base-content/70 mt-1">{$t('agentSettings.webhooksDesc', { values: { name: agent?.name ?? '' } })}</div>
+      </div>
+
+      <div class="rounded-lg border border-base-300 bg-base-100 p-3.5 flex flex-col gap-2">
+        <div class="text-sm font-medium">{$t('agentSettings.webhookNew')}</div>
+        <div class="flex flex-col sm:flex-row gap-2">
+          <input class="input input-sm input-bordered flex-1" placeholder={$t('agentSettings.webhookLabelPlaceholder')} bind:value={hookLabel} onkeydown={(e) => { if (e.key === 'Enter') mintWebhook(); }} />
+          <select class="select select-sm select-bordered sm:w-64" bind:value={hookWorkflow}>
+            <option value="">{$t('agentSettings.webhookTargetChat')}</option>
+            {#each workflowEntries as [wfName] (wfName)}
+              <option value={wfName}>{$t('agentSettings.webhookTargetWorkflow', { values: { name: wfName } })}</option>
+            {/each}
+          </select>
+          <button class="btn btn-sm btn-primary" onclick={mintWebhook} disabled={!hookLabel.trim() || !!hookBusy}>{hookBusy === 'mint' ? $t('agentSettings.webhookMinting') : $t('agentSettings.webhookMint')}</button>
+        </div>
+        <div class="text-xs text-base-content/50">{$t('agentSettings.webhookTargetHint')}</div>
+      </div>
+
+      {#if minted}
+        <div class="rounded-lg border border-warning/40 bg-warning/5 p-3.5 flex flex-col gap-2">
+          <div class="text-sm font-medium">{minted.label}</div>
+          <div class="text-xs text-warning">{$t('agentSettings.webhookKeyOnce')}</div>
+          <div class="flex items-center gap-1.5">
+            <code class="text-xs font-mono bg-base-200 rounded px-2 py-1 flex-1 min-w-0 truncate">{minted.url}</code>
+            <button class="btn btn-xs btn-ghost shrink-0" onclick={() => copyHook('url', minted?.url ?? '')}>{copiedHook === 'url' ? $t('agentSettings.copied') : $t('agentSettings.copy')}</button>
+          </div>
+          <div class="flex items-center gap-1.5">
+            <code class="text-xs font-mono bg-base-200 rounded px-2 py-1 flex-1 min-w-0 truncate">{minted.key}</code>
+            <button class="btn btn-xs btn-ghost shrink-0" onclick={() => copyHook('key', minted?.key ?? '')}>{copiedHook === 'key' ? $t('agentSettings.copied') : $t('agentSettings.copy')}</button>
+          </div>
+          <div class="flex items-start gap-1.5">
+            <code class="text-xs font-mono bg-base-200 rounded px-2 py-1 flex-1 min-w-0 whitespace-pre-wrap break-all">{curlFor(minted)}</code>
+            <button class="btn btn-xs btn-ghost shrink-0" onclick={() => copyHook('curl', curlFor(minted!))}>{copiedHook === 'curl' ? $t('agentSettings.copied') : $t('agentSettings.copy')}</button>
+          </div>
+        </div>
+      {/if}
+
+      {#if webhooksError}
+        <div class="text-xs text-error">{webhooksError}</div>
+      {/if}
+      {#if webhooksLoading && webhooks.length === 0}
+        <div class="text-xs text-base-content/50 py-6 text-center">{$t('agentSettings.webhooksLoading')}</div>
+      {:else if webhooks.length === 0}
+        <div class="text-xs text-base-content/50 py-6 text-center">{$t('agentSettings.webhooksNone')}</div>
+      {:else}
+        <div class="flex flex-col gap-2">
+          {#each webhooks as h (h.id)}
+            <div class="rounded-lg border border-base-300 bg-base-100 px-3.5 py-2.5 flex items-center gap-3">
+              <div class="flex-1 min-w-0">
+                <div class="text-sm font-medium truncate">{h.label}</div>
+                <div class="text-xs text-base-content/50 truncate">
+                  {h.workflowName ? $t('agentSettings.webhookTargetWorkflow', { values: { name: h.workflowName } }) : $t('agentSettings.webhookTargetChat')}
+                  · <span class="font-mono">{h.keyPrefix}…</span>
+                  · {h.lastUsedAt ? $t('agentSettings.webhookLastUsed', { values: { when: new Date(h.lastUsedAt).toLocaleString() } }) : $t('agentSettings.webhookNeverUsed')}
+                </div>
+                <div class="text-xs text-base-content/50 truncate font-mono">{h.url}</div>
+              </div>
+              <button class="btn btn-xs btn-ghost shrink-0" onclick={() => copyHook(h.id, h.url)}>{copiedHook === h.id ? $t('agentSettings.copied') : $t('agentSettings.copyUrl')}</button>
+              <button class="btn btn-xs btn-ghost text-error shrink-0" disabled={hookBusy === h.id} onclick={() => revokeWebhook(h.id)}>{$t('agentSettings.webhookRevoke')}</button>
+            </div>
+          {/each}
+        </div>
       {/if}
 
     {:else if section === 'accounts' || section === 'phone'}

@@ -2162,42 +2162,91 @@ pub async fn publish_agent_workflow(
     if !config.workflows.contains_key(&binding_name) {
         return Err(to_error_response(types::NeboError::NotFound));
     }
+    let label = format!("{} · {}", agent_rec.name, binding_name);
+    hub_webhook_create(&state, &agent_rec, &label, Some(&binding_name))
+        .await
+        .map(Json)
+        .map_err(to_error_response)
+}
 
-    let token = crate::codes::neboai_token(&state).ok_or_else(|| {
-        to_error_response(types::NeboError::Validation(
-            "not connected to NeboLoop — connect your account first".to_string(),
-        ))
+/// The hub's per-bot webhook endpoint for this Nebo, with the owner's token.
+/// Every webhook call goes through here — one client, one error shape.
+async fn hub_webhook_request(
+    state: &AppState,
+    method: reqwest::Method,
+    path: &str,
+    body: Option<serde_json::Value>,
+) -> Result<serde_json::Value, types::NeboError> {
+    let token = crate::codes::neboai_token(state).ok_or_else(|| {
+        types::NeboError::Validation("not connected to NeboLoop — connect your account first".to_string())
     })?;
-
     let api_url = &state.config.neboai.api_url;
-    let resp = reqwest::Client::new()
-        .post(format!("{api_url}/api/v1/bots/self/webhooks"))
-        .bearer_auth(&token)
-        .json(&serde_json::json!({
-            "agentId": id,
-            "label": format!("{} · {}", agent_rec.name, binding_name),
-            "workflowName": binding_name,
-        }))
+    let mut req = reqwest::Client::new()
+        .request(method, format!("{api_url}/api/v1/bots/self/webhooks{path}"))
+        .bearer_auth(&token);
+    if let Some(b) = body {
+        req = req.json(&b);
+    }
+    let resp = req
         .send()
         .await
-        .map_err(|e| to_error_response(types::NeboError::Internal(format!("publish webhook: {e}"))))?;
-
+        .map_err(|e| types::NeboError::Internal(format!("webhooks: {e}")))?;
     let status = resp.status();
-    let body: serde_json::Value = resp.json().await.map_err(|e| {
-        to_error_response(types::NeboError::Internal(format!(
-            "publish webhook: parse response: {e}"
-        )))
-    })?;
-
-    if !status.is_success() {
-        return Err(to_error_response(types::NeboError::Internal(format!(
-            "publish webhook: HTTP {status}: {body}"
-        ))));
+    if status == reqwest::StatusCode::NO_CONTENT {
+        return Ok(serde_json::json!({}));
     }
+    let body: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| types::NeboError::Internal(format!("webhooks: parse response: {e}")))?;
+    if !status.is_success() {
+        let msg = body["error"].as_str().unwrap_or("request failed").to_string();
+        return Err(types::NeboError::Internal(format!("webhooks: HTTP {status}: {msg}")));
+    }
+    Ok(body)
+}
 
-    // Echo NeboLoop's response fields explicitly so the generated TS client
-    // carries the full contract (the key is shown once — the UI must surface it now).
-    Ok(Json(serde_json::json!({
+/// The hub knows an employee by its loop id when it has one, else by the
+/// local id (the same convention /manage/phone uses for assignment).
+fn hub_agent_ids(agent: &db::models::Agent) -> Vec<String> {
+    let mut ids = vec![agent.id.clone()];
+    if let Some(l) = agent.loop_agent_id.as_deref().filter(|s| !s.is_empty()) {
+        ids.push(l.to_string());
+    }
+    ids
+}
+
+/// Mint a webhook bound to this employee (chat when `workflow` is None, else
+/// the named workflow). The key comes back ONCE; the UI must show it now.
+async fn hub_webhook_create(
+    state: &AppState,
+    agent: &db::models::Agent,
+    label: &str,
+    workflow: Option<&str>,
+) -> Result<serde_json::Value, types::NeboError> {
+    // The hub only routes to employees it has registered (the reconcile
+    // mirrors every enabled employee into this Nebo's loop). Without that
+    // mirror there is nothing to bind to — say so and kick the reconcile.
+    let Some(hub_id) = agent.loop_agent_id.clone().filter(|s| !s.is_empty()) else {
+        crate::codes::request_agent_reconcile(state, &format!("webhook requested for {}", agent.name));
+        return Err(types::NeboError::Validation(format!(
+            "{} is not registered on NeboAI yet — this Nebo must be in its loop on neboai.com. Registration was just requested; try again in a moment.",
+            agent.name
+        )));
+    };
+    let body = hub_webhook_request(
+        state,
+        reqwest::Method::POST,
+        "",
+        Some(serde_json::json!({
+            "agentId": hub_id,
+            "label": label,
+            "workflowName": workflow.unwrap_or(""),
+        })),
+    )
+    .await?;
+    // Echo the fields explicitly so the generated TS client carries the contract.
+    Ok(serde_json::json!({
         "id": body["id"],
         "agentId": body["agentId"],
         "label": body["label"],
@@ -2205,7 +2254,90 @@ pub async fn publish_agent_workflow(
         "key": body["key"],
         "keyPrefix": body["keyPrefix"],
         "url": body["url"],
-    })))
+    }))
+}
+
+/// GET /agents/{id}/webhooks — this employee's live webhooks on the hub.
+pub async fn list_agent_webhooks(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> HandlerResult<serde_json::Value> {
+    let agent = state
+        .store
+        .get_agent(&id)
+        .map_err(to_error_response)?
+        .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
+    let ids = hub_agent_ids(&agent);
+    let body = hub_webhook_request(&state, reqwest::Method::GET, "", None)
+        .await
+        .map_err(to_error_response)?;
+    let base = state.config.neboai.api_url.trim_end_matches('/').to_string();
+    let hooks: Vec<serde_json::Value> = body["endpoints"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter(|e| e["agentId"].as_str().map(|s| ids.iter().any(|i| i == s)).unwrap_or(false))
+                .map(|e| {
+                    let mut e = e.clone();
+                    e["url"] = serde_json::json!(format!("{base}/api/v1/hooks/{}", e["id"].as_str().unwrap_or("")));
+                    e
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok(Json(serde_json::json!({ "endpoints": hooks })))
+}
+
+#[derive(Deserialize)]
+pub struct CreateAgentWebhookRequest {
+    pub label: String,
+    #[serde(default, rename = "workflowName")]
+    pub workflow_name: String,
+}
+
+/// POST /agents/{id}/webhooks — mint a webhook for this employee. Empty
+/// workflowName = the payload runs the employee's chat; a name = that workflow.
+pub async fn create_agent_webhook(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<CreateAgentWebhookRequest>,
+) -> HandlerResult<serde_json::Value> {
+    let agent = state
+        .store
+        .get_agent(&id)
+        .map_err(to_error_response)?
+        .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
+    let label = req.label.trim();
+    if label.is_empty() {
+        return Err(to_error_response(types::NeboError::Validation("a label is required".into())));
+    }
+    let wf = req.workflow_name.trim();
+    if !wf.is_empty() {
+        let config = napp::agent::parse_agent_config(&agent.frontmatter)
+            .map_err(|e| to_error_response(types::NeboError::Internal(format!("parse agent config: {e}"))))?;
+        if !config.workflows.contains_key(wf) {
+            return Err(to_error_response(types::NeboError::Validation(format!("no workflow named {wf}"))));
+        }
+    }
+    hub_webhook_create(&state, &agent, label, (!wf.is_empty()).then_some(wf))
+        .await
+        .map(Json)
+        .map_err(to_error_response)
+}
+
+/// DELETE /agents/{id}/webhooks/{hook_id} — revoke. The key stops working
+/// at once; the hub keeps the row for its audit trail.
+pub async fn delete_agent_webhook(
+    State(state): State<AppState>,
+    Path((id, hook_id)): Path<(String, String)>,
+) -> HandlerResult<serde_json::Value> {
+    if state.store.get_agent(&id).map_err(to_error_response)?.is_none() {
+        return Err(to_error_response(types::NeboError::NotFound));
+    }
+    hub_webhook_request(&state, reqwest::Method::DELETE, &format!("/{hook_id}"), None)
+        .await
+        .map_err(to_error_response)?;
+    Ok(Json(serde_json::json!({ "ok": true })))
 }
 
 /// POST /agents/{id}/activate — activate an agent from the REST API (makes it appear in sidebar).

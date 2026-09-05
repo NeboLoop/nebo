@@ -405,6 +405,27 @@ export function toggleAgent(id: string, req: Record<string, unknown> = {}) {
 }
 
 /**
+ * @description "List agent webhooks"
+ */
+export function listAgentWebhooks(id: string) {
+	return webapi.get<components.ListAgentWebhooksResponse>(`/api/v1/agents/${id}/webhooks`)
+}
+
+/**
+ * @description "Create agent webhook"
+ */
+export function createAgentWebhook(id: string, req: Record<string, unknown> = {}) {
+	return webapi.post<unknown>(`/api/v1/agents/${id}/webhooks`, req)
+}
+
+/**
+ * @description "Delete agent webhook"
+ */
+export function deleteAgentWebhook(id: string, hookId: string) {
+	return webapi.delete<components.DeleteAgentWebhookResponse>(`/api/v1/agents/${id}/webhooks/${hookId}`)
+}
+
+/**
  * @description "Start workflow chat"
  */
 export function startWorkflowChat(id: string, req: Record<string, unknown> = {}) {

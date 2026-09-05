@@ -1153,6 +1153,10 @@ export interface DeleteAgentResponse {
 	message: string
 }
 
+export interface DeleteAgentWebhookResponse {
+	ok: boolean
+}
+
 export interface DeleteAgentWorkflowResponse {
 	message: string
 }
@@ -1448,6 +1452,10 @@ export interface ListAgentChatsResponse {
 export interface ListAgentRunsResponse {
 	runs: AgentRunEntry[]
 	total: number
+}
+
+export interface ListAgentWebhooksResponse {
+	endpoints: unknown[]
 }
 
 export interface ListAgentWorkflowsResponse {
