@@ -902,7 +902,7 @@ impl TurnSink {
                 Row::Assistant(t) => ("assistant", t.as_str()),
             };
             if let Some(cid) = self.chat_id.as_deref()
-                && ensure_voice_chat(state, cid, &self.session_key, self.phone_title.as_deref())
+                && ensure_chat_row(state, cid, &self.session_key, self.phone_title.as_deref())
             {
                 if !self.chat_bound_announced {
                     self.chat_bound_announced = true;
@@ -1472,7 +1472,7 @@ fn phone_chat_title(caller_id: Option<&str>, line: Option<&str>, outbound: bool)
 /// row behind. `title` is Some for phone calls (caller-ID title, protected
 /// from the auto-namer); None means "New Chat" + auto-naming as usual.
 /// Returns true once the chat exists.
-fn ensure_voice_chat(
+pub(crate) fn ensure_chat_row(
     state: &AppState,
     chat_id: &str,
     session_key: &str,
@@ -1711,7 +1711,7 @@ async fn handle_conversation_session(
         loop_relay: loop_relay.clone(),
         // `chat_bound` announced to the client exactly once: now, when joining
         // a thread that already exists, else when the lazily created chat
-        // first actually exists (see ensure_voice_chat).
+        // first actually exists (see ensure_chat_row).
         chat_bound_announced: false,
     };
     if let Some(cid) = chat_id.as_deref()
@@ -1911,7 +1911,7 @@ async fn handle_conversation_session(
                                     // A delegated run appends to the thread —
                                     // real activity, so the chat must exist.
                                     if let Some(cid) = delegate_chat_id.as_deref() {
-                                        ensure_voice_chat(&state, cid, &ctx.session_key, phone_title.as_deref());
+                                        ensure_chat_row(&state, cid, &ctx.session_key, phone_title.as_deref());
                                     }
                                     run_delegated_task(&state, &ctx.session_key, task, caller.as_ref()).await
                                 };

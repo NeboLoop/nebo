@@ -2092,7 +2092,6 @@
 		"apiKeyNew": "New key",
 		"apiKeyLabelField": "Name — which app will use this key",
 		"apiKeyLabelPlaceholder": "Sales console",
-		"apiKeyWorkflows": "Also expose workflows as models:",
 		"apiKeyHint": "Memory, messaging you, and notifications are always on. Everything else is off unless you tick it here; a call that reaches for anything else is told it isn't available. Anything needing approval waits for you in Nebo and the caller is told so.",
 		"apiKeysNone": "No keys yet.",
 		"apiSwitchboardOnline": "Through the switchboard \u00b7 this Nebo is online",

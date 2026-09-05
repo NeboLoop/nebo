@@ -89,7 +89,9 @@ pub async fn api_key_auth(State(state): State<AppState>, mut request: Request, n
     };
     match state.store.find_api_key_by_hash(&hash_key(&token)) {
         Ok(Some(key)) => {
-            let _ = state.store.touch_api_key(&key.id);
+            if let Err(e) = state.store.touch_api_key(&key.id) {
+                warn!(error = %e, key = %key.label, "api: could not record last use");
+            }
             request.extensions_mut().insert(key);
             next.run(request).await
         }
@@ -214,24 +216,17 @@ async fn resolve_thread(state: &AppState, agent_id: &str, agent_name: &str, user
         let ctx = conversation_ctx(user);
         let chat_id = format!("api-{}-{}", &agent_id[..agent_id.len().min(8)], ctx);
         let session_key = format!("agent:{agent_id}:{CHANNEL}:{ctx}");
-        ensure_chat(state, &chat_id, &session_key, &format!("API · {}", user.unwrap_or("conversation")));
+        super::voice::ensure_chat_row(state, &chat_id, &session_key, Some(&format!("API · {}", user.unwrap_or("conversation"))));
         (session_key, chat_id)
     } else {
         // One conversation: join the working thread, as a voice call does.
         let chat_id = super::voice::resolve_voice_chat(state, agent_id).await;
         let session_key = format!("agent:{agent_id}:thread:{chat_id}");
-        ensure_chat(state, &chat_id, &session_key, &format!("API · {agent_name}"));
+        super::voice::ensure_chat_row(state, &chat_id, &session_key, Some(&format!("API · {agent_name}")));
         (session_key, chat_id)
     }
 }
 
-fn ensure_chat(state: &AppState, chat_id: &str, session_key: &str, title: &str) {
-    if let Ok(None) = state.store.get_chat(chat_id) {
-        if let Err(e) = state.store.create_chat_for_session(chat_id, session_key, title, None) {
-            warn!(error = %e, chat = %chat_id, "api: failed to create chat row");
-        }
-    }
-}
 
 fn allowlist_for(key: &db::models::ApiKey) -> HashSet<String> {
     let mut set = super::voice::caller_floor_allowlist();
@@ -241,12 +236,42 @@ fn allowlist_for(key: &db::models::ApiKey) -> HashSet<String> {
     set
 }
 
+/// A run that has to stop for the owner cannot answer this call; the owner
+/// still has to hear about it, or "ask again once they have answered" is a
+/// lie. Same forwarding the coworker rail uses — approval in the owner's
+/// queue, a bell notification naming the key that was calling.
+async fn park_for_owner(state: &AppState, run: &EmployeeRun, key_label: &str, ev: &ai::StreamEvent) {
+    let from = format!("API key \"{key_label}\"");
+    let fwd = crate::coworker::OwnerForward {
+        state,
+        agent_id: &run.agent_id,
+        agent_name: &run.agent_name,
+        from_name: &from,
+        session_key: &run.session_key,
+    };
+    match ev.event_type {
+        ai::StreamEventType::ApprovalRequest => {
+            if let Some(tc) = &ev.tool_call {
+                fwd.forward_approval(tc);
+            }
+        }
+        _ => fwd.forward_ask(ev).await,
+    }
+}
+
+struct EmployeeRun {
+    events: tokio::sync::mpsc::Receiver<ai::StreamEvent>,
+    session_key: String,
+    agent_id: String,
+    agent_name: String,
+}
+
 async fn start_employee_run(
     state: &AppState,
     key: &db::models::ApiKey,
     agent_id: &str,
     req: &ChatCompletionRequest,
-) -> Result<tokio::sync::mpsc::Receiver<ai::StreamEvent>, types::NeboError> {
+) -> Result<EmployeeRun, types::NeboError> {
     let agent = state
         .store
         .get_agent(agent_id)?
@@ -256,6 +281,7 @@ async fn start_employee_run(
         return Err(types::NeboError::Validation("messages must end with a user message".into()));
     }
     let (session_key, _chat_id) = resolve_thread(state, agent_id, &agent.name, req.user.as_deref()).await;
+    let run_key = session_key.clone();
     let entity_config = crate::entity_config::resolve_for_chat(&state.store, "agent", agent_id);
     let mut mention = format!(
         "This message arrived over the API from an outside client using the key \"{}\". \
@@ -298,7 +324,8 @@ async fn start_employee_run(
             model_override: None,
         },
     )
-    .await
+    .await?;
+    Ok(EmployeeRun { events, session_key: run_key, agent_id: agent_id.to_string(), agent_name: agent.name })
 }
 
 /// A workflow is one invocation: the last user message is its `text` input,
@@ -502,15 +529,16 @@ pub async fn openai_chat_completions(
             }
         }
         Model::Employee(_) => {
-            let mut events = match start_employee_run(&state, &key, &agent_id, &req).await {
-                Ok(rx) => rx,
+            let mut run = match start_employee_run(&state, &key, &agent_id, &req).await {
+                Ok(r) => r,
                 Err(e) => return to_error_response(e).into_response(),
             };
+            let key_label = key.label.clone();
             if !req.stream {
                 let mut seg = Segmenter::default();
                 let mut text = String::new();
                 let mut usage = None;
-                while let Some(ev) = events.recv().await {
+                while let Some(ev) = run.events.recv().await {
                     match ev.event_type {
                         ai::StreamEventType::Text => seg.text(&ev.text),
                         ai::StreamEventType::ToolCall => {
@@ -520,6 +548,7 @@ pub async fn openai_chat_completions(
                             text = seg.done();
                         }
                         ai::StreamEventType::ApprovalRequest | ai::StreamEventType::AskRequest | ai::StreamEventType::PlanApproval => {
+                            park_for_owner(&state, &run, &key_label, &ev).await;
                             text = seg.done();
                             text.push_str(PARKED);
                             break;
@@ -547,7 +576,7 @@ pub async fn openai_chat_completions(
                 let mut usage = None;
                 let mut finish = "stop";
                 let mut seg = Segmenter::default();
-                while let Some(ev) = events.recv().await {
+                while let Some(ev) = run.events.recv().await {
                     if ev.usage.is_some() {
                         usage = ev.usage.clone();
                     }
@@ -564,6 +593,7 @@ pub async fn openai_chat_completions(
                             serde_json::json!({ "reasoning_content": interim })
                         }
                         ai::StreamEventType::ApprovalRequest | ai::StreamEventType::AskRequest | ai::StreamEventType::PlanApproval => {
+                            park_for_owner(&state, &run, &key_label, &ev).await;
                             let mut text = seg.done();
                             text.push_str(PARKED);
                             let c = chunk(&id, &model_id, serde_json::json!({ "content": text }), None, None);
@@ -793,6 +823,27 @@ mod tests {
         plain.text("Hello");
         assert_eq!(plain.tool_call(), "Hello");
         assert_eq!(plain.done(), "", "a run that ends on a tool call has no answer text");
+    }
+
+    #[test]
+    fn a_tool_row_is_its_resources_or_itself_and_marks_the_floor() {
+        let floor: HashSet<String> = ["agent:memory".to_string()].into_iter().collect();
+        let with_resources = ai::ToolDefinition {
+            name: "agent".into(),
+            description: "Agent things\nsecond line".into(),
+            input_schema: serde_json::json!({ "properties": { "resource": { "enum": ["memory", "task"] } } }),
+        };
+        let row = tool_row(&with_resources, &floor);
+        assert_eq!(row["description"], "Agent things", "first line only");
+        let entries = row["entries"].as_array().unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0]["id"], "agent:memory");
+        assert_eq!(entries[0]["floor"], true);
+        assert_eq!(entries[1]["id"], "agent:task");
+        assert_eq!(entries[1]["floor"], false);
+        let bare = ai::ToolDefinition { name: "code".into(), description: String::new(), input_schema: serde_json::json!({}) };
+        let row = tool_row(&bare, &floor);
+        assert_eq!(row["entries"][0]["id"], "code");
     }
 
     #[test]
