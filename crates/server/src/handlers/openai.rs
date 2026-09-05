@@ -294,7 +294,7 @@ async fn start_employee_run(
         mention.push_str("\n\n");
         mention.push_str(&p);
     }
-    crate::chat_dispatch::run_chat_events(
+    let events = crate::chat_dispatch::run_chat_events(
         state,
         crate::chat_dispatch::ChatConfig {
             session_key,
@@ -528,7 +528,10 @@ pub async fn openai_chat_completions(
                 Err(e) => to_error_response(e).into_response(),
             }
         }
-        Model::Employee(_) => {
+        Model::Employee(agent_id) => {
+            if agent_id != key.agent_id {
+                return openai_error(StatusCode::FORBIDDEN, "This key belongs to a different employee.", "invalid_request_error");
+            }
             let mut run = match start_employee_run(&state, &key, &agent_id, &req).await {
                 Ok(r) => r,
                 Err(e) => return to_error_response(e).into_response(),
@@ -678,7 +681,7 @@ pub async fn list_agent_api_keys(State(state): State<AppState>, Path(id): Path<S
         names.sort();
         for w in names {
             models.push(serde_json::json!({
-                "id": workflow_model(&agent, w),
+                "id": workflow_model(&id, w),
                 "kind": "workflow",
                 "name": w,
                 "memory": memory,
