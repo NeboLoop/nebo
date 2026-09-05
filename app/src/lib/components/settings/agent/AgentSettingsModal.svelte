@@ -11,6 +11,7 @@
   import { t } from 'svelte-i18n';
   import ShelfModal from '$lib/components/ui/ShelfModal.svelte';
   import AgentSettingsView from './AgentSettingsView.svelte';
+  import { agentSettingsSections } from './sections';
 
   let {
     open,
@@ -33,26 +34,7 @@
     onclose: () => void;
   } = $props();
 
-  // `label` holds an i18n key — translated with $t at render time.
-  // Ambient capability permissions (file/shell/web…) are managed once,
-  // globally, in Settings → Permissions and inherited by every employee.
-  // Approvals is deliberately per-employee: the three-state control over each
-  // employee's gated operations, so a global setting never overrides a
-  // critical decision.
-  const sections = [
-    { id: 'general', label: 'agentSettings.general' },
-    { id: 'identity', label: 'settings.navItems.identity' },
-    { id: 'persona', label: 'agentPersona.title' },
-    { id: 'soul', label: 'settings.navItems.soul' },
-    { id: 'rules', label: 'settings.navItems.rules' },
-    { id: 'configure', label: 'agent.configure' },
-    { id: 'skills', label: 'settings.navItems.skills' },
-    { id: 'channels', label: 'agentSettings.channels' },
-    { id: 'accounts', label: 'agentSettings.connectedAccounts' },
-    { id: 'phone', label: 'agentSettings.phone' },
-    { id: 'approvals', label: 'agentSettings.approvals' },
-    { id: 'memory', label: 'agentSettings.memory' },
-  ];
+  const sections = agentSettingsSections;
 
   const title = $derived(
     agentName ? `${agentName} — ${$t('settings.title')}` : $t('settings.title')

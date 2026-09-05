@@ -70,24 +70,6 @@
     ctx.openWorkflow(name, wf);
   }
 
-  // `label` holds an i18n key — translated with $t at render time.
-  const settingsSections = [
-    { id: 'general', label: 'agentSettings.general' },
-    { id: 'identity', label: 'settings.navItems.identity' },
-    { id: 'persona', label: 'agentPersona.title' },
-    { id: 'soul', label: 'settings.navItems.soul' },
-    { id: 'rules', label: 'settings.navItems.rules' },
-    { id: 'configure', label: 'agent.configure' },
-    { id: 'workflows', label: 'marketplace.workflows' },
-    { id: 'skills', label: 'settings.navItems.skills' },
-    { id: 'channels', label: 'agentSettings.channels' },
-    { id: 'accounts', label: 'agentSettings.connectedAccounts' },
-    { id: 'phone', label: 'agentSettings.phone' },
-    { id: 'webhooks', label: 'agentSettings.webhooks' },
-    { id: 'approvals', label: 'agentSettings.approvals' },
-    { id: 'memory', label: 'agentSettings.memory' },
-  ];
-
   // Delete confirmation triggered by ?delete=1 query param or button click
   let showDeleteConfirm = $state(false);
   let deleting = $state(false);
