@@ -350,6 +350,31 @@ async fn run_workflow_model(state: &AppState, agent_id: &str, name: &str, req: &
     }
 }
 
+/// A run answers in passes: text, maybe a tool call, more text, done. The
+/// answer is the text of the last pass; earlier text is the employee
+/// thinking aloud ("Let me check…") that a tool call then supersedes. An
+/// OpenAI client renders `content` as the answer, so interim text goes out
+/// as `reasoning_content` (shown by clients that show thinking, ignored by
+/// the rest) and only the final pass becomes `content`.
+#[derive(Default)]
+struct Segmenter {
+    pending: String,
+}
+
+impl Segmenter {
+    fn text(&mut self, t: &str) {
+        self.pending.push_str(t);
+    }
+    /// A tool call ends the pass: whatever was said so far was interim.
+    fn tool_call(&mut self) -> String {
+        std::mem::take(&mut self.pending)
+    }
+    /// The run is over: whatever is pending is the answer.
+    fn done(&mut self) -> String {
+        std::mem::take(&mut self.pending)
+    }
+}
+
 fn completion_id() -> String {
     format!("chatcmpl-{}", uuid::Uuid::new_v4().simple())
 }
@@ -451,21 +476,26 @@ pub async fn openai_chat_completions(
                 Err(e) => to_error_response(e).into_response(),
             }
         }
-        Model::Employee(agent_id) => {
-            if agent_id != key.agent_id {
-                return openai_error(StatusCode::FORBIDDEN, "This key belongs to a different employee.", "invalid_request_error");
-            }
+        Model::Employee(_) => {
             let mut events = match start_employee_run(&state, &key, &agent_id, &req).await {
                 Ok(rx) => rx,
                 Err(e) => return to_error_response(e).into_response(),
             };
             if !req.stream {
+                let mut seg = Segmenter::default();
                 let mut text = String::new();
                 let mut usage = None;
                 while let Some(ev) = events.recv().await {
                     match ev.event_type {
-                        ai::StreamEventType::Text => text.push_str(&ev.text),
+                        ai::StreamEventType::Text => seg.text(&ev.text),
+                        ai::StreamEventType::ToolCall => {
+                            seg.tool_call();
+                        }
+                        ai::StreamEventType::Done => {
+                            text = seg.done();
+                        }
                         ai::StreamEventType::ApprovalRequest | ai::StreamEventType::AskRequest | ai::StreamEventType::PlanApproval => {
+                            text = seg.done();
                             text.push_str(PARKED);
                             break;
                         }
@@ -478,6 +508,9 @@ pub async fn openai_chat_completions(
                         usage = ev.usage;
                     }
                 }
+                if text.is_empty() {
+                    text = seg.done();
+                }
                 return Json(completion(&id, &model_id, &text, usage.as_ref())).into_response();
             }
             let (tx, rx) = tokio::sync::mpsc::channel::<Result<Event, std::convert::Infallible>>(32);
@@ -488,14 +521,27 @@ pub async fn openai_chat_completions(
                 }
                 let mut usage = None;
                 let mut finish = "stop";
+                let mut seg = Segmenter::default();
                 while let Some(ev) = events.recv().await {
                     if ev.usage.is_some() {
                         usage = ev.usage.clone();
                     }
                     let delta = match ev.event_type {
-                        ai::StreamEventType::Text if !ev.text.is_empty() => serde_json::json!({ "content": ev.text }),
+                        ai::StreamEventType::Text => {
+                            seg.text(&ev.text);
+                            continue;
+                        }
+                        ai::StreamEventType::ToolCall => {
+                            let interim = seg.tool_call();
+                            if interim.is_empty() {
+                                continue;
+                            }
+                            serde_json::json!({ "reasoning_content": interim })
+                        }
                         ai::StreamEventType::ApprovalRequest | ai::StreamEventType::AskRequest | ai::StreamEventType::PlanApproval => {
-                            let c = chunk(&id, &model_id, serde_json::json!({ "content": PARKED }), None, None);
+                            let mut text = seg.done();
+                            text.push_str(PARKED);
+                            let c = chunk(&id, &model_id, serde_json::json!({ "content": text }), None, None);
                             let _ = tx.send(Ok(Event::default().data(c.to_string()))).await;
                             break;
                         }
@@ -505,13 +551,28 @@ pub async fn openai_chat_completions(
                             finish = "error";
                             break;
                         }
-                        ai::StreamEventType::Done => break,
+                        ai::StreamEventType::Done => {
+                            let text = seg.done();
+                            if !text.is_empty() {
+                                let c = chunk(&id, &model_id, serde_json::json!({ "content": text }), None, None);
+                                if tx.send(Ok(Event::default().data(c.to_string()))).await.is_err() {
+                                    return;
+                                }
+                            }
+                            break;
+                        }
                         _ => continue,
                     };
                     let c = chunk(&id, &model_id, delta, None, None);
                     if tx.send(Ok(Event::default().data(c.to_string()))).await.is_err() {
                         return;
                     }
+                }
+                // A run that ended without a Done frame still owes its last pass.
+                let tail = seg.done();
+                if finish != "error" && !tail.is_empty() {
+                    let c = chunk(&id, &model_id, serde_json::json!({ "content": tail }), None, None);
+                    let _ = tx.send(Ok(Event::default().data(c.to_string()))).await;
                 }
                 if finish != "error" {
                     let done = chunk(&id, &model_id, serde_json::json!({}), Some(finish), usage.as_ref());
@@ -663,6 +724,21 @@ mod tests {
         assert!(!ctx.contains("you are x"), "system prompts from the client are not context");
         let (empty, none) = split_messages(&[]);
         assert!(empty.is_empty() && none.is_none());
+    }
+
+    #[test]
+    fn only_the_last_pass_is_the_answer() {
+        let mut seg = Segmenter::default();
+        seg.text("Hey — what can I do for you?");
+        assert_eq!(seg.tool_call(), "Hey — what can I do for you?", "text before a tool call is interim");
+        seg.text("Hey — ");
+        seg.text("what's up?");
+        assert_eq!(seg.done(), "Hey — what's up?", "text after the last tool call is the answer");
+        assert_eq!(seg.done(), "", "nothing is answered twice");
+        let mut plain = Segmenter::default();
+        plain.text("Hello");
+        assert_eq!(plain.tool_call(), "Hello");
+        assert_eq!(plain.done(), "", "a run that ends on a tool call has no answer text");
     }
 
     #[test]
