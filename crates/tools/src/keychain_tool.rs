@@ -125,6 +125,7 @@ async fn handle_get(input: &serde_json::Value) -> ToolResult {
     let res = run_command(
         "security",
         &["find-generic-password", "-s", service, "-a", account, "-w"],
+        &format!("(the stored password for service '{service}' account '{account}' is empty)"),
     )
     .await;
     not_found_to_ok(res, service)
@@ -136,7 +137,12 @@ async fn handle_find(input: &serde_json::Value) -> ToolResult {
         Some(l) if !l.is_empty() => l,
         _ => return ToolResult::error(errors::missing_param("find", "label", "keychain(action: \"find\", label: \"myapp\")")),
     };
-    let res = run_command("security", &["find-generic-password", "-l", label]).await;
+    let res = run_command(
+        "security",
+        &["find-generic-password", "-l", label],
+        &format!("(security printed no attributes for label '{label}')"),
+    )
+    .await;
     not_found_to_ok(res, label)
 }
 
@@ -172,6 +178,7 @@ async fn handle_add(input: &serde_json::Value) -> ToolResult {
             password,
             "-U",
         ],
+        &format!("Stored credential for service '{service}' account '{account}'."),
     )
     .await
 }
@@ -195,7 +202,10 @@ async fn handle_delete(input: &serde_json::Value) -> ToolResult {
         args.push("-a");
         args.push(a);
     }
-    let res = not_found_to_ok(run_command("security", &args).await, service);
+    let res = not_found_to_ok(
+        run_command("security", &args, "(security printed nothing)").await,
+        service,
+    );
     if res.is_error {
         return res;
     }
@@ -234,6 +244,7 @@ async fn handle_get(input: &serde_json::Value) -> ToolResult {
     run_command(
         "secret-tool",
         &["lookup", "service", service, "account", account],
+        &format!("(the stored secret for service '{service}' account '{account}' is empty)"),
     )
     .await
 }
@@ -247,7 +258,12 @@ async fn handle_find(input: &serde_json::Value) -> ToolResult {
     if !which("secret-tool") {
         return ToolResult::error("secret-tool not found. Do not retry \u{2014} this is an environment error. The libsecret-tools package must be installed on this system.");
     }
-    run_command("secret-tool", &["search", "--all", "label", label]).await
+    run_command(
+        "secret-tool",
+        &["search", "--all", "label", label],
+        &format!("No credentials found matching label '{label}'."),
+    )
+    .await
 }
 
 #[cfg(target_os = "linux")]
@@ -292,9 +308,9 @@ async fn handle_add(input: &serde_json::Value) -> ToolResult {
         )),
         Ok(out) => {
             let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-            ToolResult::error(format!("Failed to store credential: {}. Do not retry \u{2014} this is a system error.", stderr))
+            ToolResult::error(command_failed("secret-tool store", &out))
         }
-        Err(e) => ToolResult::error(format!("Failed to run secret-tool: {}. Do not retry \u{2014} this is a system error.", e)),
+        Err(e) => ToolResult::error(spawn_failed("secret-tool store", &e)),
     }
 }
 
@@ -320,7 +336,12 @@ async fn handle_delete(input: &serde_json::Value) -> ToolResult {
         args.push("account");
         args.push(a);
     }
-    run_command("secret-tool", &args).await
+    run_command(
+        "secret-tool",
+        &args,
+        &format!("Cleared credentials for service '{service}' (secret-tool clear exited 0)."),
+    )
+    .await
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -341,9 +362,14 @@ async fn handle_get(input: &serde_json::Value) -> ToolResult {
     };
     // cmdkey cannot directly retrieve passwords; return metadata instead
     let target = format!("/list:{}", service);
-    let result = run_command("cmdkey", &[&target]).await;
-    if !result.is_error && result.content == "OK" {
+    let result = run_command("cmdkey", &[&target], CMDKEY_NO_OUTPUT).await;
+    if !result.is_error && result.content == CMDKEY_NO_OUTPUT {
         ToolResult::ok(format!("No credential found for target '{}'. This is not an error \u{2014} the credential does not exist in the store.", service))
+    } else if !result.is_error {
+        ToolResult::ok(format!(
+            "Windows Credential Manager does not return passwords; metadata only:\n{}",
+            result.content
+        ))
     } else {
         result
     }
@@ -375,9 +401,9 @@ async fn handle_find(input: &serde_json::Value) -> ToolResult {
         }
         Ok(out) => {
             let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-            ToolResult::error(format!("Failed to list credentials: {}. Do not retry \u{2014} this is a system error.", stderr))
+            ToolResult::error(command_failed("cmdkey /list", &out))
         }
-        Err(e) => ToolResult::error(format!("Failed to run cmdkey: {}. Do not retry \u{2014} this is a system error.", e)),
+        Err(e) => ToolResult::error(spawn_failed("cmdkey /list", &e)),
     }
 }
 
@@ -404,7 +430,12 @@ async fn handle_add(input: &serde_json::Value) -> ToolResult {
     let target = format!("/add:{}", service);
     let user = format!("/user:{}", account);
     let pass = format!("/pass:{}", password);
-    run_command("cmdkey", &[&target, &user, &pass]).await
+    run_command(
+        "cmdkey",
+        &[&target, &user, &pass],
+        &format!("Stored credential for target '{service}' user '{account}'."),
+    )
+    .await
 }
 
 #[cfg(target_os = "windows")]
@@ -420,7 +451,12 @@ async fn handle_delete(input: &serde_json::Value) -> ToolResult {
         _ => return ToolResult::error(errors::missing_param("delete", "service", "keychain(action: \"delete\", service: \"myapp\")")),
     };
     let target = format!("/delete:{}", service);
-    run_command("cmdkey", &[&target]).await
+    run_command(
+        "cmdkey",
+        &[&target],
+        &format!("Deleted credential for target '{service}'."),
+    )
+    .await
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -429,22 +465,22 @@ async fn handle_delete(input: &serde_json::Value) -> ToolResult {
 
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
 async fn handle_get(_input: &serde_json::Value) -> ToolResult {
-    ToolResult::error("No system keychain is available on Android")
+    ToolResult::error("No system keychain is available on this platform")
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
 async fn handle_find(_input: &serde_json::Value) -> ToolResult {
-    ToolResult::error("No system keychain is available on Android")
+    ToolResult::error("No system keychain is available on this platform")
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
 async fn handle_add(_input: &serde_json::Value) -> ToolResult {
-    ToolResult::error("No system keychain is available on Android")
+    ToolResult::error("No system keychain is available on this platform")
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
 async fn handle_delete(_input: &serde_json::Value) -> ToolResult {
-    ToolResult::error("No system keychain is available on Android")
+    ToolResult::error("No system keychain is available on this platform")
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -463,51 +499,78 @@ async fn run_osascript(script: &str) -> ToolResult {
         Ok(output) if output.status.success() => {
             let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
             ToolResult::ok(if text.is_empty() {
-                "OK".to_string()
+                "(the script exited 0 and printed nothing)".to_string()
             } else {
                 text
             })
         }
-        Ok(output) => {
-            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-            ToolResult::error(format!("AppleScript error: {}. Do not retry \u{2014} this is a script error.", stderr))
-        }
-        Err(e) => ToolResult::error(format!("Failed to run osascript: {}. Do not retry \u{2014} this is a system error.", e)),
+        Ok(output) => ToolResult::error(command_failed("osascript", &output)),
+        Err(e) => ToolResult::error(spawn_failed("osascript", &e)),
     }
 }
 
+/// What the Windows `get` sees when cmdkey exits 0 with nothing on stdout.
+#[cfg(target_os = "windows")]
+const CMDKEY_NO_OUTPUT: &str = "(cmdkey exited 0 and printed nothing)";
+
+/// Run `cmd args` and return its stdout. `on_empty` is the text returned when
+/// the command exits 0 with nothing on stdout: it states what that silence
+/// means for this call (a stored empty secret, a completed store, no matches).
 #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
-async fn run_command(cmd: &str, args: &[&str]) -> ToolResult {
+async fn run_command(cmd: &str, args: &[&str], on_empty: &str) -> ToolResult {
     match tokio::process::Command::new(cmd).args(args).output().await {
         Ok(output) if output.status.success() => {
             let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
             ToolResult::ok(if text.is_empty() {
-                "OK".to_string()
+                on_empty.to_string()
             } else {
                 text
             })
         }
-        Ok(output) => {
-            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            ToolResult::error(format!(
-                "{}{}. Do not retry \u{2014} this is a system error.",
-                stdout,
-                if stderr.is_empty() {
-                    String::new()
-                } else {
-                    format!("\n{}", stderr)
-                }
-            ))
-        }
-        Err(e) => ToolResult::error(format!("Command '{}' failed: {}. Do not retry \u{2014} this is a system error.", cmd, e)),
+        Ok(output) => ToolResult::error(command_failed(cmd, &output)),
+        Err(e) => ToolResult::error(spawn_failed(cmd, &e)),
     }
+}
+
+/// Error text for a command that ran and exited non-zero: the exit code and
+/// the message the command printed, then what to do about it.
+#[cfg_attr(not(any(target_os = "macos", target_os = "linux", target_os = "windows")), allow(dead_code))]
+fn command_failed(cmd: &str, output: &std::process::Output) -> String {
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let message = if !stderr.is_empty() {
+        stderr
+    } else if !stdout.is_empty() {
+        stdout
+    } else {
+        "(no message)".to_string()
+    };
+    let code = output
+        .status
+        .code()
+        .map(|c| c.to_string())
+        .unwrap_or_else(|| "by signal".to_string());
+    format!(
+        "`{cmd}` exited {code}: {message}. Fix the arguments if the message names one; \
+         otherwise this is an environment error, do not retry."
+    )
+}
+
+/// Error text for a command that could not be started at all.
+#[cfg_attr(not(any(target_os = "macos", target_os = "linux", target_os = "windows")), allow(dead_code))]
+fn spawn_failed(cmd: &str, err: &std::io::Error) -> String {
+    format!("`{cmd}` could not be started: {err}. This is an environment error, do not retry.")
 }
 
 #[cfg(target_os = "windows")]
 #[allow(dead_code)]
 async fn run_powershell(script: &str) -> ToolResult {
-    run_command("powershell", &["-NoProfile", "-Command", script]).await
+    run_command(
+        "powershell",
+        &["-NoProfile", "-Command", script],
+        "(powershell exited 0 and printed nothing)",
+    )
+    .await
 }
 
 #[cfg(target_os = "linux")]
@@ -532,6 +595,23 @@ mod tests {
         assert!(tool.requires_approval());
         let schema = tool.schema();
         assert!(schema["properties"]["action"].is_object());
+    }
+
+    #[test]
+    fn command_failed_names_exit_code_and_message() {
+        let out = std::process::Command::new("sh")
+            .args(["-c", "echo bad args >&2; exit 3"])
+            .output()
+            .expect("sh runs");
+        let text = command_failed("security", &out);
+        assert!(text.starts_with("`security` exited 3: bad args."), "{text}");
+        assert!(text.contains("Fix the arguments if the message names one"), "{text}");
+
+        let silent = std::process::Command::new("sh")
+            .args(["-c", "exit 1"])
+            .output()
+            .expect("sh runs");
+        assert!(command_failed("cmdkey", &silent).contains("exited 1: (no message)."));
     }
 
     #[tokio::test]

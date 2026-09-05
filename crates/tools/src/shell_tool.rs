@@ -66,36 +66,54 @@ impl ShellTool {
     pub async fn execute(&self, ctx: &ToolContext, input: serde_json::Value) -> ToolResult {
         let mut si: ShellInput = match serde_json::from_value(input) {
             Ok(v) => v,
-            Err(e) => return ToolResult::error(format!("invalid input: {}", e)),
+            Err(e) => {
+                return ToolResult::error(format!(
+                    "invalid input: {e}. Shape: os(resource: \"shell\", action: \"exec\", command: \"...\") \
+                     with optional timeout (seconds), cwd, background: true"
+                ))
+            }
         };
 
-        // Default resource based on action or input fields
-        if si.resource.is_empty() {
-            si.resource = match si.action.as_str() {
-                "exec" => "bash".to_string(),
-                "poll" | "log" | "write" => "session".to_string(),
-                _ => {
-                    if si.pid > 0 {
-                        "process".to_string()
-                    } else if !si.session_id.is_empty() {
-                        "session".to_string()
-                    } else if !si.command.is_empty() {
-                        "bash".to_string()
-                    } else {
-                        String::new()
-                    }
-                }
-            };
+        // The os tool stamps resource "shell" on every call, and the model
+        // never sees the internal bash/process/session split, so "shell" and
+        // an empty resource both route by action and parameters. Until
+        // 2026-09-05 "shell" went straight to exec, and poll/log/kill through
+        // os answered "exec requires command": every background job was a
+        // dead end.
+        if si.resource.is_empty() || si.resource == "shell" {
+            si.resource = Self::route_for(&si).to_string();
         }
 
         match si.resource.as_str() {
-            "bash" | "shell" => self.handle_bash(&si, ctx.trusted_plugin_env, ctx.cwd.as_deref()).await,
+            "bash" => self.handle_bash(&si, ctx.trusted_plugin_env, ctx.cwd.as_deref()).await,
             "process" => self.handle_process(&si).await,
             "session" => self.handle_session(&si).await,
             other => ToolResult::error(format!(
-                "Unknown resource: {} (valid: bash, process, session)",
-                other
+                "Unknown shell action '{}'{}. Valid: exec, list, poll, log, write, kill, info",
+                si.action,
+                if other.is_empty() { String::new() } else { format!(" (resource '{other}')") }
             )),
+        }
+    }
+
+    /// The handler an action belongs to. `exec` runs a command; `poll`, `log`
+    /// and `write` manage a background session; `kill`, `info` and `list`
+    /// take a `pid` (system process) or a `session_id` (background session),
+    /// and a bare `list` is the session list (`filter` asks for processes).
+    /// Anything else routes by the parameter that is present, so an unknown
+    /// action still gets the error that names the right shape.
+    fn route_for(si: &ShellInput) -> &'static str {
+        match si.action.as_str() {
+            "exec" => "bash",
+            "poll" | "log" | "write" => "session",
+            "kill" | "info" if si.pid > 0 => "process",
+            "kill" | "info" => "session",
+            "list" if si.pid > 0 || !si.filter.is_empty() => "process",
+            "list" => "session",
+            _ if si.pid > 0 => "process",
+            _ if !si.session_id.is_empty() => "session",
+            _ if !si.command.is_empty() => "bash",
+            _ => "",
         }
     }
 
@@ -104,7 +122,7 @@ impl ShellTool {
             return ToolResult::error(errors::missing_param(
                 "exec",
                 "command",
-                "shell(action: \"exec\", command: \"ls -la\")",
+                "os(resource: \"shell\", action: \"exec\", command: \"ls -la\")",
             ));
         }
 
@@ -260,16 +278,19 @@ impl ShellTool {
         // plugin processes on a customer box (see PluginRuntime::run_capture);
         // a never-exiting command like `dns-sd -B` under the default timeout
         // leaked its process on every single invocation.
-        cmd.kill_on_drop(true);
-        let result =
-            tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), cmd.output()).await;
+        // The command's whole process group ends with the call (completion,
+        // timeout or a cancelled turn): a server it started would otherwise
+        // reparent to init and run forever. Servers belong in a background session.
+        let result = crate::process::output_within(cmd, std::time::Duration::from_secs(timeout_secs)).await;
 
         match result {
-            Err(_) => ToolResult { payload: None,
+            Ok(None) => ToolResult { payload: None,
                 content: format!(
                     "Command timed out after {}s: `{}`\n\
                      The command did not complete within the timeout. \
-                     Try a shorter operation, a more specific path, or increase the timeout parameter.",
+                     The process was killed and its partial output discarded. \
+                     Try a shorter operation, a more specific path, or increase the timeout parameter. \
+                     For a server or long job use background: true and poll with action: \"poll\".",
                     timeout_secs,
                     if input.command.len() > 80 {
                         format!("{}...", crate::truncate_str(&input.command, 80))
@@ -282,7 +303,7 @@ impl ShellTool {
                 http_status: None,
                 terminal: false,
             },
-            Ok(Err(e)) => {
+            Err(e) => {
                 let err_str = e.to_string();
                 if err_str.contains("No such file or directory") || err_str.contains("not found") {
                     let base_cmd = extract_base_command(&input.command);
@@ -293,7 +314,7 @@ impl ShellTool {
                     ToolResult::error(format!("Command failed to start: {}", e))
                 }
             }
-            Ok(Ok(output)) => {
+            Ok(Some(output)) => {
                 if input.raw {
                     if !output.status.success() {
                         return ToolResult::error(format!(
@@ -337,7 +358,7 @@ impl ShellTool {
                     }
                     if is_error {
                         return ToolResult { payload: None,
-                            content: format!("Command exited with code {}\n{}", code, result),
+                            content: format!("{}\n{}", exit_header(&output.status), result),
                             is_error: true,
                             image_url: None,
                             http_status: None,
@@ -348,7 +369,7 @@ impl ShellTool {
                 }
 
                 if result.is_empty() {
-                    result = "(no output)".to_string();
+                    result = "(exit 0, no output)".to_string();
                 }
 
                 // Truncate very long output (char-boundary safe)
@@ -370,17 +391,17 @@ impl ShellTool {
 
                     if persisted {
                         result.push_str(&format!(
-                            "\n\n--- Full output ({} chars, {} lines) saved to: {}\n\
+                            "\n\n--- Showing the first 50,000 of {} bytes ({} lines). Full output (stdout, then STDERR section) saved to: {}\n\
                              Read sections with: os(resource: \"file\", action: \"read\", path: \"{}\", offset: N, limit: M)",
                             total_len, total_lines,
                             output_path.display(), output_path.display(),
                         ));
                     } else {
-                        let removed_kb = (total_len - crate::MAX_SUBPROCESS_OUTPUT) / 1024;
+                        let removed = total_len - crate::MAX_SUBPROCESS_OUTPUT;
                         result.push_str(&format!(
-                            "\n... [output truncated — showing first 50000 of {} chars, {}KB removed. \
+                            "\n... [output truncated: showing the first 50,000 of {} bytes; {} bytes not shown. \
                              Use grep to search for specific content, or pipe through head/tail.]",
-                            total_len, removed_kb
+                            total_len, removed
                         ));
                     }
                 }
@@ -455,12 +476,18 @@ impl ShellTool {
                             result.push_str(&output);
                         }
                     } else {
-                        result.push_str("\nProcess running in background. Use shell tool with session resource to manage.\n");
+                        result.push('\n');
+                        result.push_str(&session_next_steps(&sess.id));
+                        result.push('\n');
                     }
 
                     ToolResult::ok(result)
                 } else {
-                    ToolResult::ok(format!("Background session started: {}", session_id))
+                    ToolResult::ok(format!(
+                        "Background session started: {}\n{}",
+                        session_id,
+                        session_next_steps(&session_id)
+                    ))
                 }
             }
             Err(e) => ToolResult::error(format!("Failed to start background process: {}", e)),
@@ -483,7 +510,7 @@ impl ShellTool {
                 self.process_info(input.pid as u32).await
             }
             other => ToolResult::error(format!(
-                "Unknown action for process: {} (valid: list, kill, info)",
+                "Unknown shell action '{}' for a PID-based call. Valid: list, kill, info",
                 other
             )),
         }
@@ -514,26 +541,30 @@ impl ShellTool {
                 }
 
                 let filter_lower = filter.to_lowercase();
-                let mut count = 0;
+                const SHOWN: usize = 50;
+                // Count every match first so the cut can say "50 of N".
+                let matching: Vec<&str> = lines
+                    .iter()
+                    .skip(1)
+                    .copied()
+                    .filter(|line| !line.is_empty())
+                    .filter(|line| filter.is_empty() || line.to_lowercase().contains(&filter_lower))
+                    .collect();
 
-                for line in lines.iter().skip(1) {
-                    if line.is_empty() {
-                        continue;
-                    }
-                    if !filter.is_empty() && !line.to_lowercase().contains(&filter_lower) {
-                        continue;
-                    }
-                    result.push_str(line);
-                    result.push('\n');
-                    count += 1;
-                    if count >= 50 {
-                        result.push_str("\n... (showing first 50 matching processes)");
-                        break;
-                    }
+                if matching.is_empty() && !filter.is_empty() {
+                    return ToolResult::ok(format!("No processes found matching: {}", filter));
                 }
 
-                if count == 0 && !filter.is_empty() {
-                    return ToolResult::ok(format!("No processes found matching: {}", filter));
+                for line in matching.iter().take(SHOWN) {
+                    result.push_str(line);
+                    result.push('\n');
+                }
+                if matching.len() > SHOWN {
+                    result.push_str(&format!(
+                        "\n... showing {} of {} matching processes; pass filter: \"<name>\" to narrow",
+                        SHOWN,
+                        matching.len()
+                    ));
                 }
 
                 ToolResult::ok(result)
@@ -556,9 +587,10 @@ impl ShellTool {
                 .output();
 
             match result {
-                Ok(output) if output.status.success() => {
-                    ToolResult::ok(format!("Sent SIG{} to process {}", sig, pid))
-                }
+                Ok(output) if output.status.success() => ToolResult::ok(format!(
+                    "Sent SIG{} to PID {}. Confirm it exited with action: \"info\", pid: {}",
+                    sig, pid, pid
+                )),
                 Ok(output) => {
                     let stderr = String::from_utf8_lossy(&output.stderr);
                     ToolResult::error(format!("Error killing process {}: {}", pid, stderr.trim()))
@@ -618,7 +650,14 @@ impl ShellTool {
                     let text = String::from_utf8_lossy(&o.stdout);
                     ToolResult::ok(format!("Process Information (PID: {})\n{}", pid, text))
                 }
-                _ => ToolResult::error(format!("Process {} not found", pid)),
+                // ps exits non-zero both for "no such PID" and for a field it
+                // does not know; its own message says which.
+                Ok(o) => ToolResult::error(format!(
+                    "ps could not report PID {}: {}",
+                    pid,
+                    ps_failure_detail(&o)
+                )),
+                Err(e) => ToolResult::error(format!("ps could not report PID {}: {}", pid, e)),
             }
         }
 
@@ -634,42 +673,55 @@ impl ShellTool {
                     let text = String::from_utf8_lossy(&o.stdout);
                     ToolResult::ok(format!("Process Information (PID: {})\n{}", pid, text))
                 }
-                _ => ToolResult::error(format!("Process {} not found", pid)),
+                Ok(o) => ToolResult::error(format!(
+                    "tasklist could not report PID {}: {}",
+                    pid,
+                    ps_failure_detail(&o)
+                )),
+                Err(e) => ToolResult::error(format!("tasklist could not report PID {}: {}", pid, e)),
             }
         }
     }
 
     async fn handle_session(&self, input: &ShellInput) -> ToolResult {
-        match input.action.as_str() {
+        let action = input.action.as_str();
+        if matches!(action, "poll" | "log" | "write" | "kill" | "info") && input.session_id.is_empty() {
+            return ToolResult::error(format!(
+                "session_id is required: os(resource: \"shell\", action: \"{action}\", \
+                 session_id: \"<id from the background start>\"){}",
+                match action {
+                    "write" => ", plus data: \"<text to send to stdin>\"",
+                    "kill" | "info" => "; for a system process pass pid: <number> instead",
+                    _ => "",
+                }
+            ));
+        }
+        match action {
             "list" => self.list_sessions().await,
-            "poll" => {
-                if input.session_id.is_empty() {
-                    return ToolResult::error("Error: session_id is required");
-                }
-                self.poll_session(&input.session_id).await
-            }
-            "log" => {
-                if input.session_id.is_empty() {
-                    return ToolResult::error("Error: session_id is required");
-                }
-                self.get_session_log(&input.session_id).await
-            }
-            "write" => {
-                if input.session_id.is_empty() {
-                    return ToolResult::error("Error: session_id is required");
-                }
-                self.write_to_session(&input.session_id, &input.data).await
-            }
-            "kill" => {
-                if input.session_id.is_empty() {
-                    return ToolResult::error("Error: session_id is required");
-                }
-                self.kill_session(&input.session_id).await
-            }
+            "poll" => self.poll_session(&input.session_id).await,
+            "log" => self.get_session_log(&input.session_id).await,
+            "write" => self.write_to_session(&input.session_id, &input.data).await,
+            "kill" => self.kill_session(&input.session_id).await,
+            "info" => self.session_info(&input.session_id).await,
             other => ToolResult::error(format!(
-                "Unknown action for session: {} (valid: list, poll, log, write, kill)",
+                "Unknown shell action '{}' for a session_id-based call. Valid: list, poll, log, write, kill, info",
                 other
             )),
+        }
+    }
+
+    /// Status of a background session without draining its pending output
+    /// (`poll` drains; `info` only reports).
+    async fn session_info(&self, session_id: &str) -> ToolResult {
+        match self.registry.get_any_session(session_id).await {
+            Some(sess) => ToolResult::ok(format!(
+                "Session: {} (PID {})\n{}\nCommand: `{}`",
+                sess.id,
+                sess.pid,
+                session_status(sess.exited, sess.exit_code),
+                sess.command
+            )),
+            None => ToolResult::error(format!("Session not found: {}", session_id)),
         }
     }
 
@@ -726,17 +778,12 @@ impl ShellTool {
             None => return ToolResult::error(format!("Session not found: {}", session_id)),
         };
 
-        let mut result = format!("Session: {} (PID {})\n", sess.id, sess.pid);
-
-        if sess.exited {
-            let exit_code = sess
-                .exit_code
-                .map(|c| c.to_string())
-                .unwrap_or_else(|| "?".to_string());
-            result.push_str(&format!("Status: Exited (code {})\n", exit_code));
-        } else {
-            result.push_str("Status: Running\n");
-        }
+        let mut result = format!(
+            "Session: {} (PID {})\n{}\n",
+            sess.id,
+            sess.pid,
+            session_status(sess.exited, sess.exit_code)
+        );
 
         let (stdout, stderr) = sess.drain_pending().await;
         if !stdout.is_empty() || !stderr.is_empty() {
@@ -762,7 +809,20 @@ impl ShellTool {
             Some(sess) => {
                 let output = sess.get_output().await;
                 if output.is_empty() {
-                    ToolResult::ok("(no output)")
+                    // An empty log means different things for a live process
+                    // and a finished one; say which.
+                    if sess.exited {
+                        let code = sess
+                            .exit_code
+                            .map(|c| c.to_string())
+                            .unwrap_or_else(|| "unknown".to_string());
+                        ToolResult::ok(format!("(no output; exited with code {})", code))
+                    } else {
+                        ToolResult::ok(format!(
+                            "(no output yet; still running, PID {})",
+                            sess.pid
+                        ))
+                    }
                 } else {
                     ToolResult::ok(output)
                 }
@@ -790,8 +850,80 @@ impl ShellTool {
     }
 }
 
+/// The one status line for a background session, shared by poll and info.
+fn session_status(exited: bool, exit_code: Option<i32>) -> String {
+    if exited {
+        let code = exit_code.map(|c| c.to_string()).unwrap_or_else(|| "?".to_string());
+        format!("Status: Exited (code {code})")
+    } else {
+        "Status: Running".to_string()
+    }
+}
+
+/// The three calls that manage a background session, spelled out so the
+/// model does not have to guess the resource/action pair.
+fn session_next_steps(session_id: &str) -> String {
+    format!(
+        "Running. Poll: os(resource: \"shell\", action: \"poll\", session_id: \"{session_id}\"); \
+         full log: action \"log\"; stop: action \"kill\"."
+    )
+}
+
+/// What a failed `ps`/`tasklist` said, for the PID-lookup error: stderr,
+/// else stdout, else the exit code.
+fn ps_failure_detail(o: &std::process::Output) -> String {
+    let stderr = String::from_utf8_lossy(&o.stderr).trim().to_string();
+    if !stderr.is_empty() {
+        return stderr;
+    }
+    let stdout = String::from_utf8_lossy(&o.stdout).trim().to_string();
+    if !stdout.is_empty() {
+        return stdout;
+    }
+    match o.status.code() {
+        Some(c) => format!("exit code {c} with no output (no such PID)"),
+        None => "ended without an exit code".to_string(),
+    }
+}
+
 /// Extract the base command name from a (possibly piped) command string.
 /// Uses the LAST segment in a pipeline, since that determines the exit code.
+/// The program the shell reported missing, read from its own message:
+/// `sh: foo: command not found`, `zsh: command not found: foo`,
+/// `'foo' is not recognized as an internal or external command`.
+fn missing_command_name(output: &str) -> Option<String> {
+    for line in output.lines() {
+        let l = line.trim();
+        if let Some(rest) = l.strip_suffix("command not found") {
+            // "sh: foo: command not found" -> the token before the last ": "
+            let head = rest.trim_end().trim_end_matches(':').trim_end();
+            let name = head.rsplit(':').next()?.trim();
+            if !name.is_empty() {
+                return Some(name.to_string());
+            }
+        }
+        if let Some(rest) = l.split("command not found:").nth(1) {
+            let name = rest.trim();
+            if !name.is_empty() {
+                return Some(name.to_string());
+            }
+        }
+        if let Some(idx) = l.find(" is not recognized as") {
+            let name = l[..idx].trim().trim_matches(|c| c == '\'' || c == '"');
+            if !name.is_empty() {
+                return Some(name.to_string());
+            }
+        }
+        if let Some(rest) = l.strip_suffix(": not found") {
+            let name = rest.rsplit(':').next()?.trim();
+            if !name.is_empty() {
+                return Some(name.to_string());
+            }
+        }
+    }
+    None
+}
+
 fn extract_base_command(command: &str) -> String {
     let last_segment = command.rsplit('|').next().unwrap_or(command);
     last_segment
@@ -882,19 +1014,33 @@ fn interpret_exit_code(command: &str, exit_code: i32, output: &str) -> (bool, Op
                 || lo.contains("not recognized as")
                 || lo.contains(&format!("{}: not found", base))
             {
-                Some(format!(
-                    "The command '{}' is not available on this system. Tell the user it isn't \
-                     installed — do not substitute another command or install it without asking.",
-                    base
-                ))
+                // Name the program the shell named, not the last one in the
+                // pipeline: for `foo | grep x` with foo missing, the old text told
+                // the user grep was not installed.
+                Some(match missing_command_name(output) {
+                    Some(name) => format!(
+                        "The command '{}' is not available on this system. Tell the user it isn't \
+                         installed — do not substitute another command or install it without asking.",
+                        name
+                    ),
+                    None => "A command in this pipeline is not installed (the shell's message above names it). Tell the user; do not substitute another command.".to_string(),
+                })
             } else if lo.contains("no such file")
                 || lo.contains("unable to open")
                 || lo.contains("cannot open")
                 || lo.contains("does not exist")
             {
+                // "does not exist" fires for a missing branch, table, or
+                // route as readily as for a file; the stderr line above is
+                // the fact, this only points at it. A benchmark run once
+                // read the old "verify with the user" wording as "do not
+                // look", and burned five commands guessing at a path that
+                // one glob found.
                 Some(
-                    "An input the command needs was not found. Verify the exact path or ask the \
-                     user for it — do not search the filesystem for a substitute."
+                    "stderr reports something missing; read the message above before acting. \
+                     If it names a file, the working directory may be wrong or the file may \
+                     live elsewhere: one glob for its name settles that. Do not substitute a \
+                     different file or name; if none matches, say so."
                         .to_string(),
                 )
             } else {
@@ -907,6 +1053,16 @@ fn interpret_exit_code(command: &str, exit_code: i32, output: &str) -> (bool, Op
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_missing_command_is_the_one_the_shell_named_not_the_last_in_the_pipe() {
+        use super::missing_command_name;
+        assert_eq!(missing_command_name("sh: foo: command not found\n").as_deref(), Some("foo"));
+        assert_eq!(missing_command_name("zsh: command not found: foo").as_deref(), Some("foo"));
+        assert_eq!(missing_command_name("/bin/sh: 1: foo: not found").as_deref(), Some("foo"));
+        assert_eq!(missing_command_name("'foo' is not recognized as an internal or external command").as_deref(), Some("foo"));
+        assert_eq!(missing_command_name("grep: x: No such file"), None);
+    }
+
     use super::*;
     use crate::origin::Origin;
     use serde_json::json;
@@ -999,6 +1155,53 @@ mod tests {
             .await;
         assert!(!res.is_error, "plain echo failed: {}", res.content);
         assert!(res.content.contains("nebo-ok"));
+    }
+
+    // An empty result names the exit code instead of a bare "(no output)",
+    // and an unroutable call names the valid actions and the call shape.
+    #[tokio::test]
+    async fn empty_output_and_unknown_actions_are_stated_in_full() {
+        let t = tool();
+        let r = t.execute(&ctx(), json!({"action": "exec", "command": "true"})).await;
+        assert!(!r.is_error, "{}", r.content);
+        assert_eq!(r.content, "(exit 0, no output)");
+
+        let r = t.execute(&ctx(), json!({"action": "frobnicate"})).await;
+        assert!(r.is_error);
+        assert!(r.content.contains("Unknown shell action 'frobnicate'"), "{}", r.content);
+        assert!(r.content.contains("Valid: exec, list, poll, log, write, kill, info"), "{}", r.content);
+
+        let r = t.execute(&ctx(), json!({"action": "poll"})).await;
+        assert!(r.is_error);
+        assert!(r.content.contains("session_id: \"<id from the background start>\""), "{}", r.content);
+
+        let r = t.execute(&ctx(), json!({"action": "frobnicate", "pid": 1})).await;
+        assert!(r.content.contains("for a PID-based call. Valid: list, kill, info"), "{}", r.content);
+    }
+
+    // The background start names the poll call; an empty session log says
+    // whether the process is still running or how it exited.
+    #[tokio::test]
+    async fn background_start_names_the_poll_call_and_the_log_states_liveness() {
+        let t = tool();
+        let r = t
+            .execute(&ctx(), json!({"action": "exec", "command": "sleep 2", "background": true}))
+            .await;
+        assert!(!r.is_error, "{}", r.content);
+        assert!(
+            r.content.contains("Poll: os(resource: \"shell\", action: \"poll\", session_id: \""),
+            "{}",
+            r.content
+        );
+        let id = r
+            .content
+            .split("**")
+            .nth(1)
+            .expect("session id between ** markers")
+            .to_string();
+        let log = t.execute(&ctx(), json!({"action": "log", "session_id": id})).await;
+        assert!(log.content.starts_with("(no output yet; still running, PID "), "{}", log.content);
+        let _ = t.execute(&ctx(), json!({"action": "kill", "session_id": id})).await;
     }
 }
 

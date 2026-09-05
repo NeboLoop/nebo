@@ -12,8 +12,9 @@ pub mod channel_bridge;
 pub mod code_tool;
 pub mod coworker;
 
-/// Cap on raw subprocess/tool output surfaced into context (chars). ONE
-/// definition — shell and plugin execution truncate identically.
+/// Cap on raw subprocess/tool output surfaced into context, in bytes (the
+/// truncation is byte-based, not character-based). ONE definition: shell and
+/// plugin execution truncate identically.
 pub(crate) const MAX_SUBPROCESS_OUTPUT: usize = 50000;
 pub mod deep_research;
 pub mod desktop_daemon;
@@ -143,13 +144,13 @@ pub use workflows::{WorkTool, WorkflowInfo, WorkflowManager, WorkflowRunInfo};
 /// Build a NeboAI API client from a Store (for tool install actions).
 pub(crate) fn build_neboai_api(store: &db::Store) -> Result<comm::api::NeboAIApi, String> {
     let bot_id = config::read_bot_id()
-        .ok_or_else(|| "no bot_id configured — connect to NeboAI first".to_string())?;
+        .ok_or_else(|| "This Nebo is not paired with NeboAI (no bot_id configured). Ask the owner to pair it in Settings > NeboAI.".to_string())?;
     let profiles = store
         .list_active_auth_profiles_by_provider("neboai")
         .map_err(|e| format!("failed to query auth profiles: {}", e))?;
     let profile = profiles
         .first()
-        .ok_or_else(|| "not connected to NeboAI — redeem a NEBO code first".to_string())?;
+        .ok_or_else(|| "This Nebo is not paired with NeboAI (no active neboai auth profile). Ask the owner to pair it in Settings > NeboAI.".to_string())?;
     let cfg = config::Config::default();
     Ok(comm::api::NeboAIApi::new(
         cfg.neboai.api_url,
@@ -849,3 +850,10 @@ mod staged_install_tests {
 fn generate_minimal_agent_md(name: &str, description: &str) -> String {
     frontmatter_md(name, description)
 }
+
+/// Tests that set `NEBO_HOME` share the process environment; every one of
+/// them takes this lock, whatever module it lives in. Two module-local locks
+/// (checkpoint, file_tool) let their tests race each other and fail one run
+/// in five.
+#[cfg(test)]
+pub(crate) static TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());

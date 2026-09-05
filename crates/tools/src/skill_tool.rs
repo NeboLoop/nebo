@@ -64,7 +64,7 @@ impl SkillTool {
         target_hash: &str,
     ) -> ToolResult {
         let Some(store) = self.store.as_ref() else {
-            return ToolResult::error("Staging unavailable: no store configured.");
+            return ToolResult::error("Staging unavailable: the database is not initialized. Tell the user to restart Nebo.");
         };
         let pending_id = uuid::Uuid::new_v4().to_string();
         if let Err(e) = store.create_pending_write(
@@ -137,6 +137,14 @@ impl SkillTool {
         exact.or(substring)
     }
 
+    /// The ONE "no such skill" line: names the two calls that resolve it.
+    fn not_found(name: &str) -> String {
+        format!(
+            "Skill '{}' not found. skill(action: \"list\") shows installed names; skill(action: \"discover\", query: ...) searches.",
+            name
+        )
+    }
+
     fn user_skills_dir() -> Result<std::path::PathBuf, String> {
         config::user_dir()
             .map(|d| d.join("skills"))
@@ -154,7 +162,7 @@ impl SkillTool {
             || name.contains('\\')
         {
             return Err(format!(
-                "Invalid skill name '{}': names cannot contain path separators, '.', or '..'",
+                "Invalid skill name '{}': names cannot be '.' and cannot contain '..', '/' or '\\'",
                 name
             ));
         }
@@ -203,15 +211,14 @@ impl DynTool for SkillTool {
          Channels are PLUGINS, not skills — route channel I/O through the `plugin` tool with the channel name as `resource`. \
          `skill discover` will not find any channel by name; `skill help` will not return a channel's commands.\n\n\
          Before replying to any request, scan your available skills:\n\
-         1. If a skill clearly applies → load it with skill(name: \"...\") to get detailed instructions, then follow them\n\
+         1. If a skill clearly applies → load it with skill(action: \"load\", name: \"...\") to get detailed instructions, then follow them\n\
          2. If multiple skills could apply → choose the most specific one\n\
          3. If no skill applies → proceed with your built-in tools\n\n\
          - skill(action: \"list\") — Browse all available skills and apps\n\
-         - skill(action: \"help\", name: \"calendar\") — Show full content of a skill\n\
-         - skill(name: \"calendar\", resource: \"events\", action: \"list\") — Execute a skill action directly\n\
+         - skill(action: \"help\", name: \"calendar\") — Metadata preview of a skill (description, triggers, resources); load gives the full instructions\n\
          - skill(action: \"browse\", name: \"xlsx-processor\") — List resource files in a skill's directory\n\
          - skill(action: \"read_resource\", name: \"xlsx-processor\", path: \"scripts/recalc.py\") — Read a resource file\n\
-         - skill(action: \"load\", name: \"coding-assistant\") — Activate for current session\n\
+         - skill(action: \"load\", name: \"coding-assistant\") — Activate for current session (skill(name: \"...\") with no action is the same load)\n\
          - skill(action: \"install\", code: \"SKIL-XXXX-XXXX\") — Install from marketplace\n\
          - skill(action: \"configure\", name: \"brave-search\", key: \"BRAVE_API_KEY\", value: \"...\") — Set a secret\n\
          - skill(action: \"discover\", query: \"email management\") — Search for skills matching a description\n\
@@ -291,6 +298,16 @@ impl DynTool for SkillTool {
         input: serde_json::Value,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send + 'a>> {
         Box::pin(async move {
+            // skill(name: "x") with no action is a load: the shorthand the
+            // skill strap taught, made into the load call before dispatch so
+            // there is one load path.
+            let mut input = input;
+            if input.get("action").and_then(|v| v.as_str()).is_none_or(str::is_empty)
+                && input.get("name").and_then(|v| v.as_str()).is_some_and(|n| !n.is_empty())
+                && let Some(obj) = input.as_object_mut()
+            {
+                obj.insert("action".into(), serde_json::Value::String("load".into()));
+            }
             let domain_input: DomainInput = match serde_json::from_value(input.clone()) {
                 Ok(v) => v,
                 Err(e) => return ToolResult::error(format!("Failed to parse input: {}. Do not retry — this is a schema error.", e)),
@@ -329,23 +346,31 @@ impl DynTool for SkillTool {
                             .filter(|s| s.enabled)
                             .take(MAX_CATALOG_ENTRIES)
                             .map(|s| {
-                                let mut desc = s.description.clone();
-                                if desc.len() > MAX_DESC_CHARS {
-                                    desc.truncate(MAX_DESC_CHARS);
-                                    desc.push_str("...");
-                                }
+                                // Char-boundary safe: String::truncate panics
+                                // mid-codepoint on a multi-byte description.
+                                let desc = if s.description.len() > MAX_DESC_CHARS {
+                                    format!("{}...", crate::truncate_str(&s.description, MAX_DESC_CHARS))
+                                } else {
+                                    s.description.clone()
+                                };
                                 format!("- **{}** — {}", s.name, desc)
                             })
                             .collect();
                         let shown = lines.len();
                         let mut result = format!("{} skills ({} enabled):\n{}", total, enabled, lines.join("\n"));
+                        if enabled == 0 {
+                            result.push_str(&format!(
+                                "All {} are disabled. Enable one with skill(action: \"load\", name: ...).",
+                                total
+                            ));
+                        }
                         if enabled > shown {
                             result.push_str(&format!(
                                 "\n\n... and {} more. Use skill(action: \"discover\", query: \"...\") to search.",
                                 enabled - shown
                             ));
                         }
-                        result.push_str("\n\nTo use a skill: skill(action: \"load\", name: \"<name>\") to load its full instructions, then follow them inline. (help = a short metadata preview; load = the actual instructions.)");
+                        result.push_str("\n\nTo use a skill: skill(action: \"load\", name: \"<name>\") to load its full instructions, then follow them inline. (help = metadata preview; load = full instructions.)");
                         ToolResult::ok(result)
                     }
                 }
@@ -366,20 +391,34 @@ impl DynTool for SkillTool {
                         // meant to call the plugin tool. Redirect rather
                         // than returning a dead "no skills match."
                         if let Some(slug) = self.match_plugin_slug(query) {
+                            // "slack" IS the plugin; "send the weekly report to
+                            // slack" merely contains its slug. Only the first
+                            // shape gets the flat "is a plugin" verdict.
+                            let q = query.trim();
+                            let is_the_slug = q.eq_ignore_ascii_case(&slug)
+                                || !q.contains(char::is_whitespace);
+                            if is_the_slug {
+                                return ToolResult::ok(format!(
+                                    "`{}` is a plugin, not a skill. Skills are local capability bundles; plugins are managed binaries. \
+                                     USE: plugin(resource: \"{}\", action: \"exec\", command: \"help\") to see its commands, \
+                                     then call plugin(resource: \"{}\", command: \"<subcommand> ...\") to use it. \
+                                     For channel messaging (upload/post/dm/reply), the bridge fills channel and thread from context; you only need the operation and its arguments.",
+                                    slug, slug, slug
+                                ));
+                            }
                             return ToolResult::ok(format!(
-                                "`{}` is a plugin, not a skill. Skills are local capability bundles; plugins are managed binaries. \
-                                 USE: plugin(resource: \"{}\", action: \"exec\", command: \"help\") to see its commands, \
-                                 then call plugin(resource: \"{}\", command: \"<subcommand> ...\") to use it. \
-                                 For channel messaging (upload/post/dm/reply), the bridge fills channel and thread from context — you only need the operation and its arguments.",
-                                slug, slug, slug
+                                "No installed skill matches \"{}\". The installed plugin `{}` matches part of that query; \
+                                 if that is what you need, plugin(resource: \"{}\", action: \"exec\", command: \"help\") lists its commands. \
+                                 Otherwise proceed with your built-in tools (os, web, code).",
+                                query, slug, slug
                             ));
                         }
                         {
-                        ToolResult::error(format!(
-                            "No skills or plugins found for \"{}\". \
-                             This capability is not available. \
-                             Report this to the user and suggest they install a skill from the marketplace. \
-                             Do NOT attempt to perform the task through the browser or shell — it will not work.",
+                        // A keyword miss over installed skills is not a verdict on
+                        // the capability: the built-in tools handle most jobs with no
+                        // skill at all. The old text made models abandon those.
+                        ToolResult::ok(format!(
+                            "No installed skill or plugin matches \"{}\". That only means no skill is installed for it; proceed with your built-in tools (os, web, code). If a marketplace skill would help, tell the user.",
                             query
                         ))
                     }
@@ -498,7 +537,7 @@ impl DynTool for SkillTool {
                                         slug, slug, slug
                                     ));
                                 }
-                                return ToolResult::error(format!("Skill '{}' not found", name));
+                                return ToolResult::error(Self::not_found(name));
                             };
                             match std::fs::read_to_string(&path) {
                                 Ok(content) => {
@@ -589,7 +628,7 @@ impl DynTool for SkillTool {
                             }
                             Err(e) => ToolResult::error(format!("Failed to list resources: {}. Do not retry — this is a filesystem error.", e)),
                         },
-                        None => ToolResult::error(format!("Skill '{}' not found", name)),
+                        None => ToolResult::error(Self::not_found(name)),
                     }
                 }
                 "read_resource" => {
@@ -613,7 +652,7 @@ impl DynTool for SkillTool {
                             },
                             Err(e) => ToolResult::error(e),
                         },
-                        None => ToolResult::error(format!("Skill '{}' not found", name)),
+                        None => ToolResult::error(Self::not_found(name)),
                     }
                 }
                 "load" => {
@@ -671,17 +710,19 @@ impl DynTool for SkillTool {
                             skill_dir.join("SKILL.md.disabled"),
                             skill_dir.join("SKILL.md"),
                         ) {
-                            Ok(_) => ToolResult::ok(format!(
-                                "Enabled skill '{}'. It will be available on your next message.",
-                                name
-                            )),
+                            Ok(_) => {
+                                // Make it live now, so the load that follows
+                                // finds it instead of waiting for the watcher.
+                                self.loader.reload_from_disk().await;
+                                ToolResult::ok(format!(
+                                    "Enabled skill '{}'. Load it now with skill(action: \"load\", name: \"{}\").",
+                                    name, name
+                                ))
+                            }
                             Err(e) => ToolResult::error(format!("Failed to enable skill: {}. Do not retry — this is a filesystem error.", e)),
                         }
                     } else {
-                        ToolResult::error(format!(
-                            "Skill '{}' not found. Use skill(action: \"list\") to list available skills.",
-                            name
-                        ))
+                        ToolResult::error(Self::not_found(name))
                     }
                 }
                 "unload" => {
@@ -709,7 +750,7 @@ impl DynTool for SkillTool {
                             Err(e) => ToolResult::error(format!("Failed to disable skill: {}. Do not retry — this is a filesystem error.", e)),
                         }
                     } else {
-                        ToolResult::error(format!("Skill '{}' not found.", name))
+                        ToolResult::error(Self::not_found(name))
                     }
                 }
                 "create" => {
@@ -732,8 +773,9 @@ impl DynTool for SkillTool {
                         Some(owner) => {
                             if let Some(existing) = self.loader.get(name, Some(owner)).await {
                                 return ToolResult::error(format!(
-                                    "Skill '{}' already exists ({:?}). Load it and use skill(action: \"update\") to extend it instead of creating a duplicate.",
-                                    name, existing.source
+                                    "Skill '{}' already exists (source: {}). Load it and use skill(action: \"update\") to extend it instead of creating a duplicate.",
+                                    name,
+                                    source_words(&existing.source)
                                 ));
                             }
                             match self.learned_skill_dir(owner, name) {
@@ -773,10 +815,20 @@ impl DynTool for SkillTool {
                         }
                     }
 
+                    let path = skill_dir.join("SKILL.md");
+                    // Never overwrite silently: a second create with the same
+                    // name replaced the owner's skill and reported "Created".
+                    if path.exists() {
+                        return ToolResult::error(format!(
+                            "Skill '{}' already exists at {}. Use skill(action: \"update\", name: \"{}\", content: ...) to change it, or pick another name.",
+                            name,
+                            path.display(),
+                            name
+                        ));
+                    }
                     if let Err(e) = std::fs::create_dir_all(&skill_dir) {
                         return ToolResult::error(format!("Failed to create skill dir: {}. Do not retry — this is a filesystem error.", e));
                     }
-                    let path = skill_dir.join("SKILL.md");
                     match std::fs::write(&path, final_content) {
                         Ok(_) => {
                             // Make the skill (and its triggers) live NOW — the fs
@@ -918,7 +970,7 @@ impl DynTool for SkillTool {
                     };
                     let skill_md = skill_dir.join("SKILL.md");
                     if !skill_md.exists() {
-                        return ToolResult::error(format!("Skill '{}' not found", name));
+                        return ToolResult::error(Self::not_found(name));
                     }
                     match std::fs::write(&skill_md, content) {
                         Ok(_) => ToolResult::ok(format!("Updated skill '{}'", name)),
@@ -1002,10 +1054,15 @@ impl DynTool for SkillTool {
                         Ok(d) => d,
                         Err(e) => return ToolResult::error(e),
                     };
-                    if skill_dir.is_dir() {
-                        if let Err(e) = std::fs::remove_dir_all(&skill_dir) {
-                            tracing::warn!(skill = %name, error = %e, "failed to remove skill directory");
-                        }
+                    if !skill_dir.is_dir() {
+                        return ToolResult::error(format!(
+                            "Skill '{}' not found; nothing deleted. skill(action: \"list\") shows installed names.",
+                            name
+                        ));
+                    }
+                    if let Err(e) = std::fs::remove_dir_all(&skill_dir) {
+                        tracing::warn!(skill = %name, error = %e, "failed to remove skill directory");
+                        return ToolResult::error(format!("Failed to delete skill '{}': {}", name, e));
                     }
 
                     ToolResult::ok(format!("Deleted skill '{}'", name))
@@ -1074,7 +1131,7 @@ impl DynTool for SkillTool {
                     // Show declared secrets and their configuration status
                     let skill = match self.loader.get(name, agent).await {
                         Some(s) => s,
-                        None => return ToolResult::error(format!("Skill '{}' not found", name)),
+                        None => return ToolResult::error(Self::not_found(name)),
                     };
 
                     let declarations = skill.secrets();
@@ -1140,9 +1197,18 @@ impl DynTool for SkillTool {
                     // No direct API bypass.
                     let installer = self.code_installer.read().unwrap().clone();
                     match installer {
-                        Some(installer) => ToolResult::ok(installer.install(code).await),
+                        Some(installer) => {
+                            let msg = installer.install(code).await;
+                            // The installer trait returns one string for both
+                            // outcomes; a failure must not arrive as success.
+                            if install_failed(&msg) {
+                                ToolResult::error(msg)
+                            } else {
+                                ToolResult::ok(msg)
+                            }
+                        }
                         None => ToolResult::error(
-                            "install requires the running app (no installer configured).",
+                            "Installing from a code is not available in this context. Tell the user to install it from the Nebo app.",
                         ),
                     }
                 }
@@ -1204,7 +1270,7 @@ impl DynTool for SkillTool {
                                 lines.join("\n")
                             ))
                         }
-                        Err(e) => ToolResult::error(format!("failed to fetch reviews: {}. Do not retry — this is an API error.", e)),
+                        Err(e) => ToolResult::error(format!("failed to fetch reviews: {}. Tell the user; do not retry in this turn.", e)),
                     }
                 }
                 "rate" => {
@@ -1219,11 +1285,17 @@ impl DynTool for SkillTool {
                             "skill(action: \"rate\", name: \"calendar\", rating: 5, review: \"Great skill\")",
                         ));
                     }
-                    if !(1..=5).contains(&rating) {
+                    if input["rating"].is_null() {
                         return ToolResult::error(errors::missing_param(
                             "rate",
                             "rating",
-                            "skill(action: \"rate\", name: \"calendar\", rating: 5, review: \"Great skill\") — rating must be 1-5",
+                            "skill(action: \"rate\", name: \"calendar\", rating: 5, review: \"Great skill\")",
+                        ));
+                    }
+                    if !(1..=5).contains(&rating) {
+                        return ToolResult::error(format!(
+                            "rating must be an integer 1-5 (got {})",
+                            input["rating"]
                         ));
                     }
                     let store = match &self.store {
@@ -1247,11 +1319,11 @@ impl DynTool for SkillTool {
                             "Posted {}★ review on skill '{}'.",
                             rating, name
                         )),
-                        Err(e) => ToolResult::error(format!("failed to post review: {}. Do not retry — this is an API error.", e)),
+                        Err(e) => ToolResult::error(format!("failed to post review: {}. Tell the user; do not retry in this turn.", e)),
                     }
                 }
                 other => ToolResult::error(format!(
-                    "Unknown action: {}. Available: list, discover, help, browse, read_resource, load, unload, create, update, delete, install, configure, secrets, reviews, rate",
+                    "Unknown action: {}. Available: list, catalog, discover, help, browse, read_resource, load, unload, create, update, delete, install, configure, secrets, reviews, rate",
                     other
                 )),
             }
@@ -1259,9 +1331,56 @@ impl DynTool for SkillTool {
     }
 }
 
+/// Where a skill came from, in words the model can repeat to the user.
+fn source_words(source: &SkillSource) -> &'static str {
+    match source {
+        SkillSource::Installed => "installed from the marketplace",
+        SkillSource::User => "a user-created skill",
+        SkillSource::Learned => "a learned skill of this employee",
+    }
+}
+
+/// The canonical installer returns one string for success and failure; these
+/// are the failure shapes it produces (`codes::handle_code_text` and the
+/// code-format check in the server's `CodeInstallerImpl`).
+fn install_failed(msg: &str) -> bool {
+    msg.starts_with("Failed to install") || msg.contains("is not a valid install code")
+}
+
 #[cfg(test)]
 mod tests {
-    use super::SkillTool;
+    use super::{install_failed, source_words, SkillTool};
+    use crate::skills::SkillSource;
+
+    #[test]
+    fn install_failures_are_detected_and_sources_are_words() {
+        assert!(install_failed("Failed to install skill: not found"));
+        assert!(install_failed("'SKIL-1' is not a valid install code (e.g. ...)"));
+        assert!(!install_failed("Installed skill 'foo' (v1.2)"));
+        assert_eq!(source_words(&SkillSource::Learned), "a learned skill of this employee");
+        assert!(SkillTool::not_found("x").contains("skill(action: \"discover\", query: ...)"));
+    }
+
+    /// `skill(name: "x")` with no action is the load call, not "Unknown
+    /// action" and not a schema error.
+    #[tokio::test]
+    async fn a_name_with_no_action_is_a_load() {
+        use crate::registry::DynTool;
+        let dir = tempfile::tempdir().unwrap();
+        let loader = std::sync::Arc::new(crate::skills::Loader::new(
+            dir.path().join("installed"),
+            dir.path().join("user"),
+        ));
+        let tool = SkillTool::new(loader);
+        let ctx = crate::origin::ToolContext::default();
+        let result = tool
+            .execute_dyn(&ctx, serde_json::json!({"name": "no-such-skill"}))
+            .await;
+        assert!(result.is_error, "{}", result.content);
+        assert!(result.content.contains("no-such-skill"), "{}", result.content);
+        assert!(!result.content.contains("Unknown action"), "{}", result.content);
+        assert!(!result.content.contains("Failed to parse"), "{}", result.content);
+    }
 
     #[test]
     fn test_user_skill_dir_rejects_traversal_names() {

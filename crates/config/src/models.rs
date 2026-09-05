@@ -87,6 +87,11 @@ pub struct Defaults {
     pub primary: String,
     #[serde(default)]
     pub fallbacks: Vec<String>,
+    /// Where a run goes when the reviewer would otherwise stop it: one window
+    /// of steps on this model, once per run, then back. "provider/model";
+    /// empty means the reviewer's stop stands. See agent::reviewer.
+    #[serde(default)]
+    pub escalation: String,
 }
 
 /// User-friendly model alias.

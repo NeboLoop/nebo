@@ -823,15 +823,15 @@ impl Loader {
             "## Installed Plugins ({})\n\
              {}\n\n\
              To use a plugin:\n\
-             1. plugin(action: \"search\", query: \"what you need\") — find matching plugins\n\
-             2. plugin(action: \"skills\", resource: \"<slug>\", query: \"what you need\") — search a plugin's skills\n\
-             3. plugin(resource: \"<slug>\", action: \"help\", topic: \"<skill>\") — read docs BEFORE exec\n\
+             1. plugin(action: \"list\") - installed plugins and their commands\n\
+             2. plugin(action: \"discover\", query: \"what you need\") - search the marketplace when nothing installed fits\n\
+             3. plugin(resource: \"<slug>\", action: \"help\") - read the docs BEFORE the first exec; add command: \"<service>\" for one service\n\
              4. plugin(resource: \"<slug>\", action: \"exec\", command: \"<subcommand> +<flags>\")\n\n\
-             IMPORTANT: Always read docs (step 3) before your first exec of any plugin skill.\n\
-             The command field is CLI args — NOT colon syntax. Never use \"service:method\".\n\n\
+             IMPORTANT: Always read docs (step 3) before your first exec of any plugin.\n\
+             The command field is CLI args, NOT colon syntax. Never use \"service:method\".\n\n\
              For content with special characters, use args instead of command:\n\
              plugin(resource: \"<slug>\", action: \"exec\", command: \"docx +create\", args: {{\"name\": \"report.docx\", \"content\": \"...\"}})\n\n\
-             If you already know the plugin slug, skip to step 2.",
+             If you already know the plugin slug, skip to step 3.",
             total,
             categories_text,
         )
@@ -924,7 +924,7 @@ impl Loader {
 
         format!(
             "## Agent Required Plugins\n\
-             This agent depends on these plugins. Use plugin(action: \"skills\", resource: \"<slug>\", query: \"...\") to find the right skill for a task.\n\n\
+             This agent depends on these plugins. Use plugin(resource: \"<slug>\", action: \"help\") for a plugin's commands, or skill(action: \"discover\", query: \"<slug> <task>\") to find a recipe.\n\n\
              {}\n",
             lines.join("\n")
         )
@@ -1427,10 +1427,29 @@ fn build_catalog_string(skills: &HashMap<String, Skill>) -> String {
         ));
     }
 
+    // The header reconciles: total = listed + not shown (budget) + inside packs.
+    let in_packs: usize = pack_counts.values().sum();
+    let not_shown = tier_entries.len() - listed;
+    let breakdown = if not_shown > 0 {
+        format!(
+            "{} total: {} listed below, {} more not shown, {} inside packs",
+            enabled.len(),
+            listed,
+            not_shown,
+            in_packs
+        )
+    } else {
+        format!(
+            "{} total: {} listed below, {} inside packs",
+            enabled.len(),
+            listed,
+            in_packs
+        )
+    };
     format!(
         "## Available Skills ({})\n\n{}\n\
          When a skill matches the task, load it BEFORE acting: skill(action: \"load\", name: \"...\"), then follow its instructions.",
-        enabled.len(),
+        breakdown,
         body
     )
 }

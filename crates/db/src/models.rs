@@ -983,6 +983,20 @@ pub struct RunUsageEntry {
     pub cache_creation_tokens: i64,
     pub cost_microcents: i64,
     pub outcome: Option<String>,
+    /// How the turn ended: the runner's typed exit label (`Exit::label()`).
+    pub exit_reason: Option<String>,
+}
+
+/// A run's exit as `nebo-cli test runs` lists it: enough to pick a session
+/// to export as a replay fixture, nothing more.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunExit {
+    pub session_key: Option<String>,
+    pub agent_id: String,
+    pub model_id: String,
+    pub exit_reason: Option<String>,
+    pub created_at: i64,
 }
 
 /// Cost rolled up over a window, for "what is this employee costing me".

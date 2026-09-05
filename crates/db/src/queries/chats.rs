@@ -27,6 +27,20 @@ fn message_created_at(conn: &rusqlite::Connection, id: &str) -> Result<i64, Nebo
     .map_err(|e| NeboError::Database(e.to_string()))
 }
 
+/// A chat's preview line is its last VISIBLE message: not a tool result,
+/// not empty, not a hidden system-injected message (reminders carry
+/// metadata {"hidden":true}). `chat_id` is the SQL expression to match on.
+fn last_visible_message_sql(chat_id: &str) -> String {
+    format!(
+        "(SELECT m2.content FROM chat_messages m2
+          WHERE m2.chat_id = {chat_id}
+            AND m2.role != 'tool'
+            AND m2.content != ''
+            AND (m2.metadata IS NULL OR m2.metadata NOT LIKE '%\"hidden\":true%')
+          ORDER BY m2.created_at DESC, m2.id DESC LIMIT 1)"
+    )
+}
+
 impl Store {
     pub fn create_chat(&self, id: &str, title: &str) -> Result<Chat, NeboError> {
         let conn = self.conn()?;
@@ -659,7 +673,7 @@ impl Store {
         let conn = self.conn()?;
         let like_pattern = format!("{}%", session_name_prefix);
         let mut stmt = conn
-            .prepare(
+            .prepare(&format!(
                 "SELECT c.*,
                         COALESCE(s.cnt, 0) AS msg_count,
                         COALESCE(s.last_content, '') AS last_content
@@ -667,15 +681,7 @@ impl Store {
                  LEFT JOIN (
                      SELECT m.chat_id,
                             COUNT(*) AS cnt,
-                            -- Preview = last VISIBLE message: skip tool results (empty),
-                            -- empty content, and hidden system-injected messages
-                            -- (reminders carry metadata {\"hidden\":true}).
-                            (SELECT m2.content FROM chat_messages m2
-                             WHERE m2.chat_id = m.chat_id
-                               AND m2.role != 'tool'
-                               AND m2.content != ''
-                               AND (m2.metadata IS NULL OR m2.metadata NOT LIKE '%\"hidden\":true%')
-                             ORDER BY m2.created_at DESC, m2.id DESC LIMIT 1) AS last_content
+                            {last_visible} AS last_content
                      FROM chat_messages m
                      GROUP BY m.chat_id
                  ) s ON s.chat_id = c.id
@@ -685,7 +691,8 @@ impl Store {
                    -- Chats tab.
                    AND c.session_name NOT LIKE '%:help:%'
                  ORDER BY c.updated_at DESC",
-            )
+                last_visible = last_visible_message_sql("m.chat_id")
+            ))
             .map_err(|e| NeboError::Database(e.to_string()))?;
         let rows = stmt
             .query_map(params![like_pattern], |row| {
@@ -814,6 +821,17 @@ impl Store {
     /// activity because chats.updated_at is set at creation, not per message.
     pub fn get_latest_agent_chat(&self, agent_id: &str) -> Result<Option<Chat>, NeboError> {
         Ok(self.list_recent_agent_chats(agent_id, 1)?.into_iter().next().map(|(c, _)| c))
+    }
+
+    /// The roster's one-line preview for an employee: the last visible message
+    /// of its latest thread. None when it has never chatted.
+    pub fn latest_agent_chat_preview(&self, agent_id: &str) -> Result<Option<String>, NeboError> {
+        let Some(chat) = self.get_latest_agent_chat(agent_id)? else { return Ok(None) };
+        let conn = self.conn()?;
+        let content: Option<String> = conn
+            .query_row(&format!("SELECT {}", last_visible_message_sql("?1")), params![chat.id], |row| row.get(0))
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(content.filter(|c| !c.is_empty()))
     }
 
     /// How many threads this employee has (an isolated employee's matters).

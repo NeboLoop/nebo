@@ -9,9 +9,9 @@ NOT for coworkers: to talk to another AI employee on THIS computer, use message(
 - loop(resource: channel, action: list) — List available channels
 - loop(resource: channel, action: messages, channel_id: "...", limit: 20) — Read channel messages
 - loop(resource: channel, action: members, channel_id: "...") — List channel members
-- loop(resource: group, action: list) — List loops you belong to
-- loop(resource: group, action: get, loop_id: "...") — Get loop details
-- loop(resource: group, action: members, loop_id: "...") — List loop members
+- loop(resource: loop, action: list) — List loops you belong to
+- loop(resource: loop, action: get, loop_id: "...") — Get loop details
+- loop(resource: loop, action: members, loop_id: "...") — List loop members
 - loop(resource: topic, action: subscribe, topic: "news") — Subscribe to a topic
 - loop(resource: topic, action: unsubscribe, topic: "...") — Unsubscribe
 - loop(resource: topic, action: list) — List subscriptions

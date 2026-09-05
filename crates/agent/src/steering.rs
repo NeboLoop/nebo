@@ -34,6 +34,15 @@ pub fn format_proactive_items(items: &[crate::proactive::ProactiveItem]) -> Vec<
 const GLOBAL_MIN_TURNS_BETWEEN_REMINDERS: usize = 2;
 /// Consecutive silent tool-only assistant turns before SilenceBreaker fires.
 const SILENCE_BREAKER_THRESHOLD: usize = 3;
+/// The one wording for "you are blocked" guidance. prompt.rs SECTION_CONDUCT
+/// carries the same sentence (drift-tested there); every reminder that tells
+/// the model what to do when stuck says exactly this.
+pub(crate) const BLOCKED_GUIDANCE: &str =
+    "say what is blocking in one line; in direct chat, ask the one question that unblocks you";
+/// Recent tool calls ResearchDelegationNudge looks at.
+const RESEARCH_DELEGATION_WINDOW: usize = 8;
+/// Discovery-flavored calls in that window before the nudge fires.
+const RESEARCH_DELEGATION_THRESHOLD: usize = 3;
 /// Tool `action` values that change user-visible state — the model must confirm these.
 const STATE_CHANGING_ACTIONS: &[&str] = &[
     "create", "send", "schedule", "delete", "remove", "move", "rename", "edit", "write", "post",
@@ -131,6 +140,14 @@ trait Reminder: Send + Sync {
 pub struct ReminderCadence {
     last_fired: std::collections::HashMap<&'static str, usize>,
     global_last: Option<usize>,
+    /// The reminder the last successful selection fired, for the reviewer trigger.
+    last_name: Option<&'static str>,
+}
+
+impl ReminderCadence {
+    pub fn last_fired_name(&self) -> Option<&'static str> {
+        self.last_name
+    }
 }
 
 /// The registered reminders. Grows as generators migrate off the suffix.
@@ -147,6 +164,7 @@ fn reminders() -> Vec<Box<dyn Reminder>> {
         Box::new(ToolResultHonesty),
         Box::new(ResearchDelegationNudge),
         Box::new(SerialReadGrind),
+        Box::new(ReadOnlyGrind),
         Box::new(TaskTrackingNudge),
         Box::new(TaskCompletionNudge),
         Box::new(UntrustedContent),
@@ -245,6 +263,7 @@ fn select_from(
     let (name, _, text) = best?;
     cadence.last_fired.insert(name, ctx.iteration);
     cadence.global_last = Some(ctx.iteration);
+    cadence.last_name = Some(name);
     Some(wrap_system_reminder(&text))
 }
 
@@ -317,8 +336,8 @@ fn silent_tool_streak(messages: &[ChatMessage]) -> usize {
 }
 
 /// SilenceBreaker — when the model has run several tool-only turns in a row with no
-/// text, nudge it to tell the user what it's finding. Interactive only; autonomous
-/// work is silent by design.
+/// text, ask for one status line. Interactive only: autonomous, workflow and channel
+/// runs write nothing alongside tool calls and summarize when the work is done.
 struct SilenceBreaker;
 impl Reminder for SilenceBreaker {
     fn name(&self) -> &'static str {
@@ -331,29 +350,18 @@ impl Reminder for SilenceBreaker {
         3
     }
     fn check(&self, ctx: &ReminderContext) -> Option<String> {
-        if !ctx.wants_comm_discipline() {
+        if ctx.execution_mode != tools::ExecutionMode::Interactive {
             return None;
         }
         let streak = silent_tool_streak(ctx.messages);
         if streak < SILENCE_BREAKER_THRESHOLD {
             return None;
         }
-        if ctx.is_external_channel() {
-            Some(format!(
-                "You've taken {streak} actions without sending anything to the `{}` channel — \
-                 the person on the other end only sees your messages, not your tools, so to \
-                 them nothing is happening. Post one short line now: what you've found and \
-                 what you're checking next.",
-                ctx.channel
-            ))
-        } else {
-            Some(format!(
-                "You've taken {streak} actions in a row without telling the user anything — \
-                 they're watching a spinner with no idea what you're doing. Before your next \
-                 tool call, write one short line: what you've found so far and what you're \
-                 checking next."
-            ))
-        }
+        Some(format!(
+            "You've taken {streak} tool turns in a row without telling the user anything: \
+             they're watching a spinner with no idea what you're doing. Give one status line \
+             now: what you've found so far and what comes next. Then continue."
+        ))
     }
 }
 
@@ -559,15 +567,15 @@ impl Reminder for OutputDiscipline {
         }
         Some(if interactive {
             // Interactive: shape, don't silence — preambles/milestones are allowed.
-            "Your last response ran long. Keep text alongside tool calls to a few \
-             words, keep results to 1-3 sentences, and don't repeat what you already said."
+            "Your last response ran long. No text between tool calls; keep results to \
+             1-3 sentences, and don't repeat what you already said."
                 .to_string()
         } else {
             "Your last response was too long. Corrections:\n\
              1. Tool calls: output ZERO text alongside them.\n\
              2. Results: 1-3 sentences maximum.\n\
              3. Never repeat information you already said.\n\
-             4. Never announce errors or limitations — handle them silently or try a different approach."
+             4. If something failed, say so in one sentence with the error text, then continue or stop."
                 .to_string()
         })
     }
@@ -622,12 +630,13 @@ impl Reminder for NarrationSuppressor {
             return None;
         }
         Some(if interactive {
-            "You're narrating too much. Brief preambles and milestone updates are fine, \
-             but most tool calls need no surrounding text — cut the running commentary."
+            "You're narrating too much. One line before your first tool call, then no text \
+             between tool calls: write when you have a finding, a result, or a question for \
+             the user."
                 .to_string()
         } else {
-            "STOP narrating your tool calls. Output ONLY the tool call — \
-             ZERO text before, between, or after. The user sees your tool calls directly."
+            "Output ONLY the tool call: ZERO text before, between, or after. \
+             You will summarize when the work is done."
                 .to_string()
         })
     }
@@ -780,9 +789,8 @@ impl Reminder for DuplicateToolCall {
                 return Some(format!(
                     "You have called {} with identical arguments {} times without making \
                      progress — it errored or returned what you already had. Read the error and \
-                     change the arguments, try a different tool, or tell the user what is \
-                     blocking you.",
-                    tool_name, count
+                     change the arguments, try a different tool, or {}.",
+                    tool_name, count, BLOCKED_GUIDANCE
                 ));
             }
         }
@@ -853,8 +861,9 @@ impl Reminder for ContextPressure {
             return None;
         }
         Some(
-            "Context window is filling up. Summarize tool results instead of echoing them \
-             verbatim. If you need earlier results, re-run the tool rather than quoting from memory."
+            "Summarize tool results instead of echoing them verbatim. Earlier results are \
+             still in your context unless a compaction notice says otherwise; do not re-run a \
+             tool just to see a result again, unless the user asks."
                 .to_string(),
         )
     }
@@ -1034,7 +1043,7 @@ impl Reminder for SkillExecutionNudge {
             "You loaded a skill {burned} tool calls ago and haven't produced anything since — \
              no file written, no plugin invoked, no artifact created. You have the \
              instructions; stop gathering and execute the next concrete step now. If a step \
-             is blocked, state exactly what's blocking it instead of collecting more context."
+             is blocked, {BLOCKED_GUIDANCE}, instead of collecting more context."
         ))
     }
 }
@@ -1257,42 +1266,66 @@ impl Reminder for ToolResultGrounding {
             return None;
         }
 
-        // Scan last 10 messages for web tool results that succeeded with content
-        let recent = ctx.messages.iter().rev().take(10);
-        let mut web_success_chars = 0usize;
-        for msg in recent {
+        // Scan the last 10 messages for web/browser results that succeeded with
+        // content. Results carry only a tool_call_id, so the tool name comes from
+        // the assistant message that issued the call; results from other tools
+        // (os, shell) are not counted.
+        let window: Vec<&ChatMessage> = ctx.messages.iter().rev().take(10).collect();
+        let mut web_call_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for msg in &window {
+            if msg.role != "assistant" {
+                continue;
+            }
+            let Some(ref tc) = msg.tool_calls else { continue };
+            let Ok(calls) = serde_json::from_str::<Vec<serde_json::Value>>(tc) else {
+                continue;
+            };
+            for c in &calls {
+                let name = c.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                if !EXTERNAL_CONTENT_TOOLS.contains(&name) {
+                    continue;
+                }
+                if let Some(id) = c.get("id").and_then(|v| v.as_str()) {
+                    web_call_ids.insert(id.to_string());
+                }
+            }
+        }
+        let mut web_success_bytes = 0usize;
+        let mut web_success_calls = 0usize;
+        for msg in &window {
             if msg.role != "tool" {
                 continue;
             }
-            if let Some(ref tr_json) = msg.tool_results {
-                if let Ok(results) = serde_json::from_str::<Vec<serde_json::Value>>(tr_json) {
-                    for r in &results {
-                        let is_error = r.get("is_error").and_then(|v| v.as_bool()).unwrap_or(false);
-                        let content_len = r
-                            .get("content")
-                            .and_then(|v| v.as_str())
-                            .map(|s| s.len())
-                            .unwrap_or(0);
-                        if !is_error && content_len > 500 {
-                            web_success_chars += content_len;
-                        }
-                    }
+            let Some(ref tr_json) = msg.tool_results else { continue };
+            let Ok(results) = serde_json::from_str::<Vec<serde_json::Value>>(tr_json) else {
+                continue;
+            };
+            for r in &results {
+                let id = r.get("tool_call_id").and_then(|v| v.as_str()).unwrap_or("");
+                if !web_call_ids.contains(id) {
+                    continue;
                 }
-            }
-            if !msg.content.is_empty() && msg.content.len() > 500 {
-                web_success_chars += msg.content.len();
+                let is_error = r.get("is_error").and_then(|v| v.as_bool()).unwrap_or(false);
+                let content_len = r
+                    .get("content")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.len())
+                    .unwrap_or(0);
+                if !is_error && content_len > 0 {
+                    web_success_bytes += content_len;
+                    web_success_calls += 1;
+                }
             }
         }
 
-        if web_success_chars <= 1000 {
+        if web_success_bytes <= 1000 {
             return None;
         }
         Some(format!(
-            "IMPORTANT: Web tools returned {} chars of content in recent calls. \
-             Do NOT claim tools are broken, empty, or returning 0 lines — \
-             read your actual tool results and use the data you received. \
-             If a page is a 404, navigate elsewhere — do not declare all tools broken.",
-            web_success_chars
+            "IMPORTANT: Web tools returned {web_success_bytes} bytes of content across \
+             {web_success_calls} successful calls. Do NOT claim tools are broken, empty, or \
+             returning 0 lines: read your actual tool results and use the data you received. \
+             If a page is a 404, navigate elsewhere; do not declare all tools broken."
         ))
     }
 }
@@ -1391,15 +1424,50 @@ impl Reminder for CapabilityUnavailable {
         if !tripped {
             return None;
         }
-        Some(
-            "Discovery just reported that a requested capability is NOT available — no \
-             installed skill or plugin provides it. That verdict is final: do NOT attempt \
-             the task through the browser, shell, sub-agents, or unrelated plugins, and do \
-             not keep rephrasing discovery queries. Tell the user the capability isn't \
-             installed and suggest installing it from the marketplace, then stop."
-                .to_string(),
-        )
+        let query = last_discovery_query(ctx.messages);
+        let named = if query.is_empty() {
+            String::new()
+        } else {
+            format!(" ({query})")
+        };
+        Some(format!(
+            "The last discovery call{named} found no skill or plugin. If the query named the \
+             capability correctly, tell the user it isn't installed and suggest the \
+             marketplace; do not try to reproduce the capability by hand and do not keep \
+             rephrasing discovery queries. If a built-in tool covers the job, use it."
+        ))
     }
+}
+
+/// The `query` argument of the most recent skill/plugin discovery call in the
+/// transcript, or "" when there is none. Scans assistant tool_calls newest first.
+fn last_discovery_query(messages: &[ChatMessage]) -> String {
+    for m in messages.iter().rev() {
+        if m.role != "assistant" {
+            continue;
+        }
+        let Some(ref tc) = m.tool_calls else { continue };
+        let Ok(calls) = serde_json::from_str::<Vec<serde_json::Value>>(tc) else {
+            continue;
+        };
+        for c in calls.iter().rev() {
+            let name = c.get("name").and_then(|v| v.as_str()).unwrap_or("");
+            if !matches!(name, "skill" | "plugin") {
+                continue;
+            }
+            let input = c.get("input").cloned().unwrap_or(serde_json::Value::Null);
+            let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
+            if !matches!(action, "discover" | "search" | "browse") {
+                continue;
+            }
+            if let Some(q) = input.get("query").and_then(|v| v.as_str())
+                && !q.is_empty()
+            {
+                return q.to_string();
+            }
+        }
+    }
+    String::new()
 }
 
 // 15. Task Tracking Nudge — steer the LLM to break complex requests into tracked tasks
@@ -1512,17 +1580,49 @@ impl Reminder for TaskCompletionNudge {
     }
 }
 
+/// The last `limit` tool calls in the transcript as (tool name, action),
+/// newest first. Scans assistant tool_calls JSON; calls without an action
+/// get "".
+fn recent_tool_calls(messages: &[ChatMessage], limit: usize) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for m in messages.iter().rev() {
+        if m.role != "assistant" {
+            continue;
+        }
+        let Some(ref tc) = m.tool_calls else { continue };
+        let Ok(calls) = serde_json::from_str::<Vec<serde_json::Value>>(tc) else {
+            continue;
+        };
+        for c in calls.iter().rev() {
+            let name = c.get("name").and_then(|v| v.as_str()).unwrap_or("");
+            let action = c
+                .get("input")
+                .and_then(|i| i.get("action"))
+                .and_then(|a| a.as_str())
+                .unwrap_or("");
+            out.push((name.to_string(), action.to_string()));
+            if out.len() >= limit {
+                return out;
+            }
+        }
+    }
+    out
+}
+
 /// Detects when the main agent is in an exploratory research loop —
-/// repeatedly calling discovery-flavored tools (`tool_search`, `skill`,
-/// `plugin help/events`) trying to figure out how to do something — and
-/// nudges it to delegate the discovery to a sub-agent instead.
+/// repeatedly calling discovery-flavored tools (`tool_search`, `skill
+/// discover`, repeated `plugin` probes) trying to figure out how to do
+/// something — and nudges it to delegate the discovery to a sub-agent instead.
 ///
 /// Why: every exploratory tool call adds a user message + tool result pair
 /// to the main conversation, polluting the context window for the
 /// downstream turn. A sub-agent burns its OWN context on the research and
 /// returns one consolidated answer, keeping the main chat history clean.
 ///
-/// Triggers when 3+ of the recent (≤8) tool calls were discovery-flavored.
+/// The prescribed chain `skill discover` → `skill load` → `plugin help` →
+/// `plugin exec` is not exploration: `skill load` and `plugin help` never
+/// count. Triggers when RESEARCH_DELEGATION_THRESHOLD or more of the last
+/// RESEARCH_DELEGATION_WINDOW calls were discovery-flavored.
 struct ResearchDelegationNudge;
 impl Reminder for ResearchDelegationNudge {
     fn name(&self) -> &'static str {
@@ -1535,31 +1635,31 @@ impl Reminder for ResearchDelegationNudge {
         3
     }
     fn check(&self, ctx: &ReminderContext) -> Option<String> {
-        let recent = &ctx.recent_tool_names;
-        if recent.len() < 3 {
+        let window = recent_tool_calls(ctx.messages, RESEARCH_DELEGATION_WINDOW);
+        if window.len() < RESEARCH_DELEGATION_THRESHOLD {
             return None;
         }
-        let window: Vec<&String> = recent.iter().rev().take(8).collect();
         let mut discovery_count = 0usize;
         let mut plugin_count = 0usize;
-        for name in &window {
-            match name.as_str() {
-                "tool_search" | "skill" => discovery_count += 1,
-                "plugin" => plugin_count += 1,
+        for (name, action) in &window {
+            match (name.as_str(), action.as_str()) {
+                ("skill", "load") | ("plugin", "help") => {} // the prescribed chain
+                ("tool_search", _) | ("skill", _) => discovery_count += 1,
+                ("plugin", _) => plugin_count += 1,
                 _ => {}
             }
         }
         // Treat repeated plugin probes as additional discovery signal
         // (agent calling the same plugin tool multiple times to look up
-        // syntax via +help / --help / events).
+        // syntax via exec +help / --help / events).
         if plugin_count >= 2 {
             discovery_count += plugin_count.saturating_sub(1);
         }
-        if discovery_count < 3 {
+        if discovery_count < RESEARCH_DELEGATION_THRESHOLD {
             return None;
         }
         Some(
-            "You've made several discovery / how-to tool calls in this turn. \
+            "You've made several discovery / how-to tool calls in your last few tool calls. \
              STOP exploring inline — it pollutes the main context. \
              Spawn a sub-agent to do the research and report back: \
              agent(resource: \"task\", action: \"spawn\", prompt: \"Figure out exactly how to <specific question>. Return the exact command / syntax / path as a single answer.\"). \
@@ -1588,7 +1688,7 @@ fn is_serial_read_turn(tool_calls_json: &str) -> bool {
     }
     let c = &arr[0];
     let name = c.get("name").and_then(|n| n.as_str()).unwrap_or("");
-    if name != "os" && name != "system" {
+    if name != "os" {
         return false;
     }
     let action = c
@@ -1607,6 +1707,100 @@ fn is_serial_read_turn(tool_calls_json: &str) -> bool {
 /// the real damage: 40 serial reads overflow the sliding window and compaction strips all
 /// but the most-recent few, which is how the model ended up thinking the files were empty.
 /// Delegation keeps that bulk in the sub-agent's context, not the main one.
+/// Shell commands that only look. A turn made of these produces nothing.
+const READ_ONLY_COMMANDS: &[&str] = &[
+    "cat", "head", "tail", "wc", "ls", "grep", "rg", "find", "stat", "file", "xxd", "hexdump", "od",
+    "sed", "awk", "sort", "uniq", "diff", "echo", "pwd", "which", "type", "du", "df", "tree", "less",
+];
+/// Read-only turns in the window before the grind fires.
+const READ_ONLY_GRIND_TURNS: usize = 8;
+/// Assistant text this long inside the window counts as something produced.
+const READ_ONLY_GRIND_ANSWER_CHARS: usize = 200;
+
+/// Every call in the turn only looks: an `os` read/glob/grep/list, or a shell
+/// command whose program is in [`READ_ONLY_COMMANDS`]. The serial-read
+/// classifier above only knows the file actions; a model that varies its
+/// shell command every turn (cat, wc, xxd, grep) walks straight past it.
+fn is_read_only_turn(tool_calls_json: &str) -> bool {
+    let Ok(calls) = serde_json::from_str::<serde_json::Value>(tool_calls_json) else { return false };
+    let Some(arr) = calls.as_array() else { return false };
+    if arr.is_empty() {
+        return false;
+    }
+    arr.iter().all(|c| {
+        let name = c.get("name").and_then(|n| n.as_str()).unwrap_or("");
+        if name != "os" {
+            return false;
+        }
+        let input = c.get("input");
+        let action = input.and_then(|i| i.get("action")).and_then(|a| a.as_str()).unwrap_or("");
+        if matches!(action, "read" | "glob" | "grep" | "list" | "ls") {
+            return true;
+        }
+        let command = input.and_then(|i| i.get("command")).and_then(|v| v.as_str()).unwrap_or("");
+        let program = command
+            .split_whitespace()
+            .find(|w| !w.contains('='))
+            .map(|w| w.rsplit('/').next().unwrap_or(w))
+            .unwrap_or("");
+        !program.is_empty() && READ_ONLY_COMMANDS.contains(&program)
+    })
+}
+
+/// ReadOnlyGrind — many turns of looking, nothing produced. The twenty-step poll
+/// that varied its command each time (cat, cat -n, wc, xxd, grep on one file)
+/// tripped nothing: the calls were never identical, never errors, never the file
+/// actions the serial-read classifier counts. This one counts turns that only
+/// look, in any form, and fires when the last several produced no answer and no
+/// write. It is a loop-class reminder: the reviewer watches for it.
+struct ReadOnlyGrind;
+impl Reminder for ReadOnlyGrind {
+    fn name(&self) -> &'static str {
+        "read_only_grind"
+    }
+    fn priority(&self) -> u8 {
+        8
+    }
+    fn min_turns_between(&self) -> usize {
+        4
+    }
+    fn check(&self, ctx: &ReminderContext) -> Option<String> {
+        let mut looked = 0usize;
+        let mut seen = 0usize;
+        for m in ctx.messages.iter().rev() {
+            if m.role != "assistant" {
+                continue;
+            }
+            if m.content.trim().len() >= READ_ONLY_GRIND_ANSWER_CHARS {
+                return None; // it produced something in the window
+            }
+            let Some(ref tc) = m.tool_calls else { continue };
+            if tc.is_empty() || tc == "[]" || tc == "null" {
+                continue;
+            }
+            seen += 1;
+            if is_read_only_turn(tc) {
+                looked += 1;
+            } else {
+                return None; // a write or a change of tool breaks the grind
+            }
+            if seen >= READ_ONLY_GRIND_TURNS {
+                break;
+            }
+        }
+        if looked < READ_ONLY_GRIND_TURNS {
+            return None;
+        }
+        Some(format!(
+            "The last {looked} steps only looked: reads, listings, counts, searches, and no \
+             write or answer followed. If you are still gathering, say what you are looking \
+             for; otherwise act on what you have. Looking again the same way will not change \
+             what is there. Decide with what you already have, take the next concrete action, \
+             or {BLOCKED_GUIDANCE}."
+        ))
+    }
+}
+
 struct SerialReadGrind;
 impl Reminder for SerialReadGrind {
     fn name(&self) -> &'static str {
@@ -1646,9 +1840,8 @@ impl Reminder for SerialReadGrind {
             return None;
         }
         Some(
-            "You've read files one at a time for several turns — this fills your context \
-             and older reads get compacted away (that's how content you already read \
-             starts looking 'empty'). Two fixes, both faster: (1) batch independent reads \
+            "You've read files one at a time for several turns, which fills your context. \
+             Two fixes, both faster: (1) batch independent reads \
              into ONE message — Nebo runs read-only tools in parallel, so request every \
              file you need at once; (2) for a whole directory or open-ended search, spawn \
              an explore sub-agent: agent(resource: \"task\", action: \"spawn\", \
@@ -1708,6 +1901,39 @@ mod tests {
             ..base_rctx()
         };
         assert!(IdentityReinforce.check(&claude).is_none());
+    }
+
+    #[test]
+    fn read_only_grind_fires_on_varied_looking_and_not_on_work() {
+        let shell = |cmd: &str| ChatMessage {
+            tool_calls: Some(format!(r#"[{{"name":"os","input":{{"action":"exec","command":"{cmd}"}}}}]"#)),
+            ..make_msg("assistant", "checking")
+        };
+        let mut messages = vec![make_msg("user", "poll the file")];
+        for cmd in ["cat /t/d.txt", "cat -n /t/d.txt", "wc -l /t/d.txt", "xxd /t/d.txt", "grep line /t/d.txt", "tail -1 /t/d.txt", "stat /t/d.txt", "sed -n 3p /t/d.txt"] {
+            messages.push(shell(cmd));
+        }
+        let ctx = ReminderContext { messages: &messages, ..base_rctx() };
+        assert!(ReadOnlyGrind.check(&ctx).is_some(), "eight varied looks with nothing produced is a grind");
+
+        // One write inside the window is work: no grind.
+        let mut with_write = messages.clone();
+        with_write[4] = ChatMessage {
+            tool_calls: Some(r#"[{"name":"os","input":{"action":"write","path":"/t/out.md","content":"x"}}]"#.into()),
+            ..make_msg("assistant", "writing")
+        };
+        let wctx = ReminderContext { messages: &with_write, ..base_rctx() };
+        assert!(ReadOnlyGrind.check(&wctx).is_none());
+
+        // A real answer inside the window is something produced: no grind.
+        let mut with_answer = messages.clone();
+        with_answer[4] = make_msg("assistant", &"Here is what the file says and what it means for you. ".repeat(5));
+        let actx = ReminderContext { messages: &with_answer, ..base_rctx() };
+        assert!(ReadOnlyGrind.check(&actx).is_none());
+
+        // Seven looks is not yet a grind.
+        let short = ReminderContext { messages: &messages[..8], ..base_rctx() };
+        assert!(ReadOnlyGrind.check(&short).is_none());
     }
 
     #[test]
@@ -1833,8 +2059,22 @@ mod tests {
         ];
         let ctx = ReminderContext { messages: &msgs, iteration: 2, ..base_rctx() };
         let out = CapabilityUnavailable.check(&ctx).expect("fires on verdict");
-        assert!(out.contains("verdict is final"));
-        assert!(out.contains("browser"));
+        assert!(out.contains("found no skill or plugin"));
+        assert!(!out.contains("shell"), "must not forbid the built-in tools");
+
+        // The reminder names the query of the discovery call that missed.
+        let mut call = make_msg("assistant", "");
+        call.tool_calls = Some(
+            r#"[{"id":"c1","name":"plugin","input":{"action":"discover","query":"twitter"}}]"#.into(),
+        );
+        let mut miss = make_msg("tool", "");
+        miss.tool_results = Some(
+            serde_json::json!([{"tool_call_id":"c1","content":"No plugins found in the marketplace for that query.","is_error":false}]).to_string(),
+        );
+        let named = vec![make_msg("user", "post a tweet"), call, miss];
+        let nctx = ReminderContext { messages: &named, iteration: 2, ..base_rctx() };
+        let out = CapabilityUnavailable.check(&nctx).expect("fires on verdict");
+        assert!(out.contains("(twitter)"), "names the query: {out}");
 
         // Unrelated tool output does not trip it.
         let ok_msgs = vec![make_msg("tool", "Found 3 files matching \"*.md\"")];
@@ -2032,38 +2272,86 @@ mod tests {
     #[test]
     fn test_tool_result_grounding_fires_on_web_success() {
         let big = "x".repeat(1500);
-        let tr = serde_json::json!([{ "content": big, "is_error": false }]).to_string();
+        let tr = serde_json::json!([{ "tool_call_id": "w1", "content": big, "is_error": false }]).to_string();
+        let mut call = make_msg("assistant", "");
+        call.tool_calls = Some(r#"[{"id":"w1","name":"web","input":{"action":"fetch"}}]"#.into());
         let tool_msg = ChatMessage {
             tool_results: Some(tr),
             ..make_msg("tool", "")
         };
-        let msgs = vec![make_msg("user", "look it up"), tool_msg];
+        let msgs = vec![make_msg("user", "look it up"), call, tool_msg];
         let web = vec!["web".to_string()];
         let out = ToolResultGrounding
             .check(&rctx_tools(&msgs, &web, 3))
             .expect("fires on substantial web result");
         assert!(out.contains("Do NOT claim tools are broken"));
+        assert!(out.contains("1500 bytes of content across 1 successful calls"), "{out}");
         // No web tool in the recent set → no fire.
         assert!(ToolResultGrounding.check(&rctx_tools(&msgs, &[], 3)).is_none());
+
+        // A large result from a non-web tool is not counted as web content.
+        let mut os_call = make_msg("assistant", "");
+        os_call.tool_calls = Some(r#"[{"id":"o1","name":"os","input":{"action":"read"}}]"#.into());
+        let os_res = ChatMessage {
+            tool_results: Some(
+                serde_json::json!([{ "tool_call_id": "o1", "content": "y".repeat(5000), "is_error": false }]).to_string(),
+            ),
+            ..make_msg("tool", "")
+        };
+        let os_msgs = vec![make_msg("user", "look it up"), os_call, os_res];
+        assert!(ToolResultGrounding.check(&rctx_tools(&os_msgs, &web, 3)).is_none());
+    }
+
+    fn calls_as_msgs(calls: &[(&str, &str)]) -> Vec<ChatMessage> {
+        calls
+            .iter()
+            .map(|(name, action)| {
+                make_assistant_with_tools(
+                    "",
+                    &format!(r#"[{{"name":"{name}","input":{{"action":"{action}"}}}}]"#),
+                )
+            })
+            .collect()
     }
 
     #[test]
     fn test_research_delegation_nudge_on_discovery_loop() {
-        let names = vec![
-            "tool_search".to_string(),
-            "skill".to_string(),
-            "tool_search".to_string(),
-        ];
+        let msgs = calls_as_msgs(&[("tool_search", ""), ("skill", "discover"), ("tool_search", "")]);
         assert!(
             ResearchDelegationNudge
-                .check(&rctx_tools(&[], &names, 3))
+                .check(&rctx_tools(&msgs, &[], 3))
                 .unwrap()
                 .contains("Spawn a sub-agent"),
             "fires after 3 discovery calls"
         );
         // Only one discovery call → no fire.
-        let few = vec!["tool_search".to_string(), "web".to_string(), "os".to_string()];
-        assert!(ResearchDelegationNudge.check(&rctx_tools(&[], &few, 3)).is_none());
+        let few = calls_as_msgs(&[("tool_search", ""), ("web", "search"), ("os", "read")]);
+        assert!(ResearchDelegationNudge.check(&rctx_tools(&few, &[], 3)).is_none());
+    }
+
+    /// The chain the system prompt prescribes before a plugin command
+    /// (discover → load → help → exec) must not read as a discovery loop.
+    #[test]
+    fn test_research_delegation_nudge_spares_the_prescribed_chain() {
+        let chain = calls_as_msgs(&[
+            ("skill", "discover"),
+            ("skill", "load"),
+            ("plugin", "help"),
+            ("plugin", "exec"),
+        ]);
+        assert!(
+            ResearchDelegationNudge.check(&rctx_tools(&chain, &[], 4)).is_none(),
+            "discover → load → help → exec is the prescribed chain, not exploration"
+        );
+        // Genuine probing around that chain still fires.
+        let probing = calls_as_msgs(&[
+            ("skill", "discover"),
+            ("skill", "load"),
+            ("plugin", "help"),
+            ("tool_search", ""),
+            ("skill", "discover"),
+        ]);
+        assert!(ResearchDelegationNudge.check(&rctx_tools(&probing, &[], 5)).is_some());
     }
 
     #[test]
@@ -2198,7 +2486,7 @@ mod tests {
         let out = NarrationSuppressor
             .check(&rctx_prov(&many, tools::ExecutionMode::Interactive, "openai", 4))
             .expect("sustained narration fires in interactive mode");
-        assert!(out.contains("milestone updates are fine"));
+        assert!(out.contains("no text between tool calls"));
     }
 
     #[test]
@@ -2214,7 +2502,7 @@ mod tests {
         let out = NarrationSuppressor
             .check(&rctx_prov(&msgs, tools::ExecutionMode::Autonomous, "openai", 2))
             .expect("fires");
-        assert!(out.contains("STOP narrating"));
+        assert!(out.contains("Output ONLY the tool call"));
     }
 
     #[test]

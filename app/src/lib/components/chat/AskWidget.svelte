@@ -43,11 +43,13 @@
 		prompt: string;
 		widgets: AskWidgetDef[];
 		response?: string;
+		/** The run ended (stopped or cancelled) with this question unanswered. */
+		cancelled?: boolean;
 		disabled?: boolean;
 		onSubmit: (requestId: string, value: string) => void;
 	}
 
-	let { requestId, prompt, widgets, response, disabled = false, onSubmit }: Props = $props();
+	let { requestId, prompt, widgets, response, cancelled = false, disabled = false, onSubmit }: Props = $props();
 
 	import Plug from 'lucide-svelte/icons/plug';
 	import Check from 'lucide-svelte/icons/check';
@@ -140,7 +142,7 @@
 	const wasSkipped = $derived(response === SKIP_VALUE);
 
 	function submit(value: string) {
-		if (!answered && !disabled) {
+		if (!answered && !disabled && !cancelled) {
 			onSubmit(requestId, value);
 		}
 	}
@@ -158,7 +160,7 @@
 	}
 
 	function onKeydown(e: KeyboardEvent) {
-		if (e.key === 'Escape' && !answered && !disabled) {
+		if (e.key === 'Escape' && !answered && !disabled && !cancelled) {
 			submit(SKIP_VALUE);
 		}
 	}
@@ -179,6 +181,8 @@
 				{/each}
 			</div>
 		{/if}
+	{:else if cancelled}
+		<div class="badge badge-ghost badge-sm">{$t('common.cancelled')}</div>
 	{:else if disabled}
 		<div class="badge badge-ghost badge-sm">{$t('common.skipped')}</div>
 	{:else if widget?.type === 'install_plugin'}

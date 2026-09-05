@@ -77,6 +77,42 @@ fn evaluate(check: &Check, trace: &Trace) -> Result<(bool, String), String> {
         }
         evidence.push(format!("tool_calls {} ≤ {}", got, max));
     }
+    if let Some(max) = check.max_errors {
+        let errors: Vec<&TracedToolCall> = trace.tool_calls.iter().filter(|c| c.response.is_error).collect();
+        if errors.len() > max {
+            let first = errors[0];
+            return Ok((
+                false,
+                format!(
+                    "{} error result(s), at most {} allowed; first at call #{} ({}): {}",
+                    errors.len(),
+                    max,
+                    first.sequence,
+                    first.tool,
+                    first.response.content.lines().next().unwrap_or("").chars().take(160).collect::<String>()
+                ),
+            ));
+        }
+        evidence.push(format!("errors {} ≤ {}", errors.len(), max));
+    }
+    if !check.no_error_contains.is_empty() {
+        for c in trace.tool_calls.iter().filter(|c| c.response.is_error) {
+            let lower = c.response.content.to_lowercase();
+            if let Some(needle) = check.no_error_contains.iter().find(|n| lower.contains(&n.to_lowercase())) {
+                return Ok((
+                    false,
+                    format!(
+                        "call #{} ({}) errored with a result containing '{}': {}",
+                        c.sequence,
+                        c.tool,
+                        needle,
+                        c.response.content.lines().next().unwrap_or("").chars().take(160).collect::<String>()
+                    ),
+                ));
+            }
+        }
+        evidence.push(format!("no error result contains {:?}", check.no_error_contains));
+    }
     if let Some(max) = check.max_total_tokens {
         let got = trace.metrics.total_tokens;
         if got > max {
@@ -205,7 +241,9 @@ fn validate(check: &Check) -> Result<(), String> {
     let has_arg_predicate = check.arg.is_some();
     let has_trace_predicate = check.tool_calls.is_some()
         || check.max_tool_calls.is_some()
-        || check.max_total_tokens.is_some();
+        || check.max_total_tokens.is_some()
+        || check.max_errors.is_some()
+        || !check.no_error_contains.is_empty();
 
     if !has_call_selector && !has_trace_predicate {
         return Err("check has no criteria (need call/first_call/tool, or a trace-level predicate)".into());
@@ -313,6 +351,28 @@ mod tests {
         let (passed, why) = evaluate(&c, &bad).unwrap();
         assert!(!passed);
         assert!(why.contains("old_string"), "evidence names the arg: {}", why);
+    }
+
+    fn trace_with_errors(errors: Vec<&str>) -> Trace {
+        let mut t = trace_with(vec![("os", serde_json::json!({})); errors.len()], 0);
+        for (call, text) in t.tool_calls.iter_mut().zip(errors) {
+            call.response.is_error = !text.is_empty();
+            call.response.content = text.to_string();
+        }
+        t
+    }
+
+    #[test]
+    fn error_ceiling_and_forbidden_error_shapes() {
+        let clean = trace_with_errors(vec!["", ""]);
+        assert!(evaluate(&check("{ max_errors: 0 }"), &clean).unwrap().0);
+        let one = trace_with_errors(vec!["", "Missing required parameter 'pattern' for glob action."]);
+        let (p, why) = evaluate(&check("{ max_errors: 0 }"), &one).unwrap();
+        assert!(!p && why.contains("call #2") && why.contains("pattern"), "{why}");
+        assert!(evaluate(&check("{ max_errors: 1 }"), &one).unwrap().0);
+        let (p, why) = evaluate(&check(r#"{ no_error_contains: "REQUIRED PARAMETER" }"#), &one).unwrap();
+        assert!(!p && why.contains("required parameter"), "case-insensitive: {why}");
+        assert!(evaluate(&check(r#"{ no_error_contains: ["timed out", "not a valid"] }"#), &one).unwrap().0);
     }
 
     #[test]

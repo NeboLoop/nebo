@@ -232,6 +232,10 @@ pub struct Registry {
     read_state: std::sync::RwLock<Option<crate::file_tool::ReadState>>,
     /// DB store for MCP proxy tools (OAuth token refresh during tool calls).
     store: std::sync::RwLock<Option<Arc<db::Store>>>,
+    /// The MCP proxy tools this registry holds, by server: the index the
+    /// `mcp` tool describes itself from, kept at the one place proxies come
+    /// and go (`register_proxy` / `unregister_proxy`).
+    mcp_proxies: crate::mcp_tool::ProxyRoster,
     /// Browser manager, for closing a session's tab/page when a sub-agent finishes.
     browser_manager: std::sync::RwLock<Option<Arc<browser::Manager>>>,
     /// Canonical marketplace-code installer (server-implemented). `Arc`-wrapped so the
@@ -262,6 +266,7 @@ impl Registry {
             agent_loader: std::sync::RwLock::new(None),
             read_state: std::sync::RwLock::new(None),
             store: std::sync::RwLock::new(None),
+            mcp_proxies: crate::mcp_tool::new_roster(),
             browser_manager: std::sync::RwLock::new(None),
             code_installer: Arc::new(std::sync::RwLock::new(None)),
             notify_fn: Arc::new(std::sync::RwLock::new(None)),
@@ -290,6 +295,35 @@ impl Registry {
     /// Set the DB store (used by MCP proxy tools for OAuth token refresh).
     pub fn set_store(&self, store: Arc<db::Store>) {
         *self.store.write().unwrap() = Some(store);
+    }
+
+    /// The proxy roster the `mcp` tool is built on (see `McpTool::new`).
+    pub fn mcp_proxy_roster(&self) -> crate::mcp_tool::ProxyRoster {
+        self.mcp_proxies.clone()
+    }
+
+    /// Record that a proxy tool arrived or left, then re-derive the `mcp`
+    /// tool's cached description from the roster so it names what the
+    /// toolset holds. Not a proxy-shaped name: nothing to record.
+    async fn note_proxy_change(&self, name: &str, present: bool) {
+        let Some(server) = crate::mcp_tool::roster_server(name) else {
+            return;
+        };
+        {
+            let mut roster = match self.mcp_proxies.write() {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            if present {
+                roster.entry(server.to_string()).or_default().insert(name.to_string());
+            } else if let Some(tools) = roster.get_mut(server) {
+                tools.remove(name);
+                if tools.is_empty() {
+                    roster.remove(server);
+                }
+            }
+        }
+        self.refresh_definition(crate::mcp_tool::MCP_TOOL_NAME).await;
     }
 
     /// Set the plugin store for injecting plugin binary env vars into subprocesses.
@@ -612,7 +646,7 @@ impl Registry {
             if obj.len() == 1 {
                 if let Some(raw) = obj.get("_raw").and_then(|v| v.as_str()) {
                     return ToolResult::error(format!(
-                        "Your tool call's arguments were CUT OFF mid-stream at the output limit ({} characters arrived, JSON incomplete). Do NOT retry the same call — it will be cut off again. Produce large content in PARTS instead: first `os(resource: \"file\", action: \"write\", path: ..., content: <first portion>)`, then repeat with `append: true` for each following portion. Keep each call's content under ~15,000 characters.",
+                        "Your tool call's arguments were CUT OFF mid-stream at the output limit ({} bytes of arguments arrived before the cut; JSON incomplete). Do NOT retry the same call: it will be cut off again. Produce large content in PARTS instead: first `os(resource: \"file\", action: \"write\", path: ..., content: <first portion>)`, then repeat with `append: true` for each following portion. Keep each call's content under ~15,000 characters.",
                         raw.len()
                     ));
                 }
@@ -668,8 +702,9 @@ impl Registry {
                 let policy = self.policy.read().await;
                 if policy.is_denied_for_origin(ctx.origin, name, resource) {
                     return ToolResult::error(format!(
-                        "Tool '{}' is not permitted from {:?} origin",
-                        name, ctx.origin
+                        "Tool '{}' is not permitted when called from {}. Tell the user what you needed it for; do not retry.",
+                        name,
+                        origin_label(ctx.origin)
                     ));
                 }
             }
@@ -732,7 +767,7 @@ impl Registry {
                 if let Some(grant) = grants.get(resource_name) {
                     if grant == "deny" {
                         return ToolResult::error(format!(
-                            "Resource '{}' is denied for this entity",
+                            "This AI employee is not allowed to use the {}. Tell the user; do not try another tool to reach it.",
                             resource_name
                         ));
                     }
@@ -763,7 +798,7 @@ impl Registry {
         let mut result = match tool {
             Some(tool) => tool.execute_dyn(ctx, input).await,
             None => ToolResult::error(format!(
-                "Tool '{}' was unregistered during permit acquisition",
+                "Tool '{}' was removed while this call waited (a plugin install/uninstall ran). Call it once more; if it is still missing, it is gone.",
                 name
             )),
         };
@@ -774,10 +809,11 @@ impl Registry {
         // workflows) from unbounded multi-MB results.
         const MAX_RESULT_BYTES: usize = 400_000;
         if result.content.len() > MAX_RESULT_BYTES {
+            let total = result.content.len();
             let truncated = crate::truncate_str(&result.content, MAX_RESULT_BYTES);
             result.content = format!(
-                "{}\n\n[output truncated at 400KB — re-run with a narrower scope]",
-                truncated
+                "{}\n\n[output truncated: first 400,000 of {} bytes shown; nothing was saved to disk. Re-run with a narrower scope.]",
+                truncated, total
             );
         }
         result
@@ -1179,7 +1215,10 @@ impl mcp::bridge::ProxyToolRegistry for Registry {
         // MCP proxy tools are deferred — activated by keyword matching or direct call
         if tokio::runtime::Handle::try_current().is_ok() {
             tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current().block_on(self.register_deferred(Box::new(tool)));
+                tokio::runtime::Handle::current().block_on(async {
+                    self.register_deferred(Box::new(tool)).await;
+                    self.note_proxy_change(name, true).await;
+                });
             });
         }
     }
@@ -1188,7 +1227,10 @@ impl mcp::bridge::ProxyToolRegistry for Registry {
         if tokio::runtime::Handle::try_current().is_ok() {
             let name = name.to_string();
             tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current().block_on(self.unregister(&name));
+                tokio::runtime::Handle::current().block_on(async {
+                    self.unregister(&name).await;
+                    self.note_proxy_change(&name, false).await;
+                });
             });
         }
     }
@@ -1399,6 +1441,24 @@ pub fn legacy_tool_aliases() -> &'static [(&'static str, &'static str)] {
 }
 
 /// Provide specific correction for known hallucinated tool names.
+/// Plain words for where a call came from, for the origin deny message. The
+/// model reads this, so it names the caller the way the user would, not the
+/// enum variant.
+fn origin_label(origin: crate::origin::Origin) -> &'static str {
+    use crate::origin::Origin;
+    match origin {
+        Origin::User => "the app",
+        Origin::Comm => "a chat channel",
+        Origin::App => "an external app",
+        Origin::Skill => "a skill template",
+        Origin::System => "a scheduled system task",
+        Origin::Mcp => "an external MCP client",
+        Origin::Workflow => "an unattended workflow run",
+        Origin::Caller => "a phone caller",
+        Origin::Visitor => "a visitor",
+    }
+}
+
 fn tool_correction(name: &str) -> String {
     match name.to_lowercase().as_str() {
         "websearch" | "web_search" => {
@@ -1456,7 +1516,7 @@ fn tool_correction(name: &str) -> String {
             "INSTEAD USE: plugin(resource: \"gws\", command: \"gmail +triage --max 5\") — use the plugin tool with the plugin slug as resource".to_string()
         }
         "napp" | "install" | "package" => {
-            "INSTEAD USE: skill(action: \"catalog\") to see available skills, skill(action: \"install\", code: \"SKILL-XXXX-XXXX\") to install".to_string()
+            "INSTEAD USE: skill(action: \"catalog\") to see available skills, skill(action: \"install\", code: \"SKIL-XXXX-XXXX\") to install".to_string()
         }
         "workflow" | "automation" | "work_flow" => {
             "INSTEAD USE: work(action: \"list\") to see workflows, work(resource: \"name\", action: \"run\") to run".to_string()
@@ -1467,7 +1527,7 @@ fn tool_correction(name: &str) -> String {
                 // strap/mcp.txt) — they're just deferred. A miss here means the
                 // exact proxy name doesn't exist or isn't activated yet.
                 format!(
-                    "'{}' is not an active tool name. Connected MCP tools are named mcp__<server>__<tool> and activate on demand: run tool_search(query: \"<server or capability>\") to find the exact proxy name and its schema, then call it directly. mcp(action: \"list\") enumerates connected servers.",
+                    "'{}' is not a registered tool: no connected MCP server exposes a tool by that exact name. Run tool_search(query: \"<server or capability>\") to get the exact mcp__<server>__<tool> name, then call that. mcp(action: \"list\") enumerates connected servers.",
                     name
                 )
             } else {
@@ -1484,6 +1544,20 @@ fn tool_correction(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The origin deny message names the caller in plain words, never the
+    /// enum variant; the MCP miss names tool_search as the next call.
+    #[test]
+    fn origin_labels_and_mcp_miss_are_plain_words() {
+        use crate::origin::Origin;
+        assert_eq!(origin_label(Origin::Mcp), "an external MCP client");
+        assert_eq!(origin_label(Origin::Comm), "a chat channel");
+        assert_eq!(origin_label(Origin::User), "the app");
+        let c = tool_correction("mcp__foo__bar");
+        assert!(c.contains("not a registered tool"), "{c}");
+        assert!(c.contains("tool_search(query:"), "{c}");
+        assert!(tool_correction("napp").contains("SKIL-XXXX-XXXX"));
+    }
 
     /// A model that serializes a structured argument as a JSON string must not
     /// reach the tool that way: `agent(action:"spawn_parallel", tasks:"[{…}]")`

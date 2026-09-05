@@ -187,7 +187,7 @@ fn handle_query(input: &Value) -> ToolResult {
     };
     if hits.is_empty() {
         return ToolResult::ok(format!(
-            "0 matches in {path} ({}). This is not an error — the query matched nothing.",
+            "0 captures in {path} ({}). This is not an error — the query matched nothing.",
             lang.name()
         ));
     }
@@ -285,16 +285,22 @@ fn handle_symbols(input: &Value) -> ToolResult {
     } else {
         format!(" matching \"{name}\"")
     };
+    // "0 symbols in ." tells the model nothing about where it looked; name
+    // the absolute directory and the directories the walk never enters.
+    let dir_abs = std::path::absolute(&dir)
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| dir.clone());
+    const SKIPPED: &str = "skipped: hidden dirs, node_modules, vendor, target, __pycache__";
     if total == 0 {
         let mut out = format!(
-            "0 symbols{filter_note} in {dir} ({files_scanned} source files scanned). \
+            "0 symbols{filter_note} in {dir_abs} ({files_scanned} source files scanned; {SKIPPED}). \
              This is not an error — nothing matched."
         );
         append_walk_notes(&mut out, walk_capped, files_skipped_size);
         return ToolResult::ok(out);
     }
     let mut out = format!(
-        "{total} symbol{}{filter_note} in {dir} ({files_scanned} source files scanned):\n{}",
+        "{total} symbol{}{filter_note} in {dir_abs} ({files_scanned} source files scanned; {SKIPPED}):\n{}",
         if total == 1 { "" } else { "s" },
         rows.join("\n")
     );
@@ -468,7 +474,7 @@ fn lsp_unavailable_line(u: &crate::lsp::Unavailable) -> String {
             "({server} crashed this session — LSP actions unavailable; outline/parse_check/query still available)"
         ),
         crate::lsp::Unavailable::Timeout { server } => format!(
-            "(no answer from {server} within 2s — it may still be indexing; retry, or outline/parse_check/query still available)"
+            "(no answer from {server} within the 2 s budget; the request stays in flight and one later call can succeed. Do not loop on it; outline/parse_check/query answer now.)"
         ),
     }
 }
@@ -525,8 +531,10 @@ fn handle_locations(action: &str, input: &Value, lsp: &dyn crate::lsp::LspProvid
         )),
         Ok(locs) => {
             let limit = list_limit(input);
+            // "2 references results" doubled the plural; the noun is singular.
+            let noun = if action == "references" { "reference" } else { action };
             let mut out = format!(
-                "{} {action} result{} for {path}:{line}:{col}:",
+                "{} {noun} result{} for {path}:{line}:{col}:",
                 locs.len(),
                 if locs.len() == 1 { "" } else { "s" }
             );
@@ -558,7 +566,7 @@ fn handle_hover(input: &Value, lsp: &dyn crate::lsp::LspProvider) -> ToolResult 
             let mut out = format!("hover at {path}:{line}:{col}:\n{shown}");
             if shown.len() < text.len() {
                 out.push_str(&format!(
-                    "\n… truncated ({} of {} chars shown)",
+                    "\n… truncated ({} of {} bytes shown)",
                     shown.len(),
                     text.len()
                 ));
@@ -935,7 +943,7 @@ mod tests {
         assert!(!r.is_error, "{}", r.content);
         assert!(
             r.content
-                .contains("lsp (rust-analyzer): 1 warning — line 40: unused variable `x`"),
+                .contains("lsp (rust-analyzer): 1 warning — line 40 (warning): unused variable `x`"),
             "{}",
             r.content
         );
@@ -945,7 +953,7 @@ mod tests {
         assert!(r.content.contains("/x.rs:10:2"), "{}", r.content);
 
         let r = handle_locations("references", &json!({"path": p, "line": 4, "col": 8}), &MockLsp);
-        assert!(r.content.contains("2 references results"), "{}", r.content);
+        assert!(r.content.contains("2 reference results"), "{}", r.content);
         assert!(r.content.contains("/y.rs:3:9"), "{}", r.content);
 
         let r = handle_hover(&json!({"path": p, "line": 4, "col": 8}), &MockLsp);

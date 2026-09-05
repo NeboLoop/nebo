@@ -207,13 +207,19 @@ pub fn detect_servers() -> Vec<(String, Option<String>)> {
         .collect()
 }
 
-/// Render one factual diagnostics line: `lsp (rust-analyzer): 0 diagnostics`
-/// or `lsp (rust-analyzer): 1 error, 2 warnings — line 40: unused variable
-/// `x`; …; 3 more omitted`. Errors sort first; at most `cap` items are shown
-/// and the omission is stated — never a silent cut (CODE_AUDITOR §11).
+/// Render one factual diagnostics line: `lsp (rust-analyzer): 0 diagnostics in
+/// the first publish for this file (...)` or `lsp (rust-analyzer): 1 error,
+/// 2 warnings — line 40 (error): unused variable `x`; …; 3 more omitted`.
+/// Errors sort first; at most `cap` items are shown and the omission is
+/// stated — never a silent cut (CODE_AUDITOR §11). The zero line says which
+/// publish it reflects: servers often publish syntax results first and the
+/// type-check pass later, so "0" is not yet "clean".
 pub fn render_diagnostics(report: &DiagReport, cap: usize) -> String {
     if report.diagnostics.is_empty() {
-        return format!("lsp ({}): 0 diagnostics", report.server);
+        return format!(
+            "lsp ({}): 0 diagnostics in the first publish for this file (type-check results can arrive in a later publish)",
+            report.server
+        );
     }
     let mut diags = report.diagnostics.clone();
     diags.sort_by_key(|d| (d.severity, d.line, d.col));
@@ -235,7 +241,12 @@ pub fn render_diagnostics(report: &DiagReport, cap: usize) -> String {
         .take(cap)
         .map(|d| {
             let first_line = d.message.lines().next().unwrap_or("");
-            format!("line {}: {}", d.line, crate::truncate_str(first_line, 200))
+            format!(
+                "line {} ({}): {}",
+                d.line,
+                d.severity.label(),
+                crate::truncate_str(first_line, 200)
+            )
         })
         .collect::<Vec<_>>()
         .join("; ");
@@ -1154,7 +1165,10 @@ mod tests {
     #[test]
     fn render_diagnostics_zero_counts_and_cap() {
         let report = DiagReport { server: "rust-analyzer".into(), diagnostics: vec![] };
-        assert_eq!(render_diagnostics(&report, 10), "lsp (rust-analyzer): 0 diagnostics");
+        assert_eq!(
+            render_diagnostics(&report, 10),
+            "lsp (rust-analyzer): 0 diagnostics in the first publish for this file (type-check results can arrive in a later publish)"
+        );
 
         let report = DiagReport {
             server: "rust-analyzer".into(),
@@ -1166,7 +1180,8 @@ mod tests {
         };
         let line = render_diagnostics(&report, 2);
         assert!(line.starts_with("lsp (rust-analyzer): 1 error, 2 warnings — "), "{line}");
-        assert!(line.contains("line 40: mismatched types"), "errors sort first: {line}");
+        assert!(line.contains("line 40 (error): mismatched types"), "errors sort first: {line}");
+        assert!(line.contains("line 50 (warning): unused variable"), "severity is named: {line}");
         assert!(line.contains("; 1 more omitted"), "cap must be stated: {line}");
         assert!(!line.contains("unused import"), "{line}");
     }

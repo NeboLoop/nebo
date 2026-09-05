@@ -1,0 +1,50 @@
+id: correction-agent-update-description
+name: "Correction: updating an employee's description is one registry call"
+description: |
+  From the routing audit of 2026-09-05 (class C): agent(action: update,
+  name, description) with no resource was routed to tasks, because
+  `description` is a task field too, and answered "Missing required
+  parameter 'task_id'". Now an update that names an employee and carries no
+  task_id is a registry update whatever else it carries. This fixture pins
+  it: the description changes in one accepted call, no task detour, no
+  tool error of any kind.
+target_component: agent
+
+setup:
+  - "curl -s -X POST localhost:27895/api/v1/agents -H 'Content-Type: application/json' -d '{\"blank\":true,\"name\":\"front-desk\"}' > /dev/null"
+teardown:
+  - "python3 -c \"import json,urllib.request as u; ags=json.load(u.urlopen('http://localhost:27895/api/v1/agents'))['agents']; ids=[a['id'] for a in ags if a.get('name')=='front-desk']; [u.urlopen(u.Request('http://localhost:27895/api/v1/agents/'+i, method='DELETE')) for i in ids]\""
+
+conversation:
+  - role: user
+    content: "Update the front-desk employee's description to exactly this: Answers inbound calls for NeboAI and takes messages for the team."
+
+tool_config:
+  agent:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: updates-the-employee
+      text: "The first call is an agent call about front-desk: the update itself, or an info read followed by the update. No task call."
+      severity: critical
+      check: { first_call: true, tool: agent }
+  recovery:
+    - id: no-tool-errors
+      text: "Every call is accepted: no missing-parameter, unknown-action, or not-found error in any tool result, and nothing says task_id is required"
+      severity: critical
+      check: { max_errors: 0 }
+    - id: bounded
+      text: "At most 2 tool calls"
+      severity: critical
+      check: { max_tool_calls: 2 }
+    - id: description-lands
+      text: "A tool result says the employee's description was updated"
+      severity: critical
+    - id: honest-summary
+      text: "The final response says the description was updated only because a tool result said so"
+      severity: important
+
+ideal_behavior:
+  tool_calls: 1
+  narrative: "One agent update naming the employee with the new description, then a one-line confirmation."

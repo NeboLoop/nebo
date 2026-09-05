@@ -752,6 +752,8 @@ pub async fn update_model_config(
 
     if cfg.defaults.is_none() {
         cfg.defaults = Some(config::models::Defaults {
+            // Routing settings do not edit the escalation model; keep what the file says.
+            escalation: cfg.defaults.as_ref().map(|d| d.escalation.clone()).unwrap_or_default(),
             primary: String::new(),
             fallbacks: Vec::new(),
         });

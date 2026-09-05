@@ -40,6 +40,18 @@ impl NotebookTool {
         }
         cell_id.parse::<usize>().ok().filter(|&i| i < cells.len())
     }
+
+    fn cell_not_found(cells: &[Value], cell_id: &str) -> String {
+        let n = cells.len();
+        let range = if n == 0 {
+            "this notebook has 0 cells".to_string()
+        } else {
+            format!("this notebook has {n} cells (0..{})", n - 1)
+        };
+        format!(
+            "Cell not found: {cell_id}. cell_id is a cell's id or a zero-based index; {range}. Use action: \"read\" to list them."
+        )
+    }
 }
 
 impl DynTool for NotebookTool {
@@ -147,7 +159,7 @@ impl DynTool for NotebookTool {
                 "delete" => {
                     let idx = match Self::find_cell(cells, cell_id) {
                         Some(i) => i,
-                        None => return ToolResult::error(format!("Cell not found: {}", cell_id)),
+                        None => return ToolResult::error(Self::cell_not_found(cells, cell_id)),
                     };
                     cells.remove(idx);
                     format!("Deleted cell {} from {}", cell_id, path)
@@ -172,7 +184,7 @@ impl DynTool for NotebookTool {
                     } else {
                         match Self::find_cell(cells, cell_id) {
                             Some(i) => i + 1,
-                            None => return ToolResult::error(format!("Cell not found: {}", cell_id)),
+                            None => return ToolResult::error(Self::cell_not_found(cells, cell_id)),
                         }
                     };
                     cells.insert(at, new_cell);
@@ -181,7 +193,7 @@ impl DynTool for NotebookTool {
                 "replace" => {
                     let idx = match Self::find_cell(cells, cell_id) {
                         Some(i) => i,
-                        None => return ToolResult::error(format!("Cell not found: {}", cell_id)),
+                        None => return ToolResult::error(Self::cell_not_found(cells, cell_id)),
                     };
                     cells[idx]["source"] = json!(new_source);
                     if let Some(ct) = cell_type {

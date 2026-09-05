@@ -1,0 +1,46 @@
+id: correction-work-name-in-definition
+name: "Correction — a workflow name inside the definition is still a name"
+description: |
+  Found live on 2026-09-04: the model created three workflows for an employee
+  and put "name" inside the definition JSON. The work tool answered "name is
+  required" three times, though the name was in every request. It took a
+  fourth try with a top-level name. The tool now accepts either place; the
+  fixture pins that a create with the name in either place succeeds first
+  time, and that a missing name is refused with directions, not a bare
+  "required".
+target_component: work
+
+setup:
+  - "curl -s -X POST localhost:27895/api/v1/agents -H 'Content-Type: application/json' -d '{\"blank\":true,\"name\":\"cs-agent\"}' > /dev/null"
+teardown:
+  - "python3 -c \"import json,urllib.request as u; ags=json.load(u.urlopen('http://localhost:27895/api/v1/agents'))['agents']; ids=[a['id'] for a in ags if a.get('name')=='cs-agent']; [u.urlopen(u.Request('http://localhost:27895/api/v1/agents/'+i, method='DELETE')) for i in ids]\""
+
+conversation:
+  - role: user
+    content: "Create this workflow for the employee cs-agent, exactly as written, and do not run it: {\"name\": \"Handle Web Form Submission\", \"activities\": [{\"id\": \"capture\", \"intent\": \"Read the webhook payload for name, email and message\", \"steps\": [\"Extract name, email and message from the payload\"]}, {\"id\": \"classify\", \"intent\": \"Classify the inquiry\", \"steps\": [\"Pick one of: product question, billing, technical, complaint\"]}, {\"id\": \"respond\", \"intent\": \"Reply by email\", \"steps\": [\"Draft a warm reply and send it by email\"]}]}"
+
+tool_config:
+  work:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: creates-with-work
+      text: "The first call is work(action: create)"
+      severity: critical
+      check: { first_call: true, tool: work, arg: action, equals: create }
+  recovery:
+    - id: first-create-succeeds
+      text: "The create succeeds on the first try; no 'name is required' error appears in any tool result"
+      severity: critical
+    - id: bounded
+      text: "At most 2 tool calls (one create, at most one confirmation read)"
+      severity: critical
+      check: { max_tool_calls: 2 }
+    - id: reports-created
+      text: "The final response says the workflow was created and names it Handle Web Form Submission"
+      severity: important
+
+ideal_behavior:
+  tool_calls: 1
+  narrative: "One work(action: create) call with the name either top-level or inside the definition, then a one-line confirmation."

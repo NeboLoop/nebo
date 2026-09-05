@@ -726,6 +726,8 @@ async fn start_app_agent_run(
             tool_allowlist: None,
             hidden_prompt: false,
             audience: None,
+            cwd: None,
+            model_override: None,
         },
     )
     .await

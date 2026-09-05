@@ -1,0 +1,47 @@
+id: correction-plugin-discover-installed
+name: "Correction: discover never offers to install what is installed"
+description: |
+  From the owner's live thread on 2026-09-05: plugin(action: "discover")
+  built an install card for QuickBooks Online while that plugin was already
+  installed, and the run parked on the card. Now discover checks the plugin
+  store before offering a card: an installed best match is reported as
+  already installed and the run continues with the connect step. This
+  fixture runs on a machine with quickbooks installed and pins that no
+  install card is ever offered.
+target_component: plugin
+
+conversation:
+  - role: user
+    content: "Let's create a quickbooks auto-categorization assistant."
+
+tool_config:
+  plugin:
+    enabled: true
+  agent:
+    enabled: true
+  skill:
+    enabled: true
+
+prompt_assertions:
+  recovery:
+    - id: no-install-card
+      text: "No tool result contains \"Install it on the card\"; no install_plugin ask is produced for a plugin that is already installed"
+      severity: critical
+    - id: says-installed
+      text: "If discover is called for quickbooks, its result says the plugin was already installed and points at plugin(resource: \"quickbooks\", ...)"
+      severity: critical
+    - id: no-first-call-misses
+      text: "Every call is accepted: no missing-resource or unknown-action error in any tool result"
+      severity: critical
+      check: { max_errors: 0 }
+    - id: bounded
+      text: "At most 8 tool calls"
+      severity: important
+      check: { max_tool_calls: 8 }
+    - id: honest-summary
+      text: "The final response does not tell the user to install QuickBooks; it proceeds with the assistant (asks what to categorize, reads the plugin's help, or creates the employee)"
+      severity: important
+
+ideal_behavior:
+  tool_calls: 3
+  narrative: "Confirm quickbooks is installed (list or help), then design or create the assistant; no install card, no install narration."

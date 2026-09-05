@@ -76,7 +76,7 @@ async fn handle_search(input: &serde_json::Value) -> ToolResult {
         return ToolResult::error(crate::errors::missing_param(
             "search",
             "query",
-            "os(resource: \"search\", action: \"search\", query: \"budget report 2024\")",
+            "spotlight(action: \"search\", query: \"budget report 2024\")",
         ));
     }
     #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
@@ -112,8 +112,9 @@ async fn handle_search(input: &serde_json::Value) -> ToolResult {
                             let found: Vec<&str> = text.lines().take(limit).collect();
                             if !found.is_empty() {
                                 return ToolResult::ok(format!(
-                                    "Found {} results (find fallback — Spotlight does not index this location):\n{}",
-                                    found.len(),
+                                    "{} (mdfind returned nothing; results are from a bounded find in {}):\n{}",
+                                    found_header(found.len(), limit),
+                                    dir,
                                     found.join("\n")
                                 ));
                             }
@@ -122,8 +123,8 @@ async fn handle_search(input: &serde_json::Value) -> ToolResult {
                     ToolResult::ok("No files found. Note: Spotlight does not index ~/Library — for app data pass dir: \"~/Library\" (a find fallback runs there). For name/extension patterns use glob: os(resource: \"file\", action: \"glob\", pattern: \"*.ext\", path: \".\")")
                 } else {
                     ToolResult::ok(format!(
-                        "Found {} results:\n{}",
-                        results.len(),
+                        "{}:\n{}",
+                        found_header(results.len(), limit),
                         results.join("\n")
                     ))
                 }
@@ -149,13 +150,13 @@ async fn handle_search(input: &serde_json::Value) -> ToolResult {
         match output {
             Ok(out) if out.status.success() => {
                 let text = String::from_utf8_lossy(&out.stdout);
-                let results: Vec<&str> = text.lines().collect();
+                let results: Vec<&str> = text.lines().take(limit).collect();
                 if results.is_empty() {
                     ToolResult::ok("No files found. To find files by name or extension pattern, use glob instead: os(resource: \"file\", action: \"glob\", pattern: \"*.ext\", path: \".\")")
                 } else {
                     ToolResult::ok(format!(
-                        "Found {} results:\n{}",
-                        results.len(),
+                        "{}:\n{}",
+                        found_header(results.len(), limit),
                         results.join("\n")
                     ))
                 }
@@ -175,8 +176,8 @@ async fn handle_search(input: &serde_json::Value) -> ToolResult {
                             ToolResult::ok("No files found. To find files by name or extension pattern, use glob instead: os(resource: \"file\", action: \"glob\", pattern: \"*.ext\", path: \".\")")
                         } else {
                             ToolResult::ok(format!(
-                                "Found {} results:\n{}",
-                                results.len(),
+                                "{}:\n{}",
+                                found_header(results.len(), limit),
                                 results.join("\n")
                             ))
                         }
@@ -212,8 +213,8 @@ async fn handle_search(input: &serde_json::Value) -> ToolResult {
                     ToolResult::ok("No files found. To find files by name or extension pattern, use glob instead: os(resource: \"file\", action: \"glob\", pattern: \"*.ext\", path: \".\")")
                 } else {
                     ToolResult::ok(format!(
-                        "Found {} results:\n{}",
-                        results.len(),
+                        "{}:\n{}",
+                        found_header(results.len(), limit),
                         results.join("\n")
                     ))
                 }
@@ -232,9 +233,26 @@ async fn handle_search(input: &serde_json::Value) -> ToolResult {
     }
 }
 
+/// "Found N results", and when the list was cut at `limit`, says so and
+/// names the parameter that raises it.
+#[cfg_attr(not(any(target_os = "macos", target_os = "linux", target_os = "windows")), allow(dead_code))]
+fn found_header(n: usize, limit: usize) -> String {
+    if n >= limit {
+        format!("Found {n} results (limit {limit}; pass limit: N for more)")
+    } else {
+        format!("Found {n} results")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn found_header_names_the_limit_only_when_it_was_hit() {
+        assert_eq!(found_header(3, 50), "Found 3 results");
+        assert_eq!(found_header(50, 50), "Found 50 results (limit 50; pass limit: N for more)");
+    }
 
     #[test]
     fn test_tool_metadata() {

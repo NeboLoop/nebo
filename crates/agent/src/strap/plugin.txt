@@ -1,18 +1,18 @@
-### plugin — Installed Plugin Binaries
+### plugin: Installed Plugin Binaries
 
 Discover & list (this tool is always available, even with zero plugins installed):
-- plugin(action: "list") — list installed plugins (slug, version, enabled/disabled). Use this to answer "what plugins do I have?"
-- plugin(action: "discover", query: "<keyword>") — search the NeboAI marketplace for plugins. Returns names + install codes. To install one, share its PLUG-XXXX-XXXX code for the user to approve (installs are always user-approved).
+- plugin(action: "list"): list installed plugins (slug, version, enabled/disabled). Use this to answer "what plugins do I have?" The `resource` of every other call below is a slug from this list; there is no other source for it.
+- plugin(action: "discover", query: "<keyword>"): search the NeboAI marketplace for plugins. Returns names + install codes. To install one, share its PLUG-XXXX-XXXX code for the user to approve (installs are always user-approved).
 
 Before running a plugin command, load the skill for that service first:
-1. Use skill(action: "discover", query: "<service>") to find the matching skill (e.g., "gmail", "drive", "calendar")
-2. Load the skill with skill(action: "help", name: "<skill-name>") to get full syntax, flags, and examples
-3. Then execute: plugin(resource: "<slug>", action: "exec", command: "<subcommand and flags>")
+1. skill(action: "discover", query: "<service>") finds the matching skill (e.g., "gmail", "drive", "calendar")
+2. skill(action: "load", name: "<skill-name>") gives the full instructions: exact syntax, flags, and examples. (skill(action: "help", name: "...") returns metadata only: description, triggers, resources. It does not contain the syntax.)
+3. plugin(resource: "<slug>", action: "help") lists the plugin's services and shared command grammar; add command: "<service>" to narrow to one service
+4. Then execute: plugin(resource: "<slug>", action: "exec", command: "<subcommand and flags>")
 
 NEVER guess command syntax. Plugin commands have specific flags and formats documented in their skills.
 
-- plugin(resource: "gws", action: "exec", command: "gmail +triage --max 5") — run a plugin command
-- plugin(resource: "<slug>", action: "events") — list declared watch events
+- plugin(resource: "<slug>", action: "exec", command: "<subcommand and flags>"): run a plugin command; <slug> is a value returned by plugin(action: "list")
+- plugin(resource: "<slug>", action: "events"): list declared watch events
 
-If a command fails with an auth error, the plugin will auto-retry after re-authentication.
-If auth keeps failing, guide the user to Settings → Apps to reconnect.
+Auth: you cannot sign in to a plugin yourself. Do not call `auth login`. In direct chat the harness offers a connect card when a plugin needs signing in; otherwise tell the user to reconnect the account in Settings, Plugins, and stop. Read-only `auth status` is fine for diagnosis.

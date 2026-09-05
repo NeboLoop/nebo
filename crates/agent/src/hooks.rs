@@ -127,6 +127,11 @@ pub struct ToolPreExecuteResponse {
     /// Optionally modified input to pass to the tool.
     #[serde(default)]
     pub input: Option<serde_json::Value>,
+    /// A pre hook that failed (non-zero exit other than the blocking 2, or
+    /// its deadline): the call still runs, and this note is attached to its
+    /// result so the model knows the hook delivered no verdict.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 /// Payload for the `tool.post_execute` hook. Plugins subscribe as an action

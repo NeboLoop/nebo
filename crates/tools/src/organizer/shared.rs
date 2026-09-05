@@ -15,7 +15,12 @@ use crate::registry::ToolResult;
 /// Supports:
 /// - ISO format: "2024-01-15 14:00", "2024-01-15"
 /// - US format:  "01/15/2024 14:00", "01/15/2024"
-/// - Natural language: "today", "tomorrow", "in 2 hours", "in 3 days", "in 1 week"
+/// - Natural language: "today", "tomorrow", "in N minutes|hours|days|weeks"
+///
+/// `ACCEPTED_DATE_FORMS` is the same list as one line for error messages.
+#[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+pub const ACCEPTED_DATE_FORMS: &str = "'YYYY-MM-DD HH:MM', 'YYYY-MM-DD', 'MM/DD/YYYY HH:MM', 'MM/DD/YYYY', 'today', 'tomorrow', 'in N minutes|hours|days|weeks'";
+
 #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
 pub fn parse_date(s: &str) -> Result<chrono::NaiveDateTime, String> {
     use chrono::{Duration, Local, NaiveDate};
@@ -48,7 +53,10 @@ pub fn parse_date(s: &str) -> Result<chrono::NaiveDateTime, String> {
                 }
             }
         }
-        return Err(format!("Could not parse relative date: '{}'", s));
+        return Err(format!(
+            "Could not parse '{}'. Relative form is 'in N minutes|hours|days|weeks'.",
+            s
+        ));
     }
 
     // Structured formats (with time)
@@ -68,8 +76,8 @@ pub fn parse_date(s: &str) -> Result<chrono::NaiveDateTime, String> {
     }
 
     Err(format!(
-        "Could not parse date: '{}'. Use YYYY-MM-DD HH:MM, MM/DD/YYYY, 'tomorrow', or 'in N days'",
-        s
+        "Could not parse date '{}'. Accepted forms: {}.",
+        s, ACCEPTED_DATE_FORMS
     ))
 }
 
@@ -100,9 +108,49 @@ pub fn escape_powershell(s: &str) -> String {
 // Subprocess execution
 // ═══════════════════════════════════════════════════════════════════════
 
+/// Result text for a subprocess that exited 0 and printed nothing. Callers
+/// that know what "nothing" means (an empty listing) compare against this
+/// and replace it with a counted statement.
+#[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+pub const NO_OUTPUT: &str = "(exit 0, no output)";
+
 /// Maximum time to wait for a subprocess before killing it.
 #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
 const SUBPROCESS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Error text for a subprocess that hit `SUBPROCESS_TIMEOUT` and was killed.
+/// The command may or may not have taken effect before the kill.
+#[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+pub fn timeout_error(cmd: &str) -> String {
+    format!(
+        "{} did not finish within {} s and was killed; whether it took effect is unknown. Narrow the request (specify an account, mailbox, or calendar name, or lower the limit).",
+        cmd,
+        SUBPROCESS_TIMEOUT.as_secs()
+    )
+}
+
+/// Error text for a subprocess that exited non-zero: names the command and
+/// the exit code, then whatever the process printed (stderr first, stdout
+/// as a fallback, or an explicit marker when it printed nothing).
+#[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+pub fn exit_error(cmd: &str, output: &std::process::Output) -> String {
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let code = match output.status.code() {
+        Some(c) => c.to_string(),
+        None => "terminated by signal".to_string(),
+    };
+    let body = if stdout.is_empty() && stderr.is_empty() {
+        "(no output)".to_string()
+    } else if stdout.is_empty() {
+        stderr
+    } else if stderr.is_empty() {
+        stdout
+    } else {
+        format!("{}\n{}", stdout, stderr)
+    };
+    format!("{} exited {}: {}", cmd, code, body)
+}
 
 /// Run an AppleScript via `osascript -e` and return a ToolResult.
 #[cfg(target_os = "macos")]
@@ -123,21 +171,16 @@ pub async fn run_osascript(script: &str) -> ToolResult {
         Ok(Ok(output)) if output.status.success() => {
             let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
             ToolResult::ok(if text.is_empty() {
-                "OK".to_string()
+                NO_OUTPUT.to_string()
             } else {
                 text
             })
         }
-        Ok(Ok(output)) => {
-            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-            ToolResult::error(format!("AppleScript error: {}", stderr))
-        }
+        Ok(Ok(output)) => ToolResult::error(exit_error("osascript", &output)),
         Ok(Err(e)) => ToolResult::error(format!("Failed to run osascript: {}", e)),
         Err(_) => {
             // child is killed on drop via kill_on_drop(true)
-            ToolResult::error(
-                "Timed out after 30s. Narrow the query (specify an account, mailbox, or calendar name, or lower the limit).",
-            )
+            ToolResult::error(timeout_error("osascript"))
         }
     }
 }
@@ -161,25 +204,14 @@ pub async fn run_command(cmd: &str, args: &[&str]) -> ToolResult {
         Ok(Ok(output)) if output.status.success() => {
             let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
             ToolResult::ok(if text.is_empty() {
-                "OK".to_string()
+                NO_OUTPUT.to_string()
             } else {
                 text
             })
         }
-        Ok(Ok(output)) => {
-            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            let msg = if stdout.is_empty() {
-                stderr
-            } else if stderr.is_empty() {
-                stdout
-            } else {
-                format!("{}\n{}", stdout, stderr)
-            };
-            ToolResult::error(msg)
-        }
+        Ok(Ok(output)) => ToolResult::error(exit_error(cmd, &output)),
         Ok(Err(e)) => ToolResult::error(format!("Failed to run {}: {}", cmd, e)),
-        Err(_) => ToolResult::error("Timed out after 30s."),
+        Err(_) => ToolResult::error(timeout_error(cmd)),
     }
 }
 
@@ -210,23 +242,16 @@ pub async fn run_command_with_stdin(cmd: &str, args: &[&str], stdin_data: &str) 
         Ok(Ok(output)) if output.status.success() => {
             let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
             ToolResult::ok(if text.is_empty() {
-                "OK".to_string()
+                NO_OUTPUT.to_string()
             } else {
                 text
             })
         }
-        Ok(Ok(output)) => {
-            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-            ToolResult::error(if stderr.is_empty() {
-                String::from_utf8_lossy(&output.stdout).trim().to_string()
-            } else {
-                stderr
-            })
-        }
+        Ok(Ok(output)) => ToolResult::error(exit_error(cmd, &output)),
         Ok(Err(e)) => ToolResult::error(format!("{} failed: {}", cmd, e)),
         Err(_) => {
-            // child already consumed by wait_with_output — process will be cleaned up on drop
-            ToolResult::error("Timed out after 30s.")
+            // child already consumed by wait_with_output; process is cleaned up on drop
+            ToolResult::error(timeout_error(cmd))
         }
     }
 }
@@ -250,25 +275,14 @@ pub async fn run_powershell(script: &str) -> ToolResult {
         Ok(Ok(output)) if output.status.success() => {
             let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
             ToolResult::ok(if text.is_empty() {
-                "OK".to_string()
+                NO_OUTPUT.to_string()
             } else {
                 text
             })
         }
-        Ok(Ok(output)) => {
-            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            let msg = if stdout.is_empty() {
-                stderr
-            } else if stderr.is_empty() {
-                stdout
-            } else {
-                format!("{}\n{}", stdout, stderr)
-            };
-            ToolResult::error(msg)
-        }
+        Ok(Ok(output)) => ToolResult::error(exit_error("powershell", &output)),
         Ok(Err(e)) => ToolResult::error(format!("Failed to run PowerShell: {}", e)),
-        Err(_) => ToolResult::error("Timed out after 30s."),
+        Err(_) => ToolResult::error(timeout_error("powershell")),
     }
 }
 
@@ -361,6 +375,46 @@ mod tests {
         assert!(parse_date("not-a-date").is_err());
         assert!(parse_date("").is_err());
         assert!(parse_date("in banana days").is_err());
+    }
+
+    #[test]
+    fn test_parse_date_errors_name_accepted_forms() {
+        let err = parse_date("in banana days").unwrap_err();
+        assert!(err.contains("in banana days"), "{err}");
+        assert!(err.contains("in N minutes|hours|days|weeks"), "{err}");
+
+        let err = parse_date("not-a-date").unwrap_err();
+        assert!(err.contains("not-a-date"), "{err}");
+        for form in ["YYYY-MM-DD HH:MM", "MM/DD/YYYY", "today", "tomorrow", "in N minutes"] {
+            assert!(err.contains(form), "missing {form} in {err}");
+        }
+    }
+
+    #[test]
+    fn test_timeout_error_names_command_and_seconds() {
+        let msg = timeout_error("notmuch");
+        assert!(msg.starts_with("notmuch did not finish within 30 s"), "{msg}");
+        assert!(msg.contains("whether it took effect is unknown"), "{msg}");
+    }
+
+    #[test]
+    fn test_exit_error_names_command_code_and_output() {
+        #[cfg(unix)]
+        {
+            let output = std::process::Command::new("sh")
+                .args(["-c", "echo out; echo err 1>&2; exit 3"])
+                .output()
+                .unwrap();
+            let msg = exit_error("sh", &output);
+            assert!(msg.starts_with("sh exited 3: "), "{msg}");
+            assert!(msg.contains("out") && msg.contains("err"), "{msg}");
+
+            let silent = std::process::Command::new("sh")
+                .args(["-c", "exit 2"])
+                .output()
+                .unwrap();
+            assert_eq!(exit_error("sh", &silent), "sh exited 2: (no output)");
+        }
     }
 
     #[test]

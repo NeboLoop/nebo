@@ -1,109 +1,97 @@
-### agent — Self-Management, Cognition & Agent Registry
-USE THIS when: spawning sub-agents, tracking multi-step work, searching memory, managing sessions, analyzing images, asking the user a question, OR delegating to/managing installed agents.
-CRITICAL: To delegate to a NAMED agent (e.g. "chief-of-staff"), use agent(resource: "registry", action: "delegate") — NOT agent(resource: "task", action: "spawn"). Delegation loads the agent's full identity, plugins, and skills. Spawning creates a blank sub-agent with no personality.
+### agent: Self-Management, Cognition & Agent Registry
+USE THIS when: spawning sub-agents, tracking multi-step work, searching memory, managing sessions, asking the user a question (direct chat only), OR listing and managing installed agents.
+Work for a NAMED coworker (another AI employee on this computer) is a MESSAGE, never a task spawn: message(resource: "coworker", action: "send", to: "<name>", text: "..."). A spawned sub-agent is blank, with no coworker's identity, plugins, or skills.
 
 **Sub-agents (parallel work):**
 Spawn sub-agents for independent work. Two modes:
-- **wait: true (DEFAULT)** — You block until the sub-agent finishes. Result returns inline. Use this for most cases.
-- **wait: false** — Sub-agent runs in background. When it finishes or fails you are woken automatically to act on the result and report. Use this only when you have other work to do in parallel.
-- agent(resource: task, action: spawn, prompt: "Research competitor pricing", tools: ["web"]) — Spawn with web tool docs
-- agent(resource: task, action: spawn, prompt: "Check inbox for urgent items", plugins: ["PLUG-PJ3Z-ECFV"], tools: ["loop", "message"]) — Spawn with plugin + tools
-- agent(resource: task, action: spawn, prompt: "...", wait: false, tools: ["web"]) — Background with tool docs
-- agent(resource: task, action: status, agent_id: "...") — Check status of a background agent
-- agent(resource: task, action: cancel, agent_id: "...") — Cancel a running sub-agent
+- **wait: true (DEFAULT)**: You block until the sub-agent finishes. Result returns inline. Use this for most cases.
+- **wait: false**: Sub-agent runs in background. When it finishes or fails you are woken automatically to act on the result and report. Use this only when you have other work to do in parallel.
+- agent(resource: task, action: spawn, prompt: "Research competitor pricing", tools: ["web"]): Spawn with web tool docs
+- agent(resource: task, action: spawn, prompt: "Check inbox for urgent items", plugins: ["PLUG-PJ3Z-ECFV"], tools: ["loop", "message"]): Spawn with plugin + tools
+- agent(resource: task, action: spawn, prompt: "...", wait: false, tools: ["web"]): Background with tool docs
+- agent(resource: task, action: status, task_id: "..."): Check status of a background agent (omit task_id to list every running sub-agent)
+- agent(resource: task, action: cancel, task_id: "..."): Cancel a running sub-agent
 
 **Batch parallel spawn (preferred for 2+ independent tasks):**
 - agent(resource: task, action: spawn_parallel, tasks: [{prompt: "Search site A", tools: ["web"]}, {prompt: "Search site B", tools: ["web"]}])
 - All tasks run concurrently, results collected and returned together
-- Each sub-agent gets its own browser session — no tab conflicts
+- Each sub-agent gets its own browser session: no tab conflicts
 - Tasks that EDIT files in the same project: add isolate: "worktree" (and workspace: "/path/to/project" if it is not the current folder). Each hand works in its own copy (a git worktree when the folder is a repo, a scratch copy otherwise) and the results are merged back for you; a file two hands both changed is reported as a conflict with both versions kept. Read-only fan-out never needs it.
   agent(resource: task, action: spawn_parallel, isolate: "worktree", workspace: "/proj", tasks: [{prompt: "Rename foo→bar in src/a.rs"}, {prompt: "Add tests for bar in tests/"}])
 
 **Searching with an explore sub-agent (agent_type: "explore"):**
-- agent(resource: task, action: spawn, prompt: "Find where X is configured across the repo", agent_type: "explore") — a fast, READ-ONLY search specialist that issues parallel greps/reads and reports back. Keeps bulky search output out of your context.
-- Delegate the search when you're hunting for code/files/answers and aren't confident you'll find the match in the first couple of tries. When you already know the exact file path, just read it directly — don't spawn an agent for that.
+- agent(resource: task, action: spawn, prompt: "Find where X is configured across the repo", agent_type: "explore"): a fast, READ-ONLY search specialist that issues parallel greps/reads and reports back. Keeps bulky search output out of your context.
+- Delegate the search when you're hunting for code/files/answers and aren't confident you'll find the match in the first couple of tries. When you already know the exact file path, just read it directly: don't spawn an agent for that.
 
 **CRITICAL: Sub-agents are born blind.** They only know what you pass them.
 - **plugins**: Pass plugin install codes the sub-agent needs. It gets the plugin's description, skills, and usage docs.
-- **tools**: Pass STRAP tool names ("web", "loop", "message", "system", "agent", "skill", "event", "mcp"). It gets the full tool documentation.
+- **tools**: Pass STRAP tool names ("web", "loop", "message", "os", "agent", "skill", "event", "mcp"). It gets the full tool documentation.
 - **skills**: Pass skill names for SKILL.md instructions pre-loaded into context.
 If you use plugins or specific tools, you MUST pass them to any sub-agent that will need them too.
 
 **Work tracking (keep yourself on task):**
-A task list is for work that will take MANY tool calls across several distinct stages, where you could lose the thread. It is not a ritual. Do NOT open one for: a single straightforward request; a small fix or edit; a job you can finish in a handful of calls (read, checkpoint, edit, restore is four calls, not four tasks); or anything you can answer directly. Every create/update is a tool call the owner pays for and the user waits on. When a task list does earn its keep:
-- agent(resource: task, action: create, subject: "Test shell tool") — Create a trackable step
-- agent(resource: task, action: update, task_id: "1", status: "in_progress") — Mark a task in_progress BEFORE you begin it; keep only ONE task in_progress at a time
-- agent(resource: task, action: update, task_id: "1", status: "completed") — Mark a task completed as soon as you finish it; don't batch completions (pending → in_progress → completed)
-- agent(resource: task, action: list) — See all tasks and sub-agents
-- agent(resource: task, action: delete, task_id: "1") — Remove a task
-Only mark a task completed when it is FULLY accomplished. If you hit an error, a blocker, or only partly finished, keep it in_progress and create a follow-up task — never mark incomplete or failed work as completed.
+A task list is for work that will take many tool calls across several distinct stages; never for a handful of calls. Every create/update is a tool call the owner pays for and the user waits on. When a task list does earn its keep:
+- agent(resource: task, action: create, subject: "Test shell tool"): Create a trackable step
+- agent(resource: task, action: update, task_id: "1", status: "in_progress"): Mark a task in_progress BEFORE you begin it; keep only ONE task in_progress at a time
+- agent(resource: task, action: update, task_id: "1", status: "completed"): Mark a task completed as soon as you finish it; don't batch completions (pending → in_progress → completed)
+- agent(resource: task, action: list): See all tasks and sub-agents
+- agent(resource: task, action: delete, task_id: "1"): Mark a task skipped (it stays in the list with status skipped; nothing is removed)
+Only mark a task completed when it is FULLY accomplished. If you hit an error, a blocker, or only partly finished, keep it in_progress and create a follow-up task: never mark incomplete or failed work as completed.
 
 When to spawn vs do it yourself:
-- **ALWAYS spawn** when: comparing across multiple websites/sources, researching multiple independent topics, any task where 2+ web searches could run simultaneously
-- Spawn when: multiple independent tasks, long-running research, tasks that don't depend on each other
-- Do it yourself when: simple single task, tasks that depend on each other's results, quick lookups
+- For several searches at once use web(action: search, queries: [...]); spawn sub-agents only for independent multi-step investigations.
+- Do it yourself when: a single task, tasks that depend on each other's results, quick lookups.
 
 **Memory (3-tier persistence):**
-- agent(resource: memory, action: store, key: "user/name", value: "Alice", layer: "tacit") — Store a fact
-- agent(resource: memory, action: recall, key: "user/name") — Recall a specific fact
-- agent(resource: memory, action: search, query: "...") — Search across all memories
-- agent(resource: memory, action: list) — List stored memories
-- agent(resource: memory, action: delete, key: "...") — Delete a memory
-- agent(resource: memory, action: clear) — Clear all memories
-Layers: "tacit" (long-term preferences — MOST COMMON), "daily" (today's facts, auto-expires), "entity" (people/places/things)
+- agent(resource: memory, action: store, key: "user/name", value: "Alice", layer: "tacit"): Store a fact
+- agent(resource: memory, action: recall, key: "user/name"): Recall a specific fact
+- agent(resource: memory, action: search, query: "..."): Search across all memories
+- agent(resource: memory, action: list): List stored memories
+- agent(resource: memory, action: delete, key: "..."): Delete a memory
+- agent(resource: memory, action: clear): Clear all memories
+Layers: "tacit" (long-term preferences: MOST COMMON), "project" (ongoing work), "entity" (people/places/things). Any other layer value is stored as tacit.
 
 **Sessions:**
-- agent(resource: session, action: list) — List conversation sessions
-- agent(resource: session, action: history, session_key: "...") — View session history
-- agent(resource: session, action: status) — Current session status
-- agent(resource: session, action: clear) — Clear current session
-- agent(resource: session, action: query, session_key: "...", query: "...") — Search session history
+- agent(resource: session, action: list): List conversation sessions
+- agent(resource: session, action: history, session_id: "..."): View session history (omit for the current session)
+- agent(resource: session, action: status): Current session status
+- agent(resource: session, action: clear): Clear current session
+- agent(resource: session, action: query, session_id: "...", query: "..."): Search session history
 
 **Profile:**
-- agent(resource: profile, action: get) — View bot identity/profile
-- agent(resource: profile, action: update, name: "...", role: "...") — Update profile
-- agent(resource: profile, action: open_billing) — Open billing/subscription page
+- agent(resource: profile, action: get): View bot identity/profile
+- agent(resource: profile, action: update, name: "...", role: "..."): Update profile
+- agent(resource: profile, action: open_billing): Open billing/subscription page
 
 **Advisors (internal deliberation):**
 For complex decisions, consult advisors who return independent perspectives.
-- agent(resource: advisors, action: deliberate, task: "Should we use PostgreSQL or SQLite?") — Consult all
-- agent(resource: advisors, action: deliberate, task: "...", advisors: ["pragmatist", "skeptic"]) — Specific ones
-
-**Vision (image analysis):**
-- agent(resource: vision, action: analyze, image: "/path/to/image.png") — Analyze an image
+- agent(resource: advisors, action: deliberate, task: "Should we use PostgreSQL or SQLite?"): Consult all
+- agent(resource: advisors, action: deliberate, task: "...", advisors: ["pragmatist", "skeptic"]): Specific ones
 
 **Context (conversation management):**
-- agent(resource: context, action: summary) — Get current context/conversation summary
-- agent(resource: context, action: compact) — Compact conversation to free context space
-- agent(resource: context, action: reset) — Reset conversation context
+- agent(resource: context, action: summary): Get current context/conversation summary
+- agent(resource: context, action: compact): Compact conversation to free context space
+- agent(resource: context, action: reset): Reset conversation context
 
-**Ask (user input) — HITL ONLY, use SPARINGLY:**
-Asking renders interactive choices to the human. It works ONLY in direct desktop/mobile chat —
-NEVER in automated, scheduled, channel, or workflow runs (there is nobody at the keyboard; the call
-is rejected). Ask is the EXCEPTION, not the default:
-- Ask ONLY when you are genuinely blocked on a decision that is the user's to make, or to clarify
-  underspecified work BEFORE starting it.
-- Do NOT ask on every turn. Do NOT ask for confirmations you can reasonably default. Do NOT ask
-  "should I proceed?" — just proceed and report. If you can make a sensible assumption, do, and say
-  what you assumed.
+**Ask (user input): direct chat only:**
+Asking renders interactive choices to the human. It works ONLY in direct desktop/mobile chat. In automated, scheduled, channel, workflow and sub-agent runs there is no one to ask and the call is rejected: make the sensible assumption, say what you assumed in one line, and continue. Risky operations get an approval card from the harness; never ask for approval in prose.
+In direct chat, ask when you are blocked: the ONE question that unblocks you, or to clarify underspecified work BEFORE starting it. Do not ask on every turn, and do not ask for confirmations you can reasonably default.
 Mechanics:
 - Give 2–4 distinct options (meaningfully different directions, not rephrasings). Don't add an
-  "Other" option — the UI always provides a free-text escape and a Skip control.
+  "Other" option: the UI always provides a free-text escape and a Skip control.
 - Put your recommended option FIRST and add "(Recommended)" to its label.
 - Each option may carry a short description of what it means / its trade-off.
-- agent(resource: ask, action: select, text: "Which trigger type?", options: [{label: "Schedule (Recommended)", description: "Run on a cron schedule"}, {label: "Event", description: "Run when an event fires"}]) — single choice
-- agent(resource: ask, action: select, text: "Which inboxes?", multi_select: true, options: ["Work", "Personal"]) — multiple choice (non-exclusive)
-- agent(resource: ask, action: confirm, text: "Proceed with deletion?") — Yes/No (only when the consequence is irreversible and you truly cannot default)
+- agent(resource: ask, action: select, text: "Which trigger type?", options: [{label: "Schedule (Recommended)", description: "Run on a cron schedule"}, {label: "Event", description: "Run when an event fires"}]): single choice
+- agent(resource: ask, action: select, text: "Which inboxes?", multi_select: true, options: ["Work", "Personal"]): multiple choice (non-exclusive)
+- agent(resource: ask, action: confirm, text: "Proceed with deletion?"): Yes/No (only when the consequence is irreversible and you truly cannot default)
 
-**Registry (installed agent management + delegation):**
-When user mentions a named agent or wants to list/activate/delegate to installed agents.
-- agent(resource: registry, action: delegate, name: "chief-of-staff", prompt: "Check my email for urgent items") — Delegate to a NAMED agent
-- agent(resource: registry, action: delegate, id: "13223420-...", prompt: "...", wait: false) — Background delegation
-- agent(resource: registry, action: list) — List available agents
-- agent(resource: registry, action: activate, name: "chief-of-staff") — Activate an agent
-- agent(resource: registry, action: deactivate) — Deactivate current agent
-- agent(resource: registry, action: info, name: "chief-of-staff") — Show agent details
-- agent(resource: registry, action: create, name: "my-agent", description: "...", automations: [{name: "daily-check", schedule: "weekdays at 9am", steps: ["Fetch every URL listed in /data/files/pages.txt", "Check each link on those pages for 4xx/5xx status", "Write findings to /data/files/link-report-{date}.md", "Notify the owner with a one-line summary; stay silent if all links are healthy"]}]) — Create a user agent. Recurring duties go in automations — each becomes an agent workflow (Workflows tab + Schedule page, runs as the agent), NOT an event cron. agent_md optional for a custom persona.
-  Steps must be concrete enough to run unattended: name tools/files/destinations, what to produce, how to report. For multi-stage duties (research at 2am feeding a 10am publish; triage→execute) pass activities: [{id, intent, steps}] instead of steps — each activity runs as its own scoped execution and later stages see earlier outputs.
-- agent(resource: registry, action: update, name: "my-agent", add_automations: [...]) — Add workflows to an existing agent (automations: replaces ALL; remove_automations: delete by name)
-- agent(resource: registry, action: install, code: "AGNT-XXXX-XXXX") — Install from marketplace
+**Registry (installed agent management):**
+When the user wants to list, inspect, activate, or configure installed agents. To hand work to one, message it (see the coworker line at the top).
+- agent(resource: registry, action: list): List available agents
+- agent(resource: registry, action: activate, name: "chief-of-staff"): Activate an agent
+- agent(resource: registry, action: deactivate): Deactivate current agent
+- agent(resource: registry, action: info, name: "chief-of-staff"): Show agent details
+- agent(resource: registry, action: create, name: "my-agent", description: "...", automations: [{name: "daily-check", schedule: "weekdays at 9am", steps: ["Fetch every URL listed in /data/files/pages.txt", "Check each link on those pages for 4xx/5xx status", "Write findings to /data/files/link-report-{date}.md", "Notify the owner with a one-line summary; stay silent if all links are healthy"]}]): Create a user agent. Recurring duties go in automations: each becomes an agent workflow (Workflows tab + Schedule page, runs as the agent), NOT an event cron. agent_md optional for a custom persona.
+  Steps must be concrete enough to run unattended: name tools/files/destinations, what to produce, how to report. For multi-stage duties (research at 2am feeding a 10am publish; triage→execute) pass activities: [{id, intent, steps}] instead of steps: each activity runs as its own scoped execution and later stages see earlier outputs.
+- agent(resource: registry, action: update, name: "my-agent", add_automations: [...]): Add workflows to an existing agent (automations: replaces ALL; remove_automations: delete by name)
+- agent(resource: registry, action: install, code: "AGNT-XXXX-XXXX"): Install from marketplace

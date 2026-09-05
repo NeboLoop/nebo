@@ -47,7 +47,7 @@ impl VmTool {
         if guard.is_none() {
             // Find the sidecar image (embedded in app bundle)
             let image_path = find_sidecar_image()
-                .ok_or_else(|| "VM sidecar image not found. Run `make vm-image` to build.".to_string())?;
+                .ok_or_else(|| "The VM image is not installed in this build; the vm tool is unavailable. Use the host shell instead.".to_string())?;
 
             // Resolve rootfs (download from CDN if needed)
             let rootfs_path = resolve_rootfs().await?;
@@ -120,7 +120,7 @@ impl VmTool {
                     output.push_str(&format!("\n[exit code: {}]", exit_code));
                 }
                 if output.is_empty() {
-                    output = "(no output)".to_string();
+                    output = format!("(exit {exit_code}, no stdout or stderr)");
                 }
                 if exit_code == 0 {
                     ToolResult::ok(output)
@@ -227,10 +227,24 @@ impl VmTool {
         let guard = self.manager.read().await;
         let mgr = guard.as_ref().unwrap();
 
+        let requested = vm_paths.len();
         match vm::FileTransfer::copy_to_host(mgr.client(), vm_paths, dest, false).await {
             Ok(result) => {
                 let count = result.copied.len();
-                ToolResult::ok(format!("copied {count} file(s) to {dest}"))
+                let missing: Vec<String> = result
+                    .errors
+                    .iter()
+                    .map(|(path, err)| format!("{path} ({err})"))
+                    .collect();
+                let text = format!(
+                    "copied {count} of {requested} file(s) to {dest}; missing: [{}]",
+                    missing.join(", ")
+                );
+                if missing.is_empty() {
+                    ToolResult::ok(text)
+                } else {
+                    ToolResult::error(text)
+                }
             }
             Err(e) => ToolResult::error(format!("copy_out failed: {e}")),
         }
@@ -265,8 +279,14 @@ impl VmTool {
         let guard = self.manager.read().await;
         match guard.as_ref() {
             Some(mgr) => {
-                let state = mgr.state().await;
-                ToolResult::ok(format!("VM state: {:?}", state))
+                let state = match mgr.state().await {
+                    vm::manager::VmState::Stopped => "stopped".to_string(),
+                    vm::manager::VmState::Starting => "starting".to_string(),
+                    vm::manager::VmState::Running => "running".to_string(),
+                    vm::manager::VmState::Stopping => "stopping".to_string(),
+                    vm::manager::VmState::Failed(e) => format!("failed: {e}"),
+                };
+                ToolResult::ok(format!("VM state: {state}"))
             }
             None => ToolResult::ok("VM state: not started"),
         }
@@ -371,11 +391,13 @@ impl DynTool for VmTool {
                 )),
             };
 
+            // The camelCase spellings are what the vm strap taught for a
+            // while and what old runs still send; each is the same action.
             match action.as_str() {
                 "exec" => self.handle_exec(&input).await,
-                "write_file" => self.handle_write_file(&input).await,
-                "read_file" => self.handle_read_file(&input).await,
-                "copy_out" => self.handle_copy_out(&input).await,
+                "write_file" | "writeFile" => self.handle_write_file(&input).await,
+                "read_file" | "readFile" => self.handle_read_file(&input).await,
+                "copy_out" | "copyOut" => self.handle_copy_out(&input).await,
                 "list" => self.handle_list(&input).await,
                 "status" => self.handle_status().await,
                 "stop" => self.handle_stop().await,
@@ -407,7 +429,7 @@ async fn resolve_rootfs() -> Result<String, String> {
             }
         }
         return Err(
-            "No rootfs available. Run `make vm-rootfs` for dev, or set ROOTFS_SHA for CDN download."
+            "The VM image is not installed in this build; the vm tool is unavailable. Use the host shell instead."
                 .to_string(),
         );
     }
@@ -462,4 +484,31 @@ fn find_sidecar_image() -> Option<String> {
     }
 
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::origin::ToolContext;
+
+    /// The camelCase spellings the vm strap taught reach the same actions.
+    /// The missing-parameter error proves the arm was entered, and no VM is
+    /// booted to prove it.
+    #[tokio::test]
+    async fn camel_case_actions_are_the_snake_case_actions() {
+        let tool = VmTool::new();
+        let ctx = ToolContext::default();
+        for (alias, canonical) in [
+            ("writeFile", "write_file"),
+            ("readFile", "read_file"),
+            ("copyOut", "copy_out"),
+        ] {
+            let result = tool
+                .execute_dyn(&ctx, serde_json::json!({"action": alias}))
+                .await;
+            assert!(result.is_error, "{alias}: {}", result.content);
+            assert!(result.content.contains(canonical), "{alias}: {}", result.content);
+            assert!(!result.content.contains("Unknown vm action"), "{alias}: {}", result.content);
+        }
+    }
 }

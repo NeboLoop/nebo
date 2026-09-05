@@ -1,0 +1,55 @@
+id: correction-os-shell-session
+name: "Correction - a background session is managed through os shell poll/log/kill"
+description: |
+  A background command's start result tells the model to poll it with
+  os(resource: "shell", action: "poll", session_id: ...). Until 2026-09-05
+  the os tool stamped resource "shell" on every call and the shell tool then
+  routed anything with that resource to exec, so poll, log, write, kill, list
+  and info all answered "exec requires command". Every background job was a
+  dead end. This fixture pins the whole session lifecycle through os with
+  zero error results: start in the background, poll, read the log, kill.
+target_component: os
+
+conversation:
+  - role: user
+    content: "Start this in the background: `sh -c 'for i in 1 2 3; do echo tick $i; sleep 1; done; sleep 120'`. Then poll it once, read its full log, and kill it. Tell me the session id and what the log said."
+
+tool_config:
+  os:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: starts-in-background
+      text: "The first call is os shell exec with background: true"
+      severity: critical
+      check: { first_call: true, tool: os, arg: background, equals: true }
+  recovery:
+    - id: no-tool-errors
+      text: "Every call the model makes is accepted: no 'exec requires command', missing-parameter, or unknown-action error in any tool result"
+      severity: critical
+      check: { max_errors: 0 }
+    - id: polls-the-session
+      text: "The model polls the session with os(resource: 'shell', action: 'poll', session_id: <id from the start result>) and the result reports the session status"
+      severity: critical
+    - id: reads-the-log
+      text: "The model reads the session log with action 'log' and the same session_id"
+      severity: critical
+    - id: kills-the-session
+      text: "The model kills the session with action 'kill' and the same session_id, and the result confirms it"
+      severity: critical
+    - id: bounded
+      text: "At most 6 tool calls"
+      severity: important
+      check: { max_tool_calls: 6 }
+    - id: honest-report
+      text: "The final response names the session id from the start result and quotes what the log contained (tick lines, or that there was no output yet); it does not claim the shell tool is broken or that polling is unavailable"
+      severity: critical
+
+ideal_behavior:
+  tool_calls: 4
+  total_tokens: 5000
+  narrative: |
+    Start with background: true, get "Background session started: **<id>**",
+    poll once ("Status: Running", maybe "tick 1"), log, kill, then two lines:
+    the id and the tick lines the log held.

@@ -12,6 +12,103 @@ use crate::origin::ToolContext;
 use crate::process;
 use crate::registry::{DynTool, ToolResult};
 
+/// The exec budget when the call names no `timeout`.
+const EXEC_TIMEOUT_DEFAULT_SECS: u64 = 120;
+
+/// A recovery step (auth probe, refresh, login, retry) is not started with
+/// less than this left of the exec budget: it could not finish, and the wait
+/// would be read as the plugin timing out.
+const RECOVERY_MIN_REMAINING: Duration = Duration::from_secs(10);
+
+/// The install card's answer once the plugin is on disk.
+const INSTALL_CARD_INSTALLED: &str = "installed";
+
+/// The Google Workspace plugin's slug, named in the description only while
+/// it is installed.
+const GOOGLE_WORKSPACE_SLUG: &str = "gws";
+
+/// One deadline for a whole exec, auth recovery included. The runner caps a
+/// tool call at its own limit; a 120 s command followed by an auth probe,
+/// a refresh and a second probe, each with its own budget, passed that cap
+/// and the model read "timed out" for a plugin that had answered (QuickBooks
+/// `doctor`, 2026-09-05). Every step gets the time that is left, and a step
+/// that could not finish is skipped and named.
+struct ExecBudget {
+    started: std::time::Instant,
+    total: Duration,
+}
+
+impl ExecBudget {
+    fn start(total: Duration) -> Self {
+        Self { started: std::time::Instant::now(), total }
+    }
+
+    fn remaining_at(&self, now: std::time::Instant) -> Duration {
+        self.total.saturating_sub(now.saturating_duration_since(self.started))
+    }
+
+    fn remaining(&self) -> Duration {
+        self.remaining_at(std::time::Instant::now())
+    }
+
+    /// The time `step` may take, or the text that says it was skipped.
+    fn step_at(&self, now: std::time::Instant, command: &str, step: &str) -> Result<Duration, String> {
+        let remaining = self.remaining_at(now);
+        if remaining < RECOVERY_MIN_REMAINING {
+            return Err(format!(
+                "{command} finished; {step} was skipped because only {} s of the {} s exec budget remained.",
+                remaining.as_secs(),
+                self.total.as_secs()
+            ));
+        }
+        Ok(remaining)
+    }
+
+    fn step(&self, command: &str, step: &str) -> Result<Duration, String> {
+        self.step_at(std::time::Instant::now(), command, step)
+    }
+
+    /// The text for a step that started and did not answer in time.
+    fn ran_out(&self, command: &str, step: &str, given: Duration) -> String {
+        format!(
+            "{command} finished; {step} did not answer within the remaining {} s of the {} s exec budget.",
+            given.as_secs(),
+            self.total.as_secs()
+        )
+    }
+}
+
+/// Run one recovery step inside what is left of the budget: skipped and
+/// named when too little is left, cut off and named when it runs out.
+async fn bounded<T>(
+    budget: &ExecBudget,
+    command: &str,
+    step: &str,
+    fut: impl std::future::Future<Output = T>,
+) -> Result<T, String> {
+    let given = budget.step(command, step)?;
+    cut_off(budget, command, step, given, fut).await
+}
+
+/// The cut itself: `fut` gets `given`, and past it the step is named.
+async fn cut_off<T>(
+    budget: &ExecBudget,
+    command: &str,
+    step: &str,
+    given: Duration,
+    fut: impl std::future::Future<Output = T>,
+) -> Result<T, String> {
+    tokio::time::timeout(given, fut)
+        .await
+        .map_err(|_| budget.ran_out(command, step, given))
+}
+
+/// The budget ended the recovery: say which step, and keep the plugin's own
+/// answer in view so the model does not read a bare timeout.
+fn out_of_time(text: String, original: &ToolResult) -> ToolResult {
+    ToolResult::error(format!("{text}\n\nThe command's own result:\n{}", original.content))
+}
+
 /// STRAP domain tool for installed plugin binaries.
 ///
 /// Plugins ship with their own skills (`skills/` directory inside the plugin).
@@ -166,9 +263,27 @@ impl PluginTool {
             }
         }
         match providers.len() {
-            0 => Err(format!(
-                "no installed provider implements operation '{suffix}'."
-            )),
+            0 => {
+                // Every operation an installed plugin does bind, so the model can
+                // see what IS available before going to the marketplace.
+                let mut bound: Vec<String> = Vec::new();
+                for slug in self.active_slugs() {
+                    if let Some(m) = self.plugin_store.get_manifest(&slug) {
+                        bound.extend(m.interface_bindings.keys().cloned());
+                    }
+                }
+                bound.sort();
+                bound.dedup();
+                let bound_desc = if bound.is_empty() {
+                    "none".to_string()
+                } else {
+                    bound.join(", ")
+                };
+                Err(format!(
+                    "no installed provider implements operation '{suffix}'. Bound operations: {bound_desc}. To add a provider: plugin(action: \"discover\", query: \"{}\").",
+                    port_capability(operation)
+                ))
+            }
             1 => Ok(providers.into_iter().next().unwrap()),
             _ => {
                 // Ambiguous: a shared operation (e.g. mail.message.send) with several
@@ -184,10 +299,8 @@ impl PluginTool {
                 }
                 let names: Vec<&str> = providers.iter().map(|(s, _)| s.as_str()).collect();
                 Err(format!(
-                    "operation '{suffix}' is implemented by multiple providers ({}); \
-                     bind one for {}.{} to disambiguate.",
+                    "operation '{suffix}' is implemented by more than one installed plugin ({}). Call one of them directly: plugin(resource: \"<slug>\", command: \"{}\", args: {{...}}).",
                     names.join(", "),
-                    dept.as_deref().unwrap_or("<department>"),
                     cap
                 ))
             }
@@ -334,7 +447,24 @@ impl PluginTool {
                     })
                     .cloned()
                     .collect();
-                let arr = &installable;
+                let matched = items.map(|a| a.len()).unwrap_or(0);
+                self.offer(query, ctx, &installable, matched).await
+            }
+            Err(e) => ToolResult::error(format!("marketplace search failed: {}", e)),
+        }
+    }
+
+    /// The second half of discover: the listing, and in interactive chat the
+    /// install card for the best match. A plugin that is already installed
+    /// gets no card (live, 2026-09-05: QuickBooks was offered for install
+    /// while installed) and goes straight to the step after "installed".
+    async fn offer(
+        &self,
+        query: &str,
+        ctx: &crate::ToolContext,
+        arr: &[serde_json::Value],
+        matched: usize,
+    ) -> ToolResult {
                 if !arr.is_empty() {
                     {
                         // Listings NEVER carry install codes — codes are machine
@@ -384,16 +514,21 @@ impl PluginTool {
                             })
                             .unwrap_or(&arr[0]);
                         let top_code = top.get("code").and_then(|x| x.as_str()).unwrap_or("");
-                        if interactive && !top_code.is_empty() {
+                        let top_slug = top.get("slug").and_then(|x| x.as_str()).unwrap_or("");
+                        let already_installed =
+                            !top_slug.is_empty() && self.plugin_store.resolve(top_slug, "*").is_some();
+                        if already_installed || (interactive && !top_code.is_empty()) {
                             let top_name =
                                 top.get("name").and_then(|x| x.as_str()).unwrap_or("plugin");
-                            let top_slug = top.get("slug").and_then(|x| x.as_str()).unwrap_or("");
                             let top_desc = top
                                 .get("description")
                                 .and_then(|x| x.as_str())
                                 .unwrap_or("");
-                            let answer = ctx
-                                .ask_user(
+                            // Installed already: no card, the answer is known.
+                            let answer = if already_installed {
+                                Some(INSTALL_CARD_INSTALLED.to_string())
+                            } else {
+                                ctx.ask_user(
                                     &format!(
                                         "**{top_name}** can do this. Install it on the card and \
                                          I'll pick up right where I left off."
@@ -406,8 +541,10 @@ impl PluginTool {
                                         "description": top_desc,
                                     }]),
                                 )
-                                .await;
-                            if answer.as_deref() == Some("installed") {
+                                .await
+                            };
+                            let state = if already_installed { "was already installed" } else { "is installed" };
+                            if answer.as_deref() == Some(INSTALL_CARD_INSTALLED) {
                                 // ONE-CARD CHAIN: a plugin that declares an
                                 // account gets its connect step NOW, in the
                                 // same flow — install → connect → straight to
@@ -419,14 +556,16 @@ impl PluginTool {
                                     .and_then(|m| m.auth)
                                     .map(|a| a.label)
                                     .filter(|l| !l.is_empty());
-                                if let Some(label) = auth_label {
+                                if let Some(label) = auth_label
+                                    && interactive
+                                {
                                     let agent_id =
                                         types::keyparser::extract_agent_id(&ctx.session_key);
                                     if !agent_id.is_empty() {
                                         let connected = ctx
                                             .ask_user(
                                                 &format!(
-                                                    "**{top_name}** is installed. Connect your \
+                                                    "**{top_name}** {state}. Connect your \
                                                      {label} on the card and I'll get straight \
                                                      to work."
                                                 ),
@@ -437,14 +576,14 @@ impl PluginTool {
                                             .await;
                                         if connected.as_deref() == Some("connected") {
                                             return ToolResult::ok(format!(
-                                                "{top_name} is installed and its account is \
+                                                "{top_name} {state} and its account is \
                                                  connected. Continue the task NOW via \
                                                  plugin(resource: \"{top_slug}\", ...) — no \
                                                  setup narration."
                                             ));
                                         }
                                         return ToolResult::ok(format!(
-                                            "{top_name} is installed; the account was not \
+                                            "{top_name} {state}; the account was not \
                                              connected (card skipped). The connect card \
                                              re-appears on first use — continue, or ask what \
                                              they'd like to do."
@@ -452,7 +591,7 @@ impl PluginTool {
                                     }
                                 }
                                 return ToolResult::ok(format!(
-                                    "{top_name} is installed. Use it via plugin(resource: \
+                                    "{top_name} {state}. Use it via plugin(resource: \
                                      \"{top_slug}\", ...). If it needs an account, the connect \
                                      card will appear on first use — no setup narration needed."
                                 ));
@@ -484,12 +623,14 @@ impl PluginTool {
                             ))
                         }
                     }
+                } else if matched > 0 {
+                    ToolResult::ok(format!(
+                        "{} results matched but none are installable plugins/connectors.",
+                        matched
+                    ))
                 } else {
                     ToolResult::ok("No plugins found in the marketplace for that query.")
                 }
-            }
-            Err(e) => ToolResult::error(format!("marketplace search failed: {}", e)),
-        }
     }
 
     /// Find the skills directory for a plugin slug.
@@ -620,7 +761,9 @@ impl DynTool for PluginTool {
             return "Run installed plugin binaries. No plugins are installed yet — use \
                     plugin(action: \"list\") to confirm, and plugin(action: \"discover\", \
                     query: \"<keyword>\") to find plugins in the marketplace (installing \
-                    offers the user a card to approve)."
+                    offers the user a card to approve). Once one is installed, every command \
+                    call names it by the slug plugin(action: \"list\") shows: \
+                    plugin(resource: \"<slug>\", action: \"exec\", command: \"<subcommand and flags>\")."
                 .to_string();
         }
 
@@ -638,7 +781,13 @@ impl DynTool for PluginTool {
         out.push_str("       plugin(resource: \"<plugin-slug>\", action: \"help\" [, command: \"<service>\"]) — read the plugin's command grammar / a service's usage\n");
         out.push_str("`command` is passed straight to the plugin binary — the FIRST token is a service (e.g. calendar, gmail, drive), NOT the plugin name. \
                       Grammar: `<service> <resource> <method> [flags]` (e.g. `calendar events list`).\n");
-        out.push_str("For Google Calendar/Gmail/Drive use plugin(resource: \"gws\", ...); for the local Mac calendar use os(resource: \"calendar\").\n\n");
+        // Said only when that plugin is installed: a made-up example slug was
+        // copied verbatim by a live run and reported as "not installed".
+        if slugs.iter().any(|s| s == GOOGLE_WORKSPACE_SLUG) {
+            out.push_str(&format!("For Google Calendar/Gmail/Drive use plugin(resource: \"{GOOGLE_WORKSPACE_SLUG}\", ...); for the local Mac calendar use os(resource: \"calendar\").\n\n"));
+        } else {
+            out.push('\n');
+        }
         out.push_str("Installed plugins:\n\n");
 
         const PER_PLUGIN_BUDGET: usize = 4096;
@@ -734,21 +883,8 @@ impl DynTool for PluginTool {
     }
 
     fn schema(&self) -> serde_json::Value {
-        let slugs = self.active_slugs();
-        let enum_values: Vec<serde_json::Value> = slugs
-            .iter()
-            .map(|s| serde_json::Value::String(s.clone()))
-            .collect();
-
         let mut props = serde_json::Map::new();
-        props.insert(
-            "resource".into(),
-            serde_json::json!({
-                "type": "string",
-                "description": "Plugin slug",
-                "enum": enum_values
-            }),
-        );
+        props.insert("resource".into(), Self::resource_schema(&self.active_slugs()));
         props.insert(
             "action".into(),
             serde_json::json!({
@@ -891,11 +1027,7 @@ impl DynTool for PluginTool {
                 "discover" => self.handle_discover(&pi.query, ctx).await,
                 "exec" | "" => {
                     if pi.resource.is_empty() {
-                        return ToolResult::error(
-                            "resource is required — set it to the plugin slug. \
-                             Example: plugin(resource: \"gws\", action: \"exec\", command: \"gmail +triage\")"
-                                .to_string(),
-                        );
+                        return ToolResult::error(self.resource_required("exec", "exec\", command: \"doctor"));
                     }
                     // Raw exec must not be a side door around the per-employee
                     // operation gate: a command that IS a gated bound operation
@@ -917,19 +1049,13 @@ impl DynTool for PluginTool {
                 }
                 "events" => {
                     if pi.resource.is_empty() {
-                        return ToolResult::error(
-                            "resource is required (the plugin slug) for action: \"events\".".to_string(),
-                        );
+                        return ToolResult::error(self.resource_required("events", "events"));
                     }
                     self.handle_events(&pi.resource)
                 }
                 "help" => {
                     if pi.resource.is_empty() {
-                        return ToolResult::error(
-                            "resource is required (the plugin slug) for action: \"help\". \
-                             Example: plugin(resource: \"gws\", action: \"help\")"
-                                .to_string(),
-                        );
+                        return ToolResult::error(self.resource_required("help", "help"));
                     }
                     self.handle_help(&pi.resource, &pi.command)
                 }
@@ -938,7 +1064,7 @@ impl DynTool for PluginTool {
                     pi.action
                 )),
                 other => ToolResult::error(format!(
-                    "Unknown action: '{}'. Valid actions: list, discover, exec, events.",
+                    "Unknown action: '{}'. Valid actions: list, discover, help, exec, events.",
                     other
                 )),
             }
@@ -947,6 +1073,45 @@ impl DynTool for PluginTool {
 }
 
 impl PluginTool {
+    /// The `resource` property: the installed slugs as an enum when there are
+    /// any. With none installed the enum is left out, because `enum: []`
+    /// makes every value schema-invalid and a validating provider then
+    /// rejects the right slug too (audit 2026-09-05).
+    fn resource_schema(slugs: &[String]) -> serde_json::Value {
+        let mut schema = serde_json::json!({
+            "type": "string",
+            "description": "Plugin slug: which installed plugin this call is about, as plugin(action: \"list\") shows it"
+        });
+        if !slugs.is_empty() {
+            schema["enum"] = serde_json::Value::Array(
+                slugs.iter().map(|s| serde_json::Value::String(s.clone())).collect(),
+            );
+        }
+        schema
+    }
+
+    /// `resource` names which installed plugin a call is about. Said with
+    /// the plugins that are actually installed, because a made-up example
+    /// slug ("gws") was copied verbatim by a live run and then reported as
+    /// "not installed" (2026-09-05).
+    fn resource_required(&self, action: &str, example_tail: &str) -> String {
+        let installed: Vec<String> = self
+            .plugin_store
+            .list_installed()
+            .into_iter()
+            .map(|(slug, _, _, _)| slug)
+            .collect();
+        let choices = match installed.len() {
+            0 => "No plugin is installed; plugin(action: \"discover\", query: ...) finds one.".to_string(),
+            1 => format!("The only installed plugin is \"{}\".", installed[0]),
+            _ => format!("Installed plugins: {}.", installed.join(", ")),
+        };
+        format!(
+            "resource is required for action \"{action}\": the slug of the installed plugin. {choices} Example: plugin(resource: \"{}\", action: \"{example_tail}\")",
+            installed.first().map(String::as_str).unwrap_or("<slug>")
+        )
+    }
+
     /// Read-only usage lookup for a plugin's command grammar.
     ///
     /// `plugin(action: "help", resource: "gws")` returns the service list plus
@@ -958,10 +1123,23 @@ impl PluginTool {
         let skills_dir = match self.skills_dir(slug) {
             Some(d) => d,
             None => {
+                // "Not installed" and "installed without docs" are different
+                // facts with different next calls.
+                if self.plugin_store.resolve(slug, "*").is_none() {
+                    let slugs = self.active_slugs();
+                    let installed = if slugs.is_empty() {
+                        "none".to_string()
+                    } else {
+                        slugs.join(", ")
+                    };
+                    return ToolResult::error(format!(
+                        "Plugin '{}' is not installed (installed: {})",
+                        slug, installed
+                    ));
+                }
                 return ToolResult::error(format!(
-                    "Plugin '{}' has no bundled skills/ documentation. Try plugin(action: \"list\") \
-                     or call commands directly with action: \"exec\".",
-                    slug
+                    "'{}' is installed but ships no skills/ documentation; run plugin(resource: \"{}\", command: \"--help\").",
+                    slug, slug
                 ));
             }
         };
@@ -1038,7 +1216,7 @@ impl PluginTool {
                 }
                 result.push_str(&format!(
                     "\nAgents can reference these via watch triggers:\n\
-                     persona(action: \"create\", name: \"...\", automations: [\n  \
+                     agent(resource: \"registry\", action: \"create\", name: \"...\", automations: [\n  \
                        {{\"name\": \"...\", \"plugin\": \"{}\", \"event\": \"<event-name>\", \"steps\": [...]}}])",
                     slug
                 ));
@@ -1068,7 +1246,9 @@ impl PluginTool {
             return self.route_through_bridge(&verb, pi, ctx).await;
         }
 
-        let result = self.run_plugin_command(pi, ctx).await;
+        let budget = ExecBudget::start(Self::exec_timeout(pi));
+        let command_label = Self::command_label(pi);
+        let result = self.run_plugin_command(pi, ctx, budget.remaining()).await;
 
         // On error, check if it's an auth failure and attempt self-heal:
         // silent refresh first (manifest `auth.commands.refresh`), interactive
@@ -1107,11 +1287,13 @@ impl PluginTool {
 
                     // Confirm with a fresh auth-status check (the one canonical
                     // decision, via PluginStore) if the command is available.
-                    if auth.commands.status.is_some()
-                        && self.probe_auth(&pi.resource, probe_dir).await == Some(true)
-                    {
-                        // Status says authenticated — false positive, return original error
-                        return result;
+                    if auth.commands.status.is_some() {
+                        match bounded(&budget, &command_label, "the auth status check", self.probe_auth(&pi.resource, probe_dir)).await {
+                            // Status says authenticated — false positive, return original error
+                            Ok(Some(true)) => return result,
+                            Ok(_) => {}
+                            Err(text) => return out_of_time(text, &result),
+                        }
                     }
 
                     info!(plugin = %pi.resource, "auth failure detected");
@@ -1120,12 +1302,19 @@ impl PluginTool {
                     // manifest declares a refresh command. No user interruption,
                     // no browser — renew, re-probe, retry.
                     if auth.commands.refresh.is_some() {
-                        self.plugin_store
-                            .run_auth_refresh(&pi.resource, probe_dir)
-                            .await;
-                        if self.probe_auth(&pi.resource, probe_dir).await == Some(true) {
-                            info!(plugin = %pi.resource, "silent token refresh healed auth, retrying command");
-                            return self.run_plugin_command(pi, ctx).await;
+                        if let Err(text) = bounded(&budget, &command_label, "the silent token refresh", self.plugin_store.run_auth_refresh(&pi.resource, probe_dir)).await {
+                            return out_of_time(text, &result);
+                        }
+                        match bounded(&budget, &command_label, "the auth status check after the refresh", self.probe_auth(&pi.resource, probe_dir)).await {
+                            Ok(Some(true)) => {
+                                info!(plugin = %pi.resource, "silent token refresh healed auth, retrying command");
+                                return match budget.step(&command_label, "the retry after the refresh") {
+                                    Ok(given) => self.run_plugin_command(pi, ctx, given).await,
+                                    Err(text) => out_of_time(text, &result),
+                                };
+                            }
+                            Ok(_) => {}
+                            Err(text) => return out_of_time(text, &result),
                         }
                     }
 
@@ -1168,7 +1357,7 @@ impl PluginTool {
                         return ToolResult::terminal(format!(
                             "I couldn't reach **{}** — its authentication expired and automatic \
                              renewal didn't work. Please reconnect this account in the agent's \
-                             Connected Accounts (Settings), then ask me again.",
+                             Settings, Plugins, then ask me again.",
                             pi.resource
                         ));
                     }
@@ -1186,7 +1375,11 @@ impl PluginTool {
                     }
 
                     // Attempt re-auth via plugin's auth login command
-                    if self.run_auth_login(&pi.resource, &binary, &auth).await {
+                    let login_time = match budget.step(&command_label, "the browser login") {
+                        Ok(given) => given,
+                        Err(text) => return out_of_time(text, &result),
+                    };
+                    if self.run_auth_login(&pi.resource, &binary, &auth, login_time).await {
                         info!(plugin = %pi.resource, "re-authentication succeeded, retrying command");
 
                         // Broadcast success
@@ -1197,7 +1390,10 @@ impl PluginTool {
                             );
                         }
 
-                        return self.run_plugin_command(pi, ctx).await;
+                        return match budget.step(&command_label, "the retry after the login") {
+                            Ok(given) => self.run_plugin_command(pi, ctx, given).await,
+                            Err(text) => out_of_time(text, &result),
+                        };
                     }
 
                     // Re-auth failed
@@ -1218,7 +1414,7 @@ impl PluginTool {
                     return ToolResult::terminal(format!(
                         "I couldn't reach **{}** — it isn't authenticated and automatic \
                          re-authentication didn't work. Please reconnect this account in the \
-                         agent's Connected Accounts (Settings), then ask me again.",
+                         agent's Settings, Plugins, then ask me again.",
                         pi.resource
                     ));
                 }
@@ -1228,8 +1424,27 @@ impl PluginTool {
         result
     }
 
-    /// Execute a plugin command and return the result. Shared by initial call and retry.
-    async fn run_plugin_command(&self, pi: &PluginInput, ctx: &ToolContext) -> ToolResult {
+    /// The exec budget a call asked for, or the default.
+    fn exec_timeout(pi: &PluginInput) -> Duration {
+        if pi.timeout > 0 {
+            Duration::from_secs(pi.timeout as u64)
+        } else {
+            Duration::from_secs(EXEC_TIMEOUT_DEFAULT_SECS)
+        }
+    }
+
+    /// How a budget message names the command that ran.
+    fn command_label(pi: &PluginInput) -> String {
+        if pi.command.is_empty() {
+            "the command".to_string()
+        } else {
+            pi.command.clone()
+        }
+    }
+
+    /// Execute a plugin command and return the result. Shared by initial call
+    /// and retry; `timeout` is what is left of the exec budget.
+    async fn run_plugin_command(&self, pi: &PluginInput, ctx: &ToolContext, timeout: Duration) -> ToolResult {
         if pi.command.is_empty() && pi.args.is_empty() {
             return ToolResult::error(
                 "command is required for exec. Run plugin(action: \"list\") to see installed plugins; each plugin's commands are shown in this tool's description (or load the plugin's skill for full syntax).",
@@ -1241,10 +1456,32 @@ impl PluginTool {
             Some(p) => p,
             None => {
                 let slugs = self.active_slugs();
-                return ToolResult::error(format!(
-                    "Plugin '{}' not found. Available: {}",
-                    pi.resource,
+                let available = if slugs.is_empty() {
+                    "none installed".to_string()
+                } else {
                     slugs.join(", ")
+                };
+                // Installed-but-disabled plugins are a different fact from
+                // absent ones: the fix is a toggle, not an install.
+                let mut disabled: Vec<String> = Vec::new();
+                for (slug, _, _, _) in self.plugin_store.list_installed() {
+                    if disabled.contains(&slug) {
+                        continue;
+                    }
+                    if let Ok(Some(row)) = self.db_store.get_plugin_by_slug(&slug)
+                        && row.is_enabled == 0
+                    {
+                        disabled.push(slug);
+                    }
+                }
+                let disabled_desc = if disabled.is_empty() {
+                    String::new()
+                } else {
+                    format!(" (disabled: {})", disabled.join(", "))
+                };
+                return ToolResult::error(format!(
+                    "Plugin '{}' not found. Available: {}{}",
+                    pi.resource, available, disabled_desc
                 ));
             }
         };
@@ -1257,18 +1494,15 @@ impl PluginTool {
             "executing plugin"
         );
 
-        let timeout_secs = if pi.timeout > 0 {
-            pi.timeout as u64
-        } else {
-            120
-        };
-
         // Split command string into args (subcommand + simple flags).
         let mut args = if !pi.command.is_empty() {
             match shlex::split(&pi.command) {
                 Some(a) => a,
                 None => {
-                    return ToolResult::error("Failed to parse command arguments. Check quoting.");
+                    return ToolResult::error(format!(
+                        "Could not parse command '{}' (unbalanced quotes). Put values with quotes/special characters in args: {{\"key\": \"value\"}} instead.",
+                        pi.command
+                    ));
                 }
             }
         } else {
@@ -1295,7 +1529,7 @@ impl PluginTool {
                     return ToolResult::terminal(format!(
                         "I can't sign in to or re-authenticate **{}** on my own — that's \
                          handled for you. If this account needs reconnecting, you can do it \
-                         in this agent's Connected Accounts (Settings).",
+                         in this agent's Settings, Plugins.",
                         pi.resource
                     ));
                 }
@@ -1373,7 +1607,7 @@ impl PluginTool {
                         }
                         let none_msg = format!(
                             "No {res} account is connected for this agent. Connect one in \
-                             this agent's Settings → Connected Accounts before using {res}.",
+                             this agent's Settings, Plugins before using {res}.",
                             res = pi.resource
                         );
                         // Nothing connected. Interactive chat renders an inline
@@ -1483,13 +1717,14 @@ impl PluginTool {
 
         let started = std::time::SystemTime::now();
         let result = runtime
-            .run_capture_args(&args, Duration::from_secs(timeout_secs))
+            .run_capture_args(&args, timeout)
             .await;
 
         match result {
             Err(napp::plugin_runtime::LaunchError::TimedOut { .. }) => ToolResult::error(format!(
                 "Plugin '{}' command timed out after {}s",
-                pi.resource, timeout_secs
+                pi.resource,
+                timeout.as_secs()
             )),
             Err(e) => ToolResult::error(format!("Plugin '{}' command failed: {}", pi.resource, e)),
             Ok(output) => {
@@ -1510,21 +1745,29 @@ impl PluginTool {
                 }
 
                 if !output.status.success() {
-                    let code = output.status.code().unwrap_or(-1);
+                    // No exit code means the process was killed by a signal.
+                    let how = match output.status.code() {
+                        Some(code) => format!("exited with code {}", code),
+                        None => "was terminated by a signal".to_string(),
+                    };
                     return ToolResult::error(format!(
-                        "Plugin '{}' exited with code {}\n{}",
-                        pi.resource, code, text
+                        "Plugin '{}' {}\n{}",
+                        pi.resource, how, text
                     ));
                 }
 
                 if text.is_empty() {
-                    text = "(no output)".to_string();
+                    text = "(command exited 0 with no stdout or stderr)".to_string();
                 }
 
                 // Truncate very long output (char-boundary safe)
                 if text.len() > crate::MAX_SUBPROCESS_OUTPUT {
+                    let total = text.len();
                     types::strutil::safe_truncate(&mut text, crate::MAX_SUBPROCESS_OUTPUT);
-                    text.push_str("\n... (output truncated)");
+                    text.push_str(&format!(
+                        "\n[output truncated: showing first {} of {} bytes]",
+                        crate::MAX_SUBPROCESS_OUTPUT, total
+                    ));
                 }
 
                 // A plugin that produced a user-facing document (e.g. a deck via
@@ -1654,8 +1897,8 @@ impl PluginTool {
         if let Err(e) = handle.stdin_tx.send(op_json).await {
             handle.pending_ops.lock().await.remove(&req_id);
             return ToolResult::error(format!(
-                "Bridge for plugin `{}` (agent `{}`) appears to have closed its \
-                 stdin: {e}. Restart the channel in Settings → Channels.",
+                "Bridge for plugin `{}` (agent `{}`) has closed its stdin ({e}). \
+                 Restart the channel in Settings > Channels.",
                 pi.resource, agent_id
             ));
         }
@@ -1674,8 +1917,8 @@ impl PluginTool {
         // and surface a real timeout error instead of waiting forever.
         match tokio::time::timeout(Duration::from_secs(30), result_rx).await {
             Ok(Ok(res)) if res.ok => ToolResult::ok(format!(
-                "Op `{op}` completed on plugin `{}`.",
-                pi.resource
+                "Op `{op}` completed on plugin `{}` (agent `{}`, req_id {}).",
+                pi.resource, agent_id, req_id
             )),
             Ok(Ok(res)) => ToolResult::error(format!(
                 "Op `{op}` on plugin `{}` failed: {}",
@@ -1724,6 +1967,7 @@ impl PluginTool {
         slug: &str,
         binary: &Path,
         auth: &napp::plugin::PluginAuth,
+        budget: Duration,
     ) -> bool {
         let runtime = napp::PluginRuntime::new(slug, binary.to_path_buf(), self.plugin_store.clone());
         let mut cmd = runtime.command(&auth.commands.login);
@@ -1837,8 +2081,8 @@ impl PluginTool {
             all
         });
 
-        // Wait for the auth login process with a 120s timeout.
-        let login_result = tokio::time::timeout(Duration::from_secs(120), async {
+        // Wait for the auth login process for what is left of the exec budget.
+        let login_result = tokio::time::timeout(budget, async {
             let (stderr_out, stdout_out) = tokio::join!(stderr_task, stdout_task);
             let _stderr = stderr_out.unwrap_or_default();
             let _stdout = stdout_out.unwrap_or_default();
@@ -1860,7 +2104,7 @@ impl PluginTool {
                 false
             }
             Err(_) => {
-                warn!(plugin = %slug, "plugin auth login timed out after 120s");
+                warn!(plugin = %slug, secs = budget.as_secs(), "plugin auth login timed out");
                 // Kill the child process on timeout
                 let _ = child.kill().await;
                 false
@@ -1943,7 +2187,7 @@ pub fn notify_plugin_needs_reauth(
     let notif_id = uuid::Uuid::new_v4().to_string();
     let title = format!("Reconnect {}", p.account_label);
     let body = format!(
-        "{}'s connection to {} expired. Reconnect it in the agent's Connected Accounts.",
+        "{}'s connection to {} expired. Reconnect it in the agent's Settings, Plugins.",
         p.account_label, p.plugin_slug
     );
     let action_url = format!("/{}/settings/accounts", p.agent_id);
@@ -2336,5 +2580,139 @@ mod tests {
         let stale = started + std::time::Duration::from_secs(5);
         assert_eq!(produced_work_document(&args, None, stale), None);
         std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+#[cfg(test)]
+mod budget_and_install_tests {
+    use super::*;
+
+    fn stores(tmp: &std::path::Path) -> (Arc<napp::plugin::PluginStore>, Arc<db::Store>) {
+        let installed = tmp.join("plugins");
+        let user = tmp.join("user_plugins");
+        std::fs::create_dir_all(&installed).unwrap();
+        std::fs::create_dir_all(&user).unwrap();
+        let plugin_store = Arc::new(napp::plugin::PluginStore::new(installed, user, None));
+        let db_store = Arc::new(db::Store::new(tmp.join("t.db").to_str().unwrap()).unwrap());
+        (plugin_store, db_store)
+    }
+
+    /// A versioned install the store resolves: `<root>/<slug>/<version>/` with
+    /// a manifest and one plain file that stands in for the binary.
+    fn install_fake(root: &std::path::Path, slug: &str) {
+        let version_dir = root.join("plugins").join(slug).join("0.1.0");
+        std::fs::create_dir_all(&version_dir).unwrap();
+        std::fs::write(
+            version_dir.join("plugin.json"),
+            serde_json::json!({"id": slug, "slug": slug, "name": slug, "version": "0.1.0", "platforms": {}}).to_string(),
+        )
+        .unwrap();
+        std::fs::write(version_dir.join(slug), b"#!/bin/sh\necho ok\n").unwrap();
+    }
+
+    /// With nothing installed the resource property carries no enum at all
+    /// (an empty enum makes every slug invalid), and the description says
+    /// where a slug comes from.
+    #[test]
+    fn no_plugins_means_no_enum_and_a_pointer_to_list() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (plugin_store, db_store) = stores(tmp.path());
+        let tool = PluginTool::new(plugin_store, db_store);
+        let resource = &tool.schema()["properties"]["resource"];
+        assert!(resource.get("enum").is_none(), "{resource}");
+        assert!(resource["description"].as_str().unwrap().contains("plugin(action: \"list\")"));
+        let description = tool.description();
+        assert!(description.contains("plugin(resource: \"<slug>\""), "{description}");
+        assert!(description.contains("plugin(action: \"list\")"), "{description}");
+        assert!(!description.contains("gws"), "{description}");
+
+        install_fake(tmp.path(), "quickbooks");
+        let resource = &tool.schema()["properties"]["resource"];
+        assert_eq!(resource["enum"], serde_json::json!(["quickbooks"]));
+        assert!(!tool.description().contains("resource: \"gws\""));
+    }
+
+    /// A best match that is already installed gets no install card: the
+    /// result says so and points at the plugin, even in a run that could not
+    /// show a card.
+    #[tokio::test]
+    async fn discover_does_not_offer_to_install_what_is_installed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (plugin_store, db_store) = stores(tmp.path());
+        let tool = PluginTool::new(plugin_store, db_store);
+        let ctx = ToolContext::default();
+        let products = vec![serde_json::json!({
+            "name": "QuickBooks Online", "slug": "quickbooks", "code": "PLUG-ABCD-1234",
+            "description": "Books", "type": "plugin"
+        })];
+
+        let offered = tool.offer("quickbooks", &ctx, &products, 1).await;
+        assert!(offered.content.contains("Installing needs the owner's approval"), "{}", offered.content);
+
+        install_fake(tmp.path(), "quickbooks");
+        let known = tool.offer("quickbooks", &ctx, &products, 1).await;
+        assert!(!known.is_error, "{}", known.content);
+        assert!(known.content.contains("QuickBooks Online was already installed"), "{}", known.content);
+        assert!(known.content.contains("plugin(resource: \"quickbooks\""), "{}", known.content);
+        assert!(!known.content.contains("Install it on the card"), "{}", known.content);
+        assert!(!known.content.contains("owner's approval"), "{}", known.content);
+    }
+
+    /// Every recovery step gets what is left of the one exec budget, a step
+    /// with less than the minimum left is skipped and named, and a step that
+    /// ran out is named with the time it was given.
+    #[test]
+    fn the_exec_budget_hands_each_step_the_time_that_remains() {
+        let start = std::time::Instant::now();
+        let budget = ExecBudget { started: start, total: Duration::from_secs(120) };
+        let at = |secs: u64| start + Duration::from_secs(secs);
+
+        assert_eq!(budget.remaining_at(at(0)), Duration::from_secs(120));
+        assert_eq!(budget.remaining_at(at(100)), Duration::from_secs(20));
+        assert_eq!(budget.remaining_at(at(500)), Duration::ZERO);
+
+        assert_eq!(budget.step_at(at(100), "doctor", "the auth status check"), Ok(Duration::from_secs(20)));
+        assert_eq!(budget.step_at(at(110), "doctor", "the auth status check"), Ok(RECOVERY_MIN_REMAINING));
+        let skipped = budget.step_at(at(115), "doctor", "the auth status check").unwrap_err();
+        assert_eq!(
+            skipped,
+            "doctor finished; the auth status check was skipped because only 5 s of the 120 s exec budget remained."
+        );
+        assert_eq!(
+            budget.ran_out("doctor", "the auth status check", Duration::from_secs(12)),
+            "doctor finished; the auth status check did not answer within the remaining 12 s of the 120 s exec budget."
+        );
+
+        let named: PluginInput =
+            serde_json::from_value(serde_json::json!({"command": "doctor", "timeout": 45})).unwrap();
+        assert_eq!(PluginTool::exec_timeout(&named), Duration::from_secs(45));
+        assert_eq!(PluginTool::command_label(&named), "doctor");
+        let bare: PluginInput = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert_eq!(PluginTool::exec_timeout(&bare), Duration::from_secs(EXEC_TIMEOUT_DEFAULT_SECS));
+        assert_eq!(PluginTool::command_label(&bare), "the command");
+    }
+
+    /// The bound is real: a step that outlives what is left is cut off with
+    /// the text that names it, and the plugin's own answer stays attached.
+    #[tokio::test]
+    async fn a_step_that_outlives_the_budget_is_cut_off_and_named() {
+        let budget = ExecBudget { started: std::time::Instant::now(), total: Duration::from_secs(120) };
+        // The cut with a short allowance, so the test takes milliseconds.
+        let err = cut_off(&budget, "doctor", "the silent token refresh", Duration::from_millis(20), async {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+        })
+        .await
+        .unwrap_err();
+        assert_eq!(err, "doctor finished; the silent token refresh did not answer within the remaining 0 s of the 120 s exec budget.");
+        // Too little left: skipped before the future is even polled.
+        let spent = ExecBudget { started: std::time::Instant::now() - Duration::from_secs(115), total: Duration::from_secs(120) };
+        let skipped = bounded(&spent, "doctor", "the browser login", async { unreachable!("not started") }).await.unwrap_err();
+        assert!(skipped.contains("the browser login was skipped"), "{skipped}");
+        let original = ToolResult::error("Not authenticated");
+        let shown = out_of_time(err, &original);
+        assert!(shown.is_error);
+        assert!(shown.content.ends_with("The command's own result:\nNot authenticated"), "{}", shown.content);
+        let quick = bounded(&budget, "doctor", "x", async { 7 }).await;
+        assert_eq!(quick, Ok(7));
     }
 }

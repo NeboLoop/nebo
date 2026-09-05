@@ -4,3 +4,4 @@ pub mod trace;
 pub mod engine;
 pub mod grader;
 pub mod reporter;
+pub mod replay;

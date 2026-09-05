@@ -274,10 +274,10 @@ async fn handle_window_list() -> ToolResult {
         // System Events silently yields zero windows when this process lacks
         // Accessibility/Automation permission — say so instead of "no windows".
         if !result.is_error && result.content.trim().is_empty() {
-            return ToolResult::ok(
-                "No windows reported. If windows are open, this process likely lacks \
-                 Automation/Accessibility permission for System Events (System Settings \
-                 → Privacy & Security).",
+            return ToolResult::error(
+                "Window list empty. Either no visible windows exist or Accessibility \
+                 permission is missing; open System Settings > Privacy & Security > \
+                 Accessibility and enable Nebo, then retry.",
             );
         }
         return result;
@@ -611,14 +611,35 @@ fn coord(input: &serde_json::Value, key: &str) -> Option<(i64, i64)> {
     }
 }
 
+/// The target an input action names. `ref` (an element from capture see)
+/// and `coordinate: [x, y]` are the primary names, the same shape as the web
+/// browser tool. `element_id` and `element` are read as `ref`, and `x`/`y`
+/// integers as the coordinate: the straps and the os description taught
+/// those spellings, and a model that follows them must still hit the
+/// element (2026-09-05 audit: no documented click shape reached one).
+fn input_target(input: &serde_json::Value) -> (&str, Option<(i64, i64)>) {
+    let element_ref = ["ref", "element_id", "element"]
+        .iter()
+        .filter_map(|k| input[*k].as_str())
+        .find(|s| !s.is_empty())
+        .unwrap_or("");
+    let coordinate = coord(input, "coordinate").or_else(|| {
+        match (input["x"].as_i64(), input["y"].as_i64()) {
+            (Some(x), Some(y)) => Some((x, y)),
+            _ => None,
+        }
+    });
+    (element_ref, coordinate)
+}
+
 async fn handle_input(
     action: &str,
     input: &serde_json::Value,
     snapshot_store: &tokio::sync::Mutex<SnapshotStore>,
 ) -> ToolResult {
-    // Resolve the target point — same shape as the web browser tool: a `ref` (element from
-    // capture(see)) or an explicit `coordinate: [x, y]`. Returns (x, y, label).
-    let element_ref = input["ref"].as_str().unwrap_or("");
+    // Resolve the target point: a `ref` (element from capture(see)) or a
+    // `coordinate: [x, y]`. Returns (x, y, label).
+    let (element_ref, coordinate) = input_target(input);
     let snapshot_id = input["snapshot_id"].as_str().unwrap_or("");
     let target: Option<(i64, i64, String)> = if !element_ref.is_empty() {
         let store = snapshot_store.lock().await;
@@ -647,7 +668,7 @@ async fn handle_input(
             }
         }
     } else {
-        coord(input, "coordinate").map(|(x, y)| (x, y, String::new()))
+        coordinate.map(|(x, y)| (x, y, String::new()))
     };
 
     match action {
@@ -664,13 +685,22 @@ async fn handle_input(
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                 let type_result = input_type(text).await;
-                return ToolResult { payload: None,
-                    content: format!("Clicked '{}' at ({},{}) and typed text", label, x, y),
-                    is_error: type_result.is_error,
-                    image_url: None,
-                    http_status: None,
-                    terminal: false,
+                let where_ = if label.is_empty() {
+                    format!("({},{})", x, y)
+                } else {
+                    format!("'{}' at ({},{})", label, x, y)
                 };
+                if type_result.is_error {
+                    return ToolResult::error(format!(
+                        "Clicked {} but typing failed: {}",
+                        where_, type_result.content
+                    ));
+                }
+                return ToolResult::ok(format!(
+                    "Clicked {} and typed {} chars",
+                    where_,
+                    text.chars().count()
+                ));
             }
             input_type(text).await
         }
@@ -699,18 +729,15 @@ async fn handle_input(
                 (2, _) => (input_double_click(x, y).await, "Double-clicked"),
                 _ => (input_click(x, y).await, "Clicked"),
             };
+            if r.is_error {
+                return r;
+            }
             let where_ = if label.is_empty() {
                 format!("({},{})", x, y)
             } else {
                 format!("'{}' at ({},{})", label, x, y)
             };
-            ToolResult { payload: None,
-                content: format!("{} {}", how, where_),
-                is_error: r.is_error,
-                image_url: None,
-                http_status: None,
-                terminal: false,
-            }
+            ToolResult::ok(format!("{} {}", how, where_))
         }
         "move" => {
             let Some((x, y, _)) = target else {
@@ -731,8 +758,7 @@ async fn handle_input(
             input_scroll(dx, dy).await
         }
         "drag" => {
-            let (Some((x, y)), Some((x2, y2))) =
-                (coord(input, "start_coordinate"), coord(input, "coordinate"))
+            let (Some((x, y)), Some((x2, y2))) = (coord(input, "start_coordinate"), coordinate)
             else {
                 return ToolResult::error(
                     "drag requires `start_coordinate: [x, y]` and `coordinate: [x, y]` (end point).",
@@ -782,7 +808,10 @@ async fn input_type(text: &str) -> ToolResult {
 async fn input_press(key: &str) -> ToolResult {
     #[cfg(target_os = "macos")]
     {
-        let key_code = key_name_to_code(key);
+        let key_code = match key_name_to_code(key) {
+            Ok(code) => code,
+            Err(e) => return ToolResult::error(e),
+        };
         let script = format!(
             "tell application \"System Events\" to key code {}",
             key_code
@@ -1035,8 +1064,13 @@ async fn input_scroll(dx: i64, dy: i64) -> ToolResult {
     #[cfg(target_os = "macos")]
     {
         // cliclick supports scroll: kd (scroll down) / ku (scroll up)
+        if dx != 0 && dy == 0 {
+            return ToolResult::error(
+                "Horizontal scroll (left/right) is not supported on macOS. Nothing was scrolled; only up and down work here.",
+            );
+        }
         if dy == 0 {
-            return ToolResult::ok("No scroll delta specified");
+            return ToolResult::error("Nothing scrolled: the scroll amount was zero.");
         }
         let dir = if dy > 0 { "ku" } else { "kd" };
         let count = dy.unsigned_abs() as usize;
@@ -1060,7 +1094,7 @@ async fn input_scroll(dx: i64, dy: i64) -> ToolResult {
                 results.push(run_command("xdotool", &["click", "--repeat", &count, btn]).await);
             }
             if results.is_empty() {
-                return ToolResult::ok("No scroll delta specified");
+                return ToolResult::ok("Nothing scrolled (zero delta).");
             }
             return results
                 .into_iter()
@@ -1185,7 +1219,7 @@ async fn clipboard_read() -> ToolResult {
             Ok(output) => {
                 let text = String::from_utf8_lossy(&output.stdout).to_string();
                 ToolResult::ok(if text.is_empty() {
-                    "(clipboard is empty)".to_string()
+                    "Clipboard is empty (0 bytes).".to_string()
                 } else {
                     text
                 })
@@ -1220,49 +1254,73 @@ async fn clipboard_write(text: &str) -> ToolResult {
     {
         let mut child = match tokio::process::Command::new("pbcopy")
             .stdin(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
             .spawn()
         {
             Ok(c) => c,
             Err(e) => return ToolResult::error(format!("Failed to write clipboard: {}", e)),
         };
-        if let Some(stdin) = child.stdin.as_mut() {
+        if let Some(mut stdin) = child.stdin.take() {
             use tokio::io::AsyncWriteExt;
             if let Err(e) = stdin.write_all(text.as_bytes()).await {
                 return ToolResult::error(format!("Failed to write clipboard: {}", e));
             }
         }
-        return match child.wait().await {
-            Ok(status) if status.success() => ToolResult::ok("Clipboard updated"),
-            Ok(status) => ToolResult::error(format!(
-                "pbcopy exited with {} — clipboard NOT updated",
-                status
-            )),
+        match child.wait_with_output().await {
+            Ok(output) if output.status.success() => {
+                ToolResult::ok(clipboard_updated_message(text))
+            }
+            Ok(output) => {
+                let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                ToolResult::error(format!(
+                    "pbcopy exited with {}{}; clipboard not updated",
+                    output.status,
+                    if stderr.is_empty() {
+                        String::new()
+                    } else {
+                        format!(": {}", stderr)
+                    }
+                ))
+            }
             Err(e) => ToolResult::error(format!("Failed to write clipboard: {}", e)),
-        };
+        }
     }
     #[cfg(target_os = "linux")]
     {
-        if which("wl-copy") {
-            return pipe_to_command("wl-copy", &[], text).await;
+        let result = if which("wl-copy") {
+            pipe_to_command("wl-copy", &[], text).await
+        } else if which("xclip") {
+            pipe_to_command("xclip", &["-selection", "clipboard"], text).await
+        } else if which("xsel") {
+            pipe_to_command("xsel", &["-ib"], text).await
+        } else {
+            return ToolResult::error("Clipboard write requires wl-copy, xclip, or xsel");
+        };
+        if result.is_error {
+            return result;
         }
-        if which("xclip") {
-            return pipe_to_command("xclip", &["-selection", "clipboard"], text).await;
-        }
-        if which("xsel") {
-            return pipe_to_command("xsel", &["-ib"], text).await;
-        }
-        return ToolResult::error("Clipboard write requires wl-copy, xclip, or xsel");
+        return ToolResult::ok(clipboard_updated_message(text));
     }
     #[cfg(target_os = "windows")]
     {
         let script = format!("Set-Clipboard -Value '{}'", escape_powershell(text));
-        return run_powershell(&script).await;
+        let result = run_powershell(&script).await;
+        if result.is_error {
+            return result;
+        }
+        return ToolResult::ok(clipboard_updated_message(text));
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
     {
         let _ = text;
         ToolResult::error("Clipboard is not supported on this platform")
     }
+}
+
+/// Success line for clipboard write: the char count is the evidence that the
+/// text reached the clipboard, on every platform.
+fn clipboard_updated_message(text: &str) -> String {
+    format!("Clipboard updated ({} chars).", text.chars().count())
 }
 
 async fn clipboard_clear() -> ToolResult {
@@ -1406,13 +1464,23 @@ async fn notification_alert(title: &str, message: &str) -> ToolResult {
 
 // --- Screen capture ---
 
+/// The capture action a call means: the desktop straps say `capture` for a
+/// screenshot, so that name is read as `screenshot`.
+fn canonical_capture_action(action: &str) -> &str {
+    if action == "capture" {
+        "screenshot"
+    } else {
+        action
+    }
+}
+
 async fn handle_capture(
     action: &str,
     input: &serde_json::Value,
     snapshot_store: &tokio::sync::Mutex<SnapshotStore>,
     ax_cache: &AxCache,
 ) -> ToolResult {
-    match action {
+    match canonical_capture_action(action) {
         "screenshot" => capture_screenshot(input).await,
         "see" => capture_see(input, snapshot_store, ax_cache).await,
         _ => ToolResult::error(format!(
@@ -1445,11 +1513,15 @@ async fn capture_see(
         guard
             .get(&cache_key)
             .filter(|(_, _, ts)| ts.elapsed() < Duration::from_secs(2))
-            .map(|(name, elems, _)| (name.clone(), elems.clone()))
+            .map(|(name, elems, ts)| (name.clone(), elems.clone(), ts.elapsed().as_millis() as u64))
     });
 
-    let (observed, mut elements) = if let Some(hit) = cached {
-        hit
+    // When the element list is reused from a walk done moments ago, the
+    // response carries how many ms old it is; a fresh walk carries nothing.
+    let mut ax_reused_from_ms_ago: Option<u64> = None;
+    let (observed, mut elements) = if let Some((name, elems, ms)) = cached {
+        ax_reused_from_ms_ago = Some(ms);
+        (name, elems)
     } else {
         // Cache miss — subprocess runs with NO lock held
         let (capture, elems) = capture_ax_elements(app).await;
@@ -1500,12 +1572,36 @@ async fn capture_see(
     // Report the app that was actually inspected. Echoing the `app` argument
     // meant a no-argument call always answered "" — the caller could not tell
     // what it had just looked at.
+    // Two counts that must not read as one: what is listed below, and what
+    // the walk found. Unlabelled, non-actionable elements are left out and
+    // the list is capped, so the two differ on any busy window.
+    let elements_total = elements.len();
+    let elements_returned = elements_json.len();
     let mut response = serde_json::json!({
         "snapshot_id": snapshot_id,
         "app": observed.app,
-        "element_count": elements.len(),
+        "elements_returned": elements_returned,
+        "elements_total": elements_total,
         "elements": elements_json,
     });
+    if elements_returned < elements_total {
+        response["note"] = serde_json::json!(format!(
+            "Listing {elements_returned} of {elements_total} elements: unlabelled, non-actionable ones are omitted and the list is capped at 50. Use ui find with a label to reach the rest."
+        ));
+    }
+    if let Some(ms) = ax_reused_from_ms_ago {
+        response["ax_reused_from_ms_ago"] = serde_json::json!(ms);
+    }
+
+    // The walk itself failed or timed out: the empty element list is a
+    // consequence of that, not a statement about the window.
+    if let Some(err) = &observed.walk_error {
+        response["note"] = serde_json::json!(format!(
+            "Accessibility walk failed or timed out after {}s ({}); element list is empty because of that, not because the window is empty.",
+            AX_CAPTURE_TIMEOUT.as_secs(),
+            err
+        ));
+    }
 
     // An app can be running with no window open, in which case there is nothing
     // to walk. Saying so is the difference between "this app has no visible
@@ -1535,7 +1631,6 @@ const AX_SCRIPT_MAX_ELEMENTS: usize = 500;
 
 /// A full accessibility walk is far slower than a flat one. Past this the
 /// snapshot is not worth the wait, and returning partial beats hanging `see`.
-#[cfg(target_os = "macos")]
 const AX_CAPTURE_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// What the accessibility walk observed, beyond the elements themselves.
@@ -1546,6 +1641,10 @@ struct AxCapture {
     app: String,
     /// Windows the process has open, when known.
     windows: Option<usize>,
+    /// Set when the accessibility walk itself failed or timed out. An empty
+    /// element list then says nothing about the window; the caller must be
+    /// told which of the two it is looking at.
+    walk_error: Option<String>,
 }
 
 /// Capture AX elements with position information from the accessibility tree.
@@ -1629,10 +1728,21 @@ end tell"#,
                 } else {
                     header.app
                 };
-                (AxCapture { app: name, windows: header.windows }, elements)
+                (
+                    AxCapture {
+                        app: name,
+                        windows: header.windows,
+                        walk_error: None,
+                    },
+                    elements,
+                )
             }
-            Err(_) => (
-                AxCapture { app: app.to_string(), windows: None },
+            Err(e) => (
+                AxCapture {
+                    app: app.to_string(),
+                    windows: None,
+                    walk_error: Some(e),
+                },
                 Vec::new(),
             ),
         }
@@ -1644,6 +1754,7 @@ end tell"#,
             AxCapture {
                 app: app.to_string(),
                 windows: None,
+                walk_error: None,
             },
             Vec::new(),
         )
@@ -1752,7 +1863,10 @@ async fn capture_screenshot(input: &serde_json::Value) -> ToolResult {
                     .output()
                     .await
             } else {
-                return ToolResult::error("Region format: 'x,y,w,h'");
+                return ToolResult::error(format!(
+                    "Screenshot not taken: region must be 'x,y,w,h' (got '{}').",
+                    region
+                ));
             }
         } else {
             base_args.push(tmp_path.clone());
@@ -1851,8 +1965,23 @@ $bmp.Dispose()"#,
             Err(e) => ToolResult::error(format!("Failed to read screenshot: {}", e)),
         },
         Ok(output) => {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            ToolResult::error(format!("Screenshot failed: {}", stderr))
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            let code = output
+                .status
+                .code()
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "signal".to_string());
+            let mut msg = format!("Screenshot failed (exit {})", code);
+            if !stderr.is_empty() {
+                msg.push_str(": ");
+                msg.push_str(&stderr);
+            }
+            if cfg!(target_os = "macos") {
+                msg.push_str(
+                    ". On macOS this usually means Screen Recording permission is missing for Nebo.",
+                );
+            }
+            ToolResult::error(msg)
         }
         Err(e) => ToolResult::error(format!("Failed to run screenshot tool: {}", e)),
     }
@@ -1944,7 +2073,11 @@ fn compress_and_encode(img_bytes: &[u8], quality: &str) -> ToolResult {
             return finalize_capture(
                 img_bytes,
                 mime,
-                &format!("Screenshot captured ({} bytes, uncompressed)", img_bytes.len()),
+                &format!(
+                    "Screenshot captured (requested {} quality but compression failed; returning original {} bytes)",
+                    quality,
+                    img_bytes.len()
+                ),
             );
         }
     };
@@ -1962,18 +2095,18 @@ fn compress_and_encode(img_bytes: &[u8], quality: &str) -> ToolResult {
     match img.write_with_encoder(encoder) {
         Ok(()) => {
             let jpeg_bytes = jpeg_buf.into_inner();
-            let original_kb = img_bytes.len() / 1024;
-            let compressed_kb = jpeg_bytes.len() / 1024;
+            let original_kib = img_bytes.len() / 1024;
+            let compressed_kib = jpeg_bytes.len() / 1024;
             finalize_capture(
                 &jpeg_bytes,
                 "image/jpeg",
                 &format!(
-                    "Screenshot captured ({}KB → {}KB, {}x{} {}% JPEG)",
-                    original_kb,
-                    compressed_kb,
+                    "Screenshot captured: {}x{}, JPEG q{}, {} KiB (source {} KiB)",
                     img.width(),
                     img.height(),
-                    jpeg_quality
+                    jpeg_quality,
+                    compressed_kib,
+                    original_kib
                 ),
             )
         }
@@ -1983,7 +2116,11 @@ fn compress_and_encode(img_bytes: &[u8], quality: &str) -> ToolResult {
             finalize_capture(
                 img_bytes,
                 mime,
-                &format!("Screenshot captured ({} bytes, uncompressed)", img_bytes.len()),
+                &format!(
+                    "Screenshot captured (requested {} quality but compression failed; returning original {} bytes)",
+                    quality,
+                    img_bytes.len()
+                ),
             )
         }
     }
@@ -2135,7 +2272,7 @@ end tell"#,
     }
     #[cfg(target_os = "linux")]
     {
-        return ToolResult::error("UI find on Linux requires AT-SPI2 (not yet fully implemented)");
+        return ToolResult::error("UI find is not available on Linux. Use capture(action: see) for a screenshot and input(action: click, coordinate: [x,y]) instead.");
     }
     #[cfg(target_os = "windows")]
     {
@@ -2186,7 +2323,7 @@ end tell"#,
     }
     #[cfg(target_os = "linux")]
     {
-        return ToolResult::error("UI click on Linux requires AT-SPI2 (not yet fully implemented)");
+        return ToolResult::error("UI click is not available on Linux. Use capture(action: see) for a screenshot and input(action: click, coordinate: [x,y]) instead.");
     }
     #[cfg(target_os = "windows")]
     {
@@ -2234,7 +2371,7 @@ end tell"#,
     #[cfg(target_os = "linux")]
     {
         return ToolResult::error(
-            "UI get_value on Linux requires AT-SPI2 (not yet fully implemented)",
+            "UI get_value is not available on Linux. Use capture(action: see) for a screenshot and read the value from it.",
         );
     }
     #[cfg(target_os = "windows")]
@@ -2282,7 +2419,7 @@ end tell"#,
     #[cfg(target_os = "linux")]
     {
         return ToolResult::error(
-            "UI set_value on Linux requires AT-SPI2 (not yet fully implemented)",
+            "UI set_value is not available on Linux. Use input(action: click, coordinate: [x,y]) then input(action: type, text: ...) instead.",
         );
     }
     #[cfg(target_os = "windows")]
@@ -2399,27 +2536,11 @@ end tell"#,
     }
     #[cfg(target_os = "windows")]
     {
-        let script = format!(
-            r#"Add-Type @"
-using System; using System.Runtime.InteropServices;
-public class MenuHelper {{
-    [DllImport("user32.dll")] public static extern IntPtr GetMenu(IntPtr hWnd);
-    [DllImport("user32.dll")] public static extern int GetMenuItemCount(IntPtr hMenu);
-    [DllImport("user32.dll")] public static extern bool GetMenuItemInfo(IntPtr hMenu, uint uItem, bool fByPosition, ref MENUITEMINFO lpmii);
-    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Auto)]
-    public struct MENUITEMINFO {{
-        public uint cbSize; public uint fMask; public uint fType; public uint fState;
-        public uint wID; public IntPtr hSubMenu; public IntPtr hbmpChecked; public IntPtr hbmpUnchecked;
-        public IntPtr dwItemData; public string dwTypeData; public uint cch; public IntPtr hbmpItem;
-    }}
-}}
-"@
-$p = Get-Process | Where-Object {{ $_.MainWindowTitle -match '{}' }} | Select-Object -First 1
-if ($p) {{ "Menu bar found for $($p.ProcessName)" }} else {{ "App '{}' not found" }}"#,
-            escape_powershell(app),
-            escape_powershell(app)
+        // The old PowerShell script only proved the process existed and then
+        // answered "Menu bar found" with no menus in it.
+        return ToolResult::error(
+            "Menu enumeration is not implemented on Windows; use ui(action: tree) to read the window's controls.",
         );
-        return run_powershell(&script).await;
     }
     #[cfg(target_os = "linux")]
     {
@@ -2620,7 +2741,7 @@ async fn dialog_detect(app: &str) -> ToolResult {
         set sheetCount to count of sheets of window 1
         set dialogCount to count of windows whose subrole is "AXDialog" or subrole is "AXSheet"
         if sheetCount > 0 or dialogCount > 0 then
-            return "Dialog detected: " & dialogCount & " dialog(s), " & sheetCount & " sheet(s)"
+            return "Dialog detected: " & dialogCount & " dialog windows, " & sheetCount & " sheets on the front window."
         else
             return "No dialog detected"
         end if
@@ -2871,10 +2992,12 @@ async fn handle_space(action: &str, input: &serde_json::Value) -> ToolResult {
 async fn space_list() -> ToolResult {
     #[cfg(target_os = "macos")]
     {
-        // Mission Control spaces — no clean API, use defaults read
-        let script = r#"do shell script "defaults read com.apple.spaces spans-displays 2>/dev/null; echo '---'; defaults read com.apple.dock wvous-tl-corner 2>/dev/null || echo 'Use Mission Control to see spaces'"
-"#;
-        return run_osascript(script).await;
+        // There is no supported way to enumerate Mission Control spaces. The
+        // old `defaults read` script printed two unrelated integers that read
+        // as space numbers.
+        ToolResult::error(
+            "Listing Mission Control spaces is not available on macOS. Switch by number with space(action: \"switch\", index: N), 1 to 9.",
+        )
     }
     #[cfg(target_os = "linux")]
     {
@@ -2885,14 +3008,10 @@ async fn space_list() -> ToolResult {
     }
     #[cfg(target_os = "windows")]
     {
-        // Windows virtual desktops — limited PowerShell access
-        let script = r#"try {
-    $vd = [Windows.UI.ViewManagement.UIViewSettings, Windows.UI.ViewManagement, ContentType=WindowsRuntime]
-    "Virtual desktops are available (use Win+Tab to view)"
-} catch {
-    "Virtual desktop API requires Windows 10+"
-}"#;
-        return run_powershell(script).await;
+        // PowerShell has no supported API for enumerating virtual desktops.
+        return ToolResult::error(
+            "Virtual desktop enumeration is not available on Windows; space(action: switch, index: N) moves N desktops to the right.",
+        );
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
     ToolResult::error("Virtual desktops are not supported on this platform")
@@ -2941,7 +3060,14 @@ async fn space_switch(index: i64) -> ToolResult {
         } else {
             return ToolResult::error("Space index must be positive");
         };
-        return run_powershell(&script).await;
+        let result = run_powershell(&script).await;
+        if result.is_error {
+            return result;
+        }
+        return ToolResult::ok(format!(
+            "Pressed Ctrl+Win+Right {} times (relative move; Windows has no absolute desktop switch).",
+            index
+        ));
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
     ToolResult::error("Space switching is not supported on this platform")
@@ -3010,7 +3136,7 @@ async fn shortcut_list() -> ToolResult {
         for dir in &["~/.local/bin", "~/bin", "/usr/local/bin"] {
             let expanded = dir.replace('~', &std::env::var("HOME").unwrap_or_default());
             if let Ok(entries) = std::fs::read_dir(&expanded) {
-                result.push_str(&format!("{}:\n", dir));
+                result.push_str(&format!("Executables in {}:\n", dir));
                 for entry in entries.flatten() {
                     result.push_str(&format!("  {}\n", entry.file_name().to_string_lossy()));
                 }
@@ -3023,7 +3149,10 @@ async fn shortcut_list() -> ToolResult {
     }
     #[cfg(target_os = "windows")]
     {
-        return run_powershell("Get-Command -CommandType Application,Script | Select-Object -First 50 Name, Source | Format-Table -AutoSize").await;
+        return run_powershell(
+            "$all = @(Get-Command -CommandType Application,Script); \"First 50 of $($all.Count) commands:\"; $all | Select-Object -First 50 Name, Source | Format-Table -AutoSize",
+        )
+        .await;
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
     ToolResult::error("Shortcut listing is not supported on this platform")
@@ -3049,7 +3178,14 @@ async fn shortcut_run(name: &str) -> ToolResult {
                 return run_command(path, &[]).await;
             }
         }
-        // Fallback: try running as a command
+        // Fallback: run it as a PATH command, but only when it exists there;
+        // otherwise the caller gets the three places that were searched.
+        if !which(name) {
+            return ToolResult::error(format!(
+                "Shortcut '{}' not found in ~/.local/bin, ~/bin, or PATH",
+                name
+            ));
+        }
         return run_command(name, &[]).await;
     }
     #[cfg(target_os = "windows")]
@@ -3187,7 +3323,16 @@ async fn dock_badges() -> ToolResult {
     end repeat
     return badgeInfo
 end tell"#;
-        return run_osascript(script).await;
+        // System Events cannot read Dock badge counts; the script above lists
+        // running foreground apps, and the header must say exactly that.
+        let result = run_osascript(script).await;
+        if result.is_error {
+            return result;
+        }
+        ToolResult::ok(format!(
+            "Running apps (badge counts not available):\n{}",
+            result.content
+        ))
     }
     #[cfg(not(target_os = "macos"))]
     ToolResult::error("Dock badges are only available on macOS")
@@ -3197,7 +3342,14 @@ end tell"#;
 async fn dock_recent() -> ToolResult {
     #[cfg(target_os = "macos")]
     {
-        return run_command("defaults", &["read", "com.apple.dock", "recent-apps"]).await;
+        let result = run_command("defaults", &["read", "com.apple.dock", "recent-apps"]).await;
+        if result.is_error {
+            return result;
+        }
+        ToolResult::ok(format!(
+            "Raw plist from com.apple.dock recent-apps:\n{}",
+            result.content
+        ))
     }
     #[cfg(not(target_os = "macos"))]
     ToolResult::error("Dock recent items are only available on macOS")
@@ -3239,8 +3391,10 @@ async fn run_osascript(script: &str) -> ToolResult {
     // No deadline: this path includes `display alert`, which is meant to block
     // until the user dismisses it.
     match run_osascript_raw(script, None).await {
+        // Empty stdout is a fact, not a verdict: a read that found nothing and
+        // a write that succeeded must not both say "OK".
         Ok(output) => ToolResult::ok(if output.is_empty() {
-            "OK".to_string()
+            "(exit 0, no output)".to_string()
         } else {
             output
         }),
@@ -3274,8 +3428,34 @@ async fn run_osascript_raw(script: &str, deadline: Option<Duration>) -> Result<S
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        Err(format!("AppleScript error: {}", stderr))
+        Err(describe_applescript_error(&stderr))
     }
+}
+
+/// Turn osascript's stderr into a statement of what happened. The numeric
+/// codes are what System Events emits; the text after each is what the
+/// caller can act on.
+#[cfg(target_os = "macos")]
+fn describe_applescript_error(stderr: &str) -> String {
+    if stderr.contains("-25211") {
+        return format!(
+            "AppleScript error {}: Nebo is not allowed to control this app. Open System Settings > Privacy & Security > Accessibility, enable Nebo, then retry.",
+            stderr
+        );
+    }
+    if stderr.contains("-1728") {
+        return format!(
+            "AppleScript error {}: the named window/element does not exist; use capture see to list what exists.",
+            stderr
+        );
+    }
+    if stderr.contains("-600") || stderr.contains("-609") {
+        return format!("AppleScript error {}: the app is not running.", stderr);
+    }
+    if stderr.is_empty() {
+        return "AppleScript error: osascript exited non-zero and printed nothing".to_string();
+    }
+    format!("AppleScript error: {}", stderr)
 }
 
 #[cfg(target_os = "macos")]
@@ -3284,8 +3464,8 @@ fn escape_applescript(s: &str) -> String {
 }
 
 #[cfg(target_os = "macos")]
-fn key_name_to_code(key: &str) -> &str {
-    match key.to_lowercase().as_str() {
+fn key_name_to_code(key: &str) -> Result<&'static str, String> {
+    Ok(match key.to_lowercase().as_str() {
         "return" | "enter" => "36",
         "tab" => "48",
         "space" => "49",
@@ -3300,8 +3480,15 @@ fn key_name_to_code(key: &str) -> &str {
         "f3" => "99",
         "f4" => "118",
         "f5" => "96",
-        _ => "36", // default to return
-    }
+        // Falling back to Return here used to press Enter for any typo, which
+        // submits forms the caller never meant to submit.
+        _ => {
+            return Err(format!(
+                "Key '{}' is not in the macOS key map (return, tab, space, delete, escape, arrows, f1-f5). Use press with a combo or type the character.",
+                key
+            ))
+        }
+    })
 }
 
 // --- Cross-platform helpers ---
@@ -3331,7 +3518,7 @@ async fn run_command(cmd: &str, args: &[&str]) -> ToolResult {
         Ok(output) if output.status.success() => {
             let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
             ToolResult::ok(if text.is_empty() {
-                "OK".to_string()
+                "(exit 0, no output)".to_string()
             } else {
                 text
             })
@@ -3339,14 +3526,13 @@ async fn run_command(cmd: &str, args: &[&str]) -> ToolResult {
         Ok(output) => {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
             let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            let code = output.status.code().map(|c| c.to_string()).unwrap_or_else(|| "signal".into());
+            let detail = [stdout, stderr].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join("\n");
             ToolResult::error(format!(
-                "{}{}",
-                stdout,
-                if stderr.is_empty() {
-                    String::new()
-                } else {
-                    format!("\n{}", stderr)
-                }
+                "'{}' exited {}{}",
+                cmd,
+                code,
+                if detail.is_empty() { " and printed nothing".to_string() } else { format!(": {detail}") }
             ))
         }
         Err(e) => ToolResult::error(format!("Command '{}' failed: {}", cmd, e)),
@@ -3365,7 +3551,21 @@ async fn run_command_raw(cmd: &str, args: &[&str]) -> Result<String, String> {
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        Err(format!("{}", stderr))
+        let code = output
+            .status
+            .code()
+            .map(|c| c.to_string())
+            .unwrap_or_else(|| "signal".to_string());
+        Err(format!(
+            "'{}' exited {}{}",
+            cmd,
+            code,
+            if stderr.is_empty() {
+                " and printed nothing".to_string()
+            } else {
+                format!(": {}", stderr)
+            }
+        ))
     }
 }
 
@@ -3377,7 +3577,7 @@ async fn run_powershell(script: &str) -> ToolResult {
         match daemon.execute(script, Duration::from_secs(30)).await {
             Ok(out) => {
                 return ToolResult::ok(if out.is_empty() {
-                    "OK".to_string()
+                    "(exit 0, no output)".to_string()
                 } else {
                     out
                 });
@@ -3387,8 +3587,14 @@ async fn run_powershell(script: &str) -> ToolResult {
             }
         }
     }
-    // Fallback (non-Windows or daemon failure)
-    run_command("powershell", &["-NoProfile", "-Command", script]).await
+    // Fallback: a fresh powershell subprocess. Anything the caller had set in
+    // the persistent session is gone, and the result says so.
+    let mut result = run_command("powershell", &["-NoProfile", "-Command", script]).await;
+    result.content = format!(
+        "(PowerShell session restarted; prior $variables are gone) {}",
+        result.content
+    );
+    result
 }
 
 #[cfg(target_os = "linux")]
@@ -3417,8 +3623,8 @@ async fn pipe_to_command(cmd: &str, args: &[&str], text: &str) -> ToolResult {
         let _ = stdin.write_all(text.as_bytes()).await;
     }
     match child.wait().await {
-        Ok(status) if status.success() => ToolResult::ok("OK"),
-        Ok(status) => ToolResult::error(format!("{} exited with status {}", cmd, status)),
+        Ok(status) if status.success() => ToolResult::ok("(exit 0, no output)"),
+        Ok(status) => ToolResult::error(format!("{} exited with {}", cmd, status)),
         Err(e) => ToolResult::error(format!("Failed to wait for {}: {}", cmd, e)),
     }
 }
@@ -3560,10 +3766,37 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn test_key_name_to_code() {
-        assert_eq!(key_name_to_code("return"), "36");
-        assert_eq!(key_name_to_code("tab"), "48");
-        assert_eq!(key_name_to_code("escape"), "53");
-        assert_eq!(key_name_to_code("Enter"), "36"); // case insensitive
+        assert_eq!(key_name_to_code("return"), Ok("36"));
+        assert_eq!(key_name_to_code("tab"), Ok("48"));
+        assert_eq!(key_name_to_code("escape"), Ok("53"));
+        assert_eq!(key_name_to_code("Enter"), Ok("36")); // case insensitive
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn test_key_name_to_code_rejects_unmapped_key() {
+        // An unmapped key must not fall back to Return.
+        let err = key_name_to_code("f13").unwrap_err();
+        assert!(err.contains("Key 'f13' is not in the macOS key map"), "{err}");
+        assert!(err.contains("f1-f5"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn test_describe_applescript_error_maps_codes() {
+        let e = describe_applescript_error("execution error: Not authorized (-25211)");
+        assert!(e.contains("Accessibility"), "{e}");
+        let e = describe_applescript_error("Can't get window 1 (-1728)");
+        assert!(e.contains("does not exist"), "{e}");
+        let e = describe_applescript_error("Application isn't running (-600)");
+        assert!(e.contains("not running"), "{e}");
+        let e = describe_applescript_error("");
+        assert!(e.contains("printed nothing"), "{e}");
+    }
+
+    #[test]
+    fn test_clipboard_updated_message_counts_chars() {
+        assert_eq!(clipboard_updated_message("héllo"), "Clipboard updated (5 chars).");
     }
 
     #[tokio::test]
@@ -3618,6 +3851,48 @@ mod tests {
         let result = handle_input("click", &serde_json::json!({}), &store).await;
         assert!(result.is_error);
         assert!(result.content.contains("coordinate"));
+    }
+
+    /// Every spelling the docs taught for an input target lands on the
+    /// handler's two names: element_id and element are the ref, x and y are
+    /// the coordinate, and the primary names win when both are present.
+    #[test]
+    fn input_target_alias_table() {
+        let cases: &[(serde_json::Value, (&str, Option<(i64, i64)>))] = &[
+            (serde_json::json!({"ref": "B3"}), ("B3", None)),
+            (serde_json::json!({"element_id": "B3"}), ("B3", None)),
+            (serde_json::json!({"element": "T1"}), ("T1", None)),
+            (serde_json::json!({"ref": "B1", "element_id": "B2"}), ("B1", None)),
+            (serde_json::json!({"ref": "", "element_id": "B2"}), ("B2", None)),
+            (serde_json::json!({"coordinate": [10, 20]}), ("", Some((10, 20)))),
+            (serde_json::json!({"x": 100, "y": 200}), ("", Some((100, 200)))),
+            (serde_json::json!({"coordinate": [1, 2], "x": 9, "y": 9}), ("", Some((1, 2)))),
+            (serde_json::json!({"x": 100}), ("", None)),
+            (serde_json::json!({"element_id": "B3", "x": 5, "y": 6}), ("B3", Some((5, 6)))),
+            (serde_json::json!({}), ("", None)),
+        ];
+        for (input, want) in cases {
+            assert_eq!(input_target(input), *want, "{input}");
+        }
+    }
+
+    /// An `element_id` reaches the element lookup: the error names the
+    /// element it could not find, not a missing `ref`.
+    #[tokio::test]
+    async fn element_id_is_looked_up_as_a_ref() {
+        let store = tokio::sync::Mutex::new(SnapshotStore::new());
+        let result = handle_input("click", &serde_json::json!({"element_id": "Z9"}), &store).await;
+        assert!(result.is_error);
+        assert!(result.content.contains("Element 'Z9' not found"), "{}", result.content);
+        let result = handle_input("type", &serde_json::json!({"element": "Z9", "text": "hi"}), &store).await;
+        assert!(result.content.contains("Element 'Z9' not found"), "{}", result.content);
+    }
+
+    #[test]
+    fn capture_is_read_as_screenshot() {
+        assert_eq!(canonical_capture_action("capture"), "screenshot");
+        assert_eq!(canonical_capture_action("see"), "see");
+        assert_eq!(canonical_capture_action("screenshot"), "screenshot");
     }
 
     #[tokio::test]

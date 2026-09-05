@@ -136,6 +136,74 @@ pub trait MemoryEmbedder: Send + Sync {
 /// audit 2026-08-22, leak #7).
 const MEMORY_KEYCHAIN_SERVICE: &str = "nebo-memory";
 
+/// Statuses a caller can set through task update. `skipped` is what delete
+/// writes and is not offered here. `failed` is refused on purpose (see
+/// `TASK_STATUS_FAILED`): work that failed is either finished, with the
+/// failure recorded in output, or still open.
+const TASK_UPDATE_STATUSES: [&str; 3] = ["pending", "in_progress", "completed"];
+
+/// The status the task rules say never to set. The refusal names the two
+/// honest alternatives so the model does not retry with a synonym.
+const TASK_STATUS_FAILED: &str = "failed";
+
+/// The resources of the agent tool, in the order the schema lists them. The
+/// ONE list behind the schema enum, the resource auto-correction, and every
+/// "resource is required" text.
+const RESOURCES: [&str; 10] =
+    ["memory", "task", "session", "context", "advisors", "ask", "research", "registry", "runs", "profile"];
+
+/// The words a call must carry when its action has more than one meaning
+/// and nothing else says which. `status` alone was routed to task and listed
+/// active sub-agents when the model wanted the session (audit 2026-09-05).
+fn resource_required(action: &str) -> String {
+    match action {
+        "status" => "status needs a resource; it means three different things: \
+                     agent(resource: \"task\", action: \"status\", task_id: \"...\") for a sub-agent you spawned, \
+                     agent(resource: \"session\", action: \"status\") for the current session, \
+                     agent(resource: \"runs\", action: \"list\") for this employee's running work."
+            .to_string(),
+        _ => format!(
+            "Resource is required. Available: {}. Work for a named coworker is not an agent action: \
+             message(resource: \"coworker\", action: \"send\", to: \"<employee>\", text: \"...\").",
+            RESOURCES.join(", ")
+        ),
+    }
+}
+
+/// Reduce the billing subscription document to the three facts a bot needs:
+/// plan, status, renewal, balance. Fields the service did not send are
+/// reported as not reported, never invented, and the raw JSON stays out of
+/// the model's context.
+fn summarize_subscription(v: &serde_json::Value) -> String {
+    fn pick<'a>(v: &'a serde_json::Value, keys: &[&str]) -> Option<&'a serde_json::Value> {
+        keys.iter().find_map(|k| v.get(*k)).filter(|x| !x.is_null())
+    }
+    fn show(v: Option<&serde_json::Value>) -> String {
+        match v {
+            None => "not reported".to_string(),
+            Some(serde_json::Value::String(s)) => s.clone(),
+            Some(other) => other.to_string(),
+        }
+    }
+    let plan = pick(v, &["plan", "planName", "plan_name", "tier"]);
+    let status = pick(v, &["status", "state"]);
+    let renewal = pick(
+        v,
+        &["renewsAt", "renews_at", "currentPeriodEnd", "current_period_end", "renewalDate", "renewal_date"],
+    );
+    let balance = pick(
+        v,
+        &["balance", "balanceCents", "balance_cents", "credits", "creditBalance", "credit_balance"],
+    );
+    format!(
+        "Plan: {}\nSubscription status: {}\nRenewal: {}\nBalance: {}",
+        show(plan),
+        show(status),
+        show(renewal),
+        show(balance)
+    )
+}
+
 /// OS keychain writer for credential routing on explicit memory stores.
 /// The default implementation delegates to the ONE os keychain pathway
 /// (`keychain_tool::KeychainTool`'s add action) — trait-injected so tests
@@ -274,32 +342,62 @@ impl AgentTool {
         self
     }
 
-    fn infer_resource(&self, action: &str, input: &serde_json::Value) -> &str {
+    /// Params only the registry resource has. A create or update carrying one
+    /// of these is about an employee, not a task, whatever `resource` says or
+    /// omits. `prompt` is here because a live run sent
+    /// `{action: update, name, prompt}` twice and was told "task_id is
+    /// required" twice; task update has no `prompt`.
+    const REGISTRY_UPDATE_PARAMS: &[&str] = &[
+        "automations",
+        "add_automations",
+        "remove_automations",
+        "agent_md",
+        "agent_json",
+        "prompt",
+        "instructions",
+        "new_name",
+        "inputs",
+        "input_values",
+        "toggle_automation",
+        "update_automation",
+    ];
+
+    /// The resource a call means when it names none. Empty means the call
+    /// must say (see `resource_required`). `delegate` is not here: it was
+    /// removed, and a removed action reaches the generic text, not a special
+    /// arm that keeps it alive.
+    fn infer_resource(action: &str, input: &serde_json::Value) -> &'static str {
+        let has = |k: &str| !input[k].is_null();
         // create/update are ambiguous between task and registry. Registry-shaped
-        // params (automations, agent_md, agent_json) settle it, as does a create
-        // with `name` but no `subject` — task create never uses `name`.
+        // params (automations, agent_md, prompt) settle it, and so does naming an
+        // employee: task create never uses `name`, and a task update carries a
+        // task_id. An update with only a name and a description was routed to
+        // task and told "task_id required" (audit 2026-09-05).
         if matches!(action, "create" | "update") {
-            let has_registry_params = ["automations", "add_automations", "remove_automations", "agent_md", "agent_json"]
-                .iter()
-                .any(|k| !input[*k].is_null());
-            if has_registry_params
-                || (action == "create" && !input["name"].is_null() && input["subject"].is_null())
-            {
+            let has_registry_params = Self::REGISTRY_UPDATE_PARAMS.iter().any(|k| has(k));
+            let names_an_employee = match action {
+                "create" => has("name") && !has("subject"),
+                _ => has("name") && !has("task_id"),
+            };
+            if has_registry_params || names_an_employee {
                 return "registry";
             }
         }
         match action {
             "store" | "save" | "recall" | "search" => "memory",
+            "delete" if has("key") => "memory",
+            "list" | "clear" if has("namespace") => "memory",
+            "status" if !has("task_id") => "",
             "spawn" | "spawn_parallel" | "orchestrate" | "status" | "cancel" | "send"
-            | "create" | "update" | "delete" => "task",
+            | "create" | "update" | "delete" | "get" | "list" | "clear" => "task",
             "research" | "deep_research" | "submit_findings" => "research",
             "open_billing" => "profile",
             "history" | "query" => "session",
             "reset" | "compact" | "summary" => "context",
             "deliberate" => "advisors",
             "prompt" | "confirm" | "select" => "ask",
-            "delegate" | "activate" | "deactivate" | "info" | "install" | "setup" | "reload"
-            | "repair" | "stats" => "registry",
+            "activate" | "deactivate" | "info" | "install" | "setup" | "reload" | "repair"
+            | "stats" => "registry",
             _ => "",
         }
     }
@@ -466,19 +564,20 @@ impl AgentTool {
                             ),
                             Ok(None) => {
                                 // Data not visible on a different connection — persistence failure
-                                let total = self.store.count_memories().unwrap_or(-1);
+                                let total = self.store.count_memories().ok();
                                 warn!(
                                     namespace = namespace,
                                     key = key,
                                     user_id = %ctx.user_id,
-                                    total_memories = total,
+                                    total_memories = total.unwrap_or(-1),
                                     "memory store: upsert OK but cross-connection verify found NOTHING"
                                 );
                                 return ToolResult::error(format!(
-                                    "Memory store failed: data not persisted (wrote to [{}] {} but read-back returned nothing). \
-                                     Total memories in DB: {}. This may indicate FTS trigger corruption — \
-                                     try restarting the server.",
-                                    namespace, key, total
+                                    "Memory store failed: the write to [{}] {} was accepted but could not be read back; nothing was saved.{} \
+                                     Do not retry; tell the user memory storage is failing.",
+                                    namespace,
+                                    key,
+                                    total.map(|t| format!(" Memories in DB: {}.", t)).unwrap_or_default()
                                 ));
                             }
                             Err(e) => warn!(
@@ -495,10 +594,9 @@ impl AgentTool {
                         }
                         match keychain_kind {
                             Some(kind) => ToolResult::ok(format!(
-                                "Stored memory: [{namespace}] {key} = {stored_value}. The value was \
-                                 credential-shaped ({kind}), so the secret was saved to the OS keychain \
-                                 (service \"{MEMORY_KEYCHAIN_SERVICE}\", account \"{account}\") — not plaintext \
-                                 in memory. Tell the user where it lives. Retrieve later with \
+                                "Stored pointer for {key} in [{namespace}]; the value was credential-shaped ({kind}), \
+                                 and the secret itself is in the OS keychain (service {MEMORY_KEYCHAIN_SERVICE}, \
+                                 account {account}). Tell the user where it lives. Read it back with \
                                  os(resource: \"keychain\", action: \"get\", service: \"{MEMORY_KEYCHAIN_SERVICE}\", account: \"{account}\").",
                                 account = format_args!("{}/{}", ctx.user_id, key)
                             )),
@@ -566,7 +664,10 @@ impl AgentTool {
                                 let _ = self
                                     .store
                                     .increment_memory_access_by_key(namespace, key, &m.user_id);
-                                ToolResult::ok(format!("[{}] {}: {}", m.namespace, m.key, m.value))
+                                ToolResult::ok(format!(
+                                    "[{}] {}: {} (inherited from owner scope)",
+                                    m.namespace, m.key, m.value
+                                ))
                             }
                             None => {
                                 // Fallback 2: key-only lookup across all namespaces
@@ -585,9 +686,14 @@ impl AgentTool {
                                             key = key,
                                             "memory found in different namespace"
                                         );
+                                        let inherited = if m.user_id == ctx.user_id {
+                                            ""
+                                        } else {
+                                            "; inherited from owner scope"
+                                        };
                                         ToolResult::ok(format!(
-                                            "[{}] {}: {}",
-                                            m.namespace, m.key, m.value
+                                            "[{}] {}: {} (found in namespace {}, not {}{})",
+                                            m.namespace, m.key, m.value, m.namespace, namespace, inherited
                                         ))
                                     }
                                     None => {
@@ -597,7 +703,10 @@ impl AgentTool {
                                             user_id = %ctx.user_id,
                                             "memory not found in any readable scope"
                                         );
-                                        ToolResult::ok(format!("No memory found for key: {}", key))
+                                        ToolResult::ok(format!(
+                                            "No memory found for key '{}' in any namespace readable by this agent. Use search for fuzzy matches.",
+                                            key
+                                        ))
                                     }
                                 }
                             }
@@ -629,13 +738,13 @@ impl AgentTool {
                             .iter()
                             .map(|r| {
                                 format!(
-                                    "- [{}] {}: {} (score: {:.2})",
+                                    "- [{}] {}: {} (relevance {:.2}/1)",
                                     r.namespace, r.key, r.value, r.score
                                 )
                             })
                             .collect();
                         return ToolResult::ok(format!(
-                            "Found {} memories:\n{}",
+                            "Found {} memories (semantic search):\n{}",
                             results.len(),
                             lines.join("\n")
                         ));
@@ -657,7 +766,7 @@ impl AgentTool {
                                 .map(|m| format!("- [{}] {}: {}", m.namespace, m.key, m.value))
                                 .collect();
                             ToolResult::ok(format!(
-                                "Found {} memories:\n{}",
+                                "Found {} memories (text match):\n{}",
                                 memories.len(),
                                 lines.join("\n")
                             ))
@@ -685,15 +794,25 @@ impl AgentTool {
                 match memories {
                     Ok(mems) => {
                         if mems.is_empty() {
-                            ToolResult::ok("No memories stored.")
+                            ToolResult::ok(format!(
+                                "No memories in namespace prefix '{}'. (list defaults to tacit/; pass namespace: \"project\" or \"entity/\" to see others.)",
+                                ns_prefix
+                            ))
                         } else {
                             let lines: Vec<String> = mems
                                 .iter()
                                 .map(|m| format!("- [{}] {}: {}", m.namespace, m.key, m.value))
                                 .collect();
+                            let page_note = if mems.len() as i64 >= limit {
+                                format!(" (first {}; raise limit for more)", limit)
+                            } else {
+                                String::new()
+                            };
                             ToolResult::ok(format!(
-                                "{} memories:\n{}",
+                                "{} memories in {}{}:\n{}",
                                 mems.len(),
+                                ns_prefix,
+                                page_note,
                                 lines.join("\n")
                             ))
                         }
@@ -717,10 +836,14 @@ impl AgentTool {
                     .store
                     .delete_memory_by_key_and_user(namespace, key, &ctx.user_id)
                 {
-                    Ok(n) if n > 0 => {
-                        ToolResult::ok(format!("Deleted {} memory entries for key: {}", n, key))
-                    }
-                    Ok(_) => ToolResult::ok(format!("No memory found with key: {}", key)),
+                    Ok(n) if n > 0 => ToolResult::ok(format!(
+                        "Deleted {} entries for key '{}' in {}.",
+                        n, key, namespace
+                    )),
+                    Ok(_) => ToolResult::ok(format!(
+                        "Nothing deleted: no memory with key '{}' in {}.",
+                        key, namespace
+                    )),
                     Err(e) => ToolResult::error(format!("Failed to delete: {}", e)),
                 }
             }
@@ -963,17 +1086,24 @@ impl AgentTool {
                     })
                     .collect();
 
+                let task_count = requests.len();
                 match orch.spawn_parallel(requests, stream_tx).await {
                     Ok(result) => {
+                        // The orchestrator marks each failed section "(FAILED)";
+                        // counting those is the one source for the numbers here.
+                        let failed = result.output.matches("(FAILED)\n").count().min(task_count);
+                        let succeeded = task_count - failed;
                         if result.success {
                             ToolResult::ok(format!(
-                                "Parallel execution [{}] completed:\n\n{}",
-                                result.task_id, result.output
+                                "Parallel run [{}]: {} of {} tasks succeeded.\n\n{}",
+                                result.task_id, succeeded, task_count, result.output
                             ))
                         } else {
                             ToolResult::error(format!(
-                                "Parallel execution [{}] had failures:\n\n{}\n\nError: {}",
+                                "Parallel run [{}]: {} of {} tasks failed:\n\n{}\n\nError: {}",
                                 result.task_id,
+                                failed,
+                                task_count,
                                 result.output,
                                 result.error.unwrap_or_default()
                             ))
@@ -1042,7 +1172,10 @@ impl AgentTool {
                     None => {
                         // Fall back to DB cancel
                         return match self.store.cancel_task(task_id) {
-                            Ok(_) => ToolResult::ok(format!("Cancelled task: {}", task_id)),
+                            Ok(_) => ToolResult::ok(format!(
+                                "Marked task {} cancelled in the database; the orchestrator is not running so no live sub-agent was stopped.",
+                                task_id
+                            )),
                             Err(e) => ToolResult::error(format!("Failed to cancel: {}", e)),
                         };
                     }
@@ -1094,7 +1227,9 @@ impl AgentTool {
                     if let Some(orch) = self.orchestrator.get() {
                         let agents = orch.list_active().await;
                         if agents.is_empty() {
-                            return ToolResult::ok("No active sub-agents.");
+                            return ToolResult::ok(
+                                "No sub-agents currently running. Finished agents: use status with task_id, or list.",
+                            );
                         }
                         let lines: Vec<String> = agents
                             .iter()
@@ -1138,7 +1273,10 @@ impl AgentTool {
                         }
                         ToolResult::ok(result)
                     }
-                    Ok(None) => ToolResult::error(format!("Task '{}' not found", task_id)),
+                    Ok(None) => ToolResult::error(format!(
+                        "No sub-agent task has id '{}'. Task ids come from spawn results in this run; status with no task_id lists the running ones. An employee's runs are not tasks: agent(resource: \"registry\", action: \"info\", name) and agent(resource: \"session\", action: \"history\", session_id) cover those.",
+                        task_id
+                    )),
                     Err(e) => ToolResult::error(format!("Failed to get status: {}", e)),
                 }
             }
@@ -1173,7 +1311,25 @@ impl AgentTool {
                     return ToolResult::error(errors::missing_param(
                         "update",
                         "status",
-                        "agent(resource: \"task\", action: \"update\", task_id: \"1\", status: \"completed\")\nValid statuses: pending, in_progress, completed, failed",
+                        &format!(
+                            "agent(resource: \"task\", action: \"update\", task_id: \"1\", status: \"completed\")\nValid statuses: {}",
+                            TASK_UPDATE_STATUSES.join(", ")
+                        ),
+                    ));
+                }
+                if status == TASK_STATUS_FAILED {
+                    return ToolResult::error(format!(
+                        "'{TASK_STATUS_FAILED}' is not a task status. If the work is finished and the outcome was a failure, \
+                         mark it completed with the failure in output: agent(resource: \"task\", action: \"update\", \
+                         task_id: \"{task_id}\", status: \"completed\", output: \"<what failed and why>\"). \
+                         If it can still be finished, keep it in_progress and create a follow-up task."
+                    ));
+                }
+                if !TASK_UPDATE_STATUSES.contains(&status) {
+                    return ToolResult::error(format!(
+                        "Unknown status '{}'; use one of {}.",
+                        status,
+                        TASK_UPDATE_STATUSES.join(", ")
                     ));
                 }
                 let output = input["output"].as_str();
@@ -1251,12 +1407,15 @@ impl AgentTool {
                     .store
                     .update_task_item(task_id, "skipped", None, None, 0, 0)
                 {
-                    Ok(_) => ToolResult::ok(format!("Task {} deleted", task_id)),
+                    Ok(_) => ToolResult::ok(format!(
+                        "Task {} marked skipped (it stays in the list with status skipped).",
+                        task_id
+                    )),
                     Err(e) => ToolResult::error(format!("Failed to delete task: {}", e)),
                 }
             }
             _ => ToolResult::error(format!(
-                "Unknown task action: {}. Available: spawn, spawn_parallel, orchestrate, status, cancel, create, update, list, get, delete",
+                "Unknown task action: {}. Available: spawn, spawn_parallel, orchestrate, status, cancel, send, create, update, list, get, delete",
                 action
             )),
         }
@@ -1298,7 +1457,7 @@ impl AgentTool {
                     Ok(msgs) => {
                         if msgs.is_empty() {
                             return ToolResult::ok(format!(
-                                "No messages in session: {}",
+                                "No messages in the active chat of session {}.",
                                 session_id
                             ));
                         }
@@ -1316,7 +1475,12 @@ impl AgentTool {
                                 format!("[{}] {}: {}", m.id, m.role, preview)
                             })
                             .collect();
-                        ToolResult::ok(format!("{} messages:\n{}", msgs.len(), lines.join("\n")))
+                        ToolResult::ok(format!(
+                            "{} messages in session (showing the last {}):\n{}",
+                            msgs.len(),
+                            recent.len(),
+                            lines.join("\n")
+                        ))
                     }
                     Err(e) => ToolResult::error(format!("Failed to get history: {}", e)),
                 }
@@ -1357,8 +1521,8 @@ impl AgentTool {
                                     h.chat_title.clone()
                                 };
                                 format!(
-                                    "- [{} · {} · {}] {}: {}",
-                                    title, h.chat_id, when, h.role, h.snippet
+                                    "- {} in \"{}\" (chat {}), {}: {}",
+                                    when, title, h.chat_id, h.role, h.snippet
                                 )
                             })
                             .collect();
@@ -1382,14 +1546,11 @@ impl AgentTool {
         let action = input["action"].as_str().unwrap_or("");
         match action {
             "summary" => {
-                // Get recent messages from the current session for a summary
-                // Use session_key as the chat_id (messages are stored under session name, not session UUID)
-                let chat_id = if !ctx.session_key.is_empty() {
-                    &ctx.session_key
-                } else {
-                    &ctx.session_id
-                };
-                match self.store.get_chat_messages(chat_id) {
+                // Messages live under the session's active chat, resolved by the
+                // one derivation in the db crate (the same one `session history`
+                // uses, so the two can never count different chats).
+                let chat_id = self.store.resolve_session_chat_id(&ctx.session_id);
+                match self.store.get_chat_messages(&chat_id) {
                     Ok(msgs) => {
                         let count = msgs.len();
                         let user_count = msgs.iter().filter(|m| m.role == "user").count();
@@ -1423,14 +1584,16 @@ impl AgentTool {
                 }
             }
             "reset" => match self.store.reset_session(&ctx.session_id) {
-                Ok(_) => ToolResult::ok("Session context has been reset."),
+                Ok(_) => ToolResult::ok(
+                    "Stored session counters and summary were cleared (messages are not deleted). Your current conversation context is unchanged until the next session.",
+                ),
                 Err(e) => ToolResult::error(format!("Failed to reset: {}", e)),
             },
             "compact" => {
                 // Compaction is handled automatically by the agentic loop's sliding window.
                 // This explicit call is a no-op signal that the agent wants to reduce context.
                 ToolResult::ok(
-                    "Context compaction noted. The agentic loop will apply sliding window pruning on the next iteration.",
+                    "compact is a no-op: context is pruned automatically; there is no manual compaction. Do not call this again.",
                 )
             }
             _ => ToolResult::error(format!(
@@ -1502,7 +1665,7 @@ impl AgentTool {
                         }
 
                         ToolResult::ok(format!(
-                            "Advisor deliberation for: {}\n\n{}\n\nSynthesize these perspectives to form your approach.",
+                            "No live deliberation ran (advisor engine not available); these are the configured advisor personas only.\n\nTask: {}\n\n{}\n\nSynthesize these perspectives to form your approach.",
                             task,
                             perspectives.join("\n\n"),
                         ))
@@ -1630,7 +1793,7 @@ impl AgentTool {
         let querier = match self.run_querier.get() {
             Some(q) => q,
             None => return ToolResult::error(
-                "Run registry not available. The server may still be starting up. Try again in a moment.",
+                "Run registry is not initialised. Retry once after 5 seconds; if it fails again, do not retry.",
             ),
         };
 
@@ -1658,7 +1821,7 @@ impl AgentTool {
                         };
                         format!(
                             "- [{}] {} ({}) · {} tools · {}s{}",
-                            &r.run_id[..8.min(r.run_id.len())],
+                            r.run_id,
                             r.entity_name,
                             r.origin,
                             r.tool_call_count,
@@ -1707,13 +1870,8 @@ impl AgentTool {
                     out.push_str(&format!("Model: {}\n", model));
                 }
                 match api.billing_subscription().await {
-                    Ok(v) => {
-                        if let Some(plan) = v.get("plan").and_then(|p| p.as_str()) {
-                            out.push_str(&format!("Plan: {}\n", plan));
-                        }
-                        out.push_str(&format!("Subscription: {}", v));
-                    }
-                    Err(e) => out.push_str(&format!("(plan unavailable: {})", e)),
+                    Ok(v) => out.push_str(&summarize_subscription(&v)),
+                    Err(e) => out.push_str(&format!("Plan: unknown (billing lookup failed: {})", e)),
                 }
                 ToolResult::ok(out)
             }
@@ -1766,6 +1924,7 @@ impl AgentTool {
                     let id = types::keyparser::extract_agent_id(&ctx.session_key);
                     if id.is_empty() { "assistant".to_string() } else { id }
                 };
+                let mut roster_row_missing = false;
                 match self.store.get_agent(&agent_id) {
                     Ok(Some(existing)) => {
                         let new_name = if name.is_empty() {
@@ -1814,6 +1973,7 @@ impl AgentTool {
                         }
                     }
                     Ok(None) => {
+                        roster_row_missing = true;
                         tracing::warn!(agent_id = %agent_id, "profile update: no agents row to sync");
                     }
                     Err(e) => {
@@ -1825,13 +1985,19 @@ impl AgentTool {
                 }
                 // Cloud identity (NeboAI directory) — best-effort; the local
                 // rename above is the one the user experiences.
+                let mut caveats = String::new();
                 if let Err(e) = api.update_bot_identity(name, role).await {
                     tracing::warn!(error = %e, "cloud bot identity sync failed (local rename applied)");
+                    caveats.push_str(&format!("; cloud directory sync failed ({}), local name is updated", e));
+                }
+                if roster_row_missing {
+                    caveats.push_str("; no agent roster row found, only the prompt identity changed");
                 }
                 ToolResult::ok(format!(
-                    "Updated identity{}{}. This takes effect in new conversations.",
-                    if name.is_empty() { String::new() } else { format!(" — name is now '{}'", name) },
+                    "Updated identity{}{}{}. This takes effect in new conversations.",
+                    if name.is_empty() { String::new() } else { format!(": name is now '{}'", name) },
                     if role.is_empty() { String::new() } else { format!(", role: '{}'", role) },
+                    caveats,
                 ))
             }
             "open_billing" => match api.billing_portal().await {
@@ -1841,7 +2007,7 @@ impl AgentTool {
                         return ToolResult::error("Billing portal URL not available.");
                     }
                     open_url(url);
-                    ToolResult::ok(format!("Opened billing portal: {}", url))
+                    ToolResult::ok(format!("Requested the system browser to open {}.", url))
                 }
                 Err(e) => ToolResult::error(format!("Failed to open billing: {}", e)),
             },
@@ -1951,11 +2117,12 @@ impl AgentTool {
                 let run_dir = match crate::research::find_active_run_dir(&research_dir) {
                     Some(d) => d,
                     None => {
-                        return ToolResult::error(
-                            "No active research run found. You must start a research run first with:\n\
-                             agent(resource: \"research\", action: \"research\", query: \"your research question\")\n\
-                             Then submit findings from worker sub-agents using submit_findings.",
-                        );
+                        return ToolResult::error(format!(
+                            "No research run is currently in status 'running' under {}; the run this worker belongs to has ended or was not started. \
+                             Start one with agent(resource: \"research\", action: \"research\", query: \"your research question\"), \
+                             then submit findings from worker sub-agents using submit_findings.",
+                            research_dir.display()
+                        ));
                     }
                 };
 
@@ -2042,18 +2209,26 @@ impl AgentTool {
             }
             plan.push_str("\n\nStart as-is, refine the plan, or cancel?");
         }
+        let mut gate_timed_out = false;
         if confirm_gate {
             let widgets = serde_json::json!([{ "type": "buttons", "options": ["Start research", "Refine the plan", "Cancel"] }]);
             // Bounded gate: an unanswered plan must NEVER become a tool-timeout
             // error (observed live: 300s timeout → the model 'tried different
             // approaches' in a retry spiral, burning balance). No answer in 90s
             // → start as planned; the run is cancelable and the plan is visible.
-            let gate = tokio::time::timeout(
+            let gate = match tokio::time::timeout(
                 std::time::Duration::from_secs(90),
                 ctx.ask_user(&plan, widgets),
             )
             .await
-            .unwrap_or(None); // timeout → treat as "start as planned"
+            {
+                Ok(answer) => answer,
+                Err(_) => {
+                    // timeout → start as planned, and the final report says so
+                    gate_timed_out = true;
+                    None
+                }
+            };
             if let Some(resp) = gate {
                 let r = resp.to_lowercase();
                 if r.contains("cancel") {
@@ -2105,7 +2280,14 @@ impl AgentTool {
         .await
         {
             Ok(report) => {
-                let mut result = ToolResult::ok(crate::deep_research::format_report(&report))
+                let mut text = crate::deep_research::format_report(&report);
+                if gate_timed_out {
+                    text = format!(
+                        "(No answer to the plan prompt within 90s; research started as planned.)\n\n{}",
+                        text
+                    );
+                }
+                let mut result = ToolResult::ok(text)
                     // Final card state for the live stream AND reloaded history.
                     .with_payload(serde_json::json!({
                         "kind": "research_summary",
@@ -2218,7 +2400,7 @@ impl DynTool for AgentTool {
                 "resource": {
                     "type": "string",
                     "description": "REQUIRED. The agent resource category — determines which actions are available.",
-                    "enum": ["memory", "task", "session", "context", "advisors", "ask", "research", "registry", "runs", "profile"]
+                    "enum": RESOURCES
                 },
                 "action": {
                     "type": "string",
@@ -2227,10 +2409,11 @@ impl DynTool for AgentTool {
                 "key": { "type": "string", "description": "Memory key" },
                 "value": { "type": "string", "description": "Memory value or field value" },
                 "namespace": { "type": "string", "description": "Memory namespace (e.g. tacit/general, entity/people)" },
-                "query": { "type": "string", "description": "Search query" },
+                "query": { "type": "string", "description": "Search query (memory search; session query, where a query with no text is that session's history)" },
                 "limit": { "type": "integer", "description": "Max results" },
                 "subject": { "type": "string", "description": "Task subject" },
-                "status": { "type": "string", "description": "Task status: pending, in_progress, completed" },
+                "status": { "type": "string", "enum": TASK_UPDATE_STATUSES, "description": "Task status for update. There is no failed: finished work with a bad outcome is completed with the failure in output; unfinished work stays in_progress with a follow-up task." },
+                "output": { "type": "string", "description": "Task update: what the task produced, or what failed and why (kept with the task; shown by get)" },
                 "task_id": { "type": "string", "description": "Task ID for updates, status, cancel, and send" },
                 "message": { "type": "string", "description": "Follow-up for a finished sub-agent (action send)" },
                 "prompt": { "type": "string", "description": "Sub-agent prompt or orchestration task description" },
@@ -2244,7 +2427,17 @@ impl DynTool for AgentTool {
                 "session_id": { "type": "string", "description": "Session ID" },
                 "task": { "type": "string", "description": "Task description for advisor deliberation" },
                 "text": { "type": "string", "description": "Text for ask prompts" },
-                "options": { "type": "array", "items": { "type": "string" }, "description": "Options for select action" },
+                "options": {
+                    "type": "array",
+                    "items": {
+                        "oneOf": [
+                            { "type": "string" },
+                            { "type": "object", "properties": { "label": { "type": "string" }, "description": { "type": "string" }, "recommended": { "type": "boolean" } }, "required": ["label"] }
+                        ]
+                    },
+                    "description": "Ask select/confirm: the choices, each a plain string or {label, description, recommended}. Put the recommended one first; confirm with no options is Yes/No."
+                },
+                "multi_select": { "type": "boolean", "description": "Ask select: allow more than one choice (default false; confirm is always single)" },
                 "subtask_id": { "type": "string", "description": "Subtask ID for submit_findings" },
                 "findings": { "type": "array", "items": { "type": "object", "properties": { "claim": { "type": "string" }, "source_url": { "type": "string" }, "source_ref": { "type": "string" }, "confidence": { "type": "number" }, "quote": { "type": "string" } }, "required": ["claim"] }, "description": "Array of findings from research worker" },
                 "gaps": { "type": "array", "items": { "type": "string" }, "description": "Array of gaps (unanswered questions) from research worker" },
@@ -2289,7 +2482,7 @@ impl DynTool for AgentTool {
         let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
         let resource = input.get("resource").and_then(|v| v.as_str()).unwrap_or("");
         let resource = if resource.is_empty() {
-            self.infer_resource(action, input)
+            Self::infer_resource(action, input)
         } else {
             resource
         };
@@ -2310,6 +2503,12 @@ impl DynTool for AgentTool {
         input: serde_json::Value,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send + 'a>> {
         Box::pin(async move {
+            let mut input = input;
+            if let Some(action) = normalise_action(&input)
+                && let Some(obj) = input.as_object_mut()
+            {
+                obj.insert("action".into(), serde_json::Value::String(action.into()));
+            }
             let domain_input: DomainInput = match serde_json::from_value(input.clone()) {
                 Ok(v) => v,
                 Err(e) => {
@@ -2324,24 +2523,17 @@ impl DynTool for AgentTool {
                 }
             };
 
-            let mut input = input;
             let resource = {
-                let corrected = crate::domain::auto_correct_resource(
-                    &domain_input,
-                    &mut input,
-                    &["memory", "task", "session", "context", "advisors", "ask", "research", "registry", "runs", "profile"],
-                );
+                let corrected = crate::domain::auto_correct_resource(&domain_input, &mut input, &RESOURCES);
                 if corrected.is_empty() {
-                    self.infer_resource(&domain_input.action, &input).to_string()
+                    Self::infer_resource(&domain_input.action, &input).to_string()
                 } else {
                     corrected
                 }
             };
 
             if resource.is_empty() {
-                return ToolResult::error(
-                    "Resource is required. Available: memory, task, session, context, advisors, ask, research, registry",
-                );
+                return ToolResult::error(resource_required(&domain_input.action));
             }
 
             match resource.as_str() {
@@ -2356,14 +2548,15 @@ impl DynTool for AgentTool {
                 "profile" => self.handle_profile(&input, ctx).await,
                 "registry" => {
                     if let Some(ref persona) = self.persona {
-                        persona.handle_action(&input, ctx).await
+                        persona.handle_action(&input).await
                     } else {
                         ToolResult::error("Agent registry not configured")
                     }
                 }
                 other => ToolResult::error(format!(
-                    "Resource {:?} not available. Available: memory, task, session, context, advisors, ask, runs, research, profile, registry",
-                    other
+                    "Resource {:?} not available. Available: {}",
+                    other,
+                    RESOURCES.join(", ")
                 )),
             }
         })
@@ -2392,9 +2585,106 @@ fn open_url(url: &str) {
     let _ = std::process::Command::new(cmd.0).args(cmd.1).spawn();
 }
 
+/// The action a call plainly means, when the one it names (or omits) is not
+/// it. The ONE normalisation step before dispatch. A task id with a status
+/// and no action is an update (refusing it made a model retry the same call
+/// until the repeat guard stopped it); a title, description or priority alone
+/// is not enough, since update needs a status and would only refuse again. A
+/// session `query` with no query text is that session's history (live,
+/// 2026-09-05: "Missing required parameter 'query'" for a call that wanted
+/// the transcript). Anything less obvious keeps what it said.
+fn normalise_action(input: &serde_json::Value) -> Option<&'static str> {
+    let obj = input.as_object()?;
+    let has = |k: &str| obj.get(k).is_some_and(|v| !v.is_null() && v.as_str() != Some(""));
+    let word = |k: &str| obj.get(k).and_then(|v| v.as_str()).unwrap_or("");
+    match word("action") {
+        "" if has("task_id") && has("status") => Some("update"),
+        "query" if !has("query") && matches!(word("resource"), "" | "session") => Some("history"),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_task_update_without_an_action_is_an_update() {
+        let call = serde_json::json!({"task_id": "9c69732d", "status": "completed"});
+        assert_eq!(normalise_action(&call), Some("update"));
+        // An update naming an employee and its prompt is a registry update,
+        // even with no `resource`: task update has no `prompt`.
+        assert!(AgentTool::REGISTRY_UPDATE_PARAMS.contains(&"prompt"));
+        assert!(AgentTool::REGISTRY_UPDATE_PARAMS.contains(&"instructions"));
+        assert!(!AgentTool::REGISTRY_UPDATE_PARAMS.contains(&"description"), "description is a task field too");
+        let explicit = serde_json::json!({"action": "list", "task_id": "9c69732d", "status": "completed"});
+        assert_eq!(normalise_action(&explicit), None);
+        let vague = serde_json::json!({"status": "completed"});
+        assert_eq!(normalise_action(&vague), None);
+        let blank = serde_json::json!({"action": "", "task_id": "9c69732d", "status": "done"});
+        assert_eq!(normalise_action(&blank), Some("update"));
+        // A title, description or priority with a task id is not an update:
+        // update needs a status, so guessing it only moves the refusal.
+        for field in ["title", "description", "priority"] {
+            let call = serde_json::json!({"task_id": "9c69732d", field: "x"});
+            assert_eq!(normalise_action(&call), None, "{field}");
+        }
+    }
+
+    #[test]
+    fn a_session_query_with_no_text_is_the_history() {
+        let bare = serde_json::json!({"resource": "session", "action": "query"});
+        assert_eq!(normalise_action(&bare), Some("history"));
+        let inferred = serde_json::json!({"action": "query", "session_id": "s1"});
+        assert_eq!(normalise_action(&inferred), Some("history"));
+        let real = serde_json::json!({"resource": "session", "action": "query", "query": "meeting notes"});
+        assert_eq!(normalise_action(&real), None);
+        let other = serde_json::json!({"resource": "memory", "action": "query"});
+        assert_eq!(normalise_action(&other), None);
+    }
+
+    /// One row per call shape from the routing audit (2026-09-05, class C):
+    /// what a call with no `resource` reaches.
+    #[test]
+    fn a_call_without_a_resource_reaches_the_resource_it_means() {
+        use serde_json::json;
+        let cases: &[(&str, serde_json::Value, &str)] = &[
+            ("update", json!({"name": "front-desk", "description": "Answers calls"}), "registry"),
+            ("update", json!({"name": "front-desk", "prompt": "You answer calls."}), "registry"),
+            ("update", json!({"task_id": "1", "status": "completed"}), "task"),
+            ("update", json!({"task_id": "1", "name": "x", "status": "completed"}), "task"),
+            ("create", json!({"name": "front-desk"}), "registry"),
+            ("create", json!({"name": "x", "subject": "Draft the memo"}), "task"),
+            ("delete", json!({"key": "coffee-order"}), "memory"),
+            ("delete", json!({"task_id": "1"}), "task"),
+            ("get", json!({"task_id": "1"}), "task"),
+            ("list", json!({}), "task"),
+            ("clear", json!({}), "task"),
+            ("list", json!({"namespace": "tacit/general"}), "memory"),
+            ("clear", json!({"namespace": "tacit/general"}), "memory"),
+            ("status", json!({"task_id": "abc123"}), "task"),
+            ("status", json!({}), ""),
+            ("delegate", json!({"name": "chief-of-staff", "prompt": "x"}), ""),
+            ("search", json!({"query": "q"}), "memory"),
+            ("info", json!({"name": "x"}), "registry"),
+            ("cancel", json!({"task_id": "abc123"}), "task"),
+        ];
+        for (action, input, want) in cases {
+            assert_eq!(AgentTool::infer_resource(action, input), *want, "{action} {input}");
+        }
+    }
+
+    #[test]
+    fn a_missing_resource_is_explained_per_action() {
+        let status = resource_required("status");
+        for meaning in ["resource: \"task\"", "resource: \"session\"", "resource: \"runs\""] {
+            assert!(status.contains(meaning), "{status}");
+        }
+        let removed = resource_required("delegate");
+        assert!(removed.contains("message(resource: \"coworker\""), "{removed}");
+        assert!(removed.contains(&RESOURCES.join(", ")), "{removed}");
+        assert!(!removed.contains("three"), "{removed}");
+    }
     use std::sync::Mutex;
 
     /// Stub embedder that records every (namespace, key, user_id) it was asked to embed.
@@ -2847,5 +3137,79 @@ mod tests {
         assert!(!scope_is_ancestor("local", "local:agent:a1"));
         // Prefix without a `:` boundary is not an ancestor.
         assert!(!scope_is_ancestor("localx:agent:a1", "local"));
+    }
+
+    #[test]
+    fn summarize_subscription_reports_missing_fields_as_not_reported() {
+        let v = serde_json::json!({"plan": "solo", "status": "active", "secret_field": "x"});
+        let out = summarize_subscription(&v);
+        assert_eq!(
+            out,
+            "Plan: solo\nSubscription status: active\nRenewal: not reported\nBalance: not reported"
+        );
+        assert!(!out.contains("secret_field"));
+    }
+
+    #[tokio::test]
+    async fn task_update_rejects_unknown_status() {
+        let (tool, _embedder, _store) = agent_tool_with_embedder("task-update-status");
+        let ctx = ToolContext::default();
+        let result = tool
+            .handle_task(
+                &serde_json::json!({ "action": "update", "task_id": "t1", "status": "done" }),
+                &ctx,
+            )
+            .await;
+        assert!(result.is_error, "{}", result.content);
+        assert!(
+            result.content.contains("Unknown status 'done'; use one of pending, in_progress, completed."),
+            "{}",
+            result.content
+        );
+        assert!(!result.content.contains("failed"), "{}", result.content);
+    }
+
+    /// The task rules say never to mark work failed: it is either finished,
+    /// with the failure in output, or still open.
+    #[tokio::test]
+    async fn task_update_refuses_failed_and_names_the_alternatives() {
+        let (tool, _embedder, store) = agent_tool_with_embedder("task-update-failed");
+        let ctx = ToolContext::default();
+        let item = store.create_task_item("list-1", "Draft", None).unwrap();
+        let result = tool
+            .handle_task(
+                &serde_json::json!({ "action": "update", "task_id": item.id, "status": "failed", "output": "boom" }),
+                &ctx,
+            )
+            .await;
+        assert!(result.is_error, "{}", result.content);
+        assert!(result.content.contains("status: \"completed\", output:"), "{}", result.content);
+        assert!(result.content.contains("keep it in_progress"), "{}", result.content);
+        let row = store.get_pending_task(&item.id).unwrap().expect("row");
+        assert_eq!(row.status, "pending", "a refused update writes nothing");
+    }
+
+    #[tokio::test]
+    async fn task_delete_says_skipped_not_deleted() {
+        let (tool, _embedder, store) = agent_tool_with_embedder("task-delete-skipped");
+        let ctx = ToolContext::default();
+        let item = store.create_task_item("list-1", "Draft", None).unwrap();
+        let result = tool
+            .handle_task(&serde_json::json!({ "action": "delete", "task_id": item.id }), &ctx)
+            .await;
+        assert!(!result.is_error, "{}", result.content);
+        assert!(result.content.contains("marked skipped"), "{}", result.content);
+        assert!(!result.content.contains("deleted"), "{}", result.content);
+    }
+
+    #[tokio::test]
+    async fn context_compact_says_it_is_a_no_op() {
+        let (tool, _embedder, _store) = agent_tool_with_embedder("context-compact");
+        let ctx = ToolContext::default();
+        let result = tool
+            .handle_context(&serde_json::json!({ "action": "compact" }), &ctx)
+            .await;
+        assert!(result.content.starts_with("compact is a no-op"), "{}", result.content);
+        assert!(result.content.contains("Do not call this again."));
     }
 }

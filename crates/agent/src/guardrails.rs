@@ -90,6 +90,8 @@ pub enum Exit {
     RepeatedToolCalls,
     /// The same tool error came back `SAME_ERROR_NUDGE_AFTER` times after a nudge.
     SameErrorLoop,
+    /// The reviewer (reviewer.rs) judged that continuing could not help.
+    ReviewerStop,
     TerminalToolError,
     EmptyResponseExhausted,
     /// Normal end: the model answered with text. Carries the provider's stop reason.
@@ -169,6 +171,7 @@ impl Exit {
             Exit::RunawayToolLoop => "runaway_tool_loop".into(),
             Exit::RepeatedToolCalls => "repeated_tool_calls".into(),
             Exit::SameErrorLoop => "same_error_loop".into(),
+            Exit::ReviewerStop => "reviewer_stop".into(),
             Exit::TerminalToolError => "terminal_tool_error".into(),
             Exit::EmptyResponseExhausted => "empty_response_exhausted".into(),
             Exit::TextResponse(stop) => format!("text_response(stop_reason={stop})"),
@@ -321,7 +324,9 @@ mod escalation_tests {
         assert!(Exit::MaxIterations { done: 50, max: 50 }.label().starts_with("max_iterations"));
         assert!(Exit::Workflow("workflow_exit:done".into()).label().starts_with("workflow_exit:"));
         assert_eq!(Exit::Stalled.label(), "stalled");
-        assert!(Exit::TextResponse("Some(\"stop\")".into()).is_text_response());
+        assert_eq!(Exit::ReviewerStop.label(), "reviewer_stop");
+        assert!(Exit::TextResponse("stop".into()).is_text_response());
+        assert_eq!(Exit::TextResponse("stop".into()).label(), "text_response(stop_reason=stop)");
     }
 
     /// The overflow-compaction retry counter is reset only when the model

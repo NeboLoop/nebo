@@ -83,7 +83,7 @@ impl DynTool for MusicTool {
                         return ToolResult::error(crate::errors::missing_param(
                             "search",
                             "query",
-                            "os(resource: \"music\", action: \"search\", query: \"beethoven symphony\")",
+                            "music(action: \"search\", query: \"beethoven symphony\")",
                         ));
                     }
                     handle_search(query).await
@@ -161,14 +161,27 @@ async fn handle_search(query: &str) -> ToolResult {
 async fn handle_volume(input: &serde_json::Value) -> ToolResult {
     match input.get("value") {
         Some(v) if !v.is_null() => {
-            let value = v.as_i64().unwrap_or(50).clamp(0, 100);
-            run_osascript(&format!(
+            let value = match parse_volume(v) {
+                Ok(n) => n,
+                Err(e) => return ToolResult::error(e),
+            };
+            let res = run_osascript(&format!(
                 "tell application \"Music\" to set sound volume to {}",
                 value
             ))
-            .await
+            .await;
+            if res.is_error {
+                return res;
+            }
+            ToolResult::ok(format!("Volume set to {value}%"))
         }
-        _ => run_osascript("tell application \"Music\" to return sound volume").await,
+        _ => {
+            let res = run_osascript("tell application \"Music\" to return sound volume").await;
+            if res.is_error {
+                return res;
+            }
+            ToolResult::ok(volume_report(&res.content))
+        }
     }
 }
 
@@ -183,34 +196,28 @@ async fn handle_shuffle(input: &serde_json::Value) -> ToolResult {
     match input.get("value") {
         Some(v) if !v.is_null() => {
             let enable = v.as_bool().unwrap_or(true);
-            run_osascript(&format!(
+            let res = run_osascript(&format!(
                 "tell application \"Music\" to set shuffle enabled to {}",
                 enable
             ))
-            .await
+            .await;
+            if res.is_error {
+                return res;
+            }
+            ToolResult::ok(if enable { "Shuffle is ON" } else { "Shuffle is OFF" })
         }
         _ => {
-            // Check current state and toggle
-            let check = tokio::process::Command::new("osascript")
-                .args(["-e", "tell application \"Music\" to return shuffle enabled"])
-                .output()
-                .await;
-            match check {
-                Ok(out) => {
-                    let current = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                    if current == "true" {
-                        run_osascript("tell application \"Music\" to set shuffle enabled to false")
-                            .await;
-                        ToolResult::ok("Shuffle: OFF")
-                    } else if current == "false" {
-                        run_osascript("tell application \"Music\" to set shuffle enabled to true")
-                            .await;
-                        ToolResult::ok("Shuffle: ON")
-                    } else {
-                        ToolResult::ok(format!("Shuffle: {}", current))
-                    }
-                }
-                Err(e) => ToolResult::error(format!("Failed to get shuffle state: {}", e)),
+            // Report the current state; a status query never changes it.
+            let res = run_osascript("tell application \"Music\" to return shuffle enabled").await;
+            if res.is_error {
+                return res;
+            }
+            match res.content.as_str() {
+                "true" => ToolResult::ok("Shuffle is ON"),
+                "false" => ToolResult::ok("Shuffle is OFF"),
+                other => ToolResult::error(format!(
+                    "Shuffle state unreadable: Music.app answered '{other}' instead of true or false"
+                )),
             }
         }
     }
@@ -292,11 +299,28 @@ async fn handle_volume(input: &serde_json::Value) -> ToolResult {
     }
     match input.get("value") {
         Some(v) if !v.is_null() => {
-            let value = v.as_i64().unwrap_or(50).clamp(0, 100);
+            let value = match parse_volume(v) {
+                Ok(n) => n,
+                Err(e) => return ToolResult::error(e),
+            };
             let normalized = format!("{:.2}", value as f64 / 100.0);
-            run_command("playerctl", &["volume", &normalized]).await
+            let res = run_command("playerctl", &["volume", &normalized]).await;
+            if res.is_error {
+                return res;
+            }
+            ToolResult::ok(format!("Volume set to {value}%"))
         }
-        _ => run_command("playerctl", &["volume"]).await,
+        _ => {
+            let res = run_command("playerctl", &["volume"]).await;
+            if res.is_error {
+                return res;
+            }
+            // playerctl prints a 0.0-1.0 fraction.
+            match res.content.trim().parse::<f64>() {
+                Ok(f) => ToolResult::ok(format!("Volume: {}%", (f * 100.0).round() as i64)),
+                Err(_) => ToolResult::ok(volume_report(&res.content)),
+            }
+        }
     }
 }
 
@@ -319,11 +343,25 @@ async fn handle_shuffle(input: &serde_json::Value) -> ToolResult {
             } else {
                 "Off"
             };
-            run_command("playerctl", &["shuffle", enable]).await
+            let res = run_command("playerctl", &["shuffle", enable]).await;
+            if res.is_error {
+                return res;
+            }
+            ToolResult::ok(format!("Shuffle is {enable}"))
         }
         _ => {
-            // Toggle shuffle
-            run_command("playerctl", &["shuffle", "Toggle"]).await
+            // Report the current state; a status query never changes it.
+            let res = run_command("playerctl", &["shuffle"]).await;
+            if res.is_error {
+                return res;
+            }
+            match res.content.trim() {
+                "On" => ToolResult::ok("Shuffle is On"),
+                "Off" => ToolResult::ok("Shuffle is Off"),
+                other => ToolResult::error(format!(
+                    "Shuffle state unreadable: playerctl answered '{other}' instead of On or Off"
+                )),
+            }
         }
     }
 }
@@ -334,22 +372,22 @@ async fn handle_shuffle(input: &serde_json::Value) -> ToolResult {
 
 #[cfg(target_os = "windows")]
 async fn handle_play() -> ToolResult {
-    ToolResult::error("Media control on Windows requires a supported media player running")
+    ToolResult::error("Media playback control is not implemented on Windows.")
 }
 
 #[cfg(target_os = "windows")]
 async fn handle_pause() -> ToolResult {
-    ToolResult::error("Media control on Windows requires a supported media player running")
+    ToolResult::error("Media playback control is not implemented on Windows.")
 }
 
 #[cfg(target_os = "windows")]
 async fn handle_next() -> ToolResult {
-    ToolResult::error("Media control on Windows requires a supported media player running")
+    ToolResult::error("Media playback control is not implemented on Windows.")
 }
 
 #[cfg(target_os = "windows")]
 async fn handle_previous() -> ToolResult {
-    ToolResult::error("Media control on Windows requires a supported media player running")
+    ToolResult::error("Media playback control is not implemented on Windows.")
 }
 
 #[cfg(target_os = "windows")]
@@ -366,7 +404,7 @@ async fn handle_search(_query: &str) -> ToolResult {
 
 #[cfg(target_os = "windows")]
 async fn handle_volume(_input: &serde_json::Value) -> ToolResult {
-    ToolResult::error("Media control on Windows requires a supported media player running")
+    ToolResult::error("Media playback control is not implemented on Windows.")
 }
 
 #[cfg(target_os = "windows")]
@@ -376,7 +414,7 @@ async fn handle_playlists() -> ToolResult {
 
 #[cfg(target_os = "windows")]
 async fn handle_shuffle(_input: &serde_json::Value) -> ToolResult {
-    ToolResult::error("Media control on Windows requires a supported media player running")
+    ToolResult::error("Media playback control is not implemented on Windows.")
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -500,9 +538,51 @@ fn which(cmd: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Parse the `value` of a volume call: an integer 0-100, nothing else.
+#[cfg_attr(not(any(target_os = "macos", target_os = "linux")), allow(dead_code))]
+fn parse_volume(v: &serde_json::Value) -> Result<i64, String> {
+    let n = match v {
+        serde_json::Value::Number(n) => n.as_i64(),
+        serde_json::Value::String(s) => s.trim().parse::<i64>().ok(),
+        _ => None,
+    };
+    match n {
+        Some(n) if (0..=100).contains(&n) => Ok(n),
+        _ => Err(format!("volume needs an integer 0-100, got {v}")),
+    }
+}
+
+/// "Volume: N%" from a player's raw answer (Music.app prints a bare integer).
+#[cfg_attr(not(any(target_os = "macos", target_os = "linux")), allow(dead_code))]
+fn volume_report(raw: &str) -> String {
+    let raw = raw.trim();
+    match raw.parse::<i64>() {
+        Ok(n) => format!("Volume: {n}%"),
+        Err(_) => format!("Volume: the player answered {raw:?} (expected an integer 0-100)"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_volume_takes_only_integers_in_range() {
+        assert_eq!(parse_volume(&serde_json::json!(75)), Ok(75));
+        assert_eq!(parse_volume(&serde_json::json!("30")), Ok(30));
+        assert_eq!(
+            parse_volume(&serde_json::json!("loud")),
+            Err("volume needs an integer 0-100, got \"loud\"".to_string())
+        );
+        assert!(parse_volume(&serde_json::json!(150)).is_err());
+        assert!(parse_volume(&serde_json::json!(7.5)).is_err());
+    }
+
+    #[test]
+    fn volume_report_labels_the_number() {
+        assert_eq!(volume_report("75"), "Volume: 75%");
+        assert!(volume_report("").starts_with("Volume: the player answered"));
+    }
 
     #[test]
     fn test_tool_metadata() {

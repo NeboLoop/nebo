@@ -107,6 +107,8 @@ impl agent::ChannelDispatcher for ChannelDispatchImpl {
                 tool_allowlist: None,
                 hidden_prompt: false,
                 audience: None,
+                cwd: None,
+                model_override: None,
             };
             let channel = channel_kind.as_str();
 
@@ -203,7 +205,7 @@ pub(crate) async fn collect_channel_reply(
             }
             StreamEventType::AskRequest => {
                 if let Some(fw) = owner {
-                    fw.forward_ask(&event);
+                    fw.forward_ask(&event).await;
                 }
                 // Remote channels: unchanged (asks are relayed by the comm
                 // pipeline where configured, not by this collector).

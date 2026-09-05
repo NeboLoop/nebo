@@ -292,7 +292,7 @@
       {/if}
     </div>
 
-    <div class="flex-1 overflow-y-auto p-5 select-text">
+    <div class="flex-1 overflow-y-auto p-5 select-text touch-pan-y">
       <!-- Run metadata -->
       <div class="flex items-center gap-3 mb-4 text-xs text-base-content/50">
         <span>{triggerIcon(selectedRun.trigger ?? '')} <span class="capitalize">{selectedRun.trigger}</span></span>

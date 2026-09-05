@@ -1,0 +1,47 @@
+id: correction-skill-miss-proceeds
+name: "Correction — no matching skill is not a missing capability"
+description: |
+  The user names a skill that is not installed for a task the built-in tools
+  can do. The discover result says no skill matches and to proceed with the
+  built-in tools. The model must proceed (or ask a clarifying question), not
+  declare the capability unavailable.
+target_component: skill
+
+setup:
+  - "mkdir -p /tmp/nebo-corr && printf 'Q1 revenue 120\nQ2 revenue 150\n' > /tmp/nebo-corr/revenue.txt"
+teardown:
+  - "rm -f /tmp/nebo-corr/revenue.txt"
+
+conversation:
+  - role: user
+    content: "Use the quarterly-summary skill to total the revenue in /tmp/nebo-corr/revenue.txt."
+
+tool_config:
+  skill:
+    enabled: true
+  os:
+    enabled: true
+
+prompt_assertions:
+  recovery:
+    - id: no-capability-denial
+      text: "Model does NOT tell the user the task cannot be done or that the capability is unavailable"
+      severity: critical
+    - id: proceeds-with-builtins
+      text: "After finding no such skill, the model reads the file with the os tool and totals it (270), or asks one clarifying question and then does so"
+      severity: critical
+    - id: mentions-skill-honestly
+      text: "Model may mention that no 'quarterly-summary' skill is installed, but does so in one sentence and still delivers the total"
+      severity: important
+  cost:
+    - id: bounded
+      text: "At most 4 tool calls"
+      severity: important
+      check: { max_tool_calls: 4 }
+
+ideal_behavior:
+  tool_calls: 2
+  total_tokens: 2500
+  narrative: |
+    skill discover (miss) then os file read, then "270. There is no
+    quarterly-summary skill installed, so I read the file directly."

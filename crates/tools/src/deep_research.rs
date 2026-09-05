@@ -97,6 +97,17 @@ pub enum SourceQuality {
 }
 
 impl SourceQuality {
+    /// Lowercase wire name, for text a model reads (never the enum's `{:?}` name).
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Primary => "primary",
+            Self::Secondary => "secondary",
+            Self::Blog => "blog",
+            Self::Forum => "forum",
+            Self::Unreliable => "unreliable",
+        }
+    }
+
     pub fn rank(self) -> usize {
         match self {
             Self::Primary => 0,
@@ -637,6 +648,17 @@ pub struct SourceRow {
     pub quality: SourceQuality,
     pub angle: String,
     pub claim_count: usize,
+    /// What happened to this source: "fetched", "http {status}", "fetch failed",
+    /// or "extract failed". A failed source is attempted, never counted as fetched.
+    #[serde(default)]
+    pub fetch: String,
+}
+
+impl SourceRow {
+    /// Whether the page was fetched and extracted (as opposed to attempted).
+    pub fn fetched(&self) -> bool {
+        self.fetch == "fetched"
+    }
 }
 
 /// A refuted claim row (kept for transparency in the report).
@@ -651,6 +673,10 @@ pub struct RefutedRow {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Stats {
     pub angles: usize,
+    /// Sources the fetch phase tried (fetched + failed).
+    #[serde(default)]
+    pub sources_attempted: usize,
+    /// Sources actually fetched and extracted.
     pub sources_fetched: usize,
     pub claims_extracted: usize,
     pub claims_verified: usize,
@@ -690,8 +716,8 @@ pub fn salvage_no_claims(
     stats: Stats,
 ) -> ResearchReport {
     let summary = format!(
-        "No claims extracted. {} sources fetched, all empty/failed. {} URL dupes, {} budget-dropped.",
-        stats.sources_fetched, stats.url_dupes, stats.budget_dropped
+        "No claims extracted. {} sources attempted, {} fetched, none yielded a claim. {} URL dupes, {} budget-dropped.",
+        stats.sources_attempted, stats.sources_fetched, stats.url_dupes, stats.budget_dropped
     );
     ResearchReport {
         question: question.to_string(),
@@ -712,13 +738,20 @@ pub fn salvage_none_confirmed(
     question: &str,
     killed: Vec<RefutedRow>,
     unverified: Vec<RefutedRow>,
+    verifier_errors: &[String],
     sources: Vec<SourceRow>,
     stats: Stats,
 ) -> ResearchReport {
     let summary = if killed.is_empty() && !unverified.is_empty() {
+        let errors = if verifier_errors.is_empty() {
+            "none captured".to_string()
+        } else {
+            verifier_errors.join("; ")
+        };
         format!(
-            "Could not verify any claims — all {} verifier panels failed (likely rate-limiting or API errors). This is an infrastructure failure, not a research finding; retry or verify the extracted claims manually.",
-            unverified.len()
+            "Could not verify any claims: all {} verifier panels failed. Verifier errors: {}. This is an infrastructure failure, not a research finding; retry or verify the extracted claims manually.",
+            unverified.len(),
+            errors
         )
     } else if !unverified.is_empty() {
         format!(
@@ -748,6 +781,7 @@ pub fn salvage_none_confirmed(
 /// survivors raw rather than discarding the whole run.
 pub fn salvage_synth_failed(
     question: &str,
+    error: &str,
     confirmed: Vec<RefutedRow>,
     killed: Vec<RefutedRow>,
     unverified: Vec<RefutedRow>,
@@ -755,7 +789,8 @@ pub fn salvage_synth_failed(
     stats: Stats,
 ) -> ResearchReport {
     let summary = format!(
-        "Synthesis step was skipped or failed — returning {} verified claims unmerged.",
+        "Synthesis failed ({}); returning {} verified claims unmerged.",
+        error,
         confirmed.len()
     );
     ResearchReport {
@@ -905,12 +940,11 @@ fn synth_task(question: &str, confirmed: &[VotedClaim], killed: &[VotedClaim]) -
         .enumerate()
         .map(|(i, c)| {
             format!(
-                "### [{i}] {claim}\nVote: {pass}-{ref} · Source: {src} ({q:?})\nQuote: \"{quote}\"",
+                "### [{i}] {claim}\nVote: {vote} · Source: {src} ({q})\nQuote: \"{quote}\"",
                 claim = c.claim.text,
-                pass = c.passes(),
-                r#ref = c.refutes(),
+                vote = c.vote_str(),
                 src = c.claim.source_url,
-                q = c.claim.source_quality,
+                q = c.claim.source_quality.label(),
                 quote = c.claim.quote,
             )
         })
@@ -921,7 +955,7 @@ fn synth_task(question: &str, confirmed: &[VotedClaim], killed: &[VotedClaim]) -
     } else {
         let rows = killed
             .iter()
-            .map(|c| format!("- \"{}\" ({}, vote {}-{})", c.claim.text, c.claim.source_url, c.passes(), c.refutes()))
+            .map(|c| format!("- \"{}\" ({}, vote {})", c.claim.text, c.claim.source_url, c.vote_str()))
             .collect::<Vec<_>>()
             .join("\n");
         format!("\n\n## Refuted claims (for transparency)\n{rows}")
@@ -955,8 +989,18 @@ impl VotedClaim {
     fn passes(&self) -> usize {
         self.valid() - self.refutes()
     }
+    /// Abstentions: panels that errored and cast no vote.
+    fn abstains(&self) -> usize {
+        self.votes.len() - self.valid()
+    }
+    /// The ONE rendering of a claim's votes, each number labelled.
     fn vote_str(&self) -> String {
-        format!("{}-{}", self.passes(), self.refutes())
+        format!(
+            "{} pass / {} refute / {} no vote",
+            self.passes(),
+            self.refutes(),
+            self.abstains()
+        )
     }
     fn to_row(&self) -> RefutedRow {
         RefutedRow {
@@ -1197,7 +1241,7 @@ pub async fn scope(agent: &Arc<dyn StructuredAgent>, question: &str, cfg: &Confi
             warn!(error = %e, "deep_research: scope failed, salvaging with raw query");
             ScopeOut {
                 question: question.to_string(),
-                summary: "Scope step failed; searching the raw question directly.".into(),
+                summary: format!("Scope step failed ({e}); searching the raw question directly."),
                 angles: vec![Angle {
                     label: "direct".into(),
                     query: question.to_string(),
@@ -1349,23 +1393,25 @@ pub async fn run(
                     let host = host.split('/').next().unwrap_or(&planned.url);
                     let desc = format!("Fetch: {host}");
                     emit_node_start(&progress, &node, &desc);
-                    let unreliable = |claims: Vec<Claim>| FetchedSource {
-                        row: SourceRow { url: planned.url.clone(), quality: SourceQuality::Unreliable, angle: planned.angle.clone(), claim_count: claims.len() },
-                        claims,
+                    // A source that never yielded content is ATTEMPTED, recorded with
+                    // what happened; it is not a fetched page of low quality.
+                    let failed = |fetch: String| FetchedSource {
+                        row: SourceRow { url: planned.url.clone(), quality: SourceQuality::Unreliable, angle: planned.angle.clone(), claim_count: 0, fetch },
+                        claims: vec![],
                     };
                     let (body, status) = match fetch_text(&agent, tab_key(&run_id, &node), &planned.url).await {
                         Ok(v) => v,
                         Err(e) => {
                             warn!(url = %planned.url, error = %e, "deep_research: fetch failed");
                             emit_node_done(&progress, &node, &desc, false);
-                            return unreliable(vec![]);
+                            return failed("fetch failed".into());
                         }
                     };
-                    // Rate-limited / forbidden → mark unreliable, do not hammer-retry.
-                    if matches!(status, Some(429) | Some(403)) {
+                    // Rate-limited / forbidden → record the status, do not hammer-retry.
+                    if let Some(code @ (429 | 403)) = status {
                         warn!(url = %planned.url, status, "deep_research: rate-limited/forbidden source");
                         emit_node_done(&progress, &node, &desc, false);
-                        return unreliable(vec![]);
+                        return failed(format!("http {code}"));
                     }
                     let _ = std::fs::write(sources_dir.join(format!("src_{hash}.txt")), format!("URL: {}\n\n{}", planned.url, body));
 
@@ -1381,7 +1427,7 @@ pub async fn run(
                         Err(e) => {
                             warn!(url = %planned.url, error = %e, "deep_research: extract failed");
                             emit_node_done(&progress, &node, &desc, false);
-                            return unreliable(vec![]);
+                            return failed("extract failed".into());
                         }
                     };
                     let claims: Vec<Claim> = extracted.claims.into_iter()
@@ -1396,7 +1442,7 @@ pub async fn run(
                         emit_panel(&progress, &p);
                     }
                     FetchedSource {
-                        row: SourceRow { url: planned.url.clone(), quality: extracted.source_quality, angle: planned.angle.clone(), claim_count: claims.len() },
+                        row: SourceRow { url: planned.url.clone(), quality: extracted.source_quality, angle: planned.angle.clone(), claim_count: claims.len(), fetch: "fetched".into() },
                         claims,
                     }
                 }));
@@ -1434,9 +1480,11 @@ pub async fn run(
     debug!(sources = sources.len(), extracted = claims_extracted, verifying = ranked.len(), "deep_research: ranked");
 
     let angles_n = scope.angles.len();
-    let sources_fetched = sources.len();
+    let sources_attempted = sources.len();
+    let sources_fetched = sources.iter().filter(|s| s.fetched()).count();
     let base_stats = move |confirmed: usize, killed: usize, unverified: usize, verified: usize| Stats {
         angles: angles_n,
+        sources_attempted,
         sources_fetched,
         claims_extracted,
         claims_verified: verified,
@@ -1477,7 +1525,7 @@ pub async fn run(
         p.phase = "verifying".into();
         emit_panel(&progress, &p);
     }
-    let mut verify_futs: Vec<BoxFut<(usize, Vote)>> = Vec::new();
+    let mut verify_futs: Vec<BoxFut<(usize, Vote, Option<String>)>> = Vec::new();
     for (ci, claim) in ranked.iter().enumerate() {
         for v in 0..votes_per {
             let (agent, cancel, q, claim, run_id, progress) =
@@ -1487,26 +1535,39 @@ pub async fn run(
                 let node = format!("verify-{ci}-{v}");
                 let desc = format!("Verify claim {} (vote {}/{votes_per})", ci + 1, v + 1);
                 emit_node_start(&progress, &node, &desc);
-                let vote: Vote = run_typed::<Verdict>(&agent, StructuredTask {
+                // An errored panel abstains; its error is kept so an all-failed run
+                // can say what failed instead of guessing.
+                let (vote, err): (Vote, Option<String>) = match run_typed::<Verdict>(&agent, StructuredTask {
                     system: VERIFY_SYS.into(),
                     task: verify_task(&q, &claim, v, votes_per, required),
                     schema: verdict_schema(),
                     aux_tools: vec!["web".into()],
                     tab_key: tab_key(&run_id, &node),
                     max_tool_turns: Some(WEB_SUBAGENT_TOOL_TURNS),
-                }, &cancel).await.ok();
+                }, &cancel).await {
+                    Ok(verdict) => (Some(verdict), None),
+                    Err(e) => (None, Some(e)),
+                };
                 emit_node_done(&progress, &node, &desc, vote.is_some());
-                (ci, vote)
+                (ci, vote, err)
             }));
         }
     }
     let flat_votes = join_buffered(verify_futs).await;
 
-    // Regroup votes by claim index (deterministic — ranked order).
+    // Regroup votes by claim index (deterministic — ranked order). Keep the first
+    // few DISTINCT verifier errors for the all-failed salvage summary.
     let mut voted: Vec<VotedClaim> = ranked.into_iter().map(|c| VotedClaim { claim: c, votes: Vec::new() }).collect();
-    for (ci, vote) in flat_votes {
+    let mut verifier_errors: Vec<String> = Vec::new();
+    for (ci, vote, err) in flat_votes {
         if let Some(vc) = voted.get_mut(ci) {
             vc.votes.push(vote);
+        }
+        if let Some(e) = err
+            && verifier_errors.len() < 3
+            && !verifier_errors.contains(&e)
+        {
+            verifier_errors.push(e);
         }
     }
 
@@ -1543,6 +1604,7 @@ pub async fn run(
             &question,
             killed_rows,
             unverified_rows,
+            &verifier_errors,
             sources,
             base_stats(0, killed.len(), unverified.len(), verified),
         );
@@ -1581,7 +1643,7 @@ pub async fn run(
             warn!(error = %e, "deep_research: synthesis failed, salvaging survivors");
             emit_node_done(&progress, "synth", "Synthesize: writing the report", false);
             let confirmed_rows: Vec<RefutedRow> = confirmed.iter().map(|c| c.to_row()).collect();
-            salvage_synth_failed(&question, confirmed_rows, killed_rows, unverified_rows, sources, stats)
+            salvage_synth_failed(&question, &e, confirmed_rows, killed_rows, unverified_rows, sources, stats)
         }
     };
     finish(&dir, &report);
@@ -1602,15 +1664,18 @@ pub fn format_report(r: &ResearchReport) -> String {
         out.push_str("\n## Findings\n");
         for f in &r.findings {
             out.push_str(&format!(
-                "\n### {} _(confidence: {:?})_\n{}\nSources: {}\n",
-                f.claim, f.confidence, f.evidence, f.sources.join(", ")
+                "\n### {} _(confidence: {})_\n{}\nSources: {}\n",
+                f.claim,
+                format!("{:?}", f.confidence).to_lowercase(),
+                f.evidence,
+                f.sources.join(", ")
             ));
         }
     }
     if let Some(confirmed) = &r.confirmed {
         out.push_str("\n## Verified claims (unmerged)\n");
         for c in confirmed {
-            out.push_str(&format!("- {} ({}, vote {}) — {}\n", c.claim, c.source, c.vote, c.source));
+            out.push_str(&format!("- {} ({}, vote {})\n", c.claim, c.source, c.vote));
         }
     }
     if !r.refuted.is_empty() {
@@ -1627,8 +1692,8 @@ pub fn format_report(r: &ResearchReport) -> String {
     }
     let s = &r.stats;
     out.push_str(&format!(
-        "\n---\n_{} angles · {} sources · {} claims → {} verified, {} confirmed, {} killed, {} unverified · {} findings_\n",
-        s.angles, s.sources_fetched, s.claims_extracted, s.claims_verified, s.confirmed, s.killed, s.unverified, s.after_synthesis
+        "\n---\n_{} angles · {} sources attempted, {} fetched · {} claims → {} verified, {} confirmed, {} refuted, {} unverified · {} findings_\n",
+        s.angles, s.sources_attempted, s.sources_fetched, s.claims_extracted, s.claims_verified, s.confirmed, s.killed, s.unverified, s.after_synthesis
     ));
     out
 }
@@ -1794,5 +1859,80 @@ mod tests {
         assert_eq!(Config::for_depth("deep").max_fetch, 25);
         // Unknown → standard.
         assert_eq!(Config::for_depth("bogus").max_fetch, MAX_FETCH);
+    }
+
+    fn claim(text: &str) -> Claim {
+        Claim {
+            id: 0,
+            text: text.into(),
+            quote: "q".into(),
+            importance: Importance::Central,
+            source_url: "https://a.com".into(),
+            source_quality: SourceQuality::Primary,
+            source_ref: "sources/src_x.txt".into(),
+        }
+    }
+
+    fn source(url: &str, fetch: &str) -> SourceRow {
+        SourceRow {
+            url: url.into(),
+            quality: SourceQuality::Secondary,
+            angle: "direct".into(),
+            claim_count: 0,
+            fetch: fetch.into(),
+        }
+    }
+
+    /// Every vote number carries its label; an errored panel is "no vote".
+    #[test]
+    fn vote_str_labels_every_number() {
+        let vc = VotedClaim {
+            claim: claim("c"),
+            votes: vec![Some(verdict(false)), Some(verdict(true)), None],
+        };
+        assert_eq!(vc.vote_str(), "1 pass / 1 refute / 1 no vote");
+        assert_eq!(vc.to_row().vote, "1 pass / 1 refute / 1 no vote");
+    }
+
+    /// An all-failed verify phase names the errors that were observed.
+    #[test]
+    fn all_failed_verify_names_errors() {
+        let row = VotedClaim { claim: claim("c"), votes: vec![None, None, None] }.to_row();
+        let r = salvage_none_confirmed(
+            "q",
+            vec![],
+            vec![row],
+            &["rate limited".to_string(), "timeout".to_string()],
+            vec![],
+            Stats::default(),
+        );
+        assert!(r.summary.contains("Verifier errors: rate limited; timeout."), "{}", r.summary);
+        assert!(!r.summary.contains("likely"), "{}", r.summary);
+    }
+
+    /// A failed synthesis carries the error, and the footer separates attempted
+    /// from fetched sources and says "refuted", not "killed".
+    #[test]
+    fn synth_failure_and_footer_state_what_was_observed() {
+        let confirmed = vec![VotedClaim {
+            claim: claim("c"),
+            votes: vec![Some(verdict(false)), Some(verdict(false)), None],
+        }
+        .to_row()];
+        let sources = vec![source("https://a.com", "fetched"), source("https://b.com", "http 429")];
+        let stats = Stats {
+            sources_attempted: 2,
+            sources_fetched: 1,
+            killed: 1,
+            ..Stats::default()
+        };
+        let r = salvage_synth_failed("q", "timeout", confirmed, vec![], vec![], sources, stats);
+        assert_eq!(r.summary, "Synthesis failed (timeout); returning 1 verified claims unmerged.");
+        let md = format_report(&r);
+        assert!(md.contains("2 sources attempted, 1 fetched"), "{md}");
+        assert!(md.contains("1 refuted"), "{md}");
+        assert!(!md.contains("killed"), "{md}");
+        // The source is printed once per row.
+        assert!(md.contains("- c (https://a.com, vote 2 pass / 0 refute / 1 no vote)\n"), "{md}");
     }
 }

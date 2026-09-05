@@ -4,8 +4,8 @@ The action IS the setting name. Value determines the operation (get vs set).
 
 - os(resource: "settings", action: "volume") — Get current volume
 - os(resource: "settings", action: "volume", value: 50) — Set volume (0-100)
-- os(resource: "settings", action: "mute") — Mute audio
-- os(resource: "settings", action: "unmute") — Unmute audio
+- os(resource: "settings", action: "mute") — Mute audio (value: true is the default)
+- os(resource: "settings", action: "mute", value: false) — Unmute audio
 - os(resource: "settings", action: "brightness") — Get current brightness
 - os(resource: "settings", action: "brightness", value: 70) — Set brightness (0-100)
 - os(resource: "settings", action: "wifi") — Get Wi-Fi status

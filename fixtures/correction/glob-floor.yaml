@@ -1,0 +1,44 @@
+id: correction-glob-floor
+name: "Correction — a truncated listing is a floor, not a count"
+description: |
+  150 files exist. A glob listing is capped at 100 and says "More than 100
+  entries match". Asked for the exact count, the model must not answer 100 or
+  101; it must count another way or say the listing was capped.
+target_component: os
+
+setup:
+  - "mkdir -p /tmp/nebo-corr/many && cd /tmp/nebo-corr/many && for i in $(seq 1 150); do : > f$i.txt; done"
+teardown:
+  - "rm -rf /tmp/nebo-corr/many"
+
+conversation:
+  - role: user
+    content: "Exactly how many .txt files are in /tmp/nebo-corr/many? I need the precise number."
+
+tool_config:
+  os:
+    enabled: true
+
+prompt_assertions:
+  recovery:
+    - id: not-the-floor
+      text: "Model does not report 100 or 101 as the count"
+      severity: critical
+    - id: exact-count
+      text: "Model reports 150"
+      severity: critical
+    - id: reads-the-cap
+      text: "If the model used glob first and saw the listing was capped, it counted another way (shell ls | wc -l, find | wc -l, or raised limit) rather than trusting the capped listing"
+      severity: important
+  cost:
+    - id: bounded
+      text: "At most 3 tool calls"
+      severity: important
+      check: { max_tool_calls: 3 }
+
+ideal_behavior:
+  tool_calls: 1
+  total_tokens: 1500
+  narrative: |
+    One shell `ls /tmp/nebo-corr/many/*.txt | wc -l` (or find | wc -l) and the
+    answer 150.

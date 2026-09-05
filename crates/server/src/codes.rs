@@ -905,8 +905,9 @@ async fn handle_agent_code(state: &AppState, code: &str) -> Result<CodeHandlerRe
                 let _ = std::fs::remove_dir_all(&dir);
             }
         }
-        // Deregister from NeboAI so re-registration doesn't 409
-        let _ = deregister_agent_from_loop(state, &existing.name).await;
+        // The loop roster follows the local one; the reinstall lands in the
+        // same debounced reconcile pass as the removal.
+        request_agent_reconcile(state, &format!("clean reinstall: {}", existing.name));
     }
 
     // Fetch artifact content from NeboAI and persist to DB + filesystem.
@@ -1067,16 +1068,8 @@ async fn handle_agent_code(state: &AppState, code: &str) -> Result<CodeHandlerRe
             );
         }
 
-        // Register agent in the owner's personal loop
-        {
-            let st = state.clone();
-            let name = artifact_name.clone();
-            tokio::spawn(async move {
-                if let Err(e) = register_agent_in_loop(&st, &name).await {
-                    warn!(agent = %name, error = %e, "failed to register agent in loop");
-                }
-            });
-        }
+        // Register agent in the owner's personal loop (debounced roster pass)
+        request_agent_reconcile(state, &format!("agent installed: {artifact_name}"));
     }
 
     Ok(CodeHandlerResult {
@@ -2032,13 +2025,14 @@ pub async fn activate_neboai(state: &AppState) -> Result<(), NeboError> {
         .hub
         .broadcast("settings_updated", serde_json::json!({"commEnabled": true}));
 
-    // Reconcile agents + sync bot identity + refresh license keys in background (non-blocking)
+    // Every successful connect reconciles the employee roster (debounced,
+    // one pass per connect) — the platform only knows the employees we tell it.
+    request_agent_reconcile(state, "gateway connect");
+
+    // Sync bot identity + refresh license keys in background (non-blocking)
     {
         let st = state.clone();
         tokio::spawn(async move {
-            if let Err(e) = reconcile_agents(&st).await {
-                warn!(error = %e, "agent reconciliation failed");
-            }
             // Sync bot identity (name) to NeboAI
             sync_bot_identity(&st).await;
             // Refresh content protection license keys for sealed .napp files
@@ -2116,8 +2110,54 @@ pub(crate) async fn sync_bot_identity(state: &AppState) {
     }
 }
 
-/// Reconcile agents: sync all local agents (enabled AND disabled) to NeboAI.
-/// Only deregister agents that are truly deleted locally, not just paused.
+/// Debounce window between a reconcile request and its pass. Employee edits
+/// arrive in bursts (a rename saves name and description back to back; a
+/// reconnect flap fires connect twice), and one window's worth of requests
+/// collapses into a single pass.
+const AGENT_RECONCILE_DEBOUNCE: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Hub loop type of the owner's own loop.
+const PERSONAL_LOOP_TYPE: &str = "personal";
+
+/// Local id of the primary agent (the bot's own "Nebo" identity). The gateway
+/// owns its loop presence; reconcile never registers it as a secondary.
+const PRIMARY_AGENT_ID: &str = "assistant";
+
+/// Request one employee roster reconcile pass (see `reconcile_agents`). The
+/// ONE entry point for every trigger: gateway connect, and employee
+/// create/rename/enable/disable/delete. Coalesced and debounced by the worker
+/// from `spawn_agent_reconcile_worker`, so callers fire and forget.
+pub(crate) fn request_agent_reconcile(state: &AppState, reason: &str) {
+    info!(target: "neboai_identity", reason, "agent reconcile requested");
+    state.comm_manager.request_agent_sync();
+}
+
+/// Run the reconcile worker for the life of the server: wait for a request,
+/// debounce, run exactly one pass, repeat. Requests that land while a pass
+/// runs collapse into one follow-up pass (the wake keeps a single permit).
+pub(crate) fn spawn_agent_reconcile_worker(state: AppState) {
+    tokio::spawn(async move {
+        loop {
+            state.comm_manager.agent_sync_requested().await;
+            tokio::time::sleep(AGENT_RECONCILE_DEBOUNCE).await;
+            if neboai_token(&state).is_none() {
+                debug!(target: "neboai_identity", "agent reconcile skipped: not connected to NeboAI");
+                continue;
+            }
+            if let Err(e) = reconcile_agents(&state).await {
+                warn!(target: "neboai_identity", error = %e, "agent reconcile failed");
+            }
+        }
+    });
+}
+
+/// Reconcile the bot's employees into its personal loop: every ENABLED local
+/// employee (the primary excepted) exists on the loop as its own identity,
+/// renamed ones are updated, disabled or deleted ones are removed. Idempotent:
+/// a pass against an already-correct loop makes no API writes. The diff rules
+/// live in `comm::roster::plan_reconcile`; this is the executor, and it also
+/// keeps the local mirror columns (`loop_agent_id`, `loop_exposed`) truthful.
+/// One log line per change, one summary line per pass.
 async fn reconcile_agents(state: &AppState) -> Result<(), NeboError> {
     let api = build_api_client(state)?;
     let bot_id = config::read_bot_id().unwrap_or_default();
@@ -2125,10 +2165,19 @@ async fn reconcile_agents(state: &AppState) -> Result<(), NeboError> {
         .list_bot_loops()
         .await
         .map_err(|e| NeboError::Internal(format!("list loops: {e}")))?;
-    let personal = match loops.first() {
-        Some(l) => l,
-        None => return Ok(()), // No loops, nothing to reconcile
-    };
+    // The personal loop by type. Accounts that predate the type hold the bot
+    // in a single standard loop, which is then the only candidate.
+    let personal = loops
+        .iter()
+        .find(|l| l.loop_type == PERSONAL_LOOP_TYPE)
+        .or_else(|| loops.first())
+        .ok_or_else(|| {
+            NeboError::Internal(
+                "bot is not a member of any loop on NeboAI (no personal loop); \
+                 employees cannot be registered until the hub adds it"
+                    .into(),
+            )
+        })?;
 
     // Store personal loop_id for session unification — in memory for this
     // connection AND persisted, so the unification branch is deterministic from
@@ -2149,13 +2198,13 @@ async fn reconcile_agents(state: &AppState) -> Result<(), NeboError> {
     info!(
         target: "neboai_identity",
         loop_id = %personal.loop_id,
+        loop_type = %personal.loop_type,
         remote_count = remote_agents.len(),
         remote = ?remote_agents.iter().map(|a| format!("{}#{}", a.slug, &a.id[..a.id.len().min(8)])).collect::<Vec<_>>(),
         "reconcile_agents: START — remote loop agents"
     );
 
-    // Local agents that should appear on the loop as their OWN identity:
-    // "Expose to Loop" is on, excluding the primary ("assistant"). The primary
+    // Local roster: every enabled employee, excluding the primary. The primary
     // is the bot's canonical "Nebo" identity, auto-created and kept current by
     // the gateway (slug "bot_<id8>") — it always shows and must never be
     // registered as a named secondary, or it would duplicate itself.
@@ -2164,19 +2213,17 @@ async fn reconcile_agents(state: &AppState) -> Result<(), NeboError> {
     // drift to the AGENT.md frontmatter slug. The @handle is bot-scoped
     // (`bot_<id8>_<slug>`) so two bots loading the same agent never collide. We
     // also heal a drifted DB name here so display/reads are correct end-to-end.
-    let manifest_name_by_id: std::collections::HashMap<String, String> = state
+    let manifest_name_by_id: HashMap<String, String> = state
         .agent_loader
         .list()
         .await
         .into_iter()
         .filter_map(|l| Some((l.id?, l.agent_def.name)))
         .collect();
-    let exposed: Vec<(db::models::Agent, String, String)> = state
-        .store
-        .list_agents(1000, 0)
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|a| a.id != "assistant" && a.loop_exposed != 0)
+    let local_rows: Vec<db::models::Agent> = state.store.list_agents(1000, 0).unwrap_or_default();
+    let employees: Vec<comm::roster::LocalEmployee> = local_rows
+        .iter()
+        .filter(|a| a.id != PRIMARY_AGENT_ID && a.is_enabled != 0)
         .map(|a| {
             // Owner-renamed agents (name_locked) keep the owner's name as
             // canonical — no manifest heal, and the remote handle follows it.
@@ -2195,89 +2242,111 @@ async fn reconcile_agents(state: &AppState) -> Result<(), NeboError> {
                     warn!(id = %a.id, error = %e, "reconcile: failed to heal local name (non-fatal)");
                 }
             }
-            let slug = comm::handle::secondary_handle(&bot_id, &name);
-            (a, name, slug)
+            comm::roster::LocalEmployee {
+                id: a.id.clone(),
+                slug: comm::handle::secondary_handle(&bot_id, &name),
+                name,
+                description: a.description.clone(),
+            }
         })
         .collect();
-    let exposed_slugs: std::collections::HashSet<String> =
-        exposed.iter().map(|(_, _, slug)| slug.clone()).collect();
 
-    // Deregister remote secondary agents that are no longer exposed locally.
-    // Never touch the primary (its slug is bot_<id8> with no further "_").
-    for agent in &remote_agents {
-        if comm::handle::is_primary_handle(&agent.slug) {
-            continue;
-        }
-        if !exposed_slugs.contains(&agent.slug) {
-            info!(agent_slug = %agent.slug, agent_id = %agent.id, "reconcile: deregistering un-exposed agent");
-            if let Err(e) = api.deregister_agent(&personal.loop_id, &agent.id).await {
-                warn!(agent_slug = %agent.slug, agent_id = %agent.id, error = %e, "reconcile: failed to deregister");
+    let plan = comm::roster::plan_reconcile(&employees, &remote_agents);
+    for emp in &plan.collisions {
+        warn!(target: "neboai_identity", id = %emp.id, name = %emp.name, slug = %emp.slug, "reconcile: handle already taken by another employee — NOT registered (rename one of them)");
+    }
+
+    let mut failed = 0usize;
+    // Loop secondaries with no enabled local employee (disabled, deleted, or
+    // renamed away): remove, and drop the stale mirror on whichever local row
+    // still points at that loop identity.
+    for agent in &plan.deregister {
+        info!(target: "neboai_identity", agent_slug = %agent.slug, agent_id = %agent.id, "reconcile: deregistering employee no longer enabled locally");
+        match api.deregister_agent(&personal.loop_id, &agent.id).await {
+            Ok(_) => {
+                if let Ok(Some(a)) = state.store.get_agent_by_loop_agent_id(&agent.id) {
+                    if let Err(e) = state
+                        .store
+                        .set_agent_loop_agent_id(&a.id, None)
+                        .and_then(|_| state.store.set_loop_exposed(&a.id, false))
+                    {
+                        warn!(target: "neboai_identity", local_id = %a.id, error = %e, "reconcile: failed to clear loop mirror after deregister");
+                    }
+                }
+            }
+            Err(e) => {
+                failed += 1;
+                warn!(target: "neboai_identity", agent_slug = %agent.slug, agent_id = %agent.id, error = %e, "reconcile: failed to deregister");
             }
         }
     }
-
-    // Register exposed local agents missing from remote. The server upserts by
-    // slug, so this is idempotent (re-registration updates in place).
-    // Re-register when the agent is missing OR the loop's stored name differs
-    // from the manifest name — the server upserts by slug, so this updates the
-    // display name in place (otherwise a previously slug-named agent never gets
-    // its real name).
-    let remote_by_slug: std::collections::HashMap<String, String> = remote_agents
+    // Missing employees are registered; present-but-renamed ones are
+    // re-registered, which the hub applies as an in-place update (upsert by
+    // slug). Same call, same idempotency.
+    let writes = plan
+        .update
         .iter()
-        .map(|a| (a.slug.clone(), a.name.clone()))
-        .collect();
-    for (agent, name, slug) in &exposed {
-        let needs_register = match remote_by_slug.get(slug) {
-            None => true,
-            Some(remote_name) => remote_name != name,
+        .map(|(emp, remote_id)| (emp, Some(remote_id.as_str())))
+        .chain(plan.register.iter().map(|emp| (emp, None)));
+    for (emp, remote_id) in writes {
+        let desc = if emp.description.is_empty() {
+            None
+        } else {
+            Some(emp.description.as_str())
         };
-        if needs_register {
-            let desc = if agent.description.is_empty() {
-                None
-            } else {
-                Some(agent.description.as_str())
-            };
-            info!(target: "neboai_identity", name = %name, slug = %slug, remote_name = ?remote_by_slug.get(slug), "reconcile: registering/updating exposed agent (manifest name)");
-            if let Err(e) = api
-                .register_agent(&personal.loop_id, name, slug, desc)
-                .await
-            {
-                warn!(slug = %slug, error = %e, "reconcile: failed to register");
-            }
+        info!(target: "neboai_identity", name = %emp.name, slug = %emp.slug, remote_id = ?remote_id, "reconcile: registering/updating employee");
+        if let Err(e) = api
+            .register_agent(&personal.loop_id, &emp.name, &emp.slug, desc)
+            .await
+        {
+            failed += 1;
+            warn!(target: "neboai_identity", slug = %emp.slug, error = %e, "reconcile: failed to register");
         }
     }
 
     // Stabilize ids: persist each loop agent's stable UUID onto the matching
-    // local agent (`loop_agent_id`) so routing/attribution key on the stable id,
-    // never on a name-derived slug. Re-fetch so just-registered secondaries are
-    // included with the ids the loop assigned them.
-    let slug_to_local: std::collections::HashMap<String, String> = exposed
+    // local agent (`loop_agent_id`, with `loop_exposed` marking the row as
+    // present on the loop) so routing/attribution key on the stable id, never
+    // on a name-derived slug. Re-fetch so just-registered secondaries are
+    // included with the ids the loop assigned them. Writes only on change.
+    let slug_to_local: HashMap<&str, &str> = employees
         .iter()
-        .map(|(a, _, slug)| (slug.clone(), a.id.clone()))
+        .map(|e| (e.slug.as_str(), e.id.as_str()))
         .collect();
+    let local_by_id: HashMap<&str, &db::models::Agent> =
+        local_rows.iter().map(|a| (a.id.as_str(), a)).collect();
     let mut chat_sync_targets: Vec<(String, String)> = Vec::new();
     match api.list_agents(&personal.loop_id, true).await {
         Ok(final_agents) => {
-            info!(target: "neboai_identity", count = final_agents.len(), local_slugs = ?slug_to_local.keys().collect::<Vec<_>>(), "reconcile: stabilize pass — loop agents to map");
             for remote in &final_agents {
                 // HARD RULE: the primary (slug "bot_<id8>", no further "_") is
                 // ALWAYS the local "assistant". Never map it to a secondary, so
                 // the primary (Nebo) can never be overwritten.
                 let local_id = if comm::handle::is_primary_handle(&remote.slug) {
-                    Some("assistant".to_string())
+                    Some(PRIMARY_AGENT_ID)
                 } else {
-                    slug_to_local.get(&remote.slug).cloned()
+                    slug_to_local.get(remote.slug.as_str()).copied()
                 };
-                match local_id {
-                    Some(local_id) => match state.store.set_agent_loop_agent_id(&local_id, Some(remote.id.as_str())) {
-                        Ok(()) => {
-                            info!(target: "neboai_identity", local_id = %local_id, loop_agent_id = %remote.id, slug = %remote.slug, "reconcile: STABILIZED loop id");
-                            chat_sync_targets.push((local_id, remote.id.clone()));
-                        }
-                        Err(e) => warn!(target: "neboai_identity", local_id = %local_id, loop_agent_id = %remote.id, error = %e, "reconcile: FAILED to store loop_agent_id"),
-                    },
-                    None => warn!(target: "neboai_identity", slug = %remote.slug, loop_agent_id = %remote.id, "reconcile: remote agent has NO local match — not stabilized"),
+                let Some(local_id) = local_id else {
+                    warn!(target: "neboai_identity", slug = %remote.slug, loop_agent_id = %remote.id, "reconcile: remote agent has NO local match — not stabilized");
+                    continue;
+                };
+                let row = local_by_id.get(local_id).copied();
+                let mirrored = row.is_some_and(|a| {
+                    a.loop_agent_id.as_deref() == Some(remote.id.as_str()) && a.loop_exposed != 0
+                });
+                if !mirrored {
+                    if let Err(e) = state
+                        .store
+                        .set_agent_loop_agent_id(local_id, Some(remote.id.as_str()))
+                        .and_then(|_| state.store.set_loop_exposed(local_id, true))
+                    {
+                        warn!(target: "neboai_identity", local_id = %local_id, loop_agent_id = %remote.id, error = %e, "reconcile: FAILED to store loop_agent_id");
+                        continue;
+                    }
+                    info!(target: "neboai_identity", local_id = %local_id, loop_agent_id = %remote.id, slug = %remote.slug, "reconcile: STABILIZED loop id");
                 }
+                chat_sync_targets.push((local_id.to_string(), remote.id.clone()));
             }
         }
         Err(e) => warn!(target: "neboai_identity", error = %e, "reconcile: stabilize pass — list_agents FAILED"),
@@ -2409,7 +2478,17 @@ async fn reconcile_agents(state: &AppState) -> Result<(), NeboError> {
         }
     }
 
-    info!("agent reconciliation complete");
+    info!(
+        target: "neboai_identity",
+        loop_id = %personal.loop_id,
+        registered = plan.register.len(),
+        updated = plan.update.len(),
+        deregistered = plan.deregister.len(),
+        unchanged = plan.unchanged.len(),
+        collisions = plan.collisions.len(),
+        failed,
+        "agent reconcile complete"
+    );
     Ok(())
 }
 
@@ -2526,79 +2605,26 @@ pub async fn redeem_nebo_code(state: &AppState, code: &str) -> Result<String, Ne
     Ok(bot_id)
 }
 
-/// Register an agent in the owner's personal loop after role install/activate.
-///
-/// The gateway auto-creates an agent space conversation and subscribes
-/// the bot to it. Errors are non-fatal — logged by callers.
+/// Employee lifecycle hook (create/rename/enable/disable/delete) for handlers
+/// outside this module. Both this and `deregister_agent_from_loop` are the
+/// same operation: they request the ONE roster reconcile
+/// (`request_agent_reconcile`), which diffs the whole enabled roster against
+/// the loop, so a per-agent register can never disagree with a connect-time
+/// pass. Kept as two names only because their callers live in other modules.
 pub(crate) async fn register_agent_in_loop(
     state: &AppState,
     name: &str,
 ) -> Result<(), NeboError> {
-    // Canonical bot-scoped handle — the single source of truth (handle.rs).
-    // Deriving it here keeps every caller from open-coding a divergent slug.
-    let bot_id = config::read_bot_id().unwrap_or_default();
-    let slug = comm::handle::secondary_handle(&bot_id, name);
-
-    let api = build_api_client(state)?;
-    let loops = api
-        .list_bot_loops()
-        .await
-        .map_err(|e| NeboError::Internal(format!("list loops: {e}")))?;
-    let personal = loops
-        .first()
-        .ok_or_else(|| NeboError::Internal("bot not in any loop".into()))?;
-
-    // Store personal loop_id for session unification (memory + persisted; see
-    // reconcile_agents for why persistence matters across restarts).
-    *state.personal_loop_id.write().await = Some(personal.loop_id.clone());
-    if let Err(e) = state
-        .store
-        .set_plugin_setting("neboai", "personal_loop_id", &personal.loop_id)
-    {
-        warn!(error = %e, "failed to persist personal_loop_id");
-    }
-
-    // register_agent upserts by slug (see reconcile_agents), so this is idempotent.
-    api.register_agent(&personal.loop_id, name, &slug, None)
-        .await
-        .map_err(|e| NeboError::Internal(format!("register agent: {e}")))?;
-    info!(agent = %name, slug = %slug, loop_id = %personal.loop_id, "registered agent in loop");
+    request_agent_reconcile(state, &format!("employee changed: {name}"));
     Ok(())
 }
 
-/// Deregister an agent from the owner's personal loop.
+/// See `register_agent_in_loop`.
 pub(crate) async fn deregister_agent_from_loop(
     state: &AppState,
     name: &str,
 ) -> Result<(), NeboError> {
-    // Same canonical handle as registration — match the remote agent on it.
-    let bot_id = config::read_bot_id().unwrap_or_default();
-    let slug = comm::handle::secondary_handle(&bot_id, name);
-
-    let api = build_api_client(state)?;
-    let loops = api
-        .list_bot_loops()
-        .await
-        .map_err(|e| NeboError::Internal(format!("list loops: {e}")))?;
-    let personal = loops
-        .first()
-        .ok_or_else(|| NeboError::Internal("bot not in any loop".into()))?;
-    // NeboAI DELETE requires the agent UUID, not the slug.
-    // Look up the remote agent by its canonical slug to get its UUID.
-    let agents = api
-        .list_agents(&personal.loop_id, true)
-        .await
-        .map_err(|e| NeboError::Internal(format!("list agents: {e}")))?;
-    let remote = agents
-        .iter()
-        .find(|a| a.slug == slug)
-        .ok_or_else(|| {
-            NeboError::Internal(format!("agent '{}' not found on NeboAI", slug))
-        })?;
-    api.deregister_agent(&personal.loop_id, &remote.id)
-        .await
-        .map_err(|e| NeboError::Internal(format!("deregister agent: {e}")))?;
-    info!(agent = %name, slug = %slug, remote_id = %remote.id, loop_id = %personal.loop_id, "deregistered agent from loop");
+    request_agent_reconcile(state, &format!("employee removed: {name}"));
     Ok(())
 }
 

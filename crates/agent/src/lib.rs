@@ -44,6 +44,7 @@ pub mod steering;
 pub mod structured;
 pub mod structured_agent;
 pub mod summarizer;
+pub mod reviewer;
 pub mod task_graph;
 pub mod tool_filter;
 pub mod testing;

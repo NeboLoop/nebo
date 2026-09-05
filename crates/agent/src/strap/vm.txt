@@ -4,11 +4,11 @@ Requires approval for every action.
 
 - vm(action: "exec", command: "go build ./...") — Run a shell command inside the VM
 - vm(action: "exec", command: "make test", timeout: 300) — Run with custom timeout (default 120s)
-- vm(action: "writeFile", path: "/workspace/main.go", content: "...") — Write a file into the VM
-- vm(action: "readFile", path: "/workspace/output.log") — Read a file from the VM
-- vm(action: "copyOut", paths: ["/workspace/build/binary"], dest: "/Users/me/Desktop") — Copy files from VM to host
+- vm(action: "write_file", path: "/workspace/main.go", content: "...") — Write a file into the VM
+- vm(action: "read_file", path: "/workspace/output.log") — Read a file from the VM
+- vm(action: "copy_out", paths: ["/workspace/build/binary"], dest: "/Users/me/Desktop") — Copy files from VM to host
 - vm(action: "list", path: "/workspace") — List directory contents in the VM
 - vm(action: "status") — Check if the VM is running
 - vm(action: "stop") — Shut down the VM
 
-The VM boots lazily on first use. Each exec creates a fresh session. Use writeFile to stage source code, exec to build/test, copyOut to retrieve artifacts.
+The VM boots lazily on first use. Each exec creates a fresh session. Use write_file to stage source code, exec to build/test, copy_out to retrieve artifacts.

@@ -246,6 +246,12 @@
         chat.isLoading = true;
         chat.activityStatus = run.currentTool ? $t('chat.resumedActivity', { values: { tool: run.currentTool } }) : $t('chat.working');
       }
+      // ...and if that work is parked on a question, the card the live event
+      // carried is rendered here too, answerable the same way.
+      if (resp.pendingAsk) {
+        chat.isLoading = true;
+        chat.showPendingAsk(resp.pendingAsk);
+      }
     } catch (e) {
       console.warn('[nebo] Failed to load messages for thread', threadId, e);
     }

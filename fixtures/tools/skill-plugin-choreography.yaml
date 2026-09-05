@@ -19,14 +19,15 @@ tool_config:
 prompt_assertions:
   first_call:
     - id: uses-discovery
-      text: "Model's FIRST call is tool_search or skill(action: 'discover'/'catalog') — a discovery action, not an execution attempt"
+      text: "Model's FIRST call is a discovery action (skill discover, plugin discover, or tool_search), not an execution attempt and not a refusal without looking"
       severity: critical
+      check: { first_call: true, tool: [skill, plugin, tool_search] }
     - id: no-hallucinated-tool
       text: "Model does NOT call 'twitter', 'tweet', 'social', or any hallucinated standalone tool name"
       severity: critical
   recovery:
     - id: graceful-if-missing
-      text: "If no skill/plugin exists for Twitter, model reports that clearly instead of trying the browser"
+      text: "Discovery finds the X (Twitter) plugin in the marketplace and offers it (an install card in direct chat, or its name), or, if nothing is found, says so plainly; the model never declares it cannot post before discovering"
       severity: critical
     - id: no-browser-fallback
       text: "Model does NOT open a browser to attempt the task manually after discovery shows no capability"

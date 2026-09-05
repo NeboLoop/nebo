@@ -174,7 +174,7 @@ pub async fn ensure_started() -> Result<u16, String> {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
-        .map_err(|e| format!("Xvfb failed to start (is the desktop image installed?): {e}"))?;
+        .map_err(|e| format!("Xvfb failed to start: {e}. The desktop needs the server image with Xvfb installed."))?;
 
     // Wait for the display to accept connections before starting clients.
     let mut ready = false;
@@ -197,7 +197,7 @@ pub async fn ensure_started() -> Result<u16, String> {
     if !ready {
         let mut xvfb = xvfb;
         let _ = xvfb.kill().await;
-        return Err("X display did not become ready".into());
+        return Err(format!("X display {DISPLAY} did not answer within 5 seconds"));
     }
 
     // xfwm4 stays FOREGROUND (&) — `--daemon` double-forks it out of
@@ -285,7 +285,7 @@ fn teach_root() -> std::path::PathBuf {
 /// One recording at a time; the desktop must be up (start it first).
 pub async fn start_recording() -> Result<(String, std::path::PathBuf), String> {
     if !active() {
-        return Err("the desktop isn't running — open the computer first".into());
+        return Err("the desktop is not running. Start it first: open the Computer panel (it connects /ws/desktop, which starts the desktop) or POST /api/v1/desktop/teach/start, which starts it before recording".into());
     }
     let mut rec = rec_slot().lock().await;
     if rec.is_some() {
@@ -442,7 +442,7 @@ fn summarize_x11_events(log: &str) -> String {
     let mut out = String::from(
         "# Recorded action timeline
 
-Reconstructed from the input event log.          Typed text is reassembled from keycodes (US layout); clicks carry          screen coordinates on the 1280x800 display.
+Reconstructed from the input event log. Typed text is reassembled from keycodes (US layout); clicks carry screen coordinates on the 1280x800 display.
 
 ",
     );

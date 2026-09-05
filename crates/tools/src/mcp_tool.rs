@@ -1,3 +1,4 @@
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use tracing::{info, warn};
@@ -5,13 +6,38 @@ use tracing::{info, warn};
 use crate::origin::ToolContext;
 use crate::registry::{DynTool, ToolResult};
 
+/// The tool's registered name, shared with the Registry so it can refresh
+/// this tool's cached description whenever the proxy roster changes.
+pub const MCP_TOOL_NAME: &str = "mcp";
+
+/// The MCP proxy tools the Registry currently holds, keyed by server slug
+/// (the `<server>` in `mcp__<server>__<tool>`), in name order. Maintained at
+/// the ONE place proxies are registered and unregistered (`Registry` as
+/// `ProxyToolRegistry`) and read here, so this tool's description and the
+/// model's toolset never disagree: the bridge's own connection map lags proxy
+/// registration and is locked during disconnect, and a description cached
+/// from it said "No MCP servers currently connected" beside forty proxies
+/// (audit 2026-09-05).
+pub type ProxyRoster = Arc<std::sync::RwLock<BTreeMap<String, BTreeSet<String>>>>;
+
+pub fn new_roster() -> ProxyRoster {
+    Arc::new(std::sync::RwLock::new(BTreeMap::new()))
+}
+
+/// The server slug a proxy tool name belongs to (`mcp__<server>__<tool>`).
+pub fn roster_server(proxy_name: &str) -> Option<&str> {
+    let rest = proxy_name.strip_prefix("mcp__")?;
+    let (server, tool) = rest.split_once("__")?;
+    (!server.is_empty() && !tool.is_empty()).then_some(server)
+}
+
 /// McpTool enumerates connected MCP servers. It is the discovery verb for MCP —
 /// `mcp(action: "list")` — NOT a call path. Each MCP tool is exposed to the model as
 /// its own proxy tool (`mcp__<server>__<tool>`) carrying the server's real input
 /// schema, so the model calls it with correct arguments. Those proxies are the single
 /// canonical call pathway (see `call_mcp_tool` + `McpProxyTool` in registry.rs).
 pub struct McpTool {
-    bridge: Arc<mcp::Bridge>,
+    roster: ProxyRoster,
 }
 
 /// Check if a stored OAuth token is expired (with 60s buffer).
@@ -369,29 +395,62 @@ pub async fn call_mcp_tool_scoped(
                             }
                         }
                         Err(retry_err) => ToolResult::error(format!(
-                            "MCP call failed after token refresh: {}",
-                            retry_err
+                            "MCP {}/{} failed after token refresh: {}",
+                            integration_id, tool_name, retry_err
                         )),
                     },
                     Err(refresh_err) => {
                         let _ =
                             store.set_mcp_connection_status(integration_id, "disconnected", 0, None);
                         ToolResult::error(format!(
-                            "MCP authentication expired and refresh failed: {}. Reconnect the integration in settings.",
-                            refresh_err
+                            "MCP {}/{}: authentication expired and refresh failed: {}. Ask the owner to reconnect it in Settings > Connectors.",
+                            integration_id, tool_name, refresh_err
                         ))
                     }
                 }
             } else {
-                ToolResult::error(format!("MCP call failed: {}", e))
+                ToolResult::error(format!("MCP {}/{} failed: {}", integration_id, tool_name, e))
             }
         }
     }
 }
 
 impl McpTool {
-    pub fn new(bridge: Arc<mcp::Bridge>) -> Self {
-        Self { bridge }
+    pub fn new(roster: ProxyRoster) -> Self {
+        Self { roster }
+    }
+
+    /// A snapshot of the roster: server slug → proxy tool names, name order.
+    fn servers(&self) -> Vec<(String, Vec<String>)> {
+        match self.roster.read() {
+            Ok(roster) => roster
+                .iter()
+                .map(|(server, tools)| (server.clone(), tools.iter().cloned().collect()))
+                .collect(),
+            // Poisoned: a panic elsewhere while writing; the roster is a
+            // derived index, so an empty view is the honest fallback.
+            Err(_) => Vec::new(),
+        }
+    }
+
+    /// One line per connected server, the same for the description and for
+    /// `list`: the callable proxy prefix and one real example name.
+    fn server_lines(servers: &[(String, Vec<String>)]) -> String {
+        servers
+            .iter()
+            .map(|(server, tools)| {
+                // Only the callable name is shown: a prettified display
+                // name beside it reads as a second server.
+                format!(
+                    "- server {} ({} tools): mcp__{}__<tool> (e.g. {})",
+                    server,
+                    tools.len(),
+                    server,
+                    tools.first().map(String::as_str).unwrap_or("<tool>")
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     /// Build a dynamic description listing connected servers. This tool only
@@ -400,22 +459,20 @@ impl McpTool {
         let mut desc = String::from(
             "List connected MCP servers. Usage: mcp(action: \"list\").\n\n\
              To CALL a tool on a server, use that tool's own proxy tool named \
-             `mcp__<server>__<tool>` (e.g. `mcp__neboloop__customer`). Discover the exact \
+             `mcp__<server>__<tool>`. Discover the exact \
              names and argument schemas with tool_search(query: \"<server or capability>\"), \
              then call the proxy directly — its arguments match the server's real schema.\n\n",
         );
 
-        let connected = self.bridge.connected_tools();
-        if connected.is_empty() {
+        let servers = self.servers();
+        if servers.is_empty() {
             desc.push_str(
                 "No MCP servers currently connected. Add servers in Connectors settings.\n",
             );
         } else {
             desc.push_str("Connected servers:\n");
-            for (server, tools) in &connected {
-                let display = server.replace('_', ".");
-                desc.push_str(&format!("- {} → {}\n", display, tools.join(", ")));
-            }
+            desc.push_str(&Self::server_lines(&servers));
+            desc.push('\n');
         }
 
         desc
@@ -424,7 +481,7 @@ impl McpTool {
 
 impl DynTool for McpTool {
     fn name(&self) -> &str {
-        "mcp"
+        MCP_TOOL_NAME
     }
 
     fn description(&self) -> String {
@@ -456,29 +513,16 @@ impl DynTool for McpTool {
         _input: serde_json::Value,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send + 'a>> {
         Box::pin(async move {
-            let connected = self.bridge.connected_tools();
-            if connected.is_empty() {
+            let servers = self.servers();
+            if servers.is_empty() {
                 return ToolResult::ok(
                     "No MCP servers connected. Add servers in Connectors settings.",
                 );
             }
-            let lines: Vec<String> = connected
-                .iter()
-                .map(|(server, tools)| {
-                    format!(
-                        "- {} ({} tools): call via mcp__{}__<tool> (e.g. mcp__{}__{})",
-                        server.replace('_', "."),
-                        tools.len(),
-                        server,
-                        server,
-                        tools.first().map(|t| t.as_str()).unwrap_or("<tool>")
-                    )
-                })
-                .collect();
             ToolResult::ok(format!(
                 "{} connected MCP server(s). Discover a tool's schema with tool_search, then call its mcp__<server>__<tool> proxy:\n{}",
-                connected.len(),
-                lines.join("\n")
+                servers.len(),
+                Self::server_lines(&servers)
             ))
         })
     }
@@ -606,5 +650,61 @@ mod matter_scope_tests {
             ..ToolContext::new(Origin::Workflow)
         };
         assert_eq!(sealed.memory_matter.as_deref(), Some("matter/acme-v-smith"));
+    }
+}
+
+#[cfg(test)]
+mod roster_tests {
+    use super::{McpTool, MCP_TOOL_NAME, roster_server};
+    use crate::registry::{DynTool, Registry};
+    use mcp::bridge::ProxyToolRegistry;
+    use std::sync::Arc;
+
+    #[test]
+    fn a_proxy_name_names_its_server() {
+        assert_eq!(roster_server("mcp__google_calendar__list_events"), Some("google_calendar"));
+        assert_eq!(roster_server("mcp__nebo_kb__search"), Some("nebo_kb"));
+        assert_eq!(roster_server("web"), None);
+        assert_eq!(roster_server("mcp__only_one"), None);
+        assert_eq!(roster_server("mcp____tool"), None);
+    }
+
+    /// The description the model reads is re-derived from the registry's own
+    /// proxy set every time a proxy is registered or removed: a server that
+    /// has proxies in the toolset is a connected server, and one with none
+    /// is not. `block_in_place` needs the multi-thread runtime.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_description_follows_the_proxies_in_the_registry() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(db::Store::new(dir.path().join("t.db").to_str().unwrap()).unwrap());
+        let registry = Arc::new(Registry::new(crate::policy::Policy::default()));
+        let client = Arc::new(mcp::McpClient::new(Arc::new(mcp::crypto::Encryptor::generate())));
+        let bridge = Arc::new(mcp::Bridge::new(client, registry.clone()));
+        registry.set_bridge(bridge);
+        registry.set_store(store);
+        registry
+            .register(Box::new(McpTool::new(registry.mcp_proxy_roster())))
+            .await;
+
+        async fn description(r: &Registry) -> String {
+            r.definition(MCP_TOOL_NAME).await.expect("mcp is registered").description
+        }
+        assert!(description(&registry).await.contains("No MCP servers currently connected"));
+
+        registry.register_proxy("mcp__google_calendar__list_events", "list_events", "lists events", None, "int-1");
+        registry.register_proxy("mcp__google_calendar__create_event", "create_event", "creates", None, "int-1");
+        let text = description(&registry).await;
+        assert!(!text.contains("No MCP servers"), "{text}");
+        assert!(text.contains("server google_calendar (2 tools)"), "{text}");
+        assert!(text.contains("e.g. mcp__google_calendar__create_event"), "{text}");
+        // `list` reads the same roster the description does.
+        let listed = McpTool::new(registry.mcp_proxy_roster())
+            .execute_dyn(&crate::origin::ToolContext::default(), serde_json::json!({"action": "list"}))
+            .await;
+        assert!(listed.content.contains("1 connected MCP server(s)"), "{}", listed.content);
+
+        registry.unregister_proxy("mcp__google_calendar__list_events");
+        registry.unregister_proxy("mcp__google_calendar__create_event");
+        assert!(description(&registry).await.contains("No MCP servers currently connected"));
     }
 }

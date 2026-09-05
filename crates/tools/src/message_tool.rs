@@ -66,7 +66,7 @@ impl MessageTool {
         let rail = self.coworker_rail.read().unwrap().clone();
         let Some(rail) = rail else {
             return ToolResult::error(
-                "Coworker messaging is not available in this environment. Do not retry.",
+                "Coworker messaging is not available in this environment (no coworker rail wired; use loop(resource: \"dm\") for hub bots).",
             );
         };
 
@@ -240,7 +240,7 @@ impl DynTool for MessageTool {
                             );
                             // Fire OS notification
                             notify_crate::send("Nebo", text);
-                            ToolResult::ok(format!("Notified owner: {}", text))
+                            ToolResult::ok(format!("Owner notified ({} chars)", text.chars().count()))
                         }
                         Err(e) => ToolResult::error(format!("Failed to notify: {}. Do not retry — this is a database error.", e)),
                     }
@@ -288,7 +288,11 @@ async fn handle_notify(store: &Store, notify_fn: Option<&NotifyFn>, action: &str
                 },
             );
             notify_crate::send(title, text);
-            ToolResult::ok(format!("Notification sent: {}", text))
+            ToolResult::ok(format!(
+                "Notification sent ({} chars, title '{}')",
+                text.chars().count(),
+                title
+            ))
         }
         "alert" => {
             let text = input["text"].as_str().unwrap_or("");
@@ -305,7 +309,7 @@ async fn handle_notify(store: &Store, notify_fn: Option<&NotifyFn>, action: &str
         ),
         "dnd_status" => handle_dnd_status().await,
         other => ToolResult::error(format!(
-            "Unknown action '{}' for notify resource. Available: send, alert, speak, dnd_status",
+            "Unknown action '{}' for notify resource. Available: send, alert, dnd_status",
             other
         )),
     }
@@ -455,8 +459,27 @@ async fn handle_dnd_status() -> ToolResult {
 
     #[cfg(target_os = "windows")]
     {
-        let script = r#"try { $val = Get-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\CloudStore\Store\DefaultAccount\Current\default$windows.data.notifications.quiethourssettings\windows.data.notifications.quiethourssettings' -ErrorAction Stop; Write-Output $val } catch { Write-Output 'unavailable' }"#;
-        return run_powershell(script).await;
+        // Focus Assist keeps its state in an undocumented binary blob; the
+        // only honest reading is whether the key exists and how big it is.
+        let script = r#"try { $val = Get-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\CloudStore\Store\DefaultAccount\Current\default$windows.data.notifications.quiethourssettings\windows.data.notifications.quiethourssettings' -ErrorAction Stop; Write-Output ("" + $val.Data.Length) } catch { Write-Output 'unavailable' }"#;
+        let r = run_powershell(script).await;
+        if r.is_error {
+            return r;
+        }
+        let note = match r.content.trim().parse::<usize>() {
+            Ok(n) => format!(
+                "DND state unknown: Focus Assist stores its state as an undocumented {} byte binary blob under HKCU ...quiethourssettings, which Nebo does not decode",
+                n
+            ),
+            Err(_) => "DND state unknown: the Focus Assist registry key (HKCU ...quiethourssettings) is not present".to_string(),
+        };
+        return ToolResult::ok(
+            serde_json::json!({
+                "dnd_enabled": null,
+                "note": note,
+            })
+            .to_string(),
+        );
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
@@ -553,7 +576,11 @@ async fn handle_sms_send(input: &serde_json::Value) -> ToolResult {
         text = text.replace('\\', "\\\\").replace('"', "\\\""),
         phone = phone.replace('"', "\\\""),
     );
-    run_osascript_stdin(&script).await
+    run_osascript_stdin(
+        &script,
+        &format!("Handed to Messages.app for delivery to {}", phone),
+    )
+    .await
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -577,7 +604,7 @@ async fn handle_sms_conversations(input: &serde_json::Value) -> ToolResult {
         limit
     );
 
-    run_sqlite3(&db_path, &query).await
+    run_sqlite3(&db_path, &query, "No conversations in chat.db (Messages has no chats).").await
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -618,7 +645,15 @@ async fn handle_sms_read(input: &serde_json::Value) -> ToolResult {
         escaped_phone, limit
     );
 
-    run_sqlite3(&db_path, &query).await
+    run_sqlite3(
+        &db_path,
+        &query,
+        &format!(
+            "No messages for chat_identifier '{}' (exact match; list identifiers with action: \"conversations\")",
+            phone
+        ),
+    )
+    .await
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -735,8 +770,10 @@ fn chat_db_path() -> Option<String> {
 // Helper: run sqlite3 CLI
 // ---------------------------------------------------------------------------
 
+/// Run `query` against chat.db. `empty` is what an empty result set means
+/// for this caller (which identifier or text matched nothing).
 #[cfg(target_os = "macos")]
-async fn run_sqlite3(db_path: &str, query: &str) -> ToolResult {
+async fn run_sqlite3(db_path: &str, query: &str, empty: &str) -> ToolResult {
     let output = tokio::process::Command::new("sqlite3")
         .args(["-header", "-separator", "|", db_path, query])
         .output()

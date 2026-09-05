@@ -262,7 +262,7 @@ impl DynTool for A2UIDomainTool {
                 None => return ToolResult::error(crate::errors::missing_param(
                     "a2ui",
                     "action",
-                    "a2ui(resource: \"surface\", action: \"create\", components: [...])\nAvailable actions: create, update, setValue, navigate, destroy",
+                    "a2ui(resource: \"surface\", action: \"create\", components: [...])\nAvailable actions: create, update_components, update_data, navigate, delete, list",
                 )),
             };
 
@@ -315,7 +315,7 @@ impl A2UIDomainTool {
 
                 if agent_id.is_empty() {
                     return ToolResult::error(
-                        "agent_id is required (pass it explicitly or ensure session is agent-scoped)",
+                        "agent_id is required (pass it explicitly or ensure session is agent-scoped). Example: a2ui(action: \"create\", agent_id: \"crm\", view_id: \"dashboard\")",
                     );
                 }
 
@@ -340,7 +340,7 @@ impl A2UIDomainTool {
                     None => return ToolResult::error(crate::errors::missing_param(
                         "update_components",
                         "surface_id",
-                        "a2ui(resource: \"surface\", action: \"update_components\", surface_id: \"surf:abc:main\", components: [...])",
+                        "a2ui(resource: \"surface\", action: \"update_components\", surface_id: \"agent:crm:dashboard\", components: [...])",
                     )),
                 };
                 let components = match params.get("components").and_then(|v| v.as_array()) {
@@ -348,7 +348,7 @@ impl A2UIDomainTool {
                     None => return ToolResult::error(crate::errors::missing_param(
                         "update_components",
                         "components",
-                        "a2ui(resource: \"surface\", action: \"update_components\", surface_id: \"surf:abc:main\", components: [...])",
+                        "a2ui(resource: \"surface\", action: \"update_components\", surface_id: \"agent:crm:dashboard\", components: [...])",
                     )),
                 };
 
@@ -367,7 +367,7 @@ impl A2UIDomainTool {
                     None => return ToolResult::error(crate::errors::missing_param(
                         "update_data",
                         "surface_id",
-                        "a2ui(resource: \"surface\", action: \"update_data\", surface_id: \"surf:abc:main\", value: {...})",
+                        "a2ui(resource: \"surface\", action: \"update_data\", surface_id: \"agent:crm:dashboard\", value: {...})",
                     )),
                 };
                 let path = params.get("path").and_then(|v| v.as_str());
@@ -376,7 +376,7 @@ impl A2UIDomainTool {
                     None => return ToolResult::error(crate::errors::missing_param(
                         "update_data",
                         "value",
-                        "a2ui(resource: \"surface\", action: \"update_data\", surface_id: \"surf:abc:main\", value: {\"count\": 42})",
+                        "a2ui(resource: \"surface\", action: \"update_data\", surface_id: \"agent:crm:dashboard\", value: {\"count\": 42})",
                     )),
                 };
 
@@ -458,7 +458,7 @@ impl A2UIDomainTool {
                     None => return ToolResult::error(crate::errors::missing_param(
                         "delete",
                         "surface_id",
-                        "a2ui(resource: \"surface\", action: \"delete\", surface_id: \"surf:abc:main\")",
+                        "a2ui(resource: \"surface\", action: \"delete\", surface_id: \"agent:crm:dashboard\")",
                     )),
                 };
 
@@ -475,7 +475,7 @@ impl A2UIDomainTool {
                 let agent_id = agent_id_owned.as_str();
                 if agent_id.is_empty() {
                     return ToolResult::error(
-                        "agent_id is required (pass it explicitly or ensure session is agent-scoped)",
+                        "agent_id is required (pass it explicitly or ensure session is agent-scoped). Example: a2ui(action: \"create\", agent_id: \"crm\", view_id: \"dashboard\")",
                     );
                 }
 
@@ -484,7 +484,7 @@ impl A2UIDomainTool {
             }
 
             other => ToolResult::error(format!(
-                "Unknown action: {other}. Use: create, update_components, update_data, delete, list"
+                "Unknown action: {other}. Use: create, update_components, update_data, navigate, delete, list"
             )),
         }
     }

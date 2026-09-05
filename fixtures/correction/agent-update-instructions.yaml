@@ -1,0 +1,51 @@
+id: correction-agent-update-instructions
+name: "Correction — updating an employee's instructions is one call"
+description: |
+  Found live on 2026-09-04: the model sent agent(action: update, name,
+  prompt) with no resource; the tool routed it to tasks and answered
+  "Missing required parameter 'task_id'" twice. On the third try, with
+  resource: registry, the handler ignored `prompt` and still said "live agent
+  updated", and the run told the owner the instructions were changed. They
+  were not. Now: an update carrying a prompt is a registry update, `prompt`
+  replaces the AGENT.md body with the frontmatter kept, a field the handler
+  does not act on is refused before any write, and "updated" is said only
+  when something changed.
+target_component: agent
+
+setup:
+  - "curl -s -X POST localhost:27895/api/v1/agents -H 'Content-Type: application/json' -d '{\"blank\":true,\"name\":\"front-desk\"}' > /dev/null"
+teardown:
+  - "python3 -c \"import json,urllib.request as u; ags=json.load(u.urlopen('http://localhost:27895/api/v1/agents'))['agents']; ids=[a['id'] for a in ags if a.get('name')=='front-desk']; [u.urlopen(u.Request('http://localhost:27895/api/v1/agents/'+i, method='DELETE')) for i in ids]\""
+
+conversation:
+  - role: user
+    content: "Update the front-desk employee's instructions to exactly this: You answer inbound calls for NeboAI. Use only what is in local memory; never search the web. Never transfer to a person. Take the caller's name, direct number and company, and say we will call back as soon as possible."
+
+tool_config:
+  agent:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: updates-the-employee
+      text: "The first call is an agent registry call about front-desk: either the update itself, or an info read of the current persona followed by the update. No task call, no other tool."
+      severity: critical
+      check: { first_call: true, tool: agent }
+  recovery:
+    - id: no-task-id-detour
+      text: "No tool result says task_id is required; the update lands on the employee, not a task"
+      severity: critical
+    - id: bounded
+      text: "At most 2 tool calls"
+      severity: critical
+      check: { max_tool_calls: 2 }
+    - id: result-names-what-changed
+      text: "The tool result that succeeds says the instructions (AGENT.md body) were replaced, or the persona was updated; it does not claim an update when nothing changed"
+      severity: critical
+    - id: honest-summary
+      text: "The final response says the instructions were updated only if a tool result said so"
+      severity: important
+
+ideal_behavior:
+  tool_calls: 1
+  narrative: "One agent update naming the employee with the new instructions as prompt, instructions or agent_md, then a one-line confirmation."

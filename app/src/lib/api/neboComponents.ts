@@ -247,6 +247,7 @@ export interface ChatMessagesResponse {
 	messages: ChatMessage[]
 	totalMessages: number
 	activeRun?: ActiveTurnStatus
+	pendingAsk?: PendingAsk
 }
 
 export interface ChatStreamResponse {
@@ -357,6 +358,12 @@ export interface DashboardEmployee {
 	elapsedSecs: number
 	isolated: boolean
 	matters: number
+	runId?: string
+	step?: number
+	stepCount?: number
+	lastOutcome?: string
+	lastDetail?: string
+	lastRunAt?: number
 }
 
 export interface DashboardEmployeeRuns {
@@ -616,6 +623,13 @@ export interface PaymentMethodInfo {
 	isDefault?: boolean
 }
 
+export interface PendingAsk {
+	requestId: string
+	prompt: string
+	widgets?: unknown
+	createdAt: number
+}
+
 export interface PendingTask {
 	id: string
 	taskType: string
@@ -714,6 +728,14 @@ export interface RefreshToken {
 	userId: string
 	tokenHash: string
 	expiresAt: number
+	createdAt: number
+}
+
+export interface RunExit {
+	sessionKey?: string
+	agentId: string
+	modelId: string
+	exitReason?: string
 	createdAt: number
 }
 
@@ -1010,6 +1032,7 @@ export interface ApplyUpdateResponse {
 
 export interface AuthLoginAccountResponse {
 	started: boolean
+	perAccount: number
 }
 
 export interface AuthLoginResponse {
@@ -1711,16 +1734,6 @@ export interface ProxyPluginRouteResponse {
 	output: unknown
 }
 
-export interface PublishAgentWorkflowResponse {
-	id: string
-	agentId: string
-	label: string
-	workflowName: string
-	key: string
-	keyPrefix: string
-	url: string
-}
-
 export interface ReauthenticateIntegrationResponse {
 	authUrl: string
 }
@@ -2042,6 +2055,10 @@ export interface AgentListEntry {
 	name: string
 	displayName: string
 	description: string
+	/** Last visible message of the latest thread; the roster row's second line. */
+	latestPreview?: string
+	/** The latest thread was cut by a server restart; latestPreview is the status before it. */
+	restarted?: boolean
 	color?: string
 	handle?: string
 	source: string

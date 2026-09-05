@@ -17,7 +17,7 @@ CLI="${NEBO_CLI:-./target/debug/nebo-cli}"
 OUT="${OUT:-/tmp/nebo-traces-repo}"
 GUARD_SECS="${GUARD_SECS:-900}"
 ONLY="${FIXTURE:-}"
-GRADER="${GRADER:-claude-sonnet-4-6}"
+GRADER="${GRADER:-claude-opus-5}"
 RUNS="${RUNS:-1}"   # the on-par gate wants 3/3; each run re-plants the bug in setup, verification checks the last
 
 curl -sf -m 3 "http://$TEST_SERVER/health" >/dev/null || { echo "FAIL: no Nebo on $TEST_SERVER — start one with 'make dev' first."; exit 1; }

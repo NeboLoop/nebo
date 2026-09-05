@@ -1,0 +1,64 @@
+id: correction-agent-edit-user-created
+name: "Correction — editing a user-created employee starts at its own files"
+description: |
+  Replayed from a live voice session on 2026-09-05. The owner asked for an
+  employee's call-ending instructions to be changed. The registry's info
+  action reported the user-created employee as "marketplace" and pointed at
+  the installed-agents root, so the model spent forty calls searching the
+  wrong tree, decided the files "aren't on disk", tried to reinstall the
+  employee with a code built from its name, and was stopped by the
+  identical-call block. Info now reports the row's own directory and source,
+  the install action refuses name-shaped codes before any network call, and
+  the plugin and glob errors say what to do next. This fixture pins the
+  shape of a good run: info, then the update, in a handful of calls.
+target_component: agent
+
+setup:
+  # A user-created employee WITH files under user/agents, the shape of the
+  # live thread this fixture replays (a blank hire has no files and takes a
+  # different path through info).
+  - "curl -s -X POST localhost:27895/api/v1/agents -H 'Content-Type: application/json' -d '{\"name\": \"night-desk\", \"description\": \"After-hours receptionist for a small firm.\", \"agentMd\": \"---\\nname: night-desk\\ndescription: After-hours receptionist for a small firm.\\n---\\nYou answer after-hours calls, take the caller's name and number, and schedule a callback.\\n\"}' > /dev/null"
+teardown:
+  - "python3 -c \"import json,urllib.request as u; ags=json.load(u.urlopen('http://localhost:27895/api/v1/agents'))['agents']; ids=[a['id'] for a in ags if a.get('name')=='night-desk']; [u.urlopen(u.Request('http://localhost:27895/api/v1/agents/'+i, method='DELETE')) for i in ids]\""
+
+conversation:
+  - role: user
+    content: "Inspect the night-desk employee's full prompt and instructions. Add an instruction to end phone calls properly: summarize what was captured, confirm next steps, thank the caller, and say goodbye before hanging up, instead of disconnecting abruptly."
+
+tool_config:
+  agent:
+    enabled: true
+  os:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: starts-with-registry
+      text: "The first call is agent(resource: registry, action: info) on night-desk, or its update"
+      severity: critical
+      check: { first_call: true, tool: agent }
+  recovery:
+    - id: no-wrong-tree-search
+      text: "The model never globs or reads under the installed-agents directory (Nebo/nebo/agents) looking for this employee; if it reads files, they are under the path the info result named"
+      severity: critical
+    - id: no-reinstall
+      text: "No agent install call is made; the employee already exists"
+      severity: critical
+    - id: no-tool-errors
+      text: "Every call the model makes is accepted: no missing-parameter, unknown-action, invalid-code, or not-found error in any tool result"
+      severity: critical
+      check: { max_errors: 0 }
+    - id: bounded
+      text: "At most 6 tool calls"
+      severity: critical
+      check: { max_tool_calls: 6 }
+    - id: update-lands
+      text: "An update or a file edit of AGENT.md succeeds and its result says the persona or instructions were changed"
+      severity: critical
+    - id: honest-summary
+      text: "The final response says the instructions were updated only because a tool result said so, and does not claim the employee is a marketplace agent or not installed"
+      severity: important
+
+ideal_behavior:
+  tool_calls: 2
+  narrative: "One info call that names the employee's directory and shows the persona, then one update with the new instructions, then a two-line confirmation."

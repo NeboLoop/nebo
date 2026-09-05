@@ -1,0 +1,176 @@
+name: Harness gate
+
+# The agent harness is only as good as what the suites can prove. Two lanes:
+#
+#   gate    every PR and every push to main: the smoke and error-correction
+#           suites with program checks only (no judge, no billed grader).
+#           A failed critical check fails the job. Runs against a headless
+#           server started in this job, running on Janus as a CI bot.
+#
+#   nightly the same suites judged by the claude CLI, three runs each, and the
+#           correction rate must clear MIN_CORRECTION_RATE. Judged runs cost
+#           money and take an hour, so they do not sit on the PR path.
+#
+# Secrets (repository settings, not this file):
+#   HARNESS_NEBO_BOT_ID         a NeboAI bot provisioned for CI (36-char id)
+#   HARNESS_NEBO_BOT_TOKEN      that bot's token; seeds the NeboAI profile the
+#                               way a cloud pod's does, so the agent runs on
+#                               Janus (nebo-1), the same backend customers get
+#   HARNESS_CLAUDE_OAUTH_TOKEN  nightly only: login for the claude CLI that
+#                               judges the transcripts (CLAUDE_CODE_OAUTH_TOKEN)
+#
+# The agent runs on Janus; Claude Code only measures. GATE_MODEL pins the
+# speed so a routing change cannot move the number.
+#
+# Runner: the house Mac mini's Lima VM (label neboloop), never a GitHub-hosted
+# machine (see CLAUDE.md "Release builds" and scripts/check-release-runners.py).
+# GitHub only triggers the job. Nothing of ours runs or is stored there: no
+# hosted cache, no artifact upload. The build cache is the runner's own target
+# directory, which persists between jobs, and every run's traces and server
+# log stay on the VM under ~/harness-runs/<run id>. One runner, so jobs queue;
+# the concurrency group below drops superseded PR runs.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "crates/**"
+      - "fixtures/**"
+      - "suites/**"
+      - "scripts/correction-rate.py"
+      - ".github/workflows/harness-gate.yml"
+  pull_request:
+    paths:
+      - "crates/**"
+      - "fixtures/**"
+      - "suites/**"
+      - "scripts/correction-rate.py"
+      - ".github/workflows/harness-gate.yml"
+  schedule:
+    - cron: "17 7 * * *"   # 07:17 UTC nightly
+  workflow_dispatch:
+
+concurrency:
+  group: harness-gate-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GATE_MODEL: janus/nebo-1
+  GATE_PORT: "27895"
+  MIN_CORRECTION_RATE: "80"
+
+jobs:
+  harness:
+    name: ${{ github.event_name == 'schedule' && 'Nightly judged suites' || 'Program-check gate' }}
+    runs-on: [self-hosted, Linux, ARM64, neboloop] # the Mac mini's Lima VM, see CLAUDE.md "Release builds"
+    timeout-minutes: ${{ github.event_name == 'schedule' && 120 || 60 }}
+    env:
+      RUSTC_WRAPPER: ""
+    steps:
+      - uses: actions/checkout@v4
+
+      # Rust lives in the runner user's home on the VM; a non-login shell
+      # does not have it on PATH.
+      - name: Rust on PATH
+        run: |
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          "$HOME/.cargo/bin/cargo" --version
+
+      # Same dependency set as release.yml's Linux leg, already present on the
+      # VM; apt is idempotent, so this only pays when the VM is rebuilt.
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            pkg-config \
+            build-essential \
+            protobuf-compiler \
+            libopenblas-dev \
+            python3-yaml
+
+      - name: Configure OpenBLAS paths
+        run: |
+          MULTIARCH=$(dpkg-architecture -qDEB_HOST_MULTIARCH)
+          echo "PKG_CONFIG_PATH=/usr/lib/${MULTIARCH}/pkgconfig" >> $GITHUB_ENV
+          echo "RUSTFLAGS=-C link-arg=-L/usr/lib/${MULTIARCH} -C link-arg=-Wl,--no-as-needed -C link-arg=-lopenblas -C link-arg=-Wl,--as-needed" >> $GITHUB_ENV
+
+      - name: Satisfy the frontend embed folder
+        run: mkdir -p app/build
+
+      - name: Build the CLI
+        run: cargo build -p nebo-cli
+
+      # A fresh NEBO_HOME so nothing on the runner leaks in. NEBO_SERVER_MODE
+      # marks setup complete on boot (there is no desktop to click through);
+      # NEBO_BOT_ID and NEBO_BOT_TOKEN seed the NeboAI profile with Janus
+      # enabled, the same first-boot path a cloud pod takes.
+      - name: Start a headless server
+        env:
+          NEBO_HOME: ${{ runner.temp }}/nebo-home
+          NEBO_SERVER_MODE: "1"
+          NEBO_PORT: ${{ env.GATE_PORT }}
+          NEBO_BOT_ID: ${{ secrets.HARNESS_NEBO_BOT_ID }}
+          NEBO_BOT_TOKEN: ${{ secrets.HARNESS_NEBO_BOT_TOKEN }}
+          RUST_LOG: info,nebo_agent=debug
+        run: |
+          test -n "$NEBO_BOT_ID" && test -n "$NEBO_BOT_TOKEN" \
+            || { echo "HARNESS_NEBO_BOT_ID and HARNESS_NEBO_BOT_TOKEN are not set"; exit 1; }
+          mkdir -p "$NEBO_HOME"
+          nohup ./target/debug/nebo-cli agent > "${{ runner.temp }}/server.log" 2>&1 &
+          for i in $(seq 1 60); do
+            curl -sf -m 2 "http://localhost:$GATE_PORT/health" >/dev/null && break
+            sleep 2
+          done
+          curl -sf -m 2 "http://localhost:$GATE_PORT/health"
+
+      - name: Confirm Janus is the provider
+        run: |
+          curl -sf "http://localhost:$GATE_PORT/api/v1/providers" \
+            | jq -e '.profiles[] | select(.provider == "neboai" and .isActive)' >/dev/null \
+            || { echo "no active NeboAI profile; the bot token did not seed"; exit 1; }
+
+      - name: Smoke suite, program checks
+        if: github.event_name != 'schedule'
+        run: ./target/debug/nebo-cli test run --suite suites/smoke.yaml --no-judge --model "$GATE_MODEL" --server "localhost:$GATE_PORT" --output traces/smoke
+
+      - name: Error-correction suite, program checks
+        if: github.event_name != 'schedule'
+        run: ./target/debug/nebo-cli test run --suite suites/error-correction.yaml --no-judge --model "$GATE_MODEL" --server "localhost:$GATE_PORT" --output traces/correction
+
+      # The VM has no node. Anthropic's native installer puts a standalone
+      # `claude` in ~/.local/bin; it persists on the runner, so this is a
+      # no-op after the first nightly.
+      - name: Install the judge
+        if: github.event_name == 'schedule'
+        run: |
+          command -v claude >/dev/null || curl -fsSL https://claude.ai/install.sh | bash
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Error-correction suite, judged, three runs
+        if: github.event_name == 'schedule'
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.HARNESS_CLAUDE_OAUTH_TOKEN }}
+        run: |
+          ./target/debug/nebo-cli test run --suite suites/error-correction.yaml --grader claude-opus-5 --runs 3 \
+            --model "$GATE_MODEL" --server "localhost:$GATE_PORT" --output traces/correction || true
+          python3 scripts/correction-rate.py traces/correction suites/error-correction.yaml --min "$MIN_CORRECTION_RATE"
+          python3 scripts/error-shapes.py traces/correction --baseline suites/error-shapes.baseline.txt
+
+      - name: Smoke suite, judged
+        if: github.event_name == 'schedule'
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.HARNESS_CLAUDE_OAUTH_TOKEN }}
+        run: ./target/debug/nebo-cli test run --suite suites/smoke.yaml --grader claude-opus-5 --model "$GATE_MODEL" --server "localhost:$GATE_PORT" --output traces/smoke
+
+      - name: Keep the traces and the server log on the VM
+        if: always()
+        run: |
+          KEEP="$HOME/harness-runs/${{ github.run_id }}"
+          mkdir -p "$KEEP"
+          [ -d traces ] && cp -R traces "$KEEP/"
+          cp "${{ runner.temp }}/server.log" "$KEEP/" 2>/dev/null || true
+          echo "kept at $KEEP on the stadium VM (limactl shell ci)"

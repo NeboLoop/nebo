@@ -58,6 +58,7 @@ help:
 	@echo "  make test-live      - Run the live fixture suite against a running server (LLM-judged)"
 	@echo "  make test-live-fast - Same, program checks only (no judge, no claude CLI)"
 	@echo "  make test-tools     - Deterministic tool cases over /agent/mcp (no model)"
+	@echo "  make bench-swe      - SWE-bench Verified sample through the live agent (COUNT=, MODEL=, IDS=)"
 	@echo "  make clean          - Clean build artifacts (target/, dist/) — stop the watcher first"
 	@echo "  make clean-cache    - Clear global cargo download cache (~/.cargo) — safe while building"
 	@echo "  make seed-plugins   - Copy plugin binaries from sibling repos"
@@ -587,6 +588,47 @@ endif
 
 $(NEBO_CLI):
 	@echo "Building the test CLI (make build)..." && $(MAKE) build
+
+# The gate CI runs on every PR (.github/workflows/harness-gate.yml), locally:
+# smoke + error-correction with program checks only, against the dev server.
+# A failed critical check exits non-zero. Pass MODEL to pin the model the way
+# CI does (CI uses anthropic/claude-haiku-4-5-20251001).
+test-gate: $(NEBO_CLI)
+	@curl -sf -m 3 http://$(TEST_SERVER)/health >/dev/null \
+		|| { echo "No Nebo on $(TEST_SERVER) — start one with 'make dev' first."; exit 1; }
+	$(NEBO_CLI) test run --suite suites/smoke.yaml --no-judge --server $(TEST_SERVER) $(if $(MODEL),--model $(MODEL),)
+	$(NEBO_CLI) test run --suite suites/error-correction.yaml --no-judge --server $(TEST_SERVER) $(if $(MODEL),--model $(MODEL),)
+
+# What the nightly lane runs: judged, three runs, and the correction rate must
+# clear the same floor CI uses. Billed grader calls; takes most of an hour.
+test-gate-nightly: $(NEBO_CLI)
+	@command -v claude >/dev/null || { echo "The judge needs the claude CLI on PATH."; exit 1; }
+	rm -rf /tmp/nebo-gate-traces
+	-$(NEBO_CLI) test run --suite suites/error-correction.yaml --grader claude-opus-5 --runs 3 --server $(TEST_SERVER) --output /tmp/nebo-gate-traces $(if $(MODEL),--model $(MODEL),)
+	python3 scripts/correction-rate.py /tmp/nebo-gate-traces suites/error-correction.yaml --min 80
+	python3 scripts/error-shapes.py /tmp/nebo-gate-traces --baseline suites/error-shapes.baseline.txt
+
+# Every distinct error a tool handed the model in the last local suite run,
+# against the baseline of shapes someone has already read. A new shape is a
+# tool saying something no one has looked at; read it before adding it with
+# --update.
+test-error-shapes:
+	python3 scripts/error-shapes.py /tmp/nebo-gate-traces --baseline suites/error-shapes.baseline.txt
+
+# ─── Public benchmark: SWE-bench Verified ────────────────────────────────────
+# Runs a seeded sample of SWE-bench Verified through the live agent (needs make
+# dev, docker, and ./target/debug/nebo-cli), then scores it with the official
+# swebench harness. Results land in bench/runs/<UTC stamp>/report.md. Billed
+# LLM calls and amd64 emulation on Apple Silicon: a smoke test, not the number.
+# See docs/sme/TESTING_SME.md section 3c.
+#   make bench-swe COUNT=5
+#   make bench-swe IDS="django__django-11099" MODEL=nebo-1
+BENCH_VENV = bench/.venv
+COUNT ?= 5
+.PHONY: bench-swe test-gate test-gate-nightly test-error-shapes
+bench-swe:
+	@[ -x $(BENCH_VENV)/bin/python ] || { echo "Creating $(BENCH_VENV) (uv)..."; uv venv -p 3.12 $(BENCH_VENV) && uv pip install --python $(BENCH_VENV)/bin/python swebench datasets; }
+	@$(BENCH_VENV)/bin/python scripts/bench/swebench.py $(if $(IDS),--ids $(IDS),--count $(COUNT)) $(if $(MODEL),--model $(MODEL),)
 
 # ─── Synthetic Replay: poisoned-window recovery ──────────────────────────────
 # Seeds a fully SYNTHETIC poisoned conversation (forged "[os] 0 lines" tool

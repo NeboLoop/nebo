@@ -5348,6 +5348,7 @@ dependencies = [
  "tracing",
  "turbovec",
  "uuid",
+ "which 7.0.3",
 ]
 
 [[package]]
@@ -5423,6 +5424,7 @@ name = "nebo-cli"
 version = "0.13.3"
 dependencies = [
  "anyhow",
+ "chrono",
  "clap",
  "dotenvy",
  "futures",
@@ -5683,6 +5685,7 @@ dependencies = [
  "grep-regex",
  "grep-searcher",
  "image",
+ "libc",
  "nebo-ai",
  "nebo-auth",
  "nebo-browser",

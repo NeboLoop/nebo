@@ -7,7 +7,7 @@
 use rusqlite::params;
 
 use crate::Store;
-use crate::models::{AgentUsageStats, OutcomeCount, RunUsage, RunUsageEntry};
+use crate::models::{AgentUsageStats, OutcomeCount, RunExit, RunUsage, RunUsageEntry};
 use types::NeboError;
 
 /// Cost in microcents (1 = $0.000001) from token counts and per-million
@@ -51,8 +51,8 @@ impl Store {
             "INSERT INTO run_usage (
                  agent_id, session_key, run_id, run_type, model_id,
                  input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
-                 cost_microcents, outcome
-             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+                 cost_microcents, outcome, exit_reason
+             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
             params![
                 e.agent_id,
                 e.session_key,
@@ -65,6 +65,7 @@ impl Store {
                 e.cache_creation_tokens,
                 e.cost_microcents,
                 e.outcome,
+                e.exit_reason,
             ],
         )
         .map_err(|err| NeboError::Database(err.to_string()))?;
@@ -202,6 +203,80 @@ impl Store {
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(|e| NeboError::Database(e.to_string()))
     }
+
+    /// Runs whose exit reason is one of `reasons`, newest first. A reason
+    /// matches its bare label and its parameterized form, so
+    /// `max_iterations_reached` finds `max_iterations_reached(100/100)`;
+    /// nothing else matches (`max_iterations` finds nothing). No reasons,
+    /// no rows.
+    pub fn list_runs_by_exit_reason(
+        &self,
+        reasons: &[&str],
+        limit: usize,
+    ) -> Result<Vec<RunExit>, NeboError> {
+        if reasons.is_empty() {
+            return Ok(Vec::new());
+        }
+        let clauses: Vec<String> = (1..=reasons.len())
+            .map(|i| {
+                format!(
+                    "(exit_reason = ?{i} OR substr(exit_reason, 1, length(?{i}) + 1) = ?{i} || '(')"
+                )
+            })
+            .collect();
+        let sql = format!(
+            "SELECT session_key, agent_id, model_id, exit_reason, created_at
+             FROM run_usage WHERE {}
+             ORDER BY created_at DESC, id DESC LIMIT ?{}",
+            clauses.join(" OR "),
+            reasons.len() + 1
+        );
+        let mut values: Vec<rusqlite::types::Value> = reasons
+            .iter()
+            .map(|r| rusqlite::types::Value::Text(r.to_string()))
+            .collect();
+        values.push(rusqlite::types::Value::Integer(limit as i64));
+
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map(rusqlite::params_from_iter(values), row_to_run_exit)
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
+    /// The newest recorded run of a session: the exit reason
+    /// `nebo-cli test export` names in the replay fixture.
+    pub fn latest_run_for_session(&self, session_key: &str) -> Result<Option<RunExit>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT session_key, agent_id, model_id, exit_reason, created_at
+                 FROM run_usage WHERE session_key = ?1
+                 ORDER BY created_at DESC, id DESC LIMIT 1",
+            )
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        let mut rows = stmt
+            .query_map(params![session_key], row_to_run_exit)
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        match rows.next() {
+            Some(r) => Ok(Some(r.map_err(|e| NeboError::Database(e.to_string()))?)),
+            None => Ok(None),
+        }
+    }
+}
+
+fn row_to_run_exit(row: &rusqlite::Row<'_>) -> rusqlite::Result<RunExit> {
+    Ok(RunExit {
+        session_key: row.get(0)?,
+        agent_id: row.get(1)?,
+        model_id: row.get(2)?,
+        exit_reason: row.get(3)?,
+        created_at: row.get(4)?,
+    })
 }
 
 #[cfg(test)]
@@ -244,5 +319,84 @@ mod tests {
     fn nonpositive_tokens_never_reduce_cost() {
         assert_eq!(cost_microcents(-500, 0, 0, 0, 3.0, 15.0, 0.3), 0);
         assert_eq!(cost_microcents(0, 0, 0, 0, 3.0, 15.0, 0.3), 0);
+    }
+}
+
+#[cfg(test)]
+mod exit_reason_tests {
+    use crate::Store;
+    use crate::models::RunUsageEntry;
+
+    fn store() -> (tempfile::TempDir, Store) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("nebo-run-usage-test.db");
+        let store = Store::new(&path.to_string_lossy()).expect("store");
+        (dir, store)
+    }
+
+    fn record(store: &Store, session: &str, exit_reason: &str) {
+        let entry = RunUsageEntry {
+            agent_id: "emp1".into(),
+            session_key: Some(session.into()),
+            run_type: "chat".into(),
+            model_id: "nebo-1".into(),
+            input_tokens: 10,
+            output_tokens: 5,
+            exit_reason: Some(exit_reason.into()),
+            ..RunUsageEntry::default()
+        };
+        store.record_run_usage(&entry).expect("insert");
+    }
+
+    fn keys(rows: &[crate::models::RunExit]) -> Vec<&str> {
+        rows.iter().map(|r| r.session_key.as_deref().unwrap_or("-")).collect()
+    }
+
+    /// Only the named reasons come back, newest first; a parameterized label
+    /// matches its bare name and nothing shorter; a reason outside the list
+    /// (the text_response of a good run) never appears.
+    #[test]
+    fn lists_only_the_named_exit_reasons_newest_first() {
+        let (_dir, store) = store();
+        record(&store, "s1", "reviewer_stop");
+        record(&store, "s2", "text_response(stop_reason=end_turn)");
+        record(&store, "s3", "max_iterations_reached(100/100)");
+        record(&store, "s4", "repeated_tool_calls");
+
+        let rows = store
+            .list_runs_by_exit_reason(&["reviewer_stop", "max_iterations_reached"], 10)
+            .unwrap();
+        assert_eq!(keys(&rows), vec!["s3", "s1"]);
+        assert_eq!(
+            rows[0].exit_reason.as_deref(),
+            Some("max_iterations_reached(100/100)")
+        );
+        assert_eq!(rows[0].agent_id, "emp1");
+        assert_eq!(rows[0].model_id, "nebo-1");
+        assert!(rows[0].created_at > 0);
+        assert!(
+            !rows.iter().any(|r| r.exit_reason.as_deref().is_some_and(|e| e.starts_with("text_response"))),
+            "a reason outside the list must not appear"
+        );
+
+        let limited = store.list_runs_by_exit_reason(&["reviewer_stop", "repeated_tool_calls"], 1).unwrap();
+        assert_eq!(keys(&limited), vec!["s4"], "limit keeps the newest");
+
+        assert!(store.list_runs_by_exit_reason(&["max_iterations"], 10).unwrap().is_empty());
+        assert!(store.list_runs_by_exit_reason(&[], 10).unwrap().is_empty());
+    }
+
+    /// The exit reason survives the write, and the session's latest run is
+    /// the one export names.
+    #[test]
+    fn latest_run_for_session_is_the_newest_row() {
+        let (_dir, store) = store();
+        assert!(store.latest_run_for_session("s1").unwrap().is_none());
+        record(&store, "s1", "same_error_loop");
+        record(&store, "s1", "text_response(stop_reason=end_turn)");
+        record(&store, "s2", "reviewer_stop");
+        let latest = store.latest_run_for_session("s1").unwrap().expect("row");
+        assert_eq!(latest.exit_reason.as_deref(), Some("text_response(stop_reason=end_turn)"));
+        assert_eq!(latest.session_key.as_deref(), Some("s1"));
     }
 }

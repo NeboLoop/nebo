@@ -143,6 +143,25 @@ enum TestCommands {
         #[arg(long)]
         experiment: Option<String>,
     },
+    /// List runs that ended in a guard or reviewer stop, newest first
+    Runs {
+        /// Comma-separated exit reasons to list (default: the guard and
+        /// reviewer stops; text_response is never a failure)
+        #[arg(long, value_delimiter = ',')]
+        exit_reason: Vec<String>,
+        /// Maximum rows
+        #[arg(long, default_value_t = DEFAULT_RUNS_LIMIT)]
+        limit: usize,
+    },
+    /// Write a replay fixture from a session's stored messages
+    Export {
+        /// Session key (as `test runs` lists it)
+        #[arg(long)]
+        session: String,
+        /// Output path (default: fixtures/replay/<fixture id>.yaml)
+        #[arg(long)]
+        out: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -499,7 +518,7 @@ async fn run() -> anyhow::Result<()> {
             }
         },
         Some(Commands::Test { command }) => {
-            run_test_command(command).await?;
+            run_test_command(&cfg, command).await?;
         }
     }
 
@@ -712,11 +731,102 @@ async fn run_chat(
     Ok(())
 }
 
-async fn run_test_command(command: TestCommands) -> anyhow::Result<()> {
-    use agent::testing::{checks, engine, fixture, grader, reporter, trace};
+/// Rows `nebo-cli test runs` prints when `--limit` is not given.
+const DEFAULT_RUNS_LIMIT: usize = 20;
+/// The exit reasons `test runs` lists by default: every guard and reviewer
+/// stop (`Exit::label()` names). `text_response` is how a good run ends and
+/// is deliberately absent. Parameterized labels match by bare name.
+const DEFAULT_FAILURE_EXIT_REASONS: &[&str] = &[
+    "reviewer_stop",
+    "repeated_tool_calls",
+    "runaway_tool_loop",
+    "same_error_loop",
+    "adaptive_limit_no_progress",
+    "max_iterations_reached",
+];
+/// Where `test export` writes when `--out` is not given.
+const REPLAY_FIXTURE_DIR: &str = "fixtures/replay";
+/// Exit label written when a session has no recorded run (rows older than
+/// migration 0139, or a run that never reached a provider).
+const UNKNOWN_EXIT_REASON: &str = "unknown";
+
+async fn run_test_command(cfg: &config::Config, command: TestCommands) -> anyhow::Result<()> {
+    use agent::testing::{checks, engine, fixture, grader, replay, reporter, trace};
     use std::path::Path;
 
     match command {
+        TestCommands::Runs { exit_reason, limit } => {
+            let store = db::Store::new(&cfg.database.sqlite_path)?;
+            let reasons: Vec<&str> = if exit_reason.is_empty() {
+                DEFAULT_FAILURE_EXIT_REASONS.to_vec()
+            } else {
+                exit_reason.iter().map(String::as_str).collect()
+            };
+            let runs = store.list_runs_by_exit_reason(&reasons, limit)?;
+            if runs.is_empty() {
+                println!("No runs ended in {}.", reasons.join(", "));
+                return Ok(());
+            }
+            let header = ["Ended", "Exit reason", "Model", "Agent", "Session"];
+            println!(
+                "{:<20}  {:<36}  {:<28}  {:<24}  {}",
+                header[0], header[1], header[2], header[3], header[4]
+            );
+            println!("{}", "-".repeat(120));
+            for r in &runs {
+                let ended = chrono::DateTime::from_timestamp(r.created_at, 0)
+                    .map(|t| t.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M:%S").to_string())
+                    .unwrap_or_else(|| r.created_at.to_string());
+                println!(
+                    "{:<20}  {:<36}  {:<28}  {:<24}  {}",
+                    ended,
+                    r.exit_reason.as_deref().unwrap_or("-"),
+                    r.model_id,
+                    r.agent_id,
+                    r.session_key.as_deref().unwrap_or("-"),
+                );
+            }
+            println!("\n{} run(s)", runs.len());
+        }
+        TestCommands::Export { session, out } => {
+            let store = db::Store::new(&cfg.database.sqlite_path)?;
+            // `test runs` prints what the runner recorded, which is the
+            // session's id; a person may also paste the key (its name).
+            let row = match store.get_session_by_name(&session)? {
+                Some(row) => row,
+                None => store
+                    .get_session(&session)?
+                    .ok_or_else(|| anyhow::anyhow!("no session with key or id {session}"))?,
+            };
+            let session_key = row.name.clone().unwrap_or_else(|| row.id.clone());
+            let chat_id = store.resolve_session_chat_id(&row.id);
+            let messages = store.get_chat_messages(&chat_id)?;
+            let latest = match store.latest_run_for_session(&row.id)? {
+                Some(r) => Some(r),
+                None => store.latest_run_for_session(&session_key)?,
+            };
+            let exit_reason = latest
+                .and_then(|r| r.exit_reason)
+                .unwrap_or_else(|| UNKNOWN_EXIT_REASON.to_string());
+            let export = replay::fixture_from_run(&session_key, &exit_reason, &messages)
+                .map_err(|e| anyhow::anyhow!(e))?;
+            let yaml = replay::render_yaml(&export).map_err(|e| anyhow::anyhow!(e))?;
+            let out_path = match out {
+                Some(p) => std::path::PathBuf::from(p),
+                None => Path::new(REPLAY_FIXTURE_DIR).join(format!("{}.yaml", export.fixture.id)),
+            };
+            if let Some(dir) = out_path.parent().filter(|d| !d.as_os_str().is_empty()) {
+                std::fs::create_dir_all(dir)?;
+            }
+            std::fs::write(&out_path, &yaml)?;
+            println!(
+                "Wrote {} ({} user turn(s), exit {}, {} touched file(s))",
+                out_path.display(),
+                export.fixture.conversation.len(),
+                exit_reason,
+                export.touched.len()
+            );
+        }
         TestCommands::Prompt { fixture, overrides } => {
             let overrides = engine::parse_overrides(&overrides.unwrap_or_default())
                 .map_err(|e| anyhow::anyhow!(e))?;
@@ -1103,6 +1213,56 @@ mod tests {
             }
             _ => panic!("expected Test Prompt"),
         }
+    }
+
+    /// INVARIANT: `nebo test runs` splits `--exit-reason a,b` on commas and
+    /// defaults to DEFAULT_RUNS_LIMIT rows with an empty reason list (the
+    /// handler substitutes the guard-stop set); `nebo test export` requires
+    /// `--session` and leaves `--out` for the handler to default.
+    #[test]
+    fn test_runs_and_export_parse() {
+        let cli = Cli::try_parse_from([
+            "nebo", "test", "runs", "--exit-reason", "same_error_loop,stalled",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Commands::Test { command: TestCommands::Runs { exit_reason, limit } }) => {
+                assert_eq!(exit_reason, vec!["same_error_loop".to_string(), "stalled".to_string()]);
+                assert_eq!(limit, DEFAULT_RUNS_LIMIT);
+            }
+            _ => panic!("expected Test Runs"),
+        }
+
+        let cli = Cli::try_parse_from(["nebo", "test", "runs", "--limit", "5"]).unwrap();
+        match cli.command {
+            Some(Commands::Test { command: TestCommands::Runs { exit_reason, limit } }) => {
+                assert!(exit_reason.is_empty());
+                assert_eq!(limit, 5);
+            }
+            _ => panic!("expected Test Runs"),
+        }
+
+        let err = Cli::try_parse_from(["nebo", "test", "export"]).map(|_| ()).unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::MissingRequiredArgument);
+
+        let cli = Cli::try_parse_from(["nebo", "test", "export", "--session", "agent:a:web"]).unwrap();
+        match cli.command {
+            Some(Commands::Test { command: TestCommands::Export { session, out } }) => {
+                assert_eq!(session, "agent:a:web");
+                assert!(out.is_none());
+            }
+            _ => panic!("expected Test Export"),
+        }
+    }
+
+    /// INVARIANT: the default failure list is the guard and reviewer stops
+    /// only; a text response is how a good run ends and must never be listed
+    /// as a failure by default.
+    #[test]
+    fn default_failure_reasons_exclude_text_response() {
+        assert!(DEFAULT_FAILURE_EXIT_REASONS.contains(&"reviewer_stop"));
+        assert!(DEFAULT_FAILURE_EXIT_REASONS.contains(&"same_error_loop"));
+        assert!(!DEFAULT_FAILURE_EXIT_REASONS.iter().any(|r| r.starts_with("text_response")));
     }
 
     /// INVARIANT: `nebo session delete` requires the id positional — omitting

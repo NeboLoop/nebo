@@ -10,6 +10,11 @@ use crate::{CommError, CommMessage, CommPlugin, ManagerStatus, MessageHandler};
 /// Only one plugin is active at a time; all messages route through it.
 pub struct PluginManager {
     inner: RwLock<Inner>,
+    /// Coalescing wake for the employee roster reconcile (see `roster`).
+    /// `Notify::notify_one` stores at most one permit, so any burst of
+    /// requests while a pass is pending or running collapses into exactly
+    /// one follow-up pass.
+    agent_sync: tokio::sync::Notify,
 }
 
 struct Inner {
@@ -28,7 +33,21 @@ impl PluginManager {
                 handler: None,
                 topics: Vec::new(),
             }),
+            agent_sync: tokio::sync::Notify::new(),
         }
+    }
+
+    /// Ask for one employee roster reconcile pass against the platform.
+    /// Never blocks and never runs the pass itself; the worker that awaits
+    /// `agent_sync_requested` does, after its debounce window.
+    pub fn request_agent_sync(&self) {
+        self.agent_sync.notify_one();
+    }
+
+    /// Resolves once a reconcile pass has been requested since the last time
+    /// this returned (or since startup).
+    pub async fn agent_sync_requested(&self) {
+        self.agent_sync.notified().await;
     }
 
     /// Add a plugin to the manager (does not activate it).

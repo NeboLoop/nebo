@@ -148,19 +148,22 @@ async fn handle_launch(app: &str) -> ToolResult {
     // Try activate first (works for already-installed apps), fall back to open -a
     let script = format!(
         "try\n\
-         \ttell application \"{}\" to activate\n\
+         \ttell application \"{app}\" to activate\n\
          on error\n\
-         \tdo shell script \"open -a '{}'\"\n\
-         end try",
-        escape_applescript(app),
-        escape_applescript(app)
+         \tdo shell script \"open -a '{app}'\"\n\
+         end try\n\
+         return \"Launch request sent to {app}; confirm with app(action: \\\"list\\\")\"",
+        app = escape_applescript(app),
     );
     run_osascript(&script).await
 }
 
 #[cfg(target_os = "macos")]
 async fn handle_quit(app: &str) -> ToolResult {
-    let script = format!("tell application \"{}\" to quit", escape_applescript(app));
+    let script = format!(
+        "tell application \"{app}\" to quit\nreturn \"Quit request sent to {app}; confirm with app(action: \\\"list\\\")\"",
+        app = escape_applescript(app)
+    );
     run_osascript(&script).await
 }
 
@@ -185,8 +188,8 @@ return "All visible applications have been asked to quit"
 #[cfg(target_os = "macos")]
 async fn handle_activate(app: &str) -> ToolResult {
     let script = format!(
-        "tell application \"{}\" to activate",
-        escape_applescript(app)
+        "tell application \"{app}\" to activate\nreturn \"Activate request sent to {app}; confirm with app(action: \\\"frontmost\\\")\"",
+        app = escape_applescript(app)
     );
     run_osascript(&script).await
 }
@@ -194,20 +197,107 @@ async fn handle_activate(app: &str) -> ToolResult {
 #[cfg(target_os = "macos")]
 async fn handle_hide(app: &str) -> ToolResult {
     let script = format!(
-        "tell application \"System Events\" to set visible of process \"{}\" to false",
-        escape_applescript(app)
+        "tell application \"System Events\" to set visible of process \"{app}\" to false\nreturn \"Hide request sent to {app}\"",
+        app = escape_applescript(app)
     );
-    run_osascript(&script).await
+    let result = run_osascript(&script).await;
+    // -1728 ("Can't get process") means System Events has no such process:
+    // the app is not running, which is the fact worth reporting.
+    if result.is_error && result.content.contains("-1728") {
+        return ToolResult::error(format!(
+            "{} is not running (System Events has no process named '{}'); nothing to hide. Running apps: app(action: \"list\")",
+            app, app
+        ));
+    }
+    result
+}
+
+/// Directories searched for `<app>.app` by `info`, in order.
+#[cfg(target_os = "macos")]
+fn app_bundle_dirs() -> Vec<std::path::PathBuf> {
+    let mut dirs = vec![
+        std::path::PathBuf::from("/Applications"),
+        std::path::PathBuf::from("/Applications/Utilities"),
+        std::path::PathBuf::from("/System/Applications"),
+        std::path::PathBuf::from("/System/Applications/Utilities"),
+    ];
+    if let Ok(home) = std::env::var("HOME") {
+        dirs.push(std::path::PathBuf::from(home).join("Applications"));
+    }
+    dirs
+}
+
+/// Relabel `mdls` output (`kMDItemVersion = "1.2"`) into plain fields.
+#[cfg(target_os = "macos")]
+fn relabel_mdls(raw: &str) -> Vec<String> {
+    raw.lines()
+        .filter_map(|line| {
+            let (key, value) = line.split_once(" = ")?;
+            let label = match key.trim() {
+                "kMDItemDisplayName" => "Name",
+                "kMDItemVersion" => "Version",
+                "kMDItemCFBundleIdentifier" => "Bundle id",
+                "kMDItemContentType" => "Kind",
+                "kMDItemLastUsedDate" => "Last opened",
+                other => other,
+            };
+            let value = value.trim().trim_matches('"');
+            if value == "(null)" {
+                return None;
+            }
+            Some(format!("{}: {}", label, value))
+        })
+        .collect()
 }
 
 #[cfg(target_os = "macos")]
 async fn handle_info(app: &str) -> ToolResult {
-    // Use mdls to get app metadata from /Applications
-    let script = format!(
-        "do shell script \"mdls -name kMDItemDisplayName -name kMDItemVersion -name kMDItemContentType '/Applications/{}.app' 2>/dev/null || echo 'Application not found in /Applications'\"",
-        escape_applescript(app)
-    );
-    run_osascript(&script).await
+    let dirs = app_bundle_dirs();
+    let bundle = dirs
+        .iter()
+        .map(|d| d.join(format!("{}.app", app)))
+        .find(|p| p.exists());
+    let searched = dirs
+        .iter()
+        .map(|d| d.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let Some(bundle) = bundle else {
+        return ToolResult::error(format!(
+            "No '{}.app' in {}. Confirm the exact name with app(action: \"list\") (running apps only).",
+            app, searched
+        ));
+    };
+
+    let output = tokio::process::Command::new("mdls")
+        .args([
+            "-name",
+            "kMDItemDisplayName",
+            "-name",
+            "kMDItemVersion",
+            "-name",
+            "kMDItemCFBundleIdentifier",
+            "-name",
+            "kMDItemContentType",
+            "-name",
+            "kMDItemLastUsedDate",
+        ])
+        .arg(&bundle)
+        .output()
+        .await;
+    let mut lines = vec![format!("Path: {}", bundle.display())];
+    match output {
+        Ok(o) if o.status.success() => {
+            lines.extend(relabel_mdls(&String::from_utf8_lossy(&o.stdout)));
+        }
+        Ok(o) => lines.push(format!(
+            "(mdls exited {}: {}; metadata unavailable)",
+            o.status.code().unwrap_or(-1),
+            String::from_utf8_lossy(&o.stderr).trim()
+        )),
+        Err(e) => lines.push(format!("(mdls could not run: {}; metadata unavailable)", e)),
+    }
+    ToolResult::ok(lines.join("\n"))
 }
 
 #[cfg(target_os = "macos")]
@@ -238,14 +328,27 @@ async fn run_osascript(script: &str) -> ToolResult {
         Ok(output) if output.status.success() => {
             let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
             ToolResult::ok(if text.is_empty() {
-                "OK".to_string()
+                "(exit 0, no output)".to_string()
             } else {
                 text
             })
         }
         Ok(output) => {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-            ToolResult::error(format!("AppleScript error: {}", stderr))
+            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            let detail = if !stderr.is_empty() {
+                stderr
+            } else if !stdout.is_empty() {
+                stdout
+            } else {
+                "(no output)".to_string()
+            };
+            let code = output
+                .status
+                .code()
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "terminated by signal".into());
+            ToolResult::error(format!("osascript exited {}: {}", code, detail))
         }
         Err(e) => ToolResult::error(format!("Failed to run osascript: {}", e)),
     }
@@ -266,8 +369,8 @@ async fn handle_list() -> ToolResult {
     if which("wmctrl") {
         run_command("wmctrl", &["-l"]).await
     } else {
-        // Fallback: list unique process names from /proc with open displays
-        run_command("ps", &["aux", "--no-header", "-o", "comm"]).await
+        // Fallback: every process's command name (no window manager to ask)
+        run_command("ps", &["-eo", "comm", "--no-headers"]).await
     }
 }
 
@@ -277,11 +380,21 @@ async fn handle_launch(app: &str) -> ToolResult {
     if which("gtk-launch") {
         let result = run_command("gtk-launch", &[app]).await;
         if !result.is_error {
-            return result;
+            return ToolResult::ok(format!(
+                "Launch request sent to '{}' via gtk-launch; confirm with app(action: \"list\")",
+                app
+            ));
         }
     }
     if which("xdg-open") {
-        run_command("xdg-open", &[app]).await
+        let result = run_command("xdg-open", &[app]).await;
+        if result.is_error {
+            return result;
+        }
+        ToolResult::ok(format!(
+            "Launch request sent to '{}' via xdg-open; confirm with app(action: \"list\")",
+            app
+        ))
     } else {
         // Try launching directly
         match tokio::process::Command::new(app).spawn() {
@@ -303,11 +416,18 @@ async fn handle_quit(app: &str) -> ToolResult {
             let pids = String::from_utf8_lossy(&out.stdout);
             let first_pid = pids.lines().next().unwrap_or("").trim();
             if first_pid.is_empty() {
-                return ToolResult::error(format!("No process found for '{}'", app));
+                return ToolResult::error(format!("No process found for '{}' (pgrep -f matched nothing)", app));
             }
-            run_command("kill", &["-TERM", first_pid]).await
+            let result = run_command("kill", &["-TERM", first_pid]).await;
+            if result.is_error {
+                return result;
+            }
+            ToolResult::ok(format!(
+                "SIGTERM sent to pid {} ({}); confirm with app(action: \"list\")",
+                first_pid, app
+            ))
         }
-        _ => ToolResult::error(format!("No process found for '{}'", app)),
+        _ => ToolResult::error(format!("No process found for '{}' (pgrep -f matched nothing)", app)),
     }
 }
 
@@ -322,23 +442,30 @@ async fn handle_quit_all() -> ToolResult {
         match output {
             Ok(out) if out.status.success() => {
                 let lines = String::from_utf8_lossy(&out.stdout);
-                let mut closed = 0;
+                let mut sent = 0;
+                let mut failed = 0;
                 for line in lines.lines() {
                     if let Some(wid) = line.split_whitespace().next() {
-                        let _ = tokio::process::Command::new("wmctrl")
+                        let r = tokio::process::Command::new("wmctrl")
                             .args(["-i", "-c", wid])
                             .output()
                             .await;
-                        closed += 1;
+                        match r {
+                            Ok(o) if o.status.success() => sent += 1,
+                            _ => failed += 1,
+                        }
                     }
                 }
-                ToolResult::ok(format!("Closed {} windows", closed))
+                ToolResult::ok(format!(
+                    "Close request sent to {} windows ({} wmctrl calls failed); whether each app actually closed is not checked, confirm with app(action: \"list\")",
+                    sent, failed
+                ))
             }
             _ => ToolResult::error("Failed to list windows via wmctrl"),
         }
     } else {
         ToolResult::error(
-            "quit_all requires wmctrl on Linux (install with: sudo apt install wmctrl)",
+            "quit_all requires wmctrl on Linux (ask the owner to install it; Nebo cannot run sudo. Package: wmctrl)",
         )
     }
 }
@@ -346,7 +473,14 @@ async fn handle_quit_all() -> ToolResult {
 #[cfg(target_os = "linux")]
 async fn handle_activate(app: &str) -> ToolResult {
     if which("wmctrl") {
-        run_command("wmctrl", &["-a", app]).await
+        let result = run_command("wmctrl", &["-a", app]).await;
+        if result.is_error {
+            return result;
+        }
+        ToolResult::ok(format!(
+            "Activate request sent for '{}' via wmctrl; confirm with app(action: \"frontmost\")",
+            app
+        ))
     } else if which("xdotool") {
         let output = tokio::process::Command::new("xdotool")
             .args(["search", "--name", app])
@@ -359,7 +493,14 @@ async fn handle_activate(app: &str) -> ToolResult {
                 if first.is_empty() {
                     return ToolResult::error(format!("No window found for '{}'", app));
                 }
-                run_command("xdotool", &["windowactivate", first]).await
+                let result = run_command("xdotool", &["windowactivate", first]).await;
+                if result.is_error {
+                    return result;
+                }
+                ToolResult::ok(format!(
+                    "Activate request sent to window {} ('{}') via xdotool; confirm with app(action: \"frontmost\")",
+                    first, app
+                ))
             }
             _ => ToolResult::error(format!("No window found for '{}'", app)),
         }
@@ -382,13 +523,20 @@ async fn handle_hide(app: &str) -> ToolResult {
                 if first.is_empty() {
                     return ToolResult::error(format!("No window found for '{}'", app));
                 }
-                run_command("xdotool", &["windowminimize", first]).await
+                let result = run_command("xdotool", &["windowminimize", first]).await;
+                if result.is_error {
+                    return result;
+                }
+                ToolResult::ok(format!(
+                    "Minimize request sent to window {} ('{}') via xdotool",
+                    first, app
+                ))
             }
             _ => ToolResult::error(format!("No window found for '{}'", app)),
         }
     } else {
         ToolResult::error(
-            "Window hiding requires xdotool on Linux (install with: sudo apt install xdotool)",
+            "Window hiding requires xdotool on Linux (ask the owner to install it; Nebo cannot run sudo. Package: xdotool)",
         )
     }
 }
@@ -424,8 +572,8 @@ async fn handle_info(app: &str) -> ToolResult {
                 .collect();
             if matches.is_empty() {
                 ToolResult::error(format!(
-                    "No info found for '{}'. App may not be running or installed.",
-                    app
+                    "No {}.desktop in {}, {}, or {}, and no running process matching '{}'.",
+                    app_lower, desktop_dirs[0], desktop_dirs[1], user_desktop, app
                 ))
             } else {
                 ToolResult::ok(matches.join("\n"))
@@ -457,7 +605,10 @@ async fn handle_list() -> ToolResult {
 
 #[cfg(target_os = "windows")]
 async fn handle_launch(app: &str) -> ToolResult {
-    let script = format!("Start-Process '{}'", escape_powershell(app));
+    let script = format!(
+        "Start-Process '{app}' -ErrorAction Stop; 'Launch request sent to {app}; confirm with app(action: \"list\")'",
+        app = escape_powershell(app)
+    );
     run_powershell(&script).await
 }
 
@@ -466,8 +617,10 @@ async fn handle_quit(app: &str) -> ToolResult {
     // Try graceful close first, then force stop
     let script = format!(
         "$procs = Get-Process -Name '{}' -ErrorAction SilentlyContinue; \
-         if ($procs) {{ $procs | ForEach-Object {{ $_.CloseMainWindow() | Out-Null }}; 'Quit signal sent' }} \
-         else {{ 'No process found with name: {}' }}",
+         if ($procs) {{ $n = 0; $refused = 0; $procs | ForEach-Object {{ if ($_.CloseMainWindow()) {{ $n++ }} else {{ $refused++ }} }}; \
+         \"Close request sent to $n window(s) of {}; $refused had no main window to close; confirm with app(action: 'list')\" }} \
+         else {{ 'Nothing done: no running process named {} (Get-Process -Name matched nothing)'; exit 1 }}",
+        escape_powershell(app),
         escape_powershell(app),
         escape_powershell(app)
     );
@@ -493,8 +646,10 @@ async fn handle_activate(app: &str) -> ToolResult {
          }}\n\
          \"@\n\
          $proc = Get-Process -Name '{}' -ErrorAction SilentlyContinue | Select-Object -First 1;\n\
-         if ($proc) {{ [WinAPI]::SetForegroundWindow($proc.MainWindowHandle) | Out-Null; 'Activated' }}\n\
-         else {{ 'No process found with name: {}' }}",
+         if ($proc) {{ if ([WinAPI]::SetForegroundWindow($proc.MainWindowHandle)) {{ 'Activated {}: SetForegroundWindow returned true' }} else {{ 'SetForegroundWindow returned false for {}: Windows refused to bring it to the foreground; the window is unchanged'; exit 1 }} }}\n\
+         else {{ 'Nothing done: no running process named {} (Get-Process -Name matched nothing)'; exit 1 }}",
+        escape_powershell(app),
+        escape_powershell(app),
         escape_powershell(app),
         escape_powershell(app)
     );
@@ -512,8 +667,10 @@ async fn handle_hide(app: &str) -> ToolResult {
          }}\n\
          \"@\n\
          $proc = Get-Process -Name '{}' -ErrorAction SilentlyContinue | Select-Object -First 1;\n\
-         if ($proc) {{ [WinAPI]::ShowWindow($proc.MainWindowHandle, 0) | Out-Null; 'Hidden' }}\n\
-         else {{ 'No process found with name: {}' }}",
+         if ($proc) {{ if ([WinAPI]::ShowWindow($proc.MainWindowHandle, 0)) {{ 'Hidden {} (its window was visible)' }} else {{ 'Hide sent to {}: ShowWindow reported the window was already hidden' }} }}\n\
+         else {{ 'Nothing done: no running process named {} (Get-Process -Name matched nothing)'; exit 1 }}",
+        escape_powershell(app),
+        escape_powershell(app),
         escape_powershell(app),
         escape_powershell(app)
     );
@@ -526,7 +683,7 @@ async fn handle_info(app: &str) -> ToolResult {
         "$proc = Get-Process -Name '{}' -ErrorAction SilentlyContinue | Select-Object -First 1;\n\
          if ($proc) {{ $proc | Select-Object Name, Id, CPU, WorkingSet64, \
          MainWindowTitle, Path, StartTime | Format-List }}\n\
-         else {{ 'No process found with name: {}' }}",
+         else {{ 'No running process named {} (Get-Process -Name matched nothing); confirm the name with app(action: \"list\")'; exit 1 }}",
         escape_powershell(app),
         escape_powershell(app)
     );
@@ -601,13 +758,13 @@ async fn handle_frontmost() -> ToolResult {
 // Shell helpers
 // ═══════════════════════════════════════════════════════════════════════
 
-#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[cfg(target_os = "linux")]
 async fn run_command(cmd: &str, args: &[&str]) -> ToolResult {
     match tokio::process::Command::new(cmd).args(args).output().await {
         Ok(output) if output.status.success() => {
             let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
             ToolResult::ok(if text.is_empty() {
-                "OK".to_string()
+                "(exit 0, no output)".to_string()
             } else {
                 text
             })
@@ -615,23 +772,50 @@ async fn run_command(cmd: &str, args: &[&str]) -> ToolResult {
         Ok(output) => {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
             let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            let code = output.status.code().map(|c| c.to_string()).unwrap_or_else(|| "signal".into());
+            let detail = [stdout, stderr].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join("\n");
             ToolResult::error(format!(
-                "{}{}",
-                stdout,
-                if stderr.is_empty() {
-                    String::new()
-                } else {
-                    format!("\n{}", stderr)
-                }
+                "'{} {}' exited {}{}",
+                cmd,
+                args.join(" "),
+                code,
+                if detail.is_empty() { " and printed nothing".to_string() } else { format!(": {detail}") }
             ))
         }
         Err(e) => ToolResult::error(format!("Command '{}' failed: {}", cmd, e)),
     }
 }
 
+/// Like `run_command` for a PowerShell script, but the error names the
+/// script's own output rather than echoing the whole script text back.
 #[cfg(target_os = "windows")]
 async fn run_powershell(script: &str) -> ToolResult {
-    run_command("powershell", &["-NoProfile", "-Command", script]).await
+    match tokio::process::Command::new("powershell")
+        .args(["-NoProfile", "-Command", script])
+        .output()
+        .await
+    {
+        Ok(output) if output.status.success() => {
+            let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            ToolResult::ok(if text.is_empty() {
+                "(exit 0, no output)".to_string()
+            } else {
+                text
+            })
+        }
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            let code = output.status.code().map(|c| c.to_string()).unwrap_or_else(|| "signal".into());
+            let detail = [stdout, stderr].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join("\n");
+            ToolResult::error(format!(
+                "PowerShell exited {}{}",
+                code,
+                if detail.is_empty() { " and printed nothing".to_string() } else { format!(": {detail}") }
+            ))
+        }
+        Err(e) => ToolResult::error(format!("PowerShell could not be started: {}", e)),
+    }
 }
 
 #[cfg(target_os = "windows")]

@@ -13,6 +13,13 @@ use serde::Serialize;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
+use crate::handlers::chat::PendingAsk;
+
+/// The question a run is parked on, shared between the registry entry and
+/// the run's handle. It lives exactly as long as the run: an entry that goes
+/// (Done, error, cancel, stale cleanup) takes its question with it.
+type ParkedAsk = Arc<std::sync::Mutex<Option<PendingAsk>>>;
+
 /// A live run entry in the registry. Contains both identity info and live counters.
 pub struct RunEntry {
     pub run_id: String,
@@ -28,6 +35,7 @@ pub struct RunEntry {
     pub tool_call_count: Arc<AtomicU32>,
     pub current_tool: Arc<std::sync::Mutex<String>>,
     pub parent_run_id: Option<String>,
+    pending_ask: ParkedAsk,
 }
 
 /// Serializable snapshot of a run — safe to send over WS/REST.
@@ -91,6 +99,13 @@ impl RunEntry {
             .as_secs();
         now.saturating_sub(last)
     }
+
+    fn pending_ask(&self) -> Option<PendingAsk> {
+        self.pending_ask
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
 }
 
 /// Handle returned from `register()` — holds Arc refs to counters so the runner
@@ -103,9 +118,19 @@ pub struct RunHandle {
     pub tool_call_count: Arc<AtomicU32>,
     pub current_tool: Arc<std::sync::Mutex<String>>,
     pub cancel_token: CancellationToken,
+    pending_ask: ParkedAsk,
 }
 
 impl RunHandle {
+    /// Release the question this run was parked on, if any. Called when the
+    /// run ends so the answer channel it registered can be dropped with it.
+    pub fn take_pending_ask(&self) -> Option<PendingAsk> {
+        self.pending_ask
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+    }
+
     /// Record activity on this run.
     pub fn touch(&self) {
         let now = SystemTime::now()
@@ -193,6 +218,7 @@ impl RunRegistry {
         let iteration_count = Arc::new(AtomicU32::new(0));
         let tool_call_count = Arc::new(AtomicU32::new(0));
         let current_tool = Arc::new(std::sync::Mutex::new(String::new()));
+        let pending_ask: ParkedAsk = Arc::new(std::sync::Mutex::new(None));
 
         let entry = RunEntry {
             run_id: run_id.clone(),
@@ -208,6 +234,7 @@ impl RunRegistry {
             tool_call_count: tool_call_count.clone(),
             current_tool: current_tool.clone(),
             parent_run_id: params.parent_run_id,
+            pending_ask: pending_ask.clone(),
         };
 
         self.inner.runs.write().await.insert(run_id.clone(), entry);
@@ -220,7 +247,52 @@ impl RunRegistry {
             tool_call_count,
             current_tool,
             cancel_token: params.cancel_token,
+            pending_ask,
         }
+    }
+
+    /// Record the question the session's run is now parked on. Returns false
+    /// when no run is registered under that session (nothing to park on).
+    pub async fn park_ask(&self, session_key: &str, ask: PendingAsk) -> bool {
+        let runs = self.inner.runs.read().await;
+        match runs.values().find(|e| e.session_key == session_key) {
+            Some(entry) => {
+                *entry.pending_ask.lock().unwrap_or_else(|e| e.into_inner()) = Some(ask);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The question the session's run is parked on, if any.
+    pub async fn pending_ask_for_session(&self, session_key: &str) -> Option<PendingAsk> {
+        let runs = self.inner.runs.read().await;
+        runs.values()
+            .find(|e| e.session_key == session_key)
+            .and_then(RunEntry::pending_ask)
+    }
+
+    /// Every parked question, with the session it belongs to (a client that
+    /// connects late is shown all of them).
+    pub async fn pending_asks(&self) -> Vec<(String, PendingAsk)> {
+        let runs = self.inner.runs.read().await;
+        runs.values()
+            .filter_map(|e| e.pending_ask().map(|ask| (e.session_key.clone(), ask)))
+            .collect()
+    }
+
+    /// The question `request_id` was answered (or dropped): clear it from
+    /// whichever run held it. Returns that run's session key.
+    pub async fn resolve_ask(&self, request_id: &str) -> Option<String> {
+        let runs = self.inner.runs.read().await;
+        for entry in runs.values() {
+            let mut slot = entry.pending_ask.lock().unwrap_or_else(|e| e.into_inner());
+            if slot.as_ref().is_some_and(|a| a.request_id == request_id) {
+                *slot = None;
+                return Some(entry.session_key.clone());
+            }
+        }
+        None
     }
 
     /// Remove a run explicitly (also happens automatically on RunHandle drop).
@@ -499,6 +571,79 @@ impl tools::run_querier::RunQuerier for RunRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn ask(id: &str) -> PendingAsk {
+        PendingAsk {
+            request_id: id.into(),
+            prompt: format!("question {id}"),
+            widgets: None,
+            created_at: 1,
+        }
+    }
+
+    async fn register(registry: &RunRegistry, session_key: &str) -> RunHandle {
+        registry
+            .register(RegisterParams {
+                session_key: session_key.into(),
+                entity_id: "e".into(),
+                entity_name: "E".into(),
+                origin: "user".into(),
+                channel: "web".into(),
+                cancel_token: CancellationToken::new(),
+                parent_run_id: None,
+            })
+            .await
+    }
+
+    /// A parked question is readable by session and listed globally; it can
+    /// only be parked on a registered run.
+    #[tokio::test]
+    async fn park_ask_is_keyed_by_session_and_needs_a_run() {
+        let registry = RunRegistry::new();
+        let _h = register(&registry, "agent:a:thread:1").await;
+        assert!(!registry.park_ask("agent:b:thread:9", ask("r0")).await);
+        assert!(registry.park_ask("agent:a:thread:1", ask("r1")).await);
+        let parked = registry.pending_ask_for_session("agent:a:thread:1").await.unwrap();
+        assert_eq!(parked.request_id, "r1");
+        assert_eq!(parked.prompt, "question r1");
+        assert!(registry.pending_ask_for_session("agent:b:thread:9").await.is_none());
+        let all = registry.pending_asks().await;
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].0, "agent:a:thread:1");
+    }
+
+    /// Answering clears the question by request id and names the session it
+    /// belonged to; an unknown id clears nothing.
+    #[tokio::test]
+    async fn resolve_ask_clears_by_request_id() {
+        let registry = RunRegistry::new();
+        let _h = register(&registry, "s1").await;
+        let _h2 = register(&registry, "s2").await;
+        registry.park_ask("s1", ask("r1")).await;
+        registry.park_ask("s2", ask("r2")).await;
+        assert_eq!(registry.resolve_ask("nope").await, None);
+        assert_eq!(registry.pending_asks().await.len(), 2);
+        assert_eq!(registry.resolve_ask("r2").await.as_deref(), Some("s2"));
+        assert!(registry.pending_ask_for_session("s2").await.is_none());
+        assert_eq!(registry.pending_ask_for_session("s1").await.unwrap().request_id, "r1");
+    }
+
+    /// The handle releases the question (for dropping its answer channel) and
+    /// the run's end takes the question with it: no card outlives its run.
+    #[tokio::test]
+    async fn pending_ask_dies_with_the_run() {
+        let registry = RunRegistry::new();
+        let h = register(&registry, "s1").await;
+        registry.park_ask("s1", ask("r1")).await;
+        assert_eq!(h.take_pending_ask().unwrap().request_id, "r1");
+        assert!(h.take_pending_ask().is_none());
+        assert!(registry.pending_ask_for_session("s1").await.is_none());
+
+        registry.park_ask("s1", ask("r2")).await;
+        drop(h);
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        assert!(registry.pending_asks().await.is_empty());
+    }
 
     #[tokio::test]
     async fn test_register_and_list() {

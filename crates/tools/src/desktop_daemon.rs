@@ -69,9 +69,12 @@ impl DesktopDaemon {
                     // EOF — process exited
                     *guard = None;
                     return if output.is_empty() {
-                        Err("PowerShell process exited unexpectedly".to_string())
+                        Err("PowerShell exited before finishing; no output".to_string())
                     } else {
-                        Ok(output.trim().to_string())
+                        Err(format!(
+                            "PowerShell exited before finishing; partial output:\n{}",
+                            output.trim()
+                        ))
                     };
                 }
                 Ok(Ok(_)) => {
@@ -93,7 +96,10 @@ impl DesktopDaemon {
                     if let Some(mut proc) = guard.take() {
                         let _ = proc.child.kill().await;
                     }
-                    return Err("PowerShell script timed out".to_string());
+                    return Err(format!(
+                        "PowerShell script timed out after {} ms; the process was killed",
+                        timeout.as_millis()
+                    ));
                 }
             }
         }

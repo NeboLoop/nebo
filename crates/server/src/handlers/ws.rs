@@ -298,6 +298,8 @@ async fn handle_app_ws_message(state: &AppState, agent_id: &str, text: &str) {
                     tool_allowlist: None,
                     hidden_prompt: false,
                     audience: None,
+                    cwd: None,
+                    model_override: None,
                 };
 
                 run_chat(&state_clone, config).await;
@@ -378,6 +380,24 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState, ua: String) {
         Ok(()) => info!("ws welcome sent successfully"),
         Err(e) => {
             warn!("ws welcome send failed: {}", e);
+            return;
+        }
+    }
+
+    // Questions runs are parked on right now: a page that reloads, or a
+    // device that connects later, missed the live `ask_request` and would
+    // show a turn "working" with nothing to answer. Same payload, this
+    // socket only (the clients that saw it live already have the card).
+    for (session_key, ask) in state.run_registry.pending_asks().await {
+        let msg = serde_json::json!({
+            "type": "ask_request",
+            "data": ask.event_payload(&session_key),
+        });
+        if socket
+            .send(Message::Text(serde_json::to_string(&msg).unwrap_or_default().into()))
+            .await
+            .is_err()
+        {
             return;
         }
     }
@@ -781,9 +801,8 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState, ua: String) {
                                         .as_str()
                                         .unwrap_or("")
                                         .to_string();
-                                    let mut channels = state.ask_channels.lock().await;
-                                    if let Some(tx) = channels.remove(&request_id) {
-                                        let _ = tx.send(value);
+                                    if !crate::chat_dispatch::answer_ask(&state, &request_id, value).await {
+                                        debug!(request_id, "ask_response for a question nobody is waiting on");
                                     }
                                 }
                                 "plan_response" => {
@@ -799,9 +818,8 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState, ua: String) {
                                     } else {
                                         "rejected".to_string()
                                     };
-                                    let mut channels = state.ask_channels.lock().await;
-                                    if let Some(tx) = channels.remove(&request_id) {
-                                        let _ = tx.send(value);
+                                    if !crate::chat_dispatch::answer_ask(&state, &request_id, value).await {
+                                        debug!(request_id, "plan_response for a plan nobody is waiting on");
                                     }
                                 }
                                 // A2UI: user action on a surface component — dispatch deterministically or route to agent
@@ -906,6 +924,8 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState, ua: String) {
                                             tool_allowlist: None,
                                             hidden_prompt: false,
                                             audience: None,
+                                            cwd: None,
+                                            model_override: None,
                                         };
 
                                         run_chat(&state_clone, config).await;
@@ -1460,6 +1480,14 @@ struct ChatPayload {
     agent_id: String,
     scope: String,
     attachments: Vec<comm::wire::Attachment>,
+    /// Working directory for the run (empty = the process cwd). The WS is
+    /// owner-authenticated, so an owner-supplied cwd is the owner choosing
+    /// where their employee works: the same trust the desktop app extends
+    /// when it opens a project folder.
+    cwd: String,
+    /// Explicit model for this run (empty = the selector's choice). The test
+    /// harness's `--model` arrives here.
+    model_override: String,
 }
 
 impl ChatPayload {
@@ -1476,6 +1504,8 @@ impl ChatPayload {
             channel: data["channel"].as_str().unwrap_or("web").to_string(),
             agent_id: data["agent_id"].as_str().unwrap_or("").to_string(),
             scope: data["scope"].as_str().unwrap_or("").to_string(),
+            cwd: data["cwd"].as_str().unwrap_or("").to_string(),
+            model_override: data["model_override"].as_str().unwrap_or("").to_string(),
             // Uploaded attachment metadata from the WS payload
             attachments: data
                 .get("attachments")
@@ -1504,6 +1534,8 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value) {
         agent_id,
         scope,
         attachments: ws_attachments,
+        cwd,
+        model_override,
     } = ChatPayload::parse(data);
 
     info!(
@@ -1795,6 +1827,8 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value) {
             tool_allowlist: None,
             hidden_prompt: false,
             audience: None,
+            cwd: (!cwd.is_empty()).then(|| std::path::PathBuf::from(cwd)),
+            model_override: (!model_override.is_empty()).then_some(model_override),
         };
         run_chat(state, config).await;
     } else {
@@ -1892,6 +1926,8 @@ async fn fork_mention_chat(
         tool_allowlist: None,
         hidden_prompt: false,
         audience: None,
+        cwd: None,
+        model_override: None,
     };
 
     run_chat(state, chat_config).await;
@@ -2395,6 +2431,29 @@ mod chat_payload_tests {
 
         let bad = serde_json::json!({ "attachments": [{"nope": true}] });
         assert!(ChatPayload::parse(&bad).attachments.is_empty());
+    }
+
+    /// `cwd` and `model_override` (the harness's `--model`, an owner's
+    /// project folder) pass through when present and are empty when absent
+    /// or not strings; empty is the "not set" the dispatcher maps to None.
+    #[test]
+    fn cwd_and_model_override_present_absent_or_wrong_type() {
+        let present = serde_json::json!({
+            "cwd": "/Users/me/proj",
+            "model_override": "claude-sonnet-4-6",
+        });
+        let p = ChatPayload::parse(&present);
+        assert_eq!(p.cwd, "/Users/me/proj");
+        assert_eq!(p.model_override, "claude-sonnet-4-6");
+
+        let absent = ChatPayload::parse(&serde_json::json!({ "prompt": "hi" }));
+        assert_eq!(absent.cwd, "");
+        assert_eq!(absent.model_override, "");
+
+        let wrong = serde_json::json!({ "cwd": 7, "model_override": ["a"] });
+        let w = ChatPayload::parse(&wrong);
+        assert_eq!(w.cwd, "");
+        assert_eq!(w.model_override, "");
     }
 }
 

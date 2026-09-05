@@ -291,7 +291,7 @@ impl WorkflowManagerImpl {
     }
 
     /// Load workflow definition from filesystem directory or fall back to DB.
-    fn load_workflow_def(
+    pub(crate) fn load_workflow_def(
         &self,
         wf: &db::models::Workflow,
     ) -> Result<workflow::WorkflowDef, String> {

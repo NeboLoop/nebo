@@ -618,6 +618,7 @@ mod tests {
         let models_cfg = config::ModelsConfig {
             version: "1.0".into(),
             defaults: Some(config::models::Defaults {
+                escalation: String::new(),
                 primary: "anthropic/claude-sonnet-4-20250514".into(),
                 fallbacks: vec![],
             }),

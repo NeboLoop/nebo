@@ -317,10 +317,7 @@ async fn handle_chat_send(state: &AppState, input: &serde_json::Value) -> (Strin
                 // Auto-answer ask requests with a default
                 let request_id = event.error.as_deref().unwrap_or("");
                 if !request_id.is_empty() {
-                    let mut channels = state.ask_channels.lock().await;
-                    if let Some(tx) = channels.remove(request_id) {
-                        let _ = tx.send("yes".into());
-                    }
+                    crate::chat_dispatch::answer_ask(state, request_id, "yes".into()).await;
                 }
             }
             StreamEventType::Error => {

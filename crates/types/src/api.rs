@@ -136,6 +136,15 @@ pub struct DashboardEmployee {
     pub isolated: bool,
     /// Thread count; for an isolated employee, its matters.
     pub matters: u32,
+    /// The live workflow run when the employee is on one: what "Open run" opens.
+    pub run_id: Option<String>,
+    /// Where it is in that run, only when the workflow declares its steps.
+    pub step: Option<u32>,
+    pub step_count: Option<u32>,
+    /// The last workflow run that ended: how it went, and when.
+    pub last_outcome: Option<String>,
+    pub last_detail: Option<String>,
+    pub last_run_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

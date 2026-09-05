@@ -238,6 +238,8 @@ async fn tick(state: &AppState, last_fired: &LastFired) -> Result<(), String> {
             tool_allowlist: None,
             hidden_prompt: false,
             audience: None,
+            cwd: None,
+            model_override: None,
         };
 
         run_chat(state, config).await;

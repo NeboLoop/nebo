@@ -19,8 +19,109 @@ use ai::StreamEventType;
 use tokio::sync::mpsc;
 use tools::Origin;
 
-use crate::run_registry::RegisterParams;
-use crate::state::AppState;
+use crate::handlers::chat::PendingAsk;
+use crate::handlers::ws::ClientHub;
+use crate::run_registry::{RegisterParams, RunHandle, RunRegistry};
+use crate::state::{AppState, PendingToolApproval};
+
+/// A run parked on a question. The ONE pathway for every consumer that sees
+/// an `AskRequest` on a run's stream (the chat pipeline, coworker forwarding,
+/// the voice bridge): the question is recorded on the run so a late reader
+/// (thread open, socket reconnect) finds it, then the same `ask_request` the
+/// app renders live is broadcast. Returns the recorded question.
+pub(crate) async fn announce_ask(
+    hub: &ClientHub,
+    registry: &RunRegistry,
+    session_key: &str,
+    event: &ai::StreamEvent,
+) -> PendingAsk {
+    let ask = PendingAsk {
+        request_id: event.error.clone().unwrap_or_default(),
+        prompt: event.text.clone(),
+        widgets: event.widgets.clone(),
+        created_at: chrono::Utc::now().timestamp(),
+    };
+    if !registry.park_ask(session_key, ask.clone()).await {
+        warn!(session_key, "ask request on a session with no registered run: the card will not survive a reload");
+    }
+    hub.broadcast("ask_request", ask.event_payload(session_key));
+    ask
+}
+
+/// The ONE way a parked question is answered, whichever surface the answer
+/// came from (the app's ask card, a loop or channel reply, the MCP
+/// auto-answer): the tool's oneshot receives the value and the run's card is
+/// cleared. Returns false when nothing was waiting on that request id.
+pub(crate) async fn answer_ask(state: &AppState, request_id: &str, value: String) -> bool {
+    let tx = state.ask_channels.lock().await.remove(request_id);
+    state.run_registry.resolve_ask(request_id).await;
+    match tx {
+        Some(tx) => tx.send(value).is_ok(),
+        None => false,
+    }
+}
+
+/// A control notice that is status in passing, not how the run ended: a
+/// mid-stream reconnect. Surfaced, never recorded as the run's stop reason.
+pub(crate) fn is_transient_notice(event: &ai::StreamEvent) -> bool {
+    event.stop_reason.as_deref() == Some("stream_reconnecting")
+}
+
+/// The stop reason a control notice records for the run's end: the typed
+/// reason it carries, else the generic `control_stop`.
+pub(crate) fn control_stop_of(event: &ai::StreamEvent) -> Option<(String, String)> {
+    if is_transient_notice(event) {
+        return None;
+    }
+    let reason = event
+        .stop_reason
+        .clone()
+        .unwrap_or_else(|| "control_stop".to_string());
+    Some((reason, event.text.clone()))
+}
+
+/// How a drained run ended, for [`finish_turn`].
+pub(crate) struct TurnEnd<'a> {
+    pub session_key: &'a str,
+    /// The identity the consumer owns: session_id, agentId, and for chat
+    /// runs turn_id / originAgentId.
+    pub payload: serde_json::Value,
+    pub artifacts: &'a [serde_json::Value],
+    /// The typed stop reason + status line, when the run ended via a
+    /// ControlNotice, so the UI renders it as status, never prose.
+    pub control_stop: Option<&'a (String, String)>,
+}
+
+/// The ONE way a drained run tells the app its turn is over. Every consumer
+/// that drains a run's stream to its end (the chat pipeline here, the voice
+/// bridge in `handlers::voice`) ends through here: the question the run was
+/// parked on is released together with its unanswered oneshot, the run's
+/// gated tool approvals are dropped, and `chat_complete` is broadcast on the
+/// identity payload plus the run's artifacts and typed stop reason. Carries
+/// NO message content: streamed blocks finalize in place on the frontend.
+pub(crate) async fn finish_turn(
+    hub: &ClientHub,
+    run: &RunHandle,
+    ask_channels: &tools::AskChannels,
+    pending_tool_approvals: &tokio::sync::Mutex<HashMap<String, PendingToolApproval>>,
+    end: TurnEnd<'_>,
+) {
+    if let Some(ask) = run.take_pending_ask() {
+        // Dropping the sender wakes a tool still parked on it (`ask_user`
+        // reads the closed channel as "no answer"): nothing hangs on a
+        // question the run can no longer act on.
+        ask_channels.lock().await.remove(&ask.request_id);
+    }
+    // The run is over: nothing it asked can still be answered.
+    pending_tool_approvals.lock().await.retain(|_, a| a.session_key != end.session_key);
+    let mut payload = end.payload;
+    payload["artifacts"] = serde_json::json!(end.artifacts);
+    if let Some((reason, notice)) = end.control_stop {
+        payload["stop_reason"] = serde_json::json!(reason);
+        payload["stop_notice"] = serde_json::json!(notice);
+    }
+    hub.broadcast("chat_complete", payload);
+}
 
 pub(crate) fn resolve_full_access(state: &AppState) -> bool {
     state
@@ -124,6 +225,16 @@ pub struct ChatConfig {
     /// Recall-for-audience: the agent id this run replies to (coworker rail
     /// only). `None` for owner-initiated runs.
     pub audience: Option<String>,
+    /// Working directory for this run's shell commands and relative file
+    /// paths. The WS is owner-authenticated, so an owner-supplied cwd is the
+    /// owner choosing where their employee works: the same trust the desktop
+    /// app extends when it opens a project folder. Joined into a restricted
+    /// `allowed_paths` list so the file tools may work there (see `run_cwd`).
+    /// None = the process cwd.
+    pub cwd: Option<std::path::PathBuf>,
+    /// Explicit model for this run (the harness's `--model`); wins over the
+    /// entity's model preference. None = the selector's choice.
+    pub model_override: Option<String>,
 }
 
 /// Configuration for sending a reply back through a communication channel.
@@ -232,6 +343,22 @@ pub(crate) fn entity_run_params(
     }
 }
 
+/// The run's working directory as `RunRequest` carries it, joined into the
+/// entity's `allowed_paths` when that list restricts the run. An empty list
+/// means unrestricted (`safeguard::check_path_scope`), and adding the cwd to
+/// it would turn "anywhere" into "only here", so an empty list stays empty.
+/// Shared by both run entrypoints (CODE_AUDITOR Rule 8).
+pub(crate) fn run_cwd(
+    cwd: Option<&std::path::Path>,
+    allowed_paths: &mut Vec<String>,
+) -> Option<String> {
+    let cwd = cwd?.to_string_lossy().into_owned();
+    if !allowed_paths.is_empty() && !allowed_paths.iter().any(|p| p == &cwd) {
+        allowed_paths.push(cwd.clone());
+    }
+    Some(cwd)
+}
+
 pub async fn run_chat(state: &AppState, config: ChatConfig) {
     // Persistent-goals v1: a real (non-synthetic) message resets this session's
     // auto-continuation budget and becomes the prompt the judge sees. Synthetic
@@ -254,6 +381,8 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
     let pending_comm_asks = state.pending_comm_asks.clone();
     let pending_comm_approvals = state.pending_comm_approvals.clone();
     let pending_tool_approvals = state.pending_tool_approvals.clone();
+    let ask_channels = state.ask_channels.clone();
+    let run_registry = state.run_registry.clone();
     let approvals_agent_id = config.agent_id.clone();
     let comm_manager = if config.comm_reply.is_some() {
         Some(state.comm_manager.clone())
@@ -307,6 +436,8 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
     let mention_context = config.mention_context;
     let tool_scope = config.tool_scope;
     let plan_mode = config.plan_mode;
+    let run_cwd_path = config.cwd.clone();
+    let run_model_override = config.model_override.clone().unwrap_or_default();
 
     // "Full Access" master flag (settings.full_access) — when on, the runner's
     // per-tool approval gate is bypassed. Loaded here (state in scope) and moved
@@ -365,8 +496,9 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
         }
 
         // Extract per-entity overrides from resolved config
-        let (permissions, resource_grants, model_preference, personality_snippet, allowed_paths, operation_policy) =
+        let (permissions, resource_grants, model_preference, personality_snippet, mut allowed_paths, operation_policy) =
             entity_run_params(entity_cfg.as_ref());
+        let cwd = run_cwd(run_cwd_path.as_deref(), &mut allowed_paths);
 
         // Build progress tracker from RunHandle's shared Arcs
         let progress = agent::RunProgress {
@@ -392,6 +524,8 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
             personality_snippet,
             images,
             allowed_paths,
+            cwd,
+            model_override: run_model_override,
             presence_tracker: Some(presence_tracker.clone()),
             proactive_inbox: Some(proactive_inbox.clone()),
             progress: Some(progress),
@@ -556,7 +690,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                 // A mid-stream reconnect is transient status —
                                 // surface it, but never record it as the run's
                                 // stop reason: the run continues and completes.
-                                if reason != "stream_reconnecting" {
+                                if !is_transient_notice(&event) {
                                     control_stop = Some((reason.clone(), event.text.clone()));
                                 }
                                 hub.broadcast(
@@ -939,16 +1073,8 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                             }
                         }
                         StreamEventType::AskRequest => {
-                            let request_id = event.error.as_deref().unwrap_or("");
-                            let mut payload = serde_json::json!({
-                                "session_id": sid,
-                                "request_id": request_id,
-                                "prompt": event.text,
-                            });
-                            if let Some(widgets) = &event.widgets {
-                                payload["widgets"] = widgets.clone();
-                            }
-                            hub.broadcast("ask_request", payload);
+                            let ask = announce_ask(&hub, &run_registry, &sid, &event).await;
+                            let request_id = ask.request_id.as_str();
                             // Forward the question to the loop/channel
                             // conversation — without this the run blocks on a
                             // question the remote user never sees. The next
@@ -1405,22 +1531,23 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                 };
 
                 // Always send chat_complete (with any run-produced artifacts so
-                // the app renders them). Carries NO message content: streamed
-                // blocks finalize in place on the frontend — a final payload that
-                // re-carried the turn text is what caused segments to render twice.
-                // When the run ended via a typed ControlNotice, the payload also
-                // carries the typed stop reason + status line so the UI can render
-                // e.g. "stopped: repeated tool calls" as status, never prose.
-                let mut complete_payload = ws_payload!(
-                    "artifacts": &chat_artifacts,
-                );
-                if let Some((reason, notice)) = &control_stop {
-                    complete_payload["stop_reason"] = serde_json::json!(reason);
-                    complete_payload["stop_notice"] = serde_json::json!(notice);
-                }
-                // The run is over: nothing it asked can still be answered.
-                pending_tool_approvals.lock().await.retain(|_, a| a.session_key != sid);
-                hub.broadcast("chat_complete", complete_payload);
+                // the app renders them). When the run ended via a typed
+                // ControlNotice, the payload also carries the typed stop reason
+                // + status line so the UI can render e.g. "stopped: repeated
+                // tool calls" as status, never prose.
+                finish_turn(
+                    &hub,
+                    &_run_handle,
+                    &ask_channels,
+                    &pending_tool_approvals,
+                    TurnEnd {
+                        session_key: &sid,
+                        payload: ws_payload!(),
+                        artifacts: &chat_artifacts,
+                        control_stop: control_stop.as_ref(),
+                    },
+                )
+                .await;
 
                 // Persist the artifacts onto the turn's final assistant message so
                 // Work items + their version chain survive history reload (the live
@@ -1474,7 +1601,14 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                         "error": e.to_string(),
                     ),
                 );
-                hub.broadcast("chat_complete", ws_payload!());
+                finish_turn(
+                    &hub,
+                    &_run_handle,
+                    &ask_channels,
+                    &pending_tool_approvals,
+                    TurnEnd { session_key: &sid, payload: ws_payload!(), artifacts: &[], control_stop: None },
+                )
+                .await;
             }
         }
 
@@ -1643,6 +1777,8 @@ fn maybe_auto_continue(
             tool_allowlist: None,
             hidden_prompt: false,
             audience: None,
+            cwd: None,
+            model_override: None,
         };
         run_chat(&state, config).await;
     });
@@ -1679,8 +1815,9 @@ pub async fn run_chat_events(
     // Resolve display name + register the run (shared with run_chat).
     let (_agent_display_name, run_handle) = register_run(state, &config).await;
 
-    let (permissions, resource_grants, model_preference, personality_snippet, allowed_paths, operation_policy) =
+    let (permissions, resource_grants, model_preference, personality_snippet, mut allowed_paths, operation_policy) =
         entity_run_params(config.entity_config.as_ref());
+    let cwd = run_cwd(config.cwd.as_deref(), &mut allowed_paths);
 
     let progress = agent::RunProgress {
         run_id: run_handle.run_id.clone(),
@@ -1705,6 +1842,8 @@ pub async fn run_chat_events(
         personality_snippet,
         images: config.images,
         allowed_paths,
+        cwd,
+        model_override: config.model_override.unwrap_or_default(),
         presence_tracker: Some(presence_tracker),
         proactive_inbox: Some(proactive_inbox),
         progress: Some(progress),
@@ -2601,5 +2740,44 @@ mod session_key_contract_tests {
         assert_eq!(types::keyparser::agent_id_from_workflow_id(&wf), Some("a1"));
         assert_eq!(types::keyparser::agent_id_from_workflow_id("agent:"), None);
         assert_eq!(types::keyparser::agent_id_from_workflow_id("wf-123"), None);
+    }
+}
+
+#[cfg(test)]
+mod run_cwd_tests {
+    //! Locks how an owner-chosen cwd meets the entity's path restriction.
+    use super::run_cwd;
+    use std::path::Path;
+
+    /// A restricted run gains the cwd (once), so the file tools may work
+    /// there; the cwd is returned as the run's working directory.
+    #[test]
+    fn restricted_list_gains_the_cwd_once() {
+        let mut allowed = vec!["/home/me/docs".to_string()];
+        let cwd = run_cwd(Some(Path::new("/home/me/proj")), &mut allowed);
+        assert_eq!(cwd.as_deref(), Some("/home/me/proj"));
+        assert_eq!(allowed, vec!["/home/me/docs".to_string(), "/home/me/proj".to_string()]);
+
+        let mut already = vec!["/home/me/proj".to_string()];
+        run_cwd(Some(Path::new("/home/me/proj")), &mut already);
+        assert_eq!(already, vec!["/home/me/proj".to_string()], "no duplicate entry");
+    }
+
+    /// An empty list means unrestricted; adding the cwd would turn
+    /// "anywhere" into "only here", so it stays empty.
+    #[test]
+    fn unrestricted_run_stays_unrestricted() {
+        let mut allowed: Vec<String> = Vec::new();
+        let cwd = run_cwd(Some(Path::new("/home/me/proj")), &mut allowed);
+        assert_eq!(cwd.as_deref(), Some("/home/me/proj"));
+        assert!(allowed.is_empty());
+    }
+
+    /// No cwd: nothing changes and the run keeps the process cwd.
+    #[test]
+    fn no_cwd_changes_nothing() {
+        let mut allowed = vec!["/home/me/docs".to_string()];
+        assert_eq!(run_cwd(None, &mut allowed), None);
+        assert_eq!(allowed, vec!["/home/me/docs".to_string()]);
     }
 }

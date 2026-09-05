@@ -553,6 +553,9 @@ pub struct UpdateBotIdentityRequest {
 pub struct Loop {
     pub loop_id: String,
     pub loop_name: String,
+    /// Hub loop type: `personal` for the owner's own loop, else `standard`.
+    #[serde(default)]
+    pub loop_type: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     #[serde(default)]

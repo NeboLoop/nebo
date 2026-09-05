@@ -436,10 +436,9 @@ mod tests {
     fn with_home<T>(f: impl FnOnce() -> T) -> T {
         // Tests share the process env; serialize on a lock so parallel tests
         // don't race NEBO_HOME.
-        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = crate::TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let home = tempfile::tempdir().unwrap();
-        // SAFETY: the lock above serializes env mutation across these tests.
+        // SAFETY: the crate-wide lock above serializes env mutation across tests.
         unsafe { std::env::set_var("NEBO_HOME", home.path()) };
         let out = f();
         unsafe { std::env::remove_var("NEBO_HOME") };

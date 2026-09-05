@@ -1,0 +1,49 @@
+### os: Files & Shell
+
+CRITICAL RULES:
+1. ALWAYS call this tool. NEVER answer from memory or training data about files.
+2. When asked to read a file, CALL os(resource: "file", action: "read"): do NOT say "this file doesn't exist" without calling first.
+3. Before you edit or overwrite an EXISTING file, READ it first: edit and overwrite require a prior read and are rejected otherwise (this prevents clobbering changes made since you last saw the file). Creating a brand-new file needs no prior read.
+4. Include ALL required parameters on every call. Missing params cause errors.
+5. glob = FIND files by name pattern (*.md, *.yaml). grep = match text INSIDE files by regex. Do not confuse them.
+6. NEVER escalate privileges (sudo, runas, admin) without asking the user first. On permission denied, explain and offer alternatives.
+
+- A read that returns no content says so in parentheses instead of returning the file: `(file is empty)` only when the file is genuinely 0 bytes, otherwise a note naming the file's real size on disk. That note is the tool telling you what happened: it is never the file's content, and it never means your tools are broken. Do not re-read the same path hoping for a different answer; use file grep, or shell, or say plainly what you could not read.
+- The file resource has no move, copy, rename, or delete action: those go through the shell, e.g. os(resource: "shell", action: "exec", command: "mv old.txt new.txt").
+
+**File actions**: resource: "file" for all:
+| action | when to use | required params | optional |
+|--------|------------|----------------|----------|
+| read | read file contents | path | offset, limit |
+| write | create new file, or overwrite (read first to overwrite) | path, content | append |
+| edit | replace text in file (READ the file first) | path, old_string, new_string | replace_all |
+| checkpoint | snapshot the files you are ABOUT to change so you can put them back (never git stash/reset) | paths | label |
+| checkpoints | list this session's checkpoints | | |
+| restore | put a checkpoint's files back exactly; the result names the checkpoint that undoes it | checkpoint | paths |
+| plan | write a plan document, one verify command per step (the owner sees it in Work) | path, title, steps: [{title, verify}] | |
+| plan_check | run every verify command; ticks ONLY the steps that pass. Run before reporting done | path | |
+| share | hand an EXISTING file to the user as a download card (a deck, PDF, image, or any binary already on disk) | path | |
+| glob | find files by NAME pattern (*.yaml, src/**/*.rs); a path alone lists that directory (pattern defaults to *) | pattern or path | limit |
+| grep | search file CONTENTS for a regex match | pattern, path | glob, case_insensitive, output_mode, context_before, context_after |
+
+Examples (every call MUST include all required params):
+- os(resource: "file", action: "read", path: "/tmp/config.txt")
+- os(resource: "file", action: "write", path: "/tmp/out.txt", content: "hello")
+- os(resource: "file", action: "edit", path: "/tmp/out.txt", old_string: "hello", new_string: "goodbye")
+- os(resource: "file", action: "share", path: "/data/files/ai-trends-2026-2027.pptx")  # give the user an existing file as a download
+- os(resource: "file", action: "glob", pattern: "**/*.yaml", path: "fixtures/")
+- os(resource: "file", action: "glob", path: "~/Desktop")  # lists the directory
+- os(resource: "file", action: "checkpoint", paths: ["/proj/a.rs", "/proj/b.rs"])  # before editing; undo with action: "restore", checkpoint: "<id>"
+- os(resource: "file", action: "grep", pattern: "TODO", path: "/src/")
+- os(resource: "file", action: "grep", pattern: "fn main", path: ".", context_before: 2, context_after: 5)
+
+**Shell actions**: resource: "shell" for all:
+- os(resource: "shell", action: "exec", command: "ls -la"): Run a command
+- os(resource: "shell", action: "exec", command: "...", background: true): Start a background session; the result carries its session_id
+- os(resource: "shell", action: "list"): List running and finished background sessions
+- os(resource: "shell", action: "poll", session_id: "..."): New output from a background session
+- os(resource: "shell", action: "log", session_id: "..."): Full log of a background session
+- os(resource: "shell", action: "write", session_id: "...", data: "text sent to stdin\n")
+- os(resource: "shell", action: "kill", session_id: "..."): Kill a background session
+- os(resource: "shell", action: "kill", pid: 1234): Kill a process by pid
+- os(resource: "shell", action: "info", pid: 1234): Process details

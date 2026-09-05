@@ -9,6 +9,57 @@ use crate::state::AppState;
 use db::models::ChatMessage;
 use types::api::ActiveTurnStatus;
 
+/// Metadata key stamped on the assistant note a restart leaves in a chat that
+/// was mid-turn when the server stopped (`lib.rs` restart recovery). Readers
+/// that summarize a thread (the roster's status line) treat that note as a
+/// STATE of the thread, never as something the employee said.
+pub(crate) const RESTART_NOTICE_KEY: &str = "restartNotice";
+
+/// The metadata the restart note is written with.
+pub(crate) fn restart_notice_metadata() -> String {
+    serde_json::json!({ RESTART_NOTICE_KEY: true }).to_string()
+}
+
+/// Whether a stored message is the restart note.
+pub(crate) fn is_restart_notice(m: &ChatMessage) -> bool {
+    m.metadata
+        .as_deref()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+        .map(|meta| meta[RESTART_NOTICE_KEY] == serde_json::Value::Bool(true))
+        .unwrap_or(false)
+}
+
+/// A question a running turn is parked on (an ask card). Kept on the run in
+/// the registry so a page that opens the thread later, a socket that
+/// reconnects, or a phone that joins later sees the card the live
+/// `ask_request` event carried; answering it resolves the same oneshot.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingAsk {
+    pub request_id: String,
+    pub prompt: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub widgets: Option<serde_json::Value>,
+    /// Unix seconds when the run parked.
+    pub created_at: i64,
+}
+
+impl PendingAsk {
+    /// The ONE `ask_request` wire payload: the live broadcast, the reconnect
+    /// replay and every other carrier of a parked question build it here.
+    pub fn event_payload(&self, session_key: &str) -> serde_json::Value {
+        let mut payload = serde_json::json!({
+            "session_id": session_key,
+            "request_id": self.request_id,
+            "prompt": self.prompt,
+        });
+        if let Some(widgets) = &self.widgets {
+            payload["widgets"] = widgets.clone();
+        }
+        payload
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct ListChatsQuery {
     #[serde(default = "default_limit")]
@@ -321,7 +372,8 @@ pub struct CompanionQuery {
 
 /// GET /api/v1/chats/:id/messages. `active_run` is present while a turn is
 /// running on this thread, so a page opening it mid-run shows "working" at
-/// once instead of after the next event.
+/// once instead of after the next event; `pending_ask` is the question that
+/// turn is parked on, if any, so the page renders the card too.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatMessagesResponse {
@@ -329,6 +381,8 @@ pub struct ChatMessagesResponse {
     pub total_messages: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub active_run: Option<ActiveTurnStatus>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pending_ask: Option<PendingAsk>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -627,16 +681,85 @@ pub async fn get_chat_messages(
         .store
         .count_chat_messages(&resolved_id)
         .unwrap_or(messages.len() as i64);
-    // The chat's session name is the key the runner admits turns under.
-    let active_run = state
+    // The chat's session name is the key the runner admits turns under and
+    // the registry tracks runs by.
+    let session_key = state
         .store
         .get_chat(&resolved_id)
         .ok()
         .flatten()
-        .and_then(|c| c.session_name)
-        .and_then(|key| state.runner.active_turn_status(&key));
-    Ok(Json(ChatMessagesResponse { messages, total_messages: total, active_run }))
+        .and_then(|c| c.session_name);
+    let active_run = session_key
+        .as_deref()
+        .and_then(|key| state.runner.active_turn_status(key));
+    let pending_ask = match session_key.as_deref() {
+        Some(key) => state.run_registry.pending_ask_for_session(key).await,
+        None => None,
+    };
+    Ok(Json(ChatMessagesResponse { messages, total_messages: total, active_run, pending_ask }))
 }
+#[cfg(test)]
+mod pending_ask_tests {
+    use super::PendingAsk;
+
+    /// The wire payload is exactly what the live `ask_request` event carried
+    /// before persistence existed: the app's handler reads these keys.
+    #[test]
+    fn event_payload_carries_session_request_prompt_and_widgets() {
+        let ask = PendingAsk {
+            request_id: "req-1".into(),
+            prompt: "Which calendar?".into(),
+            widgets: Some(serde_json::json!([{ "type": "options", "options": ["Work", "Home"] }])),
+            created_at: 7,
+        };
+        let payload = ask.event_payload("agent:a:thread:t");
+        assert_eq!(payload["session_id"], "agent:a:thread:t");
+        assert_eq!(payload["request_id"], "req-1");
+        assert_eq!(payload["prompt"], "Which calendar?");
+        assert_eq!(payload["widgets"][0]["options"][1], "Home");
+    }
+
+    /// No widgets means no `widgets` key: the app falls back to its Yes/No
+    /// default only when the key is absent, never on `null`.
+    #[test]
+    fn event_payload_omits_absent_widgets() {
+        let ask = PendingAsk {
+            request_id: "req-2".into(),
+            prompt: "Continue?".into(),
+            widgets: None,
+            created_at: 0,
+        };
+        let payload = ask.event_payload("s");
+        assert!(payload.get("widgets").is_none());
+        let json = serde_json::to_value(&ask).unwrap();
+        assert!(json.get("widgets").is_none());
+        assert_eq!(json["requestId"], "req-2");
+    }
+
+    /// The restart note is recognized by its metadata, not by its wording.
+    #[test]
+    fn restart_notice_is_identified_by_metadata() {
+        let mut m = db::models::ChatMessage {
+            id: "m".into(),
+            chat_id: "c".into(),
+            role: "assistant".into(),
+            content: "I was interrupted by a restart before I could finish.".into(),
+            metadata: None,
+            created_at: 0,
+            day_marker: None,
+            tool_calls: None,
+            tool_results: None,
+            token_estimate: None,
+            html: None,
+        };
+        assert!(!super::is_restart_notice(&m));
+        m.metadata = Some(r#"{"hidden":true}"#.into());
+        assert!(!super::is_restart_notice(&m));
+        m.metadata = Some(super::restart_notice_metadata());
+        assert!(super::is_restart_notice(&m));
+    }
+}
+
 #[cfg(test)]
 mod transcript_metadata_tests {
     use super::{build_message_metadata, build_ui_tool_calls, default_content_blocks};

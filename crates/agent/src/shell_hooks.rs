@@ -6,12 +6,20 @@
 //! so a formatter's or test runner's verdict reaches the model through the
 //! same seam a plugin hook would.
 //!
-//! Exit-code contract, copied from the reference because agents that have
-//! read its docs assume it, and documented loudly because the natural
-//! `exit 1` on failure is the one that reaches nobody:
-//!   0     stdout is attached to the tool result as a titled note
-//!   2     stderr reaches the MODEL as an error note (pre: the call is refused)
-//!   other stderr is logged for the owner; the model sees nothing
+//! Exit-code contract. The first two rows are the reference's, kept because
+//! agents that have read its docs assume them. The rest used to be "logged for
+//! the owner; the model sees nothing", which made the natural `exit 1` on a
+//! failing check the one outcome nobody acted on (live 2026-09-03: a test
+//! runner failed on every edit and the model reported done):
+//!   0        stdout is attached to the tool result as a titled note
+//!   2        stderr reaches the MODEL as an error note (pre: the call is refused)
+//!   other    `[hook <name>] exited <code>:` + the last NOTE_CAP_CHARS of
+//!            stderr, then stdout, reaches the model. post: as an error note
+//!            (`is_error`). pre: as a note on the call's result; the call
+//!            still runs, a failing pre hook never blocks
+//!   timeout  `[hook <name>] did not finish within <n> s`, routed like "other"
+//!   no start could not spawn or wait: `[hook <name>] could not run: <why>`,
+//!            routed like "other"
 //!
 //! ```yaml
 //! post_tool:
@@ -29,10 +37,15 @@
 //! The payload arrives as JSON on stdin (`ToolPreExecutePayload` /
 //! `ToolPostExecutePayload`). A pre hook that exits 0 with a JSON object on
 //! stdout carrying `input` rewrites the call's arguments.
+//!
+//! No hooks file at all: the project's own check is inferred from the nearest
+//! workspace marker (`infer_hook`) and runs as a post hook on `os` write/edit,
+//! through this same pathway. A hooks file that exists, even one declaring
+//! `post_tool: []`, is the owner's explicit answer and disables inference.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 use tracing::{debug, warn};
@@ -42,11 +55,28 @@ pub const DEFAULT_TIMEOUT_SECS: u64 = 600;
 /// The most a hook may ask for; the dispatcher's own deadline sits just above
 /// it, and a file asking for more is clamped (and told so in the log).
 pub const MAX_HOOK_TIMEOUT_SECS: u64 = 900;
-/// Stdout attached to a result is capped here; a hook that wants the model
-/// to see less should print less.
+/// Output attached to a result is capped here (stdout keeps its head, a
+/// failure keeps its tail, where compilers put the verdict); a hook that
+/// wants the model to see less should print less.
 pub const NOTE_CAP_CHARS: usize = 4_000;
-/// Only this exit code reaches the model.
+/// The exit code whose stderr is the model-facing verdict, and the only one
+/// that refuses a pre call.
 pub const BLOCKING_EXIT: i32 = 2;
+/// Deadline for an inferred project check: long enough for an incremental
+/// `cargo check`, short enough that a cold build is handed back to the model
+/// to run itself instead of stalling every edit.
+pub const INFERRED_CHECK_TIMEOUT_SECS: u64 = 120;
+/// A burst of edits to one root pays for one inferred check: a second edit
+/// within this window skips the check (debug log only).
+pub const INFERRED_CHECK_DEBOUNCE_SECS: u64 = 30;
+/// Inferred commands pipe through `tail`, which would launder the check's
+/// exit code into tail's `0`; bash's pipefail keeps the verdict truthful.
+/// PowerShell has no pipefail and no `tail`; the inferred commands are the
+/// spec's and run as written there.
+#[cfg(not(target_os = "windows"))]
+const PIPEFAIL_PREFIX: &str = "set -o pipefail; ";
+#[cfg(target_os = "windows")]
+const PIPEFAIL_PREFIX: &str = "";
 
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct HooksFile {
@@ -70,6 +100,10 @@ pub struct Hook {
     pub action: Vec<String>,
     #[serde(default = "default_timeout")]
     pub timeout_secs: u64,
+    /// Synthesized by `infer_hook` rather than declared in a file: debounced
+    /// per root, and its timeout note tells the model to run the check itself.
+    #[serde(skip)]
+    pub inferred: bool,
 }
 
 fn default_timeout() -> u64 {
@@ -109,14 +143,14 @@ impl Hook {
     }
 }
 
-/// Find `.nebo/hooks.yaml` from `start` upward, stopping at the git root or
-/// the filesystem root (the `.nebo.md` walk).
-pub fn find_hooks_file(start: &Path) -> Option<PathBuf> {
+/// Walk from `start` upward, asking `probe` at each folder, stopping after
+/// the git root or at the filesystem root (the `.nebo.md` walk). The git
+/// root itself is probed before the walk stops there.
+fn find_up<T>(start: &Path, probe: impl Fn(&Path) -> Option<T>) -> Option<T> {
     let mut dir = start;
     loop {
-        let candidate = dir.join(".nebo").join("hooks.yaml");
-        if candidate.is_file() {
-            return Some(candidate);
+        if let Some(found) = probe(dir) {
+            return Some(found);
         }
         if dir.join(".git").exists() {
             return None;
@@ -126,6 +160,48 @@ pub fn find_hooks_file(start: &Path) -> Option<PathBuf> {
             _ => return None,
         }
     }
+}
+
+/// Find `.nebo/hooks.yaml` from `start` upward.
+pub fn find_hooks_file(start: &Path) -> Option<PathBuf> {
+    find_up(start, |dir| {
+        let candidate = dir.join(".nebo").join("hooks.yaml");
+        candidate.is_file().then_some(candidate)
+    })
+}
+
+/// The project check a folder's root marker implies, when the folder has no
+/// hooks file. First marker wins: Cargo, then Go, then a TypeScript project
+/// with its own `tsc`, then a Python project with `ruff` on PATH (`on_path`
+/// is the PATH lookup, injected so the table is testable without one).
+/// Returns None for a folder with no marker; callers walk up (`find_up`).
+pub fn infer_hook(dir: &Path, on_path: &dyn Fn(&str) -> bool) -> Option<Hook> {
+    let (tool, check) = if dir.join("Cargo.toml").is_file() {
+        ("cargo", "cargo check -q --message-format=short 2>&1 | tail -n 40")
+    } else if dir.join("go.mod").is_file() {
+        ("go", "go vet ./... 2>&1 | tail -n 40")
+    } else if dir.join("tsconfig.json").is_file() && dir.join("node_modules/.bin/tsc").is_file() {
+        ("tsc", "node_modules/.bin/tsc --noEmit -p . 2>&1 | tail -n 40")
+    } else if (dir.join("pyproject.toml").is_file() || dir.join("setup.py").is_file()) && on_path("ruff") {
+        ("ruff", "ruff check . 2>&1 | tail -n 40")
+    } else {
+        return None;
+    };
+    Some(Hook {
+        name: format!("inferred-{tool}"),
+        command: format!("{PIPEFAIL_PREFIX}{check}"),
+        tool: Some("os".into()),
+        resource: Vec::new(),
+        action: vec!["write".into(), "edit".into()],
+        timeout_secs: INFERRED_CHECK_TIMEOUT_SECS,
+        inferred: true,
+    })
+}
+
+/// Is an inferred check for a root due, given when it last ran? `None` means
+/// it never ran this process.
+pub fn inferred_check_due(last_run: Option<Instant>, now: Instant) -> bool {
+    last_run.is_none_or(|at| now.duration_since(at) >= Duration::from_secs(INFERRED_CHECK_DEBOUNCE_SECS))
 }
 
 pub fn load(path: &Path) -> Result<HooksFile, String> {
@@ -151,8 +227,10 @@ pub enum Outcome {
     Note(String),
     /// Exit 2: stderr for the model as an error.
     Blocking(String),
-    /// Any other exit or a failure to run: stderr for the owner's log only.
-    OwnerOnly { exit: Option<i32>, stderr: String },
+    /// Any other exit, the deadline, or a failure to start: the model-facing
+    /// note, already titled `[hook <name>] ...` and capped. Post hooks attach
+    /// it as an error; pre hooks attach it as a note and let the call run.
+    Failed(String),
 }
 
 /// Run one hook with the payload on stdin.
@@ -169,7 +247,7 @@ pub async fn run(hook: &Hook, payload: &[u8], cwd: &Path) -> Outcome {
         .stderr(std::process::Stdio::piped());
     let mut child = match cmd.spawn() {
         Ok(c) => c,
-        Err(e) => return Outcome::OwnerOnly { exit: None, stderr: format!("could not start: {e}") },
+        Err(e) => return Outcome::Failed(format!("[hook {}] could not run: could not start: {e}", hook.name)),
     };
     if let Some(mut stdin) = child.stdin.take() {
         // A hook that does not read stdin closes it; that is not an error.
@@ -178,26 +256,39 @@ pub async fn run(hook: &Hook, payload: &[u8], cwd: &Path) -> Outcome {
     }
     let out = match tokio::time::timeout(Duration::from_secs(hook.timeout_secs), child.wait_with_output()).await {
         Ok(Ok(out)) => out,
-        Ok(Err(e)) => return Outcome::OwnerOnly { exit: None, stderr: format!("could not run: {e}") },
+        Ok(Err(e)) => return Outcome::Failed(format!("[hook {}] could not run: {e}", hook.name)),
         Err(_) => {
-            return Outcome::OwnerOnly {
-                exit: None,
-                stderr: format!("timed out after {}s", hook.timeout_secs),
+            let mut note = format!("[hook {}] did not finish within {} s", hook.name, hook.timeout_secs);
+            if hook.inferred {
+                note.push_str(&format!("; run `{}` yourself and fix what it reports", hook.command.trim_start_matches(PIPEFAIL_PREFIX)));
             }
+            return Outcome::Failed(note);
         }
     };
     let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
     let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
     match out.status.code() {
-        Some(0) => Outcome::Note(cap(&stdout)),
-        Some(BLOCKING_EXIT) => Outcome::Blocking(cap(if stderr.is_empty() { "(no stderr output)" } else { &stderr })),
-        exit => Outcome::OwnerOnly { exit, stderr },
+        Some(0) => Outcome::Note(cap(&stdout, false)),
+        Some(BLOCKING_EXIT) => Outcome::Blocking(cap(if stderr.is_empty() { "(no stderr output)" } else { &stderr }, false)),
+        exit => {
+            let output = [stderr, stdout].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join("\n");
+            let output = if output.is_empty() { "(no output)".to_string() } else { cap(&output, true) };
+            let exit = exit.map_or_else(|| "was killed by a signal".to_string(), |c| format!("exited {c}"));
+            Outcome::Failed(format!("[hook {}] {exit}:\n{output}", hook.name))
+        }
     }
 }
 
-fn cap(s: &str) -> String {
-    if s.chars().count() <= NOTE_CAP_CHARS {
-        s.to_string()
+/// Cap text at NOTE_CAP_CHARS, keeping the head (a note reads top-down) or
+/// the tail (a failing check ends with its verdict).
+fn cap(s: &str, keep_tail: bool) -> String {
+    let total = s.chars().count();
+    if total <= NOTE_CAP_CHARS {
+        return s.to_string();
+    }
+    if keep_tail {
+        let tail: String = s.chars().skip(total - NOTE_CAP_CHARS).collect();
+        format!("[hook output trimmed to the last {NOTE_CAP_CHARS} chars]\n{tail}")
     } else {
         let head: String = s.chars().take(NOTE_CAP_CHARS).collect();
         format!("{head}\n[hook output trimmed to {NOTE_CAP_CHARS} chars]")
@@ -209,10 +300,12 @@ fn cap(s: &str) -> String {
 /// folder. Registered once, unconditionally; the hooks file is looked up per
 /// call from the folder the call works in, so an employee that moves to another
 /// project mid-session gets that project's hooks, and a folder without a file
-/// gets nothing.
+/// gets its inferred check (or nothing, when it has no root marker).
 pub struct ShellHookCaller {
     /// Parsed files by path, with the mtime they were read at.
     cache: std::sync::Mutex<std::collections::HashMap<PathBuf, (std::time::SystemTime, Arc<HooksFile>)>>,
+    /// When an inferred check last started, by project root (the debounce).
+    inferred_runs: std::sync::Mutex<std::collections::HashMap<PathBuf, Instant>>,
 }
 
 impl Default for ShellHookCaller {
@@ -223,7 +316,10 @@ impl Default for ShellHookCaller {
 
 impl ShellHookCaller {
     pub fn new() -> Self {
-        Self { cache: std::sync::Mutex::new(std::collections::HashMap::new()) }
+        Self {
+            cache: std::sync::Mutex::new(std::collections::HashMap::new()),
+            inferred_runs: std::sync::Mutex::new(std::collections::HashMap::new()),
+        }
     }
 
     /// The folder a call works in: its own `cwd` (shell), the folder of its
@@ -246,18 +342,25 @@ impl ShellHookCaller {
         base
     }
 
-    /// The hooks file for a workspace and the project root to run hooks in
-    /// (the folder holding `.nebo`). Re-read when the file's mtime changes.
+    /// The hooks for a workspace and the project root to run them in: the
+    /// folder holding `.nebo` when a hooks file exists (re-read when its
+    /// mtime changes; a file that fails to parse is ignored, and still
+    /// disables inference), else the nearest folder with a root marker and
+    /// its inferred check.
     fn resolve(&self, workspace: &Path) -> Option<(Arc<HooksFile>, PathBuf)> {
-        let path = find_hooks_file(workspace)?;
+        let Some(path) = find_hooks_file(workspace) else {
+            let (hook, root) = find_up(workspace, |dir| {
+                infer_hook(dir, &|bin| which::which(bin).is_ok()).map(|h| (h, dir.to_path_buf()))
+            })?;
+            return Some((Arc::new(HooksFile { pre_tool: Vec::new(), post_tool: vec![hook] }), root));
+        };
         let root = path.parent()?.parent()?.to_path_buf();
         let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok()?;
-        if let Ok(cache) = self.cache.lock() {
-            if let Some((seen, file)) = cache.get(&path) {
-                if *seen == mtime {
-                    return Some((file.clone(), root));
-                }
-            }
+        if let Ok(cache) = self.cache.lock()
+            && let Some((seen, file)) = cache.get(&path)
+            && *seen == mtime
+        {
+            return Some((file.clone(), root));
         }
         let file = match load(&path) {
             Ok(f) => Arc::new(f),
@@ -272,9 +375,23 @@ impl ShellHookCaller {
         Some((file, root))
     }
 
+    /// The debounce: may an inferred check start for `root` now? Records the
+    /// start when it says yes, so a burst of edits pays once.
+    fn inferred_check_permitted(&self, root: &Path) -> bool {
+        let now = Instant::now();
+        let Ok(mut runs) = self.inferred_runs.lock() else {
+            return true;
+        };
+        if !inferred_check_due(runs.get(root).copied(), now) {
+            return false;
+        }
+        runs.insert(root.to_path_buf(), now);
+        true
+    }
+
     async fn pre(&self, payload: Vec<u8>) -> Result<(Vec<u8>, bool), String> {
         let p: crate::hooks::ToolPreExecutePayload = serde_json::from_slice(&payload).map_err(|e| e.to_string())?;
-        let mut resp = crate::hooks::ToolPreExecuteResponse { blocked: false, blocked_message: None, input: None };
+        let mut resp = crate::hooks::ToolPreExecuteResponse { blocked: false, blocked_message: None, input: None, note: None };
         let Some((file, root)) = self.resolve(&Self::workspace_for(&p.input, &p.cwd)) else {
             return Ok((serde_json::to_vec(&resp).map_err(|e| e.to_string())?, false));
         };
@@ -292,15 +409,17 @@ impl ShellHookCaller {
                     break;
                 }
                 Outcome::Note(stdout) => {
-                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&stdout) {
-                        if let Some(input) = v.get("input").filter(|i| i.is_object()) {
-                            current_input = input.clone();
-                            resp.input = Some(input.clone());
-                        }
+                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&stdout)
+                        && let Some(input) = v.get("input").filter(|i| i.is_object())
+                    {
+                        current_input = input.clone();
+                        resp.input = Some(input.clone());
                     }
                 }
-                Outcome::OwnerOnly { exit, stderr } => {
-                    warn!(hook = %hook.name, ?exit, %stderr, "pre-tool hook failed (not shown to the model)");
+                Outcome::Failed(note) => {
+                    warn!(hook = %hook.name, %note, "pre-tool hook failed; the call runs and the model is told");
+                    let joined = resp.note.take().map_or(note.clone(), |prev| format!("{prev}\n\n{note}"));
+                    resp.note = Some(joined);
                 }
             }
         }
@@ -314,6 +433,10 @@ impl ShellHookCaller {
             return Ok((serde_json::to_vec(&resp).map_err(|e| e.to_string())?, false));
         };
         for hook in file.post_tool.iter().filter(|h| h.matches(&p.tool_name, &p.tool_input)) {
+            if hook.inferred && !self.inferred_check_permitted(&root) {
+                debug!(hook = %hook.name, root = %root.display(), "inferred check ran within the debounce window; skipped");
+                continue;
+            }
             match run(hook, &payload, &root).await {
                 Outcome::Note(stdout) if !stdout.is_empty() => {
                     resp.result.push_str(&format!("\n\n[hook {}]\n{stdout}", hook.name));
@@ -323,8 +446,10 @@ impl ShellHookCaller {
                     resp.result.push_str(&format!("\n\n[hook {}]: {stderr}", hook.name));
                     resp.is_error = true;
                 }
-                Outcome::OwnerOnly { exit, stderr } => {
-                    warn!(hook = %hook.name, ?exit, %stderr, "post-tool hook failed (not shown to the model)");
+                Outcome::Failed(note) => {
+                    warn!(hook = %hook.name, %note, "post-tool hook failed; shown to the model as an error");
+                    resp.result.push_str(&format!("\n\n{note}"));
+                    resp.is_error = true;
                 }
             }
         }
@@ -373,7 +498,7 @@ mod tests {
     use super::*;
 
     fn hook(cmd: &str) -> Hook {
-        Hook { name: "t".into(), command: cmd.into(), tool: None, resource: vec![], action: vec![], timeout_secs: 5 }
+        Hook { name: "t".into(), command: cmd.into(), tool: None, resource: vec![], action: vec![], timeout_secs: 5, inferred: false }
     }
 
     /// A project folder with a `.nebo/hooks.yaml` (and a `.git` so the walk
@@ -383,6 +508,13 @@ mod tests {
         std::fs::create_dir_all(dir.path().join(".git")).unwrap();
         std::fs::create_dir_all(dir.path().join(".nebo")).unwrap();
         std::fs::write(dir.path().join(".nebo/hooks.yaml"), yaml).unwrap();
+        dir
+    }
+
+    /// A project folder with a `.git` and no hooks file: inference territory.
+    fn bare_project() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".git")).unwrap();
         dir
     }
 
@@ -416,14 +548,43 @@ mod tests {
         assert!(resp.result.contains("[hook t]: FAILED: 1 test"), "{}", resp.result);
     }
 
+    /// The exit code a failing `cargo test` actually produces. It used to be
+    /// owner-only; this test fails if exit 1 goes back to being silent.
     #[tokio::test]
-    async fn other_exits_are_owner_only() {
-        let p = project("post_tool:\n  - name: t\n    command: \"echo boom >&2; exit 1\"\n");
+    async fn exit_one_reaches_the_model_as_an_error_note() {
+        let p = project("post_tool:\n  - name: t\n    command: \"echo boom >&2; echo 'test x ... FAILED'; exit 1\"\n");
         let caller = ShellHookCaller::new();
         let (bytes, _) = caller.post(post_payload(p.path().to_str().unwrap(), serde_json::Value::Null)).await.unwrap();
         let resp: crate::hooks::ToolPostExecuteResponse = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(resp.result, "Edited a.rs", "the model sees nothing from an exit-1 hook");
-        assert!(!resp.is_error);
+        assert!(resp.is_error, "a non-zero exit is an error the model must see");
+        assert!(resp.result.starts_with("Edited a.rs"), "the tool's own result stays first");
+        assert_eq!(
+            resp.result,
+            "Edited a.rs\n\n[hook t] exited 1:\nboom\ntest x ... FAILED",
+            "stderr first, then stdout, under the exit-code title"
+        );
+    }
+
+    #[tokio::test]
+    async fn failure_output_keeps_its_tail_and_a_silent_failure_says_so() {
+        let out = run(&hook("exit 3"), b"{}", Path::new(".")).await;
+        assert_eq!(out, Outcome::Failed("[hook t] exited 3:\n(no output)".into()));
+        // 6000 numbered lines on stdout: the verdict at the bottom survives, the top is cut.
+        let out = run(&hook("seq 1 6000; exit 1"), b"{}", Path::new(".")).await;
+        let Outcome::Failed(note) = out else { panic!("{out:?}") };
+        assert!(note.starts_with(&format!("[hook t] exited 1:\n[hook output trimmed to the last {NOTE_CAP_CHARS} chars]\n")), "{note}");
+        assert!(note.ends_with("\n5999\n6000"), "{}", &note[note.len() - 40..]);
+        assert!(!note.contains("\n1\n2\n"), "the head is what gets cut");
+    }
+
+    #[tokio::test]
+    async fn pre_hook_failure_is_a_note_not_a_block() {
+        let p = project("pre_tool:\n  - name: lint\n    command: \"echo 'lint crashed' >&2; exit 1\"\n");
+        let caller = ShellHookCaller::new();
+        let (bytes, handled) = caller.pre(pre_payload(p.path().to_str().unwrap(), serde_json::json!({"action": "edit", "path": "a"}))).await.unwrap();
+        let resp: crate::hooks::ToolPreExecuteResponse = serde_json::from_slice(&bytes).unwrap();
+        assert!(!handled && !resp.blocked, "only exit 2 blocks");
+        assert_eq!(resp.note.as_deref(), Some("[hook lint] exited 1:\nlint crashed"));
     }
 
     #[tokio::test]
@@ -450,13 +611,12 @@ mod tests {
     /// the server's folder. Now the folder a call touches decides, so two
     /// projects in one session each get their own file, a call whose `path`
     /// lies in another project follows the path, and a folder with no file
-    /// runs nothing. One caller serves all of them.
+    /// and no root marker runs nothing. One caller serves all of them.
     #[tokio::test]
     async fn hooks_follow_the_folder_the_call_touches() {
         let a = project("post_tool:\n  - name: which\n    command: echo project-A\n");
         let b = project("post_tool:\n  - name: which\n    command: echo project-B\n");
-        let none = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(none.path().join(".git")).unwrap();
+        let none = bare_project();
         let caller = ShellHookCaller::new();
         let note = |bytes: Vec<u8>| -> String {
             let r: crate::hooks::ToolPostExecuteResponse = serde_json::from_slice(&bytes).unwrap();
@@ -472,7 +632,7 @@ mod tests {
         // a shell call with its own cwd in B
         let (bytes, _) = caller.post(post_payload(a.path().to_str().unwrap(), serde_json::json!({"action": "exec", "cwd": b.path()}))).await.unwrap();
         assert!(note(bytes).ends_with("[hook which]\nproject-B"));
-        // a folder with no hooks file: untouched result
+        // a folder with no hooks file and no root marker: untouched result
         let (bytes, _) = caller.post(post_payload(none.path().to_str().unwrap(), serde_json::json!({"action": "edit", "path": "x.rs"}))).await.unwrap();
         assert_eq!(note(bytes), "Edited a.rs");
     }
@@ -496,13 +656,104 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn hook_timeout_kills_and_reports() {
+    async fn hook_timeout_kills_and_reports_the_deadline() {
         let mut h = hook("sleep 5; echo late");
         h.timeout_secs = 1;
         let started = std::time::Instant::now();
         let out = run(&h, b"{}", Path::new(".")).await;
-        assert!(matches!(out, Outcome::OwnerOnly { exit: None, ref stderr } if stderr.contains("timed out")), "{out:?}");
+        assert_eq!(out, Outcome::Failed("[hook t] did not finish within 1 s".into()));
         assert!(started.elapsed() < Duration::from_secs(4));
+        // An inferred check that times out hands the command back to the model.
+        h.inferred = true;
+        let out = run(&h, b"{}", Path::new(".")).await;
+        assert_eq!(out, Outcome::Failed("[hook t] did not finish within 1 s; run `sleep 5; echo late` yourself and fix what it reports".into()));
+    }
+
+    /// The marker-to-command table and its precedence, on a fake root: no
+    /// real cargo/go/tsc/ruff is invoked, only the files are consulted.
+    #[test]
+    fn inferred_check_follows_the_marker_table_in_priority_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        let ruff_present = |bin: &str| bin == "ruff";
+        let no_ruff = |_: &str| false;
+        assert!(infer_hook(d, &ruff_present).is_none(), "no marker, no check");
+
+        std::fs::write(d.join("setup.py"), "").unwrap();
+        assert!(infer_hook(d, &no_ruff).is_none(), "a Python project without ruff on PATH gets no check");
+        let h = infer_hook(d, &ruff_present).unwrap();
+        assert_eq!(h.name, "inferred-ruff");
+        assert!(h.command.ends_with("ruff check . 2>&1 | tail -n 40"), "{}", h.command);
+        std::fs::remove_file(d.join("setup.py")).unwrap();
+        std::fs::write(d.join("pyproject.toml"), "").unwrap();
+        assert_eq!(infer_hook(d, &ruff_present).unwrap().name, "inferred-ruff", "pyproject.toml is the other Python marker");
+
+        std::fs::write(d.join("tsconfig.json"), "{}").unwrap();
+        assert_eq!(infer_hook(d, &ruff_present).unwrap().name, "inferred-ruff", "tsconfig without a local tsc is not a TypeScript check");
+        std::fs::create_dir_all(d.join("node_modules/.bin")).unwrap();
+        std::fs::write(d.join("node_modules/.bin/tsc"), "").unwrap();
+        let h = infer_hook(d, &ruff_present).unwrap();
+        assert_eq!(h.name, "inferred-tsc");
+        assert!(h.command.ends_with("node_modules/.bin/tsc --noEmit -p . 2>&1 | tail -n 40"), "{}", h.command);
+
+        std::fs::write(d.join("go.mod"), "module x\n").unwrap();
+        let h = infer_hook(d, &ruff_present).unwrap();
+        assert_eq!(h.name, "inferred-go");
+        assert!(h.command.ends_with("go vet ./... 2>&1 | tail -n 40"), "{}", h.command);
+
+        std::fs::write(d.join("Cargo.toml"), "[package]\n").unwrap();
+        let h = infer_hook(d, &no_ruff).unwrap();
+        assert_eq!(h.name, "inferred-cargo");
+        assert!(h.command.ends_with("cargo check -q --message-format=short 2>&1 | tail -n 40"), "{}", h.command);
+        // The shape every inferred hook shares.
+        assert!(h.inferred);
+        assert_eq!(h.timeout_secs, INFERRED_CHECK_TIMEOUT_SECS);
+        assert_eq!(h.tool.as_deref(), Some("os"));
+        assert_eq!(h.action, vec!["write".to_string(), "edit".to_string()]);
+        assert!(h.matches("os", &serde_json::json!({"action": "edit", "path": "a.rs"})));
+        assert!(!h.matches("os", &serde_json::json!({"action": "read", "path": "a.rs"})));
+        assert!(!h.matches("os", &serde_json::json!({"action": "exec", "command": "ls"})));
+    }
+
+    #[test]
+    fn inferred_check_is_debounced_per_root() {
+        let now = Instant::now();
+        assert!(inferred_check_due(None, now), "never ran: due");
+        assert!(!inferred_check_due(Some(now), now), "just ran: not due");
+        let window = Duration::from_secs(INFERRED_CHECK_DEBOUNCE_SECS);
+        assert!(!inferred_check_due(now.checked_sub(window - Duration::from_secs(1)), now), "inside the window");
+        assert!(inferred_check_due(now.checked_sub(window), now), "at the window's edge");
+        // The live gate records the start, so the second edit to a root skips
+        // and another root is unaffected.
+        let caller = ShellHookCaller::new();
+        assert!(caller.inferred_check_permitted(Path::new("/a")));
+        assert!(!caller.inferred_check_permitted(Path::new("/a")), "a burst pays once");
+        assert!(caller.inferred_check_permitted(Path::new("/b")), "per root");
+    }
+
+    #[test]
+    fn a_hooks_file_even_an_empty_one_disables_inference() {
+        // No file, a Cargo root, a call from a subfolder: the inferred cargo
+        // check, run in the marker's folder. Nothing is executed here.
+        let bare = bare_project();
+        std::fs::write(bare.path().join("Cargo.toml"), "[package]\n").unwrap();
+        std::fs::create_dir_all(bare.path().join("src")).unwrap();
+        let caller = ShellHookCaller::new();
+        let (file, root) = caller.resolve(&bare.path().join("src")).unwrap();
+        assert_eq!(root, bare.path());
+        assert!(file.pre_tool.is_empty());
+        assert_eq!(file.post_tool.len(), 1);
+        assert_eq!(file.post_tool[0].name, "inferred-cargo");
+        assert!(file.post_tool[0].inferred);
+        // The same root with an explicit `post_tool: []`: the owner's answer wins.
+        let explicit = project("post_tool: []\n");
+        std::fs::write(explicit.path().join("Cargo.toml"), "[package]\n").unwrap();
+        let (file, root) = caller.resolve(explicit.path()).unwrap();
+        assert_eq!(root, explicit.path());
+        assert!(file.post_tool.is_empty(), "an explicit empty file runs nothing and infers nothing");
+        // A bare root with no marker: nothing at all.
+        let empty = bare_project();
+        assert!(caller.resolve(empty.path()).is_none());
     }
 
     #[test]
@@ -532,6 +783,7 @@ mod tests {
         let found = find_hooks_file(&dir.path().join("src/deep")).unwrap();
         let file = load(&found).unwrap();
         assert_eq!(file.post_tool[0].timeout_secs, DEFAULT_TIMEOUT_SECS);
+        assert!(!file.post_tool[0].inferred, "a declared hook is never debounced");
         assert!(file.post_tool[0].matches("os", &serde_json::json!({"action": "edit", "path": "a"})));
         assert!(!file.post_tool[0].matches("os", &serde_json::json!({"action": "read", "path": "a"})));
         assert!(!file.post_tool[0].matches("web", &serde_json::json!({"action": "edit"})));

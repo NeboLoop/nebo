@@ -82,7 +82,7 @@ impl GrepTool {
         };
 
         if files.is_empty() {
-            return ToolResult::ok(errors::no_grep_results(pattern, path));
+            return ToolResult::ok(errors::no_files_to_search(path));
         }
 
         // Resolve the search base for relative path display.
@@ -94,7 +94,7 @@ impl GrepTool {
                 .unwrap_or_else(|_| p.parent().unwrap_or(Path::new(".")).to_path_buf())
         };
 
-        match output_mode {
+        let mut result = match output_mode {
             "files" => self.search_files_mode(&matcher, &files, &search_base, pattern, limit, offset),
             "count" => self.search_count_mode(&matcher, &files, &search_base, pattern, limit, offset),
             _ => self.search_content_mode(
@@ -107,7 +107,16 @@ impl GrepTool {
                 context_before,
                 context_after,
             ),
+        };
+        // find_files stops enumerating at MAX_FILES, so a full-length list
+        // means the tree was only partly searched; say so in every mode.
+        if !result.is_error && files.len() >= MAX_FILES {
+            result.content.push_str(&format!(
+                "\n(search stopped at {} files; narrow the path or glob)",
+                MAX_FILES
+            ));
         }
+        result
     }
 
     // ── content mode ───────────────────────────────────────────────
@@ -134,6 +143,7 @@ impl GrepTool {
         let mut all_lines: Vec<String> = Vec::new();
         let mut match_count: usize = 0;
         let mut file_count: usize = 0;
+        let mut unreadable: usize = 0;
         // Track how many raw match lines (not context) we have collected so
         // we can stop early once we have enough after applying offset.
         let collected_enough = |mc: usize| mc >= offset + limit;
@@ -153,8 +163,11 @@ impl GrepTool {
                 rel_path: &rel,
             };
 
-            // Errors (permission denied, binary quit, etc.) are silently skipped.
-            let _ = searcher.search_path(matcher, file_path, &mut sink);
+            // A file that cannot be read (permission denied, I/O error) is
+            // skipped but counted, so the total says what was not searched.
+            if searcher.search_path(matcher, file_path, &mut sink).is_err() {
+                unreadable += 1;
+            }
 
             if file_lines.iter().any(|l| l.is_match) {
                 file_had_match = true;
@@ -180,20 +193,33 @@ impl GrepTool {
         // figure out which *match* lines correspond to offset..offset+limit
         // and include their surrounding context.
         let paginated = paginate_content_lines(&all_lines, offset, limit);
-        let shown = paginated.len();
+        // Matching lines on this page (context lines are not counted).
+        let shown = match_count.saturating_sub(offset).min(limit);
         let truncated = match_count > offset + limit;
 
-        let mut result = format!("Found {} matches in {} files", match_count, file_count);
-        if shown < match_count {
+        // The file loop stops once offset + limit lines are collected, so past
+        // that point both counts are floors, never totals.
+        let mut result = if truncated {
+            format!("Found at least {} matching lines in {}+ files (stopped early; showing {})", match_count, file_count, shown)
+        } else {
+            format!("Found {} matching lines in {} files", match_count, file_count)
+        };
+        if !truncated && shown < match_count {
             result.push_str(&format!(" (showing {})", shown));
+        }
+        if unreadable > 0 {
+            result.push_str(&format!(" ({} files could not be read)", unreadable));
         }
         result.push_str("\n\n");
         result.push_str(&paginated.join("\n"));
 
         if truncated {
             result.push_str(&format!(
-                "\n(Results truncated. Use offset={} to see more.)",
-                offset + limit
+                "\n(Showing matches {}-{} of at least {}. Use offset={} for the rest.)",
+                offset + 1,
+                offset + shown,
+                match_count,
+                offset + shown
             ));
         }
 
@@ -218,10 +244,11 @@ impl GrepTool {
 
         // Collect (path, mtime) for files that have at least one match.
         let mut matched_files: Vec<(String, std::time::SystemTime)> = Vec::new();
+        let mut unreadable: usize = 0;
 
         for file_path in files {
             let mut has_match = false;
-            let _ = searcher.search_path(
+            let searched = searcher.search_path(
                 matcher,
                 file_path,
                 Lossy(|_line_num, _line| {
@@ -230,6 +257,9 @@ impl GrepTool {
                     Ok(false)
                 }),
             );
+            if searched.is_err() {
+                unreadable += 1;
+            }
 
             if has_match {
                 let mtime = std::fs::metadata(file_path)
@@ -251,7 +281,11 @@ impl GrepTool {
         let page: Vec<_> = after_offset.iter().take(limit).collect();
         let truncated = after_offset.len() > limit;
 
-        let mut result = format!("Found {} files matching \"{}\"\n\n", total, pattern);
+        let mut result = format!("Found {} files matching \"{}\"", total, pattern);
+        if unreadable > 0 {
+            result.push_str(&format!(" ({} files could not be read)", unreadable));
+        }
+        result.push_str("\n\n");
         for (fp, _) in &page {
             result.push_str(&relativize(fp, search_base));
             result.push('\n');
@@ -259,8 +293,11 @@ impl GrepTool {
 
         if truncated {
             result.push_str(&format!(
-                "(Results truncated. Use offset={} to see more.)",
-                offset + limit
+                "(Showing files {}-{} of {}. Use offset={} for the rest.)",
+                offset + 1,
+                offset + page.len(),
+                total,
+                offset + page.len()
             ));
         }
 
@@ -285,10 +322,11 @@ impl GrepTool {
 
         let mut counts: Vec<(String, usize)> = Vec::new();
         let mut total_matches: usize = 0;
+        let mut unreadable: usize = 0;
 
         for file_path in files {
             let mut count: usize = 0;
-            let _ = searcher.search_path(
+            let searched = searcher.search_path(
                 matcher,
                 file_path,
                 Lossy(|_line_num, _line| {
@@ -296,6 +334,9 @@ impl GrepTool {
                     Ok(true)
                 }),
             );
+            if searched.is_err() {
+                unreadable += 1;
+            }
 
             if count > 0 {
                 total_matches += count;
@@ -314,17 +355,24 @@ impl GrepTool {
         let truncated = after_offset.len() > limit;
 
         let mut result = format!(
-            "Found {} matches across {} files\n\n",
+            "Found {} matches across {} files",
             total_matches, total_files
         );
+        if unreadable > 0 {
+            result.push_str(&format!(" ({} files could not be read)", unreadable));
+        }
+        result.push_str("\n\n");
         for (rel, c) in &page {
             result.push_str(&format!("{}: {}\n", rel, c));
         }
 
         if truncated {
             result.push_str(&format!(
-                "(Results truncated. Use offset={} to see more.)",
-                offset + limit
+                "(Showing files {}-{} of {}. Use offset={} for the rest.)",
+                offset + 1,
+                offset + page.len(),
+                total_files,
+                offset + page.len()
             ));
         }
 
@@ -468,6 +516,10 @@ fn relativize(abs_path: &str, search_base: &Path) -> String {
         .unwrap_or_else(|_| abs_path.to_string())
 }
 
+/// Enumeration stops here; a list this long means the tree was only
+/// partly searched, and `execute` says so.
+const MAX_FILES: usize = 10000;
+
 fn find_files(dir: &str, file_glob: Option<&str>) -> Vec<String> {
     let mut files = Vec::new();
     let binary_exts = [
@@ -499,7 +551,7 @@ fn find_files(dir: &str, file_glob: Option<&str>) -> Vec<String> {
         });
 
     for entry in walker {
-        if files.len() >= 10000 {
+        if files.len() >= MAX_FILES {
             break;
         }
 
@@ -578,7 +630,7 @@ mod tests {
         assert!(!res.is_error);
         assert!(res.content.contains("alpha"));
         assert!(res.content.contains("alpha again"));
-        assert!(res.content.contains("Found 2 matches"));
+        assert!(res.content.contains("Found 2 matching lines"));
     }
 
     #[test]
@@ -606,7 +658,7 @@ mod tests {
         let res = search(&tool, "hello", work.to_str().unwrap(), None, true, 0, 0, "content", 0, 0);
 
         assert!(!res.is_error);
-        assert!(res.content.contains("Found 3 matches"));
+        assert!(res.content.contains("Found 3 matching lines"));
     }
 
     #[test]

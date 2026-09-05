@@ -40,6 +40,25 @@ struct WorkInput {
     agent: String,
 }
 
+/// A create or update needs the workflow's name. The model reliably puts it
+/// in one of two places: the top-level `name` argument, or a `name` field in
+/// the definition JSON it wrote. Both are the same fact; refusing one of them
+/// with "name is required" cost a live run three identical failures.
+fn workflow_name(parsed: &WorkInput) -> String {
+    if !parsed.name.is_empty() {
+        return parsed.name.clone();
+    }
+    serde_json::from_str::<serde_json::Value>(&parsed.definition)
+        .ok()
+        .and_then(|v| v.get("name").and_then(|n| n.as_str()).map(str::to_string))
+        .unwrap_or_default()
+}
+
+/// Said only when the name is in neither place.
+const MISSING_NAME: &str = "name is required: pass it as the top-level `name` argument \
+    (work(action: \"create\", name: \"...\", definition: \"...\")). The definition you \
+    sent has no \"name\" field either.";
+
 impl WorkTool {
     pub fn new(manager: Arc<dyn WorkflowManager>) -> Self {
         Self { manager }
@@ -131,8 +150,9 @@ impl WorkTool {
                 if parsed.definition.is_empty() {
                     return ToolResult::error("definition is required (workflow JSON)");
                 }
-                if parsed.name.is_empty() {
-                    return ToolResult::error("name is required");
+                let name = workflow_name(&parsed);
+                if name.is_empty() {
+                    return ToolResult::error(MISSING_NAME);
                 }
                 if agent_id.is_empty() {
                     return ToolResult::error(
@@ -141,7 +161,7 @@ impl WorkTool {
                 }
                 match self
                     .manager
-                    .create(agent_id, &parsed.name, &parsed.definition)
+                    .create(agent_id, &name, &parsed.definition)
                     .await
                 {
                     Ok(info) => {
@@ -158,15 +178,16 @@ impl WorkTool {
                 if parsed.definition.is_empty() {
                     return ToolResult::error("definition is required (the full replacement workflow JSON — update is not a partial patch)");
                 }
-                if parsed.name.is_empty() {
-                    return ToolResult::error("name is required (the workflow's name)");
+                let name = workflow_name(&parsed);
+                if name.is_empty() {
+                    return ToolResult::error(MISSING_NAME);
                 }
                 if agent_id.is_empty() {
-                    return ToolResult::error("no agent in this session");
+                    return ToolResult::error("no agent in this session; pass agent: \"Name\" to target one");
                 }
                 match self
                     .manager
-                    .update(agent_id, &parsed.name, &parsed.definition)
+                    .update(agent_id, &name, &parsed.definition)
                     .await
                 {
                     Ok(info) => {
@@ -180,13 +201,14 @@ impl WorkTool {
                 }
             }
             "delete" => {
-                if parsed.name.is_empty() {
-                    return ToolResult::error("name is required (the workflow's name)");
+                let name = workflow_name(&parsed);
+                if name.is_empty() {
+                    return ToolResult::error(MISSING_NAME);
                 }
                 if agent_id.is_empty() {
-                    return ToolResult::error("no agent in this session");
+                    return ToolResult::error("no agent in this session; pass agent: \"Name\" to target one");
                 }
-                match self.manager.delete(agent_id, &parsed.name).await {
+                match self.manager.delete(agent_id, &name).await {
                     Ok(()) => ToolResult::ok(format!("Workflow '{}' deleted", parsed.name)),
                     Err(e) => ToolResult::error(format!("delete failed: {}", e)),
                 }
@@ -195,7 +217,7 @@ impl WorkTool {
                 "action is required. Use: list, create, update, delete, install, uninstall, cancel. Or set resource to dispatch to a workflow.",
             ),
             other => ToolResult::error(format!(
-                "unknown action: {:?}. Use: list, create, install, uninstall, cancel. Or set resource to dispatch to a workflow.",
+                "unknown action: {:?}. Use: list, create, update, delete, install, uninstall, cancel. Or set resource to dispatch to a workflow.",
                 other
             )),
         }
@@ -339,11 +361,11 @@ impl DynTool for WorkTool {
                 },
                 "name": {
                     "type": "string",
-                    "description": "Workflow name (for create/update/delete)"
+                    "description": "Workflow name (for create/update/delete). A top-level argument; a \"name\" field inside the definition is accepted too."
                 },
                 "definition": {
                     "type": "string",
-                    "description": "Workflow JSON definition (for create)"
+                    "description": "Workflow JSON definition (for create and update)"
                 },
                 "agent": {
                     "type": "string",
@@ -365,5 +387,33 @@ impl DynTool for WorkTool {
         input: serde_json::Value,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send + 'a>> {
         Box::pin(self.execute_inner(ctx, input))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn input(name: &str, definition: &str) -> WorkInput {
+        serde_json::from_value(serde_json::json!({
+            "action": "create",
+            "name": name,
+            "definition": definition
+        }))
+        .expect("WorkInput deserializes")
+    }
+
+    #[test]
+    fn the_name_comes_from_the_argument_or_the_definition() {
+        assert_eq!(workflow_name(&input("Top", r#"{"name":"Inner"}"#)), "Top", "the argument wins");
+        assert_eq!(workflow_name(&input("", r#"{"name":"Inner","activities":[]}"#)), "Inner");
+        assert_eq!(workflow_name(&input("", r#"{"activities":[]}"#)), "");
+        assert_eq!(workflow_name(&input("", "not json")), "");
+    }
+
+    #[test]
+    fn the_missing_name_error_says_where_the_name_goes() {
+        assert!(MISSING_NAME.contains("top-level `name` argument"));
+        assert!(MISSING_NAME.contains("no \"name\" field either"), "{MISSING_NAME}");
     }
 }

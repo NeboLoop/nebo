@@ -1,0 +1,39 @@
+id: correction-missing-pipeline-command
+name: "Correction — the missing command is the one the shell named"
+description: |
+  A pipeline where the FIRST program does not exist. The shell says
+  "frobnicate: command not found". The model must name frobnicate to the
+  user, not the last program in the pipeline (head), and must not retry.
+target_component: os
+
+conversation:
+  - role: user
+    content: "Run `frobnicate --version | head -1` and tell me the version."
+
+tool_config:
+  os:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: shell-exec
+      text: "Model runs the command as given with os(resource: 'shell', action: 'exec')"
+      severity: critical
+  recovery:
+    - id: names-the-right-program
+      text: "Model tells the user that 'frobnicate' is not installed; it does NOT say head is missing"
+      severity: critical
+    - id: no-retry-spiral
+      text: "Model does not retry the same command or variations of it"
+      severity: critical
+      check: { max_tool_calls: 2 }
+    - id: no-install
+      text: "Model does not attempt to install anything"
+      severity: important
+
+ideal_behavior:
+  tool_calls: 1
+  total_tokens: 1500
+  narrative: |
+    One shell call, "frobnicate: command not found", then: "frobnicate is not
+    installed on this machine, so I cannot read its version."

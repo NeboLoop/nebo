@@ -156,6 +156,68 @@ fn isolated_from_frontmatter(frontmatter: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// A message as a one-line preview: plain text, cut at `PREVIEW_CHARS`.
+const PREVIEW_CHARS: usize = 120;
+fn chat_preview(last_content: &str) -> String {
+    let clean = strip_to_plain(last_content);
+    if clean.chars().count() > PREVIEW_CHARS {
+        format!("{}...", clean.chars().take(PREVIEW_CHARS).collect::<String>())
+    } else {
+        clean
+    }
+}
+
+/// What the roster row and the thread list say about a thread in one line.
+pub(crate) struct ThreadPreview {
+    pub preview: Option<String>,
+    /// The thread's newest visible message is the restart note.
+    pub restarted: bool,
+}
+
+/// How many of a thread's newest rows are read for its status line: the
+/// restart note, the real status before it, and room for hidden rows between.
+const PREVIEW_LOOKBACK: i64 = 6;
+
+/// A row the owner sees in the thread. Mirrors `last_visible_message_sql`
+/// in crates/db/src/queries/chats.rs (not a tool row, non-empty, not
+/// `"hidden":true`); `sql_visibility_rule_matches_thread_preview` fails if
+/// that SQL changes without this predicate following.
+fn is_visible(m: &db::models::ChatMessage) -> bool {
+    m.role != "tool"
+        && !m.content.is_empty()
+        && !m.metadata.as_deref().is_some_and(|raw| raw.contains("\"hidden\":true"))
+}
+
+/// The thread's status line from its newest rows (oldest first, as the store
+/// returns them). The newest visible message is the line; when that message
+/// is the restart note the thread's state is "restarted" and the line is the
+/// last real status before it: a restart is something that happened to the
+/// thread, not something the employee said.
+pub(crate) fn thread_preview(newest_last: &[db::models::ChatMessage]) -> ThreadPreview {
+    let mut visible = newest_last.iter().rev().filter(|m| is_visible(m));
+    match visible.next() {
+        None => ThreadPreview { preview: None, restarted: false },
+        Some(m) if super::chat::is_restart_notice(m) => ThreadPreview {
+            preview: visible
+                .find(|m| !super::chat::is_restart_notice(m))
+                .map(|m| chat_preview(&m.content)),
+            restarted: true,
+        },
+        Some(m) => ThreadPreview { preview: Some(chat_preview(&m.content)), restarted: false },
+    }
+}
+
+/// The status line of one stored thread.
+fn thread_status(store: &db::Store, chat_id: &str) -> ThreadPreview {
+    let rows = store
+        .get_recent_chat_messages_with_tools(chat_id, PREVIEW_LOOKBACK)
+        .unwrap_or_else(|e| {
+            warn!(error = %e, chat_id, "thread preview: could not read newest messages");
+            Vec::new()
+        });
+    thread_preview(&rows)
+}
+
 pub async fn list_agents(
     State(state): State<AppState>,
     Query(_q): Query<ListQuery>,
@@ -232,6 +294,13 @@ pub async fn list_agents(
             })
             .unwrap_or_else(|| name.clone());
 
+        let latest_thread = state
+            .store
+            .get_latest_agent_chat(&agent_id)
+            .ok()
+            .flatten()
+            .map(|c| thread_status(&state.store, &c.id));
+
         let mut entry = serde_json::json!({
             "id": agent_id,
             "name": name,
@@ -262,6 +331,10 @@ pub async fn list_agents(
                 Some(r) => isolated_from_frontmatter(&r.frontmatter),
                 None => loaded.config.as_ref().map(|c| c.memory.context_isolated).unwrap_or(false),
             },
+            // The roster row's second line, without a per-employee round trip:
+            // the latest thread's status line, and whether a restart cut it.
+            "latestPreview": latest_thread.as_ref().and_then(|t| t.preview.clone()),
+            "restarted": latest_thread.as_ref().is_some_and(|t| t.restarted),
         });
         // Derive needsSetup from config inputs vs stored input_values
         let needs_setup = if let Some(ref cfg) = loaded.config {
@@ -443,6 +516,8 @@ fn spawn_agent_intro(state: &AppState, agent_id: &str, name: &str, brand_new: bo
         tool_allowlist: None,
         hidden_prompt: true,
         audience: None,
+        cwd: None,
+        model_override: None,
     };
     let st = state.clone();
     tokio::spawn(async move {
@@ -2756,6 +2831,8 @@ pub async fn chat_with_agent(
         tool_allowlist: None,
         hidden_prompt: false,
         audience: None,
+        cwd: None,
+        model_override: None,
     };
 
     crate::chat_dispatch::run_chat(&state, config).await;
@@ -3475,18 +3552,17 @@ pub async fn list_agent_chats(
     let enriched: Vec<serde_json::Value> = enriched_chats
         .iter()
         .map(|(chat, msg_count, last_content)| {
-            let clean = strip_to_plain(last_content);
-            let preview = if clean.chars().count() > 120 {
-                format!("{}...", clean.chars().take(120).collect::<String>())
-            } else {
-                clean
-            };
+            // The enriched row's last content is the fallback for a thread
+            // whose newest rows could not be read.
+            let status = thread_status(&state.store, &chat.id);
+            let preview = status.preview.unwrap_or_else(|| chat_preview(last_content));
             let updated_at_relative = format_relative_time(chat.updated_at, now);
             serde_json::json!({
                 "id": chat.id,
                 "name": chat.title,
                 "title": chat.title,
                 "preview": preview,
+                "restarted": status.restarted,
                 "updatedAt": updated_at_relative,
                 "messages": msg_count,
                 "createdAt": chat.created_at,
@@ -4449,4 +4525,91 @@ pub async fn resolve_learning(
         );
     info!(id, agent_id = %row.agent_id, target = %row.target, action = %row.action, "learning approved and applied");
     Ok(Json(serde_json::json!({ "status": "approved" })))
+}
+
+#[cfg(test)]
+mod thread_preview_tests {
+    use super::thread_preview;
+    use db::models::ChatMessage;
+
+    fn msg(role: &str, content: &str, metadata: Option<&str>) -> ChatMessage {
+        ChatMessage {
+            id: format!("{role}-{}", content.len()),
+            chat_id: "c".into(),
+            role: role.into(),
+            content: content.into(),
+            metadata: metadata.map(str::to_string),
+            created_at: 0,
+            day_marker: None,
+            tool_calls: None,
+            tool_results: None,
+            token_estimate: None,
+            html: None,
+        }
+    }
+
+    fn restart_note() -> ChatMessage {
+        msg(
+            "assistant",
+            "I was interrupted by a restart before I could finish.",
+            Some(&crate::handlers::chat::restart_notice_metadata()),
+        )
+    }
+
+    /// The newest visible row is the line; tool rows, empty rows and hidden
+    /// rows are skipped exactly as the store's preview query skips them.
+    #[test]
+    fn newest_visible_message_is_the_line() {
+        let rows = vec![
+            msg("user", "Book the flights", None),
+            msg("assistant", "Comparing fares now.", None),
+            msg("tool", "{...}", None),
+            msg("assistant", "", None),
+            msg("user", "steering", Some(r#"{"hidden":true}"#)),
+        ];
+        let t = thread_preview(&rows);
+        assert_eq!(t.preview.as_deref(), Some("Comparing fares now."));
+        assert!(!t.restarted);
+        assert!(thread_preview(&[]).preview.is_none());
+    }
+
+    /// A restart note on top makes the thread "restarted" and the line is
+    /// the last real status before it, never the apology sentence.
+    #[test]
+    fn restart_note_is_a_state_not_a_status_line() {
+        let rows = vec![
+            msg("user", "Book the flights", None),
+            msg("assistant", "Comparing fares now.", None),
+            restart_note(),
+        ];
+        let t = thread_preview(&rows);
+        assert!(t.restarted);
+        assert_eq!(t.preview.as_deref(), Some("Comparing fares now."));
+
+        // Two restarts in a row still reach past both to the real status.
+        let rows = vec![msg("assistant", "Drafting the summary.", None), restart_note(), restart_note()];
+        let t = thread_preview(&rows);
+        assert!(t.restarted);
+        assert_eq!(t.preview.as_deref(), Some("Drafting the summary."));
+
+        // A restart note with nothing real before it: restarted, no line.
+        let t = thread_preview(&[restart_note()]);
+        assert!(t.restarted);
+        assert!(t.preview.is_none());
+    }
+
+    /// `is_visible` mirrors the store's `last_visible_message_sql`; if that
+    /// SQL's three clauses change, this fails so the mirror follows.
+    #[test]
+    fn sql_visibility_rule_matches_thread_preview() {
+        let sql = include_str!("../../../db/src/queries/chats.rs");
+        let rule = sql
+            .split("fn last_visible_message_sql")
+            .nth(1)
+            .expect("last_visible_message_sql exists in crates/db");
+        let rule = &rule[..rule.find("impl Store").unwrap_or(rule.len())];
+        assert!(rule.contains("m2.role != 'tool'"), "tool rows are hidden: {rule}");
+        assert!(rule.contains("m2.content != ''"), "empty rows are hidden: {rule}");
+        assert!(rule.contains(r#"NOT LIKE '%\"hidden\":true%'"#), "hidden rows are hidden: {rule}");
+    }
 }

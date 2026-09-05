@@ -16,7 +16,7 @@
 //! - [ ] 1. Reproduce with a test (verify: `cargo test -p web redirect`)
 //! - [x] 2. Fix the handler (verify: `cargo test -p web redirect`)
 //!
-//! Last check: 2026-09-02T14:03:11Z, 1/2 verified
+//! Last check: 2026-09-02T14:03:11Z, 1/2 checked steps verified (2 steps in plan)
 //!   1. ✗ Reproduce with a test, exit 101: test redirect_keeps_query ... FAILED
 //!   2. ✓ Fix the handler
 //!
@@ -168,7 +168,11 @@ pub fn apply(content: &str, results: &[StepResult], now: &str) -> (String, usize
     }
     let verified = results.iter().filter(|r| r.ok).count();
     lines.push(String::new());
-    lines.push(format!("Last check: {now}, {verified}/{} verified", results.len()));
+    let steps_in_plan = parse(content).map(|p| p.steps.len()).unwrap_or(0);
+    lines.push(format!(
+        "Last check: {now}, {verified}/{} checked steps verified ({steps_in_plan} steps in plan)",
+        results.len()
+    ));
     for r in results {
         let title = parse(content)
             .ok()
@@ -236,7 +240,7 @@ mod tests {
         let plan = parse(&doc2).unwrap();
         assert!(!plan.steps[0].checked);
         assert!(plan.steps[1].checked);
-        assert!(doc2.contains("Last check: 2026-09-02T14:03:11Z, 1/2 verified"));
+        assert!(doc2.contains("Last check: 2026-09-02T14:03:11Z, 1/2 checked steps verified (2 steps in plan)"), "{doc2}");
         assert!(doc2.contains("1. ✗ Reproduce with a test, exit 101: test redirect_keeps_query ... FAILED"));
         assert!(!doc2.contains('—'), "owner-visible document carries no em-dash:\n{doc2}");
         assert!(doc2.contains("2. ✓ Fix the handler"));

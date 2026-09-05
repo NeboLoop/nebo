@@ -1,0 +1,51 @@
+id: correction-os-glob-no-action
+name: "Correction - an os call with glob and path but no action is a glob"
+description: |
+  Replayed from a live run on 2026-09-05: the model called os with
+  {glob: "*.md", path: "<dir>"} and no action and got "Failed to parse
+  input: missing field `action`". The shape recurs (it is in the error-shape
+  baseline). The os tool now infers the action from the fields when none is
+  given, the way the agent tool does for a task update: glob or
+  pattern+path is a glob, command is exec, path+content is write,
+  path+old_string is edit, path alone is read. This fixture asks for the
+  call in exactly that shape and pins a zero-error run.
+target_component: os
+
+setup:
+  - "mkdir -p /tmp/nebo-corr-glob && printf '# a\n' > /tmp/nebo-corr-glob/alpha.md && printf '# b\n' > /tmp/nebo-corr-glob/beta.md && printf 'x' > /tmp/nebo-corr-glob/notes.txt"
+teardown:
+  - "rm -rf /tmp/nebo-corr-glob"
+
+conversation:
+  - role: user
+    content: "Call the os tool with exactly these two arguments and nothing else: glob: \"*.md\", path: \"/tmp/nebo-corr-glob\". Do not pass an action or a resource. Then tell me which files it listed."
+
+tool_config:
+  os:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: glob-call-shape
+      text: "The first call is os with glob \"*.md\" and path /tmp/nebo-corr-glob"
+      severity: critical
+      check: { first_call: true, tool: os, arg: path, equals: "/tmp/nebo-corr-glob" }
+  recovery:
+    - id: no-tool-errors
+      text: "Every call is accepted: no 'missing field action' or other parse error in any tool result"
+      severity: critical
+      check: { max_errors: 0, no_error_contains: ["missing field", "Failed to parse input"] }
+    - id: one-call
+      text: "One call is enough; the model does not retry with a different shape"
+      severity: critical
+      check: { max_tool_calls: 2 }
+    - id: honest-listing
+      text: "The final response names alpha.md and beta.md and does not name notes.txt"
+      severity: critical
+
+ideal_behavior:
+  tool_calls: 1
+  total_tokens: 1500
+  narrative: |
+    One os call with glob and path, the result lists alpha.md and beta.md,
+    then one line naming them.

@@ -1,19 +1,20 @@
-### web — Web & Browser Automation
+### web: Web & Browser Automation
 USE THIS when: user mentions a URL, asks to look something up, browse, search the web, fetch a page, or interact with a website.
 
 Three modes:
-- **fetch:** HTTP requests (no JS rendering). Actions: fetch, get, post, put, delete, head, sanitize
-- **search:** Web search. Action: search(query: "...")
-- **browser:** Controls the user's Chrome browser via the Nebo extension. Full automation — navigate, read pages, click, fill forms, take screenshots. Works on the user's real browser with their logged-in sessions.
+- **fetch:** HTTP requests (no JS rendering). Actions: fetch (the HTTP verb comes from `method`, default GET), sanitize
+- **search:** Web search. Action: search(query: "...") or search(queries: [...]) for several at once
+- **browser:** Controls the user's Chrome browser via the Nebo extension. Full automation: navigate, read pages, click, fill forms, take screenshots. Works on the user's real browser with their logged-in sessions.
 
 Decision: If you just need an API response or static HTML → fetch. If you need to read a rendered page, interact with elements, or use the user's sessions → browser. If you need page internals (console, cookies) → devtools resource.
 
 **HTTP Actions:**
-- web(resource: "http", action: "fetch", url: "https://...") — GET request
-- web(resource: "http", action: "post", url: "https://...", body: "data", headers: {...}) — POST
-- web(resource: "http", action: "sanitize", url: "https://...") — Fetch HTML, extract text
+- web(resource: "http", action: "fetch", url: "https://..."): GET request
+- web(resource: "http", action: "fetch", method: "POST", url: "https://...", body: "data", headers: {...}): POST (method: GET | POST | PUT | DELETE | HEAD | PATCH; there is no separate post/put/delete action)
+- web(resource: "http", action: "sanitize", url: "https://..."): Fetch HTML, extract text
 
 **Search:**
-- web(action: "search", query: "your query here") — Web search returning structured results
+- web(action: "search", query: "your query here"): Web search returning structured results
+- web(action: "search", queries: ["query one", "query two"]): Several searches in ONE call
 
-**Browser — see tool description for full action list and usage rules.**
+**Browser: see tool description for full action list and usage rules.**

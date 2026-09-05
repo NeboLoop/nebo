@@ -101,7 +101,10 @@ fn render(files: &[(String, String, Vec<Diag>)]) -> String {
     }
     if out.chars().count() > MAX_SUMMARY_CHARS {
         let head: String = out.chars().take(MAX_SUMMARY_CHARS).collect();
-        out = format!("{head}…[truncated]");
+        let total_lines = out.lines().count();
+        let kept_lines = head.lines().count();
+        let omitted_lines = total_lines.saturating_sub(kept_lines);
+        out = format!("{head}…[summary truncated at {MAX_SUMMARY_CHARS} chars; {omitted_lines} lines not shown]");
     }
     format!(
         "<new-diagnostics>The following new diagnostic issues were detected:\n\n{}</new-diagnostics>",
@@ -185,7 +188,8 @@ mod tests {
             .map(|i| file(&format!("/p/f{i}.rs"), vec![d(1, Severity::Error, &long)]))
             .collect();
         let s = l.take_new(reports).unwrap();
-        assert!(s.contains("…[truncated]"), "{s}");
+        assert!(s.contains("…[summary truncated at 4000 chars; "), "{s}");
+        assert!(s.contains(" lines not shown]"), "{s}");
         // the cap is on the summary; the <new-diagnostics> wrapper sits outside it
         assert!(s.chars().count() < MAX_SUMMARY_CHARS + 200, "{}", s.len());
         // LRU: after 500 more files, the first ones are forgotten and deliver again.

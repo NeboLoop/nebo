@@ -912,9 +912,14 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
             Ok(chats) => {
                 for (chat_id, _session_name) in &chats {
                     let msg_id = uuid::Uuid::new_v4().to_string();
-                    let text = "I was interrupted by a restart before I could finish — want me to \
+                    let text = "I was interrupted by a restart before I could finish. Want me to \
                                 pick up where I left off? Just say \"continue\".";
-                    let _ = store.create_chat_message(&msg_id, chat_id, "assistant", text, None);
+                    // Stamped so thread summaries read it as a state of the
+                    // thread (a restart), not as the employee's last words.
+                    let metadata = handlers::chat::restart_notice_metadata();
+                    if let Err(e) = store.create_chat_message(&msg_id, chat_id, "assistant", text, Some(&metadata)) {
+                        warn!(error = %e, chat_id = %chat_id, "restart recovery: failed to note interrupted chat");
+                    }
                 }
                 if !chats.is_empty() {
                     info!(count = chats.len(), "restart recovery: noted interrupted chats");
@@ -1314,7 +1319,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
 
     // Register the MCP enumeration tool — mcp(action:"list") lists connected servers.
     // Each server's tools are exposed as their own mcp__<server>__<tool> proxy tools.
-    let mcp_tool = tools::mcp_tool::McpTool::new(bridge.clone());
+    let mcp_tool = tools::mcp_tool::McpTool::new(tool_registry.mcp_proxy_roster());
     tool_registry.register(Box::new(mcp_tool)).await;
 
     // Sync MCP integrations from DB — reconnect with stored OAuth tokens
@@ -2253,6 +2258,12 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
                 }
             }
         });
+    }
+
+    // Employee roster reconcile worker: connect and every employee change
+    // request a pass; this is the one place a pass runs (debounced, coalesced).
+    if cfg.is_neboai_enabled() {
+        codes::spawn_agent_reconcile_worker(state.clone());
     }
 
     // Auto-connect NeboAI if enabled and credentials exist
@@ -3210,8 +3221,7 @@ async fn try_handle_comm_control(
     }
     let pending = state.pending_comm_asks.lock().await.remove(session_key);
     if let Some(request_id) = pending {
-        if let Some(tx) = state.ask_channels.lock().await.remove(&request_id) {
-            let _ = tx.send(answer.to_string());
+        if chat_dispatch::answer_ask(state, &request_id, answer.to_string()).await {
             tracing::info!(session = %session_key, "inbound comm message resolved pending ask");
             return true;
         }
@@ -3414,6 +3424,14 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
             }
             _ => {}
         }
+    }
+
+    // A provider revoked a plugin account on ITS side (an Intuit disconnect,
+    // for one); the hub relays it on the bot's own stream. Keyed on the
+    // metadata kind, not the stream, so it is handled wherever it arrives.
+    if let Some(revoked) = handlers::plugins::parse_plugin_auth_revoked(&msg) {
+        handlers::plugins::revoke_plugin_auth(&state, &revoked).await;
+        return;
     }
 
     // Route account stream messages (plan changes, token refresh)
@@ -3698,6 +3716,8 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
             tool_allowlist: None,
             hidden_prompt: false,
             audience: None,
+            cwd: None,
+            model_override: None,
         };
 
         chat_dispatch::run_chat(&state, config).await;
@@ -3869,6 +3889,8 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
             tool_allowlist: None,
             hidden_prompt: false,
             audience: None,
+            cwd: None,
+            model_override: None,
         };
 
         chat_dispatch::run_chat(&state, config).await;
@@ -4147,6 +4169,8 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
                 tool_allowlist: None,
                 hidden_prompt: false,
                 audience: None,
+                cwd: None,
+                model_override: None,
             };
 
             chat_dispatch::run_chat(&state, config).await;
@@ -4255,6 +4279,8 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
             tool_allowlist: None,
             hidden_prompt: false,
             audience: None,
+            cwd: None,
+            model_override: None,
         };
 
         chat_dispatch::run_chat(&state, config).await;
@@ -5058,6 +5084,8 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
                 },
                 hidden_prompt: false,
                 audience: None,
+                cwd: None,
+                model_override: None,
             };
 
             chat_dispatch::run_chat(&state, config).await;

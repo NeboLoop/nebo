@@ -471,7 +471,7 @@ export function toggleAgentWorkflow(id: string, bindingName: string, req: Record
  * @description "Publish agent workflow"
  */
 export function publishAgentWorkflow(id: string, name: string, req: Record<string, unknown> = {}) {
-	return webapi.post<components.PublishAgentWorkflowResponse>(`/api/v1/agents/${id}/workflows/${name}/publish`, req)
+	return webapi.post<unknown>(`/api/v1/agents/${id}/workflows/${name}/publish`, req)
 }
 
 /**

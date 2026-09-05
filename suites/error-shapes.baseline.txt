@@ -1,0 +1,18 @@
+# Error shapes the suite has produced and someone has read. One per line.
+# A new shape fails the nightly until it is fixed or added here on purpose.
+event: Either '<x>' or '<x>' is required. Use cron: "<x>" or at: "<x>".
+message: No employee named '<x>' is installed. Use agent(resource: "<x>", action: "<x>") to see the roster — coworker messages go to installed employees only.
+os: BLOCKED: sudo is not permitted. Nebo must never run commands with elevated privileges. This is a hard safety limit that cannot be overridden. Ask the owner to m
+os: Blocked: os has been called <n> times with identical arguments and has not made progress — it errored or returned what you already had. Retrying it unchanged wi
+os: Blocked: os has been called <n> times with identical arguments and returned the same thing each time, or errored each time. Calling it the same way again, or th
+os: Command exited with code <n>
+os: Command timed out after 60s: `while [ $(wc -l < <path>) -lt <n> ]; do sleep <n>; done && sed -n '...`
+os: Could not infer a resource from action '<x>'. Pass resource explicitly (file, shell, window, input, clipboard, capture, notification, ui, menu, dialog, space, s
+os: Could not infer a resource from action 'exec>
+os: Error writing file: Permission denied (os error <n>)
+os: Error: file not found: <path>
+os: Error: source file not found: <path>
+os: Failed to parse input: missing field `action`. Received fields: [glob, path, pattern]. Every `os` call needs an `action` (resource is inferred when omitted) — e
+os: Missing required parameter '<x>' for edit action.
+os: Unknown action: append (valid: read, write, edit, share, glob, grep, checkpoint, checkpoints, restore, plan, plan_check)
+os: `tail -f` follows output forever and would block this call for its entire timeout without returning anything. Take a bounded snapshot instead — e.g. `tail -n <n

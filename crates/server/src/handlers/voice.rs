@@ -6,10 +6,12 @@ use tokio::sync::mpsc;
 use tracing::{error, info, warn};
 
 use super::to_error_response;
-use crate::chat_dispatch::{entity_run_params, resolve_full_access};
+use crate::chat_dispatch::{
+    TurnEnd, announce_ask, control_stop_of, entity_run_params, finish_turn, resolve_full_access,
+};
 use crate::codes::build_api_client;
-use crate::run_registry::RegisterParams;
-use crate::state::AppState;
+use crate::run_registry::{RegisterParams, RunHandle, RunRegistry};
+use crate::state::{AppState, PendingToolApproval};
 
 /// Voice conversation — speech-to-speech via the xAI Grok realtime API
 /// (Janus metered relay or BYOK direct). Dictation was removed: the OS does
@@ -595,46 +597,176 @@ async fn run_delegated_task(
         current_tool: run_handle.current_tool.clone(),
     });
     let cancel_token = req.cancel_token.clone();
+    let agent_id = req.agent_id.clone();
     match state.runner.run(req).await {
-        Ok(mut rx) => {
-            let mut out = String::new();
-            // Typed run status (a busy session's "still on the last thing",
-            // a stall) stands in for a reply only when there is none;
-            // progress notices are superseded by the text that follows.
-            let mut last_notice = String::new();
-            let mut last_event = tokio::time::Instant::now();
-            loop {
-                let event = match agent::guardrails::next_event(&mut rx, last_event).await {
-                    agent::guardrails::Next::Event(e) => e,
-                    agent::guardrails::Next::Closed => break,
-                    agent::guardrails::Next::Stalled => {
-                        warn!(
-                            session_key,
-                            "voice run stalled: no event for {}s",
-                            agent::guardrails::RUN_IDLE_LIMIT.as_secs()
-                        );
-                        last_notice = agent::guardrails::stall_notice();
-                        cancel_token.cancel();
-                        break;
-                    }
-                };
-                last_event = tokio::time::Instant::now();
-                run_handle.touch();
-                match event.event_type {
-                    ai::StreamEventType::Text => out.push_str(&event.text),
-                    ai::StreamEventType::ControlNotice => last_notice = event.text,
-                    _ => {}
-                }
-            }
-            if !out.trim().is_empty() {
-                out
-            } else if !last_notice.is_empty() {
-                last_notice
-            } else {
-                "The task completed but produced no text summary.".into()
-            }
+        Ok(rx) => {
+            let (spoken_tx, spoken_rx) = tokio::sync::oneshot::channel();
+            let sinks = VoiceRunSinks {
+                hub: state.hub.clone(),
+                registry: state.run_registry.clone(),
+                ask_channels: state.ask_channels.clone(),
+                pending_tool_approvals: state.pending_tool_approvals.clone(),
+            };
+            tokio::spawn(drain_voice_run(
+                sinks,
+                session_key.to_string(),
+                agent_id,
+                rx,
+                run_handle,
+                cancel_token,
+                spoken_tx,
+            ));
+            spoken_rx.await.unwrap_or_else(|_| VOICE_RUN_VANISHED.to_string())
         }
         Err(e) => format!("The task failed: {e}"),
+    }
+}
+
+/// Spoken when the drain task ended without ever producing a reply (it
+/// panicked): the phone must hear something, and it must be true.
+const VOICE_RUN_VANISHED: &str = "The task ended before it could answer.";
+
+/// Where a delegated voice run reports: the same hub, registry and answer
+/// channels the chat pipeline uses, so its parked questions and its end look
+/// identical to a chat run's from every client.
+struct VoiceRunSinks {
+    hub: std::sync::Arc<super::ws::ClientHub>,
+    registry: RunRegistry,
+    ask_channels: tools::AskChannels,
+    pending_tool_approvals: std::sync::Arc<tokio::sync::Mutex<std::collections::HashMap<String, PendingToolApproval>>>,
+}
+
+/// Drain a delegated voice run to its end. The spoken reply is sent ONCE
+/// through `spoken`: the run's text when it finishes, or, if the run parks
+/// on a question first, the spoken form of that question, so the phone's
+/// tool call returns while the run waits for the answer (the card is on the
+/// web, recorded on the run like any chat ask). Live 2026-09-05: the run sat
+/// on an install card and the phone reported "plugin failed 300s". The run
+/// then ends through the same `finish_turn` the chat pipeline uses, so the
+/// phone learns the turn is over from `chat_complete` like every client.
+async fn drain_voice_run(
+    sinks: VoiceRunSinks,
+    session_key: String,
+    agent_id: String,
+    mut rx: mpsc::Receiver<ai::StreamEvent>,
+    run_handle: RunHandle,
+    cancel_token: tokio_util::sync::CancellationToken,
+    spoken: tokio::sync::oneshot::Sender<String>,
+) {
+    let mut spoken = Some(spoken);
+    let mut out = String::new();
+    // Typed run status (a busy session's "still on the last thing", a
+    // stall) stands in for a reply only when there is none; progress
+    // notices are superseded by the text that follows.
+    let mut last_notice = String::new();
+    let mut control_stop: Option<(String, String)> = None;
+    let mut last_event = tokio::time::Instant::now();
+    loop {
+        let event = match agent::guardrails::next_event(&mut rx, last_event).await {
+            agent::guardrails::Next::Event(e) => e,
+            agent::guardrails::Next::Closed => break,
+            agent::guardrails::Next::Stalled => {
+                warn!(
+                    session_key,
+                    "voice run stalled: no event for {}s",
+                    agent::guardrails::RUN_IDLE_LIMIT.as_secs()
+                );
+                last_notice = agent::guardrails::stall_notice();
+                control_stop = Some((agent::guardrails::Exit::Stalled.label(), last_notice.clone()));
+                cancel_token.cancel();
+                break;
+            }
+        };
+        last_event = tokio::time::Instant::now();
+        run_handle.touch();
+        match event.event_type {
+            ai::StreamEventType::Text => out.push_str(&event.text),
+            ai::StreamEventType::ControlNotice => {
+                if let Some(stop) = control_stop_of(&event) {
+                    control_stop = Some(stop);
+                }
+                last_notice = event.text;
+            }
+            ai::StreamEventType::AskRequest => {
+                announce_ask(&sinks.hub, &sinks.registry, &session_key, &event).await;
+                if let Some(tx) = spoken.take() {
+                    let _ = tx.send(spoken_ask(&event));
+                }
+            }
+            _ => {}
+        }
+    }
+    if let Some(tx) = spoken.take() {
+        let _ = tx.send(voice_reply(&out, &last_notice));
+    }
+    finish_turn(
+        &sinks.hub,
+        &run_handle,
+        &sinks.ask_channels,
+        &sinks.pending_tool_approvals,
+        TurnEnd {
+            session_key: &session_key,
+            payload: serde_json::json!({ "session_id": session_key, "agentId": agent_id }),
+            artifacts: &[],
+            control_stop: control_stop.as_ref(),
+        },
+    )
+    .await;
+}
+
+/// The spoken reply when a run ends: its text, else its typed status line,
+/// else an honest "nothing to say".
+fn voice_reply(out: &str, last_notice: &str) -> String {
+    if !out.trim().is_empty() {
+        out.to_string()
+    } else if !last_notice.is_empty() {
+        last_notice.to_string()
+    } else {
+        "The task completed but produced no text summary.".into()
+    }
+}
+
+/// What the phone hears when the delegated run parks on a question. Choices
+/// are read out so the caller knows what the employee is waiting on; an
+/// install or sign-in card can only be acted on in the app, so that one
+/// sentence says exactly that and the card waits there.
+fn spoken_ask(event: &ai::StreamEvent) -> String {
+    let widget = event.widgets.as_ref().and_then(|w| w.get(0));
+    let field = |key: &str| widget.and_then(|w| w.get(key)).and_then(|v| v.as_str());
+    let kind = field("type").unwrap_or("");
+    let name = field("name")
+        .or_else(|| field("label"))
+        .or_else(|| field("plugin"))
+        .unwrap_or("that app");
+    match kind {
+        "install_plugin" => format!("I need you to install {name} from the app before I can continue."),
+        "connect_account" => format!("I need you to sign in to {name} from the app before I can continue."),
+        _ => {
+            let options: Vec<&str> = widget
+                .and_then(|w| w.get("options"))
+                .and_then(|o| o.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|o| o.as_str().or_else(|| o.get("label").and_then(|l| l.as_str())))
+                        .collect()
+                })
+                .unwrap_or_default();
+            if options.is_empty() {
+                event.text.clone()
+            } else {
+                format!("{} Your options are: {}.", event.text.trim_end(), join_options(&options))
+            }
+        }
+    }
+}
+
+/// "A", "A or B", "A, B, or C".
+fn join_options(options: &[&str]) -> String {
+    match options {
+        [] => String::new(),
+        [one] => (*one).to_string(),
+        [first, second] => format!("{first} or {second}"),
+        [head @ .., last] => format!("{}, or {last}", head.join(", ")),
     }
 }
 
@@ -1992,5 +2124,158 @@ mod voice_prompt_tests {
             assert!(c.len() <= cap.max(0));
             assert!(s.starts_with(c));
         }
+    }
+
+    fn ask_event(prompt: &str, widgets: serde_json::Value) -> ai::StreamEvent {
+        ai::StreamEvent::ask_request("req-1", prompt, Some(widgets))
+    }
+
+    /// Option widgets are read out; a lone option or a pair reads naturally.
+    #[test]
+    fn spoken_ask_reads_the_options() {
+        let e = ask_event(
+            "Which calendar should I use?",
+            serde_json::json!([{ "type": "options", "options": ["Work", { "label": "Personal" }, "Both"] }]),
+        );
+        assert_eq!(
+            super::spoken_ask(&e),
+            "Which calendar should I use? Your options are: Work, Personal, or Both."
+        );
+        let e = ask_event("Send it?", serde_json::json!([{ "type": "options", "options": ["Yes", "No"] }]));
+        assert_eq!(super::spoken_ask(&e), "Send it? Your options are: Yes or No.");
+        let e = ask_event("Go on?", serde_json::json!([]));
+        assert_eq!(super::spoken_ask(&e), "Go on?");
+    }
+
+    /// Install and sign-in cards become one sentence naming the app: the
+    /// action happens in the app, the phone only needs to know to go there.
+    #[test]
+    fn spoken_ask_names_the_app_for_cards() {
+        let e = ask_event(
+            "Install QuickBooks to continue.",
+            serde_json::json!([{ "type": "install_plugin", "name": "QuickBooks", "code": "PLUG-1" }]),
+        );
+        assert_eq!(super::spoken_ask(&e), "I need you to install QuickBooks from the app before I can continue.");
+        let e = ask_event(
+            "Connect your Gmail on the card.",
+            serde_json::json!([{ "type": "connect_account", "plugin": "gmail", "label": "Gmail" }]),
+        );
+        assert_eq!(super::spoken_ask(&e), "I need you to sign in to Gmail from the app before I can continue.");
+    }
+
+    /// A run that parks on a question answers the phone at once with the
+    /// spoken question, records the card on the run, and when the run later
+    /// ends releases the card and emits chat_complete for the session.
+    #[tokio::test]
+    async fn drain_voice_run_speaks_the_ask_then_finishes_the_turn() {
+        let hub = std::sync::Arc::new(crate::handlers::ws::ClientHub::new());
+        let mut events = hub.subscribe();
+        let registry = crate::run_registry::RunRegistry::new();
+        let ask_channels: tools::AskChannels = Default::default();
+        let approvals = std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let run_handle = registry
+            .register(crate::run_registry::RegisterParams {
+                session_key: "agent:a:thread:t".into(),
+                entity_id: "a".into(),
+                entity_name: "A".into(),
+                origin: "user".into(),
+                channel: "voice".into(),
+                cancel_token: cancel.clone(),
+                parent_run_id: None,
+            })
+            .await;
+        // The tool side of the ask: a oneshot the drain must leave alone
+        // while parked and release when the run ends.
+        let (ask_tx, ask_rx) = tokio::sync::oneshot::channel::<String>();
+        ask_channels.lock().await.insert("req-1".into(), ask_tx);
+
+        let (tx, rx) = tokio::sync::mpsc::channel(8);
+        let (spoken_tx, spoken_rx) = tokio::sync::oneshot::channel();
+        let sinks = super::VoiceRunSinks {
+            hub: hub.clone(),
+            registry: registry.clone(),
+            ask_channels: ask_channels.clone(),
+            pending_tool_approvals: approvals,
+        };
+        let drain = tokio::spawn(super::drain_voice_run(
+            sinks,
+            "agent:a:thread:t".into(),
+            "a".into(),
+            rx,
+            run_handle,
+            cancel,
+            spoken_tx,
+        ));
+
+        tx.send(ask_event("Send it?", serde_json::json!([{ "type": "options", "options": ["Yes", "No"] }])))
+            .await
+            .unwrap();
+        let spoken = tokio::time::timeout(std::time::Duration::from_secs(2), spoken_rx)
+            .await
+            .expect("phone hears the question before the run ends")
+            .unwrap();
+        assert_eq!(spoken, "Send it? Your options are: Yes or No.");
+        let parked = registry.pending_ask_for_session("agent:a:thread:t").await.expect("card recorded on the run");
+        assert_eq!(parked.request_id, "req-1");
+        assert!(ask_channels.lock().await.contains_key("req-1"), "the answer channel waits while parked");
+        let live = events.recv().await.unwrap();
+        assert_eq!(live.event_type, "ask_request");
+        assert_eq!(live.payload["request_id"], "req-1");
+
+        // The run ends (answered elsewhere, or not): the turn finishes.
+        tx.send(ai::StreamEvent::text("Done.")).await.unwrap();
+        drop(tx);
+        drain.await.unwrap();
+        let done = events.recv().await.unwrap();
+        assert_eq!(done.event_type, "chat_complete");
+        assert_eq!(done.payload["session_id"], "agent:a:thread:t");
+        assert_eq!(done.payload["agentId"], "a");
+        assert!(ask_channels.lock().await.is_empty(), "the unanswered channel is released with the run");
+        assert!(ask_rx.await.is_err(), "the parked tool is woken");
+        assert!(registry.pending_asks().await.is_empty());
+    }
+
+    /// Without a question the phone hears the run's text at the end, and
+    /// chat_complete still follows.
+    #[tokio::test]
+    async fn drain_voice_run_speaks_the_reply_when_nothing_parks() {
+        let hub = std::sync::Arc::new(crate::handlers::ws::ClientHub::new());
+        let mut events = hub.subscribe();
+        let registry = crate::run_registry::RunRegistry::new();
+        let run_handle = registry
+            .register(crate::run_registry::RegisterParams {
+                session_key: "s".into(),
+                entity_id: "a".into(),
+                entity_name: "A".into(),
+                origin: "user".into(),
+                channel: "voice".into(),
+                cancel_token: tokio_util::sync::CancellationToken::new(),
+                parent_run_id: None,
+            })
+            .await;
+        let (tx, rx) = tokio::sync::mpsc::channel(8);
+        let (spoken_tx, spoken_rx) = tokio::sync::oneshot::channel();
+        let sinks = super::VoiceRunSinks {
+            hub: hub.clone(),
+            registry,
+            ask_channels: Default::default(),
+            pending_tool_approvals: std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
+        };
+        let drain = tokio::spawn(super::drain_voice_run(
+            sinks,
+            "s".into(),
+            "a".into(),
+            rx,
+            run_handle,
+            tokio_util::sync::CancellationToken::new(),
+            spoken_tx,
+        ));
+        tx.send(ai::StreamEvent::text("Booked ")).await.unwrap();
+        tx.send(ai::StreamEvent::text("both.")).await.unwrap();
+        drop(tx);
+        drain.await.unwrap();
+        assert_eq!(spoken_rx.await.unwrap(), "Booked both.");
+        assert_eq!(events.recv().await.unwrap().event_type, "chat_complete");
     }
 }

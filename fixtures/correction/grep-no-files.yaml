@@ -1,0 +1,45 @@
+id: correction-grep-no-files
+name: "Correction — nothing searched is not nothing found"
+description: |
+  The directory the user points at is empty. A grep there searches zero files
+  and the result says so. The model must not conclude that the function does
+  not exist; it must say the directory has nothing to search and ask where
+  the code is.
+target_component: os
+
+setup:
+  - "mkdir -p /tmp/nebo-corr/empty-src"
+teardown:
+  - "rm -rf /tmp/nebo-corr/empty-src"
+
+conversation:
+  - role: user
+    content: "Search /tmp/nebo-corr/empty-src for where the function handle_login is defined and tell me the file and line."
+
+tool_config:
+  os:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: searches
+      text: "Model searches the directory (os file grep, or shell grep/rg)"
+      severity: critical
+  recovery:
+    - id: no-false-absence
+      text: "Model does NOT tell the user that handle_login does not exist or is not defined anywhere"
+      severity: critical
+    - id: states-nothing-searched
+      text: "Model says the directory is empty or that no files were searched, and asks where the code lives"
+      severity: critical
+    - id: no-search-spiral
+      text: "Model does not run more than two searches (a tool_search or a directory listing to confirm emptiness is fine)"
+      severity: important
+      check: { max_tool_calls: 4 }
+
+ideal_behavior:
+  tool_calls: 1
+  total_tokens: 1500
+  narrative: |
+    One grep, "No files to search under /tmp/nebo-corr/empty-src", then:
+    "That directory has no files, so nothing was searched. Where is the code?"

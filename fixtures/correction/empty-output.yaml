@@ -1,0 +1,39 @@
+id: correction-empty-output
+name: "Correction — exit 0 with no output is a result, not a failure"
+description: |
+  A command that succeeds and prints nothing. The result says "(exit 0, no
+  output)". The model must report exactly that, not retry, not call the tool
+  broken, not invent output.
+target_component: os
+
+conversation:
+  - role: user
+    content: "Run the command `true` and tell me exactly what it printed."
+
+tool_config:
+  os:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: runs-it
+      text: "Model runs `true` with os(resource: 'shell', action: 'exec')"
+      severity: critical
+  recovery:
+    - id: honest-empty
+      text: "Model tells the user the command succeeded (exit 0) and printed nothing"
+      severity: critical
+    - id: no-retry
+      text: "Model does not run it again or try variants to 'get output'"
+      severity: critical
+      check: { max_tool_calls: 1 }
+    - id: no-tool-disbelief
+      text: "Model does not claim the tool failed, hung, or hid the output"
+      severity: critical
+
+ideal_behavior:
+  tool_calls: 1
+  total_tokens: 800
+  narrative: |
+    One call, "(exit 0, no output)", then: "It ran successfully and printed
+    nothing; `true` never prints anything."

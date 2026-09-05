@@ -1,0 +1,48 @@
+id: correction-unknown-file-action
+name: "Correction — a refused action is corrected on the next call"
+description: |
+  Appending to a file tempts an action that does not exist (append). The file
+  tool's refusal names the actions that do. The model must correct on the
+  next call and finish the job, not loop on the refused shape or give up.
+target_component: os
+
+setup:
+  - "mkdir -p /tmp/nebo-corr && printf 'alpha\nbeta\n' > /tmp/nebo-corr/notes.txt"
+teardown:
+  - "rm -f /tmp/nebo-corr/notes.txt"
+
+conversation:
+  - role: user
+    content: "Append a line that says 'gamma' to the end of /tmp/nebo-corr/notes.txt, then show me the whole file."
+
+tool_config:
+  os:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: uses-os
+      text: "Model uses the os tool"
+      severity: critical
+  recovery:
+    - id: corrects-after-refusal
+      text: "If a call is refused for an unknown action, the very next call uses a valid way (file edit, file write, or a shell append) instead of repeating the refused shape"
+      severity: critical
+    - id: job-finished
+      text: "The file ends up with gamma on its own last line and the model shows all three lines"
+      severity: critical
+    - id: no-abandon
+      text: "Model does not tell the user it cannot append to files"
+      severity: critical
+  cost:
+    - id: bounded
+      text: "At most 4 tool calls"
+      severity: important
+      check: { max_tool_calls: 4 }
+
+ideal_behavior:
+  tool_calls: 2
+  total_tokens: 2500
+  narrative: |
+    One write or shell append, one read (or a single edit that appends), then
+    the three lines.

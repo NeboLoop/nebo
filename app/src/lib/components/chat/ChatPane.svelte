@@ -22,6 +22,7 @@
   import Table from 'lucide-svelte/icons/table';
   import Presentation from 'lucide-svelte/icons/presentation';
   import type { UploadedAttachment } from '$lib/types/attachment';
+  import { flushSync } from 'svelte';
   import type { Snippet } from 'svelte';
   import { getAttachmentType, formatFileSize, attachmentMediaUrl } from '$lib/types/attachment';
   import { NEAR_BOTTOM_PX, distanceFromBottom } from '$lib/chat/scroll';
@@ -74,7 +75,7 @@
   type Message =
     | { type: 'user'; content: string; time?: string; attachments?: UploadedAttachment[]; pending?: boolean }
     | { type: 'thinking'; content: string; duration: string }
-    | { type: 'ask'; requestId: string; prompt: string; widgets: AskWidgetDef[]; response?: string }
+    | { type: 'ask'; requestId: string; prompt: string; widgets: AskWidgetDef[]; response?: string; cancelled?: boolean }
     | { type: 'assistant'; content: string; time?: string; delegateAgentId?: string; delegateAgentName?: string; id?: string; attachments?: UploadedAttachment[]; tools?: ToolMsg[]; streaming?: boolean };
 
   type AgentInfo = { id: string; name: string; color: string; initial: string; role: string; status: string; isApp?: boolean };
@@ -779,6 +780,11 @@
       const content = messagesContent;
       if (!scroller || !content) return;
       updateTurnSpacer();
+      // The spacer is state; it has to be in the DOM before the scroll below
+      // or the browser clamps the scroll to the old height and the message
+      // lands wherever the previous reply left it, the reply then streaming
+      // below the fold while the spacer keeps the follow pin from firing.
+      flushSync();
       const userEls = content.querySelectorAll<HTMLElement>('[data-user-msg]');
       const target = userEls[userEls.length - 1];
       if (!target) return;
@@ -1011,7 +1017,13 @@
     return total > 0 ? fmtDuration(total) : '';
   }
   function stepOutcome(tool: ToolMsg): string {
+    // A failed step says so. "Used agent" for a call that was refused hid a
+    // model retrying the same bad call four times in a row.
+    if (tool.status === 'error') return $t('chat.stepFailed', { values: { name: tool.name } });
     return tool.outcome ?? tool.label ?? $t('chat.usedTool', { values: { name: tool.name } });
+  }
+  function anyFailed(tools: ToolMsg[]): boolean {
+    return tools.some((t) => t.status === 'error');
   }
   // Correct tool signature: MCP → "slug · tool", STRAP → "name · resource.action".
   function strapSig(t: ToolMsg): string {
@@ -1281,7 +1293,7 @@
           {:else}
             {@const wd = workLineDuration(tools)}
             <svg width="13" height="13" viewBox="0 0 18 18" fill="none" class="text-base-content/50 shrink-0"><path d="M10.5 3.5C10.5 2.67 11.17 2 12 2C12.5 2 13.09 2.24 13.45 2.59L15.41 4.55C15.76 4.91 16 5.5 16 6C16 6.83 15.33 7.5 14.5 7.5C14.16 7.5 13.85 7.38 13.6 7.18L12.18 8.6C12.38 8.85 12.5 9.16 12.5 9.5C12.5 10.33 11.83 11 11 11C10.67 11 10.36 10.88 10.11 10.69L5.69 15.11C5.5 15.3 5.25 15.41 5 15.41C4.75 15.41 4.5 15.3 4.31 15.11L2.89 13.69C2.7 13.5 2.59 13.25 2.59 13C2.59 12.75 2.7 12.5 2.89 12.31L7.31 7.89C7.12 7.64 7 7.33 7 7C7 6.17 7.67 5.5 8.5 5.5C8.84 5.5 9.15 5.62 9.4 5.82L10.82 4.4C10.62 4.15 10.5 3.84 10.5 3.5Z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>
-            <span class="text-xs truncate max-w-[60vw] md:max-w-md">{workLineLabel(tools)}</span>
+            <span class="text-xs truncate max-w-[60vw] md:max-w-md {anyFailed(tools) ? 'text-error' : ''}">{workLineLabel(tools)}</span>
             {#if wd}<span class="text-xs text-base-content/40">· {wd}</span>{/if}
             <span class="text-xs transition-transform {isOpen ? 'rotate-180' : ''}">&darr;</span>
           {/if}
@@ -1575,6 +1587,7 @@
             prompt={msg.prompt}
             widgets={msg.widgets}
             response={msg.response}
+            cancelled={msg.cancelled ?? false}
             disabled={!isLoading}
             onSubmit={(id, val) => onasksubmit?.(id, val)}
           />
@@ -1608,8 +1621,10 @@
                While the run is LIVE the work line stays up the whole time —
                working must ALWAYS be visible, with no flicker between calls.
                Only after the run ends does the telemetry line become developer
-               furniture, shown in dev mode (Settings → Developer). -->
-          {#if nonCoworkerTools(msg.tools).length && ($devMode || nonCoworkerTools(msg.tools).some((t) => t.status === 'running') || (isLoading && origIdx === groupedMessages.length - 1))}
+               furniture, shown in dev mode (Settings → Developer). A failed step
+               is never furniture: it stays, so a refused call is visible after
+               the fact. -->
+          {#if nonCoworkerTools(msg.tools).length && ($devMode || nonCoworkerTools(msg.tools).some((t) => t.status === 'running' || t.status === 'error') || (isLoading && origIdx === groupedMessages.length - 1))}
             {@render toolTimeline(nonCoworkerTools(msg.tools), msg.id ?? `m${origIdx}`)}
           {/if}
           {#each coworkerEvents(msg.tools) as ev, evIdx (evIdx)}

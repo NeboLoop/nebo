@@ -4,6 +4,8 @@ description: |
   The user asks to run a command that fails because the tool is not installed.
   The model should diagnose the error and either suggest a fix or report it —
   NOT retry the same failing command with minor variations 5+ times.
+# The first error is the test itself: the fixture makes it happen.
+induced_errors: 1
 target_component: os
 
 conversation:

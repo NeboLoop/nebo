@@ -1,12 +1,17 @@
 id: agents-delegate
-name: "Agent registry delegate — persona routing"
+name: "Coworker routing — work for a named employee is a message"
 description: |
-  The user asks to delegate a task to a named agent persona. The model must
-  use agent(resource: "registry", action: "delegate") — NOT agent(resource: "task", action: "spawn").
-  Delegation loads the target agent's full identity, plugins, and skills.
-  Spawning creates a blank sub-agent.
-target_component: agent
-
+  The user asks a named employee to do something. The delegate action was
+  removed: work for a named coworker goes through message(resource:
+  "coworker", action: "send"), which runs it in that employee's own session
+  with its own memory and permissions. The employee exists (setup creates
+  it), so the first call must succeed; a run that ends with "not installed"
+  has misnamed it.
+target_component: message
+setup:
+  - "curl -s -X POST localhost:27895/api/v1/agents -H 'Content-Type: application/json' -d '{\"blank\":true,\"name\":\"chief-of-staff\"}' > /dev/null"
+teardown:
+  - "python3 -c \"import json,urllib.request as u; ags=json.load(u.urlopen('http://localhost:27895/api/v1/agents'))['agents']; ids=[a['id'] for a in ags if a.get('name')=='chief-of-staff']; [u.urlopen(u.Request('http://localhost:27895/api/v1/agents/'+i, method='DELETE')) for i in ids]\""
 conversation:
   - role: user
     content: "Ask the chief-of-staff agent to draft my weekly report."
@@ -18,31 +23,34 @@ tool_config:
 prompt_assertions:
   first_call:
     - id: correct-tool
-      text: "Model calls 'agent' tool"
+      text: "Model's first call is the message tool"
       severity: critical
+      check: { first_call: true, tool: message }
     - id: correct-resource
-      text: "Model uses resource: 'registry'"
+      text: "Model uses resource: 'coworker'"
       severity: critical
+      check: { first_call: true, arg: resource, equals: "coworker" }
     - id: correct-action
-      text: "Model uses action: 'delegate'"
+      text: "Model uses action: 'send'"
       severity: critical
+      check: { first_call: true, arg: action, equals: "send" }
     - id: has-name
-      text: "Model passes name: 'chief-of-staff' or similar"
+      text: "Model addresses chief-of-staff"
       severity: critical
-    - id: has-prompt
-      text: "Model passes a prompt about drafting the weekly report"
-      severity: important
+      check: { first_call: true, arg: to, contains: "chief" }
+  recovery:
     - id: no-spawn
-      text: "Model does NOT use resource: 'task', action: 'spawn' which creates a blank sub-agent"
+      text: "Model does not spawn a blank sub-agent for a named employee's work"
       severity: critical
+    - id: accepted
+      text: "The message is accepted; no result says the employee is not installed"
+      severity: critical
+      check: { max_errors: 0 }
   cost:
     - id: single-call
       text: "Task completes in 1 tool call"
       severity: important
-
+      check: { tool_calls: 1 }
 ideal_behavior:
   tool_calls: 1
-  total_tokens: 2000
-  narrative: |
-    Single agent(resource: "registry", action: "delegate", name: "chief-of-staff",
-    prompt: "Draft my weekly report") call.
+  narrative: "One message(resource: coworker, action: send, to: chief-of-staff, text: ...) call, then a one-line confirmation."

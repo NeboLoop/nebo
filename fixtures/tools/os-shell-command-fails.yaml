@@ -4,6 +4,8 @@ description: |
   The user asks to run a command that will fail (nonexistent binary).
   The model should report the error clearly — NOT retry the same command,
   NOT try to install the missing tool without asking.
+# The first error is the test itself: the fixture makes it happen.
+induced_errors: 1
 target_component: os
 
 conversation:

@@ -192,7 +192,7 @@ pub async fn generate_session_title(
 
 /// Pick the cheapest available provider. Prefer non-gateway (non-Janus) providers,
 /// then fall back to whatever is available.
-fn pick_cheapest(providers: &[Arc<dyn Provider>]) -> Option<Arc<dyn Provider>> {
+pub(crate) fn pick_cheapest(providers: &[Arc<dyn Provider>]) -> Option<Arc<dyn Provider>> {
     // Prefer non-gateway providers (local/direct API are cheapest)
     providers
         .iter()

@@ -1,0 +1,44 @@
+id: correction-read-past-end
+name: "Correction — a read past the end reports the file's real length"
+description: |
+  The user asks for lines 500 to 520 of a three-line file. The read says the
+  file has 3 lines and the offset is past the end. The model must report that
+  and show what exists, not try other offsets or claim the file is empty.
+target_component: os
+
+setup:
+  - "mkdir -p /tmp/nebo-corr && printf 'one\ntwo\nthree\n' > /tmp/nebo-corr/short.txt"
+teardown:
+  - "rm -f /tmp/nebo-corr/short.txt"
+
+conversation:
+  - role: user
+    content: "Show me lines 500 to 520 of /tmp/nebo-corr/short.txt."
+
+tool_config:
+  os:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: ranged-read
+      text: "Model reads the file with an offset (os file read with offset/limit, or sed -n 500,520p)"
+      severity: important
+  recovery:
+    - id: reports-length
+      text: "Model tells the user the file only has 3 lines, so lines 500 to 520 do not exist"
+      severity: critical
+    - id: no-empty-claim
+      text: "Model does not say the file is empty or that the read failed"
+      severity: critical
+    - id: no-offset-hunting
+      text: "Model does not try several other offsets looking for content"
+      severity: important
+      check: { max_tool_calls: 2 }
+
+ideal_behavior:
+  tool_calls: 1
+  total_tokens: 1200
+  narrative: |
+    One read, "(file has 3 lines; offset 500 is past the end)", then: "The
+    file only has three lines: one, two, three. There is no line 500."

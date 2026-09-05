@@ -214,6 +214,12 @@ pub struct ToolContext {
     /// Shared ask channels — tools call `ask_user()` to show a UI prompt and
     /// block until the user responds. The WS handler resolves the oneshot.
     pub ask_channels: Option<AskChannels>,
+    /// True while this call is parked on the owner (an ask card). The runner
+    /// gives each call its own flag and stops the tool clock while it is set:
+    /// a card the owner took five minutes to click is not a slow tool, and
+    /// reporting it as "timed out after 300s" sent a live run off to blame
+    /// the marketplace (2026-09-05).
+    pub parked: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Channel context (Slack/Discord/etc.) when this run was triggered by an
     /// inbound channel message. `None` for web UI, scheduled, or system runs.
     pub channel: Option<ChannelContext>,
@@ -358,13 +364,69 @@ impl ToolContext {
             ))
             .await;
 
-        resp_rx.await.ok()
+        self.parked.store(true, std::sync::atomic::Ordering::SeqCst);
+        let answer = tokio::select! {
+            answer = resp_rx => answer.ok(),
+            _ = self.cancel_token.cancelled() => {
+                // The run is being cancelled: unpark now, so the runner can end
+                // the turn instead of waiting on an answer nobody will give.
+                channels.lock().await.remove(&request_id);
+                None
+            }
+        };
+        self.parked.store(false, std::sync::atomic::Ordering::SeqCst);
+        answer
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A parked ask ends with the run: cancelling the run's token resolves
+    /// the wait with no answer and withdraws the request from the channel
+    /// map, so a cancelled run never hangs on a card nobody will answer.
+    #[tokio::test]
+    async fn cancel_unparks_a_pending_ask() {
+        let (stream_tx, mut stream_rx) = tokio::sync::mpsc::channel(4);
+        let channels: AskChannels = Default::default();
+        let mut ctx = ToolContext::new(Origin::User);
+        ctx.stream_tx = Some(stream_tx);
+        ctx.ask_channels = Some(channels.clone());
+        let cancel = ctx.cancel_token.clone();
+        let parked = ctx.parked.clone();
+
+        let asking = tokio::spawn(async move { ctx.ask_user("Continue?", serde_json::json!([])).await });
+        let request = stream_rx.recv().await.expect("ask_request emitted");
+        assert_eq!(request.event_type, ai::StreamEventType::AskRequest);
+        assert!(parked.load(std::sync::atomic::Ordering::SeqCst));
+        assert_eq!(channels.lock().await.len(), 1);
+
+        cancel.cancel();
+        let answer = tokio::time::timeout(std::time::Duration::from_secs(2), asking)
+            .await
+            .expect("cancel unparks the ask")
+            .unwrap();
+        assert_eq!(answer, None);
+        assert!(channels.lock().await.is_empty(), "the withdrawn request leaves no sender behind");
+        assert!(!parked.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    /// An answer still resolves the wait exactly as before.
+    #[tokio::test]
+    async fn answer_resolves_a_pending_ask() {
+        let (stream_tx, mut stream_rx) = tokio::sync::mpsc::channel(4);
+        let channels: AskChannels = Default::default();
+        let mut ctx = ToolContext::new(Origin::User);
+        ctx.stream_tx = Some(stream_tx);
+        ctx.ask_channels = Some(channels.clone());
+        let asking = tokio::spawn(async move { ctx.ask_user("Which?", serde_json::json!([])).await });
+        let request = stream_rx.recv().await.unwrap();
+        let request_id = request.error.clone().unwrap();
+        let tx = channels.lock().await.remove(&request_id).unwrap();
+        tx.send("Work".into()).unwrap();
+        assert_eq!(asking.await.unwrap().as_deref(), Some("Work"));
+    }
 
     #[test]
     fn execution_mode_from_origin_table() {

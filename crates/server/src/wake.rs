@@ -190,6 +190,8 @@ pub async fn deliver(state: &AppState, session_key: &str) {
         tool_allowlist: None,
         hidden_prompt: true,
         audience: None,
+        cwd: None,
+        model_override: None,
     };
     run_chat(state, config).await;
 }

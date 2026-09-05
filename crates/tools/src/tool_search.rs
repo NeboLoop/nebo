@@ -166,7 +166,9 @@ impl DynTool for ToolSearchTool {
                 "total_deferred": stubs.len(),
             });
             if match_names.is_empty() {
-                result["hint"] = json!("No matching tools found. Try skill(action: \"discover\", query: \"...\") to check if a skill is available for this task.");
+                result["hint"] = json!("No connected MCP tool matches. tool_search only lists connected MCP tools; the built-in tools (os for files, shell, grep and glob; web; code; skill) are always available without it. If a skill might exist for this task, try skill(action: \"discover\", query: \"...\").");
+            } else {
+                result["note"] = json!("matched tools are callable from your next response");
             }
             ToolResult::ok(result.to_string())
         })

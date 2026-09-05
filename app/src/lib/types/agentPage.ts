@@ -18,6 +18,9 @@ export interface EnrichedChat {
 	name: string
 	title: string
 	preview: string
+	/** The thread's newest visible message is the restart note: `preview` is the
+	 *  last real status before it. */
+	restarted?: boolean
 	updatedAt: string
 	messages: number
 	createdAt: number
@@ -105,6 +108,10 @@ export interface AgentDisplay {
 	id: string
 	name: string
 	role: string
+	/** Last visible message of the latest thread, from the list endpoint. */
+	lastPreview?: string
+	/** The latest thread was cut by a server restart (`lastPreview` is the status before it). */
+	restarted?: boolean
 	initial: string
 	status: string
 	color: string
@@ -147,6 +154,8 @@ export interface AgentPageContext {
 	openRuns: (filter?: string) => void
 	/** Open this employee's settings modal. */
 	openSettings: () => void
+	/** Open the Inbox shelf. */
+	openInbox: () => void
 	/** Show the workspace list (mobile back-to-team) — a real navigation. */
 	openList: () => void
 	/** Drop a starter prompt into this employee's composer. */

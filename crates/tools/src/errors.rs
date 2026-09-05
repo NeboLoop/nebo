@@ -206,6 +206,15 @@ pub fn no_grep_results(pattern: &str, path: &str) -> String {
     )
 }
 
+/// Nothing was searched: the pattern was never tested against any file.
+/// Distinct from "no matches", which the old text claimed even here.
+pub fn no_files_to_search(path: &str) -> String {
+    format!(
+        "No files to search under {}: the file glob matched nothing there (hidden directories, node_modules, vendor, target and binary extensions are skipped). The pattern was not tested against any file, so this says nothing about whether it exists elsewhere. Search a directory that has files, or ask where the code is.",
+        path
+    )
+}
+
 /// Build a missing-parameter error with a complete working example.
 pub fn missing_param(action: &str, param: &str, example: &str) -> String {
     format!(

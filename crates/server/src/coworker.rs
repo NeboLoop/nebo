@@ -164,6 +164,8 @@ async fn send_coworker_message(
         // Recall-for-audience: the target's recall is filtered against this
         // requester unless the owner granted them in `memory.share_with`.
         audience: Some(sender_ref.to_string()),
+        cwd: None,
+        model_override: None,
     };
 
     let rx = run_chat_events(&state, config)
@@ -312,19 +314,16 @@ impl OwnerForward<'_> {
         );
     }
 
-    pub(crate) fn forward_ask(&self, event: &ai::StreamEvent) {
-        let request_id = event.error.as_deref().unwrap_or("");
-        let mut payload = serde_json::json!({
-            "session_id": self.session_key,
-            "request_id": request_id,
-            "prompt": event.text,
-        });
-        if let Some(widgets) = &event.widgets {
-            payload["widgets"] = widgets.clone();
-        }
-        self.state.hub.broadcast("ask_request", payload);
+    pub(crate) async fn forward_ask(&self, event: &ai::StreamEvent) {
+        let ask = crate::chat_dispatch::announce_ask(
+            &self.state.hub,
+            &self.state.run_registry,
+            self.session_key,
+            event,
+        )
+        .await;
         self.notify_owner(
-            &format!("coworker-ask:{}", request_id),
+            &format!("coworker-ask:{}", ask.request_id),
             "info",
             &format!("{} has a question", self.agent_name),
             &event.text,

@@ -82,6 +82,26 @@ pub async fn dashboard(State(state): State<AppState>) -> HandlerResult<Dashboard
     approvals.sort_by_key(|a| a.since);
     let waiting_ids: HashSet<&str> = approvals.iter().map(|a| a.agent_id.as_str()).collect();
 
+    // ---- per employee: the workflow run it is on now, and the last one that ended
+    // (`runs` is newest first).
+    let mut live_wf: HashMap<&str, &db::models::WorkflowRun> = HashMap::new();
+    let mut last_wf: HashMap<&str, &db::models::WorkflowRun> = HashMap::new();
+    for r in &runs {
+        let Some(agent_id) = types::keyparser::agent_id_from_workflow_id(&r.workflow_id) else { continue };
+        if outcome_of(&r.status, r.started_at, now_ts) == "working" {
+            live_wf.entry(agent_id).or_insert(r);
+        } else {
+            last_wf.entry(agent_id).or_insert(r);
+        }
+    }
+    // Where a live run is in its workflow, when the workflow declares steps.
+    let step_of = |r: &db::models::WorkflowRun| -> (Option<String>, Option<u32>, Option<u32>) {
+        let Some(wf) = state.store.get_workflow(&r.workflow_id).ok().flatten() else { return (None, None, None) };
+        let Ok(def) = state.workflow_manager.load_workflow_def(&wf) else { return (None, None, None) };
+        let idx = r.current_activity.as_ref().and_then(|cur| def.activities.iter().position(|a| &a.id == cur));
+        (Some(def.name).filter(|n| !n.is_empty()), idx.map(|i| i as u32 + 1), Some(def.activities.len() as u32))
+    };
+
     // ---- employees
     let mut working_ids: HashSet<String> = HashSet::new();
     let mut employees = Vec::with_capacity(agents.len());
@@ -91,17 +111,25 @@ pub async fn dashboard(State(state): State<AppState>) -> HandlerResult<Dashboard
             .iter()
             .filter(|r| r.entity_id == a.id || (r.entity_id == "main" && a.id == "assistant"))
             .collect();
-        let latest = state.store.get_latest_agent_chat(&a.id).ok().flatten();
+        // A working card points at the chat the live run is on, not the most
+        // recently touched chat: "Open chat" must land where things are moving.
+        let live_chat = live.first().and_then(|run| {
+            let session = state.store.get_session_by_name(&run.session_key).ok().flatten()?;
+            state.store.get_chat(session.active_chat_id.as_deref()?).ok().flatten()
+        });
+        let latest = live_chat.or_else(|| state.store.get_latest_agent_chat(&a.id).ok().flatten());
         let latest_title = latest.as_ref().and_then(|c| display_title(&c.title));
         let isolated = crate::workflow_manager::agent_context_isolated(&state.store, &a.id);
         let matters = state.store.count_agent_chats(&a.id).unwrap_or(0) as u32;
         let paused = !active_ids.contains(&a.id);
+        let wf_now = live_wf.get(a.id.as_str()).copied();
+        let (wf_name, step, step_count) = wf_now.map(step_of).unwrap_or((None, None, None));
         let (status, task, activity, tool_calls, elapsed_secs) = if let Some(run) = live.first() {
             working_ids.insert(a.id.clone());
             let doing = if run.current_tool.is_empty() { "thinking".to_string() } else { format!("using {}", run.current_tool) };
             (
                 "working",
-                latest_title.clone().unwrap_or_else(|| format!("Working over {}", run.channel)),
+                wf_name.clone().or_else(|| latest_title.clone()).unwrap_or_else(|| format!("Working over {}", run.channel)),
                 format!("{doing}, {}", elapsed_phrase(run.elapsed_secs)),
                 run.tool_call_count,
                 run.elapsed_secs,
@@ -138,11 +166,22 @@ pub async fn dashboard(State(state): State<AppState>) -> HandlerResult<Dashboard
             elapsed_secs,
             isolated,
             matters,
+            run_id: wf_now.map(|r| r.id.clone()),
+            step,
+            step_count,
+            last_outcome: last_wf.get(a.id.as_str()).map(|r| outcome_of(&r.status, r.started_at, now_ts).to_string()),
+            last_detail: last_wf.get(a.id.as_str()).map(|r| run_detail(outcome_of(&r.status, r.started_at, now_ts), r)),
+            last_run_at: last_wf.get(a.id.as_str()).map(|r| r.completed_at.unwrap_or(r.started_at)),
         });
     }
-    // Working first, then waiting, then idle, then paused; ties by name.
-    let rank = |s: &str| match s { "working" => 0, "waiting" => 1, "idle" => 2, _ => 3 };
-    employees.sort_by(|x, y| rank(&x.status).cmp(&rank(&y.status)).then_with(|| x.name.cmp(&y.name)));
+    // The sidebar's order, so a card never jumps when its employee starts or
+    // stops: a working card is marked, not moved.
+    let app_ids: HashSet<&str> = agents.iter().filter(|a| a.is_app.unwrap_or(0) != 0).map(|a| a.id.as_str()).collect();
+    employees.sort_by(|x, y| {
+        card_rank(&x.id, app_ids.contains(x.id.as_str()))
+            .cmp(&card_rank(&y.id, app_ids.contains(y.id.as_str())))
+            .then_with(|| x.name.cmp(&y.name))
+    });
 
     // ---- history: workflow runs by day and by employee, chat turns by day
     let mut days: HashMap<String, DashboardDay> = HashMap::new();
@@ -225,17 +264,65 @@ pub async fn dashboard(State(state): State<AppState>) -> HandlerResult<Dashboard
             started_at: r.started_at,
             ended_at: r.completed_at,
             outcome: outcome.into(),
-            detail: match outcome {
-                "done" => "Done".to_string(),
-                "skipped" => format!("Nothing to do: {}", r.error.as_deref().map(first_line).unwrap_or_default()),
-                "working" => r.current_activity.clone().unwrap_or_else(|| "Working".to_string()),
-                "waiting" => "Waiting for your okay".to_string(),
-                _ => r.error.clone().filter(|e| !e.is_empty()).map(|e| first_line(&e)).unwrap_or_else(|| format!("Stopped ({})", r.status)),
-            },
+            detail: run_detail(outcome, r),
         });
     }
 
     Ok(Json(DashboardResponse { employees, counts, approvals, recent_runs, runs_by_day, runs_by_employee }))
+}
+
+/// The sidebar's order: the primary employee first, then everyone by name,
+/// apps last. Status is deliberately not part of it.
+fn card_rank(id: &str, is_app: bool) -> (bool, bool) {
+    (id != "assistant", is_app)
+}
+
+/// What a run's row says about how it went, in the owner's words. The raw
+/// message stays on the run itself, one tap deeper.
+fn run_detail(outcome: &str, r: &db::models::WorkflowRun) -> String {
+    match outcome {
+        "done" => "Done".to_string(),
+        "skipped" => match r.error.as_deref().map(owner_wording).filter(|e| !e.is_empty()) {
+            Some(why) => format!("Nothing to do: {}", lower_first(&why)),
+            None => "Nothing to do".to_string(),
+        },
+        "working" => r.current_activity.clone().unwrap_or_else(|| "Working".to_string()),
+        "waiting" => "Waiting for your okay".to_string(),
+        _ => r.error.as_deref().map(owner_wording).filter(|e| !e.is_empty()).map(|e| upper_first(&e)).unwrap_or_else(|| "Stopped".to_string()),
+    }
+}
+
+/// A run's error or exit reason as the owner should read it: the evaluator's
+/// "Step 2/8 evaluator:" bookkeeping dropped, a guard's counter turned into
+/// what happened, everything else its first line.
+fn owner_wording(raw: &str) -> String {
+    let line = first_line(raw);
+    let line = line.trim();
+    if line.starts_with("activity run exceeded token budget") {
+        return "Ran out of room and stopped".to_string();
+    }
+    // "Step 2/8 evaluator: No meetings ..." -> "No meetings ..."
+    line.strip_prefix("Step ")
+        .and_then(|rest| rest.split_once("evaluator:"))
+        .map(|(_, why)| why.trim())
+        .unwrap_or(line)
+        .to_string()
+}
+
+fn upper_first(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
+}
+
+fn lower_first(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) => c.to_lowercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
 }
 
 /// A workflow run's status as a dashboard outcome.
@@ -289,6 +376,45 @@ mod tests {
         assert_eq!(outcome_of("exited", 0, now), "skipped");
         assert_eq!(outcome_of("failed", 0, now), "stopped");
         assert_eq!(outcome_of("suspended", 0, now), "waiting");
+    }
+
+    #[test]
+    fn cards_keep_the_sidebar_order_whatever_their_status() {
+        let mut ids = vec![("zed", false), ("app", true), ("assistant", false), ("amy", false)];
+        ids.sort_by(|x, y| card_rank(x.0, x.1).cmp(&card_rank(y.0, y.1)).then_with(|| x.0.cmp(y.0)));
+        let order: Vec<&str> = ids.iter().map(|x| x.0).collect();
+        assert_eq!(order, ["assistant", "amy", "zed", "app"]);
+    }
+
+    fn sample_run(status: &str) -> db::models::WorkflowRun {
+        db::models::WorkflowRun {
+            id: "r1".into(),
+            workflow_id: "agent:a1:wf".into(),
+            trigger_type: "schedule".into(),
+            trigger_detail: None,
+            status: status.into(),
+            inputs: None,
+            current_activity: None,
+            total_tokens_used: None,
+            error: None,
+            error_activity: None,
+            session_key: None,
+            output: None,
+            started_at: 0,
+            completed_at: None,
+        }
+    }
+
+    #[test]
+    fn exit_reasons_read_as_the_owner_would_say_them() {
+        assert_eq!(owner_wording("Step 1/8 evaluator: No meetings with external guests in the next 24 hours"), "No meetings with external guests in the next 24 hours");
+        assert_eq!(owner_wording("activity run exceeded token budget (4772/4096)"), "Ran out of room and stopped");
+        assert_eq!(owner_wording("connection refused\nsecond line"), "connection refused");
+        assert_eq!(owner_wording(""), "");
+        let skipped = db::models::WorkflowRun { error: Some("Step 2/8 evaluator: No meetings found.".into()), ..sample_run("exited") };
+        assert_eq!(run_detail("skipped", &skipped), "Nothing to do: no meetings found.");
+        let stopped = db::models::WorkflowRun { error: Some("connection refused".into()), ..sample_run("failed") };
+        assert_eq!(run_detail("stopped", &stopped), "Connection refused");
     }
 
     #[test]

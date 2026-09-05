@@ -17,9 +17,9 @@ USE THIS when: user mentions email, calendar, contacts, reminders, appointments,
 **Calendar:**
 - os(resource: "calendar", action: "today") — Today's events
 - os(resource: "calendar", action: "upcoming", days: 7) — Upcoming events
-- os(resource: "calendar", action: "create", title: "Meeting", date: "2025-03-15 14:00", calendar: "Work") — Create event
-- os(resource: "calendar", action: "create", title: "Standup", date: "2025-03-15 09:00", repeat: "weekly", repeat_days: "mon,tue,wed,thu") — Create recurring event
-- os(resource: "calendar", action: "create", title: "Review", date: "2025-03-15 10:00", repeat: "daily", end_repeat: "2025-12-31") — Daily event with end date
+- os(resource: "calendar", action: "create", title: "Meeting", date: "YYYY-MM-DD 14:00", calendar: "Work") — Create event (date forms: 'YYYY-MM-DD HH:MM', 'YYYY-MM-DD', 'MM/DD/YYYY HH:MM', 'MM/DD/YYYY', 'today', 'tomorrow', 'in N minutes|hours|days|weeks'; take the year from the current date in your context)
+- os(resource: "calendar", action: "create", title: "Standup", date: "tomorrow", repeat: "weekly", repeat_days: "mon,tue,wed,thu") — Create recurring event
+- os(resource: "calendar", action: "create", title: "Review", date: "YYYY-MM-DD 10:00", repeat: "daily", end_repeat: "YYYY-MM-DD") — Daily event with end date
 - os(resource: "calendar", action: "delete", title: "Meeting", calendar: "Work") — Delete event(s) by title
 - os(resource: "calendar", action: "list", calendar: "Work", days: 30) — List events from a specific calendar
 - os(resource: "calendar", action: "pending") — List pending calendar invitations
@@ -32,7 +32,7 @@ USE THIS when: user mentions email, calendar, contacts, reminders, appointments,
 
 Calendar reads (today/upcoming/list) return the FULL event: start and end times (all-day events are marked), location, notes/description in full, URL, organizer, attendees with their reply status, availability, recurrence, and event ID. Meeting links and agendas are already in that result — read them there instead of asking the user.
 
-Recurrence params (for create): repeat: "daily"/"weekly"/"monthly"/"yearly", repeat_days: "mon,tue,wed" (for weekly), interval: 2 (every 2 weeks), end_repeat: "2025-12-31"
+Recurrence params (for create): repeat: "daily"/"weekly"/"monthly"/"yearly", repeat_days: "mon,tue,wed" (for weekly), interval: 2 (every 2 weeks), end_repeat: "YYYY-MM-DD"
 
 **Reminders:**
 - os(resource: "reminders", action: "lists") — List reminder lists

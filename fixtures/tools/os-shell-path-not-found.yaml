@@ -5,6 +5,8 @@ description: |
   clear error and recover gracefully — no retries, no hallucinated content.
   This is the degenerate loop generator: model retries the same failing
   command, burning tokens and polluting context.
+# The first error is the test itself: the fixture makes it happen.
+induced_errors: 1
 target_component: os
 
 setup:

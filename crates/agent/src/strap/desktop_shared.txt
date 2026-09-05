@@ -1,0 +1,38 @@
+### os: Desktop Automation (resource: capture/input/clipboard/ui/window/shortcut/tts)
+USE THIS when: user wants to interact with the GUI: click, type, screenshot, manage windows, use menus, or control desktop apps visually.
+
+Look, then act: os(resource: "capture", action: "see") returns a screenshot with element refs (B1, T2, ...). Every input action targets a `ref` from the latest see, or an explicit `coordinate: [x, y]`. `<App>` below is the application name as shown by window list.
+
+- os(resource: "capture", action: "screenshot"): Capture the screen (optional quality: "low" | "medium" (default) | "high"; region: "x,y,w,h")
+- os(resource: "capture", action: "see", app: "<App>"): Capture an app with annotated element refs
+- os(resource: "input", action: "click", ref: "B3"): Click an element from the latest see
+- os(resource: "input", action: "click", coordinate: [100, 200]): Click at coordinates
+- os(resource: "input", action: "click", ref: "B3", click_count: 2): Double-click
+- os(resource: "input", action: "click", ref: "B3", button: "right"): Right-click
+- os(resource: "input", action: "type", text: "hello"): Type into the focused field; add ref or coordinate to click it first
+- os(resource: "input", action: "type", ref: "T1", text: "hello"): Click the field, then type
+- os(resource: "input", action: "press", key: "return"): Press a key; combos join with + (see the platform examples below)
+- os(resource: "input", action: "move", coordinate: [100, 200]): Move the cursor
+- os(resource: "input", action: "scroll", direction: "down", amount: 3): Scroll (up/down/left/right; amount in ticks of about 100px)
+- os(resource: "input", action: "drag", start_coordinate: [10, 10], coordinate: [200, 200]): Drag
+- os(resource: "input", action: "paste"): Paste the clipboard; put the text there first with clipboard write
+- os(resource: "clipboard", action: "read" | "write" | "clear", text: "..."): Clipboard (text for write)
+- os(resource: "ui", action: "tree", app: "<App>"): Get UI element hierarchy
+- os(resource: "ui", action: "find", app: "<App>", role: "button", label: "Submit"): Find elements
+- os(resource: "ui", action: "click", app: "<App>", role: "button", label: "Submit"): Click element
+- os(resource: "ui", action: "get_value", app: "<App>", role: "textfield", label: "Search"): Read value
+- os(resource: "ui", action: "set_value", app: "<App>", role: "textfield", label: "Search", value: "query"): Set value
+- os(resource: "ui", action: "list_apps"): List apps with accessibility access
+- os(resource: "window", action: "list"): List all windows
+- os(resource: "window", action: "focus", app: "<App>"): Focus window
+- os(resource: "window", action: "move", app: "<App>", x: 0, y: 0): Move window
+- os(resource: "window", action: "resize", app: "<App>", width: 800, height: 600): Resize
+- os(resource: "window", action: "minimize" | "maximize" | "close", app: "<App>")
+- os(resource: "shortcut", action: "list"): List available shortcuts
+- os(resource: "shortcut", action: "run", name: "My Shortcut"): Run a shortcut
+- os(resource: "tts", action: "speak", text: "Hello"): Text-to-speech
+
+Speed: chain actions from one snapshot:
+- After capture(action: see), chain MULTIPLE input actions from the same snapshot in one response; they share refs. Example, click a text field and type into it: [click(ref: "T1"), type(ref: "T1", text: "hello")].
+- Refs remain valid until the next capture(action: see). Chain as many inputs as you can before re-seeing.
+- Only re-see when you need to verify the result or the UI may have changed significantly.

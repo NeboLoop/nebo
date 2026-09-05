@@ -34,6 +34,7 @@ chrono-tz = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
 regex = { workspace = true }
+which = "7"
 sysinfo = { workspace = true }
 turbovec = "0.5"
 

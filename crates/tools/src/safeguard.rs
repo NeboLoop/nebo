@@ -138,7 +138,8 @@ fn check_shell_path_scope(input: &serde_json::Value, allowed_paths: &[String]) -
         };
         if !is_within_allowed(&abs_cwd, allowed_paths) {
             return Some(format!(
-                "BLOCKED: cannot execute shell command in {:?} — this agent is restricted to: {}",
+                "BLOCKED: cannot execute shell command in {:?} — this agent is restricted to: {}. \
+                 Run it inside one of those directories or ask the owner to widen them in the Configure tab.",
                 cwd,
                 allowed_paths.join(", ")
             ));
@@ -203,7 +204,7 @@ fn check_file_safeguard(input: &serde_json::Value) -> Option<String> {
         return Some(format!(
             "BLOCKED: cannot {} {:?} — {}. \
              This is a hard safety limit that cannot be overridden. \
-             If you need to modify system files, do it manually in a terminal",
+             Ask the owner to make this change themselves.",
             action, path, reason
         ));
     }
@@ -216,7 +217,7 @@ fn check_file_safeguard(input: &serde_json::Value) -> Option<String> {
                 return Some(format!(
                     "BLOCKED: cannot {} {:?} — {}. \
                      This is a hard safety limit that cannot be overridden. \
-                     If you need to modify system files, do it manually in a terminal",
+                     Ask the owner to make this change themselves.",
                     action, path, reason
                 ));
             }
@@ -285,7 +286,7 @@ fn scan_command_text(text: &str) -> Option<String> {
             "BLOCKED: sudo is not permitted. \
              Nebo must never run commands with elevated privileges. \
              This is a hard safety limit that cannot be overridden. \
-             If you need root access, run the command manually in a terminal"
+             Ask the owner to make this change themselves."
                 .to_string(),
         );
     }
@@ -301,7 +302,7 @@ fn scan_command_text(text: &str) -> Option<String> {
         return Some(format!(
             "BLOCKED: {}. \
              This is a hard safety limit that cannot be overridden. \
-             If you need to perform this operation, do it manually in a terminal",
+             Ask the owner to make this change themselves.",
             reason
         ));
     }

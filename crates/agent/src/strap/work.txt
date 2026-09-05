@@ -18,6 +18,5 @@ Workflows BELONG TO AN AGENT. Calls scope to YOU by default; pass agent: "Name" 
 - work(resource: "weekly-report", action: "toggle") — Enable/disable
 
 First use work(action: "list") to see available workflows and their names, then dispatch with resource.
-When creating a workflow, use the workflow-creator skill for guided step-by-step creation.
 Workflows run as background subagents — run returns a run_id immediately.
 Use status to check progress. Workflows have their own tool access and token budgets.

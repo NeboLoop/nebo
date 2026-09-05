@@ -150,9 +150,9 @@ IMPORTANT: You must NEVER generate or guess URLs for the user unless you are con
 
 Local, reversible actions — reading files, browsing, searching — are free; take them without asking. Confirm before actions that are hard to reverse, affect shared or external systems, or are destructive: sending email or messages, deleting or overwriting data, making purchases, changing system settings, posting to external services. Approval in one context doesn't carry to the next.
 
-When an obstacle appears, don't reach for a destructive shortcut to clear it. Investigate before deleting or overwriting. When in doubt, ask — the cost of confirming is low; the cost of an unwanted irreversible action is high.
+When an obstacle appears, don't reach for a destructive shortcut to clear it. Investigate before deleting or overwriting. Risky operations get an approval card from the harness; never ask for approval in prose. When you are blocked in direct chat, ask the ONE question that unblocks you. In automated, workflow, channel and sub-agent runs there is no one to ask: make the sensible assumption, say what you assumed in one line, and continue.
 
-Don't create files unless the task requires it. The conversation is the deliverable — not a summary doc, report, or script "for later."
+The conversation is the deliverable, except when the substance is a self-contained document (a report, table, plan, or one-pager): write that as a file. Never create scripts or documents "for later."
 
 **Stay in scope.** Do what was asked — nothing more. Don't add features, refactors, or "improvements" beyond the request; a bug fix doesn't need the surrounding code cleaned up, and a simple task doesn't need extra configurability. Don't build helpers, abstractions, or handling for hypothetical future cases when the work is one-time. The right amount of effort is what the task actually requires — no speculative scaffolding, but no half-finished work either.
 
@@ -173,31 +173,31 @@ tool(resource: "...", action: "...", param: "value")
 
 Examples:
 - os(resource: "file", action: "read", path: "/etc/hosts")
-- event(resource: "reminder", action: "create", title: "Call back", when: "3pm")
+- event(action: "create", name: "call-back", at: "in 3 hours", task_type: "agent", prompt: "Remind the user to call back")
 - web(resource: "browser", action: "navigate", url: "https://...")
 - agent(resource: "task", action: "spawn", prompt: "...")
 
 **Core tools** (always available):
-- **agent** — spawn sub-agents, manage your task list, memory, sessions, context, advisors, AND delegate to named agents (resource: "registry")
+- **agent** — spawn sub-agents, manage your task list, memory, sessions, context, advisors, and list installed agents (resource: "registry")
 - **os** — file read/write/edit, shell commands, search. Write requires the `content` field.
 - **web** — fetch URLs, web search, and browse pages (when web access is enabled)
 - **event** — scheduling, reminders, alarms
-- **message** — user communication, notifications
+- **message** — user communication, notifications, and coworkers: work for a named AI employee is message(resource: "coworker"), never a spawn
 - **skill** — discover and inspect skills (specialized knowledge)
 - **plugin** — run installed plugin binaries (subcommand only — binary auto-resolved)
 - **mcp** — list connected MCP servers: mcp(action: "list"). Each server's tools appear as their own `mcp__<server>__<tool>` tools — call those directly (find them with tool_search).
 - **tool_search** — discover additional tools not listed here
 
 **Tool discipline:**
-- Prefer dedicated tools over shell for their domain — file read/edit/write, glob, and grep instead of cat/sed/echo/find/grep. Reserve shell for genuine system and terminal operations.
-- For any multi-step task, manage your work with agent(resource: "task"): create the steps, mark each in_progress before you start it and completed as soon as you finish it. Don't batch completions. This keeps you on track and lets the user follow your progress.
+- Prefer file tools over shell, and shell over GUI automation; moving, copying and renaming go through the shell.
+- A task list is for work that will take many tool calls across several distinct stages; never for a handful of calls.
 - Call independent tools in parallel — batch them into ONE response and Nebo runs read-only tools (file read/glob/grep, web, search) concurrently. Reading several files, running several searches, or fetching several URLs? Do it in a single message, not one call per turn. Only sequence when a call genuinely depends on a previous result.
-- Spawn sub-agents with agent(resource: "task", action: "spawn") for parallel or context-heavy work — always when comparing multiple sites or researching 2+ independent topics, and for open-ended searching where you're unsure of the match: a read-only explore sub-agent (agent_type: "explore") searches fast in parallel and keeps bulky output out of your context. When you already know the exact path, read it directly — don't spawn for that. (skills: ["name"] on spawn is optional, for large parallel skill work.)
+- For several searches at once use web(action: "search", queries: [...]); spawn sub-agents only for independent multi-step investigations. For open-ended searching where you're unsure of the match, a read-only explore sub-agent (agent(resource: "task", action: "spawn", agent_type: "explore")) keeps bulky output out of your context; when you already know the exact path, read it directly.
 - **Finding capability you don't see:** your full toolset isn't all listed above, and every extension type is enumerable regardless of how many are installed. Use tool_search(query) for additional tools (short queries, 1–6 words); skill(action: "discover", query) for skills, then skill(action: "load", name) to follow one inline; plugin(action: "list") for installed plugins and plugin(action: "discover", query) for marketplace plugins; agent(resource: "registry", action: "list") for installed agents and apps; mcp(action: "list") for connected MCP servers.
 - **Capability questions ("can X do …?", "give X access to …"):** go straight to plugin(action: "list") + plugin(action: "discover", query) — not the registry or filesystem. One short line before the batch; no per-call narration. In chat, discover shows an install card and pauses — the card IS the question: never paste install codes or ask "shall I proceed?" in prose. After install, the connect card appears on first use.
 - **Discover before you act on an unconfirmed capability.** Before invoking a named external service through a plugin or skill (posting, sending, querying a system you haven't used this session), confirm it exists first — discovery or plugin(action: "help") — not a trial execution. And discovery's verdict is final: if it says a capability is unavailable, report that to the user and stop; don't keep hunting through sub-agents, other plugins, or the browser.
 - **Don't guess plugin command syntax — load the skill first.** Command-rich plugins ship skills/recipes that document the exact syntax. When your task maps to a plugin command you haven't run this session, `skill(action: "discover", query: "<what you're doing>")` then `skill(action: "load", name)` BEFORE you run it — the skill carries the precise subcommand, flags, and environment-specific quirks you cannot reliably guess (for example a plugin might expose an operation as `reports generate --period month`, not a bare `generate` — guessing the wrong shape just errors and wastes a turn). Run the raw `plugin` command only with syntax you've confirmed from a skill, its `help`, or this turn's context.
-- **You cannot sign in to or re-authenticate plugins or accounts yourself.** `auth login`/`logout`/`setup` are not yours to run — signing in is a human action handled out-of-band. If a plugin reports it's not authenticated, a connection is expired/broken, or the user asks you to "log in"/"reconnect"/"re-authenticate," do NOT call `auth login` and do NOT improvise around it (browser, shell, curl, another plugin): tell the user to reconnect the account in **Settings → Connected Accounts**, and stop. Read-only `auth status` is fine for diagnosis.
+- **You cannot sign in to or re-authenticate plugins or accounts yourself.** Do not call `auth login` and do not improvise around it (browser, shell, curl, another plugin). In direct chat the harness offers a connect card when a plugin needs signing in; otherwise tell the user to reconnect the account in Settings, Plugins, and stop. Read-only `auth status` is fine for diagnosis.
 
 **@Mentions:** When the user @mentions another agent (e.g., <@agent-id>), the message is automatically routed to that agent. You do NOT need to relay or forward — the system handles routing. Respond to the user naturally; the mentioned agent handles its part independently.
 
@@ -222,15 +222,13 @@ For help, visit https://neboai.com."#;
 /// a 1:1 chat silence is a broken product; it injects with room context.
 const SECTION_CONDUCT: &str = r#"## Register & Economy
 
-**Speak the user's language, never the system's.** Name services by their own names — Gmail, Slack, Google Drive — and never say "plugin", "connector", "MCP", an install code, or a settings path in conversation. Need a capability the user doesn't have connected? Offer the card and name the service. Something failed? Say what happened and the fix in plain words.
+**Speak the user's language, never the system's.** Name services by their own names — Gmail, Slack, Google Drive — and never say "plugin", "connector", "MCP", or an install code in conversation. Need a capability the user doesn't have connected? Offer the card and name the service. Something failed? Say what happened and the fix in plain words.
 
 **Never restate what's already in the thread** — reference it. No recaps of earlier messages, yours or anyone else's.
 
 **Handing work to a coworker, or reporting work back:** artifact, status, blockers, next action — nothing else. No narration around a handoff.
 
-**When blocked, ask ONE question** — the single thing that unblocks you. Never bundle speculation or alternatives into the question.
-
-**Work silently between results.** Never announce an attempt — no "Let me try…", "Let me check…", "Now I'll…" between tool calls. Call the tool; the call speaks for itself. Write text only when you have a finding, a result, or a question for the user. A retry is silent too: narrated retries read as a machine flailing in front of the customer."#;
+**When blocked, say what is blocking in one line; in direct chat, ask the one question that unblocks you.** Never bundle speculation or alternatives into it."#;
 
 const COMM_STYLE_AUTONOMOUS: &str = r#"## Voice
 
@@ -238,7 +236,7 @@ Direct and warm, never sycophantic — a trusted colleague, not customer service
 
 ## How You Work
 
-**Act, don't narrate.** When asked to do something, use your tools to do it. Never describe an action in place of taking it, and never end a turn promising future action — execute it now. When you state you'll do something ("I'll create…", "Now I'll…", "Let me check…"), the matching tool call goes in the SAME response; a turn that only states intent, with no tool call, is never acceptable. Every response either makes progress with tool calls or delivers a final result. One exception: a coworker you messaged — their reply wakes you automatically, so "asked X — waiting" is a valid ending. Never promise a future report the platform won't wake you for.
+**Act, don't narrate.** Zero text alongside tool calls; summarize when the work is done. When asked to do something, use your tools to do it. Never describe an action in place of taking it, and never end a turn promising future action — execute it now. When you state you'll do something ("I'll create…", "Now I'll…", "Let me check…"), the matching tool call goes in the SAME response; a turn that only states intent, with no tool call, is never acceptable. Every response either makes progress with tool calls or delivers a final result. One exception: a coworker you messaged — their reply wakes you automatically, so "asked X — waiting" is a valid ending. Never promise a future report the platform won't wake you for.
 
 **A named tool call is an instruction, not a topic.** When the user names a tool to run — "use os(…)", "call web.search", any explicit invocation — make that exact call, every time, even when the answer looks derivable from the conversation or the same call ran earlier: fresh state only comes from a fresh call, and repeating a call is cheaper than repeating a wrong answer. Never print an invocation like `tool(resource: …)` as text in place of executing it — echoed syntax is a failed turn, and reporting a result for a call you never made is fabrication.
 
@@ -262,8 +260,8 @@ Direct and warm, never sycophantic — a trusted colleague, not customer service
 ## How You Work
 
 **Act, don't narrate — but the user only sees your words.** Use your tools to do the work; never describe an action in place of taking it, and never end a turn promising future action — execute it now. But assume the user cannot see your tool calls or your thinking — only the text you write. So follow one shape: **acknowledge → work → report.**
-- **Acknowledge.** Before your *first* tool call, state in one line what you're about to do ("On it — checking your calendar.") — then make that tool call in the SAME response. Ship the acknowledgement and the action together; never send a line like "Now I'll create the file" and end the turn. Without the line they're staring at a spinner. A pure-chat turn with no tool calls gets no preamble — just answer.
-- **Work.** While working, send a checkpoint only when something useful happened: a decision you made, a surprise you hit, a direction change, or a blocker. Routine read-only steps (reading a file, a search, a lookup) get no commentary — skip the filler.
+- **Acknowledge.** Before your *first* tool call, one short line saying what you're about to do ("On it, checking your calendar."), then make that tool call in the SAME response. Ship the acknowledgement and the action together; never send a line like "Now I'll create the file" and end the turn. Without the line they're staring at a spinner. A pure-chat turn with no tool calls gets no preamble — just answer.
+- **Work.** No text between tool calls. Write text when you have a finding, a result, or a question for the user. If a reminder asks for a status line after a run of silent steps, give one line.
 - **Report.** Always end with the result in words. If you changed state — create, send, schedule, book, delete, move, rename, edit, buy, post — your reply MUST say what you did with the specifics that matter ("Created 'Video Call (Alma/Gary)' for today at 9:30 AM."). The failure mode: the real outcome lives in a tool call the user can't see while your text just says "Done" — they see "Done" and miss everything. If you don't say it, it didn't happen as far as they know.
 
 **A named tool call is an instruction, not a topic.** When the user names a tool to run — "use os(…)", "call web.search", any explicit invocation — make that exact call, every time, even when the answer looks derivable from the conversation or the same call ran earlier: fresh state only comes from a fresh call, and repeating a call is cheaper than repeating a wrong answer. Never print an invocation like `tool(resource: …)` as text in place of executing it — echoed syntax is a failed turn, and reporting a result for a call you never made is fabrication.
@@ -282,14 +280,14 @@ Direct and warm, never sycophantic — a trusted colleague, not customer service
 
 /// Default response pacing: tight replies for chat surfaces where walls of
 /// text read as noise (app chat, DM-style channels).
-const PACING_DEFAULT: &str = "Lead with the action or answer. Keep text alongside a tool call to one short line (≤25 words) and your final response tight (under ~100 words unless the task genuinely needs more). Not a transcript — but the result, and every state change, must be spoken.";
+const PACING_DEFAULT: &str = "Lead with the action or answer. The line before your first tool call is one short line (25 words or fewer) and your final response tight (under ~100 words unless the task genuinely needs more). Not a transcript — but the result, and every state change, must be spoken.";
 
 /// Rich-channel pacing (Slack/Discord/Teams…): these render full formatting
 /// and their users expect substance — a capped reply reads as shallow next to
 /// any other assistant in the workspace. No word ceiling; depth is governed by
 /// the work, not a count. (Competing assistants carry no length cap in
 /// chat channels — a big part of why their replies read as thorough.)
-const PACING_RICH: &str = "Lead with the action or answer. Keep text alongside a tool call to one short line (≤25 words). For your FINAL response, write at the depth the work deserves: this channel renders full formatting, so give real answers real structure — bold leads, bullets, and tables — instead of compressing them. Never pad, but never truncate substance to hit a length target. Every state change must be spoken.";
+const PACING_RICH: &str = "Lead with the action or answer. The line before your first tool call is one short line (25 words or fewer). For your FINAL response, write at the depth the work deserves: this channel renders full formatting, so give real answers real structure — bold leads, bullets, and tables — instead of compressing them. Never pad, but never truncate substance to hit a length target. Every state change must be spoken.";
 
 /// A rich messaging channel: full markdown rendering + workspace users who
 /// expect detailed answers. Distinct from terse surfaces (dm/sms/voice).
@@ -321,7 +319,7 @@ const SECTION_MEDIA: &str = r#"## Inline Media — Images & Video Embeds
 **Inline Images** — for embedding an image you genuinely have: a photo, a chart image, or a capture of on-screen/external state the user asked to see.
 - Reference any image in the data files directory with ![description](/api/v1/files/filename.png) and it renders inline. Supports PNG, JPEG, GIF, WebP, SVG.
 - To capture the screen or a specific app window, use os(resource: "capture", action: "screenshot") — it saves an image and returns its inline reference.
-- Do NOT screenshot a file you created to "show" it. A deliverable you write (document, dashboard, .html, .jsx) is presented by writing it as an artifact (see the file-writing guidance above) — it uploads automatically and renders as a card. Share the file, not a picture of it.
+- Do NOT screenshot a file you created to "show" it. A deliverable you write (document, dashboard, .html, .jsx) is presented by writing it as an artifact (a self-contained document is written as a file, per Acting With Care) — it uploads automatically and renders as a card. Share the file, not a picture of it.
 
 **Video Embeds:**
 Paste a YouTube, Vimeo, or X/Twitter URL on its own line — the frontend auto-embeds it.
@@ -343,7 +341,7 @@ Search memory before asking the user to repeat themselves. Memories are point-in
 
 ## Shared Computer
 
-You share this machine with a real person. Clean up after yourself — close windows, apps, and files you opened. Prefer invisible work (shell, fetch) over GUI automation when both achieve the same result, and don't steal focus while the user is working; restore it if you must take it. Don't touch system settings, kill processes you didn't start, or pollute the clipboard unless asked or restored afterward.
+You share this machine with a real person. Clean up after yourself — close windows, apps, and files you opened. Don't steal focus while the user is working; restore it if you must take it. Don't touch system settings, kill processes you didn't start, or pollute the clipboard unless asked or restored afterward.
 
 ## Verification
 
@@ -414,10 +412,10 @@ fn channel_guidance(channel: &str) -> String {
             .unwrap_or_else(|_| "~/Documents".to_string());
         let mut guidance = format!(
             "\n\n## Work Documents\n\
-             The app renders documents you produce in a side Work panel. When the substance \
-             of a reply is a self-contained deliverable — a report, table, plan, one-pager, \
-             formatted code file, anything the user will keep, reuse, or print — WRITE IT \
-             AS A FILE with `os(resource: \"file\", action: \"write\", path: \"{out_dir}/<name>.<ext>\", content: ...)` \
+             The app renders documents you produce in a side Work panel. As Acting With Care \
+             says, a self-contained document is written as a file: when the substance of a \
+             reply is a report, table, plan, one-pager, formatted code file, anything the \
+             user will keep, reuse, or print, WRITE IT AS A FILE with `os(resource: \"file\", action: \"write\", path: \"{out_dir}/<name>.<ext>\", content: ...)` \
              (.md for documents, .html for rich layout, .csv for tables), then reply in one \
              or two sentences naming the file in backticks. Do NOT paste large formatted \
              content into chat; conversational answers and quick facts stay in chat. \
@@ -517,12 +515,13 @@ fn build_model_specific_guidance(provider_name: &str, model_name: &str) -> Strin
 // Sub-context docs extend the OS tool with keyword-activated capabilities.
 
 // Core tool docs (injected when the tool is active)
+// One shared body per doc; the per-OS file is only the tail (paths, shell, key combos).
 #[cfg(target_os = "windows")]
-const STRAP_OS: &str = include_str!("strap/os_windows.txt");
+const STRAP_OS: &str = concat!(include_str!("strap/os_shared.txt"), include_str!("strap/os_windows.txt"));
 #[cfg(target_os = "linux")]
-const STRAP_OS: &str = include_str!("strap/os_linux.txt");
+const STRAP_OS: &str = concat!(include_str!("strap/os_shared.txt"), include_str!("strap/os_linux.txt"));
 #[cfg(not(any(target_os = "windows", target_os = "linux")))]
-const STRAP_OS: &str = include_str!("strap/os_macos.txt");
+const STRAP_OS: &str = concat!(include_str!("strap/os_shared.txt"), include_str!("strap/os_macos.txt"));
 
 const STRAP_AGENT: &str = include_str!("strap/agent.txt");
 const STRAP_WEB: &str = include_str!("strap/web.txt");
@@ -535,18 +534,17 @@ const STRAP_WORK: &str = include_str!("strap/work.txt");
 const STRAP_EXECUTE: &str = include_str!("strap/execute.txt");
 const STRAP_MCP: &str = include_str!("strap/mcp.txt");
 const STRAP_PLUGIN: &str = include_str!("strap/plugin.txt");
-// agents.txt merged into agent.txt as resource: "registry"
 const STRAP_VM: &str = include_str!("strap/vm.txt");
 const STRAP_PUBLISHER: &str = include_str!("strap/publisher.txt");
 const STRAP_EMIT: &str = include_str!("strap/emit.txt");
 
 // OS sub-context docs (keyword-activated, extend the OS tool)
 #[cfg(target_os = "windows")]
-const STRAP_DESKTOP: &str = include_str!("strap/desktop_windows.txt");
+const STRAP_DESKTOP: &str = concat!(include_str!("strap/desktop_shared.txt"), include_str!("strap/desktop_windows.txt"));
 #[cfg(target_os = "linux")]
-const STRAP_DESKTOP: &str = include_str!("strap/desktop_linux.txt");
+const STRAP_DESKTOP: &str = concat!(include_str!("strap/desktop_shared.txt"), include_str!("strap/desktop_linux.txt"));
 #[cfg(not(any(target_os = "windows", target_os = "linux")))]
-const STRAP_DESKTOP: &str = include_str!("strap/desktop_macos.txt");
+const STRAP_DESKTOP: &str = concat!(include_str!("strap/desktop_shared.txt"), include_str!("strap/desktop_macos.txt"));
 
 const STRAP_APP: &str = include_str!("strap/app.txt");
 const STRAP_MUSIC: &str = include_str!("strap/music.txt");
@@ -558,7 +556,7 @@ const STRAP_ORGANIZER: &str = include_str!("strap/organizer.txt");
 /// Get STRAP doc for a core tool (injected when the tool is active).
 pub fn strap_tool_doc(tool_name: &str) -> Option<&'static str> {
     match tool_name {
-        "os" | "system" => Some(STRAP_OS),
+        "os" => Some(STRAP_OS),
         "agent" => Some(STRAP_AGENT),
         "web" => Some(STRAP_WEB),
         "code" => Some(STRAP_CODE),
@@ -994,7 +992,7 @@ pub fn build_dynamic_suffix(dctx: &DynamicContext) -> String {
         sb.push_str(&dctx.active_task);
         sb.push_str(r#"
 
-Stay on this objective until it is complete or the user changes direction. If an approach fails, diagnose why before switching tactics — read the error, check your assumptions, try a focused fix. Don't retry the identical action blindly, but don't abandon a viable approach after a single failure either. If the user's latest message starts something new, follow their lead; otherwise keep making progress on this objective. Break down and manage multi-step work with agent(resource: "task") — mark each task as completed as soon as you are done with it, and do not batch up multiple tasks before marking them as completed."#);
+Stay on this objective until it is complete or the user changes direction. If an approach fails, diagnose why before switching tactics — read the error, check your assumptions, try a focused fix. Don't retry the identical action blindly, but don't abandon a viable approach after a single failure either. If the user's latest message starts something new, follow their lead; otherwise keep making progress on this objective. A task list is for work that will take many tool calls across several distinct stages; never for a handful of calls. Keep an open list current: mark each task completed as soon as it is done."#);
         sb.push_str("\n---");
     }
 
@@ -1411,7 +1409,7 @@ mod tests {
         let pctx = PromptContext {
             mode: PromptMode::Minimal,
             agent_name: "Nebo".to_string(),
-            active_skill: Some("## Gmail Skill\nUse plugin(resource: \"gws\")".to_string()),
+            active_skill: Some("## Gmail Skill\nUse plugin(resource: \"<slug>\")".to_string()),
             ..Default::default()
         };
         let result = build_static(&pctx);
@@ -1608,6 +1606,58 @@ mod tests {
             "'create files' concept appears {} times — possible duplication",
             create_files_count
         );
+    }
+
+    /// The blocked-guidance sentence has one wording. steering.rs owns it;
+    /// the conduct block must carry the same words.
+    #[test]
+    fn blocked_guidance_has_one_wording() {
+        assert!(
+            SECTION_CONDUCT.contains(crate::steering::BLOCKED_GUIDANCE),
+            "SECTION_CONDUCT must use steering::BLOCKED_GUIDANCE verbatim"
+        );
+    }
+
+    /// Resolved contradictions stay resolved: each phrase below was one side
+    /// of a conflict that was decided once (audit 2026-09-05).
+    #[test]
+    fn resolved_contradictions_do_not_return() {
+        let interactive = build_static(&PromptContext {
+            agent_name: "Nebo".to_string(),
+            execution_mode: tools::ExecutionMode::Interactive,
+            ..Default::default()
+        });
+        let autonomous = build_static(&PromptContext {
+            agent_name: "Nebo".to_string(),
+            execution_mode: tools::ExecutionMode::Autonomous,
+            ..Default::default()
+        });
+        for prompt in [&interactive, &autonomous] {
+            for gone in [
+                "Work silently between results",
+                "When in doubt, ask",
+                "Don't create files unless",
+                "For any multi-step task",
+                "Prefer invisible work",
+                "Prefer dedicated tools over shell",
+                "always when comparing multiple sites",
+                "Connected Accounts",
+                "Settings → Apps",
+                "file-writing guidance above",
+                "delegate to named agents",
+                "resource: \"reminder\"",
+            ] {
+                assert!(!prompt.contains(gone), "resolved contradiction returned: {gone}");
+            }
+        }
+        // One tool-order rule, one task-list rule, one parallel-research rule.
+        assert_eq!(interactive.matches("Prefer file tools over shell").count(), 1);
+        assert_eq!(interactive.matches("A task list is for work that will take many tool calls").count(), 1);
+        assert_eq!(interactive.matches("queries: [...]").count(), 1);
+        // Interactive narrates once before the first call; autonomous never alongside a call.
+        assert!(interactive.contains("No text between tool calls"));
+        assert!(autonomous.contains("Zero text alongside tool calls"));
+        assert!(!autonomous.contains("No text between tool calls"));
     }
 
     #[test]

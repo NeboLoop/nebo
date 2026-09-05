@@ -15,29 +15,50 @@ use crate::registry::ToolResult;
 // Outlook detection (cached, 10-second timeout)
 // ═══════════════════════════════════════════════════════════════════════
 
-fn has_outlook() -> bool {
+const OUTLOOK_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// One-shot Outlook COM probe. `Err` carries what was observed (the COM
+/// object could not be created, or the probe did not answer in time) plus
+/// the fact that the answer is cached for the life of the process.
+fn outlook_status() -> Result<(), String> {
     use std::sync::OnceLock;
-    static HAS_OUTLOOK: OnceLock<bool> = OnceLock::new();
+    static OUTLOOK: OnceLock<Result<(), String>> = OnceLock::new();
 
-    *HAS_OUTLOOK.get_or_init(|| {
-        let script = r#"try { $null = New-Object -ComObject Outlook.Application; Write-Output "true" } catch { Write-Output "false" }"#;
-        // Use .output() in a thread with a 10-second timeout — Outlook COM can hang
-        let (tx, rx) = std::sync::mpsc::channel();
-        let script = script.to_string();
-        std::thread::spawn(move || {
-            let result = std::process::Command::new("powershell")
-                .args(["-NoProfile", "-Command", &script])
-                .output();
-            let _ = tx.send(result);
-        });
+    OUTLOOK
+        .get_or_init(|| {
+            let script = r#"try { $null = New-Object -ComObject Outlook.Application; Write-Output "true" } catch { Write-Output "false" }"#;
+            // Use .output() in a thread with a timeout: Outlook COM can hang.
+            let (tx, rx) = std::sync::mpsc::channel();
+            let script = script.to_string();
+            std::thread::spawn(move || {
+                let result = std::process::Command::new("powershell")
+                    .args(["-NoProfile", "-Command", &script])
+                    .output();
+                let _ = tx.send(result);
+            });
 
-        match rx.recv_timeout(std::time::Duration::from_secs(10)) {
-            Ok(Ok(output)) => {
-                String::from_utf8_lossy(&output.stdout).trim() == "true"
+            let cached = "This check is cached until Nebo restarts; ask the owner to open Outlook and restart Nebo.";
+            match rx.recv_timeout(OUTLOOK_PROBE_TIMEOUT) {
+                Ok(Ok(output)) if String::from_utf8_lossy(&output.stdout).trim() == "true" => {
+                    Ok(())
+                }
+                Ok(Ok(_)) => Err(format!(
+                    "Outlook COM object could not be created (New-Object Outlook.Application failed), so Outlook is not installed or not registered. {}",
+                    cached
+                )),
+                Ok(Err(e)) => Err(format!("PowerShell could not be started: {}. {}", e, cached)),
+                Err(_) => Err(format!(
+                    "Outlook COM did not answer within {} s. {}",
+                    OUTLOOK_PROBE_TIMEOUT.as_secs(),
+                    cached
+                )),
             }
-            _ => false,
-        }
-    })
+        })
+        .clone()
+}
+
+fn has_outlook() -> bool {
+    outlook_status().is_ok()
 }
 
 /// Map mailbox name to Outlook folder ID, or return name for custom folder lookup.
@@ -56,9 +77,12 @@ fn folder_id(mailbox: &str) -> &str {
 // Mail
 // ═══════════════════════════════════════════════════════════════════════
 
+/// Every mail listing is capped here; the cap is named in the result footer.
+const MAIL_LIMIT_CAP: i64 = 50;
+
 pub async fn handle_mail(action: &str, input: &OrganizerInput) -> ToolResult {
-    if !has_outlook() {
-        return ToolResult::error("Mail requires Microsoft Outlook on Windows");
+    if let Err(e) = outlook_status() {
+        return ToolResult::error(format!("Mail on Windows goes through Outlook, and {}", e));
     }
 
     match action {
@@ -80,11 +104,11 @@ if ($output -eq "") { Write-Output "No email accounts configured in Outlook" } e
 $ol = New-Object -ComObject Outlook.Application
 $ns = $ol.GetNamespace("MAPI")
 $inbox = $ns.GetDefaultFolder(6)
-Write-Output $inbox.UnReadItemCount"#;
+Write-Output ("" + $inbox.UnReadItemCount + " unread in Inbox (of " + $inbox.Items.Count + " messages)")"#;
             run_powershell(script).await
         }
         "read" => {
-            let limit = input.limit.unwrap_or(10).clamp(1, 50);
+            let limit = input.limit.unwrap_or(10).clamp(1, MAIL_LIMIT_CAP);
             let fid = folder_id(&input.mailbox);
 
             let script = if fid.chars().all(|c| c.is_ascii_digit()) {
@@ -101,7 +125,8 @@ for ($i = 1; $i -le $count; $i++) {{
     $m = $items.Item($i)
     $output += "From: " + $m.SenderName + " | Subject: " + $m.Subject + " | Date: " + $m.ReceivedTime.ToString("yyyy-MM-dd HH:mm") + "`n---`n"
 }}
-if ($output -eq "") {{ Write-Output "No messages" }} else {{ Write-Output $output }}"#,
+if ($output -eq "") {{ Write-Output ("0 messages in folder '" + $folder.Name + "'") }} else {{ Write-Output ($output + "Showing $count of $($items.Count) messages in folder '" + $folder.Name + "' (limit {limit}, cap {cap})") }}"#,
+                    cap = MAIL_LIMIT_CAP,
                 )
             } else {
                 // Custom folder lookup by name
@@ -111,7 +136,7 @@ $ol = New-Object -ComObject Outlook.Application
 $ns = $ol.GetNamespace("MAPI")
 $inbox = $ns.GetDefaultFolder(6)
 $folder = $inbox.Parent.Folders | Where-Object {{ $_.Name -eq "{name}" }} | Select-Object -First 1
-if ($null -eq $folder) {{ $folder = $inbox }}
+if ($null -eq $folder) {{ Write-Output "Mail folder '{name}' not found"; exit 1 }}
 
 $items = $folder.Items
 $items.Sort("[ReceivedTime]", $true)
@@ -121,8 +146,9 @@ for ($i = 1; $i -le $count; $i++) {{
     $m = $items.Item($i)
     $output += "From: " + $m.SenderName + " | Subject: " + $m.Subject + " | Date: " + $m.ReceivedTime.ToString("yyyy-MM-dd HH:mm") + "`n---`n"
 }}
-if ($output -eq "") {{ Write-Output "No messages" }} else {{ Write-Output $output }}"#,
+if ($output -eq "") {{ Write-Output "0 messages in folder '{name}'" }} else {{ Write-Output ($output + "Showing $count of $($items.Count) messages in folder '{name}' (limit {limit}, cap {cap})") }}"#,
                     name = escape_powershell(&input.mailbox),
+                    cap = MAIL_LIMIT_CAP,
                 )
             };
             run_powershell(&script).await
@@ -153,14 +179,17 @@ $mail.Body = "{body}""#,
                 script.push_str(&format!("\n$mail.CC = \"{cc_str}\""));
             }
 
-            script.push_str("\n$mail.Send()\nWrite-Output \"Email sent\"");
+            script.push_str(&format!(
+                "\n$mail.Send()\nWrite-Output \"Handed to Outlook for delivery to {}\"",
+                escape_powershell(&input.to.join(", "))
+            ));
             run_powershell(&script).await
         }
         "search" => {
             if input.query.is_empty() {
                 return ToolResult::error("'query' parameter required for search");
             }
-            let limit = input.limit.unwrap_or(20).clamp(1, 50);
+            let limit = input.limit.unwrap_or(20).clamp(1, MAIL_LIMIT_CAP);
             let query = escape_powershell(&input.query);
 
             let script = format!(
@@ -177,7 +206,8 @@ for ($i = 1; $i -le $count; $i++) {{
     $m = $items.Item($i)
     $output += $m.ReceivedTime.ToString("yyyy-MM-dd HH:mm") + " | From: " + $m.SenderName + " | Subject: " + $m.Subject + "`n"
 }}
-if ($output -eq "") {{ Write-Output "No messages found" }} else {{ Write-Output $output }}"#,
+if ($output -eq "") {{ Write-Output "No messages in Inbox whose subject or body contains '{query}' (plain substring; operators like from: are not supported)" }} else {{ Write-Output ($output + "Showing $count of $($items.Count) matching messages in Inbox (limit {limit}, cap {cap})") }}"#,
+                cap = MAIL_LIMIT_CAP,
             );
             run_powershell(&script).await
         }
@@ -193,8 +223,11 @@ if ($output -eq "") {{ Write-Output "No messages found" }} else {{ Write-Output 
 // ═══════════════════════════════════════════════════════════════════════
 
 pub async fn handle_contacts(action: &str, input: &OrganizerInput) -> ToolResult {
-    if !has_outlook() {
-        return ToolResult::error("Contacts requires Microsoft Outlook on Windows");
+    if let Err(e) = outlook_status() {
+        return ToolResult::error(format!(
+            "Contacts on Windows go through Outlook, and {}",
+            e
+        ));
     }
 
     match action {
@@ -524,8 +557,14 @@ function Format-NeboEvent($e, $calName) {
 "##;
 
 /// Build the Outlook calendar query script for a `[start, end)` date window.
-/// `start`/`end` are Outlook Restrict filter dates (MM/DD/YYYY).
-fn calendar_query_script(start: &str, end: &str, empty_msg: &str) -> String {
+/// `start`/`end` are Outlook Restrict filter dates (MM/DD/YYYY). `range` is
+/// the human phrase for the window ("today", "in the next 7 days"); only the
+/// default calendar is read, and the empty statement says so.
+fn calendar_query_script(start: &str, end: &str, range: &str) -> String {
+    let empty_msg = format!(
+        "No events {} in '$calName' (default calendar only)",
+        escape_powershell(range)
+    );
     format!(
         r#"{prelude}
 $ol = New-Object -ComObject Outlook.Application
@@ -553,8 +592,11 @@ pub async fn handle_calendar(
     _ctx: &crate::origin::ToolContext,
     _store: Option<&std::sync::Arc<db::Store>>,
 ) -> ToolResult {
-    if !has_outlook() {
-        return ToolResult::error("Calendar requires Microsoft Outlook on Windows");
+    if let Err(e) = outlook_status() {
+        return ToolResult::error(format!(
+            "Calendar on Windows goes through Outlook, and {}",
+            e
+        ));
     }
 
     match action {
@@ -580,7 +622,7 @@ if ($output -eq "") { Write-Output "No calendars found" } else { Write-Output $o
                 .format("%m/%d/%Y")
                 .to_string();
 
-            let script = calendar_query_script(&today, &tomorrow, "No events today");
+            let script = calendar_query_script(&today, &tomorrow, "today");
             run_powershell(&script).await
         }
         "upcoming" => {
@@ -593,7 +635,7 @@ if ($output -eq "") { Write-Output "No calendars found" } else { Write-Output $o
             let script = calendar_query_script(
                 &start,
                 &end,
-                &format!("No upcoming events in the next {days} days"),
+                &format!("in the next {days} days (days is capped at 365)"),
             );
             run_powershell(&script).await
         }
@@ -607,7 +649,7 @@ if ($output -eq "") { Write-Output "No calendars found" } else { Write-Output $o
             let script = calendar_query_script(
                 &start,
                 &end,
-                &format!("No events in the next {days} days"),
+                &format!("in the next {days} days (days is capped at 365)"),
             );
             run_powershell(&script).await
         }
@@ -799,7 +841,7 @@ foreach ($t in $tasks) {{
         break
     }}
 }}
-if (-not $found) {{ Write-Output "No matching task found" }}"#,
+if (-not $found) {{ Write-Output "Nothing changed: no incomplete task whose subject contains '{name_escaped}'"; exit 1 }}"#,
             );
             run_powershell(&script).await
         }
@@ -825,7 +867,7 @@ foreach ($t in $tasks) {{
         break
     }}
 }}
-if (-not $found) {{ Write-Output "No matching task found" }}"#,
+if (-not $found) {{ Write-Output "Nothing changed: no task whose subject contains '{name_escaped}'"; exit 1 }}"#,
             );
             run_powershell(&script).await
         }
@@ -841,13 +883,13 @@ async fn scheduler_reminders(action: &str, input: &OrganizerInput) -> ToolResult
     match action {
         "lists" => {
             run_powershell(
-                r#"Get-ScheduledTask | Where-Object { $_.TaskPath -eq "\Nebo\" } | ForEach-Object { $_.TaskName } | Sort-Object"#,
+                r#"$t = @(Get-ScheduledTask | Where-Object { $_.TaskPath -eq "\Nebo\" }); if ($t.Count -eq 0) { Write-Output "No Nebo reminders scheduled (Task Scheduler folder \Nebo\ is empty)" } else { $t | ForEach-Object { $_.TaskName } | Sort-Object }"#,
             )
             .await
         }
         "list" => {
             run_powershell(
-                r#"Get-ScheduledTask | Where-Object { $_.TaskPath -eq "\Nebo\" } | Select-Object TaskName, State | Format-Table -AutoSize"#,
+                r#"$t = @(Get-ScheduledTask | Where-Object { $_.TaskPath -eq "\Nebo\" }); if ($t.Count -eq 0) { Write-Output "No Nebo reminders scheduled (Task Scheduler folder \Nebo\ is empty)" } else { $t | Select-Object TaskName, State | Format-Table -AutoSize }"#,
             )
             .await
         }
@@ -871,10 +913,11 @@ async fn scheduler_reminders(action: &str, input: &OrganizerInput) -> ToolResult
             let name_escaped = escape_powershell(name);
             let script = format!(
                 r#"
+$existing = Get-ScheduledTask -TaskPath "\Nebo\" -TaskName "{name_escaped}" -ErrorAction SilentlyContinue
 $action = New-ScheduledTaskAction -Execute "msg.exe" -Argument "* Reminder: {name_escaped}"
 $trigger = New-ScheduledTaskTrigger -Once -At "{trigger_time}"
-Register-ScheduledTask -TaskPath "\Nebo\" -TaskName "{name_escaped}" -Action $action -Trigger $trigger -Force | Out-Null
-Write-Output "Reminder scheduled: {name_escaped} at {trigger_time}""#,
+Register-ScheduledTask -TaskPath "\Nebo\" -TaskName "{name_escaped}" -Action $action -Trigger $trigger -Force -ErrorAction Stop | Out-Null
+if ($existing) {{ Write-Output "Reminder replaced (a scheduled task named '{name_escaped}' already existed): {name_escaped} at {trigger_time}" }} else {{ Write-Output "Reminder scheduled: {name_escaped} at {trigger_time}" }}"#,
             );
             run_powershell(&script).await
         }
@@ -885,7 +928,7 @@ Write-Output "Reminder scheduled: {name_escaped} at {trigger_time}""#,
             }
             let name_escaped = escape_powershell(name);
             let script = format!(
-                r#"Unregister-ScheduledTask -TaskPath "\Nebo\" -TaskName "{name_escaped}" -Confirm:$false; Write-Output "Removed: {name_escaped}""#,
+                r#"Unregister-ScheduledTask -TaskPath "\Nebo\" -TaskName "{name_escaped}" -Confirm:$false -ErrorAction Stop; Write-Output "Removed: {name_escaped}""#,
             );
             run_powershell(&script).await
         }

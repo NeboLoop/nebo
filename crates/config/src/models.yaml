@@ -34,6 +34,11 @@ defaults:
   # Users with their own API keys can override in Settings > Routing.
   primary: janus/nebo-1
 
+  # When the reviewer would stop a run, it first moves the next few steps to
+  # this model (once per run). A stronger speed costs more per step, but a run
+  # stopped at step forty has already spent forty steps. Empty = stop instead.
+  escalation: janus/nebo-1-high
+
   # Fallback chain (tried in order if primary fails)
   fallbacks:
     - anthropic/claude-sonnet-4-6

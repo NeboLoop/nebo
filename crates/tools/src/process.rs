@@ -7,6 +7,78 @@ use tokio::sync::Mutex;
 use tracing::debug;
 use uuid::Uuid;
 
+/// Background sessions alive at once. Past this the model is told to end one:
+/// each is a process tree that nothing else will ever stop.
+pub const MAX_BACKGROUND_SESSIONS: usize = 8;
+
+/// Take the complete UTF-8 prefix out of `carry`, leaving any partial
+/// trailing character for the next read. A 4 KB read can split a multi-byte
+/// character; the old code dropped the whole chunk when it did, so non-ASCII
+/// output arrived with holes.
+fn drain_utf8(carry: &mut Vec<u8>) -> String {
+    let valid = match std::str::from_utf8(carry) {
+        Ok(_) => carry.len(),
+        Err(e) => e.valid_up_to(),
+    };
+    let text = String::from_utf8_lossy(&carry[..valid]).into_owned();
+    carry.drain(..valid);
+    // Bytes that can never complete a character (an invalid sequence, not a
+    // partial one) must not sit in the carry forever.
+    if let Err(e) = std::str::from_utf8(carry)
+        && e.error_len().is_some()
+    {
+        let bad = String::from_utf8_lossy(carry).into_owned();
+        carry.clear();
+        return text + bad.as_str();
+    }
+    text
+}
+
+/// Every command runs as the leader of its own process group, and the group
+/// is what gets killed. Killing only the `sh -c` leaves whatever it started
+/// (a dev server, a watcher, a `&` job) reparented to init, running forever.
+pub fn in_own_group(cmd: &mut Command) {
+    #[cfg(unix)]
+    cmd.process_group(0);
+}
+
+/// Kill a whole process group. Nothing to do for pid 0 or off unix.
+pub fn kill_group(pid: u32) {
+    #[cfg(unix)]
+    if pid > 0 {
+        // SAFETY: killpg on a pid this process spawned; a stale pgid returns ESRCH.
+        unsafe {
+            libc::killpg(pid as libc::pid_t, libc::SIGKILL);
+        }
+    }
+}
+
+/// Owns a foreground command's process group: dropping it, on completion,
+/// timeout or a cancelled turn, kills the group.
+struct GroupGuard(u32);
+impl Drop for GroupGuard {
+    fn drop(&mut self) {
+        kill_group(self.0);
+    }
+}
+
+/// Run `cmd` to completion or `timeout`. `Ok(None)` is a timeout. Either way
+/// the command's whole process group is gone when this returns; a server the
+/// model wants kept alive belongs in a background session.
+pub async fn output_within(
+    mut cmd: Command,
+    timeout: std::time::Duration,
+) -> std::io::Result<Option<std::process::Output>> {
+    in_own_group(&mut cmd);
+    cmd.kill_on_drop(true);
+    let child = cmd.spawn()?;
+    let _group = GroupGuard(child.id().unwrap_or(0));
+    match tokio::time::timeout(timeout, child.wait_with_output()).await {
+        Ok(out) => out.map(Some),
+        Err(_) => Ok(None),
+    }
+}
+
 /// A background shell session.
 #[derive(Debug)]
 pub struct BackgroundSession {
@@ -78,9 +150,26 @@ impl ProcessRegistry {
             cmd.env(k, v);
         }
 
-        let child = cmd.spawn().map_err(|e| format!("failed to spawn: {}", e))?;
+        {
+            let running = self.running.lock().await;
+            if running.len() >= MAX_BACKGROUND_SESSIONS {
+                let mut ids: Vec<String> = running.values().map(|s| format!("{} ({})", s.id, s.command)).collect();
+                ids.sort();
+                return Err(format!(
+                    "{MAX_BACKGROUND_SESSIONS} background sessions are already running; kill one first: {}",
+                    ids.join(", ")
+                ));
+            }
+        }
+        in_own_group(&mut cmd);
+        let child = cmd
+            .spawn()
+            .map_err(|e| format!("failed to spawn '{}': {}", command, e))?;
 
         let pid = child.id().unwrap_or(0);
+        // The shutdown handler kills registered children, so a Nebo restart
+        // takes its background sessions with it instead of orphaning them.
+        napp::child_guard::register_child(pid);
         let session_id = format!("bg-{}", &Uuid::new_v4().to_string()[..8]);
 
         let output = Arc::new(Mutex::new(String::new()));
@@ -142,6 +231,7 @@ impl ProcessRegistry {
         running: Arc<Mutex<HashMap<String, Arc<BackgroundSession>>>>,
         finished: Arc<Mutex<HashMap<String, Arc<BackgroundSession>>>>,
     ) {
+        let pid = child.id().unwrap_or(0);
         let mut child_stdout = child.stdout.take();
         let mut child_stderr = child.stderr.take();
         let mut child_stdin = child.stdin.take();
@@ -152,14 +242,14 @@ impl ProcessRegistry {
         let stdout_handle = tokio::spawn(async move {
             if let Some(ref mut stdout) = child_stdout {
                 let mut buf = [0u8; 4096];
+                let mut carry: Vec<u8> = Vec::new();
                 loop {
                     match stdout.read(&mut buf).await {
                         Ok(0) => break,
                         Ok(n) => {
                             let data = &buf[..n];
-                            if let Ok(text) = std::str::from_utf8(data) {
-                                stdout_output.lock().await.push_str(text);
-                            }
+                            carry.extend_from_slice(data);
+                            stdout_output.lock().await.push_str(&drain_utf8(&mut carry));
                             stdout_pending.lock().await.extend_from_slice(data);
                         }
                         Err(_) => break,
@@ -174,14 +264,14 @@ impl ProcessRegistry {
         let stderr_handle = tokio::spawn(async move {
             if let Some(ref mut stderr) = child_stderr {
                 let mut buf = [0u8; 4096];
+                let mut carry: Vec<u8> = Vec::new();
                 loop {
                     match stderr.read(&mut buf).await {
                         Ok(0) => break,
                         Ok(n) => {
                             let data = &buf[..n];
-                            if let Ok(text) = std::str::from_utf8(data) {
-                                stderr_output.lock().await.push_str(text);
-                            }
+                            carry.extend_from_slice(data);
+                            stderr_output.lock().await.push_str(&drain_utf8(&mut carry));
                             stderr_pending.lock().await.extend_from_slice(data);
                         }
                         Err(_) => break,
@@ -213,6 +303,9 @@ impl ProcessRegistry {
             status = child.wait() => {
                 let exit_code = status.ok().and_then(|s| s.code());
                 debug!(session = %session_id, exit_code = ?exit_code, "background process exited");
+                // The leader is gone; whatever it left behind in the group goes too.
+                kill_group(pid);
+                napp::child_guard::unregister_child(pid);
 
                 // Wait for IO to drain
                 let _ = stdout_handle.await;
@@ -238,7 +331,9 @@ impl ProcessRegistry {
                 }
             }
             _ = kill_rx => {
+                kill_group(pid);
                 let _ = child.kill().await;
+                napp::child_guard::unregister_child(pid);
                 debug!(session = %session_id, "background process killed");
             }
         }
@@ -262,12 +357,31 @@ impl ProcessRegistry {
         self.finished.lock().await.values().cloned().collect()
     }
 
+    /// Why `id` is not a running session: it already exited (with what code),
+    /// or it never existed (and which sessions do).
+    async fn not_running(&self, id: &str) -> String {
+        if let Some(done) = self.finished.lock().await.get(id) {
+            return match done.exit_code {
+                Some(c) => format!("session {} has already exited (exit code {})", id, c),
+                None => format!("session {} has already exited (terminated by signal)", id),
+            };
+        }
+        let mut ids: Vec<String> = self.running.lock().await.keys().cloned().collect();
+        ids.sort();
+        if ids.is_empty() {
+            format!("no session {}; no background sessions are running", id)
+        } else {
+            format!("no session {}; running: {}", id, ids.join(", "))
+        }
+    }
+
     /// Write data to a session's stdin.
     pub async fn write_stdin(&self, id: &str, data: &[u8]) -> Result<(), String> {
         let running = self.running.lock().await;
-        let sess = running
-            .get(id)
-            .ok_or_else(|| format!("session not found: {}", id))?;
+        let Some(sess) = running.get(id) else {
+            drop(running);
+            return Err(self.not_running(id).await);
+        };
         let tx = sess.stdin_tx.as_ref().ok_or("session stdin closed")?;
         tx.send(data.to_vec())
             .await
@@ -277,9 +391,13 @@ impl ProcessRegistry {
     /// Kill a running session by sending the kill signal via oneshot channel.
     pub async fn kill_session(&self, id: &str) -> Result<(), String> {
         let mut running = self.running.lock().await;
-        let sess = running
-            .remove(id)
-            .ok_or_else(|| format!("session not found: {}", id))?;
+        let Some(sess) = running.remove(id) else {
+            drop(running);
+            return Err(self.not_running(id).await);
+        };
+        // The group dies here, by pid: the oneshot below only tidies the IO
+        // task, and it cannot fire while another handle to the session exists.
+        kill_group(sess.pid);
 
         // We need mutable access to take the kill_tx. Since the session is wrapped in Arc,
         // and we just removed the only reference from the map, we try to unwrap.
@@ -438,5 +556,107 @@ mod ps_stderr_tests {
     fn plain_stderr_unchanged() {
         let raw = "warning: something simple\n";
         assert_eq!(clean_powershell_stderr(raw), "warning: something simple");
+    }
+}
+
+#[cfg(test)]
+mod utf8_tests {
+    use super::drain_utf8;
+
+    #[test]
+    fn a_character_split_across_reads_is_kept_not_dropped() {
+        let text = "héllo wörld";
+        let bytes = text.as_bytes();
+        // Split inside the two-byte "é".
+        let mut carry: Vec<u8> = Vec::new();
+        carry.extend_from_slice(&bytes[..2]);
+        let first = drain_utf8(&mut carry);
+        assert_eq!(first, "h");
+        assert_eq!(carry, vec![bytes[1]], "the half character waits for the next read");
+        carry.extend_from_slice(&bytes[2..]);
+        let rest = drain_utf8(&mut carry);
+        assert_eq!(first + rest.as_str(), text);
+        assert!(carry.is_empty());
+    }
+
+    #[test]
+    fn an_invalid_byte_is_replaced_not_stuck() {
+        let mut carry = vec![0xff, b'o', b'k'];
+        let out = drain_utf8(&mut carry);
+        assert!(out.ends_with("ok"), "{out}");
+        assert!(carry.is_empty());
+    }
+}
+
+#[cfg(all(test, unix))]
+mod group_tests {
+    use super::*;
+    use std::time::Duration;
+
+    /// A grandchild's pid, written by the shell so the test can watch it die.
+    fn pid_file() -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("nebo-group-{}", Uuid::new_v4()))
+    }
+    fn alive(pid: i32) -> bool {
+        // SAFETY: signal 0 only checks existence.
+        unsafe { libc::kill(pid, 0) == 0 }
+    }
+    async fn grandchild_pid(file: &std::path::Path) -> i32 {
+        for _ in 0..50 {
+            if let Ok(t) = std::fs::read_to_string(file)
+                && let Ok(pid) = t.trim().parse()
+            {
+                return pid;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!("grandchild never reported its pid");
+    }
+    async fn settle() {
+        tokio::time::sleep(Duration::from_millis(150)).await;
+    }
+
+    #[tokio::test]
+    async fn a_timed_out_command_takes_its_children_with_it() {
+        let file = pid_file();
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c").arg(format!("sleep 30 & echo $! > {}; wait", file.display()));
+        cmd.stdout(Stdio::null()).stderr(Stdio::null());
+        let out = output_within(cmd, Duration::from_millis(400)).await.unwrap();
+        assert!(out.is_none(), "expected a timeout");
+        let pid = grandchild_pid(&file).await;
+        settle().await;
+        assert!(!alive(pid), "the backgrounded grandchild outlived the timeout");
+        let _ = std::fs::remove_file(file);
+    }
+
+    #[tokio::test]
+    async fn killing_a_background_session_takes_its_children_with_it() {
+        let file = pid_file();
+        let reg = ProcessRegistry::new();
+        let id = reg
+            .spawn_background(&format!("sleep 30 & echo $! > {}; wait", file.display()), None, &[])
+            .await
+            .unwrap();
+        let pid = grandchild_pid(&file).await;
+        assert!(alive(pid));
+        reg.kill_session(&id).await.unwrap();
+        settle().await;
+        assert!(!alive(pid), "the session's grandchild outlived the kill");
+        let _ = std::fs::remove_file(file);
+    }
+
+    #[tokio::test]
+    async fn background_sessions_are_capped() {
+        let reg = ProcessRegistry::new();
+        let mut ids = Vec::new();
+        for _ in 0..MAX_BACKGROUND_SESSIONS {
+            ids.push(reg.spawn_background("sleep 30", None, &[]).await.unwrap());
+        }
+        let err = reg.spawn_background("sleep 30", None, &[]).await.unwrap_err();
+        assert!(err.contains("kill one first"), "{err}");
+        for id in ids {
+            reg.kill_session(&id).await.unwrap();
+        }
     }
 }

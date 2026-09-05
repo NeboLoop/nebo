@@ -46,6 +46,8 @@ const MAX_OVERFLOW_RETRIES: usize = 2;
 const MAX_OVERLOADS_BEFORE_FALLBACK: usize = 3;
 /// Timeout for individual tool execution.
 const TOOL_EXECUTION_TIMEOUT: Duration = Duration::from_secs(300);
+/// How often the tool clock checks whether the call is parked on the owner.
+const PARKED_POLL: Duration = Duration::from_millis(250);
 /// Max gap between stream events before the stream is declared wedged
 /// (connection open, no tokens). A 90s idle watchdog, classified transient so
 /// the normal retry/failover path re-issues the request.
@@ -602,6 +604,16 @@ fn extract_file_read_path(call: &ai::ToolCall) -> Option<String> {
     }
 
     None
+}
+
+/// True for an unranged `os` file read: the shape the read ledger fingerprints
+/// and notes itself, so the duplicate-read note must not stack on it.
+fn is_full_os_file_read(call: &ai::ToolCall) -> bool {
+    call.name == "os"
+        && call.input.get("action").and_then(|v| v.as_str()) == Some("read")
+        && tools::OsTool::resolved_resource(&call.input) == "file"
+        && call.input.get("offset").is_none()
+        && call.input.get("limit").is_none()
 }
 
 /// Detect a shell command whose sole purpose is dumping a file's contents and
@@ -1857,8 +1869,12 @@ impl Runner {
                     }
 
                     if result_text.len() > FORK_OUTPUT_CAP {
+                        let total = result_text.len();
                         result_text.truncate(FORK_OUTPUT_CAP);
-                        result_text.push_str("\n\n[Output truncated]");
+                        result_text.push_str(&format!(
+                            "\n\n[Output truncated: {total} bytes, showing first {FORK_OUTPUT_CAP}; \
+                             the sub-agent's full output is in its session]"
+                        ));
                     }
 
                     let _ = session_mgr.append_message(
@@ -2260,8 +2276,85 @@ const PLAN_REMINDER_EVERY: usize = 10;
 
 /// The ONE predicate the loop uses for the plan reminder (tested directly;
 /// the live site calls this, it does not re-implement it).
+/// Runs a tool call under its budget, with the clock stopped while the call
+/// is parked on the owner. `None` means the budget of working time ran out.
+async fn run_within_budget<F>(
+    budget: Duration,
+    parked: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    fut: F,
+) -> Option<ToolResult>
+where
+    F: std::future::Future<Output = ToolResult>,
+{
+    tokio::pin!(fut);
+    let mut spent = Duration::ZERO;
+    loop {
+        let slice = PARKED_POLL.min(budget.saturating_sub(spent));
+        match tokio::time::timeout(slice, &mut fut).await {
+            Ok(result) => return Some(result),
+            Err(_) => {
+                if !parked.load(std::sync::atomic::Ordering::SeqCst) {
+                    spent += slice;
+                }
+                if spent >= budget {
+                    return None;
+                }
+            }
+        }
+    }
+}
+
+/// What the model reads when a tool's working time runs out. Names the
+/// budget as working time, because parked time never counts toward it.
+fn tool_timeout_text(tool: &str, budget: Duration) -> String {
+    format!(
+        "Tool '{}' did not finish within {}s of working time and was stopped. That is the tool's limit, not a verdict on the service behind it; if the same call is needed, say what it was waiting on.",
+        tool,
+        budget.as_secs()
+    )
+}
+
 fn plan_reminder_due(iteration: usize, last_touch: usize) -> bool {
     iteration.saturating_sub(last_touch) >= PLAN_REMINDER_EVERY
+}
+
+/// The done gate fires at most this many times per run: once is a nudge to
+/// run the checks; a second firing would be the spiral of a model that has
+/// no checks to run.
+const DONE_GATE_MAX: usize = 1;
+
+/// A shell command that IS a project check. Running one resets the edit
+/// count the done gate watches, exactly as a post-tool hook verdict does.
+/// Word-bounded so `rustc` is not `tsc`.
+static CHECK_VERB_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(
+        r"\b(?:cargo (?:test|check|clippy)|pytest|go (?:test|vet)|pnpm (?:check|test|build)|npm (?:test|run)|npx tsc|tsc|vitest|jest|ruff|make (?:test|check))\b",
+    )
+    .expect("CHECK_VERB_RE is a literal")
+});
+
+fn is_check_command(command: &str) -> bool {
+    CHECK_VERB_RE.is_match(command)
+}
+
+/// An `os` file write or edit: the calls the done gate counts.
+fn is_file_change_call(tc: &ai::ToolCall) -> bool {
+    tc.name == "os"
+        && tools::OsTool::resolved_resource(&tc.input) == "file"
+        && matches!(tc.input.get("action").and_then(|v| v.as_str()), Some("write" | "edit"))
+}
+
+/// An `os` shell call whose command is a project check (`CHECK_VERB_RE`).
+fn is_check_run_call(tc: &ai::ToolCall) -> bool {
+    tc.name == "os"
+        && tools::OsTool::resolved_resource(&tc.input) == "shell"
+        && tc.input.get("command").and_then(|v| v.as_str()).is_some_and(is_check_command)
+}
+
+/// Does the done gate fire at the text-response exit? Only when edits landed
+/// after the last check, and only [`DONE_GATE_MAX`] times per run.
+fn done_gate_due(edits_since_check: usize, fired: usize) -> bool {
+    edits_since_check > 0 && fired < DONE_GATE_MAX
 }
 
 /// Post-tool hooks, applied to a result BEFORE it is streamed or persisted, so
@@ -2269,16 +2362,18 @@ fn plan_reminder_due(iteration: usize, last_touch: usize) -> bool {
 /// given (a formatter's note, a test runner's verdict). Plugins listen as
 /// actions (fire-and-forget); shell hooks as filters whose response is the
 /// result. Live 2026-09-02: the hook note reached the model but not the trace,
-/// because the event went out first.
+/// because the event went out first. Returns whether a hook attached
+/// anything to the result (a note or a verdict), which the done gate takes
+/// as "a check ran".
 async fn apply_post_tool_hooks(
     hooks: &napp::HookDispatcher,
     tc: &ai::ToolCall,
     result: &mut ToolResult,
     session_id: &str,
     run_cwd: Option<&str>,
-) {
+) -> bool {
     if !hooks.has_subscribers("tool.post_execute") {
-        return;
+        return false;
     }
     let payload = serde_json::to_vec(&crate::hooks::ToolPostExecutePayload {
         tool_name: tc.name.clone(),
@@ -2293,10 +2388,13 @@ async fn apply_post_tool_hooks(
     .unwrap_or_default();
     hooks.do_action("tool.post_execute", payload.clone()).await;
     let (bytes, _) = hooks.apply_filter("tool.post_execute", payload).await;
+    let mut attached = false;
     if let Ok(resp) = serde_json::from_slice::<crate::hooks::ToolPostExecuteResponse>(&bytes) {
+        attached = resp.result != result.content;
         result.content = resp.result;
         result.is_error = resp.is_error;
     }
+    attached
 }
 
 async fn run_loop(
@@ -2446,6 +2544,12 @@ async fn run_loop(
     // run one before reporting done (the reference nags its todo list the same
     // way; ours nags for a MEASURED check, not a self-declared tick).
     let mut plan_touch: Option<(usize, String)> = None;
+    // Done gate: os write/edit results since a check last ran (a post-tool
+    // hook verdict, declared or inferred, or a check verb the model ran
+    // itself). At the text-response exit a non-zero count sends the model
+    // back to run the project's checks, DONE_GATE_MAX times per run.
+    let mut edits_since_check: usize = 0;
+    let mut done_gate_fired: usize = 0;
     // Context accounting for the owner (Stage 8): where this run's tokens went.
     let mut ctx_compaction_passes: usize = 0;
     let mut ctx_evictions: usize = 0;
@@ -2500,6 +2604,11 @@ async fn run_loop(
     const MAX_EMPTY_CONTENT_RETRIES: usize = 3;
     // Message-stream steering: per-run cadence for <system-reminder> injection.
     let mut reminder_cadence = steering::ReminderCadence::default();
+    let mut review_trigger = crate::reviewer::Trigger::default();
+    // (model, iteration the window ends at). Set once per run by a reviewer
+    // stop verdict when models.yaml names an escalation model.
+    let mut escalation: Option<(String, usize)> = None;
+    let mut escalated_once = false;
     let mut turn_exit_reason = crate::guardrails::Exit::Unknown;
     // Stage 2 guards with their escalation attached (see guardrails.rs).
     let mut spiral_escalator = crate::guardrails::Escalator::default();
@@ -3134,7 +3243,7 @@ async fn run_loop(
                 }
                 sk_lines.push(String::new());
                 sk_lines.push(
-                    "These skills are part of your configuration. Use skill(action: \"discover\", query: \"...\") or plugin(action: \"skills\") to explore their capabilities."
+                    "These skills are part of your configuration. Use skill(action: \"discover\", query: \"...\") or plugin(resource: \"<slug>\", action: \"help\") to explore their capabilities."
                         .to_string(),
                 );
                 parts.push(sk_lines.join("\n"));
@@ -3881,11 +3990,12 @@ async fn run_loop(
             "[telemetry] tools filtered + prompt sections built"
         );
 
-        // Select model: use override if set, otherwise ask the selector
-        let selected_model = if !model_override.is_empty() {
-            model_override.to_string()
-        } else {
-            selector.select(&window_messages)
+        // Select model: an open escalation window wins, then the override,
+        // otherwise ask the selector.
+        let selected_model = match crate::reviewer::window_model(escalation.as_ref(), iteration) {
+            Some(model) => model.to_string(),
+            None if !model_override.is_empty() => model_override.to_string(),
+            None => selector.select(&window_messages),
         };
 
         // Determine thinking mode
@@ -4144,7 +4254,12 @@ async fn run_loop(
         // Breakpoint 1: CACHE_BOUNDARY within static_system (stable identity/behaviour — rarely changes)
         // Breakpoint 2: end of static_system (semi-dynamic: skill hints, model aliases)
         // Everything after breakpoint 2 (STRAP, tools list, dynamic suffix) is fully dynamic.
-        let cache_breakpoints = {
+        let cache_breakpoints = if !full_system.starts_with(static_system.as_str()) {
+            // A pre_send hook rewrote the prompt: the offsets below would
+            // slice its text at points that mean nothing, so cache nothing.
+            debug!(session_id, "pre_send hook changed the prompt prefix; cache breakpoints dropped");
+            Vec::new()
+        } else {
             let mut bps = Vec::new();
             if let Some(boundary) = prompt::cache_boundary_offset(&static_system) {
                 bps.push(boundary);
@@ -4580,6 +4695,15 @@ async fn run_loop(
                             state.estimate_correction =
                                 conversation_actual.saturating_sub(state.last_request_estimate);
                         }
+                        info!(
+                            session_id,
+                            iteration,
+                            context_tokens = context_actual,
+                            cache_read_tokens = usage.cache_read_input_tokens,
+                            estimated = state.last_request_estimate + state.system_overhead_tokens,
+                            limit = thresholds.auto_compact,
+                            "context usage"
+                        );
                     }
                     let _ = tx.send(event).await;
                 }
@@ -5039,6 +5163,7 @@ async fn run_loop(
                 stream_tx: Some(tx.clone()),
                 run_id: progress.map(|p| p.run_id.clone()),
                 ask_channels: ask_channels.cloned(),
+                parked: Default::default(),
                 channel: channel_ctx.cloned(),
                 model_preference: (!model_override.is_empty()).then(|| model_override.to_string()),
                 memory_topics: memory_topics.iter().map(|t| t.slug.clone()).collect(),
@@ -5104,6 +5229,9 @@ async fn run_loop(
                     wf_break_reason = Some(format!("workflow_exit:{reason}"));
                 }
             }
+            // A pre hook that failed without blocking: its note rides on the
+            // call's result, after the tool's own output, keyed by tool id.
+            let mut pre_hook_notes: HashMap<String, String> = HashMap::new();
             let has_pre_hook = hooks.has_subscribers("tool.pre_execute");
             if has_pre_hook {
                 for idx in 0..tool_calls.len() {
@@ -5126,8 +5254,13 @@ async fn run_loop(
                                 .unwrap_or_else(|| "Blocked by plugin hook".into());
                             blocked_results[idx] =
                                 Some((tool_calls[idx].clone(), ToolResult::error(msg)));
-                        } else if let Some(mutated_input) = resp.input {
-                            tool_calls[idx].input = mutated_input;
+                        } else {
+                            if let Some(note) = resp.note {
+                                pre_hook_notes.insert(tool_calls[idx].id.clone(), note);
+                            }
+                            if let Some(mutated_input) = resp.input {
+                                tool_calls[idx].input = mutated_input;
+                            }
                         }
                     }
                 }
@@ -5164,13 +5297,19 @@ async fn run_loop(
                     blocked_results[idx] = Some((
                         tc.clone(),
                         ToolResult::error(format!(
-                            "Blocked: {} has been called {} times with identical arguments \
-                             and has not made progress — it errored or returned what you \
-                             already had. Retrying it unchanged will not help: read the \
-                             error, change the arguments, or tell the user what is blocking \
-                             you. Do NOT work around this by renaming an output file.",
-                            tc.name,
-                            unproductive_repeats + 1
+                            "Blocked: {name} has been called {n} times with identical arguments \
+                             and returned the same thing each time, or errored each time. \
+                             Calling it the same way again, or the same way through a \
+                             different command, returns the same thing. If you are waiting \
+                             for a file or a process to change, wait in ONE bounded shell \
+                             command instead of re-reading: os(action: \"exec\", command: \
+                             \"for i in $(seq 1 12); do test $(wc -l < FILE) -ge N && break; \
+                             sleep 5; done; cat FILE\", timeout: 90), then report what you \
+                             saw, changed or not, with the count and the time. If you need \
+                             something different, change the arguments. Do NOT work around \
+                             this by renaming an output file.",
+                            name = tc.name,
+                            n = unproductive_repeats + 1
                         )),
                     ));
                 }
@@ -5256,15 +5395,14 @@ async fn run_loop(
             // The budget resets when it fires, so a model that changes approach isn't
             // locked out of the action for the rest of the turn — a genuine loop simply
             // earns another nudge after another limit's worth of unproductive calls.
-            let mut spiral_hard_stop: Option<String> = None;
+            let mut spiral_hard_stop: Option<(String, usize)> = None;
             for (idx, tc) in tool_calls.iter().enumerate() {
                 if blocked_results[idx].is_some() {
                     continue;
                 }
                 let key = action_key(tc);
-                if action_call_counts.get(&key).copied().unwrap_or(0)
-                    >= guard_cfg.same_action_limit
-                {
+                let observed = action_call_counts.get(&key).copied().unwrap_or(0);
+                if observed >= guard_cfg.same_action_limit {
                     warn!(
                         session_id,
                         action = %key,
@@ -5279,7 +5417,7 @@ async fn run_loop(
                     if guard_cfg.hard_stop
                         || spiral_escalator.fire(&key) == crate::guardrails::Verdict::Stop
                     {
-                        spiral_hard_stop = Some(key);
+                        spiral_hard_stop = Some((key, observed));
                         break;
                     }
                     action_call_counts.insert(key.clone(), 0);
@@ -5295,17 +5433,21 @@ async fn run_loop(
                     ));
                 }
             }
-            if let Some(key) = spiral_hard_stop {
+            if let Some((key, observed)) = spiral_hard_stop {
                 turn_exit_reason = crate::guardrails::Exit::RepeatedToolCalls;
+                let notice = if guard_cfg.hard_stop {
+                    format!(
+                        "Stopped: '{key}' was repeated {observed} times without progress \
+                         (hard stop is on)."
+                    )
+                } else {
+                    format!(
+                        "Stopped: '{key}' was repeated {observed} times without progress, \
+                         and again after being told to change approach."
+                    )
+                };
                 let _ = tx
-                    .send(StreamEvent::control_notice(
-                        format!(
-                            "Stopped: '{}' was repeated {} times without progress, \
-                             and again after being told to change approach.",
-                            key, guard_cfg.same_action_limit
-                        ),
-                        "repeated_tool_calls",
-                    ))
+                    .send(StreamEvent::control_notice(notice, "repeated_tool_calls"))
                     .await;
                 break;
             }
@@ -5827,18 +5969,18 @@ async fn run_loop(
                         .await
                         .unwrap_or(TOOL_EXECUTION_TIMEOUT);
                     let started = std::time::Instant::now();
-                    let result = tokio::time::timeout(
+                    let mut ctx = ctx;
+                    ctx.parked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                    let parked = ctx.parked.clone();
+                    let result = match run_within_budget(
                         budget,
+                        parked,
                         tools.execute(&ctx, &tc.name, tc.input.clone()),
                     )
-                    .await;
-                    let result = match result {
-                        Ok(r) => r,
-                        Err(_) => ToolResult::error(format!(
-                            "Tool '{}' timed out after {}s",
-                            tc.name,
-                            budget.as_secs()
-                        )),
+                    .await
+                    {
+                        Some(r) => r,
+                        None => ToolResult::error(tool_timeout_text(&tc.name, budget)),
                     };
                     let duration_ms = started.elapsed().as_millis() as u64;
                     let result_log = truncate_str(&result.content, 300);
@@ -5851,6 +5993,9 @@ async fn run_loop(
             let mut results: Vec<Option<(ai::ToolCall, ToolResult)>> = vec![None; tool_calls.len()];
             // The call's wall-clock time per tool id; persisted with the result.
             let mut durations: HashMap<String, u64> = HashMap::new();
+            // Tool ids whose result a post-tool hook wrote into (the done gate's
+            // "a check ran" signal).
+            let mut hook_noted: HashSet<String> = HashSet::new();
             loop {
                 let item = tokio::select! {
                     _ = cancel_token.cancelled() => {
@@ -5863,7 +6008,13 @@ async fn run_loop(
                     }
                 };
                 let (idx, tc, mut result, duration_ms) = item;
-                apply_post_tool_hooks(hooks, &tc, &mut result, session_id, run_cwd).await;
+                if let Some(note) = pre_hook_notes.remove(&tc.id) {
+                    result.content.push_str("\n\n");
+                    result.content.push_str(&note);
+                }
+                if apply_post_tool_hooks(hooks, &tc, &mut result, session_id, run_cwd).await {
+                    hook_noted.insert(tc.id.clone());
+                }
                 // Send tool result event immediately as each completes
                 let _ = tx
                     .send(StreamEvent { payload: result.payload.clone(),
@@ -5913,21 +6064,27 @@ async fn run_loop(
                     .await
                     .unwrap_or(TOOL_EXECUTION_TIMEOUT);
                 let started = std::time::Instant::now();
-                let result = tokio::time::timeout(
+                let mut ctx = ctx.clone();
+                ctx.parked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let parked = ctx.parked.clone();
+                let mut result = match run_within_budget(
                     budget,
+                    parked,
                     tools.execute(&ctx, &tc.name, tc.input.clone()),
                 )
-                .await;
-                let mut result = match result {
-                    Ok(r) => r,
-                    Err(_) => ToolResult::error(format!(
-                        "Tool '{}' timed out after {}s",
-                        tc.name,
-                        budget.as_secs()
-                    )),
+                .await
+                {
+                    Some(r) => r,
+                    None => ToolResult::error(tool_timeout_text(&tc.name, budget)),
                 };
                 let duration_ms = started.elapsed().as_millis() as u64;
-                apply_post_tool_hooks(hooks, &tc, &mut result, session_id, run_cwd).await;
+                if let Some(note) = pre_hook_notes.remove(&tc.id) {
+                    result.content.push_str("\n\n");
+                    result.content.push_str(&note);
+                }
+                if apply_post_tool_hooks(hooks, &tc, &mut result, session_id, run_cwd).await {
+                    hook_noted.insert(tc.id.clone());
+                }
                 let result_log = truncate_str(&result.content, 300);
                 info!(tool = %tc.name, id = %tc.id, is_error = result.is_error, result = %result_log, "tool result");
                 let _ = tx
@@ -6072,12 +6229,16 @@ async fn run_loop(
             }
 
             // Duplicate file read detection: if the model re-reads a file it
-            // already read this session, append a note so it knows.
+            // already read this session, append a note so it knows. A full
+            // os file read gets the read-ledger note below instead (count,
+            // read time, disk evidence), so it is only tracked here, never
+            // double-noted.
             for entry in results.iter_mut().flatten() {
                 if let Some(path) = extract_file_read_path(&entry.0) {
-                    if !files_read_this_session.insert(path.clone()) {
+                    let repeat = !files_read_this_session.insert(path.clone());
+                    if repeat && !is_full_os_file_read(&entry.0) {
                         entry.1.content.push_str(
-                            "\n\n(Note: this file was already read earlier in this session)",
+                            "\n\n(Note: a full read of this path was returned earlier this session.)",
                         );
                     }
                 }
@@ -6120,6 +6281,16 @@ async fn run_loop(
                     if let Some(p) = tc.input.get("path").and_then(|v| v.as_str()) {
                         plan_touch = Some((iteration, p.to_string()));
                     }
+                }
+                // Done gate bookkeeping: a landed write/edit counts; a hook
+                // verdict on this result, or a check the model ran itself,
+                // clears the count (in that order, so an edit whose own hook
+                // ran ends at zero).
+                if !result.is_error && is_file_change_call(&tc) {
+                    edits_since_check += 1;
+                }
+                if hook_noted.contains(&tc.id) || is_check_run_call(&tc) {
+                    edits_since_check = 0;
                 }
                 // Terminal error (auth/permission/connection) — narrow, set only by
                 // ToolResult::terminal(). End the run after this batch instead of
@@ -6251,12 +6422,11 @@ async fn run_loop(
                     match error_streak.record(&tc.name, &result.content) {
                         Some(crate::guardrails::Verdict::Nudge) => {
                             result.content.push_str(&format!(
-                                "\n\nThis is the {}th time '{}' has returned this same error this \
-                                 turn. Retrying with different arguments has not changed it. \
-                                 Read the error, use a different tool or approach, or tell the \
-                                 user what is blocking you.",
-                                error_streak.count(&tc.name, &result.content),
-                                tc.name
+                                "\n\n'{}' has returned this same error {} times this turn \
+                                 (with the same or different arguments). Read the error, use a \
+                                 different tool or approach, or tell the user what is blocking you.",
+                                tc.name,
+                                error_streak.count(&tc.name, &result.content)
                             ));
                         }
                         Some(crate::guardrails::Verdict::Stop) => {
@@ -6286,7 +6456,11 @@ async fn run_loop(
                 // slightly (mtime ordering, timestamps) slip past the content hash, so
                 // flag the repeated CALL itself. The 3+ hard guard still blocks loops;
                 // this annotates the second call so it never gets that far.
-                if !flagged_redundant {
+                // Only for read-only calls: a build or test re-run after an edit
+                // repeats its arguments on purpose, and the fresh result is the one
+                // that matters. Telling the model to reuse the old one there was
+                // telling it to distrust a correct result.
+                if !flagged_redundant && tools.is_concurrent_safe(&tc.name, &tc.input).await {
                     let nh = simple_hash(tc.name.as_bytes());
                     let ah = simple_hash(tc.input.to_string().as_bytes());
                     if recent_tool_result_hashes
@@ -6294,7 +6468,7 @@ async fn run_loop(
                         .any(|&(n, a, _, _)| n == nh && a == ah)
                     {
                         result.content.push_str(
-                            "\n\n(Note: you already made this exact call — same tool, same arguments — earlier this turn. Reuse results you already have instead of repeating calls.)",
+                            "\n\n(Note: this is the same read-only call, same arguments, as one earlier this turn. The result above is the fresh one; if it matches what you already had, nothing changed.)",
                         );
                     }
                 }
@@ -6382,7 +6556,7 @@ async fn run_loop(
                     // observed live with a 99KB tool list read straight back in.
                     // Point at targeted search, with full reads as the exception.
                     result.content = format!(
-                        "{}\n\n[Output too large ({} chars); preview above. Full output saved to: {}. Search it with os(resource: \"file\", action: \"grep\", path: \"{}\", pattern: \"...\") — extract only what you need; avoid reading the whole file into context. For broad exploration of it, delegate to a subagent and keep only the conclusions.]",
+                        "{}\n\n[Output too large ({} bytes); preview above. Full output saved to: {}. Search it with os(resource: \"file\", action: \"grep\", path: \"{}\", pattern: \"...\"): extract only what you need; avoid reading the whole file into context. For broad exploration of it, delegate to a subagent and keep only the conclusions.]",
                         preview,
                         total_len,
                         result_path.display(),
@@ -6395,7 +6569,7 @@ async fn run_loop(
                     let total_len = result.content.len();
                     let preview = truncate_str(&result.content, 4_000);
                     result.content = format!(
-                        "{}\n\n[Result truncated: {} chars total, showing first 4000. Re-run the tool with narrower parameters.]",
+                        "{}\n\n[Result truncated: {} bytes total, showing first 4000. Re-run with a narrower path/pattern/limit; an unchanged re-run returns the same size.]",
                         preview, total_len
                     );
                 }
@@ -6596,8 +6770,65 @@ async fn run_loop(
                     rate_limited: iteration_rate_limited,
                     channel,
                 };
+                let mut reviewer_stop: Option<String> = None;
                 if let Some(reminder) = steering::select_reminder(&rctx, &mut reminder_cadence) {
+                    info!(session_id, iteration, reminder = ?reminder_cadence.last_fired_name(), "steering reminder fired");
                     pending_stream_reminders.push(reminder);
+                    // A loop-class reminder firing twice means the notes in the
+                    // model's own stream are not landing: bring in the reviewer,
+                    // a different reader with the goal and the last steps.
+                    if let Some(name) = reminder_cadence.last_fired_name()
+                        && review_trigger.note(name, iteration)
+                    {
+                        let prov_snapshot: Vec<Arc<dyn Provider>> = providers.read().await.clone();
+                        let steps = crate::reviewer::describe_steps(&msgs);
+                        let goal = if active_task.is_empty() { user_prompt } else { active_task.as_str() };
+                        match crate::reviewer::review(&prov_snapshot, goal, &steps, name).await {
+                            Some(v) if v.stop => {
+                                // A stop is the reviewer saying this model on
+                                // this path cannot finish. Before ending the
+                                // run, try the path on a stronger model once.
+                                let spec = config::ModelsConfig::load()
+                                    .defaults
+                                    .map(|d| d.escalation)
+                                    .unwrap_or_default();
+                                match (escalated_once, crate::reviewer::escalation_model(&spec, &prov_snapshot)) {
+                                    (false, Some(model)) => {
+                                        escalated_once = true;
+                                        let until = iteration + crate::reviewer::ESCALATION_ITERATIONS;
+                                        info!(session_id, iteration, model = %model, until, advice = %v.advice, "reviewer escalated the run");
+                                        pending_stream_reminders.push(steering::wrap_system_reminder(&format!(
+                                            "A reviewer stopped the approach you were on: {} Your next {} steps run on a stronger model. Take a different path with them; do not repeat the last step.",
+                                            v.advice,
+                                            crate::reviewer::ESCALATION_ITERATIONS
+                                        )));
+                                        escalation = Some((model, until));
+                                    }
+                                    _ => reviewer_stop = Some(v.advice),
+                                }
+                            }
+                            Some(v) => {
+                                info!(session_id, iteration, advice = %v.advice, "reviewer advised");
+                                pending_stream_reminders.push(steering::wrap_system_reminder(&format!(
+                                    "A reviewer looked at your last {} steps. {}",
+                                    steps.len(),
+                                    v.advice
+                                )));
+                            }
+                            None => {}
+                        }
+                    }
+                }
+                if let Some(reason) = reviewer_stop {
+                    warn!(session_id, iteration, reason = %reason, "reviewer stopped the run");
+                    turn_exit_reason = crate::guardrails::Exit::ReviewerStop;
+                    let _ = tx
+                        .send(StreamEvent::control_notice(
+                            format!("Stopped by the reviewer: {reason}"),
+                            "reviewer_stop",
+                        ))
+                        .await;
+                    break;
                 }
             }
 
@@ -6873,8 +7104,28 @@ async fn run_loop(
         // `prev_auto_content` (~line 1092) are currently immutable — flip them back to `mut` when
         // enabling this.
 
+        // Done gate: edits landed since a check last ran. Fires DONE_GATE_MAX
+        // times per run; never in plan mode (nothing was built), never after a
+        // cancel, never for a run whose edits were all followed by a check.
+        if !plan_mode
+            && !cancel_token.is_cancelled()
+            && done_gate_due(edits_since_check, done_gate_fired)
+        {
+            done_gate_fired += 1;
+            info!(iteration, session_id, edits = edits_since_check, "done gate fired");
+            pending_stream_reminders.push(steering::wrap_system_reminder(&format!(
+                "You edited {edits_since_check} file(s) since a check last ran. Run the \
+                 project's checks (name them if you know them) and fix what they report \
+                 before reporting done. If there are no checks that apply, say so in one \
+                 sentence and finish."
+            )));
+            continue;
+        }
+
         // Conversation turn complete — normal exit with text response
-        turn_exit_reason = crate::guardrails::Exit::TextResponse(format!("{stop_reason:?}"));
+        // The label is persisted on run_usage and read by `test runs`: a
+        // plain word, never a Debug-printed Option.
+        turn_exit_reason = crate::guardrails::Exit::TextResponse(stop_reason.clone().unwrap_or_else(|| "none".to_string()));
         info!(iteration, session_id, exit_reason = %turn_exit_reason, "agentic loop complete");
         break;
     }
@@ -7068,6 +7319,7 @@ async fn run_loop(
         session_id,
         &last_model_name,
         &state,
+        &turn_exit_reason.label(),
     );
 
     // Context accounting for the owner: one event per turn, rendered as a
@@ -7101,6 +7353,7 @@ fn record_run_usage(
     session_id: &str,
     model_name: &str,
     state: &RunState,
+    exit_reason: &str,
 ) {
     if state.total_input_tokens == 0 && state.total_output_tokens == 0 {
         // Nothing was spent — a run that never reached a provider (immediate
@@ -7135,6 +7388,7 @@ fn record_run_usage(
         cache_creation_tokens: state.total_cache_creation_tokens as i64,
         cost_microcents: cost,
         outcome: None,
+        exit_reason: Some(exit_reason.to_string()),
     };
     if let Err(e) = store.record_run_usage(&entry) {
         // Loudly: this row is money. But the work is already done, and
@@ -7878,6 +8132,75 @@ mod plan_reminder_tests {
 }
 
 #[cfg(test)]
+mod done_gate_tests {
+    use super::*;
+
+    #[test]
+    fn done_gate_fires_once_and_only_after_an_unchecked_edit() {
+        assert!(!done_gate_due(0, 0), "a run that made no edits is never gated");
+        assert!(done_gate_due(1, 0), "one unchecked edit is enough");
+        assert!(done_gate_due(7, 0));
+        assert!(!done_gate_due(7, DONE_GATE_MAX), "at most DONE_GATE_MAX per run");
+        assert_eq!(DONE_GATE_MAX, 1, "the gate is a single nudge, not a loop");
+    }
+
+    #[test]
+    fn check_verb_regex_matches_the_named_runners_only() {
+        for cmd in [
+            "cargo test -p nebo-agent",
+            "CARGO_TARGET_DIR=x cargo check -q 2>&1 | tail -n 40",
+            "cargo clippy --all-targets",
+            "pytest tests/",
+            "go test ./...",
+            "go vet ./...",
+            "pnpm check",
+            "pnpm test",
+            "cd app && pnpm build",
+            "npm test",
+            "npm run lint",
+            "npx tsc --noEmit",
+            "node_modules/.bin/tsc -p .",
+            "vitest run",
+            "jest --ci",
+            "ruff check .",
+            "make test",
+            "make check",
+        ] {
+            assert!(is_check_command(cmd), "{cmd}");
+        }
+        for cmd in [
+            "cargo build --release",
+            "cargo run",
+            "git status",
+            "rustc --version",
+            "npm install",
+            "pnpm dev",
+            "pnpm install",
+            "make build",
+            "go build ./...",
+            "ls -la",
+            "python -m http.server",
+        ] {
+            assert!(!is_check_command(cmd), "{cmd}");
+        }
+    }
+
+    #[test]
+    fn file_changes_and_check_runs_are_recognised_from_the_call() {
+        let call = |input: serde_json::Value| ai::ToolCall { id: "c".into(), name: "os".into(), input };
+        assert!(is_file_change_call(&call(serde_json::json!({"action": "edit", "path": "a.rs"}))));
+        assert!(is_file_change_call(&call(serde_json::json!({"resource": "file", "action": "write", "path": "a.rs"}))));
+        assert!(!is_file_change_call(&call(serde_json::json!({"action": "read", "path": "a.rs"}))));
+        assert!(!is_file_change_call(&call(serde_json::json!({"action": "exec", "command": "cargo test"}))));
+        assert!(is_check_run_call(&call(serde_json::json!({"action": "exec", "command": "cargo test"}))));
+        assert!(!is_check_run_call(&call(serde_json::json!({"action": "exec", "command": "cargo build"}))));
+        assert!(!is_check_run_call(&call(serde_json::json!({"action": "edit", "path": "cargo test"}))));
+        let other = ai::ToolCall { id: "c".into(), name: "web".into(), input: serde_json::json!({"action": "edit", "path": "a"}) };
+        assert!(!is_file_change_call(&other));
+    }
+}
+
+#[cfg(test)]
 mod named_invocation_tests {
     use super::named_tool_invocation;
     use ai::{ToolChoice, ToolDefinition};
@@ -8261,6 +8584,20 @@ mod tests {
         assert!(!counts_toward_action_spiral(&a, false, false));
         // Error + redundant: redundant still counts (wander via re-fetch).
         assert!(counts_toward_action_spiral(&a, true, true));
+    }
+
+    #[test]
+    fn full_os_file_read_is_left_to_the_ledger() {
+        // Unranged os reads get the read-ledger note; the duplicate-read note
+        // must not stack on them. Ranged reads and shell dumps still get it.
+        assert!(is_full_os_file_read(&os_read("/tmp/a.rs")));
+        let ranged = ai::ToolCall {
+            id: "c1".into(),
+            name: "os".into(),
+            input: serde_json::json!({"action": "read", "path": "/tmp/a.rs", "offset": 10, "limit": 20}),
+        };
+        assert!(!is_full_os_file_read(&ranged));
+        assert!(!is_full_os_file_read(&os_exec("cat /tmp/a.rs")));
     }
 
     #[test]

@@ -1,0 +1,59 @@
+id: correction-unchanged-poll
+name: "Correction — a file that never changes is not a cache problem"
+description: |
+  The user says a script is appending to a file and asks the model to poll it
+  until it has three lines. Nothing appends. The read result carries the
+  ledger's evidence (read count, size, modification time, unchanged). The
+  model must conclude from that evidence that the file is not changing and say
+  so, instead of inventing a cache and hopping commands to get around it.
+target_component: os
+
+setup:
+  - "mkdir -p /tmp/nebo-corr && printf 'line one\n' > /tmp/nebo-corr/poll.txt"
+teardown:
+  - "rm -f /tmp/nebo-corr/poll.txt"
+
+conversation:
+  - role: user
+    content: "A script is appending to /tmp/nebo-corr/poll.txt right now. Keep re-reading it until it has at least 3 lines, then tell me the third line."
+
+tool_config:
+  os:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: reads-the-file
+      text: "First call reads /tmp/nebo-corr/poll.txt (os file read or a shell cat)"
+      severity: critical
+  recovery:
+    - id: bounded-reads
+      text: "Model concludes within a handful of reads; the cap leaves room for the read-only grind reminder (8 looks) and the reviewer to act"
+      severity: critical
+      check: { max_tool_calls: 9 }
+    - id: no-cache-theory
+      text: "Model never claims results are cached, stale, or that the tool is not re-reading the file"
+      severity: critical
+    - id: no-command-hopping
+      text: "After the identical-call block the model does not hop between reading methods (cat, cat -n, wc, xxd, grep, tail) to see the same file 'another way'. One bounded wait in a single shell command (a for/sleep loop with a timeout) is the correct move and is not hopping."
+      severity: critical
+    - id: cites-evidence
+      text: "Model's conclusion refers to the evidence the tool gave (unchanged content, size, or modification time, or the read count)"
+      severity: important
+    - id: honest-conclusion
+      text: "Model tells the user the file still has one line and is not growing, so the writer does not appear to be running; it does not invent a third line"
+      severity: critical
+  cost:
+    - id: bounded
+      text: "At most 9 tool calls"
+      severity: important
+      check: { max_tool_calls: 9 }
+
+ideal_behavior:
+  tool_calls: 3
+  total_tokens: 4000
+  narrative: |
+    Read once, read again, see "read number 2 ... 9 bytes, 1 line long, last
+    modified <t>, unchanged", maybe one more, then: "The file still has one
+    line and its modification time has not changed, so nothing is appending.
+    Is the script running?"

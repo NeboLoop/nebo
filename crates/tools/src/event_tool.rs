@@ -105,6 +105,9 @@ impl DynTool for EventTool {
                     let command = input["command"].as_str().unwrap_or("");
                     let prompt = input["prompt"].as_str().unwrap_or("");
 
+                    if let Some(text) = reminder_shape_error(&input) {
+                        return ToolResult::error(text);
+                    }
                     if name.is_empty() {
                         return ToolResult::error(errors::missing_param(
                             "create",
@@ -114,11 +117,15 @@ impl DynTool for EventTool {
                     }
 
                     // Resolve schedule: prefer `cron`, fall back to `at` (relative time)
+                    let mut fires_at: Option<String> = None;
                     let schedule = if !cron_val.is_empty() {
                         cron_val.to_string()
                     } else if !at_val.is_empty() {
                         match parse_relative_time(at_val) {
-                            Some(s) => s,
+                            Some((s, target)) => {
+                                fires_at = Some(target.format("%Y-%m-%d %H:%M:%S %Z").to_string());
+                                s
+                            }
                             None => {
                                 return ToolResult::error(format!(
                                     "Could not parse '{}'. Use format like 'in 5 minutes', 'in 1 hour', 'in 30 seconds'.",
@@ -139,7 +146,7 @@ impl DynTool for EventTool {
                             return ToolResult::error(errors::missing_param(
                                 "create",
                                 "command",
-                                "event(action: \"create\", name: \"cleanup\", cron: \"0 0 * * *\", command: \"rm -rf /tmp/cache/*\")",
+                                "Missing 'command' for a bash task. For an agent task pass task_type: \"agent\", prompt: \"...\". Example bash: command: \"echo hello\"",
                             ));
                         }
                         // Cron commands execute later without going through the
@@ -192,17 +199,28 @@ impl DynTool for EventTool {
                         channel_ctx_json.as_deref(),
                     ) {
                         Ok(job) => ToolResult::ok(format!(
-                            "Created scheduled task '{}' (id={}): {} ({})",
-                            name, job.id, schedule, task_type
+                            "Created scheduled task '{}' (id={}): {} ({}){}",
+                            name,
+                            job.id,
+                            schedule,
+                            task_type,
+                            fires_at
+                                .map(|t| format!("; fires at {t}"))
+                                .unwrap_or_default()
                         )),
                         Err(e) => ToolResult::error(format!("Failed to create task: {}", e)),
                     }
                 }
-                "list" => match self.store.list_cron_jobs(100, 0) {
+                "list" => match self.store.list_cron_jobs(LIST_CAP, 0) {
                     Ok(jobs) => {
                         if jobs.is_empty() {
                             ToolResult::ok("No scheduled tasks.")
                         } else {
+                            let total = self
+                                .store
+                                .count_cron_jobs()
+                                .map(|n| n.max(jobs.len() as i64) as usize)
+                                .unwrap_or(jobs.len());
                             let lines: Vec<String> = jobs
                                 .iter()
                                 .map(|j| {
@@ -218,8 +236,8 @@ impl DynTool for EventTool {
                                 })
                                 .collect();
                             ToolResult::ok(format!(
-                                "{} scheduled tasks:\n{}",
-                                jobs.len(),
+                                "{}\n{}",
+                                list_header(jobs.len(), total),
                                 lines.join("\n")
                             ))
                         }
@@ -255,6 +273,11 @@ impl DynTool for EventTool {
                             "event(action: \"pause\", name: \"daily-report\")",
                         ));
                     }
+                    match self.store.get_cron_job_by_name(name) {
+                        Ok(None) => return ToolResult::error(format!("Task '{}' not found", name)),
+                        Err(e) => return ToolResult::error(format!("Failed to find task: {}", e)),
+                        Ok(Some(_)) => {}
+                    }
                     match self.store.disable_cron_job_by_name(name) {
                         Ok(_) => ToolResult::ok(format!("Paused task: {}", name)),
                         Err(e) => ToolResult::error(format!("Failed to pause: {}", e)),
@@ -268,6 +291,11 @@ impl DynTool for EventTool {
                             "name",
                             "event(action: \"resume\", name: \"daily-report\")",
                         ));
+                    }
+                    match self.store.get_cron_job_by_name(name) {
+                        Ok(None) => return ToolResult::error(format!("Task '{}' not found", name)),
+                        Err(e) => return ToolResult::error(format!("Failed to find task: {}", e)),
+                        Ok(Some(_)) => {}
                     }
                     match self.store.enable_cron_job_by_name(name) {
                         Ok(_) => ToolResult::ok(format!("Resumed task: {}", name)),
@@ -341,8 +369,8 @@ impl DynTool for EventTool {
                                         (
                                             false,
                                             format!(
-                                                "Agent task '{}' — runner not available. Run via the scheduler or API.",
-                                                name
+                                                "Agent task '{}' cannot be run on demand in this context; it will run at its scheduled time ({}).",
+                                                name, job.schedule
                                             ),
                                         )
                                     }
@@ -435,7 +463,54 @@ impl DynTool for EventTool {
 /// means 7 AM local). The scheduler (`crates/server/src/scheduler.rs::tick`)
 /// reads `Local::now()` and evaluates `schedule.after()` with a local-time
 /// `last_run`, so this side must match.
-fn parse_relative_time(input: &str) -> Option<String> {
+/// Cap on the `list` action; the header says "showing N of M" when it applies.
+const LIST_CAP: i64 = 100;
+
+/// Header for the `list` action: "N scheduled tasks" when the list is complete,
+/// "showing N of M scheduled tasks" when the cap cut it.
+fn list_header(shown: usize, total: usize) -> String {
+    if total > shown {
+        format!("showing {shown} of {total} scheduled tasks (list cap {LIST_CAP}):")
+    } else {
+        format!("{shown} scheduled tasks:")
+    }
+}
+
+/// The fields a scheduled task needs, named together. A call shaped like the
+/// reminder an early system prompt taught (`title`, `when`, nothing the tool
+/// reads) used to earn three errors in a row: name, then cron/at, then
+/// command. One error, all three fields, one valid call.
+fn reminder_shape_error(input: &serde_json::Value) -> Option<String> {
+    let has = |k: &str| input[k].as_str().is_some_and(|v| !v.trim().is_empty());
+    let reminder_shaped = has("title") || has("when");
+    let has_a_required_field = ["name", "cron", "schedule", "at", "command"].iter().any(|k| has(k));
+    if !reminder_shaped || has_a_required_field {
+        return None;
+    }
+    let title = input["title"].as_str().map(str::trim).filter(|t| !t.is_empty()).unwrap_or("reminder");
+    let name = Some(comm::handle::slugify(title)).filter(|n| !n.is_empty()).unwrap_or_else(|| "reminder".to_string());
+    let when = input["when"].as_str().map(str::trim).unwrap_or("");
+    let (at, when_note) = if !when.is_empty() && parse_relative_time(when).is_some() {
+        (when.to_string(), String::new())
+    } else if when.is_empty() {
+        ("in 3 hours".to_string(), String::new())
+    } else {
+        (
+            "in 3 hours".to_string(),
+            format!(" `at` takes a relative time, not \"{when}\": say how long from now (\"in 2 hours\"), or give a cron for a clock time."),
+        )
+    };
+    Some(format!(
+        "A scheduled task needs three fields, and `title`/`when` are not fields: name (a unique id), \
+         a time (at: \"in 3 hours\" or cron: \"0 0 15 * * *\"), and the work (task_type: \"agent\", prompt: \"...\", \
+         or command: \"...\" for a shell command). Example: event(action: \"create\", name: \"{name}\", at: \"{at}\", \
+         task_type: \"agent\", prompt: \"Remind the user: {title}\").{when_note}"
+    ))
+}
+
+/// Parse "in 5 minutes" style input into a 7-field cron expression plus the
+/// local time it resolves to, so the result can say when the task fires.
+fn parse_relative_time(input: &str) -> Option<(String, chrono::DateTime<Local>)> {
     let s = input.trim().to_lowercase();
     let s = s.strip_prefix("in ").unwrap_or(&s);
 
@@ -457,7 +532,7 @@ fn parse_relative_time(input: &str) -> Option<String> {
 
     let target = Local::now() + duration;
     // Cron format: second minute hour day-of-month month day-of-week year (7 fields)
-    Some(format!(
+    let cron = format!(
         "{} {} {} {} {} * {}",
         target.format("%-S"),
         target.format("%-M"),
@@ -465,5 +540,75 @@ fn parse_relative_time(input: &str) -> Option<String> {
         target.format("%-d"),
         target.format("%-m"),
         target.format("%Y"),
-    ))
+    );
+    Some((cron, target))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn list_header_says_showing_n_of_m_only_when_capped() {
+        assert_eq!(list_header(3, 3), "3 scheduled tasks:");
+        assert_eq!(
+            list_header(100, 240),
+            "showing 100 of 240 scheduled tasks (list cap 100):"
+        );
+    }
+
+    #[test]
+    fn a_reminder_shaped_call_gets_one_error_naming_all_three_fields() {
+        use serde_json::json;
+        let call = json!({"action": "create", "resource": "reminder", "title": "Call back", "when": "3pm"});
+        let text = reminder_shape_error(&call).expect("refused");
+        for needle in ["name", "at:", "cron:", "prompt:", "command:", "name: \"call-back\"", "not \"3pm\""] {
+            assert!(text.contains(needle), "{needle}: {text}");
+        }
+        let relative = json!({"action": "create", "title": "Call back", "when": "in 2 hours"});
+        let text = reminder_shape_error(&relative).expect("refused");
+        assert!(text.contains("at: \"in 2 hours\""), "{text}");
+        assert!(!text.contains("relative time, not"), "{text}");
+        let well_formed = json!({"action": "create", "name": "call-back", "at": "in 3 hours", "task_type": "agent", "prompt": "x", "title": "Call back"});
+        assert!(reminder_shape_error(&well_formed).is_none());
+        assert!(reminder_shape_error(&json!({"action": "create"})).is_none());
+        assert!(reminder_shape_error(&json!({"action": "create", "when": "3pm", "command": "echo hi"})).is_none());
+    }
+
+    /// The refusal fires before the name check, and the corrected call lands.
+    #[tokio::test]
+    async fn create_refuses_the_reminder_shape_before_asking_for_a_name() {
+        use crate::registry::DynTool;
+        let path = std::env::temp_dir().join(format!("nebo-event-reminder-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let store = Arc::new(Store::new(&path.to_string_lossy()).unwrap());
+        let tool = EventTool::new(store);
+        let ctx = ToolContext::default();
+        let refused = tool
+            .execute_dyn(&ctx, serde_json::json!({"action": "create", "title": "Call back", "when": "3pm"}))
+            .await;
+        assert!(refused.is_error, "{}", refused.content);
+        assert!(refused.content.contains("three fields"), "{}", refused.content);
+        assert!(!refused.content.contains("Missing required parameter"), "{}", refused.content);
+        let created = tool
+            .execute_dyn(
+                &ctx,
+                serde_json::json!({"action": "create", "name": "call-back", "at": "in 5 minutes", "task_type": "agent", "prompt": "Remind the user: call back"}),
+            )
+            .await;
+        assert!(!created.is_error, "{}", created.content);
+        assert!(created.content.contains("Created scheduled task 'call-back'"), "{}", created.content);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn relative_time_yields_cron_and_the_moment_it_fires() {
+        let before = Local::now();
+        let (cron, target) = parse_relative_time("in 5 minutes").expect("parses");
+        assert_eq!(cron.split_whitespace().count(), 7, "{cron}");
+        let delta = target - before;
+        assert!(delta >= chrono::Duration::minutes(5) - chrono::Duration::seconds(1));
+        assert!(delta <= chrono::Duration::minutes(5) + chrono::Duration::seconds(5));
+        assert!(parse_relative_time("next tuesday").is_none());
+    }
 }

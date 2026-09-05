@@ -2,6 +2,7 @@
 
 use super::OrganizerInput;
 use super::shared::{escape_applescript, run_osascript};
+use crate::errors::missing_param;
 use crate::origin::ToolContext;
 use crate::registry::ToolResult;
 
@@ -9,10 +10,11 @@ use crate::registry::ToolResult;
 // Mail
 // ═══════════════════════════════════════════════════════════════════════
 
-/// AppleScript can only return strings, so the mail scripts prefix
-/// diagnostic (non-content) outcomes with "DIAG|" — count-vs-content
-/// mismatches must surface as tool errors, never as an empty-looking success.
-fn mail_diag(result: ToolResult) -> ToolResult {
+/// AppleScript can only return strings, so the scripts prefix diagnostic
+/// (non-content) outcomes with "DIAG|": count-vs-content mismatches and
+/// exact-name misses must surface as tool errors, never as an empty-looking
+/// success. Used by the mail, contacts and reminders scripts.
+fn diag(result: ToolResult) -> ToolResult {
     if !result.is_error {
         if let Some(msg) = result.content.strip_prefix("DIAG|") {
             return ToolResult::error(msg.to_string());
@@ -20,6 +22,12 @@ fn mail_diag(result: ToolResult) -> ToolResult {
     }
     result
 }
+
+/// `read` fetches bodies at ~0.8 s each via AppleScript, so it is capped
+/// lower than `search` to stay inside the 30 s subprocess budget.
+const MAIL_READ_LIMIT_CAP: i64 = 20;
+const MAIL_SEARCH_LIMIT_CAP: i64 = 50;
+const MAIL_SEND_EXAMPLE: &str = "organizer(resource: \"mail\", action: \"send\", to: [\"pat@example.com\"], subject: \"Invoice 42\", body: \"Attached is the invoice.\")";
 
 pub async fn handle_mail(action: &str, input: &OrganizerInput) -> ToolResult {
     match action {
@@ -58,7 +66,7 @@ end tell"#,
         "read" => {
             // Content snippets cost ~0.8s/message via AppleScript, so the cap is
             // 20 (not 50) to stay inside the 30s subprocess budget.
-            let limit = input.limit.unwrap_or(10).clamp(1, 20);
+            let limit = input.limit.unwrap_or(10).clamp(1, MAIL_READ_LIMIT_CAP);
             // Read per-account INBOXes (newest-first), never the unified `inbox`:
             // the unified object orders by account, so a chatty secondary account
             // (e.g. iCloud onboarding mail) shadows the one that matters. An
@@ -113,7 +121,7 @@ end tell"#,
                     set c to content of m
                 end timeout
                 if c is missing value then set c to ""
-                if length of c > 200 then set c to (characters 1 through 200 of c) as string
+                if length of c > 200 then set c to ((characters 1 through 200 of c) as string) & " …[body truncated at 200 characters]"
             on error errMsg
                 set c to "[body unavailable: " & errMsg & "]"
             end try
@@ -124,6 +132,7 @@ end tell"#,
     end repeat
     if output is "" and unreadTotal > 0 then
         set n to count of messages of inbox
+        set enumerated to n
         set i to 1
         repeat while i <= n and taken < lim
             set m to message i of inbox
@@ -137,7 +146,7 @@ end tell"#,
                     set c to content of m
                 end timeout
                 if c is missing value then set c to ""
-                if length of c > 200 then set c to (characters 1 through 200 of c) as string
+                if length of c > 200 then set c to ((characters 1 through 200 of c) as string) & " …[body truncated at 200 characters]"
             on error errMsg
                 set c to "[body unavailable: " & errMsg & "]"
             end try
@@ -145,25 +154,35 @@ end tell"#,
             set taken to taken + 1
             set i to i + 1
         end repeat
-        if output is not "" then return output & "(via unified inbox fallback — per-account enumeration was empty)" & linefeed
-        return "DIAG|Mail reports " & unreadTotal & " unread but message enumeration returned none (per-account and unified) — Mail.app is likely not running or not finished syncing. Open Mail, let it sync, and retry."
+        if output is not "" then
+            set output to output & "(account names unavailable for these messages)" & linefeed
+            if enumerated > taken then set output to output & "(showing " & taken & " of " & enumerated & " messages; limit is capped at {cap})" & linefeed
+            return output
+        end if
+        return "DIAG|Mail reports " & unreadTotal & " unread but message enumeration returned 0 messages (per-account and unified). Mail.app is not exposing any messages: open Mail, let it finish syncing, and call again."
     end if
-    if output is "" and skipped is not "" then return "DIAG|No messages in readable mailboxes; some accounts were skipped — " & skipped
-    if output is "" then return "No messages"
+    if output is "" and skipped is not "" then return "DIAG|0 messages in readable mailboxes; accounts skipped: " & skipped
+    if output is "" then
+        set emptyMsg to "0 messages in " & wantedBox & " across " & (count of targets) & " account(s)."
+        if enumerated is 0 then set emptyMsg to emptyMsg & " Mail.app is not exposing any messages."
+        return emptyMsg
+    end if
+    if enumerated > taken then set output to output & "(showing " & taken & " of " & enumerated & " messages in " & wantedBox & "; limit is capped at {cap})" & linefeed
     if skipped is not "" then set output to output & "(skipped accounts: " & skipped & ")" & linefeed
     return output
 end tell"#,
                 acct = escape_applescript(&input.account),
                 mbox = escape_applescript(&input.mailbox),
+                cap = MAIL_READ_LIMIT_CAP,
             );
-            mail_diag(run_osascript(&script).await)
+            diag(run_osascript(&script).await)
         }
         "send" => {
             if input.to.is_empty() {
-                return ToolResult::error("'to' parameter required for send");
+                return ToolResult::error(missing_param("send", "to", MAIL_SEND_EXAMPLE));
             }
             if input.subject.is_empty() {
-                return ToolResult::error("'subject' parameter required for send");
+                return ToolResult::error(missing_param("send", "subject", MAIL_SEND_EXAMPLE));
             }
 
             let mut script = format!(
@@ -189,13 +208,20 @@ end tell"#,
                 ));
             }
 
-            script.push_str("\n    send newMsg\nend tell");
+            script.push_str(&format!(
+                "\n    send newMsg\n    return \"Handed to Mail for delivery to {}\"\nend tell",
+                escape_applescript(&input.to.join(", "))
+            ));
             run_osascript(&script).await
         }
         "search" => {
             let query = &input.query;
             if query.is_empty() {
-                return ToolResult::error("'query' parameter required for search");
+                return ToolResult::error(missing_param(
+                    "search",
+                    "query",
+                    "organizer(resource: \"mail\", action: \"search\", query: \"invoice\")",
+                ));
             }
             // Mail's scripting suite has NO `search` verb (the previous
             // `search inbox for …` never even parsed) — a whose-clause over
@@ -203,7 +229,7 @@ end tell"#,
             // (measured ~0.15s over a few-hundred-message inbox). Searched
             // per-account (see `read` for why the unified inbox misleads);
             // optional `account` narrows to one.
-            let limit = input.limit.unwrap_or(20).clamp(1, 50);
+            let limit = input.limit.unwrap_or(20).clamp(1, MAIL_SEARCH_LIMIT_CAP);
             // Same failure honesty as `read`: when enumeration is dead (0 messages
             // visible while unread counters say otherwise), "no matches" would be
             // a lie — return a DIAG explaining the sync state instead.
@@ -214,16 +240,20 @@ end tell"#,
     set taken to 0
     set unreadTotal to 0
     set enumerated to 0
+    set matched to 0
+    set searchedAccts to 0
     set skipped to ""
     repeat with a in accounts
         if wantedAcct is "" or (name of a is wantedAcct) or ((email addresses of a as string) contains wantedAcct) then
             try
                 set mb to mailbox "INBOX" of a
+                set searchedAccts to searchedAccts + 1
                 try
                     set unreadTotal to unreadTotal + (unread count of mb)
                 end try
                 set enumerated to enumerated + (count of messages of mb)
                 set found to (messages of mb whose subject contains "{query}" or sender contains "{query}")
+                set matched to matched + (count of found)
                 repeat with m in found
                     if taken >= {limit} then exit repeat
                     set output to output & (name of a) & " | From: " & (sender of m) & " | Subject: " & (subject of m) & " | " & (date received of m as text) & linefeed
@@ -234,16 +264,18 @@ end tell"#,
             end try
         end if
     end repeat
-    if output is "" and enumerated is 0 and unreadTotal > 0 then return "DIAG|Mail reports " & unreadTotal & " unread but message enumeration returned none — Mail.app is likely not running or not finished syncing. Open Mail, let it sync, and retry."
-    if output is "" and skipped is not "" then return "DIAG|No matches, and some accounts could not be searched — " & skipped
-    if output is "" then return "No messages found (search matches subject/sender substrings only — try a broker name, site name, or domain like stadium.partners; NOT operators like from:)"
+    if output is "" and enumerated is 0 and unreadTotal > 0 then return "DIAG|Mail reports " & unreadTotal & " unread but message enumeration returned 0 messages. Mail.app is not exposing any messages: open Mail, let it finish syncing, and call again."
+    if output is "" and skipped is not "" then return "DIAG|No messages whose subject or sender contains '{query}', and some accounts could not be searched: " & skipped
+    if output is "" then return "No messages whose subject or sender contains '{query}' (searched " & enumerated & " messages in the INBOX of " & searchedAccts & " account(s)). Search is a plain substring; operators like from: are not supported."
+    if matched > taken then set output to output & "(showing " & taken & " of " & matched & " matching messages; limit is capped at {cap})" & linefeed
     if skipped is not "" then set output to output & "(skipped accounts: " & skipped & ")" & linefeed
     return output
 end tell"#,
                 acct = escape_applescript(&input.account),
                 query = escape_applescript(query),
+                cap = MAIL_SEARCH_LIMIT_CAP,
             );
-            mail_diag(run_osascript(&script).await)
+            diag(run_osascript(&script).await)
         }
         _ => ToolResult::error(format!(
             "Unknown mail action '{}'. Use: accounts, unread, read, send, search",
@@ -292,7 +324,11 @@ pub async fn handle_contacts(action: &str, input: &OrganizerInput) -> ToolResult
         "search" => {
             let query = &input.query;
             if query.is_empty() {
-                return ToolResult::error("'query' parameter required for search");
+                return ToolResult::error(missing_param(
+                    "search",
+                    "query",
+                    "organizer(resource: \"contacts\", action: \"search\", query: \"Pat\")",
+                ));
             }
             let script = format!(
                 r#"tell application "Contacts"
@@ -305,7 +341,7 @@ pub async fn handle_contacts(action: &str, input: &OrganizerInput) -> ToolResult
         end try
         set output to output & linefeed
     end repeat
-    if output is "" then return "No contacts found"
+    if output is "" then return "No contacts whose name contains '{query}'."
     return output
 end tell"#,
                 query = escape_applescript(query)
@@ -315,11 +351,20 @@ end tell"#,
         "get" => {
             let name = &input.name;
             if name.is_empty() {
-                return ToolResult::error("'name' parameter required for get");
+                return ToolResult::error(missing_param(
+                    "get",
+                    "name",
+                    "organizer(resource: \"contacts\", action: \"get\", name: \"Pat Smith\")",
+                ));
             }
             let script = format!(
                 r#"tell application "Contacts"
-    set p to first person whose name is "{name}"
+    try
+        set p to first person whose name is "{name}"
+    on error errMsg number errNum
+        if errNum is -1728 then return "DIAG|No contact named exactly '{name}'. Use action 'search' for partial matches."
+        error errMsg number errNum
+    end try
     set output to "Name: " & (name of p) & linefeed
     try
         set emails to every email of p
@@ -343,12 +388,16 @@ end tell"#,
 end tell"#,
                 name = escape_applescript(name)
             );
-            run_osascript(&script).await
+            diag(run_osascript(&script).await)
         }
         "create" => {
             let name = &input.name;
             if name.is_empty() {
-                return ToolResult::error("'name' parameter required for create");
+                return ToolResult::error(missing_param(
+                    "create",
+                    "name",
+                    "organizer(resource: \"contacts\", action: \"create\", name: \"Pat Smith\", email: \"pat@example.com\")",
+                ));
             }
             // Split name into first/last
             let parts: Vec<&str> = name.splitn(2, ' ').collect();
@@ -561,15 +610,19 @@ async fn query_calendar_events(
     days: u32,
     store: Option<&std::sync::Arc<db::Store>>,
 ) -> ToolResult {
-    let no_events_msg = if days <= 1 {
-        "No events today".to_string()
+    let range = if days <= 1 {
+        "today".to_string()
     } else {
-        format!("No upcoming events in the next {} days", days)
+        format!("in the next {} days", days)
     };
 
     // If a specific calendar is named, query just that one.
     if !calendar.is_empty() {
         let escaped = escape_applescript(calendar);
+        let no_events_msg = escape_applescript(&format!(
+            "No events {} in calendar '{}'.",
+            range, calendar
+        ));
         let script = format!(
             r#"{CALENDAR_TEXT_HANDLERS}
 tell application "Calendar"
@@ -593,6 +646,18 @@ end tell"#,
     // Build the calendar filter: use saved preferences if available,
     // otherwise query all calendars.
     let saved_prefs = load_calendar_prefs(store);
+    // The empty result names which calendars were read, so "no events" is
+    // never mistaken for "no events anywhere" when only tracked ones were.
+    let no_events_plain = match saved_prefs {
+        Some(ref prefs) => format!(
+            "No events {} in the {} tracked calendar(s): {}. Untracked calendars were not read; change the set with organizer(resource: \"calendar\", action: \"configure\").",
+            range,
+            prefs.len(),
+            prefs.join(", ")
+        ),
+        None => format!("No events {} in any calendar (all calendars read).", range),
+    };
+    let no_events_msg = escape_applescript(&no_events_plain);
     let cal_filter = if let Some(ref prefs) = saved_prefs {
         // AppleScript list literal: {"cal1", "cal2", ...}
         let items: Vec<String> = prefs
@@ -633,7 +698,7 @@ tell application "Calendar"
         end try
     end repeat
     if skippedCals is not "" then
-        set output to output & linefeed & "(Skipped slow calendars: " & text 1 thru -3 of skippedCals & ")"
+        set output to output & linefeed & "(Calendars not read (error or 15 s timeout): " & text 1 thru -3 of skippedCals & ")"
     end if
     if output is "" then return "{no_events_msg}"
     return output
@@ -666,21 +731,20 @@ end tell"#,
         Ok(Ok(o)) if o.status.success() => {
             let text = String::from_utf8_lossy(&o.stdout).trim().to_string();
             if text.is_empty() {
-                ToolResult::ok(no_events_msg)
+                ToolResult::ok(no_events_plain)
             } else {
                 ToolResult::ok(text)
             }
         }
-        Ok(Ok(o)) => {
-            let stderr = String::from_utf8_lossy(&o.stderr).trim().to_string();
-            ToolResult::error(format!("Calendar query failed: {stderr}"))
-        }
+        Ok(Ok(o)) => ToolResult::error(format!(
+            "Calendar query failed: {}",
+            super::shared::exit_error("osascript", &o)
+        )),
         Ok(Err(e)) => ToolResult::error(format!("Calendar process error: {e}")),
-        Err(_) => ToolResult::error(
-            "Calendar query timed out. Try configuring which calendars to track: \
-             organizer(resource: \"calendar\", action: \"configure\")"
-                .to_string(),
-        ),
+        Err(_) => ToolResult::error(format!(
+            "Calendar query exceeded {} s and was killed. Narrow it: name one calendar, or choose which calendars to track with organizer(resource: \"calendar\", action: \"configure\").",
+            overall_timeout.as_secs()
+        )),
     }
 }
 
@@ -771,6 +835,8 @@ fn save_full_calendar_prefs(
         .map_err(|e| format!("save to DB: {e}"))?;
     Ok(())
 }
+
+const CALENDAR_CREATE_EXAMPLE: &str = "organizer(resource: \"calendar\", action: \"create\", title: \"Dentist\", date: \"2026-09-15 14:00\", end_date: \"2026-09-15 15:00\")";
 
 pub async fn handle_calendar(
     action: &str,
@@ -934,12 +1000,10 @@ pub async fn handle_calendar(
         "create" => {
             let name = input.event_name();
             if name.is_empty() {
-                return ToolResult::error("'name' or 'title' parameter required for create");
+                return ToolResult::error(missing_param("create", "title", CALENDAR_CREATE_EXAMPLE));
             }
             if input.date.is_empty() {
-                return ToolResult::error(
-                    "'date' parameter required for create (e.g. '2024-06-15 14:00')",
-                );
+                return ToolResult::error(missing_param("create", "date", CALENDAR_CREATE_EXAMPLE));
             }
 
             let start_dt = match super::shared::parse_date(&input.date) {
@@ -1000,7 +1064,11 @@ end tell"#,
         "delete" => {
             let name = input.event_name();
             if name.is_empty() {
-                return ToolResult::error("'name' or 'title' parameter required for delete");
+                return ToolResult::error(missing_param(
+                    "delete",
+                    "title",
+                    "organizer(resource: \"calendar\", action: \"delete\", title: \"Dentist\")",
+                ));
             }
             let calendar_filter = if input.calendar.is_empty() {
                 String::new()
@@ -1027,8 +1095,12 @@ end tell"#,
             );
             run_osascript(&script).await
         }
+        "pending" | "accept" | "decline" => ToolResult::error(format!(
+            "'{}' needs the native calendar helper, which is not available on this machine. Calendar.app's scripting does not expose invitations.",
+            action
+        )),
         _ => ToolResult::error(format!(
-            "Unknown calendar action '{}'. Use: calendars, today, upcoming, create, delete, pending, accept, decline, auto_accept, list, configure",
+            "Unknown calendar action '{}'. Use: calendars, today, upcoming, list, create, delete, auto_accept, configure",
             action
         )),
     }
@@ -1103,7 +1175,11 @@ end tell"#,
         "create" => {
             let name = input.event_name();
             if name.is_empty() {
-                return ToolResult::error("'name' parameter required for create");
+                return ToolResult::error(missing_param(
+                    "create",
+                    "name",
+                    "organizer(resource: \"reminders\", action: \"create\", name: \"Call the plumber\", due_date: \"tomorrow\")",
+                ));
             }
 
             let list = if input.list.is_empty() {
@@ -1157,7 +1233,11 @@ end tell"#,
         "complete" => {
             let name = input.event_name();
             if name.is_empty() {
-                return ToolResult::error("'name' parameter required for complete");
+                return ToolResult::error(missing_param(
+                    "complete",
+                    "name",
+                    "organizer(resource: \"reminders\", action: \"complete\", name: \"Call the plumber\")",
+                ));
             }
             let list = if input.list.is_empty() {
                 "Reminders"
@@ -1166,18 +1246,27 @@ end tell"#,
             };
             let script = format!(
                 r#"tell application "Reminders"
-    set completed of (first reminder of list "{list}" whose name is "{name}") to true
+    try
+        set completed of (first reminder of list "{list}" whose name is "{name}") to true
+    on error errMsg number errNum
+        if errNum is -1728 then return "DIAG|No reminder named exactly '{name}' in list '{list}'. Use action 'list' to see the exact names."
+        error errMsg number errNum
+    end try
     return "Completed: {name}"
 end tell"#,
                 list = escape_applescript(list),
                 name = escape_applescript(name)
             );
-            run_osascript(&script).await
+            diag(run_osascript(&script).await)
         }
         "delete" => {
             let name = input.event_name();
             if name.is_empty() {
-                return ToolResult::error("'name' parameter required for delete");
+                return ToolResult::error(missing_param(
+                    "delete",
+                    "name",
+                    "organizer(resource: \"reminders\", action: \"delete\", name: \"Call the plumber\")",
+                ));
             }
             let list = if input.list.is_empty() {
                 "Reminders"
@@ -1186,13 +1275,18 @@ end tell"#,
             };
             let script = format!(
                 r#"tell application "Reminders"
-    delete (first reminder of list "{list}" whose name is "{name}")
+    try
+        delete (first reminder of list "{list}" whose name is "{name}")
+    on error errMsg number errNum
+        if errNum is -1728 then return "DIAG|No reminder named exactly '{name}' in list '{list}'. Use action 'list' to see the exact names."
+        error errMsg number errNum
+    end try
     return "Deleted reminder: {name}"
 end tell"#,
                 list = escape_applescript(list),
                 name = escape_applescript(name)
             );
-            run_osascript(&script).await
+            diag(run_osascript(&script).await)
         }
         _ => ToolResult::error(format!(
             "Unknown reminders action '{}'. Use: lists, list, create, complete, delete",

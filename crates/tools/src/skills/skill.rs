@@ -220,7 +220,7 @@ impl Skill {
         }
         if self.name.len() > 64 {
             return Err(format!(
-                "skill name exceeds 64 characters: {}",
+                "skill name is {} characters; the maximum is 64",
                 self.name.len()
             ));
         }
@@ -244,13 +244,13 @@ impl Skill {
         }
         if self.description.len() > 1024 {
             return Err(format!(
-                "skill description exceeds 1024 characters: {}",
+                "skill description is {} characters; the maximum is 1024",
                 self.description.len()
             ));
         }
         if self.compatibility.len() > 500 {
             return Err(format!(
-                "compatibility exceeds 500 characters: {}",
+                "compatibility is {} characters; the maximum is 500",
                 self.compatibility.len()
             ));
         }
@@ -348,7 +348,10 @@ impl Skill {
     /// extracted directory on disk.
     pub fn read_resource(&self, relative_path: &str) -> Result<Vec<u8>, String> {
         if relative_path.contains("..") {
-            return Err("path traversal not allowed".into());
+            return Err(format!(
+                "resource path must be relative to the skill root and contain no '..': got '{}'",
+                relative_path
+            ));
         }
 
         // Sealed .napp: read from archive in memory
@@ -362,7 +365,11 @@ impl Skill {
             let full = base_dir.join(relative_path);
             // Guard against symlink escapes
             if !full.starts_with(base_dir) {
-                return Err("path traversal not allowed".into());
+                return Err(format!(
+                    "resource path must be relative to the skill root and contain no '..': got '{}' (resolves outside {})",
+                    relative_path,
+                    base_dir.display()
+                ));
             }
             std::fs::read(&full).map_err(|e| format!("failed to read resource: {}", e))
         } else {
@@ -721,7 +728,9 @@ Process spreadsheets.
 
         let result = skill.read_resource("../../../etc/passwd");
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("path traversal"));
+        let err = result.unwrap_err();
+        assert!(err.contains("relative to the skill root"), "{err}");
+        assert!(err.contains("../../../etc/passwd"), "{err}");
     }
 
     // ── Agent Skills Standard Compliance Tests ──────────────────────

@@ -15,6 +15,8 @@ import type { AskWidgetDef } from '$lib/components/chat/AskWidget.svelte';
 import type { UploadedAttachment } from '$lib/types/attachment';
 import { sendInstallCode } from '$lib/marketplace/installCodes';
 import { formatTime } from '$lib/time';
+import { get } from 'svelte/store';
+import { t } from 'svelte-i18n';
 
 export interface TokenUsage {
   input: number;
@@ -78,7 +80,7 @@ export interface ToolUse {
 export type ChatMessage =
   | { type: 'user'; content: string; time?: string; id?: string; attachments?: UploadedAttachment[]; pending?: boolean }
   | { type: 'thinking'; content: string; duration: string }
-  | { type: 'ask'; requestId: string; prompt: string; widgets: AskWidgetDef[]; response?: string }
+  | { type: 'ask'; requestId: string; prompt: string; widgets: AskWidgetDef[]; response?: string; cancelled?: boolean }
   | { type: 'assistant'; content: string; time?: string; delegateAgentId?: string; delegateAgentName?: string; id?: string; attachments?: UploadedAttachment[]; workItems?: WorkItem[]; tools?: ToolUse[]; streaming?: boolean };
 
 export interface ChatControllerConfig {
@@ -639,17 +641,41 @@ export function createChatController(config: ChatControllerConfig) {
     if (!isMyEvent(data)) return;
     const requestId = data.request_id as string;
     if (!requestId) return;
+    // The same question can reach the page twice: the live event, the thread's
+    // history response, and a reconnect replay all carry it. One card.
+    if (messages.some((m) => m.type === 'ask' && m.requestId === requestId)) return;
     messages = [...messages, {
       type: 'ask' as const,
       requestId,
       prompt: data.prompt as string,
       widgets: (data.widgets ?? [{ type: 'options', multiSelect: false, options: ['Yes', 'No'] }]) as AskWidgetDef[],
     }];
+    // The run is parked on the owner: the last tool's activity line ("browsing
+    // the marketplace") would otherwise sit under the card as if still running.
+    activityStatus = get(t)('chat.waitingForYou');
+  }
+
+  /** A question the run was already parked on when this thread opened (the
+   *  history response's `pendingAsk`): rendered exactly like the live event. */
+  function showPendingAsk(ask: { requestId: string; prompt: string; widgets?: unknown }) {
+    handleAskRequest({
+      session_id: activeSessionKey,
+      agentId,
+      request_id: ask.requestId,
+      prompt: ask.prompt,
+      widgets: ask.widgets,
+    });
   }
 
   function handleSubagentProgress(data: any) {
+    if (!isMyEvent(data)) return;
     const op = data.current_operation as string | undefined;
     if (!op) return;
+    // The delegate's current step IS this turn's live status: without it a
+    // long delegated job reads as "Still working: agent" for minutes, and a
+    // page that was reloaded mid-run has no running tool row to annotate.
+    const steps = Number(data.tool_count) || 0;
+    activityStatus = steps > 0 ? get(t)('chat.subagentStep', { values: { op, n: steps } }) : op;
     // Update the last running tool's live sub-step text (e.g. "Initialized sub-agent").
     for (let i = messages.length - 1; i >= 0; i--) {
       const m = messages[i];
@@ -677,6 +703,11 @@ export function createChatController(config: ChatControllerConfig) {
     resetStreaming();
     phaseStartTime = 0;
     activityStatus = '';
+    // A question nobody answered dies with the run: the card says so instead
+    // of offering choices the tool will never read.
+    messages = messages.map((m) =>
+      m.type === 'ask' && m.response == null && !m.cancelled ? { ...m, cancelled: true } : m
+    );
   }
 
   // --- Subscribe to WS events ---
@@ -830,6 +861,8 @@ export function createChatController(config: ChatControllerConfig) {
         ? { ...msg, response: value }
         : msg
     );
+    // Answered: the run is working again; its next tool_start names what it does.
+    activityStatus = '';
   }
 
   function edit(msgIndex: number, newContent: string) {
@@ -910,6 +943,7 @@ export function createChatController(config: ChatControllerConfig) {
     stop,
     newThread,
     submitAsk,
+    showPendingAsk,
     restoreVersion,
     edit,
     redo,

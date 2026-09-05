@@ -7,7 +7,7 @@
 //! Reminders: taskwarrior (task) → todo.sh
 
 use super::OrganizerInput;
-use super::shared::{run_command, run_command_with_stdin, which_exists};
+use super::shared::{NO_OUTPUT, run_command, run_command_with_stdin, which_exists};
 use crate::registry::ToolResult;
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -97,9 +97,9 @@ async fn mail_send(input: &OrganizerInput) -> ToolResult {
         None => {
             return ToolResult::error(
                 "No mail client found. Install one of:\n\
-                 - neomutt (recommended): sudo apt install neomutt\n\
-                 - mutt: sudo apt install mutt\n\
-                 - s-nail: sudo apt install s-nail",
+                 - neomutt (recommended): ask the owner to install neomutt\n\
+                 - mutt: ask the owner to install mutt\n\
+                 - s-nail: ask the owner to install s-nail",
             );
         }
     };
@@ -136,28 +136,75 @@ async fn mail_send(input: &OrganizerInput) -> ToolResult {
     }
 }
 
+/// Every notmuch list is capped here; the cap is named in the result header.
+const NOTMUCH_LIMIT_CAP: i64 = 50;
+
+/// Where a notmuch query looked, for result headers.
+fn notmuch_scope(mailbox: &str) -> String {
+    if mailbox.is_empty() {
+        "all folders".to_string()
+    } else {
+        format!("folder '{}'", mailbox)
+    }
+}
+
+/// `notmuch count --output=threads <query>`; None when the count itself fails.
+async fn notmuch_thread_count(query: &str) -> Option<u64> {
+    let r = run_command("notmuch", &["count", "--output=threads", query]).await;
+    if r.is_error {
+        return None;
+    }
+    r.content.trim().parse().ok()
+}
+
+/// Wrap a `notmuch search` summary listing with a counted header:
+/// "showing N of M threads" when the total is known, and a plain
+/// zero statement (never the bare no-output marker) when nothing matched.
+async fn notmuch_listing(what: &str, query: &str, limit: i64, listing: ToolResult) -> ToolResult {
+    if listing.is_error {
+        return listing;
+    }
+    if listing.content == NO_OUTPUT {
+        return ToolResult::ok(format!("0 {} (notmuch query: {}).", what, query));
+    }
+    let shown = listing.content.lines().count();
+    let header = match notmuch_thread_count(query).await {
+        Some(total) => format!(
+            "{} (notmuch query: {}): showing {} of {} threads (limit {}, cap {})",
+            what, query, shown, total, limit, NOTMUCH_LIMIT_CAP
+        ),
+        None => format!(
+            "{} (notmuch query: {}): showing {} threads (limit {}, cap {})",
+            what, query, shown, limit, NOTMUCH_LIMIT_CAP
+        ),
+    };
+    ToolResult::ok(format!("{}\n{}", header, listing.content))
+}
+
 async fn mail_read(input: &OrganizerInput) -> ToolResult {
     let backend = match detect_mail_read() {
         Some(b) => b,
         None => {
             return ToolResult::error(
                 "No mail reader found. Install notmuch for best results:\n\
-                 sudo apt install notmuch\n\
+                 ask the owner to install notmuch\n\
                  notmuch setup",
             );
         }
     };
 
-    let limit = input.limit.unwrap_or(10).clamp(1, 50);
+    let limit = input.limit.unwrap_or(10).clamp(1, NOTMUCH_LIMIT_CAP);
     let limit_str = limit.to_string();
 
     match backend {
         "notmuch" => {
+            // notmuch has no "recent" notion, so the read is scoped to the
+            // last month; the header says so.
             let mut query = "date:1month..today".to_string();
             if !input.mailbox.is_empty() {
                 query = format!("folder:{} and {}", input.mailbox, query);
             }
-            run_command(
+            let listing = run_command(
                 "notmuch",
                 &[
                     "search",
@@ -167,7 +214,12 @@ async fn mail_read(input: &OrganizerInput) -> ToolResult {
                     &query,
                 ],
             )
-            .await
+            .await;
+            let what = format!(
+                "Messages from the last month in {}",
+                notmuch_scope(&input.mailbox)
+            );
+            notmuch_listing(&what, &query, limit, listing).await
         }
         "mutt" | "neomutt" => {
             // Mutt batch mode is limited; suggest notmuch for better reading
@@ -190,7 +242,7 @@ async fn mail_unread(input: &OrganizerInput) -> ToolResult {
     if !which_exists("notmuch") {
         return ToolResult::error(
             "Unread count requires notmuch:\n\
-             sudo apt install notmuch && notmuch setup",
+             ask the owner to install notmuch && notmuch setup",
         );
     }
 
@@ -198,7 +250,16 @@ async fn mail_unread(input: &OrganizerInput) -> ToolResult {
     if !input.mailbox.is_empty() {
         query = format!("folder:{} and {}", input.mailbox, query);
     }
-    run_command("notmuch", &["count", &query]).await
+    let r = run_command("notmuch", &["count", &query]).await;
+    if r.is_error {
+        return r;
+    }
+    ToolResult::ok(format!(
+        "{} unread messages in {} (notmuch query: {})",
+        r.content.trim(),
+        notmuch_scope(&input.mailbox),
+        query
+    ))
 }
 
 async fn mail_search(input: &OrganizerInput) -> ToolResult {
@@ -209,17 +270,17 @@ async fn mail_search(input: &OrganizerInput) -> ToolResult {
     if !which_exists("notmuch") {
         return ToolResult::error(
             "Search requires notmuch:\n\
-             sudo apt install notmuch && notmuch setup",
+             ask the owner to install notmuch && notmuch setup",
         );
     }
 
-    let limit = input.limit.unwrap_or(20).clamp(1, 50);
+    let limit = input.limit.unwrap_or(20).clamp(1, NOTMUCH_LIMIT_CAP);
     let mut query = input.query.clone();
     if !input.mailbox.is_empty() {
         query = format!("folder:{} and ({})", input.mailbox, query);
     }
 
-    run_command(
+    let listing = run_command(
         "notmuch",
         &[
             "search",
@@ -229,7 +290,13 @@ async fn mail_search(input: &OrganizerInput) -> ToolResult {
             &query,
         ],
     )
-    .await
+    .await;
+    let what = format!(
+        "Messages matching '{}' in {}",
+        input.query,
+        notmuch_scope(&input.mailbox)
+    );
+    notmuch_listing(&what, &query, limit, listing).await
 }
 
 async fn mail_accounts() -> ToolResult {
@@ -286,8 +353,8 @@ pub async fn handle_contacts(action: &str, input: &OrganizerInput) -> ToolResult
         None => {
             return ToolResult::error(
                 "No contacts backend found. Install one of:\n\
-                 - khard (recommended): sudo apt install khard\n\
-                 - abook: sudo apt install abook",
+                 - khard (recommended): ask the owner to install khard\n\
+                 - abook: ask the owner to install abook",
             );
         }
     };
@@ -356,11 +423,11 @@ pub async fn handle_contacts(action: &str, input: &OrganizerInput) -> ToolResult
         }
         ("abook", "create") => ToolResult::error(
             "abook does not support non-interactive contact creation.\n\
-             Install khard for full CRUD support: sudo apt install khard",
+             Install khard for full CRUD support: ask the owner to install khard",
         ),
         ("abook", "groups") => ToolResult::error(
             "abook does not support contact groups.\n\
-             Install khard for addressbook support: sudo apt install khard",
+             Install khard for addressbook support: ask the owner to install khard",
         ),
 
         (_, _) => ToolResult::error(format!(
@@ -586,12 +653,19 @@ fn format_calcurse_events(raw: &str) -> Option<String> {
     if out.is_empty() { None } else { Some(out) }
 }
 
-/// khal event listing for a `khal list <start> <end>` range.
-async fn khal_list_events(start: &str, end: &str) -> ToolResult {
+/// khal event listing for a `khal list <start> <end>` range. `range` is the
+/// human phrase for the window ("today", "in the next 7 days") used in the
+/// header and in the empty statement.
+async fn khal_list_events(start: &str, end: &str, range: &str) -> ToolResult {
     let rich = run_command("khal", &["list", start, end, "--format", KHAL_RICH_FORMAT]).await;
     if !rich.is_error {
         return match format_khal_events(&rich.content) {
-            Some(text) => ToolResult::ok(text),
+            Some(text) => ToolResult::ok(format!("Events {} (khal):\n{}", range, text)),
+            // khal printed nothing: the window is empty.
+            None if rich.content == NO_OUTPUT => {
+                ToolResult::ok(format!("No events {} (khal).", range))
+            }
+            // Older khal ignored the template: its own text is the record.
             None => rich,
         };
     }
@@ -613,8 +687,8 @@ async fn gcalcli_agenda(start: &str, end: &str) -> ToolResult {
     run_command("gcalcli", &["agenda", "--nocolor", start, end]).await
 }
 
-/// calcurse appointment listing for the next `days` days.
-async fn calcurse_list_events(days: &str) -> ToolResult {
+/// calcurse appointment listing for the next `days` days; `range` as for khal.
+async fn calcurse_list_events(days: &str, range: &str) -> ToolResult {
     let detailed = run_command(
         "calcurse",
         &[
@@ -632,12 +706,21 @@ async fn calcurse_list_events(days: &str) -> ToolResult {
     .await;
     if !detailed.is_error {
         return match format_calcurse_events(&detailed.content) {
-            Some(text) => ToolResult::ok(text),
+            Some(text) => ToolResult::ok(format!("Events {} (calcurse):\n{}", range, text)),
+            None if detailed.content == NO_OUTPUT => {
+                ToolResult::ok(format!("No events {} (calcurse).", range))
+            }
             None => detailed,
         };
     }
     // Older calcurse without extended format specifiers — previous behaviour.
     run_command("calcurse", &["-Q", "--filter-type", "apt", "-d", days]).await
+}
+
+/// Human phrase for a clamped day window, so the effective value (after the
+/// 1..=365 clamp) is what the result header states.
+fn days_range(days: i64) -> String {
+    format!("in the next {} days (days is capped at 365)", days)
 }
 
 pub async fn handle_calendar(
@@ -651,9 +734,9 @@ pub async fn handle_calendar(
         None => {
             return ToolResult::error(
                 "No calendar backend found. Install one of:\n\
-                 - khal (recommended): sudo apt install khal\n\
+                 - khal (recommended): ask the owner to install khal\n\
                  - gcalcli (Google Calendar): pip install gcalcli\n\
-                 - calcurse: sudo apt install calcurse",
+                 - calcurse: ask the owner to install calcurse",
             );
         }
     };
@@ -661,14 +744,14 @@ pub async fn handle_calendar(
     match (backend, action) {
         // ── khal ──
         ("khal", "calendars") => run_command("khal", &["printcalendars"]).await,
-        ("khal", "today") => khal_list_events("today", "today").await,
+        ("khal", "today") => khal_list_events("today", "today", "today").await,
         ("khal", "upcoming") => {
             let days = input.days.unwrap_or(7).clamp(1, 365);
-            khal_list_events("today", &format!("{}d", days)).await
+            khal_list_events("today", &format!("{}d", days), &days_range(days)).await
         }
         ("khal", "list") => {
             let days = input.days.unwrap_or(365).clamp(1, 365);
-            khal_list_events("today", &format!("{}d", days)).await
+            khal_list_events("today", &format!("{}d", days), &days_range(days)).await
         }
         ("khal", "create") => {
             let name = input.event_name();
@@ -804,14 +887,14 @@ pub async fn handle_calendar(
         ("calcurse", "calendars") => ToolResult::ok(
             "calcurse uses a single local calendar stored in ~/.local/share/calcurse/".to_string(),
         ),
-        ("calcurse", "today") => calcurse_list_events("1").await,
+        ("calcurse", "today") => calcurse_list_events("1", "today").await,
         ("calcurse", "upcoming") => {
             let days = input.days.unwrap_or(7).clamp(1, 365);
-            calcurse_list_events(&days.to_string()).await
+            calcurse_list_events(&days.to_string(), &days_range(days)).await
         }
         ("calcurse", "list") => {
             let days = input.days.unwrap_or(365).clamp(1, 365);
-            calcurse_list_events(&days.to_string()).await
+            calcurse_list_events(&days.to_string(), &days_range(days)).await
         }
         ("calcurse", "create") => {
             let name = input.event_name();
@@ -864,7 +947,7 @@ pub async fn handle_reminders(action: &str, input: &OrganizerInput) -> ToolResul
         None => {
             return ToolResult::error(
                 "No task/reminder backend found. Install one of:\n\
-                 - taskwarrior (recommended): sudo apt install taskwarrior\n\
+                 - taskwarrior (recommended): ask the owner to install taskwarrior\n\
                  - todo.sh: https://github.com/todotxt/todo.txt-cli",
             );
         }

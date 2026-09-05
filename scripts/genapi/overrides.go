@@ -102,6 +102,10 @@ export interface RunDisplay {
 	name: string
 	displayName: string
 	description: string
+	/** Last visible message of the latest thread; the roster row's second line. */
+	latestPreview?: string
+	/** The latest thread was cut by a server restart; latestPreview is the status before it. */
+	restarted?: boolean
 	color?: string
 	handle?: string
 	source: string

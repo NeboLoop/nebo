@@ -122,6 +122,8 @@ pub async fn teach_stop(
         tool_allowlist: None,
         hidden_prompt: false,
         audience: None,
+        cwd: None,
+        model_override: None,
     };
     crate::chat_dispatch::run_chat(&state, config).await;
 

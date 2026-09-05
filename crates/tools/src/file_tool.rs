@@ -289,21 +289,44 @@ impl FileTool {
     fn overwrite_warning(&self, session: &str, path: &str, verb: &str) -> Option<String> {
         let guard = self.read_state.lock().ok()?; // poisoned lock: no advisory
         match guard.get(&Self::read_state_key(session, path)) {
-            None => Some(format!(
-                "Warning: {path} already existed and you had not read it this session — \
-                 it may have been written by a sub-agent or another process. Your {verb} \
-                 changed it without you having seen what was there. If that content \
-                 mattered, read the file now to confirm the result is what you intended."
-            )),
+            None => {
+                // Captured before the write lands: the size and mtime of what is
+                // about to be replaced are the only evidence of it.
+                let meta = std::fs::metadata(path).ok();
+                let old_size = meta
+                    .as_ref()
+                    .map(|m| format!("{} bytes", m.len()))
+                    .unwrap_or_else(|| "size unknown".to_string());
+                let old_mtime = current_mtime_ms(path)
+                    .map(fmt_ms_rfc3339)
+                    .unwrap_or_else(|| "mtime unknown".to_string());
+                let effect = if verb == "edit" {
+                    "Only the matched text was replaced; re-read to see the rest of the file."
+                } else {
+                    "Its previous content is gone; re-read if it mattered."
+                };
+                Some(format!(
+                    "Warning: {path} already existed ({old_size}, modified {old_mtime}) and this \
+                     tool has no record of reading it this session (shell reads are not \
+                     recorded). {effect}"
+                ))
+            }
             Some(entry) => {
                 // Warn only when the file is demonstrably newer than the recorded
                 // read. If we can't stat it, stay quiet — don't alarm on our own
                 // bookkeeping.
-                if current_mtime_ms(path).is_some_and(|cur| cur > entry.mtime_ms) {
+                if let Some(cur) = current_mtime_ms(path).filter(|cur| *cur > entry.mtime_ms) {
+                    // An edit replaces one string; the outside change is still on
+                    // disk. Only a write replaced the whole file. Saying "overwrote"
+                    // for an edit sent models re-applying changes that were there.
+                    let effect = if verb == "edit" {
+                        "Your edit replaced only the matched text; the other change is still there"
+                    } else {
+                        "Your write replaced the whole file, including that change"
+                    };
                     Some(format!(
-                        "Warning: {path} was modified since you last read it (by the user, \
-                         a linter, or another process), and your {verb} overwrote those \
-                         changes. Re-read the file if you need to confirm the result."
+                        "Warning: {path} changed on disk (modified {} ms after your read). {effect}. Re-read before editing further.",
+                        cur - entry.mtime_ms
                     ))
                 } else {
                     None
@@ -432,9 +455,16 @@ impl FileTool {
                         return result;
                     }
 
+                    // metadata.len() is 0 for dataless/placeholder files even when
+                    // a read returns bytes, so it is only quoted when non-zero.
+                    let size = if metadata.len() > 0 {
+                        format!("{} bytes", metadata.len())
+                    } else {
+                        format!("size unknown (metadata reports 0 bytes; {} bytes were read)", n)
+                    };
                     return ToolResult::ok(format!(
-                        "[Binary file detected — content not shown. {} bytes; {}. To inspect the raw bytes: os(resource: \"shell\", action: \"exec\", command: \"hexdump -C '{}' | head\")]",
-                        metadata.len(),
+                        "[Binary file detected: content not shown. {}; {}. To inspect the raw bytes: os(resource: \"shell\", action: \"exec\", command: \"hexdump -C '{}' | head\")]",
+                        size,
                         reason,
                         path
                     ));
@@ -468,7 +498,13 @@ impl FileTool {
             .map(|n| n != "tool-results")
             .unwrap_or(true);
 
-        for line_result in reader.lines() {
+        // The range note is appended AFTER the byte cap below, so it is never
+        // sliced off the end of a capped result.
+        let mut range_note: Option<String> = None;
+        // Total line count once known (the limit path counts the remainder).
+        let mut total_lines: Option<usize> = None;
+        let mut lines_iter = reader.lines();
+        while let Some(line_result) = lines_iter.next() {
             let line = match line_result {
                 Ok(l) => l,
                 Err(e) => return ToolResult::error(format!("Error reading file: {}", e)),
@@ -482,17 +518,25 @@ impl FileTool {
 
             if lines_read >= limit {
                 limit_truncated = true;
-                result.push_str(&format!(
-                    "\n... (showing lines {}-{} of {}+)",
+                // Count the rest so the note states the real total, not a floor.
+                let total = line_num + (&mut lines_iter).count();
+                total_lines = Some(total);
+                range_note = Some(format!(
+                    "\n... (showing lines {}-{} of {}; continue with offset: {})",
                     offset,
                     line_num - 1,
+                    total,
                     line_num
                 ));
                 break;
             }
 
             let display_line = if line.len() > 2000 {
-                format!("{}...", crate::truncate_str(&line, 2000))
+                format!(
+                    "{}  [line truncated: 2000 of {} bytes shown]",
+                    crate::truncate_str(&line, 2000),
+                    line.len()
+                )
             } else {
                 line
             };
@@ -517,32 +561,60 @@ impl FileTool {
         if result.is_empty() {
             let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
             result = if offset > 1 {
-                format!("(file has fewer than {} lines)", offset)
-            } else if size > 0 {
-                // Bytes on disk but nothing read back. Saying "empty" here would
-                // be a false claim the model has no way to doubt.
                 format!(
+                    "(file has {} lines; offset {} is past the end)",
+                    line_num, offset
+                )
+            } else if size > 0 {
+                // Bytes on disk but nothing read back. Saying "empty" would be a
+                // false claim the model has no way to doubt; this is a failed
+                // read and is returned as one.
+                return ToolResult::error(format!(
                     "(no content returned — this file is {} bytes on disk, so it is NOT empty. \
                      This is a read failure, not the file's contents. Try os(resource: \"file\", \
                      action: \"grep\", path: \"{}\", pattern: \".\") instead of repeating this read.)",
                     size, path
-                )
+                ));
             } else {
                 "(file is empty)".to_string()
             };
         }
 
-        // Cap total result size to prevent huge files from blowing up context
-        const FILE_READ_MAX_CHARS: usize = 50_000;
+        // Cap total result size to prevent huge files from blowing up context.
+        // The cut lands on a line boundary and the footer names the last whole
+        // line shown, so the next read can start exactly after it.
+        const FILE_READ_MAX_BYTES: usize = 50_000;
         let mut char_truncated = false;
-        if result.len() > FILE_READ_MAX_CHARS {
+        if result.len() > FILE_READ_MAX_BYTES {
             char_truncated = true;
             let total_len = result.len();
-            let truncated = crate::truncate_str(&result, FILE_READ_MAX_CHARS);
+            let window = crate::truncate_str(&result, FILE_READ_MAX_BYTES);
+            let (kept, last_line) = match window.rfind('\n') {
+                Some(nl) => {
+                    let kept = &window[..nl + 1];
+                    // Every shown line ends in exactly one '\n'.
+                    let shown = kept.matches('\n').count();
+                    (kept.to_string(), Some(offset + shown - 1))
+                }
+                None => (window.to_string(), None),
+            };
+            let (last_desc, next_offset) = match last_line {
+                Some(n) => (n.to_string(), n + 1),
+                None => (
+                    format!("none (line {} alone exceeds the cap)", offset),
+                    offset + 1,
+                ),
+            };
+            let total_desc = match total_lines {
+                Some(t) => format!(" File has {} lines.", t),
+                None => String::new(),
+            };
             result = format!(
-                "{}\n\n[Output truncated: {} total chars, showing first {}. Use offset/limit params to read specific sections.]",
-                truncated, total_len, FILE_READ_MAX_CHARS
+                "{}\n[Output truncated at 50,000 bytes (file rendering is {} bytes). Last complete line shown: {}. Use offset: {}.{}]",
+                kept, total_len, last_desc, next_offset, total_desc
             );
+        } else if let Some(note) = range_note {
+            result.push_str(&note);
         }
 
         // Outline-first reads (PRD P4.1): a BLIND read (no offset/limit given)
@@ -621,7 +693,12 @@ impl FileTool {
 
         // Overwrite advisory, captured BEFORE the write clobbers the evidence.
         // Creating a new file, or appending, needs no advisory.
-        let overwrite_note = if !input.append && Path::new(&path).exists() {
+        let prior_len = if !input.append {
+            std::fs::metadata(&path).ok().map(|m| m.len())
+        } else {
+            None
+        };
+        let overwrite_note = if !input.append && prior_len.is_some() {
             self.overwrite_warning(session, &path, "write")
         } else {
             None
@@ -668,8 +745,18 @@ impl FileTool {
                 // in this session isn't wrongly flagged stale against our own write.
                 self.record_read(session, &path);
                 crate::diagnostics_feed::clear_delivered(&path);
-                let action = if input.append { "Appended" } else { "Wrote" };
-                let mut msg = format!("{} {} bytes to {}", action, input.content.len(), path);
+                let mut msg = if input.append {
+                    format!("Appended {} bytes to {}", input.content.len(), path)
+                } else if let Some(old) = prior_len {
+                    format!(
+                        "Overwrote {} ({} to {} bytes)",
+                        path,
+                        old,
+                        input.content.len()
+                    )
+                } else {
+                    format!("Created {} ({} bytes)", path, input.content.len())
+                };
                 // Edit-verification chain step 1 (PRD P4.4): parse what is now
                 // on disk. A plain write's file content IS the input content;
                 // an append must be checked as the whole file, so read it back
@@ -791,7 +878,12 @@ impl FileTool {
         let mut msg = if input.replace_all && count > 1 {
             format!("Replaced {} occurrences in {}", count, path)
         } else {
-            format!("Edited {}", path)
+            // Line of the (single) match in the pre-edit content.
+            let at_line = content
+                .find(&input.old_string)
+                .map(|idx| 1 + content[..idx].matches('\n').count())
+                .unwrap_or(1);
+            format!("Edited {}: replaced 1 occurrence at line {}", path, at_line)
         };
         // Edit-verification chain steps 1+2 (PRD P4.4): the parse verdict on
         // the post-edit content rides on the edit result, with LSP
@@ -875,13 +967,10 @@ impl FileTool {
             format!("{size} bytes")
         };
 
-        // The result text is relayed to the user — state plainly that delivery is
-        // done, so the model never follows up by telling them to open a local path
-        // or claiming it can't share files.
+        // The attachment is a fact of this reply; the model needs nothing more
+        // than what was attached and how big it is.
         ToolResult::ok(format!(
-            "Delivered {name} ({size_str}) to the chat as a downloadable card. \
-             The user has the file now — do not tell them to open a local path or \
-             say you can't share files."
+            "Attached {name} ({size_str}) as a download card on this reply."
         ))
         .with_image_url(path)
     }
@@ -922,7 +1011,14 @@ impl FileTool {
                 pattern_was_defaulted = true;
                 ("*".to_string(), expanded)
             } else {
-                return ToolResult::error(errors::missing_param("glob", "pattern", "os(resource: \"file\", action: \"glob\", pattern: \"*.rs\", path: \".\")"));
+                // A bare path lists a directory (pattern "*"). This path is not
+                // a directory, and that fact, not a missing parameter, is what
+                // the caller needs: the same call succeeds on a directory.
+                let what = if Path::new(&expanded).is_file() { "a file, not a directory" } else { "not a path that exists" };
+                return ToolResult::error(format!(
+                    "glob on {} did nothing: it is {}. A path alone lists a directory; to search by name give pattern (os(resource: \"file\", action: \"glob\", pattern: \"*.json\", path: \"<dir>\")); to read a file use action: \"read\".",
+                    expanded, what
+                ));
             }
         };
         let pattern = &resolved_pattern;
@@ -959,8 +1055,18 @@ impl FileTool {
 
         if files_with_time.is_empty() {
             return ToolResult::ok(format!(
-                "No files found matching \"{}\" in {}. This is not an error — no files match this pattern in this directory. Try a different pattern or path.",
-                pattern, base_path
+                "No files found matching \"{}\" in {}. This is not an error; nothing here matches. \
+                 Next: widen the search with os(resource: \"file\", action: \"glob\", pattern: \"{}\", path: \"{}\"), \
+                 or search file contents with action: \"grep\". \
+                 (Hidden dirs, node_modules, vendor, target, __pycache__ are not searched.)",
+                pattern,
+                base_path,
+                if pattern.starts_with("**/") { pattern.to_string() } else { format!("**/{pattern}") },
+                Path::new(&base_path)
+                    .parent()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .filter(|p| !p.is_empty())
+                    .unwrap_or_else(|| base_path.clone())
             ));
         }
 
@@ -970,10 +1076,12 @@ impl FileTool {
             .map(|(p, _)| relativize_path(p, display_base))
             .collect();
 
-        let mut result = format!("Found {} files matching \"{}\"", total_found, pattern);
-        if truncated {
-            result.push_str(&format!(" (showing first {}, results truncated)", limit));
-        }
+        // The walk stops at limit + 1, so a truncated count is a floor, never a total.
+        let mut result = if truncated {
+            format!("More than {} entries match \"{}\"; showing the {} most recently modified. Narrow the pattern or raise limit.", limit, pattern, limit)
+        } else {
+            format!("Found {} entries matching \"{}\"", total_found, pattern)
+        };
         result.push_str("\n\n");
         result.push_str(&paths.join("\n"));
 
@@ -1314,7 +1422,7 @@ fn read_pdf_text(path: &str) -> ToolResult {
             .last()
             .map_or(0, |(i, c)| i + c.len_utf8());
         return ToolResult::ok(format!(
-            "{}\n\n[Truncated: showing the first {} of {} characters of {}.]",
+            "{}\n\n[Truncated: showing the first {} of {} bytes of {}.]",
             &text[..cut],
             cut,
             text.len(),
@@ -1420,7 +1528,7 @@ fn validate_file_path(raw_path: &str, action: &str) -> Result<(), String> {
             || path_matches_or_inside(&real_path, &sensitive)
         {
             return Err(format!(
-                "blocked: {} access to {:?} is restricted (sensitive path)",
+                "blocked: {} access to '{}' is restricted (sensitive path). Ask the user to paste the needed value instead.",
                 action, raw_path
             ));
         }
@@ -1484,6 +1592,15 @@ fn syntax_note(path: &str, content: &str, lsp: &dyn crate::lsp::LspProvider) -> 
         parts.push(crate::lsp::render_diagnostics(&report, 10));
     }
     if parts.is_empty() { None } else { Some(parts.join("\n")) }
+}
+
+/// Milliseconds since the epoch rendered as an RFC 3339 UTC timestamp (second
+/// precision), or the raw value when it is out of range.
+fn fmt_ms_rfc3339(ms: i64) -> String {
+    match chrono::DateTime::<chrono::Utc>::from_timestamp_millis(ms) {
+        Some(dt) => dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        None => format!("{} ms since epoch", ms),
+    }
 }
 
 /// Current on-disk modification time of `path` in milliseconds since the epoch, or
@@ -1558,12 +1675,11 @@ pub fn external_edit_notes(state: &ReadState, session: &str) -> Vec<String> {
                 (Some(old), Some(new)) => edit_snippet(old, new),
                 _ => "(file too large to show the changed lines)".to_string(),
             };
+            let mtime = fmt_ms_rfc3339(now.mtime_ms);
             notes.push(format!(
-                "Note: {path} was modified, either by the user or by a linter. This change was \
-                 intentional, so make sure to take it into account as you proceed (ie. don't \
-                 revert it unless the user asks you to). Don't tell the user this, since they \
-                 are already aware. Here are the relevant changes (shown with line numbers):\n\
-                 {snippet}"
+                "Note: {path} changed on disk at {mtime} since this session last read it (not \
+                 through this tool). Current content differs as shown; work from the current \
+                 content:\n{snippet}"
             ));
         }
         refreshed.push((key, now));
@@ -1655,10 +1771,9 @@ mod tests {
     /// ledger must follow, or the very next edit is warned about its own change.
     #[test]
     fn restore_refreshes_read_state_so_the_next_edit_has_no_overwrite_warning() {
-        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = crate::TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let home = tempfile::tempdir().unwrap();
-        // SAFETY: serialized by the lock above; checkpoints go under NEBO_HOME.
+        // SAFETY: serialized by the crate-wide lock; checkpoints go under NEBO_HOME.
         unsafe { std::env::set_var("NEBO_HOME", home.path()) };
         let work = tempfile::tempdir().unwrap();
         let path = work.path().join("a.txt");
@@ -1697,7 +1812,8 @@ mod tests {
         std::fs::write(&path, "one\n2\nthree\n").unwrap();
         let notes = external_edit_notes(&t.read_state(), &c.session_key);
         assert_eq!(notes.len(), 1, "{notes:?}");
-        assert!(notes[0].contains("don't revert it"), "{}", notes[0]);
+        assert!(notes[0].contains("changed on disk at 20"), "{}", notes[0]);
+        assert!(notes[0].contains("work from the current content"), "{}", notes[0]);
         assert!(notes[0].contains("-2: two\n+2: 2\n"), "{}", notes[0]);
         assert!(!notes[0].contains("one"), "unchanged lines are trimmed:\n{}", notes[0]);
         assert!(external_edit_notes(&t.read_state(), &c.session_key).is_empty(), "reported once");
@@ -1899,7 +2015,7 @@ mod tests {
 
         assert!(!res.is_error);
         assert!(
-            res.content.starts_with("Found 2 files matching"),
+            res.content.starts_with("Found 2 entries matching"),
             "unexpected header: {}",
             res.content
         );
@@ -1921,10 +2037,10 @@ mod tests {
         );
 
         assert!(!res.is_error);
-        // Walker collects limit+1 so caller detects truncation.
-        // Default limit=100, so 150 files → "Found 101 files" + truncation notice.
+        // Walker collects limit+1 so caller detects truncation. The header
+        // must read as a floor, never "Found 101 files".
         assert!(
-            res.content.contains("results truncated"),
+            res.content.starts_with("More than 100 entries match"),
             "expected truncation notice: {}",
             res.content
         );
@@ -1938,7 +2054,7 @@ mod tests {
         );
         assert!(!res2.is_error);
         assert!(
-            res2.content.contains("results truncated"),
+            res2.content.starts_with("More than 10 entries match"),
             "expected truncation with limit=10: {}",
             res2.content
         );
@@ -2078,7 +2194,7 @@ mod tests {
         assert!(!r.is_error, "{}", r.content);
         assert_eq!(fs::read_to_string(&path).unwrap(), "beta\n");
         assert!(
-            r.content.contains("Warning") && r.content.contains("had not read it"),
+            r.content.contains("Warning") && r.content.contains("no record of reading it"),
             "the edit lands, the advisory rides along: {}",
             r.content
         );
@@ -2117,7 +2233,7 @@ mod tests {
         );
         assert!(!r.is_error, "{}", r.content);
         assert_eq!(fs::read_to_string(&path).unwrap(), "beta changed\n");
-        assert!(r.content.contains("modified since"), "{}", r.content);
+        assert!(r.content.contains("changed on disk"), "{}", r.content);
     }
 
     #[test]
@@ -2165,7 +2281,7 @@ mod tests {
         assert!(!r.is_error, "{}", r.content);
         assert_eq!(fs::read_to_string(&path).unwrap(), "new\n");
         assert!(
-            r.content.contains("Warning") && r.content.contains("had not read it"),
+            r.content.contains("Warning") && r.content.contains("no record of reading it"),
             "{}",
             r.content
         );
@@ -2398,7 +2514,7 @@ mod tests {
         let syntax_at = r.content.find("syntax OK (rust)").expect("tree-sitter verdict present");
         let lsp_at = r
             .content
-            .find("lsp (rust-analyzer): 1 warning — line 1: unused variable `x`")
+            .find("lsp (rust-analyzer): 1 warning — line 1 (warning): unused variable `x`")
             .unwrap_or_else(|| panic!("lsp line present: {}", r.content));
         assert!(lsp_at > syntax_at, "lsp line comes AFTER the syntax verdict: {}", r.content);
     }
@@ -2494,6 +2610,112 @@ mod tests {
         );
         assert!(!r.is_error);
         assert!(!r.content.contains("[Outline"), "{}", crate::truncate_str(&r.content, 200));
+    }
+
+    /// A limit-truncated read states the real total and the offset to continue
+    /// from, never a "+" floor.
+    #[test]
+    fn limited_read_states_total_and_next_offset() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("n.txt");
+        fs::write(&path, "a\nb\nc\nd\ne\n").unwrap();
+        let tool = FileTool::new();
+        let r = tool.execute(
+            &ctx(),
+            json!({"action":"read","path": path.to_str().unwrap(), "limit": 2}),
+        );
+        assert!(!r.is_error, "{}", r.content);
+        assert!(
+            r.content.ends_with("(showing lines 1-2 of 5; continue with offset: 3)"),
+            "{}",
+            r.content
+        );
+    }
+
+    /// An offset past the end names the file's line count, not a bound.
+    #[test]
+    fn offset_past_end_states_line_count() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("n.txt");
+        fs::write(&path, "a\nb\nc\n").unwrap();
+        let tool = FileTool::new();
+        let r = tool.execute(
+            &ctx(),
+            json!({"action":"read","path": path.to_str().unwrap(), "offset": 10}),
+        );
+        assert!(!r.is_error, "{}", r.content);
+        assert_eq!(r.content, "(file has 3 lines; offset 10 is past the end)");
+    }
+
+    /// The byte cap cuts on a line boundary and the footer names the last whole
+    /// line and the offset to continue from; the footer is never sliced off.
+    #[test]
+    fn byte_capped_read_names_last_complete_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("wide.txt");
+        let mut src = String::new();
+        for i in 0..1000 {
+            src.push_str(&format!("{i:04} {}\n", "x".repeat(95)));
+        }
+        fs::write(&path, &src).unwrap();
+        let tool = FileTool::new();
+        let r = tool.execute(&ctx(), json!({"action":"read","path": path.to_str().unwrap()}));
+        assert!(!r.is_error, "{}", r.content);
+        assert!(r.content.contains("[Output truncated at 50,000 bytes (file rendering is"), "{}", crate::truncate_str(&r.content, 200));
+        assert!(r.content.trim_end().ends_with("]"), "footer must be last");
+        // The named last line is the one actually shown, and the next offset follows it.
+        let footer = r.content.rsplit("Last complete line shown: ").next().unwrap();
+        let n: usize = footer.split('.').next().unwrap().parse().unwrap();
+        assert!(r.content.contains(&format!("{:6}\t{:04} ", n, n - 1)), "line {n} must be shown");
+        assert!(!r.content.contains(&format!("{:6}\t{:04} ", n + 1, n)), "line {} must not be shown", n + 1);
+        assert!(footer.contains(&format!("Use offset: {}.", n + 1)), "{footer}");
+    }
+
+    /// A line over 2000 bytes says how much of it is shown.
+    #[test]
+    fn long_line_states_bytes_shown() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("long.txt");
+        fs::write(&path, format!("{}\n", "y".repeat(2500))).unwrap();
+        let tool = FileTool::new();
+        let r = tool.execute(&ctx(), json!({"action":"read","path": path.to_str().unwrap()}));
+        assert!(!r.is_error, "{}", r.content);
+        assert!(r.content.contains("[line truncated: 2000 of 2500 bytes shown]"), "{}", crate::truncate_str(&r.content, 100));
+    }
+
+    /// Create and overwrite are distinct observations, and an edit names the line.
+    #[test]
+    fn write_and_edit_results_state_what_changed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("w.txt");
+        let p = path.to_str().unwrap();
+        let tool = FileTool::new();
+        let r = tool.execute(&ctx(), json!({"action":"write","path": p,"content":"one\ntwo\n"}));
+        assert!(!r.is_error, "{}", r.content);
+        assert!(r.content.starts_with(&format!("Created {} (8 bytes)", p)), "{}", r.content);
+        let r = tool.execute(&ctx(), json!({"action":"write","path": p,"content":"one\ntwo\nthree\n"}));
+        assert!(!r.is_error, "{}", r.content);
+        assert!(r.content.starts_with(&format!("Overwrote {} (8 to 14 bytes)", p)), "{}", r.content);
+        let r = tool.execute(
+            &ctx(),
+            json!({"action":"edit","path": p,"old_string":"three","new_string":"3"}),
+        );
+        assert!(!r.is_error, "{}", r.content);
+        assert!(r.content.starts_with(&format!("Edited {}: replaced 1 occurrence at line 3", p)), "{}", r.content);
+    }
+
+    /// Overwriting a file this session never read names what was replaced.
+    #[test]
+    fn unread_overwrite_warning_states_size_and_mtime() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("u.txt");
+        fs::write(&path, "previous\n").unwrap();
+        let p = path.to_str().unwrap();
+        let tool = FileTool::new();
+        let r = tool.execute(&ctx(), json!({"action":"write","path": p,"content":"new\n"}));
+        assert!(!r.is_error, "{}", r.content);
+        assert!(r.content.contains("already existed (9 bytes, modified 20"), "{}", r.content);
+        assert!(r.content.contains("shell reads are not recorded"), "{}", r.content);
     }
 }
 

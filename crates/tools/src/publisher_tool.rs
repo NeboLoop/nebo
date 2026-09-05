@@ -58,7 +58,7 @@ impl PublisherTool {
         };
         let db_role = match db_role {
             Some(r) => r,
-            None => return ToolResult::error(format!("Agent '{}' not found locally.", name)),
+            None => return ToolResult::error(format!("Agent '{}' not found locally. Use agent(resource: \"registry\", action: \"list\") to see names.", name)),
         };
 
         let agent_json = if db_role.frontmatter.is_empty() || db_role.frontmatter == "{}" {
@@ -79,7 +79,12 @@ impl PublisherTool {
             .await
         {
             Ok(result) => {
-                let artifact_id = result["id"].as_str().unwrap_or("unknown");
+                let Some(artifact_id) = result["id"].as_str().filter(|id| !id.is_empty()) else {
+                    return ToolResult::error(format!(
+                        "Publish response for agent '{}' carried no artifact id; response: {}",
+                        db_role.name, result
+                    ));
+                };
                 self.maybe_submit(
                     api,
                     artifact_id,
@@ -158,7 +163,12 @@ impl PublisherTool {
             .await
         {
             Ok(result) => {
-                let artifact_id = result["id"].as_str().unwrap_or("unknown");
+                let Some(artifact_id) = result["id"].as_str().filter(|id| !id.is_empty()) else {
+                    return ToolResult::error(format!(
+                        "Publish response for skill '{}' carried no artifact id; response: {}",
+                        name, result
+                    ));
+                };
                 self.maybe_submit(api, artifact_id, version, visibility, name, "skill")
                     .await
             }
@@ -181,9 +191,10 @@ impl PublisherTool {
                     "Published **{}** ({}) v{} to NeboAI and submitted for marketplace review.\nArtifact ID: {}",
                     name, artifact_type, version, artifact_id
                 )),
-                Err(e) => ToolResult::ok(format!(
-                    "Published **{}** ({}) v{} to NeboAI (artifact: {}) but review submission failed: {}",
-                    name, artifact_type, version, artifact_id, e
+                Err(e) => ToolResult::error(format!(
+                    "Review submission FAILED ({}); the artifact was published as {} ({}). \
+                     **{}** ({}) v{} is on NeboAI but not in the review queue.",
+                    e, visibility, artifact_id, name, artifact_type, version
                 )),
             }
         } else {
@@ -200,11 +211,15 @@ impl PublisherTool {
             Err(e) => return ToolResult::error(format!("NeboAI connection required: {}", e)),
         };
 
-        let skills_resp = api.list_skills(None, None, Some(1), Some(100)).await;
-        let skills = skills_resp.map(|r| r.skills).unwrap_or_default();
+        // A failed listing is not an empty listing: the old code turned an
+        // auth or network error into "you have nothing published".
+        let skills = match api.list_skills(None, None, Some(1), Some(100)).await {
+            Ok(r) => r.skills,
+            Err(e) => return ToolResult::error(format!("Could not list published skills on NeboAI: {}", e)),
+        };
 
         if skills.is_empty() {
-            return ToolResult::ok("No published artifacts on NeboAI.");
+            return ToolResult::ok("No published skills on NeboAI (this list covers skills only).");
         }
 
         let mut out = String::from("## Published Artifacts\n\n");

@@ -246,7 +246,7 @@
   // tiles can deep-link straight to what they count; '1' = unfiltered.
   const openRuns = (filter?: string) =>
     setParams((p) => p.set('runs', filter === 'failed' || filter === 'running' ? filter : '1'));
-  const closeRuns = () => setParams((p) => p.delete('runs'));
+  const closeRuns = () => setParams((p) => { p.delete('runs'); p.delete('agent'); });
   const openInbox = () => setParams((p) => p.set('inbox', '1'));
   const openSettings = () => setParams((p) => p.set('settings', 'general'));
   const closeSettings = () => setParams((p) => p.delete('settings'));
@@ -328,6 +328,8 @@
           id: a.id,
           name: a.name,
           role: a.description || '',
+          lastPreview: a.latestPreview || '',
+          restarted: a.restarted ?? false,
           initial: a.name.charAt(0).toUpperCase(),
           status: activeIds.has(a.id) ? 'online' : 'paused',
           color: colors[a.id],
@@ -418,7 +420,7 @@
 
   // Refresh runs + stats for the currently viewed agent
   async function refreshRuns() {
-    const id = $page.params.agentId;
+    const id = runsAgentId;
     if (!id) return;
     try {
       const api = await import('$lib/api/nebo');
@@ -445,6 +447,32 @@
   // are set up in onMount, so we collect unsubscribes and tear them down in the
   // onMount return. (The shared onWsEvent helper is for top-level subscriptions.)
   const wsUnsubs: (() => void)[] = [];
+  // Swipe back, iOS style: a touch drag that starts at the sheet's left edge
+  // while a run is open pulls the list back in; past the threshold it commits.
+  let swipeStartX: number | null = null;
+  let swipeDx = $state(0);
+  let swiping = $state(false);
+  const SWIPE_EDGE_PX = 28;
+  const SWIPE_BACK_AT_PX = 90;
+  function swipeStart(e: PointerEvent) {
+    if (openRunId === null || e.pointerType === 'mouse') return;
+    if (e.clientX - (e.currentTarget as HTMLElement).getBoundingClientRect().left > SWIPE_EDGE_PX) return;
+    swipeStartX = e.clientX;
+    swiping = true;
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+  }
+  function swipeMove(e: PointerEvent) {
+    if (swipeStartX === null) return;
+    swipeDx = Math.max(0, e.clientX - swipeStartX);
+  }
+  function swipeEnd() {
+    if (swipeStartX === null) return;
+    const back = swipeDx > SWIPE_BACK_AT_PX;
+    swipeStartX = null;
+    swiping = false;
+    swipeDx = 0;
+    if (back) closeRun();
+  }
 
   function onWsEvent(event: string, handler: (data: any) => void) {
     wsUnsubs.push(getWebSocketClient().on(event.replace(/^nebo:/, ''), handler));
@@ -649,7 +677,7 @@
   }
 
   async function loadMoreRuns() {
-    const id = $page.params.agentId;
+    const id = runsAgentId;
     if (!id || apiRunsLoading[id]) return;
     const current = apiRuns[id]?.length ?? 0;
     const total = apiRunsTotal[id] ?? 0;
@@ -704,6 +732,9 @@
   const listedAgents = $derived([...sortedAgents, ...sortedAppAgents]);
 
   const agentId = $derived($page.params.agentId ?? '');
+  // Whose runs the runs sheet shows: the page's employee, or on the
+  // dashboard the one named by ?agent=<id>, so the sheet opens in place.
+  const runsAgentId = $derived($page.params.agentId ?? $page.url.searchParams.get('agent') ?? '');
   const onDashboard = $derived(($page.route.id ?? '').endsWith('/dashboard'));
   const workingCount = $derived(Object.values(agentStatuses).filter((s) => s === 'running').length);
   const agent = $derived(allAgents.find(a => a.id === agentId));
@@ -726,10 +757,17 @@
   const agentColor = $derived(agent ? AGENT_COLORS_MAP[agent.color] : null);
   const threads = $derived(agentId ? (apiThreads[agentId] || []) : []);
   const isThreadsLoading = $derived(agentId ? (threadsLoading[agentId] ?? true) : true);
-  const runs = $derived(agentId ? (apiRuns[agentId] || []) : []);
-  const runsTotal = $derived(agentId ? (apiRunsTotal[agentId] ?? 0) : 0);
+  const runs = $derived(runsAgentId ? (apiRuns[runsAgentId] || []) : []);
+  const runsTotal = $derived(runsAgentId ? (apiRunsTotal[runsAgentId] ?? 0) : 0);
   const hasMoreRuns = $derived(runs.length < runsTotal);
-  const runsLoading = $derived(agentId ? (apiRunsLoading[agentId] ?? false) : false);
+  const runsLoading = $derived(runsAgentId ? (apiRunsLoading[runsAgentId] ?? false) : false);
+  const runsAgent = $derived(allAgents.find(a => a.id === runsAgentId));
+  const runsAgentColor = $derived(runsAgent ? AGENT_COLORS_MAP[runsAgent.color] : null);
+  // Over the dashboard nothing else loads that employee's runs: fetch on demand.
+  $effect(() => {
+    const id = runsAgentId;
+    if (id && id !== agentId && !apiRuns[id] && !apiRunsLoading[id]) refreshRuns();
+  });
   const skills = $derived(agentId ? (apiSkills[agentId] || []) : []);
   const config = $derived(agentId ? (apiConfig[agentId] || DEFAULT_CONFIG) : DEFAULT_CONFIG);
   const workflowEntries = $derived(Object.entries(config.workflows));
@@ -913,6 +951,7 @@
     openWorkflow,
     openRuns,
     openSettings,
+    openInbox,
     openList: () => showList(agent?.isolated ? agentId : '1'),
     askEmployee,
     openCanvas,
@@ -1187,7 +1226,9 @@
                      and a column where only some rows carry a time reads as
                      noise. Times live on the conversations themselves. -->
               </div>
-              <div class="text-xs text-base-content/60 truncate">{latest?.preview || a.role}</div>
+              <!-- A restart is a state, not something the employee said: the
+                   label carries it and the line keeps the last real status. -->
+              <div class="text-xs text-base-content/60 truncate">{#if latest ? latest.restarted : a.restarted}<span class="badge badge-ghost badge-xs mr-1 align-middle">{$t('sidebar.restarted')}</span>{/if}{latest?.preview || a.lastPreview || a.role}</div>
             </div>
             {#if !isPinned && a.isolated}
               <!-- Drill chevron: an isolated employee opens its list of sealed
@@ -1238,7 +1279,7 @@
                 <span class="text-sm truncate flex-1 min-w-0">{c.title || c.name}</span>
                 <span class="text-xs text-base-content/45 shrink-0">{dayLabel(c.updatedAtEpoch)}</span>
               </div>
-              <div class="text-xs text-base-content/55 truncate">{c.preview}</div>
+              <div class="text-xs text-base-content/55 truncate">{#if c.restarted}<span class="badge badge-ghost badge-xs mr-1 align-middle">{$t('sidebar.restarted')}</span>{/if}{c.preview}</div>
             </a>
           {/each}
         </div>
@@ -1391,23 +1432,13 @@
   open={settingsSection !== null}
   section={settingsSection ?? 'general'}
   agentName={agent?.name ?? ''}
+  readOnly={agent ? !agent.editable : false}
   avatarInitial={agent?.initial ?? ''}
   avatarClass={agentColor ? `${agentColor.bgClass} ${agentColor.inkClass}` : ''}
   onsection={selectSection}
   onclose={closeSettings}
 />
 
-<ShelfModal
-  open={openRunId !== null}
-  title={agent ? `${agent.name} — ${$t('agentActivity.runDetail')}` : $t('agentActivity.runDetail')}
-  avatarInitial={agent?.initial ?? ''}
-  avatarClass={agentColor ? `${agentColor.bgClass} ${agentColor.inkClass}` : ''}
-  onclose={closeRun}
->
-  <div class="flex-1 min-h-0 flex flex-col overflow-hidden">
-    {#if openRunId}<RunDetail runId={openRunId} onclose={closeRun} />{/if}
-  </div>
-</ShelfModal>
 
 <!-- The shelf lays its children out in a row (settings puts its nav beside its
      content); the storefront stacks, so it owns its own column. -->
@@ -1429,7 +1460,6 @@
         </button>
       {/each}
     </div>
-  readOnly={agent ? !agent.editable : false}
     <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
     <div class="flex-1 min-h-0 flex" onclickcapture={interceptMarketClick}>
       <!-- Same category rail as the /marketplace page — its plain /marketplace
@@ -1462,12 +1492,32 @@
 
 <ShelfModal
   open={runsOpen}
-  title={agent ? `${agent.name} — ${$t('nav.runs')}` : $t('nav.runs')}
-  avatarInitial={agent?.initial ?? ''}
-  avatarClass={agentColor ? `${agentColor.bgClass} ${agentColor.inkClass}` : ''}
+  title={runsAgent ? `${runsAgent.name} — ${$t('nav.runs')}` : $t('nav.runs')}
+  avatarInitial={runsAgent?.initial ?? ''}
+  avatarClass={runsAgentColor ? `${runsAgentColor.bgClass} ${runsAgentColor.inkClass}` : ''}
   onclose={closeRuns}
 >
-  <RunsPane onopen={openRun} />
+  <!-- The run detail pushes in over the list, inside this one shelf: list and
+       detail side by side at twice the width, slid left while a run is open.
+       The detail's back button slides it out; on touch, so does an edge swipe. -->
+  <div
+    class="flex-1 min-h-0 overflow-hidden touch-pan-y"
+    onpointerdown={swipeStart}
+    onpointermove={swipeMove}
+    onpointerup={swipeEnd}
+    onpointercancel={swipeEnd}
+    role="presentation"
+  >
+    <div
+      class="flex h-full w-[200%] {swiping ? '' : 'transition-transform duration-[250ms] ease-out motion-reduce:transition-none'}"
+      style:translate={openRunId !== null ? `calc(-50% + ${swipeDx}px) 0` : '0 0'}
+    >
+      <div class="w-1/2 min-w-0 flex"><RunsPane onopen={openRun} /></div>
+      <div class="w-1/2 min-w-0 flex flex-col overflow-hidden">
+        {#if openRunId}<RunDetail runId={openRunId} onclose={closeRun} />{/if}
+      </div>
+    </div>
+  </div>
 </ShelfModal>
 
 <!-- A workroom: the owner's live seat in a mission room an employee opened. -->

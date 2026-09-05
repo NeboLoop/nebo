@@ -1,0 +1,47 @@
+id: correction-event-reminder-shape
+name: "Correction: a reminder-shaped event call gets one error, not three"
+description: |
+  From the audit of 2026-09-05 (class B, F): the system prompt once taught
+  event(resource: "reminder", action: "create", title, when), which failed
+  the name check, then the cron/at check, then the command check, three
+  errors in a row for the first event call a model ever sees. Now a call
+  carrying title or when and none of name, cron, at, or command gets one
+  error that names all three required fields and shows a valid call. This
+  fixture pins the outcome: at most one error, then a created reminder.
+# The one taught error is the point of this fixture.
+induced_errors: 1
+target_component: event
+
+teardown:
+  - "python3 -c \"import json,urllib.request as u; jobs=json.load(u.urlopen('http://localhost:27895/api/v1/tasks')).get('tasks',[]); [u.urlopen(u.Request('http://localhost:27895/api/v1/tasks/'+j['name'], method='DELETE')) for j in jobs if 'call' in j.get('name','').lower() and 'back' in j.get('name','').lower()]\" || true"
+
+conversation:
+  - role: user
+    content: "Remind me in 3 hours to call Kristi back."
+
+tool_config:
+  event:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: uses-event
+      text: "The first call is an event create"
+      severity: critical
+      check: { first_call: true, tool: event }
+  recovery:
+    - id: at-most-one-error
+      text: "At most one tool result is an error, and if there is one it names name, at or cron, and prompt or command together"
+      severity: critical
+      check: { max_errors: 1 }
+    - id: reminder-lands
+      text: "A tool result says a scheduled task was created and when it fires"
+      severity: critical
+    - id: bounded
+      text: "At most 3 tool calls"
+      severity: critical
+      check: { max_tool_calls: 3 }
+
+ideal_behavior:
+  tool_calls: 1
+  narrative: "One event create with name, at: \"in 3 hours\", task_type agent and a prompt, then a one-line confirmation of when it fires."

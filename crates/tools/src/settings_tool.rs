@@ -102,7 +102,14 @@ impl DynTool for SettingsTool {
 #[cfg(target_os = "macos")]
 async fn handle_volume(action: &str, input: &serde_json::Value) -> ToolResult {
     match action {
-        "get" => run_osascript("output volume of (get volume settings)").await,
+        "get" => {
+            let r = run_osascript("output volume of (get volume settings)").await;
+            if r.is_error {
+                r
+            } else {
+                ToolResult::ok(format!("Volume: {}%", r.content.trim()))
+            }
+        }
         "set" => {
             let value = input["value"].as_i64().unwrap_or(50).clamp(0, 100);
             run_osascript(&format!("set volume output volume {}", value)).await
@@ -214,11 +221,16 @@ async fn handle_darkmode(action: &str) -> ToolResult {
                 Ok(out) => String::from_utf8_lossy(&out.stdout).trim() == "false",
                 Err(_) => true,
             };
-            run_osascript(&format!(
+            let r = run_osascript(&format!(
                 "tell application \"System Events\" to tell appearance preferences to set dark mode to {}",
                 enable
             ))
-            .await
+            .await;
+            if r.is_error {
+                r
+            } else {
+                ToolResult::ok(if enable { "Dark mode: ON" } else { "Dark mode: OFF" }.to_string())
+            }
         }
         _ => ToolResult::error(format!(
             "Unknown darkmode action '{}'. Use: status, toggle",
@@ -234,7 +246,14 @@ async fn handle_sleep() -> ToolResult {
 
 #[cfg(target_os = "macos")]
 async fn handle_lock() -> ToolResult {
-    run_command("pmset", &["displaysleepnow"]).await
+    let r = run_command("pmset", &["displaysleepnow"]).await;
+    if r.is_error {
+        r
+    } else {
+        ToolResult::ok(
+            "Display put to sleep (locks only if the Mac requires a password on wake)".to_string(),
+        )
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -408,7 +427,7 @@ async fn handle_bluetooth(action: &str) -> ToolResult {
                             ToolResult::ok("Bluetooth: OFF".to_string())
                         }
                     }
-                    Err(_) => ToolResult::ok("Bluetooth unavailable".to_string()),
+                    Err(e) => ToolResult::error(format!("Could not run bluetoothctl: {}", e)),
                 }
             } else if which("rfkill") {
                 let output = tokio::process::Command::new("rfkill")
@@ -425,7 +444,7 @@ async fn handle_bluetooth(action: &str) -> ToolResult {
                             ToolResult::ok("Bluetooth: ON".to_string())
                         }
                     }
-                    Err(_) => ToolResult::ok("Bluetooth unavailable".to_string()),
+                    Err(e) => ToolResult::error(format!("Could not run rfkill: {}", e)),
                 }
             } else {
                 ToolResult::ok("Bluetooth status unavailable (install bluez)".to_string())
@@ -625,8 +644,10 @@ async fn handle_mute(mute: bool) -> ToolResult {
 async fn handle_volume(action: &str, input: &serde_json::Value) -> ToolResult {
     match action {
         "get" => {
-            // No clean way to get volume on Windows without COM; report approximate
-            ToolResult::ok("Volume get not supported — use set to change.".to_string())
+            // No clean way to read the volume on Windows without COM.
+            ToolResult::error(
+                "Reading the volume is not supported on Windows. Set it with action \"set\" (value 0-100), or ask the user for the current level.",
+            )
         }
         "set" => {
             let value = input["value"].as_i64().unwrap_or(50).clamp(0, 100);
@@ -660,7 +681,7 @@ async fn handle_brightness(action: &str, input: &serde_json::Value) -> ToolResul
             );
             match run_powershell(&script).await {
                 r if r.is_error => ToolResult::error(format!(
-                    "Failed to set brightness (may not work on desktop monitors): {}",
+                    "Failed to set brightness: {}. WMI brightness control only works on built-in laptop displays.",
                     r.content
                 )),
                 _ => ToolResult::ok(format!("Brightness set to {}%", value)),
@@ -781,15 +802,11 @@ async fn handle_darkmode(action: &str) -> ToolResult {
                  Set-ItemProperty -Path '{}' -Name SystemUsesLightTheme -Value {} -Force",
                 reg_path, new_value, reg_path, new_value
             );
-            run_powershell(&script).await;
-            ToolResult::ok(format!(
-                "Dark mode {}",
-                if new_value == 0 {
-                    "enabled"
-                } else {
-                    "disabled"
-                }
-            ))
+            let r = run_powershell(&script).await;
+            if r.is_error {
+                return r;
+            }
+            ToolResult::ok(if new_value == 0 { "Dark mode: ON" } else { "Dark mode: OFF" }.to_string())
         }
         _ => ToolResult::error(format!(
             "Unknown darkmode action '{}'. Use: status, toggle",
@@ -833,7 +850,13 @@ $uptime = (Get-Date) - (Get-CimInstance -ClassName Win32_OperatingSystem).LastBo
 async fn handle_mute(_mute: bool) -> ToolResult {
     // Windows mute is a toggle — both mute and unmute call the same key
     let script = "$obj = New-Object -ComObject WScript.Shell; $obj.SendKeys([char]173)";
-    run_powershell(script).await
+    let r = run_powershell(script).await;
+    if r.is_error {
+        return r;
+    }
+    ToolResult::ok(
+        "Toggled mute (Windows cannot set an absolute mute state); verify with the user".to_string(),
+    )
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -938,52 +961,52 @@ mod macos_native {
 
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
 async fn handle_volume(_action: &str, _input: &serde_json::Value) -> ToolResult {
-    ToolResult::error("System volume control is not available on Android")
+    ToolResult::error("System volume control is not available on this platform")
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
 async fn handle_brightness(_action: &str, _input: &serde_json::Value) -> ToolResult {
-    ToolResult::error("Screen brightness control is not available on Android")
+    ToolResult::error("Screen brightness control is not available on this platform")
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
 async fn handle_wifi(_action: &str) -> ToolResult {
-    ToolResult::error("Wi-Fi control is not available on Android")
+    ToolResult::error("Wi-Fi control is not available on this platform")
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
 async fn handle_bluetooth(_action: &str) -> ToolResult {
-    ToolResult::error("Bluetooth control is not available on Android")
+    ToolResult::error("Bluetooth control is not available on this platform")
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
 async fn handle_battery() -> ToolResult {
-    ToolResult::error("Battery status is not available on Android")
+    ToolResult::error("Battery status is not available on this platform")
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
 async fn handle_darkmode(_action: &str) -> ToolResult {
-    ToolResult::error("Dark mode control is not available on Android")
+    ToolResult::error("Dark mode control is not available on this platform")
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
 async fn handle_sleep() -> ToolResult {
-    ToolResult::error("System sleep is not available on Android")
+    ToolResult::error("System sleep is not available on this platform")
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
 async fn handle_lock() -> ToolResult {
-    ToolResult::error("Screen lock is not available on Android")
+    ToolResult::error("Screen lock is not available on this platform")
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
 async fn handle_info() -> ToolResult {
-    ToolResult::error("System info is not available on Android")
+    ToolResult::error("System info is not available on this platform")
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
 async fn handle_mute(_mute: bool) -> ToolResult {
-    ToolResult::error("System mute control is not available on Android")
+    ToolResult::error("System mute control is not available on this platform")
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -1001,7 +1024,7 @@ async fn run_osascript(script: &str) -> ToolResult {
         Ok(output) if output.status.success() => {
             let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
             ToolResult::ok(if text.is_empty() {
-                "OK".to_string()
+                "(exit 0, no output)".to_string()
             } else {
                 text
             })
@@ -1020,7 +1043,7 @@ async fn run_command(cmd: &str, args: &[&str]) -> ToolResult {
         Ok(output) if output.status.success() => {
             let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
             ToolResult::ok(if text.is_empty() {
-                "OK".to_string()
+                "(exit 0, no output)".to_string()
             } else {
                 text
             })
@@ -1028,14 +1051,25 @@ async fn run_command(cmd: &str, args: &[&str]) -> ToolResult {
         Ok(output) => {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
             let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            let detail = if !stderr.is_empty() {
+                stderr
+            } else if !stdout.is_empty() {
+                stdout
+            } else {
+                "(no output)".to_string()
+            };
+            let code = output
+                .status
+                .code()
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "none (ended by a signal)".to_string());
             ToolResult::error(format!(
-                "{}{}",
-                stdout,
-                if stderr.is_empty() {
-                    String::new()
-                } else {
-                    format!("\n{}", stderr)
-                }
+                "`{}{}{}` exited with code {}: {}",
+                cmd,
+                if args.is_empty() { "" } else { " " },
+                args.join(" "),
+                code,
+                detail
             ))
         }
         Err(e) => ToolResult::error(format!("Command '{}' failed: {}", cmd, e)),

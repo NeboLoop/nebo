@@ -180,7 +180,19 @@ async fn run_single(
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis();
-    let session_id = format!("eval:{}:{}:{}", fixture.id, run_id, ts);
+    // With an agent, the id carries the agent prefix: the server keeps a
+    // client session id only when it already does, and replaces anything
+    // else with the agent's main session, whose events would never be ours.
+    let session_id = match fixture.agent.as_deref() {
+        Some(agent) => format!(
+            "{}eval:{}:{}:{}",
+            types::keyparser::agent_session_prefix(agent),
+            fixture.id,
+            run_id,
+            ts
+        ),
+        None => format!("eval:{}:{}:{}", fixture.id, run_id, ts),
+    };
 
     // Collect results across all conversation turns
     let mut all_tool_calls: Vec<TracedToolCall> = Vec::new();
@@ -211,6 +223,12 @@ async fn run_single(
         }
         if let Some(sys) = system_override {
             msg_data["system"] = json!(sys);
+        }
+        if let Some(cwd) = fixture.cwd.as_deref() {
+            msg_data["cwd"] = json!(cwd);
+        }
+        if let Some(agent) = fixture.agent.as_deref() {
+            msg_data["agent_id"] = json!(agent);
         }
 
         // message_id must be unique per turn — the server's idempotency check
@@ -358,6 +376,8 @@ async fn run_single(
     Ok(Trace {
         fixture_id: fixture.id.clone(),
         run_id: run_id.to_string(),
+        // No stream event names the model the server used (`usage` carries
+        // tokens, `chat_complete` artifacts), so this is the requested model.
         model: model.unwrap_or("default").to_string(),
         timestamp: now,
         overrides: Vec::new(),

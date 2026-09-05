@@ -20,6 +20,7 @@ Workflow for a large unfamiliar file:
 2. os(resource: "file", action: "read", path: ..., offset: <start>, limit: <lines>) — read only the symbol you need
 3. os(resource: "file", action: "edit", ...) — the edit result appends "syntax OK (rust)" or the parse errors
 4. If the edit result reports syntax errors, fix them before moving on — the errors name the line.
+5. An edit result may end with a `[hook ...]` note from the project's own checks (a hooks file, or the inferred `cargo check` / `go vet` / `tsc` / `ruff`). A failing check is the next thing to fix, before any further edits or reporting done.
 
 Rules:
 - Lists cap at 200 entries and END with an explicit "N more omitted" line — trust the stated count.

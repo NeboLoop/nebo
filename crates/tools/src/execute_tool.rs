@@ -278,9 +278,14 @@ impl ExecuteTool {
 
         let script_path = tmp_dir.path().join(script_rel_path);
         if !script_path.exists() {
+            let files = match skill.list_resources() {
+                Ok(list) if list.is_empty() => "(none)".to_string(),
+                Ok(list) => list.join(", "),
+                Err(e) => format!("(could not be listed: {})", e),
+            };
             return ToolResult::error(format!(
-                "Script '{}' not found after extracting resources",
-                script_rel_path
+                "Skill '{}' has no file '{}'. Its files: {}",
+                skill.name, script_rel_path, files
             ));
         }
 
@@ -360,9 +365,8 @@ impl ExecuteTool {
         // plugin processes on a customer box (see PluginRuntime::run_capture);
         // a never-exiting command like `dns-sd -B` under the default timeout
         // leaked its process on every single invocation.
-        cmd.kill_on_drop(true);
-        let result =
-            tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), cmd.output()).await;
+        // The script's whole process group ends with the call; see process::output_within.
+        let result = crate::process::output_within(cmd, std::time::Duration::from_secs(timeout_secs)).await;
 
         // Post-execution sandbox cleanup
         if let Some(ref sandbox) = self.sandbox {
@@ -370,7 +374,7 @@ impl ExecuteTool {
         }
 
         match result {
-            Ok(Ok(output)) => {
+            Ok(Some(output)) => {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 let mut stderr_str = String::from_utf8_lossy(&output.stderr).to_string();
 
@@ -380,23 +384,33 @@ impl ExecuteTool {
                         sandbox.annotate_stderr_with_sandbox_failures(&stderr_str, &final_cmd);
                 }
 
-                let exit_code = output.status.code().unwrap_or(-1);
+                let exit_desc = match output.status.code() {
+                    Some(c) => format!("exited with code {}", c),
+                    None => "was terminated by a signal".to_string(),
+                };
 
                 if output.status.success() {
-                    let mut result = stdout.to_string();
+                    let mut result = if stdout.trim().is_empty() {
+                        "(script exited 0 with no output)".to_string()
+                    } else {
+                        stdout.to_string()
+                    };
                     if !stderr_str.is_empty() {
                         result.push_str(&format!("\n[stderr]\n{}", stderr_str));
                     }
                     ToolResult::ok(result)
                 } else {
                     ToolResult::error(format!(
-                        "Script exited with code {}\n[stdout]\n{}\n[stderr]\n{}",
-                        exit_code, stdout, stderr_str
+                        "Script {}\n[stdout]\n{}\n[stderr]\n{}",
+                        exit_desc, stdout, stderr_str
                     ))
                 }
             }
-            Ok(Err(e)) => ToolResult::error(format!("failed to execute script: {}", e)),
-            Err(_) => ToolResult::error(format!("Script timed out after {} seconds", timeout_secs)),
+            Err(e) => ToolResult::error(format!("failed to execute script: {}", e)),
+            Ok(None) => ToolResult::error(format!(
+                "Script exceeded timeout={} s and was killed; its output was discarded. Raise timeout or narrow the work.",
+                timeout_secs
+            )),
         }
     }
 }
@@ -409,8 +423,7 @@ impl DynTool for ExecuteTool {
     fn description(&self) -> String {
         "Script execution — run a script or binary bundled with a skill.\n\
          USE THIS when: user wants to run a script (Python, Node.js, etc.) from an installed skill.\n\n\
-         - execute(skill: \"SKILL-XXXX-XXXX\", args: {...}) — Execute a skill's binary/script\n\
-         - execute(skill: \"SKILL-XXXX-XXXX\", action: \"info\") — Get skill execution info\n\n\
+         - execute(skill: \"my-skill\", script: \"scripts/run.py\", args: {...}) — run a script shipped with an installed skill (Python or JavaScript)\n\n\
          Scripts run in a sandboxed environment with managed runtimes (Python via uv, Node via bun)."
             .to_string()
     }
@@ -460,7 +473,7 @@ impl DynTool for ExecuteTool {
                 _ => return ToolResult::error(crate::errors::missing_param(
                     "execute",
                     "skill",
-                    "skill_execute(skill: \"my-skill\", script: \"run.sh\")",
+                    "execute(skill: \"my-skill\", script: \"scripts/run.py\")",
                 )),
             };
             let script_path = match input["script"].as_str() {
@@ -468,7 +481,7 @@ impl DynTool for ExecuteTool {
                 _ => return ToolResult::error(crate::errors::missing_param(
                     "execute",
                     "script",
-                    "skill_execute(skill: \"my-skill\", script: \"run.sh\")",
+                    "execute(skill: \"my-skill\", script: \"scripts/run.py\")",
                 )),
             };
             let args = input
@@ -480,7 +493,12 @@ impl DynTool for ExecuteTool {
             // 1. Look up skill
             let skill = match self.loader.get(skill_name, agent_scope.as_deref()).await {
                 Some(s) => s,
-                None => return ToolResult::error(format!("Skill '{}' not found", skill_name)),
+                None => {
+                    return ToolResult::error(format!(
+                        "No installed skill named '{}'. List them with skill(action: \"list\").",
+                        skill_name
+                    ));
+                }
             };
 
             // 2. Check for binary execution — bin/ directory or legacy root "binary"
@@ -520,9 +538,21 @@ impl DynTool for ExecuteTool {
                         }
                     }
                 }
+                let checked = match skill.base_dir {
+                    Some(ref base_dir) => format!(
+                        "checked {} and {}",
+                        base_dir.join(script_path).display(),
+                        base_dir.join("binary").display()
+                    ),
+                    None => "the skill has no extracted directory to check".to_string(),
+                };
                 return ToolResult::error(format!(
-                    "Skill '{}' has no binary at '{}'. The .napp archive may not contain a binary for this platform.",
-                    skill_name, script_path
+                    "Skill '{}' has no file at '{}' ({}). It ships no binary for {}-{}.",
+                    skill_name,
+                    script_path,
+                    checked,
+                    std::env::consts::OS,
+                    std::env::consts::ARCH
                 ));
             }
 
@@ -556,20 +586,13 @@ impl DynTool for ExecuteTool {
                     "cloud sandbox not yet available"
                 );
                 return ToolResult::error(
-                    "Cloud sandbox execution is coming soon. \
-                     Install the runtime locally to run this script now:\n\
-                     - Python: https://python.org/downloads/\n\
-                     - Node.js: https://nodejs.org/",
+                    "No local runtime for this script and cloud execution is not available. Ask the owner to install the runtime (Python or Node.js) on this machine.",
                 );
             }
 
             // 6. Neither available — show both options
             ToolResult::error(format!(
-                "No {} runtime found locally and cloud sandbox requires a paid plan.\n\n\
-                 Option 1: Install {} locally (free)\n\
-                 {}\n\n\
-                 Option 2: Upgrade to Pro for cloud execution\n\
-                 Visit your NeboAI dashboard to upgrade.",
+                "No {} runtime found on this machine and cloud execution is not available. Ask the owner to install {}:\n{}",
                 language,
                 language,
                 match language {

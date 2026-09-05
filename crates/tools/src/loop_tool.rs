@@ -41,6 +41,27 @@ pub struct LoopTool {
     broadcast: Option<crate::web_tool::Broadcaster>,
 }
 
+/// Error text for a failed NeboAI hub call. Names the hub, the action, and
+/// the error, and when an HTTP status is present in the error says whether
+/// the call itself was rejected (4xx: fix the call) or the hub failed
+/// (5xx: transient, call again later).
+fn hub_error(what: &str, e: &dyn std::fmt::Display) -> String {
+    let text = e.to_string();
+    let status = text
+        .split(|c: char| !c.is_ascii_digit())
+        .filter_map(|tok| tok.parse::<u16>().ok())
+        .find(|n| (400..=599).contains(n));
+    let hint = match status {
+        Some(n) if n < 500 => format!(" HTTP {}: the hub rejected this call; fix the ids or parameters before calling again.", n),
+        Some(n) => format!(" HTTP {}: the hub itself failed; this is transient, call again later.", n),
+        None if text.contains("timed out") || text.contains("timeout") => {
+            " The request timed out; this is transient, call again later.".to_string()
+        }
+        None => String::new(),
+    };
+    format!("NeboAI hub error while trying to {}: {}.{}", what, text, hint)
+}
+
 impl LoopTool {
     pub fn new(
         comm: Arc<dyn CommPlugin>,
@@ -82,7 +103,7 @@ impl LoopTool {
         let p = std::path::Path::new(path);
         if !p.is_absolute() {
             return ToolResult::error(format!(
-                "path must be absolute, got: {}. Do not retry — provide the full absolute path.",
+                "path must be absolute; got '{}'. Call again with the full absolute path.",
                 path
             ));
         }
@@ -91,13 +112,16 @@ impl LoopTool {
             Ok(m) => m,
             Err(e) => {
                 return ToolResult::error(format!(
-                    "Cannot access file at {}: {}. Do not retry — this is a filesystem error.",
+                    "Cannot read '{}': {}. Check the path exists (os file list) and call again with the correct one.",
                     path, e
                 ));
             }
         };
         if !meta.is_file() {
-            return ToolResult::error(format!("Not a file: {}. Do not retry — this is a filesystem error.", path));
+            return ToolResult::error(format!(
+                "'{}' is not a regular file (a directory or special file). Call again with the path of a file.",
+                path
+            ));
         }
 
         let filename = p
@@ -327,7 +351,9 @@ impl LoopTool {
             ));
         }
         let Some(store) = self.store.as_ref() else {
-            return ToolResult::error("Workrooms are not available on this install.");
+            return ToolResult::error(
+                "Workrooms are not available on this install (no local store). Ask the owner; nothing here can create one.",
+            );
         };
         let name = input["name"].as_str().unwrap_or("");
         if name.is_empty() {
@@ -556,10 +582,17 @@ impl LoopTool {
                 }
                 let limit = input["limit"].as_u64().unwrap_or(50) as usize;
                 match self.comm.list_channel_messages(channel_id, limit).await {
-                    Ok(msgs) => {
-                        ToolResult::ok(serde_json::to_string_pretty(&msgs).unwrap_or_default())
+                    Ok(msgs) if msgs.is_empty() => {
+                        ToolResult::ok(format!("No messages in channel {}", channel_id))
                     }
-                    Err(e) => ToolResult::error(format!("Failed to list channel messages: {}. Do not retry — this is a communication error.", e)),
+                    Ok(msgs) => ToolResult::ok(format!(
+                        "Showing the {} most recent messages in channel {} (limit {})\n{}",
+                        msgs.len(),
+                        channel_id,
+                        limit,
+                        serde_json::to_string_pretty(&msgs).unwrap_or_default()
+                    )),
+                    Err(e) => ToolResult::error(hub_error("list channel messages", &e)),
                 }
             }
             "members" => {
@@ -572,17 +605,28 @@ impl LoopTool {
                     ));
                 }
                 match self.comm.list_channel_members(channel_id).await {
-                    Ok(members) => {
-                        ToolResult::ok(serde_json::to_string_pretty(&members).unwrap_or_default())
+                    Ok(members) if members.is_empty() => {
+                        ToolResult::ok(format!("No members in channel {}", channel_id))
                     }
-                    Err(e) => ToolResult::error(format!("Failed to list channel members: {}. Do not retry — this is a communication error.", e)),
+                    Ok(members) => ToolResult::ok(format!(
+                        "{} members in channel {}\n{}",
+                        members.len(),
+                        channel_id,
+                        serde_json::to_string_pretty(&members).unwrap_or_default()
+                    )),
+                    Err(e) => ToolResult::error(hub_error("list channel members", &e)),
                 }
             }
             "list" => match self.comm.list_channels().await {
-                Ok(channels) => {
-                    ToolResult::ok(serde_json::to_string_pretty(&channels).unwrap_or_default())
+                Ok(channels) if channels.is_empty() => {
+                    ToolResult::ok("No channels: this Nebo is not a member of any loop channel.".to_string())
                 }
-                Err(e) => ToolResult::error(format!("Failed to list channels: {}. Do not retry — this is a communication error.", e)),
+                Ok(channels) => ToolResult::ok(format!(
+                    "{} channels\n{}",
+                    channels.len(),
+                    serde_json::to_string_pretty(&channels).unwrap_or_default()
+                )),
+                Err(e) => ToolResult::error(hub_error("list channels", &e)),
             },
             "share" => {
                 let path = input["path"].as_str().unwrap_or("");
@@ -600,10 +644,15 @@ impl LoopTool {
 
         match action {
             "list" => match self.comm.list_loops().await {
-                Ok(loops) => {
-                    ToolResult::ok(serde_json::to_string_pretty(&loops).unwrap_or_default())
+                Ok(loops) if loops.is_empty() => {
+                    ToolResult::ok("No loops: this Nebo is not a member of any loop.".to_string())
                 }
-                Err(e) => ToolResult::error(format!("Failed to list loops: {}. Do not retry — this is a communication error.", e)),
+                Ok(loops) => ToolResult::ok(format!(
+                    "{} loops\n{}",
+                    loops.len(),
+                    serde_json::to_string_pretty(&loops).unwrap_or_default()
+                )),
+                Err(e) => ToolResult::error(hub_error("list loops", &e)),
             },
             "get" => {
                 let loop_id = input["loop_id"].as_str().unwrap_or("");
@@ -618,7 +667,7 @@ impl LoopTool {
                     Ok(info) => {
                         ToolResult::ok(serde_json::to_string_pretty(&info).unwrap_or_default())
                     }
-                    Err(e) => ToolResult::error(format!("Failed to get loop info: {}. Do not retry — this is a communication error.", e)),
+                    Err(e) => ToolResult::error(hub_error("get loop info", &e)),
                 }
             }
             "members" => {
@@ -631,10 +680,16 @@ impl LoopTool {
                     ));
                 }
                 match self.comm.list_channel_members(loop_id).await {
-                    Ok(members) => {
-                        ToolResult::ok(serde_json::to_string_pretty(&members).unwrap_or_default())
+                    Ok(members) if members.is_empty() => {
+                        ToolResult::ok(format!("No members in loop {}", loop_id))
                     }
-                    Err(e) => ToolResult::error(format!("Failed to list loop members: {}. Do not retry — this is a communication error.", e)),
+                    Ok(members) => ToolResult::ok(format!(
+                        "{} members in loop {}\n{}",
+                        members.len(),
+                        loop_id,
+                        serde_json::to_string_pretty(&members).unwrap_or_default()
+                    )),
+                    Err(e) => ToolResult::error(hub_error("list loop members", &e)),
                 }
             }
             _ => ToolResult::error(format!(
@@ -660,7 +715,7 @@ impl LoopTool {
 
                 match self.comm.subscribe(topic).await {
                     Ok(()) => ToolResult::ok(format!("Subscribed to topic: {}", topic)),
-                    Err(e) => ToolResult::error(format!("Failed to subscribe: {}. Do not retry — this is a communication error.", e)),
+                    Err(e) => ToolResult::error(hub_error("subscribe", &e)),
                 }
             }
             "unsubscribe" => {
@@ -675,7 +730,7 @@ impl LoopTool {
 
                 match self.comm.unsubscribe(topic).await {
                     Ok(()) => ToolResult::ok(format!("Unsubscribed from topic: {}", topic)),
-                    Err(e) => ToolResult::error(format!("Failed to unsubscribe: {}. Do not retry — this is a communication error.", e)),
+                    Err(e) => ToolResult::error(hub_error("unsubscribe", &e)),
                 }
             }
             "status" => {
@@ -772,7 +827,7 @@ impl DynTool for LoopTool {
         Box::pin(async move {
             let domain_input: DomainInput = match serde_json::from_value(input.clone()) {
                 Ok(v) => v,
-                Err(e) => return ToolResult::error(format!("Failed to parse input: {}. Do not retry — this is a serialization error.", e)),
+                Err(e) => return ToolResult::error(format!("Input did not match the schema: {}. Every call needs resource (dm, channel, loop, topic or workroom) and action; see the tool description for each call's fields, then call again.", e)),
             };
 
             let mut input = input;
@@ -802,21 +857,16 @@ impl DynTool for LoopTool {
             let action = input["action"].as_str().unwrap_or("");
             if action != "share" && !self.comm.is_connected() {
                 return ToolResult::error(
-                    "Not connected to NeboAI. The comm plugin is not active.",
+                    "This Nebo is not connected to NeboAI, so no loop, channel, or dm action can work. Ask the owner to pair it in Settings > NeboAI.",
                 );
             }
 
             match resource.as_str() {
                 "dm" => self.handle_dm(&input, ctx.handoff_depth).await,
                 "channel" => self.handle_channel(&input, ctx.handoff_depth).await,
-                "loop" => self.handle_loop(&input).await,
-                // Old name — return a correction, same pattern as the other
-                // tool renames (the concept is user-facing "loop" everywhere).
-                "group" => ToolResult::error(
-                    "resource \"group\" is now \"loop\". Call \
-                     loop(resource: \"loop\", action: \"list\") to list the loops \
-                     this agent belongs to (or get / members with loop_id).",
-                ),
+                // "group" is the old name for a loop; older straps and runs
+                // still send it, and it means the same thing.
+                "loop" | "group" => self.handle_loop(&input).await,
                 "topic" => self.handle_topic(&input).await,
                 "workroom" => self.handle_workroom(&input, ctx).await,
                 other => ToolResult::error(format!(
@@ -830,9 +880,44 @@ impl DynTool for LoopTool {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    /// "group" is the old name for a loop: a group call is the loop call,
+    /// word for word, not a correction to retry.
+    #[tokio::test]
+    async fn a_group_call_is_the_loop_call() {
+        let comm = Arc::new(comm::LoopbackPlugin::new());
+        comm.connect(std::collections::HashMap::new()).await.unwrap();
+        let tool = LoopTool::new(comm, None, None);
+        let ctx = ToolContext::default();
+        let group = tool
+            .execute_dyn(&ctx, serde_json::json!({"resource": "group", "action": "list"}))
+            .await;
+        let looped = tool
+            .execute_dyn(&ctx, serde_json::json!({"resource": "loop", "action": "list"}))
+            .await;
+        assert_eq!(group.content, looped.content);
+        assert!(!group.content.contains("is now"), "{}", group.content);
+    }
+
     #[test]
-    fn test_tool_metadata() {
-        // Can't test without a comm plugin, just verify struct exists
-        assert_eq!("loop", "loop"); // placeholder
+    fn hub_error_classifies_http_status() {
+        let e = "NeboAI returned 404 Not Found: no such channel".to_string();
+        let msg = hub_error("list channel messages", &e);
+        assert!(msg.starts_with("NeboAI hub error while trying to list channel messages: NeboAI returned 404"), "{msg}");
+        assert!(msg.contains("HTTP 404: the hub rejected this call"), "{msg}");
+        assert!(!msg.contains("Do not retry"), "{msg}");
+
+        let e = "NeboAI returned 503 Service Unavailable: ".to_string();
+        let msg = hub_error("list loops", &e);
+        assert!(msg.contains("HTTP 503: the hub itself failed; this is transient"), "{msg}");
+
+        let e = "request failed: operation timed out".to_string();
+        let msg = hub_error("subscribe", &e);
+        assert!(msg.contains("timed out; this is transient"), "{msg}");
+
+        let e = "decode response: expected value at line 1".to_string();
+        let msg = hub_error("subscribe", &e);
+        assert!(msg.ends_with("expected value at line 1."), "{msg}");
     }
 }

@@ -1,0 +1,22 @@
+name: error-correction
+# Correction rate: how often the model reads a tool result that reports a
+# problem and does the right next thing, instead of retrying, inventing a
+# theory, or giving up. Every fixture induces its error through the real
+# environment; the assertions that matter are under `recovery`. Score the
+# suite by the pass rate of critical recovery assertions across runs.
+fixtures:
+  - ../fixtures/correction/unchanged-poll.yaml
+  - ../fixtures/correction/missing-pipeline-command.yaml
+  - ../fixtures/correction/unknown-file-action.yaml
+  - ../fixtures/correction/glob-floor.yaml
+  - ../fixtures/correction/grep-no-files.yaml
+  - ../fixtures/correction/read-past-end.yaml
+  - ../fixtures/correction/empty-output.yaml
+  - ../fixtures/correction/skill-miss-proceeds.yaml
+  - ../fixtures/correction/work-name-in-definition.yaml
+  - ../fixtures/correction/agent-update-instructions.yaml
+  - ../fixtures/correction/agent-edit-user-created.yaml
+  - ../fixtures/correction/os-shell-session.yaml
+  - ../fixtures/correction/agent-update-description.yaml
+  - ../fixtures/correction/plugin-discover-installed.yaml
+  - ../fixtures/correction/event-reminder-shape.yaml

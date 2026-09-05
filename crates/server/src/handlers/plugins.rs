@@ -13,6 +13,15 @@ use std::time::Duration;
 /// the process when the client gives up.
 const SETUP_COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 
+/// Bound on a plugin's per-account `logout` run during disconnect. Logout is
+/// where server-side release happens (revoking a token, returning a number);
+/// disconnect must still finish when the plugin or network is broken.
+const ACCOUNT_LOGOUT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Frontend route of the Plugins settings page (the reconnect destination in
+/// owner-facing notices).
+const PLUGINS_SETTINGS_PATH: &str = "/settings/plugins";
+
 use axum::extract::{Path, Query, State};
 use axum::response::Json;
 use tokio::io::AsyncReadExt;
@@ -235,10 +244,16 @@ struct LoginProfile {
 
 /// POST /plugins/{slug}/accounts/login
 ///
-/// Per-account login for multi-account plugins. Body:
+/// Login from a card or the agent settings, which always ask for an account
+/// on behalf of one agent. Body:
 ///   { "agentId": "...", "accountLabel": "work@acme.com" }
-/// Allocates an isolated config dir for this (agent, account), runs the
-/// plugin's login pointed at it, and records the profile on success.
+/// A multi-account plugin (one that declares `profile_dir_env`) gets an
+/// isolated config dir for this (agent, account); the login runs pointed at
+/// it and the profile is recorded on success. A single-account plugin has
+/// nowhere to keep a second set of credentials, so its one shared login
+/// runs instead, the same thing `auth/login` does. Refusing it with a 500
+/// left the QuickBooks connect card reading "Sign-in didn't complete" on
+/// every click (2026-09-04) when no sign-in had been started at all.
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountLoginRequest {
@@ -259,35 +274,42 @@ pub async fn auth_login_account(
         .get_auth_info(&slug)
         .ok_or_else(|| to_error_response(NeboError::NotFound))?;
 
-    let env_name = auth.profile_dir_env.clone().ok_or_else(|| {
-        to_error_response(NeboError::Internal(format!(
-            "plugin '{slug}' does not support multiple accounts (no profile_dir_env declared)"
-        )))
-    })?;
-
-    // Allocate an isolated, sanitized config dir for this (agent, account).
-    let config_dir = plugin_profile_dir(&req.agent_id, &slug, &req.account_label);
-    if let Err(e) = std::fs::create_dir_all(&config_dir) {
-        return Err(to_error_response(NeboError::Internal(format!(
-            "failed to create profile dir: {e}"
-        ))));
+    let profile = login_profile(auth.profile_dir_env.clone(), &slug, req);
+    if let Some(p) = &profile {
+        // Allocate an isolated, sanitized config dir for this (agent, account).
+        if let Err(e) = std::fs::create_dir_all(&p.config_dir) {
+            return Err(to_error_response(NeboError::Internal(format!(
+                "failed to create profile dir: {e}"
+            ))));
+        }
+    } else {
+        tracing::info!(slug, "single-account plugin: running its shared login for the account card");
     }
-
+    let per_account = profile.is_some();
     spawn_plugin_login(
         state,
         slug,
         auth.commands.login.clone(),
         binary_path,
         auth.label.clone(),
-        Some(LoginProfile {
-            agent_id: req.agent_id,
-            account_label: req.account_label,
-            account_number: req.account_number,
-            env_name,
-            config_dir: config_dir.to_string_lossy().into_owned(),
-        }),
+        profile,
     );
-    Ok(Json(serde_json::json!({ "started": true })))
+    Ok(Json(serde_json::json!({ "started": true, "perAccount": per_account })))
+}
+
+/// The per-account context for a login, or `None` when the plugin keeps one
+/// shared set of credentials (no `profile_dir_env`), in which case the login
+/// runs the way `auth/login` runs it.
+fn login_profile(profile_dir_env: Option<String>, slug: &str, req: AccountLoginRequest) -> Option<LoginProfile> {
+    let env_name = profile_dir_env?;
+    let config_dir = plugin_profile_dir(&req.agent_id, slug, &req.account_label);
+    Some(LoginProfile {
+        agent_id: req.agent_id,
+        account_label: req.account_label,
+        account_number: req.account_number,
+        env_name,
+        config_dir: config_dir.to_string_lossy().into_owned(),
+    })
 }
 
 /// Per-(agent, plugin, account) credential directory. Lives under the Nebo
@@ -795,18 +817,35 @@ pub async fn disconnect_plugin_account(
     Path(slug): Path<String>,
     Query(q): Query<DisconnectAccountQuery>,
 ) -> HandlerResult<serde_json::Value> {
+    disconnect_account(&state, &slug, &q.agent_id, &q.account_label)
+        .await
+        .map_err(to_error_response)?;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+/// Disconnect one (agent, plugin, account): the plugin's own logout against
+/// that account's config dir, then the profile row and the credential dir.
+/// The ONE account-disconnect path — the settings UI (handler above) and a
+/// provider-side revocation relayed by the hub (`revoke_plugin_auth`) both
+/// land here, so the two can never drift.
+async fn disconnect_account(
+    state: &AppState,
+    slug: &str,
+    agent_id: &str,
+    account_label: &str,
+) -> Result<(), NeboError> {
     // Run the plugin's own logout against this account's config dir BEFORE
     // deleting it — logout is where server-side release happens (revoking an
     // OAuth token, returning a phone number). Deleting the dir first would
     // orphan whatever the account held. Best-effort with a bound: disconnect
     // must still succeed when the plugin or network is broken.
-    let dir = plugin_profile_dir(&q.agent_id, &slug, &q.account_label);
+    let dir = plugin_profile_dir(agent_id, slug, account_label);
     if dir.is_dir()
-        && let Some((binary_path, auth)) = state.plugin_store.get_auth_info(&slug)
+        && let Some((binary_path, auth)) = state.plugin_store.get_auth_info(slug)
         && let (Some(logout_cmd), Some(env_name)) =
             (auth.commands.logout.as_deref(), auth.profile_dir_env.as_deref())
     {
-        let runtime = napp::PluginRuntime::new(&slug, binary_path, state.plugin_store.clone());
+        let runtime = napp::PluginRuntime::new(slug, binary_path, state.plugin_store.clone());
         let mut cmd = runtime.command(logout_cmd);
         cmd.env(env_name, &dir);
         // Same locals a login gets — a logout that releases something
@@ -814,11 +853,11 @@ pub async fn disconnect_plugin_account(
         for (key, value) in napp::plugin::plugin_base_env() {
             cmd.env(key, value);
         }
-        cmd.env("NEBO_AGENT_ID", &q.agent_id);
-        match tokio::time::timeout(std::time::Duration::from_secs(30), cmd.output()).await {
+        cmd.env("NEBO_AGENT_ID", agent_id);
+        match tokio::time::timeout(ACCOUNT_LOGOUT_TIMEOUT, cmd.output()).await {
             Ok(Ok(out)) if out.status.success() => {}
             Ok(Ok(out)) => {
-                warn!(plugin = %slug, account = %q.account_label,
+                warn!(plugin = %slug, account = %account_label,
                     stderr = %String::from_utf8_lossy(&out.stderr),
                     "account logout command failed; disconnecting anyway");
             }
@@ -826,7 +865,7 @@ pub async fn disconnect_plugin_account(
                 warn!(plugin = %slug, error = %e, "account logout could not run; disconnecting anyway");
             }
             Err(_) => {
-                warn!(plugin = %slug, account = %q.account_label,
+                warn!(plugin = %slug, account = %account_label,
                     "account logout timed out; disconnecting anyway");
             }
         }
@@ -834,27 +873,26 @@ pub async fn disconnect_plugin_account(
 
     state
         .store
-        .delete_plugin_account_profile(&q.agent_id, &slug, &q.account_label)
-        .map_err(to_error_response)?;
+        .delete_plugin_account_profile(agent_id, slug, account_label)?;
     // Remove the account's credential directory so disconnect is a real removal.
     if dir.is_dir() {
         let _ = std::fs::remove_dir_all(&dir);
     }
-    info!(plugin = %slug, account = %q.account_label, "disconnected plugin account");
+    info!(plugin = %slug, account = %account_label, "disconnected plugin account");
 
     // Lifecycle event: a specific account was disconnected — symmetric with
     // "account.connected". Workflows subscribe via an `event` trigger on this source.
     state.emit_lifecycle(
         "account.disconnected",
         serde_json::json!({
-            "plugin": &slug,
-            "account_label": &q.account_label,
-            "agent_id": &q.agent_id,
+            "plugin": slug,
+            "account_label": account_label,
+            "agent_id": agent_id,
         }),
         format!("disconnect:plugin:{slug}"),
     );
 
-    Ok(Json(serde_json::json!({ "ok": true })))
+    Ok(())
 }
 
 /// POST /plugins/{slug}/auth/logout
@@ -864,38 +902,45 @@ pub async fn auth_logout(
     State(state): State<AppState>,
     Path(slug): Path<String>,
 ) -> HandlerResult<serde_json::Value> {
+    logout_plugin(&state, &slug).await.map_err(to_error_response)?;
+    Ok(Json(serde_json::json!({ "success": true })))
+}
+
+/// Run a plugin's global auth logout command (single-account plugins keep
+/// their credentials in the plugin's own profile). `NotFound` when the plugin
+/// has no auth block, `Validation` when it declares no logout command. The
+/// ONE global-logout path, shared by the settings handler above and
+/// `revoke_plugin_auth`.
+async fn logout_plugin(state: &AppState, slug: &str) -> Result<(), NeboError> {
     let (binary_path, auth) = state
         .plugin_store
-        .get_auth_info(&slug)
-        .ok_or_else(|| to_error_response(NeboError::NotFound))?;
+        .get_auth_info(slug)
+        .ok_or(NeboError::NotFound)?;
 
-    let logout_cmd = auth.commands.logout.as_deref().ok_or_else(|| {
-        to_error_response(NeboError::Validation(
-            "plugin has no auth logout command".into(),
-        ))
-    })?;
+    let logout_cmd = auth
+        .commands
+        .logout
+        .as_deref()
+        .ok_or_else(|| NeboError::Validation("plugin has no auth logout command".into()))?;
 
-    let runtime = napp::PluginRuntime::new(&slug, binary_path, state.plugin_store.clone());
+    let runtime = napp::PluginRuntime::new(slug, binary_path, state.plugin_store.clone());
     let mut cmd = runtime.command(logout_cmd);
 
     let output = cmd
         .output()
         .await
-        .map_err(|e| to_error_response(NeboError::Internal(e.to_string())))?;
+        .map_err(|e| NeboError::Internal(e.to_string()))?;
 
     if output.status.success() {
         info!(plugin = %slug, "plugin auth logout succeeded");
         // Update in-memory auth cache so getAgent reflects the change instantly
-        state.plugin_store.update_auth_status(&slug).await;
+        state.plugin_store.update_auth_status(slug).await;
         state.tools.refresh_definition("plugin").await;
-        Ok(Json(serde_json::json!({ "success": true })))
+        Ok(())
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr);
         warn!(plugin = %slug, error = %stderr, "plugin auth logout failed");
-        Err(to_error_response(NeboError::Internal(format!(
-            "logout failed: {}",
-            stderr
-        ))))
+        Err(NeboError::Internal(format!("logout failed: {}", stderr)))
     }
 }
 
@@ -1641,4 +1686,228 @@ fn substitute_placeholders(template: &str, vars: &HashMap<String, String>) -> St
         out = out.replace(&needle, value);
     }
     out
+}
+
+// ── Provider-side revocation (relayed by the hub) ────────────────────────
+
+/// Metadata `kind` the hub puts on a bot-stream delivery when a provider
+/// (Intuit, Google, ...) revoked a plugin account's authorization on ITS side.
+/// Contract agreed with the hub (all values are strings):
+/// `kind=plugin_auth_revoked`, `slug`, `account_label`, optional `realm_id`,
+/// optional `provider` (display name for the notice).
+pub(crate) const PLUGIN_AUTH_REVOKED_KIND: &str = "plugin_auth_revoked";
+
+/// Owner-visible notice wording when the provider name is not on the wire.
+const UNKNOWN_PROVIDER_LABEL: &str = "the provider";
+
+/// A revocation the hub relayed for one (plugin, account).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PluginAuthRevoked {
+    pub slug: String,
+    pub account_label: String,
+    pub realm_id: Option<String>,
+    pub provider: Option<String>,
+}
+
+/// Recognize a `plugin_auth_revoked` delivery. Stream-agnostic: keyed on the
+/// metadata `kind` alone, so the hub may send it on any bot stream. `None`
+/// for every other message, and for a malformed revoke (no slug or account):
+/// a disconnect the desktop cannot target is logged, never guessed.
+pub(crate) fn parse_plugin_auth_revoked(msg: &comm::CommMessage) -> Option<PluginAuthRevoked> {
+    if msg.metadata.get("kind").map(String::as_str) != Some(PLUGIN_AUTH_REVOKED_KIND) {
+        return None;
+    }
+    let field = |key: &str| {
+        msg.metadata
+            .get(key)
+            .map(|v| v.trim())
+            .filter(|v| !v.is_empty())
+            .map(str::to_string)
+    };
+    let (Some(slug), Some(account_label)) = (field("slug"), field("account_label")) else {
+        warn!(
+            msg_id = %msg.id,
+            keys = ?msg.metadata.keys().collect::<Vec<_>>(),
+            "plugin_auth_revoked without slug/account_label; ignoring"
+        );
+        return None;
+    };
+    Some(PluginAuthRevoked {
+        slug,
+        account_label,
+        realm_id: field("realm_id"),
+        provider: field("provider"),
+    })
+}
+
+/// Apply a provider-side revocation locally: drop the (plugin, account)
+/// credentials through the SAME disconnect path the settings UI uses, then
+/// tell the owner in one line. Best-effort throughout: the remote token is
+/// already dead, so every local failure is logged and the notice still fires.
+pub(crate) async fn revoke_plugin_auth(state: &AppState, revoked: &PluginAuthRevoked) {
+    let slug = revoked.slug.as_str();
+    let label = revoked.account_label.as_str();
+    info!(
+        plugin = %slug,
+        account = %label,
+        realm_id = ?revoked.realm_id,
+        "plugin authorization revoked on the provider's side; disconnecting locally"
+    );
+
+    // Every agent that holds this account as a per-account profile.
+    let holders: Vec<db::PluginAccountProfile> = state
+        .store
+        .list_all_plugin_account_profiles()
+        .unwrap_or_else(|e| {
+            warn!(plugin = %slug, error = %e, "revoke: could not list account profiles");
+            Vec::new()
+        })
+        .into_iter()
+        .filter(|p| p.plugin_slug == slug && p.account_label == label)
+        .collect();
+
+    if holders.is_empty() {
+        // Single-account plugin: its credentials live in the plugin's own
+        // global profile, cleared by its logout command.
+        match logout_plugin(state, slug).await {
+            Ok(()) => info!(plugin = %slug, "revoke: plugin logged out"),
+            Err(NeboError::NotFound) | Err(NeboError::Validation(_)) => {
+                info!(plugin = %slug, account = %label, "revoke: no local account matched and the plugin has no logout command; nothing to clear")
+            }
+            Err(e) => warn!(plugin = %slug, error = %e, "revoke: plugin logout failed"),
+        }
+    }
+    for p in &holders {
+        match disconnect_account(state, slug, &p.agent_id, label).await {
+            Ok(()) => info!(plugin = %slug, account = %label, agent = %p.agent_id, "revoke: account disconnected"),
+            Err(e) => warn!(plugin = %slug, account = %label, agent = %p.agent_id, error = %e, "revoke: account disconnect failed"),
+        }
+    }
+
+    // The plugin tool's auth view must reflect the loss right away.
+    state.plugin_store.update_auth_status(slug).await;
+    state.tools.refresh_definition("plugin").await;
+
+    let display = state
+        .plugin_store
+        .get_manifest(slug)
+        .map(|m| m.name)
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(|| slug.to_string());
+    let provider = revoked
+        .provider
+        .as_deref()
+        .unwrap_or(UNKNOWN_PROVIDER_LABEL);
+    let title = format!("{display} was disconnected");
+    let body = format!(
+        "{display} was disconnected from {provider}'s side; reconnect in Settings, Plugins when you are ready."
+    );
+    // Fresh id per occurrence so a later revoke notifies again instead of
+    // being folded into an already-read row (same rule as the reauth notice).
+    let notif_id = uuid::Uuid::new_v4().to_string();
+    let agent_id = holders.first().map(|p| p.agent_id.as_str());
+    tools::owner_notify::emit(
+        &state.store,
+        Some(&|ev, payload| state.hub.broadcast(ev, payload)),
+        &tools::owner_notify::OwnerNotification {
+            id: &notif_id,
+            kind: "warning",
+            title: &title,
+            body: Some(&body),
+            action_url: Some(PLUGINS_SETTINGS_PATH),
+            agent_id,
+            loud: true,
+        },
+    );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn req() -> AccountLoginRequest {
+        AccountLoginRequest {
+            agent_id: "agent-1".into(),
+            account_label: "work@acme.com".into(),
+            account_number: String::new(),
+        }
+    }
+
+    #[test]
+    fn a_single_account_plugin_runs_its_shared_login_instead_of_refusing() {
+        assert!(login_profile(None, "quickbooks", req()).is_none());
+    }
+
+    fn hub_delivery(kind: &str, extra: &[(&str, &str)]) -> comm::CommMessage {
+        let mut metadata = HashMap::new();
+        metadata.insert("kind".to_string(), kind.to_string());
+        for (k, v) in extra {
+            metadata.insert((*k).to_string(), (*v).to_string());
+        }
+        comm::CommMessage {
+            id: "01J0000000000000000000ABCD".into(),
+            from: "hub".into(),
+            to: String::new(),
+            topic: "account".into(),
+            conversation_id: "conv-1".into(),
+            msg_type: comm::CommMessageType::Message,
+            content: r#"{"text":""}"#.into(),
+            metadata,
+            timestamp: 0,
+            human_injected: false,
+            human_id: None,
+            task_id: None,
+            correlation_id: None,
+            task_status: None,
+            artifacts: vec![],
+            error: None,
+            attachments: vec![],
+        }
+    }
+
+    /// The hub contract: kind=plugin_auth_revoked + slug + account_label,
+    /// realm_id and provider optional. Mutation check: dropping the `kind`
+    /// guard makes the second assertion fail; dropping the slug requirement
+    /// makes the third fail.
+    #[test]
+    fn plugin_auth_revoked_is_recognized_from_a_hub_delivery() {
+        let msg = hub_delivery(
+            PLUGIN_AUTH_REVOKED_KIND,
+            &[
+                ("slug", "quickbooks"),
+                ("account_label", "Acme Co"),
+                ("realm_id", "9130357"),
+                ("provider", "Intuit"),
+            ],
+        );
+        assert_eq!(
+            parse_plugin_auth_revoked(&msg),
+            Some(PluginAuthRevoked {
+                slug: "quickbooks".into(),
+                account_label: "Acme Co".into(),
+                realm_id: Some("9130357".into()),
+                provider: Some("Intuit".into()),
+            })
+        );
+
+        let stop = hub_delivery("stop", &[("slug", "quickbooks"), ("account_label", "Acme Co")]);
+        assert_eq!(parse_plugin_auth_revoked(&stop), None, "other kinds are not revokes");
+
+        let no_slug = hub_delivery(PLUGIN_AUTH_REVOKED_KIND, &[("account_label", "Acme Co")]);
+        assert_eq!(parse_plugin_auth_revoked(&no_slug), None, "a revoke without a slug cannot be targeted");
+
+        let minimal = hub_delivery(PLUGIN_AUTH_REVOKED_KIND, &[("slug", "gws"), ("account_label", " work@acme.com ")]);
+        let parsed = parse_plugin_auth_revoked(&minimal).expect("optional fields may be absent");
+        assert_eq!(parsed.account_label, "work@acme.com", "labels are trimmed");
+        assert_eq!(parsed.realm_id, None);
+        assert_eq!(parsed.provider, None);
+    }
+
+    #[test]
+    fn a_multi_account_plugin_gets_its_own_profile_dir() {
+        let p = login_profile(Some("GWS_CONFIG_DIR".into()), "gws", req()).expect("profile");
+        assert_eq!(p.env_name, "GWS_CONFIG_DIR");
+        assert!(p.config_dir.contains("gws"), "{}", p.config_dir);
+        assert_eq!(p.agent_id, "agent-1");
+    }
 }
