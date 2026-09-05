@@ -1340,14 +1340,14 @@
         </label>
         <div class="flex flex-col sm:flex-row gap-2">
           <select class="select select-sm select-bordered flex-1" bind:value={hookWorkflow}>
-            <option value="">{$t('agentSettings.webhookTargetChat')}</option>
+            <option value="">{$t('agentSettings.webhookTargetChat', { values: { name: agent?.name ?? '' } })}</option>
             {#each workflowEntries as [wfName] (wfName)}
               <option value={wfName}>{$t('agentSettings.webhookTargetWorkflow', { values: { name: wfName } })}</option>
             {/each}
           </select>
           <button class="btn btn-sm btn-primary" onclick={mintWebhook} disabled={!hookLabel.trim() || !!hookBusy}>{hookBusy === 'mint' ? $t('agentSettings.webhookMinting') : $t('agentSettings.webhookMint')}</button>
         </div>
-        <div class="text-xs text-base-content/50">{$t('agentSettings.webhookTargetHint')}</div>
+        <div class="text-xs text-base-content/50">{$t('agentSettings.webhookTargetHint', { values: { name: agent?.name ?? '' } })}</div>
       </div>
 
       {#if minted}
@@ -1383,7 +1383,7 @@
               <div class="flex-1 min-w-0">
                 <div class="text-sm font-medium truncate">{h.label}</div>
                 <div class="text-xs text-base-content/50 truncate">
-                  {h.workflowName ? $t('agentSettings.webhookTargetWorkflow', { values: { name: h.workflowName } }) : $t('agentSettings.webhookTargetChat')}
+                  {h.workflowName ? $t('agentSettings.webhookTargetWorkflow', { values: { name: h.workflowName } }) : $t('agentSettings.webhookTargetChat', { values: { name: agent?.name ?? '' } })}
                   · <span class="font-mono">{h.keyPrefix}…</span>
                   · {h.lastUsedAt ? $t('agentSettings.webhookLastUsed', { values: { when: new Date(h.lastUsedAt).toLocaleString() } }) : $t('agentSettings.webhookNeverUsed')}
                 </div>
