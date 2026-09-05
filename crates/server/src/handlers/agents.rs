@@ -207,6 +207,18 @@ pub(crate) fn thread_preview(newest_last: &[db::models::ChatMessage]) -> ThreadP
     }
 }
 
+/// The latest thread's status line for an employee, or None when it has no
+/// thread yet. A read failure is logged, not swallowed into "no preview".
+fn latest_thread_status(store: &db::Store, agent_id: &str) -> Option<ThreadPreview> {
+    match store.get_latest_agent_chat(agent_id) {
+        Ok(chat) => chat.map(|c| thread_status(store, &c.id)),
+        Err(e) => {
+            warn!(error = %e, agent_id, "roster: could not read the latest thread");
+            None
+        }
+    }
+}
+
 /// The status line of one stored thread.
 fn thread_status(store: &db::Store, chat_id: &str) -> ThreadPreview {
     let rows = store
@@ -294,12 +306,7 @@ pub async fn list_agents(
             })
             .unwrap_or_else(|| name.clone());
 
-        let latest_thread = state
-            .store
-            .get_latest_agent_chat(&agent_id)
-            .ok()
-            .flatten()
-            .map(|c| thread_status(&state.store, &c.id));
+        let latest_thread = latest_thread_status(&state.store, &agent_id);
 
         let mut entry = serde_json::json!({
             "id": agent_id,
@@ -373,15 +380,19 @@ pub async fn list_agents(
         agents.push(entry);
     }
 
-    // DB agents with no loadable filesystem counterpart (broken AGENT.md /
-    // agent.json, or files deleted out from under the DB). Their duties still
-    // run from agent_workflows, so hiding them made unmanageable "ghost"
-    // employees — surface them flagged loadError so they can be disabled or
-    // deleted from the UI.
+    // DB agents with no loadable filesystem counterpart. Two very different
+    // cases share this branch: an employee created in the database with no
+    // files at all (the agent tool's "database only" employees — a normal,
+    // working employee), and one whose files exist but failed to load
+    // (broken AGENT.md / agent.json, or files deleted out from under the DB).
+    // Only the second is broken, and only it is flagged loadError; both get
+    // the same thread status line as every other row on the roster.
     for r in &db_rows {
         if matched_db_ids.contains(&r.id) {
             continue;
         }
+        let latest_thread = latest_thread_status(&state.store, &r.id);
+        let files_expected = r.napp_path.as_deref().is_some_and(|p| !p.is_empty());
         agents.push(serde_json::json!({
             "id": r.id,
             "name": r.name,
@@ -404,7 +415,13 @@ pub async fn list_agents(
             // then showed no drill affordance until a click resolved it.
             "isolated": isolated_from_frontmatter(&r.frontmatter),
             "needsSetup": false,
-            "loadError": "agent files failed to load — this employee cannot run correctly; delete it or repair its files",
+            "latestPreview": latest_thread.as_ref().and_then(|t| t.preview.clone()),
+            "restarted": latest_thread.as_ref().is_some_and(|t| t.restarted),
+            "loadError": if files_expected {
+                serde_json::Value::String("agent files failed to load — this employee cannot run correctly; delete it or repair its files".into())
+            } else {
+                serde_json::Value::Null
+            },
         }));
     }
 
