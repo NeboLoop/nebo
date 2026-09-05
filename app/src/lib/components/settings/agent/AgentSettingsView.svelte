@@ -1334,9 +1334,12 @@
 
       <div class="rounded-lg border border-base-300 bg-base-100 p-3.5 flex flex-col gap-2">
         <div class="text-sm font-medium">{$t('agentSettings.webhookNew')}</div>
+        <label class="flex flex-col gap-1">
+          <span class="text-xs text-base-content/60">{$t('agentSettings.webhookLabelField')}</span>
+          <input class="input input-sm input-bordered w-full" placeholder={$t('agentSettings.webhookLabelPlaceholder')} bind:value={hookLabel} onkeydown={(e) => { if (e.key === 'Enter') mintWebhook(); }} />
+        </label>
         <div class="flex flex-col sm:flex-row gap-2">
-          <input class="input input-sm input-bordered flex-1" placeholder={$t('agentSettings.webhookLabelPlaceholder')} bind:value={hookLabel} onkeydown={(e) => { if (e.key === 'Enter') mintWebhook(); }} />
-          <select class="select select-sm select-bordered sm:w-64" bind:value={hookWorkflow}>
+          <select class="select select-sm select-bordered flex-1" bind:value={hookWorkflow}>
             <option value="">{$t('agentSettings.webhookTargetChat')}</option>
             {#each workflowEntries as [wfName] (wfName)}
               <option value={wfName}>{$t('agentSettings.webhookTargetWorkflow', { values: { name: wfName } })}</option>
@@ -1401,10 +1404,13 @@
       </div>
       <div class="rounded-lg border border-base-300 bg-base-100 p-3.5 flex flex-col gap-2">
         <div class="text-sm font-medium">{$t('agentSettings.apiKeyNew')}</div>
-        <div class="flex flex-col sm:flex-row gap-2">
-          <input class="input input-sm input-bordered flex-1" placeholder={$t('agentSettings.apiKeyLabelPlaceholder')} bind:value={keyLabel} onkeydown={(e) => { if (e.key === 'Enter') mintApiKey(); }} />
-          <button class="btn btn-sm btn-primary" onclick={mintApiKey} disabled={!keyLabel.trim() || !!keyBusy}>{keyBusy === 'mint' ? $t('agentSettings.webhookMinting') : $t('agentSettings.webhookMint')}</button>
-        </div>
+        <label class="flex flex-col gap-1">
+          <span class="text-xs text-base-content/60">{$t('agentSettings.apiKeyLabelField')}</span>
+          <div class="flex gap-2">
+            <input class="input input-sm input-bordered flex-1" placeholder={$t('agentSettings.apiKeyLabelPlaceholder')} bind:value={keyLabel} onkeydown={(e) => { if (e.key === 'Enter') mintApiKey(); }} />
+            <button class="btn btn-sm btn-primary" onclick={mintApiKey} disabled={!keyLabel.trim() || !!keyBusy}>{keyBusy === 'mint' ? $t('agentSettings.webhookMinting') : $t('agentSettings.webhookMint')}</button>
+          </div>
+        </label>
         {#if workflowEntries.length > 0}
           <div class="flex flex-wrap items-center gap-2 text-xs">
             <span class="text-base-content/50">{$t('agentSettings.apiKeyWorkflows')}</span>
