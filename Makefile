@@ -40,7 +40,7 @@ MAC_BIN_DIR = $(if $(MAC_TARGET),target/$(MAC_TARGET)/release,$(TAURI_RELEASE))
 # DMG arch suffix: amd64 for the x86_64 cross, else the host arch (arm64).
 DMG_ARCH = $(if $(MAC_TARGET),$(if $(filter x86_64-apple-darwin,$(MAC_TARGET)),amd64,arm64),$(UNAME_M))
 
-.PHONY: help dev run build build-desktop test test-live test-live-fast test-tools test-cache-prefix test-repo test-repo-probes test-busy-session clean clean-cache seed-plugins stage-obscura stage-ripgrep bundle-napps plugin-status release release-darwin release-linux release-windows release-macos release-macos-amd64 publish-macos app-bundle dmg notarize install github-release gen
+.PHONY: help dev run build build-desktop test audit test-live test-live-fast test-tools test-cache-prefix test-repo test-repo-probes test-busy-session clean clean-cache seed-plugins stage-obscura stage-ripgrep bundle-napps plugin-status release release-darwin release-linux release-windows release-macos release-macos-amd64 publish-macos app-bundle dmg notarize install github-release gen
 
 # Default target
 help:
@@ -55,6 +55,7 @@ help:
 	@echo "  make build          - Build headless CLI binary"
 	@echo "  make build-desktop  - Build Tauri desktop app"
 	@echo "  make test           - Run all tests (unit, offline)"
+	@echo "  make audit          - Dependency vulnerability scan (cargo audit + pnpm audit); fails on high/critical"
 	@echo "  make test-live      - Run the live fixture suite against a running server (LLM-judged)"
 	@echo "  make test-live-fast - Same, program checks only (no judge, no claude CLI)"
 	@echo "  make test-tools     - Deterministic tool cases over /agent/mcp (no model)"
@@ -131,6 +132,13 @@ build-desktop: bundle-napps
 	$(MAKE) stage-ripgrep OBSCURA_TRIPLE=$(MAC_OBSCURA_TRIPLE)
 	@cd app && pnpm build
 	cargo tauri build $(MAC_TARGET_FLAG)
+
+# ─── Dependency audit ────────────────────────────────────────────────────────
+# cargo audit over the workspace + pnpm audit --audit-level=high in app/.
+# Fails on high/critical findings. Runs before every release on house
+# machines (dev box or the stadium runner) — never on GitHub-hosted runners.
+audit:
+	@./scripts/audit.sh
 
 test:
 	@echo "Running tests..."
@@ -596,7 +604,7 @@ $(NEBO_CLI):
 test-gate: $(NEBO_CLI)
 	@curl -sf -m 3 http://$(TEST_SERVER)/health >/dev/null \
 		|| { echo "No Nebo on $(TEST_SERVER) — start one with 'make dev' first."; exit 1; }
-	$(NEBO_CLI) test run --suite suites/smoke.yaml --no-judge --server $(TEST_SERVER) $(if $(MODEL),--model $(MODEL),)
+	$(NEBO_CLI) test run --suite suites/smoke.yaml --no-judge --runs 3 --server $(TEST_SERVER) $(if $(MODEL),--model $(MODEL),)
 	$(NEBO_CLI) test run --suite suites/error-correction.yaml --no-judge --server $(TEST_SERVER) $(if $(MODEL),--model $(MODEL),)
 
 # What the nightly lane runs: judged, three runs, and the correction rate must

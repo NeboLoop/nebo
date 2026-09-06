@@ -816,7 +816,9 @@
 		"restarting": "Restarting…",
 		"relaunchToUpdate": "Relaunch to update",
 		"installAndRestart": "Install & Restart",
-		"openSourceLicenses": "Open Source Licenses"
+		"openSourceLicenses": "Open Source Licenses",
+		"contactSupport": "Contact support",
+		"contactSupportBlurb": "Questions or problems? Email us and a person replies within one business day."
 	},
 	"settingsAdvisors": {
 		"title": "Advisors",

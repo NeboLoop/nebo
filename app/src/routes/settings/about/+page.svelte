@@ -3,6 +3,7 @@
   import { onMount } from 'svelte';
   import { t } from 'svelte-i18n';
   import ExternalLink from 'lucide-svelte/icons/external-link';
+  import Mail from 'lucide-svelte/icons/mail';
   import ChevronDown from 'lucide-svelte/icons/chevron-down';
   import { updateState, checkForUpdates, setApplying } from '$lib/stores/update';
   import { addToast } from '$lib/stores/toast';
@@ -114,6 +115,21 @@
       </a>
     {/each}
   </div>
+</div>
+
+<!-- Contact support -->
+<div class="mb-6">
+  <h3 class="text-sm font-semibold mb-3">{$t('settingsAbout.contactSupport')}</h3>
+  <a
+    href="mailto:support@neboai.com"
+    class="flex items-center justify-between gap-3 p-3 rounded-lg border border-base-content/5 bg-base-100 cursor-pointer hover:border-base-content/15 transition-colors no-underline"
+  >
+    <div class="flex flex-col gap-0.5 min-w-0">
+      <span class="text-sm font-medium">support@neboai.com</span>
+      <span class="text-xs text-base-content/70">{$t('settingsAbout.contactSupportBlurb')}</span>
+    </div>
+    <Mail class="w-3.5 h-3.5 shrink-0 text-base-content/50" />
+  </a>
 </div>
 
 <!-- Open Source Licenses -->

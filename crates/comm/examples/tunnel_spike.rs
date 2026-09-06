@@ -8,7 +8,8 @@ async fn main() {
     let mut args = std::env::args().skip(1);
     let hub_url = args.next().expect("usage: tunnel_spike <hub_ws_url> <local_addr>");
     let local_addr = args.next().expect("usage: tunnel_spike <hub_ws_url> <local_addr>");
-    match nebo_comm::tunnel::run(&hub_url, "spike-token", &local_addr).await {
+    let online = std::sync::atomic::AtomicBool::new(false);
+    match nebo_comm::tunnel::run(&hub_url, "spike-token", &local_addr, &online).await {
         Ok(()) => println!("tunnel closed cleanly"),
         Err(e) => eprintln!("tunnel error: {e}"),
     }

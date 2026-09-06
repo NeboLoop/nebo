@@ -454,7 +454,12 @@ pub struct AgentTokenBudget {
 }
 
 fn default_agent_token_max() -> u32 {
-    4096
+    // 0 = no per-activity output budget; enforcement is opt-in, the same
+    // rule the workflow crate settled on. 4096 here capped every automation
+    // that never declared a budget: a prospecting run drafting ten messages
+    // was killed at 4,476 output tokens and the owner saw "Ran out of room
+    // and stopped" on two employees (2026-09-05).
+    0
 }
 
 impl Default for AgentTokenBudget {

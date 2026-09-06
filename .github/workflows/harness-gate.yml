@@ -135,7 +135,7 @@ jobs:
 
       - name: Smoke suite, program checks
         if: github.event_name != 'schedule'
-        run: ./target/debug/nebo-cli test run --suite suites/smoke.yaml --no-judge --model "$GATE_MODEL" --server "localhost:$GATE_PORT" --output traces/smoke
+        run: ./target/debug/nebo-cli test run --suite suites/smoke.yaml --no-judge --runs 3 --model "$GATE_MODEL" --server "localhost:$GATE_PORT" --output traces/smoke
 
       - name: Error-correction suite, program checks
         if: github.event_name != 'schedule'
@@ -164,7 +164,7 @@ jobs:
         if: github.event_name == 'schedule'
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.HARNESS_CLAUDE_OAUTH_TOKEN }}
-        run: ./target/debug/nebo-cli test run --suite suites/smoke.yaml --grader claude-opus-5 --model "$GATE_MODEL" --server "localhost:$GATE_PORT" --output traces/smoke
+        run: ./target/debug/nebo-cli test run --suite suites/smoke.yaml --grader claude-opus-5 --runs 3 --model "$GATE_MODEL" --server "localhost:$GATE_PORT" --output traces/smoke
 
       - name: Keep the traces and the server log on the VM
         if: always()

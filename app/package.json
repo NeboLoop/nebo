@@ -18,7 +18,7 @@
   "devDependencies": {
     "@sveltejs/adapter-auto": "^7.0.1",
     "@sveltejs/adapter-static": "^3.0.10",
-    "@sveltejs/kit": "^2.57.0",
+    "@sveltejs/kit": "^2.70.3",
     "@sveltejs/vite-plugin-svelte": "^7.0.0",
     "@tailwindcss/typography": "^0.5.19",
     "@tailwindcss/vite": "^4.2.4",
@@ -28,7 +28,7 @@
     "tailwindcss": "^4.2.4",
     "tsx": "^4.21.0",
     "typescript": "^6.0.3",
-    "vite": "^8.0.7",
+    "vite": "^8.2.2",
     "vitest": "^4.1.8"
   },
   "dependencies": {
@@ -47,11 +47,11 @@
     "docx-preview": "^0.3.7",
     "lucide-svelte": "^1.0.1",
     "marked": "^18.0.3",
-    "pdfjs-dist": "^6.0.227",
+    "pdfjs-dist": "^6.3.289",
     "shiki": "^4.2.0",
     "svelte-i18n": "^4.0.1",
     "tiptap-markdown": "^0.9.0",
-    "xlsx": "^0.18.5"
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
   },
   "pnpm": {
     "onlyBuiltDependencies": [

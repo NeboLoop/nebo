@@ -264,6 +264,17 @@ Agent runs use `tokio_util::sync::CancellationToken` for graceful cancellation â
 
 ---
 
+## Dependency Scanning
+
+Third-party dependencies are scanned for known vulnerabilities before every release with `make audit`, run on house machines (a developer box or the self-hosted stadium runner), never on GitHub-hosted runners:
+
+- `cargo audit` over the Rust workspace (`Cargo.lock` against the RustSec advisory database)
+- `pnpm audit --audit-level=high` in `app/`
+
+The target fails on any high or critical finding (and on RustSec advisories that carry no CVSS score, since unscored is not the same as low). RustSec unmaintained/unsound/yanked warnings are printed but do not block a release. A release does not ship with a failing audit unless the finding has been reviewed and recorded as not exploitable in our usage.
+
+---
+
 ## Reporting Security Issues
 
 If you discover a security vulnerability, please report it responsibly:
