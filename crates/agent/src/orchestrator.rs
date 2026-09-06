@@ -260,6 +260,7 @@ impl Orchestrator {
             Some(&req.description),
             Some("subagent"),
             0,
+            None,
         );
 
         let task_prefix = task_prefix_for_type(&agent_type);
@@ -556,6 +557,7 @@ impl Orchestrator {
             Some("DAG orchestration"),
             Some("subagent"),
             0,
+            None,
         );
 
         // 4. Shared cancellation for the entire DAG — derived from parent so
@@ -599,6 +601,7 @@ impl Orchestrator {
                     graph.nodes.get(&task_id).map(|n| n.description.as_str()),
                     Some("subagent"),
                     0,
+                    Some(&parent_task_id),
                 );
 
                 graph.mark_running(&task_id);
@@ -833,6 +836,7 @@ impl Orchestrator {
                 Some(&description),
                 Some("subagent"),
                 0,
+                None,
             );
 
             // Register active
