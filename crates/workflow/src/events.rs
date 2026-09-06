@@ -60,12 +60,12 @@ impl CaseRoute {
 /// idempotency key is the event's identity — source, payload, and the
 /// second it was emitted — so a re-emit of the same moment is a duplicate
 /// while a genuine second submission minutes later is a new signal.
-fn route_case(store: &db::Store, sub: &EventSubscription, route: &CaseRoute, def_json: &str, event: &Event) {
-    let Some(key_value) = crate::cases::key_at(&event.payload, &route.key_path) else {
-        warn!(agent = %sub.agent_source, binding = %sub.binding_name, event_source = %event.source, key = %route.key_path, "case event: payload has no key at that path");
-        return;
+fn route_case(store: &db::Store, sub: &EventSubscription, route: &CaseRoute, def_json: &str, event: &Event) -> bool {
+    let Some((key_type, key_value)) = crate::cases::resolve_key(&event.payload, &route.key_path) else {
+        warn!(agent = %sub.agent_source, binding = %sub.binding_name, event_source = %event.source, key = %route.key_path, "case event: payload names nobody at those paths; running as a plain event");
+        return false;
     };
-    let key_type = route.key_path.rsplit('.').next().unwrap_or("key");
+    let key_type = key_type.as_str();
     let b = crate::cases::CaseBinding {
         agent_id: &sub.agent_source,
         binding_name: &sub.binding_name,
@@ -86,6 +86,7 @@ fn route_case(store: &db::Store, sub: &EventSubscription, route: &CaseRoute, def
         Ok(routed) => info!(agent = %sub.agent_source, binding = %sub.binding_name, event_source = %event.source, ?routed, "case event routed"),
         Err(e) => warn!(agent = %sub.agent_source, binding = %sub.binding_name, event_source = %event.source, error = %e, "case event routing failed"),
     }
+    true
 }
 
 /// Dispatches events to matching workflow subscriptions.
@@ -167,8 +168,11 @@ impl EventDispatcher {
                     // holds one case per person and this event reaches it
                     // (or opens it). No run starts here.
                     if let (Some(route), Some(def_json)) = (&sub.case, &sub.definition_json) {
-                        route_case(&store, &sub, route, def_json, &event);
-                        continue;
+                        if route_case(&store, &sub, route, def_json, &event) {
+                            continue;
+                        }
+                        // The payload named nobody: fall through to today's
+                        // behavior, a run per event, rather than lose it.
                     }
                     let mut inputs = sub.default_inputs.clone();
                     // Merge event payload into inputs

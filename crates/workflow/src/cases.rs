@@ -31,16 +31,14 @@ pub struct CaseBinding<'a> {
 }
 
 impl<'a> CaseBinding<'a> {
-    /// From a binding that declares `case`. The key type is the leaf of the
-    /// key path (`customer.email` → `email`).
+    /// From a binding that declares `case`.
     pub fn from_binding(
         agent_id: &'a str,
         binding_name: &'a str,
         definition_json: &'a str,
         binding: &napp::agent::WorkflowBinding,
-    ) -> Option<(Self, String)> {
+    ) -> Option<Self> {
         let case = binding.case.as_ref()?;
-        let key_type = case.key.rsplit('.').next().unwrap_or("key").to_string();
         let default_wait_secs = case
             .default_wait
             .as_deref()
@@ -50,13 +48,26 @@ impl<'a> CaseBinding<'a> {
         if !base_inputs.is_object() {
             base_inputs = serde_json::json!({});
         }
-        Some((Self { agent_id, binding_name, definition_json, base_inputs, default_wait_secs }, key_type))
+        Some(Self { agent_id, binding_name, definition_json, base_inputs, default_wait_secs })
     }
 }
 
-/// `customer.email` → the string at that dotted path, trimmed and lowercased
-/// so `Alma@X.com` and `alma@x.com` are one key.
-pub fn key_at(payload: &serde_json::Value, path: &str) -> Option<String> {
+/// The person a payload names, per the binding's key spec. The spec is one
+/// or more dotted paths, comma-separated, tried in order: the first present
+/// wins, and its leaf becomes the key type (`customer.email` → `email`).
+/// Values are trimmed and lowercased so `Alma@X.com` and `alma@x.com` are
+/// one key. None means this payload does not name anyone.
+pub fn resolve_key(payload: &serde_json::Value, spec: &str) -> Option<(String, String)> {
+    for path in spec.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+        if let Some(value) = key_at(payload, path) {
+            let key_type = path.rsplit('.').next().unwrap_or("key").to_string();
+            return Some((key_type, value));
+        }
+    }
+    None
+}
+
+fn key_at(payload: &serde_json::Value, path: &str) -> Option<String> {
     let mut cur = payload;
     for seg in path.split('.').filter(|s| !s.is_empty()) {
         cur = cur.get(seg)?;
