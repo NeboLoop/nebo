@@ -31,14 +31,15 @@ fn mime_for_path(p: &std::path::Path) -> &'static str {
     }
 }
 
-/// LoopTool provides NeboAI communication capabilities.
-/// Resources: dm, channel, loop, topic, workroom.
+/// LoopTool provides NeboAI hub communication capabilities.
+/// Resources: dm, channel, loop, topic, workroom (alias of the `team` tool).
 pub struct LoopTool {
     comm: Arc<dyn CommPlugin>,
-    /// Workroom registry (rooms are agent-created; the registry is local).
+    /// Team registry — a channel id that names a local team routes there.
     store: Option<Arc<db::Store>>,
-    /// ClientHub broadcast — the sidebar learns about a new room live.
-    broadcast: Option<crate::web_tool::Broadcaster>,
+    /// The `team` tool the `workroom` resource and team-id channel actions
+    /// alias to (one implementation, two doors).
+    team: crate::team_tool::TeamTool,
 }
 
 /// Error text for a failed NeboAI hub call. Names the hub, the action, and
@@ -67,12 +68,54 @@ impl LoopTool {
         comm: Arc<dyn CommPlugin>,
         store: Option<Arc<db::Store>>,
         broadcast: Option<crate::web_tool::Broadcaster>,
+        rail: crate::coworker::CoworkerRailCell,
     ) -> Self {
-        Self {
-            comm,
-            store,
+        let team = crate::team_tool::TeamTool::new(
+            store.clone(),
+            Some(comm.clone()),
             broadcast,
+            rail,
+        );
+        Self { comm, store, team }
+    }
+
+    /// The local team a `channel_id` names (by id, then by name), if any.
+    /// Hub channel ids never match a team id, so hub channels keep working.
+    fn local_team(&self, channel_id: &str) -> Option<db::Team> {
+        let store = self.store.as_ref()?;
+        if channel_id.trim().is_empty() {
+            return None;
         }
+        crate::team::resolve_team(store, channel_id).ok()
+    }
+
+    /// The local teams, one line each, for list answers.
+    fn teams_listing(&self) -> String {
+        let Some(store) = self.store.as_ref() else {
+            return String::new();
+        };
+        let teams = store.list_teams().unwrap_or_default();
+        if teams.is_empty() {
+            return crate::team::no_teams_hint();
+        }
+        let lines: Vec<String> = teams
+            .iter()
+            .map(|t| crate::team_tool::TeamTool::describe(store, t))
+            .collect();
+        format!(
+            "{} team(s) on this Nebo (local; post with team(action: \"send\", team: \"<name>\", text: \"...\"))\n{}",
+            teams.len(),
+            lines.join("\n")
+        )
+    }
+
+    /// The no-hub answer: hub actions need a NeboAI pairing, teams do not.
+    fn not_connected(&self) -> ToolResult {
+        ToolResult::error(format!(
+            "This Nebo is not connected to NeboAI, so no hub loop, channel, or dm action can work. \
+             Teams work locally without a hub. {} Ask the owner to pair this Nebo in Settings > NeboAI for hub features.",
+            self.teams_listing()
+        ))
     }
 
     fn infer_resource(&self, action: &str) -> &str {
@@ -171,12 +214,12 @@ impl LoopTool {
         channel_id: &str,
         names: &[String],
     ) -> (Vec<String>, Vec<String>) {
-        // Workroom members first — the room's own roster outranks hub lookup.
+        // Team members first — a mirrored team's own roster outranks hub lookup.
         let room_members: Vec<db::models::Agent> = self
             .store
             .as_ref()
             .and_then(|store| {
-                let room = store.get_workroom(channel_id).ok().flatten()?;
+                let room = store.get_team_by_hub_channel(channel_id).ok().flatten()?;
                 Some(
                     room.member_agent_ids
                         .iter()
@@ -335,78 +378,23 @@ impl LoopTool {
         }
     }
 
-    /// Workrooms are opened by the employee that owns a task — never by a
-    /// human clicking a form. Create registers the room (channel + registry)
-    /// and tells the caller how to bring coworkers in: posting into the
-    /// channel with mentions IS the invitation, because channel dispatch is
-    /// mention-driven.
+    /// `workroom` is the old name for a team. Every action routes to the
+    /// `team` tool — one implementation, two doors — so transcripts that
+    /// recorded loop(resource: "workroom", action: "create") still work.
     async fn handle_workroom(&self, input: &serde_json::Value, ctx: &ToolContext) -> ToolResult {
         let action = input["action"].as_str().unwrap_or("");
-        if action != "create" {
-            return ToolResult::error(format!(
-                "Action {:?} not available on workroom. Available: create. \
-                 To talk in a room, use loop(resource: \"channel\", action: \"send\", \
-                 channel_id: \"...\", text: \"...\", mention: [\"Coworker Name\"]).",
-                action
-            ));
-        }
-        let Some(store) = self.store.as_ref() else {
-            return ToolResult::error(
-                "Workrooms are not available on this install (no local store). Ask the owner; nothing here can create one.",
-            );
-        };
-        let name = input["name"].as_str().unwrap_or("");
-        if name.is_empty() {
-            return ToolResult::error(errors::missing_param(
-                "workroom create",
-                "name",
-                "loop(resource: \"workroom\", action: \"create\", name: \"Website launch\", \
-                 mission: \"Ship the new site\", agents: [\"Writer\", \"Reviewer\"])",
-            ));
-        }
-        let mission = input["mission"].as_str().unwrap_or("");
-
-        // Members: the caller plus whoever it names (names or local ids).
-        let mut member_ids: Vec<String> = Vec::new();
-        let own_id = types::keyparser::extract_agent_id(&ctx.session_key);
-        if !own_id.is_empty() {
-            member_ids.push(own_id);
-        }
-        if let Some(agents) = input["agents"].as_array() {
-            for a in agents {
-                let Some(label) = a.as_str().map(str::trim).filter(|s| !s.is_empty()) else {
-                    continue;
-                };
-                let resolved = store
-                    .get_agent_by_name(label)
-                    .ok()
-                    .flatten()
-                    .map(|ag| ag.id)
-                    .unwrap_or_else(|| label.to_string());
-                if !member_ids.contains(&resolved) {
-                    member_ids.push(resolved);
-                }
-            }
-        }
-
-        match crate::workroom::create(&self.comm, store, name, mission, &member_ids).await {
-            Ok(room) => {
-                if let Some(bc) = self.broadcast.as_ref() {
-                    bc(
-                        crate::workroom::WORKROOM_CREATED_EVENT,
-                        serde_json::json!({ "workroom": room }),
-                    );
-                }
-                ToolResult::ok(format!(
-                    "Workroom \"{}\" is open (channel_id: {}). Start the work by posting the \
-                     mission and mentioning the coworkers who should act: \
-                     loop(resource: \"channel\", action: \"send\", channel_id: \"{}\", \
-                     text: \"...\", mention: [\"Coworker Name\"]). Coworkers answer when \
-                     mentioned; the owner sees the whole room.",
-                    room.name, room.channel_id, room.channel_id
-                ))
-            }
-            Err(e) => ToolResult::error(format!("Failed to create workroom \"{name}\": {e}")),
+        match action {
+            "create" | "ensure" => self.team.create(input, ctx).await,
+            "list" => self.team.list(),
+            "send" => self.team.send(input, ctx).await,
+            "messages" => self.team.messages(input),
+            "members" => self.team.members(input),
+            _ => ToolResult::error(format!(
+                "Action {:?} not available on workroom (a team). Available: create, list, send, \
+                 messages, members — or use the team tool directly: {}",
+                action,
+                crate::team::CREATE_USAGE
+            )),
         }
     }
 
@@ -618,15 +606,24 @@ impl LoopTool {
                 }
             }
             "list" => match self.comm.list_channels().await {
-                Ok(channels) if channels.is_empty() => {
-                    ToolResult::ok("No channels: this Nebo is not a member of any loop channel.".to_string())
-                }
-                Ok(channels) => ToolResult::ok(format!(
-                    "{} channels\n{}",
-                    channels.len(),
-                    serde_json::to_string_pretty(&channels).unwrap_or_default()
+                Ok(channels) if channels.is_empty() => ToolResult::ok(format!(
+                    "No hub channels: this Nebo is not a member of any NeboAI loop channel. \
+                     Teams work locally without one. {}",
+                    self.teams_listing()
                 )),
-                Err(e) => ToolResult::error(hub_error("list channels", &e)),
+                Ok(channels) => ToolResult::ok(format!(
+                    "{} hub channels\n{}\n\n{}",
+                    channels.len(),
+                    serde_json::to_string_pretty(&channels).unwrap_or_default(),
+                    self.teams_listing()
+                )),
+                // The hub failing to list is not the model's error, and the
+                // local teams are still the answer for work on this Nebo.
+                Err(e) => ToolResult::ok(format!(
+                    "Hub channels unavailable — {} Teams work locally without a hub. {}",
+                    hub_error("list channels", &e),
+                    self.teams_listing()
+                )),
             },
             "share" => {
                 let path = input["path"].as_str().unwrap_or("");
@@ -644,15 +641,22 @@ impl LoopTool {
 
         match action {
             "list" => match self.comm.list_loops().await {
-                Ok(loops) if loops.is_empty() => {
-                    ToolResult::ok("No loops: this Nebo is not a member of any loop.".to_string())
-                }
-                Ok(loops) => ToolResult::ok(format!(
-                    "{} loops\n{}",
-                    loops.len(),
-                    serde_json::to_string_pretty(&loops).unwrap_or_default()
+                Ok(loops) if loops.is_empty() => ToolResult::ok(format!(
+                    "No hub loops: this Nebo is not a member of any NeboAI loop. Teams work \
+                     locally without one. {}",
+                    self.teams_listing()
                 )),
-                Err(e) => ToolResult::error(hub_error("list loops", &e)),
+                Ok(loops) => ToolResult::ok(format!(
+                    "{} hub loops\n{}\n\n{}",
+                    loops.len(),
+                    serde_json::to_string_pretty(&loops).unwrap_or_default(),
+                    self.teams_listing()
+                )),
+                Err(e) => ToolResult::ok(format!(
+                    "Hub loops unavailable — {} Teams work locally without a hub. {}",
+                    hub_error("list loops", &e),
+                    self.teams_listing()
+                )),
             },
             "get" => {
                 let loop_id = input["loop_id"].as_str().unwrap_or("");
@@ -757,9 +761,10 @@ impl DynTool for LoopTool {
     }
 
     fn description(&self) -> String {
-        "NeboAI hub communication — loops (workspaces this agent belongs to), channels, workrooms, and topics.\n\
-         USE THIS when: user asks which loops you belong to, wants to post to a channel, open a workroom, or reach a bot on ANOTHER machine through the hub.\n\
-         NOT for local coworkers: to talk to, hand work to, or introduce yourself to another AI employee on THIS computer, use message(resource: \"coworker\", action: \"send\", to: \"<name>\", text: \"...\") — no loop or channel needed.\n\n\
+        "NeboAI hub communication — hub loops (workspaces this agent belongs to), channels, and topics.\n\
+         USE THIS when: user asks which hub loops you belong to, wants to post to a hub channel, or reach a bot on ANOTHER machine through the hub.\n\
+         NOT for local coworkers: to talk to, hand work to, or introduce yourself to another AI employee on THIS computer, use message(resource: \"coworker\", action: \"send\", to: \"<name>\", text: \"...\") — no loop or channel needed.\n\
+         NOT for teams: a team of employees on THIS Nebo is the team tool — team(action: \"create\", name: \"...\", mission: \"...\", agents: [...]) — and works with no hub at all. (loop(resource: \"workroom\", ...) and loop(action: \"create\", ...) are old aliases of it.)\n\n\
          - loop(resource: \"loop\", action: \"list\") — List the loops this agent belongs to\n\
          - loop(resource: \"loop\", action: \"get\", loop_id: \"...\") / members — Loop details / members\n\
          - loop(resource: \"dm\", action: \"send\", to: \"agent-uuid\", text: \"Hello\") — DM a hub bot (on another machine; takes an agent UUID, not a coworker name)\n\
@@ -767,13 +772,13 @@ impl DynTool for LoopTool {
          - loop(resource: \"channel\", action: \"send\", channel_id: \"...\", text: \"...\", mention: [\"Executive Assistant\"]) — Hand off to other AI employees: mentioned employees pick the message up and run\n\
          - loop(resource: \"channel\", action: \"share\", path: \"/abs/path/file.pdf\") — Share a local file into the channel reply\n\
          - loop(resource: \"dm\", action: \"share\", path: \"/abs/path/file.pdf\") — Share a local file in a direct message\n\
-         - loop(resource: \"channel\", action: \"ensure\", name: \"daily-briefing\", description: \"...\") — Create (or get) a broadcast channel (a feed you post into: briefings, digests). To work WITH coworkers on a task, do NOT use this — use workroom create below.\n\
+         - loop(resource: \"channel\", action: \"ensure\", name: \"daily-briefing\", description: \"...\") — Create (or get) a broadcast channel (a feed you post into: briefings, digests). To work WITH coworkers on a task, do NOT use this — create a team.\n\
          - loop(resource: \"channel\", action: \"list\") — List available channels\n\
          - loop(resource: \"channel\", action: \"messages\", channel_id: \"...\", limit: 20) — Read channel messages\n\
          - loop(resource: \"channel\", action: \"members\", channel_id: \"...\") — List channel members\n\
          - loop(resource: \"topic\", action: \"subscribe\", topic: \"news\") / unsubscribe / status\n\
-         - loop(resource: \"workroom\", action: \"create\", name: \"Website launch\", mission: \"...\", agents: [\"Writer\", \"Reviewer\"]) — Open a mission room with coworkers. `agents` is REQUIRED: a room takes at least one named coworker besides you. Every room is NEW — never reuse a name; an existing room's name is an error. After creating, post the mission with mentions; mentioned coworkers respond in the room.\n\n\
-         Use loop for hub channels, workrooms, and cross-machine bots; a coworker on this computer is message(resource: \"coworker\")."
+         - loop(resource: \"workroom\", action: \"create\", name: \"Website launch\", mission: \"...\", agents: [\"Writer\", \"Reviewer\"]) — Old alias of team create; prefer the team tool.\n\n\
+         Use loop for hub channels and cross-machine bots; a team on this Nebo is the team tool; a coworker on this computer is message(resource: \"coworker\")."
             .to_string()
     }
 
@@ -850,15 +855,38 @@ impl DynTool for LoopTool {
                 );
             }
 
+            let action = input["action"].as_str().unwrap_or("");
+
+            // Teams are local: the workroom alias and any channel action whose
+            // channel_id names a team never need the hub.
+            if resource == "workroom" {
+                return self.handle_workroom(&input, ctx).await;
+            }
+            if resource == "channel"
+                && matches!(action, "send" | "messages" | "members")
+                && self.local_team(input["channel_id"].as_str().unwrap_or("")).is_some()
+            {
+                return match action {
+                    "send" => self.team.send(&input, ctx).await,
+                    "messages" => self.team.messages(&input),
+                    _ => self.team.members(&input),
+                };
+            }
+
             // `share` only nominates a local file path (the actual upload is deferred
             // to the chat dispatcher's resolve_comm_attachments at reply time), so it
             // does not need a live connection here. Every other action talks to NeboAI
-            // directly and requires the plugin to be connected.
-            let action = input["action"].as_str().unwrap_or("");
+            // directly and requires the plugin to be connected — except listing,
+            // which still has the local teams to report.
             if action != "share" && !self.comm.is_connected() {
-                return ToolResult::error(
-                    "This Nebo is not connected to NeboAI, so no loop, channel, or dm action can work. Ask the owner to pair it in Settings > NeboAI.",
-                );
+                if action == "list" && matches!(resource.as_str(), "channel" | "loop" | "group") {
+                    return ToolResult::ok(format!(
+                        "No hub loops: this Nebo is not connected to NeboAI. Teams work locally \
+                         without one. {}",
+                        self.teams_listing()
+                    ));
+                }
+                return self.not_connected();
             }
 
             match resource.as_str() {
@@ -868,7 +896,6 @@ impl DynTool for LoopTool {
                 // still send it, and it means the same thing.
                 "loop" | "group" => self.handle_loop(&input).await,
                 "topic" => self.handle_topic(&input).await,
-                "workroom" => self.handle_workroom(&input, ctx).await,
                 other => ToolResult::error(format!(
                     "Resource {:?} not available. Available: dm, channel, loop, topic, workroom",
                     other
@@ -888,7 +915,7 @@ mod tests {
     async fn a_group_call_is_the_loop_call() {
         let comm = Arc::new(comm::LoopbackPlugin::new());
         comm.connect(std::collections::HashMap::new()).await.unwrap();
-        let tool = LoopTool::new(comm, None, None);
+        let tool = LoopTool::new(comm, None, None, crate::coworker::new_rail_cell());
         let ctx = ToolContext::default();
         let group = tool
             .execute_dyn(&ctx, serde_json::json!({"resource": "group", "action": "list"}))
@@ -898,6 +925,59 @@ mod tests {
             .await;
         assert_eq!(group.content, looped.content);
         assert!(!group.content.contains("is now"), "{}", group.content);
+    }
+
+    /// Outside every hub loop, `loop list` and `channel list` still answer —
+    /// with the local teams and the exact create call — and never send the
+    /// model to the marketplace.
+    #[tokio::test]
+    async fn no_hub_loop_lists_local_teams_and_teaches_create() {
+        let path = std::env::temp_dir().join(format!("nebo-loop-tool-{}.db", uuid::Uuid::new_v4()));
+        let store = Arc::new(db::Store::new(&path.to_string_lossy()).expect("store"));
+        let comm = Arc::new(comm::LoopbackPlugin::new());
+        comm.connect(std::collections::HashMap::new()).await.unwrap();
+        let tool = LoopTool::new(comm, Some(store.clone()), None, crate::coworker::new_rail_cell());
+        let ctx = ToolContext::default();
+
+        // Disconnected: listing still works, locally.
+        let disconnected = LoopTool::new(
+            Arc::new(comm::LoopbackPlugin::new()),
+            Some(store.clone()),
+            None,
+            crate::coworker::new_rail_cell(),
+        );
+        let res = disconnected
+            .execute_dyn(&ctx, serde_json::json!({"resource": "loop", "action": "list"}))
+            .await;
+        assert!(!res.is_error, "{}", res.content);
+        assert_eq!(
+            res.content,
+            format!(
+                "No hub loops: this Nebo is not connected to NeboAI. Teams work locally without one. {}",
+                crate::team::no_teams_hint()
+            )
+        );
+        assert!(!res.content.to_lowercase().contains("marketplace"));
+
+        // A local team shows up in both listings, hub or not.
+        store
+            .create_team("t-1", "Operations", "Run the office", &["a".into(), "b".into()], "a", None)
+            .unwrap();
+        let res = tool
+            .execute_dyn(&ctx, serde_json::json!({"resource": "channel", "action": "list"}))
+            .await;
+        assert!(!res.is_error, "{}", res.content);
+        assert!(res.content.contains("Operations (id: t-1)"), "{}", res.content);
+
+        // The workroom alias creates a team without any hub.
+        let res = tool
+            .execute_dyn(
+                &ctx,
+                serde_json::json!({"resource": "workroom", "action": "create", "name": "Solo"}),
+            )
+            .await;
+        assert!(res.is_error);
+        assert!(res.content.contains("at least two employees"), "{}", res.content);
     }
 
     #[test]

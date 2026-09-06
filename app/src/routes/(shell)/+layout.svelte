@@ -20,7 +20,7 @@
   import CategoryRail, { hasCategoryRail } from '$lib/components/marketplace/CategoryRail.svelte';
   import ProductDetail from '$lib/components/marketplace/ProductDetail.svelte';
   import CoworkerThreadView from '$lib/components/chat/CoworkerThreadView.svelte';
-  import WorkroomView from '$lib/components/workrooms/WorkroomView.svelte';
+  import TeamView from '$lib/components/teams/TeamView.svelte';
   import AgentSettingsModal from '$lib/components/settings/agent/AgentSettingsModal.svelte';
   import ConfirmModal from '$lib/components/settings/ConfirmModal.svelte';
   import NewEmployeeModal from '$lib/components/NewEmployeeModal.svelte';
@@ -180,36 +180,36 @@
     marketDetail = null;
     market = { ...MARKET_HOME, kind };
   }
-  // ── Workrooms: mission rooms where the owner and several employees share
-  // one conversation (a room IS a loop channel; the hub owns the history).
-  // `?room=<channelId>` opens a room, `?room=new` is the create form.
-  let workrooms = $state<import('$lib/api/neboComponents').Workroom[]>([]);
-  // Live recency: a room row rises within its section when its channel talks.
-  let roomActivity = $state<Record<string, number>>({});
-  async function loadWorkrooms() {
+  // ── Teams: local groups of employees that share one mission and one
+  // conversation (the thread lives on this Nebo; a hub is only a mirror).
+  // `?team=<id>` opens a team.
+  let teams = $state<import('$lib/api/neboComponents').Team[]>([]);
+  // Live recency: a team row rises within its section when it talks.
+  let teamActivity = $state<Record<string, number>>({});
+  async function loadTeams() {
     try {
       const api = await import('$lib/api/nebo');
-      const resp = await api.listWorkrooms();
-      workrooms = resp?.workrooms ?? [];
+      const resp = await api.listTeams();
+      teams = resp?.teams ?? [];
     } catch {
       /* section simply stays absent */
     }
   }
-  const roomParam = $derived($page.url.searchParams.get('room'));
-  const openRoomObj = $derived(workrooms.find((w) => w.channelId === roomParam) ?? null);
-  const sortedWorkrooms = $derived(
-    [...workrooms].sort(
+  const teamParam = $derived($page.url.searchParams.get('team'));
+  const openTeamObj = $derived(teams.find((w) => w.id === teamParam) ?? null);
+  const sortedTeams = $derived(
+    [...teams].sort(
       (a, b) =>
-        (roomActivity[b.channelId] ?? b.createdAt * 1000) -
-        (roomActivity[a.channelId] ?? a.createdAt * 1000)
+        (teamActivity[b.id] ?? b.createdAt * 1000) -
+        (teamActivity[a.id] ?? a.createdAt * 1000)
     )
   );
-  const openRoom = (id: string) => setParams((p) => p.set('room', id));
-  const closeRoom = () => setParams((p) => p.delete('room'));
+  const openTeam = (id: string) => setParams((p) => p.set('team', id));
+  const closeTeam = () => setParams((p) => p.delete('team'));
   // First two members for the row's stacked-avatars glyph, in their roster
-  // colors — the room row previews who's inside.
-  const roomFaces = (room: { memberAgentIds: string[] }) =>
-    room.memberAgentIds
+  // colors — the team row previews who's on it.
+  const teamFaces = (team: { memberAgentIds: string[] }) =>
+    team.memberAgentIds
       .map((id) => allAgents.find((a) => a.id === id))
       .filter((a): a is (typeof allAgents)[number] => !!a)
       .slice(0, 2)
@@ -218,29 +218,29 @@
         return { initial: a.initial, cls: `${ac.bgClass} ${ac.inkClass}` };
       });
 
-  // Room housekeeping: right-click → Remove forgets the registration (the
-  // conversation history stays on the hub); confirm first — it's an audit
-  // surface leaving the sidebar.
+  // Team housekeeping: right-click → Remove forgets the team (its
+  // conversation history stays); confirm first — it's an audit surface
+  // leaving the sidebar.
   let newEmployeeOpen = $state(false);
-  let roomCtxMenu = $state<{ x: number; y: number; channelId: string } | null>(null);
-  let removeRoom = $state<import('$lib/api/neboComponents').Workroom | null>(null);
-  let removeRoomBusy = $state(false);
-  function handleRoomContext(e: MouseEvent, channelId: string) {
+  let teamCtxMenu = $state<{ x: number; y: number; id: string } | null>(null);
+  let removeTeamObj = $state<import('$lib/api/neboComponents').Team | null>(null);
+  let removeTeamBusy = $state(false);
+  function handleTeamContext(e: MouseEvent, id: string) {
     e.preventDefault();
-    roomCtxMenu = { x: e.clientX, y: e.clientY, channelId };
+    teamCtxMenu = { x: e.clientX, y: e.clientY, id };
   }
-  async function confirmRemoveRoom() {
-    const room = removeRoom;
-    if (!room || removeRoomBusy) return;
-    removeRoomBusy = true;
+  async function confirmRemoveTeam() {
+    const team = removeTeamObj;
+    if (!team || removeTeamBusy) return;
+    removeTeamBusy = true;
     try {
       const api = await import('$lib/api/nebo');
-      await api.deleteWorkroom(room.channelId);
-      workrooms = workrooms.filter((w) => w.channelId !== room.channelId);
-      if (roomParam === room.channelId) closeRoom();
-      removeRoom = null;
+      await api.removeTeam(team.id);
+      teams = teams.filter((w) => w.id !== team.id);
+      if (teamParam === team.id) closeTeam();
+      removeTeamObj = null;
     } catch { /* row stays; the owner can retry */ }
-    removeRoomBusy = false;
+    removeTeamBusy = false;
   }
 
   // The value doubles as the initial status filter ("failed") so the stat
@@ -482,7 +482,7 @@
   onMount(() => {
     // Initial roster load
     loadAgentRoster();
-    loadWorkrooms();
+    loadTeams();
 
     // Phones start on the team list. Landing cold on a specific conversation
     // (a shared link, a notification) keeps that conversation — the list is
@@ -551,17 +551,18 @@
       }
     });
 
-    // Rooms are opened by employees; the sidebar learns about a new one live.
-    onWsEvent('nebo:workroom_created', (data) => {
-      const room = data?.workroom;
-      if (!room?.channelId) return;
-      workrooms = [room, ...workrooms.filter((w) => w.channelId !== room.channelId)];
-      roomActivity[room.channelId] = Date.now();
+    // Teams are created by employees (or the model); the sidebar learns
+    // about a new one live.
+    onWsEvent('nebo:team_created', (data) => {
+      const team = data?.team;
+      if (!team?.id) return;
+      teams = [team, ...teams.filter((w) => w.id !== team.id)];
+      teamActivity[team.id] = Date.now();
     });
-    // Workroom traffic → bump that room's recency in the sidebar section.
-    // The open room view holds its own subscription for the transcript.
-    onWsEvent('nebo:workroom_message', (data) => {
-      if (data?.channelId) roomActivity[data.channelId] = Date.now();
+    // Team traffic → bump that team's recency in the sidebar section.
+    // The open team view holds its own subscription for the transcript.
+    onWsEvent('nebo:team_message', (data) => {
+      if (data?.teamId) teamActivity[data.teamId] = Date.now();
     });
 
     // Run/workflow updates → refresh runs + stats
@@ -1019,31 +1020,31 @@
   </div>
 {/if}
 
-<!-- Workroom context menu — one action: housekeeping. -->
-{#if roomCtxMenu}
-  <div class="fixed inset-0 z-50" onclick={() => (roomCtxMenu = null)} oncontextmenu={(e) => { e.preventDefault(); roomCtxMenu = null; }} role="presentation"></div>
+<!-- Team context menu — one action: housekeeping. -->
+{#if teamCtxMenu}
+  <div class="fixed inset-0 z-50" onclick={() => (teamCtxMenu = null)} oncontextmenu={(e) => { e.preventDefault(); teamCtxMenu = null; }} role="presentation"></div>
   <div
     class="fixed z-50 w-[180px] py-1 rounded-lg border border-base-300 bg-base-100 shadow-xl"
-    style="left: {roomCtxMenu.x}px; top: {roomCtxMenu.y}px;"
+    style="left: {teamCtxMenu.x}px; top: {teamCtxMenu.y}px;"
   >
     <button
       class="flex items-center gap-2.5 w-full px-3 py-1.5 text-sm text-left cursor-pointer bg-transparent border-none hover:bg-error/10 text-error transition-colors"
-      onclick={() => { removeRoom = workrooms.find((w) => w.channelId === roomCtxMenu?.channelId) ?? null; roomCtxMenu = null; }}
+      onclick={() => { removeTeamObj = teams.find((w) => w.id === teamCtxMenu?.id) ?? null; teamCtxMenu = null; }}
     >
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
-      {$t('workrooms.remove')}
+      {$t('teams.remove')}
     </button>
   </div>
 {/if}
 
-{#if removeRoom}
+{#if removeTeamObj}
   <ConfirmModal
-    title={$t('workrooms.removeTitle', { values: { name: removeRoom.name } })}
-    message={$t('workrooms.removeBody')}
-    confirmLabel={$t('workrooms.remove')}
-    busy={removeRoomBusy}
-    onConfirm={confirmRemoveRoom}
-    onCancel={() => (removeRoom = null)}
+    title={$t('teams.removeTitle', { values: { name: removeTeamObj.name } })}
+    message={$t('teams.removeBody')}
+    confirmLabel={$t('teams.remove')}
+    busy={removeTeamBusy}
+    onConfirm={confirmRemoveTeam}
+    onCancel={() => (removeTeamObj = null)}
   />
 {/if}
 
@@ -1288,29 +1289,27 @@
         </div>
       {/if}
       {#if !drilledAgent}
-        <!-- WORKROOMS — mission rooms, under the employees (list = conversations;
-             the shelf is for utilities). Rooms are opened by employees, never by
-             a form: whichever employee owns a task creates the room and brings
-             coworkers in. So the empty state is NOTHING — the section exists
-             the day work starts happening in one. -->
+        <!-- TEAMS — local groups of employees, under the employees (list =
+             conversations; the shelf is for utilities). Teams are created by
+             asking any employee (or by the model itself), never by a form. -->
         <div class="flex items-center gap-2 mt-4 mb-1 mx-4">
-          <span class="text-[10px] font-semibold uppercase tracking-wider text-base-content/45">{$t('workrooms.section')}</span>
+          <span class="text-[10px] font-semibold uppercase tracking-wider text-base-content/45">{$t('teams.section')}</span>
         </div>
-        {#if sortedWorkrooms.length > 0}
-          {#each sortedWorkrooms as room (room.channelId)}
-            {@const faces = roomFaces(room)}
+        {#if sortedTeams.length > 0}
+          {#each sortedTeams as room (room.id)}
+            {@const faces = teamFaces(room)}
             <!-- Margin lives on the wrapper, width on the button — w-full plus
                  mx on the same box overflows the column and summons a
                  scrollbar on hover (the row "jump"). -->
             <div class="mx-1.5">
             <button
-              class="group/room w-full flex items-center gap-2.5 py-2 px-2.5 cursor-pointer text-left bg-transparent {roomParam === room.channelId
+              class="group/room w-full flex items-center gap-2.5 py-2 px-2.5 cursor-pointer text-left bg-transparent {teamParam === room.id
                 ? 'rounded-box border border-primary/30 bg-primary/10 shadow-sm'
                 : 'rounded-box border border-transparent hover:bg-base-100/70'}"
-              onclick={() => openRoom(room.channelId)}
-              oncontextmenu={(e) => handleRoomContext(e, room.channelId)}
+              onclick={() => openTeam(room.id)}
+              oncontextmenu={(e) => handleTeamContext(e, room.id)}
             >
-              <!-- Stacked-avatars glyph in the avatar slot: this row is a room,
+              <!-- Stacked-avatars glyph in the avatar slot: this row is a team,
                    not a person. -->
               <div class="relative w-8 h-8 shrink-0">
                 {#if faces.length >= 2}
@@ -1318,7 +1317,7 @@
                   <div class="absolute top-0 left-0 w-6 h-6 rounded-field flex items-center justify-center font-mono text-[10px] font-semibold {faces[0].cls}">{faces[0].initial}</div>
                   <div class="absolute bottom-0 right-0 w-6 h-6 rounded-field border border-base-100 flex items-center justify-center font-mono text-[10px] font-semibold {faces[1].cls}">{faces[1].initial}</div>
                   {#if extra > 0}
-                    <!-- The row says "several"; the full roster is the room's member rail. -->
+                    <!-- The row says "several"; the full roster is the team's member rail. -->
                     <div class="absolute -top-1 -right-1 min-w-4 h-4 px-0.5 rounded-full bg-neutral text-neutral-content border border-base-100 flex items-center justify-center font-mono text-[9px] font-semibold">+{extra}</div>
                   {/if}
                 {:else}
@@ -1331,17 +1330,17 @@
                 <div class="flex items-baseline gap-2">
                   <span class="text-sm font-medium truncate min-w-0">{room.name}</span>
                   <span class="flex-1"></span>
-                  <span class="text-xs text-base-content/45 shrink-0">{dayLabel(roomActivity[room.channelId] ? roomActivity[room.channelId] / 1000 : room.createdAt)}</span>
+                  <span class="text-xs text-base-content/45 shrink-0">{dayLabel(teamActivity[room.id] ? teamActivity[room.id] / 1000 : room.createdAt)}</span>
                 </div>
-                <div class="text-xs text-base-content/60 truncate">{room.mission || $t('workrooms.membersCount', { values: { count: room.memberAgentIds.length } })}</div>
+                <div class="text-xs text-base-content/60 truncate">{room.mission || $t('teams.membersCount', { values: { count: room.memberAgentIds.length } })}</div>
               </div>
             </button>
             </div>
           {/each}
         {:else}
-          <!-- The section teaches what rooms ARE before the first one exists —
-               the owner shouldn't have to ask "how do I see the rooms". -->
-          <p class="text-xs text-base-content/45 mx-4 mb-1 leading-relaxed">{$t('workrooms.emptyRoster')}</p>
+          <!-- The section teaches what teams ARE before the first one exists —
+               the owner shouldn't have to ask "how do I see the teams". -->
+          <p class="text-xs text-base-content/45 mx-4 mb-1 leading-relaxed">{$t('teams.emptyRoster')}</p>
         {/if}
       {/if}
     {/if}
@@ -1523,12 +1522,12 @@
   </div>
 </ShelfModal>
 
-<!-- A workroom: the owner's live seat in a mission room an employee opened. -->
-<ShelfModal open={openRoomObj !== null} title={openRoomObj?.name ?? ''} onclose={closeRoom}>
-  {#if openRoomObj}
-    {#key openRoomObj.channelId}
-      <WorkroomView
-        room={openRoomObj}
+<!-- A team: the owner's live seat in a team's conversation. -->
+<ShelfModal open={openTeamObj !== null} title={openTeamObj?.name ?? ''} onclose={closeTeam}>
+  {#if openTeamObj}
+    {#key openTeamObj.id}
+      <TeamView
+        team={openTeamObj}
         roster={allAgents.map((a) => ({ id: a.id, name: a.name, initial: a.initial, color: a.color, loopAgentId: a.loopAgentId }))}
       />
     {/key}

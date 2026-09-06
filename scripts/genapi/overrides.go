@@ -42,10 +42,11 @@ var typeOverrides = map[string]string{
 	// ── Run detail: human-readable projection derived server-side ──
 	"get_run.display": "RunDisplay",
 
-	// ── Workrooms (Workroom/WorkroomMessage generated from Rust structs) ──
-	"list_workrooms.workrooms":        "Workroom[]",
-	"create_workroom.workroom":        "Workroom",
-	"get_workroom_messages.messages":  "WorkroomMessage[]",
+	// ── Teams (Team/TeamMessage generated from Rust structs) ──
+	"list_teams.teams":            "Team[]",
+	"open_team.team":              "Team",
+	"get_team_messages.messages":  "TeamMessage[]",
+	"send_team_message.asked":     "string[]",
 
 	// ── User profile ──
 	"userGetProfile.profile": "UserProfileFull",

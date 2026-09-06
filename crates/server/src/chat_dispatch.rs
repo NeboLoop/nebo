@@ -537,7 +537,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
             // directly in voice.rs) — so the denial teaches delegation. If a
             // second allowlist caller appears, thread its own hint instead.
             tool_denial_hint: config.tool_allowlist.as_ref().map(|_| {
-                "You are coordinating a workroom: delegating IS the action here. \
+                "You are coordinating a team: delegating IS the action here. \
                  Address the coworker whose role owns this step — write their \
                  mention token with a specific ask in your reply — instead of \
                  doing the step yourself."
@@ -1407,7 +1407,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                             };
                             if let Some(channel_id) = channel_id {
                                 if workroom_store
-                                    .get_workroom(&channel_id)
+                                    .get_team_by_hub_channel(&channel_id)
                                     .ok()
                                     .flatten()
                                     .is_some()

@@ -1,0 +1,52 @@
+id: correction-team-no-hub
+name: "Correction: a team is created locally, with no hub loop"
+description: |
+  Owner direction (2026-09-06): teams work within a single Nebo regardless
+  of the hub. Before this, asking an employee for a team room failed with
+  "no loop available to create a channel in" whenever this Nebo was in no
+  NeboAI loop, and the model wandered off to the marketplace or the plugin
+  store looking for a fix. Now team(action: "create", ...) creates a local
+  team (its own thread, the named employees as members) and never touches
+  the hub. This fixture runs on a machine that is paired with no hub loop
+  and has Chief of Staff and Executive Assistant installed; it pins that
+  the FIRST call is the team create with those agents, that it is accepted,
+  and that the model reports the team as existing.
+target_component: team
+
+conversation:
+  - role: user
+    content: "make a team called Operations with Chief of Staff and Executive Assistant"
+
+tool_config:
+  team:
+    enabled: true
+  loop:
+    enabled: true
+  plugin:
+    enabled: true
+  agent:
+    enabled: true
+
+prompt_assertions:
+  recovery:
+    - id: first-call-is-team-create
+      text: "The first tool call is team(action: \"create\") (or its alias loop(action: \"create\") / loop(resource: \"workroom\", action: \"create\")) with name \"Operations\" and agents containing \"Chief of Staff\" and \"Executive Assistant\""
+      severity: critical
+    - id: no-first-call-misses
+      text: "Every call is accepted: no missing-parameter, unknown-action, or \"no loop available\" error in any tool result"
+      severity: critical
+      check: { max_errors: 0 }
+    - id: bounded
+      text: "At most 3 tool calls"
+      severity: critical
+      check: { max_tool_calls: 3 }
+    - id: no-plugin-discover
+      text: "No plugin(action: \"discover\") call and no marketplace lookup is made"
+      severity: critical
+    - id: team-exists
+      text: "The final response tells the user the Operations team exists (is created / ready) with Chief of Staff and Executive Assistant on it, and never says the team needs a hub, a loop, or a NeboAI connection"
+      severity: critical
+
+ideal_behavior:
+  tool_calls: 1
+  narrative: "One call: team(action: \"create\", name: \"Operations\", agents: [\"Chief of Staff\", \"Executive Assistant\"]); then tell the owner the team exists and offer to post the first ask."

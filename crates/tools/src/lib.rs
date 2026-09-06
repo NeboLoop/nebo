@@ -63,7 +63,8 @@ pub mod spotlight_tool;
 pub mod tool_search;
 pub mod vm_tool;
 pub mod web_tool;
-pub mod workroom;
+pub mod team;
+pub mod team_tool;
 pub mod workflows;
 
 /// True when this Nebo runs as a cloud/container server rather than on a user's
@@ -112,7 +113,10 @@ pub use channel_bridge::{
     ChannelBridgeHandle, ChannelBridgeRegistry, OpResult, PendingOps, channel_bridge_key,
     channel_bridges, new_channel_bridge_registry, new_pending_ops, set_channel_bridges,
 };
-pub use coworker::{CoworkerDelivery, CoworkerMessage, CoworkerRail, CoworkerRailCell};
+pub use coworker::{
+    CoworkerDelivery, CoworkerMessage, CoworkerRail, CoworkerRailCell, TeamDelivery, TeamPost,
+    TeamPostReceipt,
+};
 pub use domain::*;
 pub use emit_tool::EmitTool;
 pub use event_tool::EventTool;

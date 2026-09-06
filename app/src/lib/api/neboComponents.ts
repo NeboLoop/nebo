@@ -844,6 +844,25 @@ export interface SkillSecretInfo {
 	configured: boolean
 }
 
+export interface Team {
+	id: string
+	name: string
+	mission: string
+	memberAgentIds: string[]
+	organizerAgentId: string
+	hubChannelId?: string
+	createdAt: number
+}
+
+export interface TeamMessage {
+	id: string
+	from: string
+	fromAgentId: string
+	role: string
+	content: string
+	createdAt: number
+}
+
 export interface User {
 	id: string
 	email: string
@@ -984,22 +1003,6 @@ export interface WorkflowToolBinding {
 	workflowId: string
 	interfaceName: string
 	tool: string
-}
-
-export interface Workroom {
-	channelId: string
-	name: string
-	mission: string
-	memberAgentIds: string[]
-	createdAt: number
-}
-
-export interface WorkroomMessage {
-	id: string
-	from: string
-	content: string
-	createdAt: string
-	role?: string
 }
 
 // ── API Response Types (inferred from handlers) ────────────────────
@@ -1175,10 +1178,6 @@ export interface CreateWorkflowResponse {
 	cascade: unknown
 }
 
-export interface CreateWorkroomResponse {
-	workroom: Workroom
-}
-
 export interface DeactivateAgentResponse {
 	agentId: string
 	name: string
@@ -1255,10 +1254,6 @@ export interface DeleteTeamResponse {
 }
 
 export interface DeleteWorkflowResponse {
-	message: string
-}
-
-export interface DeleteWorkroomResponse {
 	message: string
 }
 
@@ -1437,6 +1432,10 @@ export interface GetSystemInfoResponse {
 	version: string
 }
 
+export interface GetTeamMessagesResponse {
+	messages: TeamMessage[]
+}
+
 export interface GetToolOutputResponse {
 	output: string
 	isError: boolean
@@ -1448,10 +1447,6 @@ export interface GetWorkflowApprovalStatusResponse {
 
 export interface GetWorkflowResponse {
 	workflow: Workflow
-}
-
-export interface GetWorkroomMessagesResponse {
-	messages: WorkroomMessage[]
 }
 
 export interface HttpProxyResponse {
@@ -1623,6 +1618,11 @@ export interface ListTasksResponse {
 	total: number
 }
 
+export interface ListTeamsResponse {
+	teams: Team[]
+	total: number
+}
+
 export interface ListToolsResponse {
 	tools: unknown[]
 }
@@ -1641,11 +1641,6 @@ export interface ListWorkDocumentsResponse {
 
 export interface ListWorkflowsResponse {
 	workflows: Workflow[]
-	total: number
-}
-
-export interface ListWorkroomsResponse {
-	workrooms: Workroom[]
 	total: number
 }
 
@@ -1735,6 +1730,15 @@ export interface OauthTokenResponse {
 	error: string
 }
 
+export interface OpenTeamResponse {
+	team: Team
+}
+
+export interface OpenaiListModelsResponse {
+	object: string
+	data: unknown[]
+}
+
 export interface PickFilesResponse {
 	paths: string[]
 }
@@ -1779,6 +1783,10 @@ export interface RemovePluginResponse {
 	message: string
 }
 
+export interface RemoveTeamResponse {
+	message: string
+}
+
 export interface ResolveLearningResponse {
 	status: string
 }
@@ -1819,8 +1827,10 @@ export interface SearchMessagesResponse {
 	messages: ChatMessage[]
 }
 
-export interface SendWorkroomMessageResponse {
+export interface SendTeamMessageResponse {
 	message: string
+	messageId: string
+	asked: string[]
 }
 
 export interface SetAgentChannelConfigResponse {

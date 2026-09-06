@@ -138,6 +138,7 @@ impl MessageTool {
             handoff_depth: ctx.handoff_depth,
             provenance: ctx.run_taint.clone(),
             wait: input["wait"].as_bool().unwrap_or(true),
+            team: None,
         };
 
         match rail.send(msg).await {

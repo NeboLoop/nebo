@@ -31,7 +31,7 @@ mod user_profile;
 mod users;
 pub(crate) mod work;
 mod workflows;
-mod workrooms;
+mod teams;
 
 pub use agents::agent_slug;
 pub use run_usage::cost_microcents;
@@ -39,4 +39,4 @@ pub use session_wakes::{SessionWake, WAKE_MAX_ATTEMPTS};
 pub use license_keys::LicenseKeyRow;
 pub use plugin_account_profiles::PluginAccountProfile;
 pub use work::WorkDocumentListing;
-pub use workrooms::Workroom;
+pub use teams::{team_thread_key, Team, TeamMessage, TEAM_THREAD_PREFIX};

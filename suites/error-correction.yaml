@@ -20,3 +20,4 @@ fixtures:
   - ../fixtures/correction/agent-update-description.yaml
   - ../fixtures/correction/plugin-discover-installed.yaml
   - ../fixtures/correction/event-reminder-shape.yaml
+  - ../fixtures/correction/team-no-hub.yaml

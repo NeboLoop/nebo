@@ -1115,6 +1115,17 @@ impl Registry {
         self.register_deferred(Box::new(crate::vm_tool::VmTool::new()))
             .await;
 
+        // Team tool (teams of local employees) — always registered (core): a
+        // team is a local object and works with no hub at all. The comm
+        // handle, when present, only adds the optional hub mirror.
+        self.register(Box::new(crate::team_tool::TeamTool::new(
+            Some(store.clone()),
+            comm_plugin.clone(),
+            broadcaster.clone(),
+            self.coworker_rail.clone(),
+        )))
+        .await;
+
         // Loop tool (NeboAI comms: dm, channel, loop, topic) — requires "loop" permission.
         // The comm handle exists from startup; the real LoopTool's per-action
         // `is_connected()` check reflects the live connection state, so it is always
@@ -1125,6 +1136,7 @@ impl Registry {
                     comm.clone(),
                     Some(store.clone()),
                     broadcaster.clone(),
+                    self.coworker_rail.clone(),
                 )))
                 .await;
             }

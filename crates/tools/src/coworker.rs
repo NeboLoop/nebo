@@ -44,6 +44,20 @@ pub struct CoworkerMessage {
     /// delivery is still acknowledged, and the reply is appended to the
     /// sender's session when it lands.
     pub wait: bool,
+    /// Set when this message is a team post being delivered to a member: the
+    /// target's thread is the team thread (`agent:<to>:coworker:team:<id>`),
+    /// the briefing names the team, and the reply is posted back into the
+    /// team instead of returned to the sender. `act` = false delivers the
+    /// post as context only (no run).
+    pub team: Option<TeamDelivery>,
+}
+
+/// The team leg of a coworker message (see `CoworkerMessage::team`).
+#[derive(Debug, Clone)]
+pub struct TeamDelivery {
+    pub team_id: String,
+    /// Whether the member is asked to act (run) or only receives the post.
+    pub act: bool,
 }
 
 /// Delivery acknowledgment — a message is never silently dropped: either this
@@ -59,14 +73,58 @@ pub struct CoworkerDelivery {
     pub reply: Option<String>,
 }
 
+/// One post into a team (`crate::team`). The rail appends it to the team's
+/// local thread (`team:<id>`), fans it out to the members through the ONE
+/// coworker pipeline, and mirrors it to the team's hub channel when there
+/// is one.
+#[derive(Debug, Clone)]
+pub struct TeamPost {
+    /// Local team id (`db::Team::id`).
+    pub team_id: String,
+    /// Posting agent id (empty = the owner).
+    pub from_agent_id: String,
+    pub text: String,
+    /// Members explicitly asked to act (local agent ids). Mentions written in
+    /// the text (`<@id>` / `@Name`) count too; the rail unions both.
+    pub mention: Vec<String>,
+    /// Agent-to-agent hop count of the post (`ToolContext.handoff_depth`).
+    /// Every delivery this post causes carries it; the rail's depth limit
+    /// refuses past it.
+    pub handoff_depth: u8,
+    /// Engine-stamped provenance of the posting run.
+    pub provenance: Vec<types::provenance::ProvenanceClass>,
+    /// True when this post is a member's reply to a delivery (set by the
+    /// rail's collector), false for a deliberate post (tool or app). A reply
+    /// never re-opens the floor, even the organizer's; its mentions still
+    /// ask.
+    pub is_reply: bool,
+}
+
+/// Receipt for a team post: the post is in the thread and every listed
+/// member has been asked to act (the rest received it as context).
+#[derive(Debug, Clone)]
+pub struct TeamPostReceipt {
+    pub team_id: String,
+    pub team_name: String,
+    pub message_id: String,
+    /// Display names of the members whose runs were started by this post.
+    pub asked: Vec<String>,
+}
+
 /// Implemented by the server (`CoworkerRailImpl`), consumed by the `message`
-/// tool. `Pin<Box<dyn Future>>` for object safety — same seam shape as
-/// `SubAgentOrchestrator`.
+/// and `team` tools. `Pin<Box<dyn Future>>` for object safety — same seam
+/// shape as `SubAgentOrchestrator`.
 pub trait CoworkerRail: Send + Sync {
     fn send(
         &self,
         msg: CoworkerMessage,
     ) -> Pin<Box<dyn Future<Output = Result<CoworkerDelivery, String>> + Send + '_>>;
+
+    /// Post into a team: record + fan-out + optional hub mirror.
+    fn post_team(
+        &self,
+        post: TeamPost,
+    ) -> Pin<Box<dyn Future<Output = Result<TeamPostReceipt, String>> + Send + '_>>;
 }
 
 /// Late-bound cell: tool registration runs before `AppState` exists, so the

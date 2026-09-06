@@ -6,6 +6,7 @@ mod channel_dispatch;
 pub mod chat_dispatch;
 pub mod codes;
 pub mod coworker;
+pub mod team;
 pub mod deps;
 pub mod entity_config;
 pub mod handlers;
@@ -4365,33 +4366,52 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
                 }
             });
 
-        // Workroom live feed: if this channel is a registered room, every
-        // message reaches the owner's UI as an event — mentioned or not,
-        // employee or human. (Initial history is REST getChannelMessages;
-        // this keeps the open room view event-driven, never polling.)
-        // The room registration is held for mention resolution below: in a
-        // registered room the member registry IS the mention surface.
+        // Mirrored-team feed: if this hub channel mirrors a local team, every
+        // hub message is ALSO a post in the team's local thread (the local
+        // thread is the team's record; the hub is a mirror) and reaches the
+        // owner's UI as a `team_message` event. The team is held for mention
+        // resolution below: in a team the member registry IS the mention
+        // surface.
         let workroom = match state
             .comm_manager
             .channel_for_conversation(&msg.conversation_id)
             .await
         {
-            Some(channel_id) => state.store.get_workroom(&channel_id).ok().flatten(),
+            Some(channel_id) => state.store.get_team_by_hub_channel(&channel_id).ok().flatten(),
             None => None,
         };
         if let Some(ref room) = workroom {
+            let from_agent_id = msg.metadata.get("fromAgentId").cloned().unwrap_or_default();
+            let sender_name = msg
+                .metadata
+                .get("fromAgentName")
+                .cloned()
+                .unwrap_or_else(|| sender_label.clone());
+            let role = if !from_agent_id.is_empty()
+                || msg.metadata.get("senderKind").map(String::as_str) == Some("agent")
+            {
+                "assistant"
+            } else {
+                "user"
+            };
+            let message_id = state
+                .store
+                .append_team_message(room, role, &text, &sender_name, &from_agent_id)
+                .map(|m| m.id)
+                .unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, team = %room.id, "failed to record mirrored hub message in the team thread");
+                    String::new()
+                });
             state.hub.broadcast(
-                "workroom_message",
+                tools::team::TEAM_MESSAGE_EVENT,
                 serde_json::json!({
-                    "channelId": room.channel_id,
+                    "teamId": room.id,
+                    "messageId": message_id,
                     "conversationId": msg.conversation_id,
                     "from": msg.from,
-                    "fromAgentId": msg.metadata.get("fromAgentId").cloned().unwrap_or_default(),
-                    "senderName": msg
-                        .metadata
-                        .get("fromAgentName")
-                        .cloned()
-                        .unwrap_or_else(|| sender_label.clone()),
+                    "fromAgentId": from_agent_id,
+                    "senderName": sender_name,
+                    "role": role,
                     "text": text,
                 }),
             );
@@ -4929,7 +4949,11 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
                 // writes the creator first). The organizer coordinates and
                 // integrates; everyone else is an expert who does their part
                 // and returns it to the organizer.
-                let organizer = room.member_agent_ids.first().cloned().unwrap_or_default();
+                let organizer = if room.organizer_agent_id.is_empty() {
+                    room.member_agent_ids.first().cloned().unwrap_or_default()
+                } else {
+                    room.organizer_agent_id.clone()
+                };
                 let is_organizer = organizer == agent_id
                     || (agent_id.is_empty() && organizer == "assistant");
                 organizer_run = is_organizer;
@@ -4938,7 +4962,7 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
                     .map(|(n, t, _)| format!("{n} ({t})"))
                     .unwrap_or_else(|| "the organizer".to_string());
                 let common = format!(
-                    "You are {name}, in the workroom \"{room_name}\".{mission} A workroom is \
+                    "You are {name}, in the team \"{room_name}\".{mission} A team is \
                      where work gets DONE, not discussed. Coworkers here: {coworkers}. Your \
                      reply posts to the room — report concrete results: artifact, status, \
                      blockers, next action, nothing else. Coworkers are PERSISTENT EXPERTS \
@@ -5047,12 +5071,12 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
 
             // The owner's live room view shows who picked the message up —
             // a send must never look like it went into the void. Cleared
-            // client-side when this agent's reply lands as workroom_message.
+            // client-side when this agent's reply lands as team_message.
             if let Some(ref room) = workroom {
                 state.hub.broadcast(
-                    "workroom_activity",
+                    tools::team::TEAM_ACTIVITY_EVENT,
                     serde_json::json!({
-                        "channelId": room.channel_id,
+                        "teamId": room.id,
                         "agentId": if agent_id.is_empty() { "assistant".to_string() } else { agent_id.clone() },
                         "agentName": agent_name.clone(),
                         "state": "started",

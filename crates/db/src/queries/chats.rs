@@ -68,7 +68,9 @@ impl Store {
             .prepare("SELECT * FROM chats
                  WHERE session_name IS NULL
                     OR (session_name NOT LIKE 'agent:%:workflow:%'
-                        AND session_name NOT LIKE 'workflow:%')
+                        AND session_name NOT LIKE 'workflow:%'
+                        -- A team's thread is the team's surface, not a chat.
+                        AND session_name NOT LIKE 'team:%')
                  ORDER BY updated_at DESC LIMIT ?1 OFFSET ?2")
             .map_err(|e| NeboError::Database(e.to_string()))?;
         let rows = stmt

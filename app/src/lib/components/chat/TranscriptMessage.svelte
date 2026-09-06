@@ -1,6 +1,6 @@
 <!--
   TranscriptMessage — ONE bubble for the hub-fed transcript surfaces
-  (coworker threads, workrooms). ChatPane keeps its own richer message
+  (coworker threads, teams). ChatPane keeps its own richer message
   rendering (runs, tools, artifacts); these surfaces render a record of
   conversation, and this is that record's one shape.
 -->

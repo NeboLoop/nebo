@@ -1861,6 +1861,41 @@ export function toggleTask(name: string, req: Record<string, unknown> = {}) {
 }
 
 /**
+ * @description "List teams"
+ */
+export function listTeams() {
+	return webapi.get<components.ListTeamsResponse>(`/api/v1/teams`)
+}
+
+/**
+ * @description "Open team"
+ */
+export function openTeam(req: Record<string, unknown> = {}) {
+	return webapi.post<components.OpenTeamResponse>(`/api/v1/teams`, req)
+}
+
+/**
+ * @description "Remove team"
+ */
+export function removeTeam(teamId: string) {
+	return webapi.delete<components.RemoveTeamResponse>(`/api/v1/teams/${teamId}`)
+}
+
+/**
+ * @description "Get team messages"
+ */
+export function getTeamMessages(teamId: string) {
+	return webapi.get<components.GetTeamMessagesResponse>(`/api/v1/teams/${teamId}/messages`)
+}
+
+/**
+ * @description "Send team message"
+ */
+export function sendTeamMessage(teamId: string, req: Record<string, unknown> = {}) {
+	return webapi.post<components.SendTeamMessageResponse>(`/api/v1/teams/${teamId}/messages`, req)
+}
+
+/**
  * @description "Update apply"
  */
 export function updateApply(req: Record<string, unknown> = {}) {
@@ -2047,40 +2082,5 @@ export function cancelRun(id: string, runId: string, req: Record<string, unknown
  */
 export function toggleWorkflow(id: string, req: Record<string, unknown> = {}) {
 	return webapi.post<components.ToggleWorkflowResponse>(`/api/v1/workflows/${id}/toggle`, req)
-}
-
-/**
- * @description "List workrooms"
- */
-export function listWorkrooms() {
-	return webapi.get<components.ListWorkroomsResponse>(`/api/v1/workrooms`)
-}
-
-/**
- * @description "Create workroom"
- */
-export function createWorkroom(req: Record<string, unknown> = {}) {
-	return webapi.post<components.CreateWorkroomResponse>(`/api/v1/workrooms`, req)
-}
-
-/**
- * @description "Delete workroom"
- */
-export function deleteWorkroom(channelId: string) {
-	return webapi.delete<components.DeleteWorkroomResponse>(`/api/v1/workrooms/${channelId}`)
-}
-
-/**
- * @description "Get workroom messages"
- */
-export function getWorkroomMessages(channelId: string) {
-	return webapi.get<components.GetWorkroomMessagesResponse>(`/api/v1/workrooms/${channelId}/messages`)
-}
-
-/**
- * @description "Send workroom message"
- */
-export function sendWorkroomMessage(channelId: string, req: Record<string, unknown> = {}) {
-	return webapi.post<components.SendWorkroomMessageResponse>(`/api/v1/workrooms/${channelId}/send`, req)
 }
 
