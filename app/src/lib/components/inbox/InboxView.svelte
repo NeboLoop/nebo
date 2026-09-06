@@ -233,6 +233,20 @@
   });
   const detail = $derived(selected ? details[selected.id] ?? null : null);
 
+  /** A staged SKILL.md, split for reading: the front-matter fields as a
+   *  header, the body as markdown. Rendered, not edited — editing is not
+   *  offered yet, so what you see is exactly what Approve writes. */
+  function splitSkill(text: string): { meta: Array<[string, string]>; body: string } {
+    const m = /^---\n([\s\S]*?)\n---\n?/.exec(text);
+    if (!m) return { meta: [], body: text };
+    const meta = m[1]
+      .split('\n')
+      .map((line) => line.split(/:\s*/, 2))
+      .filter((kv): kv is [string, string] => kv.length === 2 && kv[0].trim() !== '')
+      .map(([k, v]) => [k.trim(), v.replace(/^["']|["']$/g, '').trim()] as [string, string]);
+    return { meta, body: text.slice(m[0].length) };
+  }
+
   function open(n: Notification) {
     markAsRead(n.id);
     copied = false;
@@ -414,7 +428,9 @@
         {/if}
         <span class="text-xs text-base-content/50 font-mono shrink-0">{selected.time}</span>
         <div class="ml-auto flex items-center gap-1 shrink-0">
-          {#if selected.link}
+          <!-- Open goes somewhere else — a run, a thread. A link back to the
+               inbox itself is not a destination, so it gets no button. -->
+          {#if selected.link && !selected.link.startsWith('/inbox')}
             <button class="btn btn-ghost btn-xs gap-1.5" onclick={() => selected?.link && onnavigate(selected.link)}>
               <ExternalLink class="w-3.5 h-3.5" />
               {$t('common.open')}
@@ -429,22 +445,37 @@
           </button>
         </div>
       </div>
-      <div class="flex-1 overflow-y-auto">
-        <div class="max-w-2xl mx-auto px-6 py-6">
+      <!-- The headline and label hold still; the evidence below them scrolls in
+           its own box; the decision bar under that never leaves the screen. -->
+      <div class="flex-1 min-h-0 flex flex-col">
+        <div class="max-w-2xl w-full mx-auto px-6 pt-6 shrink-0">
           <div class="prose prose-sm max-w-none [&>:first-child]:mt-0">
             {@html parseMarkdown(selected.message)}
           </div>
+        </div>
+        <div class="flex-1 min-h-0 max-w-2xl w-full mx-auto px-6 pb-6 flex flex-col">
           {#if detail?.kind === 'learning' && detail.data.content}
-            <div class="mt-6 pt-4 border-t border-base-content/10">
-              <div class="text-xs font-semibold uppercase tracking-wide text-base-content/50 mb-2">{$t('inbox.stagedText', { values: { action: detail.data.action ?? '', target: detail.data.target ?? '' } })}</div>
-              <pre class="text-xs whitespace-pre-wrap break-words rounded-lg bg-base-200 p-3 max-h-[60vh] overflow-y-auto">{detail.data.content}</pre>
+            <div class="mt-6 pt-4 border-t border-base-content/10 shrink-0 text-xs font-semibold uppercase tracking-wide text-base-content/50 mb-2">{$t('inbox.stagedText', { values: { action: detail.data.action ?? '', target: detail.data.target ?? '' } })}</div>
+            {@const skill = splitSkill(detail.data.content)}
+            <div class="flex-1 min-h-0 overflow-y-auto rounded-lg border border-base-content/10 bg-base-100">
+              {#if skill.meta.length > 0}
+                <div class="px-5 py-3 border-b border-base-content/10 bg-base-200/50 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1">
+                  {#each skill.meta as [k, v] (k)}
+                    <span class="text-xs font-mono text-base-content/50">{k}</span>
+                    <span class="text-sm {k === 'name' ? 'font-semibold' : 'text-base-content/80'}">{v}</span>
+                  {/each}
+                </div>
+              {/if}
+              <div class="px-5 py-4 prose prose-sm max-w-none [&>:first-child]:mt-0">
+                {@html parseMarkdown(skill.body)}
+              </div>
             </div>
           {:else if detail?.kind === 'gone'}
             <div class="mt-6 pt-4 border-t border-base-content/10 text-xs text-base-content/70">{$t('inbox.recordGone')}</div>
           {:else if detail?.kind === 'run'}
             {@const run = detail.data.run}
             {@const steps = Object.values((detail.data.taskItems ?? {}) as Record<string, PendingTask[]>).flat()}
-            <div class="mt-6 pt-4 border-t border-base-content/10 space-y-4">
+            <div class="mt-6 pt-4 border-t border-base-content/10 space-y-4 flex-1 min-h-0 overflow-y-auto">
               {#if run.error}
                 <div>
                   <div class="text-xs font-semibold uppercase tracking-wide text-base-content/50 mb-2">{run.errorActivity ? $t('inbox.failedAt', { values: { activity: run.errorActivity } }) : $t('inbox.whatHappened')}</div>
@@ -461,7 +492,7 @@
                         <div class="min-w-0">
                           <div>{step.description || step.prompt}</div>
                           {#if step.lastError}<div class="text-xs text-error/80 mt-0.5">{step.lastError}</div>{/if}
-                          {#if step.output}<pre class="text-xs whitespace-pre-wrap break-words rounded-lg bg-base-200 p-2 mt-1 max-h-48 overflow-y-auto">{step.output}</pre>{/if}
+                          {#if step.output}<pre class="text-xs whitespace-pre-wrap break-words rounded-lg bg-base-200 p-2 mt-1">{step.output}</pre>{/if}
                         </div>
                       </li>
                     {/each}
@@ -471,31 +502,33 @@
               {#if run.output}
                 <div>
                   <div class="text-xs font-semibold uppercase tracking-wide text-base-content/50 mb-2">{$t('inbox.output')}</div>
-                  <pre class="text-xs whitespace-pre-wrap break-words rounded-lg bg-base-200 p-3 max-h-[40vh] overflow-y-auto">{run.output}</pre>
+                  <pre class="text-xs whitespace-pre-wrap break-words rounded-lg bg-base-200 p-3">{run.output}</pre>
                 </div>
-              {/if}
-            </div>
-          {/if}
-          {#if approvalRunId(selected)}
-            {@const runId = approvalRunId(selected)!}
-            {@const status = approvalStatuses[runId]}
-            <div class="mt-6 pt-4 border-t border-base-content/10">
-              {#if status === 'pending'}
-                <div class="flex items-center gap-2">
-                  <button class="btn btn-sm btn-success" disabled={!!deciding[runId]} onclick={() => selected && decide(selected, true)}>{$t('inbox.approve')}</button>
-                  <button class="btn btn-sm btn-ghost border border-base-content/15" disabled={!!deciding[runId]} onclick={() => selected && decide(selected, false)}>{$t('inbox.deny')}</button>
-                </div>
-              {:else if status === 'approved' || status === 'denied' || status === 'rejected'}
-                <span class="badge {status === 'approved' ? 'badge-success badge-outline' : 'badge-ghost text-base-content/60'}">{$t(status === 'approved' ? 'inbox.approved' : 'inbox.denied')}</span>
-              {:else if status === 'conflict'}
-                <span class="badge badge-warning badge-outline">{$t('inbox.conflict')}</span>
-              {:else if status}
-                <span class="badge badge-ghost text-base-content/60">{status}</span>
               {/if}
             </div>
           {/if}
         </div>
       </div>
+      {#if approvalRunId(selected)}
+        {@const runId = approvalRunId(selected)!}
+        {@const status = approvalStatuses[runId]}
+        <div class="shrink-0 border-t border-base-content/10 bg-base-100">
+          <div class="max-w-2xl mx-auto px-6 py-3">
+            {#if status === 'pending'}
+              <div class="flex items-center gap-2">
+                <button class="btn btn-sm btn-success" disabled={!!deciding[runId]} onclick={() => selected && decide(selected, true)}>{$t('inbox.approve')}</button>
+                <button class="btn btn-sm btn-ghost border border-base-content/15" disabled={!!deciding[runId]} onclick={() => selected && decide(selected, false)}>{$t('inbox.deny')}</button>
+              </div>
+            {:else if status === 'approved' || status === 'denied' || status === 'rejected'}
+              <span class="badge {status === 'approved' ? 'badge-success badge-outline' : 'badge-ghost text-base-content/60'}">{$t(status === 'approved' ? 'inbox.approved' : 'inbox.denied')}</span>
+            {:else if status === 'conflict'}
+              <span class="badge badge-warning badge-outline">{$t('inbox.conflict')}</span>
+            {:else if status}
+              <span class="badge badge-ghost text-base-content/60">{status}</span>
+            {/if}
+          </div>
+        </div>
+      {/if}
     {:else}
       <div class="flex-1 flex flex-col items-center justify-center text-center gap-2 text-base-content/40">
         <Mail class="w-8 h-8" />
