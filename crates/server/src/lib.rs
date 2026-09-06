@@ -1885,6 +1885,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     event_dispatcher.clone().spawn(
         event_rx,
         workflow_manager.clone() as Arc<dyn tools::WorkflowManager>,
+        store.clone(),
     );
 
     // Create orchestrator and fill the late-binding handle. The wake channel
@@ -3383,26 +3384,18 @@ async fn run_webhook_workflow(
     // A case binding: the payload names a person, and the engine holds one
     // case per person. The signal reaches that case or opens it; a fresh
     // run per submission is exactly the repeat this exists to end.
-    if let Some(case) = &binding.case {
-        let Some(key_value) = engine::key_at(&payload, &case.key) else {
-            tracing::warn!(agent = %agent_id, workflow = %binding_name, key = %case.key, "case webhook: payload has no key at that path");
+    if let Some((b, key_type)) = workflow::cases::CaseBinding::from_binding(agent_id, binding_name, &def_json, binding) {
+        let key_path = binding.case.as_ref().map(|c| c.key.as_str()).unwrap_or_default();
+        let Some(key_value) = workflow::cases::key_at(&payload, key_path) else {
+            tracing::warn!(agent = %agent_id, workflow = %binding_name, key = %key_path, "case webhook: payload has no key at that path");
             return;
-        };
-        let key_type = case.key.rsplit('.').next().unwrap_or("key");
-        let default_wait_secs = case.default_wait.as_deref().and_then(engine::relative_secs).unwrap_or(3 * 86_400);
-        let b = engine::CaseBinding {
-            agent_id,
-            binding_name,
-            definition_json: &def_json,
-            base_inputs: inputs.clone(),
-            default_wait_secs,
         };
         let idem = if idem_key.is_empty() {
             format!("webhook:{}:{}", binding_name, agent::dedupe::hash_text(&payload.to_string()))
         } else {
             idem_key.to_string()
         };
-        match engine::signal_or_open(&state.store, &b, key_type, &key_value, &payload, &idem, chrono::Utc::now().timestamp()) {
+        match workflow::cases::signal_or_open(&state.store, &b, &key_type, &key_value, &payload, "webhook", &idem, chrono::Utc::now().timestamp()) {
             Ok(routed) => tracing::info!(agent = %agent_id, workflow = %binding_name, ?routed, "case webhook routed"),
             Err(e) => tracing::warn!(agent = %agent_id, workflow = %binding_name, error = %e, "case webhook routing failed"),
         }

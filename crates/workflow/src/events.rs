@@ -28,6 +28,64 @@ pub struct EventSubscription {
     pub definition_json: Option<String>,
     /// Namespaced emit source for the last activity (e.g. "chief-of-staff.briefing.ready").
     pub emit_source: Option<String>,
+    /// Present when the binding declares `case`: the event is routed to the
+    /// one case for the person it names instead of starting a run.
+    pub case: Option<CaseRoute>,
+}
+
+/// How an event-triggered case binding names its person.
+#[derive(Debug, Clone)]
+pub struct CaseRoute {
+    /// Dotted path into the event payload (`contactEmail`, `customer.id`).
+    pub key_path: String,
+    /// Wait applied when a turn declares none.
+    pub default_wait_secs: i64,
+}
+
+impl CaseRoute {
+    pub fn from_binding(binding: &napp::agent::WorkflowBinding) -> Option<Self> {
+        let case = binding.case.as_ref()?;
+        Some(Self {
+            key_path: case.key.clone(),
+            default_wait_secs: case
+                .default_wait
+                .as_deref()
+                .and_then(crate::cases::relative_secs)
+                .unwrap_or(crate::cases::DEFAULT_WAIT_SECS),
+        })
+    }
+}
+
+/// An event for a case binding: signal the person's case or open it. The
+/// idempotency key is the event's identity — source, payload, and the
+/// second it was emitted — so a re-emit of the same moment is a duplicate
+/// while a genuine second submission minutes later is a new signal.
+fn route_case(store: &db::Store, sub: &EventSubscription, route: &CaseRoute, def_json: &str, event: &Event) {
+    let Some(key_value) = crate::cases::key_at(&event.payload, &route.key_path) else {
+        warn!(agent = %sub.agent_source, binding = %sub.binding_name, event_source = %event.source, key = %route.key_path, "case event: payload has no key at that path");
+        return;
+    };
+    let key_type = route.key_path.rsplit('.').next().unwrap_or("key");
+    let b = crate::cases::CaseBinding {
+        agent_id: &sub.agent_source,
+        binding_name: &sub.binding_name,
+        definition_json: def_json,
+        base_inputs: sub.default_inputs.clone(),
+        default_wait_secs: route.default_wait_secs,
+    };
+    let idem = {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        event.source.hash(&mut h);
+        event.payload.to_string().hash(&mut h);
+        event.timestamp.hash(&mut h);
+        format!("event:{}:{:016x}", event.source, h.finish())
+    };
+    let t = chrono::Utc::now().timestamp();
+    match crate::cases::signal_or_open(store, &b, key_type, &key_value, &event.payload, "event", &idem, t) {
+        Ok(routed) => info!(agent = %sub.agent_source, binding = %sub.binding_name, event_source = %event.source, ?routed, "case event routed"),
+        Err(e) => warn!(agent = %sub.agent_source, binding = %sub.binding_name, event_source = %event.source, error = %e, "case event routing failed"),
+    }
 }
 
 /// Dispatches events to matching workflow subscriptions.
@@ -95,6 +153,7 @@ impl EventDispatcher {
         self: Arc<Self>,
         mut rx: tokio::sync::mpsc::UnboundedReceiver<Event>,
         manager: Arc<dyn WorkflowManager>,
+        store: Arc<db::Store>,
     ) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
             // No time-based rate limiting — events must fire instantly.
@@ -104,6 +163,13 @@ impl EventDispatcher {
             while let Some(event) = rx.recv().await {
                 let matches = self.match_event(&event).await;
                 for sub in matches {
+                    // A case binding: the event names a person; the engine
+                    // holds one case per person and this event reaches it
+                    // (or opens it). No run starts here.
+                    if let (Some(route), Some(def_json)) = (&sub.case, &sub.definition_json) {
+                        route_case(&store, &sub, route, def_json, &event);
+                        continue;
+                    }
                     let mut inputs = sub.default_inputs.clone();
                     // Merge event payload into inputs
                     insert_event_envelope(
@@ -398,6 +464,7 @@ mod tests {
             binding_name: "auto-reply".into(),
             definition_json: None,
             emit_source: None,
+            case: None,
         };
 
         // Same (agent, binding, pattern) registered twice → ONE subscription,

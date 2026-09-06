@@ -917,6 +917,7 @@ async fn test_events() -> TestResult {
             binding_name: "email-watch".into(),
             definition_json: None,
             emit_source: None,
+            case: None,
         })
         .await;
     dispatcher
@@ -927,6 +928,7 @@ async fn test_events() -> TestResult {
             binding_name: "urgent-watch".into(),
             definition_json: None,
             emit_source: None,
+            case: None,
         })
         .await;
 

@@ -1,3 +1,4 @@
+pub mod cases;
 pub mod engine;
 pub mod loop_contract;
 pub mod events;

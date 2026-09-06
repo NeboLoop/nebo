@@ -1,0 +1,335 @@
+//! Cases: how work for one person or thing enters the durable engine and
+//! how a finished turn hands the case its next wait. Pure over the store,
+//! so the webhook path, the event dispatcher, and the engine loop all call
+//! the same code and tests need no runner. Design of record: "One Engine
+//! for Durable Work" (2026-09-06).
+
+use db::{EngineEvent, EngineRun, NewEvent, NewRun, NewWait, Store};
+use types::NeboError;
+
+/// A turn that ends without declaring a wait, on a binding that names none.
+pub const DEFAULT_WAIT_SECS: i64 = 3 * 24 * 3600;
+
+/// Where a routed signal went.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Routed {
+    /// Already recorded under this idempotency key; nothing happened.
+    Duplicate,
+    /// Appended to an open case; the loop wakes it.
+    Signaled { case_id: String },
+    /// No open case for the key: one opened and its first turn queued.
+    Opened { case_id: String },
+}
+
+/// Everything a binding brings to the router.
+pub struct CaseBinding<'a> {
+    pub agent_id: &'a str,
+    pub binding_name: &'a str,
+    pub definition_json: &'a str,
+    pub base_inputs: serde_json::Value,
+    pub default_wait_secs: i64,
+}
+
+impl<'a> CaseBinding<'a> {
+    /// From a binding that declares `case`. The key type is the leaf of the
+    /// key path (`customer.email` → `email`).
+    pub fn from_binding(
+        agent_id: &'a str,
+        binding_name: &'a str,
+        definition_json: &'a str,
+        binding: &napp::agent::WorkflowBinding,
+    ) -> Option<(Self, String)> {
+        let case = binding.case.as_ref()?;
+        let key_type = case.key.rsplit('.').next().unwrap_or("key").to_string();
+        let default_wait_secs = case
+            .default_wait
+            .as_deref()
+            .and_then(relative_secs)
+            .unwrap_or(DEFAULT_WAIT_SECS);
+        let mut base_inputs = serde_json::to_value(&binding.inputs).unwrap_or_default();
+        if !base_inputs.is_object() {
+            base_inputs = serde_json::json!({});
+        }
+        Some((Self { agent_id, binding_name, definition_json, base_inputs, default_wait_secs }, key_type))
+    }
+}
+
+/// `customer.email` → the string at that dotted path, trimmed and lowercased
+/// so `Alma@X.com` and `alma@x.com` are one key.
+pub fn key_at(payload: &serde_json::Value, path: &str) -> Option<String> {
+    let mut cur = payload;
+    for seg in path.split('.').filter(|s| !s.is_empty()) {
+        cur = cur.get(seg)?;
+    }
+    let s = match cur {
+        serde_json::Value::String(s) => s.trim().to_lowercase(),
+        serde_json::Value::Number(n) => n.to_string(),
+        _ => return None,
+    };
+    (!s.is_empty()).then_some(s)
+}
+
+/// `3d`, `12h`, `45m`, `30s`, or combinations (`1d12h`).
+pub fn relative_secs(s: &str) -> Option<i64> {
+    let s = s.trim();
+    if s.is_empty() || !s.chars().next()?.is_ascii_digit() {
+        return None;
+    }
+    let mut total: i64 = 0;
+    let mut n = String::new();
+    for c in s.chars() {
+        if c.is_ascii_digit() {
+            n.push(c);
+            continue;
+        }
+        let v: i64 = n.parse().ok()?;
+        n.clear();
+        total += match c {
+            'd' => v * 86_400,
+            'h' => v * 3_600,
+            'm' => v * 60,
+            's' => v,
+            _ => return None,
+        };
+    }
+    if !n.is_empty() {
+        return None;
+    }
+    Some(total)
+}
+
+/// Signal-with-start. The signal is recorded first (durable, idempotent);
+/// then it either reaches the open case for the key or opens one. The
+/// event's target is the key itself, `<type>:<value>`, which is also what
+/// the case's wait matches on.
+pub fn signal_or_open(
+    store: &Store,
+    b: &CaseBinding<'_>,
+    key_type: &str,
+    key_value: &str,
+    payload: &serde_json::Value,
+    channel: &str,
+    idem_key: &str,
+    t: i64,
+) -> Result<Routed, NeboError> {
+    let key = format!("{key_type}:{key_value}");
+    let event = NewEvent {
+        kind: "signal",
+        target_type: "run",
+        target_id: &key,
+        payload: &payload.to_string(),
+        channel,
+        r#ref: idem_key,
+        idem_key,
+        durable: true,
+        ..Default::default()
+    };
+    if store.engine_enqueue_event(&event)? == db::Enqueued::Duplicate {
+        return Ok(Routed::Duplicate);
+    }
+    if let Some(case) = store.engine_run_for_key(key_type, key_value)? {
+        return Ok(Routed::Signaled { case_id: case.id });
+    }
+
+    let case_id = uuid::Uuid::new_v4().to_string();
+    let session_key = format!("agent:{}:case:{}", b.agent_id, case_id);
+    let mut inputs = b.base_inputs.clone();
+    inputs["_case"] = serde_json::json!({
+        "id": case_id,
+        "key_type": key_type,
+        "key_value": key_value,
+        "binding": b.binding_name,
+        "default_wait_secs": b.default_wait_secs,
+    });
+    store.engine_create_run(&NewRun {
+        id: &case_id,
+        kind: "case",
+        session_key: &session_key,
+        agent_id: b.agent_id,
+        lane: "main",
+        parent_run_id: None,
+        definition: Some(b.definition_json),
+        inputs: Some(&inputs.to_string()),
+    })?;
+    if !store.engine_bind_key(&case_id, key_type, key_value)? {
+        // Lost a race to another opener; that case owns the key now.
+        store.engine_close_run(&case_id, "cancelled", t)?;
+        if let Some(case) = store.engine_run_for_key(key_type, key_value)? {
+            return Ok(Routed::Signaled { case_id: case.id });
+        }
+        return Err(NeboError::Internal("case key bound by nobody".into()));
+    }
+    // The case waits on its key from the start, so a second signal that
+    // lands before the first turn ends is routed to it, not to nowhere.
+    store.engine_declare_wait(
+        &case_id,
+        &NewWait { action: "trigger_child", on_kind: "signal", key: &key, deadline: None, parked: None, reason: "first contact" },
+        t,
+    )?;
+    let case = store.engine_get_run(&case_id)?.ok_or(NeboError::NotFound)?;
+    let claimed = store.engine_claim_events(t, 1)?; // the signal just written, in order
+    if let Some(ev) = claimed.0.into_iter().find(|e| e.idem_key == idem_key) {
+        start_child(store, &case, &ev)?;
+        store.engine_complete_event(ev.id, t)?;
+    }
+    // Otherwise another claimer took it in between; the loop routes it.
+    Ok(Routed::Opened { case_id })
+}
+
+/// `trigger_child`: the parent keeps waiting; a child run carries the event.
+/// The child's inputs name the event that started it so the turn reads the
+/// signal and the parent's history, not a guess.
+pub fn start_child(store: &Store, parent: &EngineRun, event: &EngineEvent) -> Result<(), NeboError> {
+    let mut inputs: serde_json::Value = parent
+        .inputs
+        .as_deref()
+        .and_then(|s| serde_json::from_str(s).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    let payload: serde_json::Value = serde_json::from_str(&event.payload).unwrap_or_else(|_| serde_json::json!(event.payload));
+    crate::events::insert_event_envelope(&mut inputs, &format!("case.{}", event.kind), payload, "case");
+    inputs["_case"]["event_id"] = serde_json::json!(event.id);
+    inputs["_case"]["history"] = serde_json::json!(history_lines(store, &parent.id));
+    let child_id = uuid::Uuid::new_v4().to_string();
+    let kind = if parent.kind == "case" { "case_turn" } else { "task" };
+    store.engine_create_run(&NewRun {
+        id: &child_id,
+        kind,
+        session_key: &parent.session_key,
+        agent_id: &parent.agent_id,
+        lane: &parent.lane,
+        parent_run_id: Some(&parent.id),
+        definition: parent.definition.as_deref(),
+        inputs: Some(&inputs.to_string()),
+    })
+}
+
+/// The last durable events on a case, one line each, for the turn's prompt.
+pub fn history_lines(store: &Store, case_id: &str) -> Vec<String> {
+    store
+        .engine_events_for("run", case_id, 50)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|e| format!("{} [{}] {}", e.id, e.kind, e.payload.chars().take(200).collect::<String>()))
+        .collect()
+}
+
+// ── the turn contract ─────────────────────────────────────────────────────
+
+/// What a finished turn asked to wait for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WaitSpec {
+    pub on_kind: String,
+    pub deadline: Option<i64>,
+    pub reason: String,
+    pub state: Option<String>,
+}
+
+/// `{"wait": {...}}` anywhere in the turn's output, last occurrence wins.
+/// `deadline` is RFC 3339 or a relative span (`3d`, `12h`, `45m`). A
+/// terminal `state` (booked, declined, opted_out, unresponsive,
+/// owner_takeover, closed) closes the case instead.
+pub fn parse_wait(output: &str, t: i64) -> Option<WaitSpec> {
+    let idx = output.rfind("\"wait\"")?;
+    let bytes = output.as_bytes();
+    // Walk outward to the enclosing object: the nearest '{' before "wait"
+    // that parses together with some '}' after it.
+    let mut starts: Vec<usize> = output[..idx].match_indices('{').map(|(i, _)| i).collect();
+    starts.reverse();
+    let ends: Vec<usize> = output[idx..].match_indices('}').map(|(i, _)| idx + i + 1).collect();
+    for s in starts.iter().take(4) {
+        for e in ends.iter().take(6) {
+            if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes[*s..*e]) {
+                if let Some(spec) = wait_from_value(&v, t) {
+                    return Some(spec);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn wait_from_value(v: &serde_json::Value, t: i64) -> Option<WaitSpec> {
+    let w = v.get("wait")?;
+    let state = v.get("state").and_then(|s| s.as_str()).map(str::to_string);
+    let on_kind = w.get("on").and_then(|s| s.as_str()).unwrap_or("signal").to_string();
+    let deadline = w.get("deadline").and_then(|d| d.as_str()).and_then(|d| parse_deadline(d, t));
+    let reason = w
+        .get("reason")
+        .and_then(|s| s.as_str())
+        .map(str::to_string)
+        .or_else(|| v.get("outcome").and_then(|s| s.as_str()).map(str::to_string))
+        .unwrap_or_default();
+    Some(WaitSpec { on_kind, deadline, reason, state })
+}
+
+fn parse_deadline(s: &str, t: i64) -> Option<i64> {
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s.trim()) {
+        return Some(dt.timestamp());
+    }
+    Some(t + relative_secs(s)?)
+}
+
+pub fn is_terminal(state: &str) -> bool {
+    matches!(state, "booked" | "declined" | "opted_out" | "unresponsive" | "owner_takeover" | "closed" | "done")
+}
+
+/// A finished turn: apply what it declared to its case.
+pub fn settle_turn(store: &Store, child: &EngineRun, output: Option<&str>, failed: bool, t: i64) -> Result<(), NeboError> {
+    let Some(parent_id) = child.parent_run_id.as_deref() else {
+        store.engine_set_run_state(&child.id, if failed { "failed" } else { "done" }, t, None)?;
+        return Ok(());
+    };
+    let inputs: serde_json::Value = child.inputs.as_deref().and_then(|s| serde_json::from_str(s).ok()).unwrap_or_default();
+    let key = format!(
+        "{}:{}",
+        inputs["_case"]["key_type"].as_str().unwrap_or(""),
+        inputs["_case"]["key_value"].as_str().unwrap_or("")
+    );
+    let default_secs = inputs["_case"]["default_wait_secs"].as_i64().unwrap_or(DEFAULT_WAIT_SECS);
+
+    let spec = output.and_then(|o| parse_wait(o, t));
+    if let Some(out) = output {
+        store.engine_set_run_result(&child.id, out, None)?;
+    }
+    store.engine_set_run_state(&child.id, if failed { "failed" } else { "done" }, t, None)?;
+
+    // The turn's own words become the case's history.
+    let summary = spec
+        .as_ref()
+        .map(|s| s.reason.clone())
+        .filter(|r| !r.is_empty())
+        .unwrap_or_else(|| if failed { "turn failed".to_string() } else { "turn finished without a declared wait".to_string() });
+    let _ = store.engine_enqueue_event(&NewEvent {
+        kind: if failed { "turn_failed" } else { "turn_result" },
+        target_type: "run",
+        target_id: parent_id,
+        payload: &summary,
+        r#ref: &child.id,
+        idem_key: &format!("turn:{}:result", child.id),
+        durable: true,
+        ..Default::default()
+    });
+    // History rows never wake anything; they are complete on arrival.
+    if let Ok((claimed, _)) = store.engine_claim_events(t, 50) {
+        for e in claimed.iter().filter(|e| e.r#ref == child.id && e.target_type == "run" && e.target_id == parent_id) {
+            store.engine_complete_event(e.id, t)?;
+        }
+    }
+
+    if let Some(state) = spec.as_ref().and_then(|s| s.state.as_deref()).filter(|s| is_terminal(s)) {
+        store.engine_close_run(parent_id, "done", t)?;
+        store.engine_set_run_result(parent_id, state, Some(&summary))?;
+        return Ok(());
+    }
+    let (on_kind, deadline, reason) = match spec {
+        Some(s) => (s.on_kind, s.deadline.or(Some(t + default_secs)), s.reason),
+        None => ("signal".to_string(), Some(t + default_secs), summary.clone()),
+    };
+    store.engine_set_run_result(parent_id, "", Some(&summary))?;
+    store.engine_declare_wait(
+        parent_id,
+        &NewWait { action: "trigger_child", on_kind: &on_kind, key: &key, deadline, parked: None, reason: &reason },
+        t,
+    )?;
+    Ok(())
+}
