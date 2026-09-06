@@ -350,31 +350,47 @@ async fn run_workflow_model(state: &AppState, agent_id: &str, name: &str, req: &
     let emit_source = binding.emit.as_ref().map(|emit| {
         format!("{}.{}", agent.name.to_lowercase().replace(' ', "-"), emit)
     });
+    // Listen before starting so a finish can't slip between the two; the
+    // workflow manager announces every terminal state on the local event
+    // bus. The final read of the row is the answer either way — the event
+    // only says "now".
+    let mut events = state.hub.subscribe();
     let run_id = state
         .workflow_manager
         .run_inline(def_json, inputs, "api", Some(name.to_string()), agent_id, emit_source)
         .await
         .map_err(types::NeboError::Internal)?;
-    let started = std::time::Instant::now();
+    let deadline = tokio::time::Instant::now() + WORKFLOW_WAIT;
     loop {
-        let run = state
-            .store
-            .get_workflow_run(&run_id)?
-            .ok_or_else(|| types::NeboError::Internal("workflow run vanished".into()))?;
-        match run.status.as_str() {
-            "completed" => return Ok(run.output.unwrap_or_default()),
-            "failed" | "cancelled" => {
-                return Err(types::NeboError::Internal(
-                    run.error.unwrap_or_else(|| format!("workflow {}", run.status)),
-                ));
+        if let Some(out) = workflow_outcome(state, &run_id)? {
+            return out;
+        }
+        let ev = tokio::time::timeout_at(deadline, events.recv()).await;
+        match ev {
+            Ok(Ok(ev)) if ev.payload["runId"].as_str() == Some(run_id.as_str()) && ev.event_type.starts_with("workflow_run_") => {}
+            Ok(Ok(_)) => continue,
+            Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => continue,
+            Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) | Err(_) => {
+                return workflow_outcome(state, &run_id)?
+                    .unwrap_or_else(|| Err(types::NeboError::Internal("workflow did not finish in time".into())));
             }
-            _ => {}
         }
-        if started.elapsed() > WORKFLOW_WAIT {
-            return Err(types::NeboError::Internal("workflow did not finish in time".into()));
-        }
-        tokio::time::sleep(Duration::from_millis(750)).await;
     }
+}
+
+/// Some(answer) once the run has reached a terminal state, None while it runs.
+fn workflow_outcome(state: &AppState, run_id: &str) -> Result<Option<Result<String, types::NeboError>>, types::NeboError> {
+    let run = state
+        .store
+        .get_workflow_run(run_id)?
+        .ok_or_else(|| types::NeboError::Internal("workflow run vanished".into()))?;
+    Ok(match run.status.as_str() {
+        "completed" => Some(Ok(run.output.unwrap_or_default())),
+        "failed" | "cancelled" => Some(Err(types::NeboError::Internal(
+            run.error.unwrap_or_else(|| format!("workflow {}", run.status)),
+        ))),
+        _ => None,
+    })
 }
 
 /// A run answers in passes: text, maybe a tool call, more text, done. The
