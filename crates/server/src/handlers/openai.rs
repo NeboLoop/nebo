@@ -38,8 +38,10 @@ fn hash_key(raw: &str) -> String {
 
 // ── Model ids ─────────────────────────────────────────────────────────────
 
-/// What a model id names. `employee/<agent id>` runs the employee's chat;
-/// `workflow/<agent id>/<name>` runs one of its workflows.
+/// What a model id names. `employee/<employee>` runs the employee's chat;
+/// `workflow/<employee>/<name>` runs one of its workflows. `<employee>` is the
+/// name's slug (what we mint and show) or the row id (what keys minted before
+/// slugs carry, still honoured).
 enum Model {
     Employee(String),
     Workflow(String, String),
@@ -56,12 +58,28 @@ fn parse_model(id: &str) -> Option<Model> {
     None
 }
 
-fn employee_model(agent_id: &str) -> String {
-    format!("employee/{agent_id}")
+fn employee_model(agent: &db::models::Agent) -> String {
+    format!("employee/{}", db::agent_slug(&agent.name))
 }
 
-fn workflow_model(agent_id: &str, name: &str) -> String {
-    format!("workflow/{agent_id}/{name}")
+fn workflow_model(agent: &db::models::Agent, name: &str) -> String {
+    format!("workflow/{}/{name}", db::agent_slug(&agent.name))
+}
+
+/// The employee a model id's `<employee>` part names: slug first, row id second.
+fn resolve_agent(store: &db::Store, r: &str) -> Option<db::models::Agent> {
+    store.get_agent_by_slug(r).ok().flatten().or_else(|| store.get_agent(r).ok().flatten())
+}
+
+/// A model id in today's spelling, if it names this employee at all. Keys
+/// minted before slugs hold `employee/<row id>`; this is what makes them equal.
+fn canonical_model(id: &str, agent: &db::models::Agent) -> Option<String> {
+    let mine = |a: &str| a == agent.id || a == db::agent_slug(&agent.name);
+    match parse_model(id)? {
+        Model::Employee(a) if mine(&a) => Some(employee_model(agent)),
+        Model::Workflow(a, w) if mine(&a) => Some(workflow_model(agent, &w)),
+        _ => None,
+    }
 }
 
 // ── Auth ──────────────────────────────────────────────────────────────────
@@ -112,7 +130,10 @@ pub async fn openai_list_models(State(state): State<AppState>, axum::Extension(k
         .models
         .iter()
         .map(|m| {
-            let (kind, label) = match parse_model(m) {
+            // Always today's id, so a client that scripted against an older
+            // spelling sees the current one here.
+            let m = agent.as_ref().and_then(|a| canonical_model(m, a)).unwrap_or_else(|| m.clone());
+            let (kind, label) = match parse_model(&m) {
                 Some(Model::Employee(_)) => ("employee", name.clone()),
                 Some(Model::Workflow(_, w)) => ("workflow", format!("{name} · {w}")),
                 None => ("unknown", m.clone()),
@@ -498,21 +519,32 @@ pub async fn openai_chat_completions(
     axum::Extension(key): axum::Extension<db::models::ApiKey>,
     Json(req): Json<ChatCompletionRequest>,
 ) -> Response {
-    if !key.models.iter().any(|m| m == &req.model) {
-        return openai_error(StatusCode::NOT_FOUND, &format!("The model `{}` does not exist or this key may not call it. See GET /v1/models.", req.model), "invalid_request_error");
-    }
+    let not_found = || openai_error(StatusCode::NOT_FOUND, &format!("The model `{}` does not exist or this key may not call it. See GET /v1/models.", req.model), "invalid_request_error");
     let Some(model) = parse_model(&req.model) else {
-        return openai_error(StatusCode::NOT_FOUND, "Unknown model id", "invalid_request_error");
+        return not_found();
     };
+    let agent_ref = match &model {
+        Model::Employee(a) | Model::Workflow(a, _) => a.as_str(),
+    };
+    let Some(agent) = resolve_agent(&state.store, agent_ref) else {
+        return not_found();
+    };
+    if agent.id != key.agent_id {
+        return openai_error(StatusCode::FORBIDDEN, "This key belongs to a different employee.", "invalid_request_error");
+    }
+    let Some(canon) = canonical_model(&req.model, &agent) else {
+        return not_found();
+    };
+    if !key.models.iter().any(|m| canonical_model(m, &agent).as_deref() == Some(canon.as_str())) {
+        return not_found();
+    }
+    let agent_id = agent.id.clone();
     let id = completion_id();
     let model_id = req.model.clone();
     info!(key = %key.label, model = %model_id, stream = req.stream, "api: chat completion");
 
     match model {
-        Model::Workflow(agent_id, name) => {
-            if agent_id != key.agent_id {
-                return openai_error(StatusCode::FORBIDDEN, "This key belongs to a different employee.", "invalid_request_error");
-            }
+        Model::Workflow(_, name) => {
             if req.stream {
                 // Keepalive comments hold the connection while the workflow runs;
                 // the whole output arrives as one chunk, then the stop.
@@ -687,7 +719,7 @@ pub async fn list_agent_api_keys(State(state): State<AppState>, Path(id): Path<S
     let isolated = crate::workflow_manager::agent_context_isolated(&state.store, &id);
     let memory = if isolated { "isolated" } else { "shared" };
     let mut models = vec![serde_json::json!({
-        "id": employee_model(&id),
+        "id": employee_model(&agent),
         "kind": "employee",
         "name": agent.name,
         "memory": memory,
@@ -697,7 +729,7 @@ pub async fn list_agent_api_keys(State(state): State<AppState>, Path(id): Path<S
         names.sort();
         for w in names {
             models.push(serde_json::json!({
-                "id": workflow_model(&id, w),
+                "id": workflow_model(&agent, w),
                 "kind": "workflow",
                 "name": w,
                 "memory": memory,
@@ -765,12 +797,12 @@ pub async fn create_agent_api_key(
     }
     let config = napp::agent::parse_agent_config(&agent.frontmatter)
         .map_err(|e| to_error_response(types::NeboError::Internal(format!("parse agent config: {e}"))))?;
-    let mut models = vec![employee_model(&id)];
+    let mut models = vec![employee_model(&agent)];
     for w in &req.workflows {
         if !config.workflows.contains_key(w) {
             return Err(to_error_response(types::NeboError::Validation(format!("no workflow named {w}"))));
         }
-        models.push(workflow_model(&id, w));
+        models.push(workflow_model(&agent, w));
     }
     let mut raw = [0u8; 32];
     rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut raw);
@@ -809,7 +841,19 @@ mod tests {
         assert!(matches!(parse_model("workflow/abc/write-proposal"), Some(Model::Workflow(a, w)) if a == "abc" && w == "write-proposal"));
         assert!(parse_model("gpt-4o").is_none());
         assert!(parse_model("workflow/abc").is_none());
-        assert_eq!(employee_model("abc"), "employee/abc");
+    }
+
+    #[test]
+    fn model_ids_are_name_slugs_and_old_row_id_form_still_means_the_same_employee() {
+        let mut agent = db::models::Agent::default();
+        agent.id = "ff58-row-id".into();
+        agent.name = "Executive Assistant".into();
+        assert_eq!(employee_model(&agent), "employee/executive-assistant");
+        assert_eq!(workflow_model(&agent, "write-proposal"), "workflow/executive-assistant/write-proposal");
+        assert_eq!(canonical_model("employee/ff58-row-id", &agent).as_deref(), Some("employee/executive-assistant"));
+        assert_eq!(canonical_model("workflow/ff58-row-id/x", &agent).as_deref(), Some("workflow/executive-assistant/x"));
+        assert_eq!(canonical_model("employee/someone-else", &agent), None);
+        assert_eq!(canonical_model("gpt-4o", &agent), None);
     }
 
     #[test]

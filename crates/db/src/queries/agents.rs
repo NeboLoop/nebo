@@ -5,6 +5,41 @@ use crate::Store;
 use crate::models::{Agent, AgentWorkflow, EmitSource};
 use types::NeboError;
 
+/// An employee's public name: lowercased, runs of anything that isn't a letter
+/// or digit collapsed to one dash. Two names with the same slug are the same
+/// name, so uniqueness and the API's `employee/<slug>` both key on this.
+pub fn agent_slug(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    let mut dash = false;
+    for c in name.trim().chars() {
+        if c.is_alphanumeric() {
+            out.extend(c.to_lowercase());
+            dash = false;
+        } else if !dash && !out.is_empty() {
+            out.push('-');
+            dash = true;
+        }
+    }
+    while out.ends_with('-') {
+        out.pop();
+    }
+    out
+}
+
+#[cfg(test)]
+mod slug_tests {
+    use super::agent_slug;
+
+    #[test]
+    fn slug_collapses_case_space_and_punctuation() {
+        assert_eq!(agent_slug("Executive Assistant"), "executive-assistant");
+        assert_eq!(agent_slug("  Frontend Designer/Coder Agent "), "frontend-designer-coder-agent");
+        assert_eq!(agent_slug("Sales-Advisor"), agent_slug("sales advisor"));
+        assert_eq!(agent_slug("Nebo!!"), "nebo");
+        assert_eq!(agent_slug("---"), "");
+    }
+}
+
 impl Store {
     pub fn list_agents(&self, limit: i64, offset: i64) -> Result<Vec<Agent>, NeboError> {
         let conn = self.conn()?;
@@ -43,6 +78,77 @@ impl Store {
         .db_err("get_agent")
     }
 
+    /// The employee named like `name`, matched on slug so "Sales Advisor" and
+    /// "sales-advisor" are the same name. `except_id` is the row being renamed.
+    pub fn agent_name_taken(&self, name: &str, except_id: Option<&str>) -> Result<Option<String>, NeboError> {
+        let slug = agent_slug(name);
+        if slug.is_empty() {
+            return Ok(None);
+        }
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare("SELECT id, name FROM agents").db_err("agent_name_taken")?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+            .db_err("agent_name_taken")?;
+        for row in rows.flatten() {
+            if except_id != Some(row.0.as_str()) && agent_slug(&row.1) == slug {
+                return Ok(Some(row.1));
+            }
+        }
+        Ok(None)
+    }
+
+    /// The employee whose name slugs to `slug` — how the public API names one.
+    pub fn get_agent_by_slug(&self, slug: &str) -> Result<Option<Agent>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, kind, name, description, agent_md, frontmatter,
+                        pricing_model, pricing_cost, is_enabled, installed_at, updated_at,
+                        napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config, soul, rules, handle, color, loop_exposed, loop_agent_id, department, voice, name_locked
+                 FROM agents",
+            )
+            .db_err("get_agent_by_slug")?;
+        let rows = stmt.query_map([], row_to_agent).db_err("get_agent_by_slug")?;
+        Ok(rows.flatten().find(|a| agent_slug(&a.name) == slug))
+    }
+
+    /// Give later duplicates a numbered name so every employee name is unique;
+    /// the renamed rows lock their name so a manifest sync can't undo it.
+    /// Returns (id, new name) per rename. Idempotent: no duplicates, no writes.
+    pub fn dedupe_agent_names(&self) -> Result<Vec<(String, String)>, NeboError> {
+        let conn = self.conn()?;
+        let rows: Vec<(String, String)> = {
+            let mut stmt = conn
+                .prepare("SELECT id, name FROM agents ORDER BY installed_at, rowid")
+                .db_err("dedupe_agent_names")?;
+            let it = stmt
+                .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+                .db_err("dedupe_agent_names")?;
+            it.flatten().collect()
+        };
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut renamed = Vec::new();
+        for (id, name) in rows {
+            let slug = agent_slug(&name);
+            if seen.insert(slug.clone()) {
+                continue;
+            }
+            let fresh = (2..)
+                .map(|n| format!("{} {n}", name.trim()))
+                .find(|candidate| !seen.contains(&agent_slug(candidate)))
+                .expect("an unbounded counter finds a free name");
+            conn.execute(
+                "UPDATE agents SET name = ?2, name_locked = 1, updated_at = unixepoch() WHERE id = ?1",
+                params![id, fresh],
+            )
+            .db_err("dedupe_agent_names")?;
+            seen.insert(agent_slug(&fresh));
+            renamed.push((id, fresh));
+        }
+        Ok(renamed)
+    }
+
     pub fn create_agent(
         &self,
         id: &str,
@@ -54,6 +160,9 @@ impl Store {
         pricing_model: Option<&str>,
         pricing_cost: Option<f64>,
     ) -> Result<Agent, NeboError> {
+        if let Some(other) = self.agent_name_taken(name, None)? {
+            return Err(NeboError::Validation(format!("An employee named \"{other}\" already exists. Pick a different name.")));
+        }
         let conn = self.conn()?;
         conn.query_row(
             "INSERT INTO agents (id, kind, name, description, agent_md, frontmatter,
@@ -84,6 +193,11 @@ impl Store {
         loop_exposed: Option<bool>,
         voice: Option<&str>,
     ) -> Result<(), NeboError> {
+        if !name.trim().is_empty() {
+            if let Some(other) = self.agent_name_taken(name, Some(id))? {
+                return Err(NeboError::Validation(format!("An employee named \"{other}\" already exists. Pick a different name.")));
+            }
+        }
         let conn = self.conn()?;
         // A blank name is never written and never locks: locking one would leave
         // the row nameless with no way back, since sync_agent_identity only

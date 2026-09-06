@@ -20,8 +20,10 @@
   import * as api from '$lib/api/nebo';
   import type * as components from '$lib/api/neboComponents';
   import { getWebSocketClient } from '$lib/websocket/client';
-  import { AGENT_COLORS_MAP, assignAgentColors } from '$lib/tokens';
+  import { assignAgentColors } from '$lib/tokens';
+  import AgentAvatar from '$lib/components/AgentAvatar.svelte';
   import { formatTime, formatRelative } from '$lib/time';
+  import { storage } from '$lib/storage';
 
   // The phone has no sidebar on screen: the header's back chevron opens the
   // employee list the way every thread page does. The bell opens the Inbox.
@@ -41,7 +43,11 @@
   // Where Nebo opens: a user preference, so the phone and the desktop agree.
   let startHere = $state(false);
   let error = $state('');
-  let view = $state<'grid' | 'list'>('grid');
+  // Grid or list is a per-device habit, so it lives in base-scoped storage
+  // rather than the account's preferences.
+  const VIEW_KEY = 'dashboard:view';
+  let view = $state<'grid' | 'list'>(storage.get(VIEW_KEY) === 'list' ? 'list' : 'grid');
+  $effect(() => storage.set(VIEW_KEY, view));
   let statusFilter = $state<Status>('all');
   let showAllRuns = $state(false);
   let timer: ReturnType<typeof setInterval> | null = null;
@@ -130,14 +136,8 @@
   // The same assignment the sidebar makes (user-set colour first, then a
   // stable fallback per employee), so a card matches its row.
   const colors = $derived(assignAgentColors(data?.employees ?? []));
-  function colorOf(agentId: string) {
-    return AGENT_COLORS_MAP[colors[agentId] ?? ''] ?? AGENT_COLORS_MAP['teal'];
-  }
   function outcomeClass(outcome: string) {
     return outcome === 'done' ? 'text-success' : outcome === 'stopped' ? 'text-error' : outcome === 'waiting' ? 'text-warning' : outcome === 'skipped' ? 'text-base-content/60' : 'text-success';
-  }
-  function initialOf(name: string) {
-    return (name.trim()[0] ?? '?').toUpperCase();
   }
   function openChat(e: components.DashboardEmployee) {
     // An isolated employee keeps one thread per matter: open its list, the
@@ -216,7 +216,7 @@
     </div>
   </div>
 
-  <div class="flex-1 overflow-auto">
+  <div class="flex-1 overflow-auto bg-base-300">
     <!-- One explicit minmax(0,1fr) track: an implicit auto track lets a two-column
          section size itself to its content and run past a phone screen. -->
     <div class="max-w-[1120px] w-full min-w-0 mx-auto px-3 md:px-5 py-3 md:py-5 grid grid-cols-[minmax(0,1fr)] gap-4 md:gap-5">
@@ -228,38 +228,38 @@
         <!-- The story in four numbers: who is working, who needs me, how much
              work happened, how much of it happened without me. -->
         <section class="grid grid-cols-2 lg:grid-cols-4 gap-3 md:gap-4 min-w-0">
-          <div class="rounded-2xl border p-4 min-w-0 flex flex-col gap-2.5 {data.counts.working > 0 ? 'border-success/40 bg-success/5' : 'border-base-300'}">
+          <div class="rounded-2xl border p-4 min-w-0 flex flex-col gap-2.5 bg-base-100 shadow-sm {data.counts.working > 0 ? 'border-success/40 bg-success/5' : 'border-base-300'}">
             <div class="w-9 h-9 rounded-xl flex items-center justify-center bg-primary/10 text-primary"><Users class="w-[18px] h-[18px]" /></div>
             <div class="flex items-center gap-2">
-              <span class="text-[26px] md:text-[30px] font-semibold leading-none tracking-tight tabular-nums">{data.counts.working}</span>
+              <span class="text-3xl font-semibold leading-none tracking-tight tabular-nums">{data.counts.working}</span>
               {#if data.counts.working > 0}<i class="w-2.5 h-2.5 rounded-full bg-success animate-pulse" aria-hidden="true"></i>{/if}
             </div>
             <div>
-              <div class="text-[13px] font-medium">{$t('dashboard.workingNow')}</div>
+              <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('dashboard.workingNow')}</div>
               <div class="text-xs text-base-content/50 mt-0.5">{$t('dashboard.ofEmployees', { values: { n: data.counts.employees, paused: data.counts.paused } })}</div>
             </div>
           </div>
-          <div class="rounded-2xl border p-4 min-w-0 flex flex-col gap-2.5 {data.counts.waiting > 0 ? 'border-warning/60 bg-warning/10' : 'border-base-300'}">
+          <div class="rounded-2xl border p-4 min-w-0 flex flex-col gap-2.5 bg-base-100 shadow-sm {data.counts.waiting > 0 ? 'border-warning/60 bg-warning/10' : 'border-base-300'}">
             <div class="w-9 h-9 rounded-xl flex items-center justify-center bg-warning/15 text-warning"><Clock class="w-[18px] h-[18px]" /></div>
-            <span class="text-[26px] md:text-[30px] font-semibold leading-none tracking-tight tabular-nums">{data.counts.waiting}</span>
+            <span class="text-3xl font-semibold leading-none tracking-tight tabular-nums">{data.counts.waiting}</span>
             <div>
-              <div class="text-[13px] font-medium">{$t('dashboard.waitingOnYou')}</div>
+              <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('dashboard.waitingOnYou')}</div>
               <div class="text-xs text-base-content/50 mt-0.5 truncate">{data.approvals[0] ? `${data.approvals[0].agentName}, ${data.approvals[0].summary}` : $t('dashboard.nothingRightNow')}</div>
             </div>
           </div>
-          <div class="rounded-2xl border border-base-300 p-4 min-w-0 flex flex-col gap-2.5">
+          <div class="rounded-2xl border border-base-content/15 bg-base-100 shadow-sm p-4 min-w-0 flex flex-col gap-2.5">
             <div class="w-9 h-9 rounded-xl flex items-center justify-center bg-success/15 text-success"><TrendingUp class="w-[18px] h-[18px]" /></div>
-            <span class="text-[26px] md:text-[30px] font-semibold leading-none tracking-tight tabular-nums">{data.counts.runsToday}</span>
+            <span class="text-3xl font-semibold leading-none tracking-tight tabular-nums">{data.counts.runsToday}</span>
             <div>
-              <div class="text-[13px] font-medium">{$t('dashboard.runsToday')}</div>
+              <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('dashboard.runsToday')}</div>
               <div class="text-xs text-base-content/50 mt-0.5">{$t('dashboard.runsTodayDetail', { values: { done: data.counts.doneToday, skipped: data.counts.skippedToday, chats: data.counts.chatTurnsToday, stopped: data.counts.stoppedToday } })}</div>
             </div>
           </div>
-          <div class="rounded-2xl border border-base-300 p-4 min-w-0 flex flex-col gap-2.5">
+          <div class="rounded-2xl border border-base-content/15 bg-base-100 shadow-sm p-4 min-w-0 flex flex-col gap-2.5">
             <div class="w-9 h-9 rounded-xl flex items-center justify-center bg-base-content/8 text-base-content/70"><BadgeCheck class="w-[18px] h-[18px]" /></div>
-            <span class="text-[26px] md:text-[30px] font-semibold leading-none tracking-tight tabular-nums">{ended.total ? `${ended.pct}%` : '–'}</span>
+            <span class="text-3xl font-semibold leading-none tracking-tight tabular-nums">{ended.total ? `${ended.pct}%` : '–'}</span>
             <div>
-              <div class="text-[13px] font-medium">{$t('dashboard.workedWithoutYou')}</div>
+              <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('dashboard.workedWithoutYou')}</div>
               <div class="text-xs text-base-content/50 mt-0.5">{ended.total ? $t('dashboard.workedWithoutYouSub', { values: { n: ended.done + ended.skipped, total: ended.total } }) : $t('dashboard.noRunsYet')}</div>
             </div>
           </div>
@@ -267,10 +267,9 @@
 
         <!-- Needs your okay: the interrupt. Cards stay in place; this is what moves. -->
         {#each data.approvals as a (a.id)}
-          {@const ac = colorOf(a.agentId)}
           <section class="rounded-2xl border border-warning/60 bg-warning/10 px-4 py-3 flex flex-wrap items-center gap-3">
             <div class="flex items-center gap-2.5 min-w-0">
-              <div class="w-7 h-7 rounded-lg flex items-center justify-center font-mono text-xs font-semibold shrink-0 {ac.bgClass} {ac.inkClass}">{initialOf(a.agentName)}</div>
+              <AgentAvatar name={a.agentName} color={colors[a.agentId]} size="sm" />
               <p class="m-0 text-[13px]"><b>{$t('dashboard.needsOkay', { values: { name: a.agentName } })}</b> {a.summary} <span class="text-base-content/50">· {formatRelative(a.since * 1000, 'short')}</span></p>
             </div>
             <div class="flex gap-1.5 ml-auto shrink-0">
@@ -301,22 +300,24 @@
           {#if view === 'grid'}
             <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3 md:gap-4 min-w-0">
               {#each shown as e (e.id)}
-                {@const ac = colorOf(e.id)}
                 {@const working = e.status === 'working'}
                 <!-- Every card uses the same four slots, so a working card is
                      marked, not taller: name row, what it is on, the live line
                      (or what comes next), the actions. -->
-                <div class="rounded-2xl border p-4 grid grid-rows-[auto_1fr_auto_auto] gap-3 min-w-0 {working ? 'border-success/40 bg-success/5' : e.status === 'waiting' ? 'border-warning/50 bg-warning/5' : 'border-base-300 bg-base-100'}">
-                  <div class="flex items-center gap-2.5 min-w-0">
-                    <div class="w-7 h-7 rounded-lg flex items-center justify-center font-mono text-xs font-semibold shrink-0 {ac.bgClass} {ac.inkClass}">{initialOf(e.name)}</div>
-                    <span class="font-medium text-sm truncate">{e.name}</span>
-                    <span class="ml-auto text-[10px] font-semibold uppercase tracking-wider px-2 py-px rounded-full shrink-0 flex items-center gap-1 {working ? 'bg-success/15 text-success' : e.status === 'waiting' ? 'bg-warning/15 text-warning' : 'bg-base-content/5 text-base-content/55'}">
-                      {#if working}<i class="w-1.5 h-1.5 rounded-full bg-success animate-pulse" aria-hidden="true"></i>{/if}{$t(`dashboard.status.${e.status}`)}
-                    </span>
+                <div class="rounded-2xl border p-4 grid grid-rows-[auto_1fr_auto_auto] gap-3 min-w-0 shadow-sm {working ? 'border-success/40 bg-success/5' : e.status === 'waiting' ? 'border-warning/50 bg-warning/5' : 'border-base-content/15 bg-base-100'}">
+                  <div class="flex items-center gap-3 min-w-0">
+                    <AgentAvatar name={e.name} color={colors[e.id]} />
+                    <span class="font-semibold text-[15px] truncate">{e.name}</span>
+                    <!-- No pill means idle: the pill is reserved for a state worth noticing. -->
+                    {#if e.status !== 'idle'}
+                      <span class="ml-auto text-[10px] font-semibold uppercase tracking-wider px-2 py-px rounded-full shrink-0 flex items-center gap-1 {working ? 'bg-success/15 text-success' : e.status === 'waiting' ? 'bg-warning/15 text-warning' : 'bg-base-content/5 text-base-content/55'}">
+                        {#if working}<i class="w-1.5 h-1.5 rounded-full bg-success animate-pulse" aria-hidden="true"></i>{/if}{$t(`dashboard.status.${e.status}`)}
+                      </span>
+                    {/if}
                   </div>
                   <div class="min-w-0 grid content-start gap-1.5">
                     {#if working}
-                      <div class="text-[13px] font-medium leading-snug line-clamp-2">{e.task}</div>
+                      <div class="text-sm font-medium leading-snug line-clamp-2">{e.task}</div>
                       {#if e.step && e.stepCount}
                         <div class="flex items-center gap-2 text-xs text-base-content/60">
                           <span class="shrink-0">{$t('dashboard.stepsOf', { values: { step: e.step, total: e.stepCount } })}</span>
@@ -326,13 +327,13 @@
                         </div>
                       {/if}
                     {:else if e.lastDetail}
-                      <div class="text-[13px] leading-snug line-clamp-2 {outcomeClass(e.lastOutcome ?? '')}">{e.lastDetail}</div>
+                      <div class="text-sm leading-snug line-clamp-2 {outcomeClass(e.lastOutcome ?? '')}">{e.lastDetail}</div>
                       {#if e.lastRunAt}<div class="text-xs text-base-content/50">{formatRelative(e.lastRunAt * 1000, 'short')}</div>{/if}
                     {:else}
-                      <div class="text-[13px] leading-snug line-clamp-2 text-base-content/80">{#if e.isolated && e.matters > 0}<span class="text-base-content/50">{$t('dashboard.matters', { values: { n: e.matters } })} · </span>{/if}{e.task}</div>
+                      <div class="text-sm leading-snug line-clamp-2 text-base-content/70">{#if e.isolated && e.matters > 0}<span class="text-base-content/50">{$t('dashboard.matters', { values: { n: e.matters } })} · </span>{/if}{e.task}</div>
                     {/if}
                   </div>
-                  <div class="border-t border-base-300/80 pt-2.5 flex items-center gap-2 text-xs min-w-0 {working ? 'text-success' : 'text-base-content/60'}">
+                  <div class="border-t border-base-300/80 pt-2.5 flex items-center gap-2 text-xs min-w-0 {working ? 'text-success' : 'text-base-content/50'}">
                     {#if working}<i class="w-1.5 h-1.5 rounded-full bg-success shrink-0" aria-hidden="true"></i>{/if}
                     <span class="truncate">{e.activity}</span>
                   </div>
@@ -343,7 +344,7 @@
                       <button class="link link-primary no-underline" onclick={() => openChat(e)}>{e.isolated ? $t('dashboard.openMatters') : $t('dashboard.openChat')}</button>
                     {/if}
                     <button class="link link-primary no-underline" onclick={() => openRuns(e.id)}>{$t('dashboard.runs')}</button>
-                    {#if e.lastActivityAt}<span class="ml-auto text-base-content/45 tabular-nums">{formatTime(e.lastActivityAt * 1000)}</span>{/if}
+                    {#if e.lastActivityAt}<span class="ml-auto text-base-content/50 font-mono tabular-nums">{formatTime(e.lastActivityAt * 1000)}</span>{/if}
                   </div>
                 </div>
               {:else}
@@ -351,18 +352,17 @@
               {/each}
             </div>
           {:else}
-            <div class="rounded-2xl border border-base-300 divide-y divide-base-300 min-w-0">
+            <div class="rounded-2xl border border-base-content/15 bg-base-100 shadow-sm divide-y divide-base-300 min-w-0">
               {#each shown as e (e.id)}
-                {@const ac = colorOf(e.id)}
                 {@const working = e.status === 'working'}
-                <div class="px-4 py-2.5 grid grid-cols-[28px_minmax(0,1fr)_auto] md:grid-cols-[28px_minmax(0,1.1fr)_minmax(0,2fr)_auto] items-center gap-3 min-w-0 {working ? 'bg-success/5' : ''}">
-                  <div class="w-7 h-7 rounded-lg flex items-center justify-center font-mono text-xs font-semibold {ac.bgClass} {ac.inkClass}">{initialOf(e.name)}</div>
-                  <div class="min-w-0 flex items-center gap-2">
-                    <span class="font-medium text-sm truncate">{e.name}</span>
-                    <span class="text-[10px] font-semibold uppercase tracking-wider px-2 py-px rounded-full shrink-0 {working ? 'bg-success/15 text-success' : e.status === 'waiting' ? 'bg-warning/15 text-warning' : 'bg-base-content/5 text-base-content/55'}">{$t(`dashboard.status.${e.status}`)}</span>
-                  </div>
+                <!-- Real columns: avatar, name, status, detail, actions. Every
+                     row's status and detail start on the same x. -->
+                <div class="px-4 py-2.5 grid grid-cols-[36px_minmax(0,1fr)_auto_auto] md:grid-cols-[36px_minmax(0,1.2fr)_5.5rem_minmax(0,2fr)_auto] items-center gap-3 min-w-0 {working ? 'bg-success/5' : ''}">
+                  <AgentAvatar name={e.name} color={colors[e.id]} />
+                  <span class="font-semibold text-[15px] truncate min-w-0">{e.name}</span>
+                  <span class="justify-self-start text-[10px] font-semibold uppercase tracking-wider px-2 py-px rounded-full {working ? 'bg-success/15 text-success' : e.status === 'waiting' ? 'bg-warning/15 text-warning' : 'bg-base-content/5 text-base-content/55'} {e.status === 'idle' ? 'invisible' : ''}">{$t(`dashboard.status.${e.status}`)}</span>
                   <div class="hidden md:block min-w-0 text-xs truncate {working ? 'text-success' : 'text-base-content/60'}">{working ? `${e.task} · ${e.activity}` : e.lastDetail ? `${e.lastDetail} · ${e.activity}` : e.activity}</div>
-                  <div class="flex items-center gap-3 text-xs shrink-0">
+                  <div class="grid grid-cols-[6.5rem_auto] items-center gap-3 text-xs shrink-0">
                     {#if working}
                       <button class="link link-primary no-underline font-medium" onclick={() => openWork(e)}>{e.runId ? $t('dashboard.openRun') : $t('dashboard.openChat')}</button>
                     {:else}
@@ -380,7 +380,7 @@
 
         <!-- How much work happened, and how much of it happened without you -->
         <section class="grid grid-cols-1 md:grid-cols-[minmax(0,3fr)_minmax(0,2fr)] gap-3 md:gap-4 min-w-0">
-          <div class="rounded-2xl border border-base-300 p-4 min-w-0">
+          <div class="rounded-2xl border border-base-content/15 bg-base-100 shadow-sm p-4 min-w-0">
             <div class="flex items-baseline justify-between gap-3 mb-4">
               <h3 class="text-[14px] font-semibold">{$t('dashboard.activityOverTime')}</h3>
               <span class="text-xs text-base-content/50">{$t('dashboard.last14Days')}</span>
@@ -417,7 +417,7 @@
               <span><i class="inline-block w-2 h-2 rounded-full bg-error mr-1"></i>{$t('dashboard.stopped')}</span>
             </div>
           </div>
-          <div class="rounded-2xl border border-base-300 p-4 min-w-0">
+          <div class="rounded-2xl border border-base-content/15 bg-base-100 shadow-sm p-4 min-w-0">
             <div class="flex items-baseline justify-between gap-3 mb-4">
               <h3 class="text-[14px] font-semibold">{$t('dashboard.workedWithoutYou')}</h3>
               <span class="text-xs text-base-content/50">{$t('dashboard.last14DaysCount', { values: { n: ended.total } })}</span>
@@ -452,10 +452,9 @@
           <!-- Phone: one stacked row per run, nothing scrolls sideways. -->
           <ul class="md:hidden divide-y divide-base-300 border-y border-base-300 -mx-3 px-3">
             {#each visibleRuns as r (r.id)}
-              {@const ac = colorOf(r.agentId)}
               <li class="py-2.5 grid gap-1 min-w-0">
                 <div class="flex items-center gap-2 min-w-0">
-                  <div class="w-[22px] h-[22px] rounded-md flex items-center justify-center font-mono text-[10px] font-semibold shrink-0 {ac.bgClass} {ac.inkClass}">{initialOf(r.agentName)}</div>
+                  <AgentAvatar name={r.agentName} color={colors[r.agentId]} size="xs" />
                   <span class="text-[13px] font-medium truncate">{r.agentName}</span>
                   <span class="ml-auto text-[11px] text-base-content/50 whitespace-nowrap tabular-nums">{formatTime(r.startedAt * 1000)}</span>
                 </div>
@@ -469,7 +468,7 @@
               <li class="py-3 text-xs text-base-content/50">{$t('dashboard.noRunsYet')}</li>
             {/each}
           </ul>
-          <div class="hidden md:block rounded-2xl border border-base-300 overflow-x-auto min-w-0">
+          <div class="hidden md:block rounded-2xl border border-base-content/15 bg-base-100 shadow-sm overflow-x-auto min-w-0">
             <table class="w-full min-w-[640px] border-collapse text-[13px]">
               <thead>
                 <tr class="text-left text-[11px] font-semibold uppercase tracking-wider text-base-content/50">
@@ -482,11 +481,10 @@
               </thead>
               <tbody>
                 {#each visibleRuns as r, i (r.id)}
-                  {@const ac = colorOf(r.agentId)}
                   {@const last = i === visibleRuns.length - 1}
                   <tr>
                     <td class="py-2.5 pl-4 pr-2 text-xs text-base-content/60 whitespace-nowrap tabular-nums {last ? '' : 'border-b border-base-300'}">{formatTime(r.startedAt * 1000)}</td>
-                    <td class="py-2.5 pr-2 {last ? '' : 'border-b border-base-300'}"><div class="flex items-center gap-2"><div class="w-[22px] h-[22px] rounded-md flex items-center justify-center font-mono text-[10px] font-semibold shrink-0 {ac.bgClass} {ac.inkClass}">{initialOf(r.agentName)}</div><span class="truncate">{r.agentName}</span></div></td>
+                    <td class="py-2.5 pr-2 {last ? '' : 'border-b border-base-300'}"><div class="flex items-center gap-2"><AgentAvatar name={r.agentName} color={colors[r.agentId]} size="xs" /><span class="truncate">{r.agentName}</span></div></td>
                     <td class="py-2.5 pr-2 truncate max-w-[280px] {last ? '' : 'border-b border-base-300'}">{r.title}</td>
                     <td class="py-2.5 pr-2 text-xs font-medium {outcomeClass(r.outcome)} {last ? '' : 'border-b border-base-300'}">{r.detail}</td>
                     <td class="py-2.5 pr-4 text-right {last ? '' : 'border-b border-base-300'}"><button class="link link-primary no-underline text-xs" onclick={() => openRuns(r.agentId)}>{$t('dashboard.runs')}</button></td>

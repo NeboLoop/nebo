@@ -1166,6 +1166,17 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
             )) as Arc<dyn tools::MemoryEmbedder>
         });
 
+    // Employee names are unique (the public API names an employee by its name's
+    // slug). Rows from before the rule get a numbered name once, here.
+    match store.dedupe_agent_names() {
+        Ok(renamed) => {
+            for (id, name) in renamed {
+                tracing::warn!(agent = %id, %name, "renamed a duplicate employee name so every name is unique");
+            }
+        }
+        Err(e) => tracing::warn!(error = %e, "could not check employee names for duplicates"),
+    }
+
     // Background boot maintenance for vector recall, skipped entirely when no
     // embedding provider exists:
     // 1. backfill memories that have no embeddings (victims of the

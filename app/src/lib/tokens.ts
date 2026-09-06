@@ -64,19 +64,31 @@ export function ensureAgentColor(shortId: string): void {
   };
 }
 
-// Agent color map by color name (used for agent avatar backgrounds)
-export const AGENT_COLORS_MAP: Record<string, { bgClass: string; inkClass: string; borderClass: string }> = {
-  violet: { bgClass: 'bg-[var(--agent-violet-bg)]', inkClass: 'text-[var(--agent-violet-ink)]', borderClass: 'border-[var(--agent-violet-ink)]' },
-  green:  { bgClass: 'bg-[var(--agent-green-bg)]',  inkClass: 'text-[var(--agent-green-ink)]',  borderClass: 'border-[var(--agent-green-ink)]' },
-  sky:    { bgClass: 'bg-[var(--agent-sky-bg)]',    inkClass: 'text-[var(--agent-sky-ink)]',    borderClass: 'border-[var(--agent-sky-ink)]' },
-  amber:  { bgClass: 'bg-[var(--agent-amber-bg)]',  inkClass: 'text-[var(--agent-amber-ink)]',  borderClass: 'border-[var(--agent-amber-ink)]' },
-  rose:   { bgClass: 'bg-[var(--agent-rose-bg)]',   inkClass: 'text-[var(--agent-rose-ink)]',   borderClass: 'border-[var(--agent-rose-ink)]' },
-  mint:   { bgClass: 'bg-[var(--agent-mint-bg)]',   inkClass: 'text-[var(--agent-mint-ink)]',   borderClass: 'border-[var(--agent-mint-ink)]' },
-  slate:  { bgClass: 'bg-[var(--agent-slate-bg)]',  inkClass: 'text-[var(--agent-slate-ink)]',  borderClass: 'border-[var(--agent-slate-ink)]' },
-  peach:  { bgClass: 'bg-[var(--agent-peach-bg)]',  inkClass: 'text-[var(--agent-peach-ink)]',  borderClass: 'border-[var(--agent-peach-ink)]' },
-  lilac:  { bgClass: 'bg-[var(--agent-lilac-bg)]',  inkClass: 'text-[var(--agent-lilac-ink)]',  borderClass: 'border-[var(--agent-lilac-ink)]' },
-  teal:   { bgClass: 'bg-primary/15',               inkClass: 'text-primary',                   borderClass: 'border-primary' },
+// Agent color map by color name (used for agent avatar backgrounds).
+// `solidClass` is the avatar chip: ink as fill, page surface as the letters,
+// so contrast holds in both themes. Spelled out per colour because Tailwind
+// only emits classes it can read from source — a class built at runtime
+// renders as nothing.
+export const AGENT_COLORS_MAP: Record<string, { bgClass: string; inkClass: string; borderClass: string; solidClass: string }> = {
+  violet: { bgClass: 'bg-[var(--agent-violet-bg)]', inkClass: 'text-[var(--agent-violet-ink)]', borderClass: 'border-[var(--agent-violet-ink)]', solidClass: 'bg-[var(--agent-violet-ink)] text-base-100' },
+  green:  { bgClass: 'bg-[var(--agent-green-bg)]',  inkClass: 'text-[var(--agent-green-ink)]',  borderClass: 'border-[var(--agent-green-ink)]',  solidClass: 'bg-[var(--agent-green-ink)] text-base-100' },
+  sky:    { bgClass: 'bg-[var(--agent-sky-bg)]',    inkClass: 'text-[var(--agent-sky-ink)]',    borderClass: 'border-[var(--agent-sky-ink)]',    solidClass: 'bg-[var(--agent-sky-ink)] text-base-100' },
+  amber:  { bgClass: 'bg-[var(--agent-amber-bg)]',  inkClass: 'text-[var(--agent-amber-ink)]',  borderClass: 'border-[var(--agent-amber-ink)]',  solidClass: 'bg-[var(--agent-amber-ink)] text-base-100' },
+  rose:   { bgClass: 'bg-[var(--agent-rose-bg)]',   inkClass: 'text-[var(--agent-rose-ink)]',   borderClass: 'border-[var(--agent-rose-ink)]',   solidClass: 'bg-[var(--agent-rose-ink)] text-base-100' },
+  mint:   { bgClass: 'bg-[var(--agent-mint-bg)]',   inkClass: 'text-[var(--agent-mint-ink)]',   borderClass: 'border-[var(--agent-mint-ink)]',   solidClass: 'bg-[var(--agent-mint-ink)] text-base-100' },
+  slate:  { bgClass: 'bg-[var(--agent-slate-bg)]',  inkClass: 'text-[var(--agent-slate-ink)]',  borderClass: 'border-[var(--agent-slate-ink)]',  solidClass: 'bg-[var(--agent-slate-ink)] text-base-100' },
+  peach:  { bgClass: 'bg-[var(--agent-peach-bg)]',  inkClass: 'text-[var(--agent-peach-ink)]',  borderClass: 'border-[var(--agent-peach-ink)]',  solidClass: 'bg-[var(--agent-peach-ink)] text-base-100' },
+  lilac:  { bgClass: 'bg-[var(--agent-lilac-bg)]',  inkClass: 'text-[var(--agent-lilac-ink)]',  borderClass: 'border-[var(--agent-lilac-ink)]',  solidClass: 'bg-[var(--agent-lilac-ink)] text-base-100' },
+  teal:   { bgClass: 'bg-primary/15',               inkClass: 'text-primary',                   borderClass: 'border-primary',                   solidClass: 'bg-primary text-primary-content' },
 };
+
+/** Avatar letters: first of the first two words ("Executive Assistant" → EA),
+ *  or the first two of a single word ("Nebo" → NE). */
+export function initialsOf(name: string): string {
+  const words = name.trim().split(/\s+/).filter(Boolean);
+  const two = words.length >= 2 ? words[0][0] + words[1][0] : (words[0] ?? '?').slice(0, 2);
+  return two.toUpperCase();
+}
 
 /**
  * The ONE place an employee's colour is decided.

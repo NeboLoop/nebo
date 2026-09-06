@@ -16,7 +16,8 @@
   } from '$lib/stores/notifications';
 
   import Hand from 'lucide-svelte/icons/hand';
-  import { applyUpdate, getLearning, getWorkflowApprovalStatus, listUpdates, resolveLearning, resolveWorkflowApproval } from '$lib/api/nebo';
+  import { applyUpdate, getLearning, getRun, getWorkflowApprovalStatus, listUpdates, resolveLearning, resolveWorkflowApproval } from '$lib/api/nebo';
+  import type { GetRunResponse, PendingTask } from '$lib/api/neboComponents';
 
   let copied = $state(false);
   let filter = $state<'all' | 'agent' | 'system' | 'warning' | 'error'>('all');
@@ -206,6 +207,31 @@
   } = $props();
   // Search ALL notifications (not the filtered stream) so band rows open too.
   const selected = $derived($notifications.find(n => n.id === selectedId) ?? null);
+
+  // ── Reader detail: the one-line body is a headline, not the evidence.
+  // A staged learning shows the exact text that would be written; a failed
+  // run shows its full error and the activity trail. Fetched once per id.
+  type Learning = { action?: string; target?: string; content?: string | null };
+  type Detail = { kind: 'learning'; data: Learning } | { kind: 'run'; data: GetRunResponse } | { kind: 'gone' };
+  let details = $state<Record<string, Detail>>({});
+  const detailFetched = new Set<string>();
+  $effect(() => {
+    const n = selected;
+    if (!n || detailFetched.has(n.id)) return;
+    const ref = approvalRef(n);
+    const fetch: Promise<Detail> | null =
+      ref?.kind === 'learning'
+        ? getLearning(ref.id).then(r => ({ kind: 'learning', data: r as Learning }))
+        : n.id.startsWith('wf-fail:') && n.agentId
+          ? getRun(`agent:${n.agentId}`, n.id.slice('wf-fail:'.length)).then(r => ({ kind: 'run', data: r }))
+          : null;
+    if (!fetch) return;
+    detailFetched.add(n.id);
+    // A 404 is an answer, not a retry: the run row goes when its employee
+    // is removed, and the reader should say so instead of showing nothing.
+    fetch.then(d => { details = { ...details, [n.id]: d }; }).catch(() => { details = { ...details, [n.id]: { kind: 'gone' } }; });
+  });
+  const detail = $derived(selected ? details[selected.id] ?? null : null);
 
   function open(n: Notification) {
     markAsRead(n.id);
@@ -408,6 +434,48 @@
           <div class="prose prose-sm max-w-none [&>:first-child]:mt-0">
             {@html parseMarkdown(selected.message)}
           </div>
+          {#if detail?.kind === 'learning' && detail.data.content}
+            <div class="mt-6 pt-4 border-t border-base-content/10">
+              <div class="text-xs font-semibold uppercase tracking-wide text-base-content/50 mb-2">{$t('inbox.stagedText', { values: { action: detail.data.action ?? '', target: detail.data.target ?? '' } })}</div>
+              <pre class="text-xs whitespace-pre-wrap break-words rounded-lg bg-base-200 p-3 max-h-[60vh] overflow-y-auto">{detail.data.content}</pre>
+            </div>
+          {:else if detail?.kind === 'gone'}
+            <div class="mt-6 pt-4 border-t border-base-content/10 text-xs text-base-content/70">{$t('inbox.recordGone')}</div>
+          {:else if detail?.kind === 'run'}
+            {@const run = detail.data.run}
+            {@const steps = Object.values((detail.data.taskItems ?? {}) as Record<string, PendingTask[]>).flat()}
+            <div class="mt-6 pt-4 border-t border-base-content/10 space-y-4">
+              {#if run.error}
+                <div>
+                  <div class="text-xs font-semibold uppercase tracking-wide text-base-content/50 mb-2">{run.errorActivity ? $t('inbox.failedAt', { values: { activity: run.errorActivity } }) : $t('inbox.whatHappened')}</div>
+                  <pre class="text-xs whitespace-pre-wrap break-words rounded-lg bg-error/10 text-error p-3">{run.error}</pre>
+                </div>
+              {/if}
+              {#if steps.length > 0}
+                <div>
+                  <div class="text-xs font-semibold uppercase tracking-wide text-base-content/50 mb-2">{$t('inbox.steps')}</div>
+                  <ol class="space-y-2">
+                    {#each steps as step (step.id)}
+                      <li class="text-sm flex items-start gap-2">
+                        <span class="badge badge-sm shrink-0 font-mono {step.status === 'failed' ? 'badge-error badge-outline' : step.status === 'completed' ? 'badge-success badge-outline' : 'badge-ghost'}">{step.status}</span>
+                        <div class="min-w-0">
+                          <div>{step.description || step.prompt}</div>
+                          {#if step.lastError}<div class="text-xs text-error/80 mt-0.5">{step.lastError}</div>{/if}
+                          {#if step.output}<pre class="text-xs whitespace-pre-wrap break-words rounded-lg bg-base-200 p-2 mt-1 max-h-48 overflow-y-auto">{step.output}</pre>{/if}
+                        </div>
+                      </li>
+                    {/each}
+                  </ol>
+                </div>
+              {/if}
+              {#if run.output}
+                <div>
+                  <div class="text-xs font-semibold uppercase tracking-wide text-base-content/50 mb-2">{$t('inbox.output')}</div>
+                  <pre class="text-xs whitespace-pre-wrap break-words rounded-lg bg-base-200 p-3 max-h-[40vh] overflow-y-auto">{run.output}</pre>
+                </div>
+              {/if}
+            </div>
+          {/if}
           {#if approvalRunId(selected)}
             {@const runId = approvalRunId(selected)!}
             {@const status = approvalStatuses[runId]}

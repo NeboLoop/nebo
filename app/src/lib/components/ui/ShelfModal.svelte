@@ -104,7 +104,7 @@
 
         <div class="h-12 max-md:h-10 px-4 border-b border-base-300 flex items-center gap-2">
         {#if avatarInitial}
-          <span class="w-6 h-6 rounded-md flex items-center justify-center font-mono text-[10px] font-semibold shrink-0 {avatarClass}">{avatarInitial}</span>
+          <span class="w-7 h-7 rounded-lg flex items-center justify-center text-[10px] font-semibold tracking-wide shrink-0 {avatarClass}">{avatarInitial}</span>
         {/if}
         <span class="text-sm font-semibold">{title}</span>
         <div class="flex-1"></div>

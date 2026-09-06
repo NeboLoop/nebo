@@ -3,13 +3,13 @@
   import { t } from 'svelte-i18n';
   import { devMode } from '$lib/stores/devmode.js';
   import ChatComposer from './ChatComposer.svelte';
+  import AgentAvatar from '$lib/components/AgentAvatar.svelte';
   import WorkViewer from './WorkViewer.svelte';
   import DesktopView from './DesktopView.svelte';
   import { teachStart, teachStop } from '$lib/api/nebo';
   import ShareArtifactModal from './ShareArtifactModal.svelte';
   import AskWidget from './AskWidget.svelte';
   import type { AskWidgetDef } from './AskWidget.svelte';
-  import { AGENT_COLORS_MAP } from '$lib/tokens.js';
   import { renderMentionChips } from '$lib/mentions';
   import { downloadArtifact } from '$lib/chat/download';
   import { backendUrl, backendBase } from '$lib/api/base';
@@ -1604,11 +1604,8 @@
         <div class="max-w-[640px] {isTurnStart ? 'mt-3' : 'mt-1.5'}">
           {#if msg.delegateAgentName}
             {@const da = allAgents.find(a => a.id === msg.delegateAgentId)}
-            {@const dc = AGENT_COLORS_MAP[da?.color || 'teal'] || AGENT_COLORS_MAP['teal']}
             <div class="flex items-center gap-1.5 mb-1">
-              <div class="w-5 h-5 rounded-md flex items-center justify-center text-xs font-semibold {dc.bgClass} {dc.inkClass}">
-                {da?.initial || msg.delegateAgentName.charAt(0).toUpperCase()}
-              </div>
+              <AgentAvatar name={da?.name ?? msg.delegateAgentName} color={da?.color} size="xs" />
               <span class="text-xs font-medium">{msg.delegateAgentName}</span>
             </div>
           {/if}

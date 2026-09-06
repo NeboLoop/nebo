@@ -123,9 +123,9 @@
 		"december": "December"
 	},
 	"dashboard": {
-		"title": "Dashboard",
+		"title": "Team",
 		"sidebarLine": "{working, plural, =0 {Nobody working right now} one {1 employee working right now} other {# employees working right now}}",
-		"loadError": "The dashboard could not load.",
+		"loadError": "The team page could not load.",
 		"workingNow": "Working now",
 		"ofEmployees": "of {n} employees, {paused} paused",
 		"waitingOnYou": "Waiting on you",
@@ -438,7 +438,7 @@
 	"commandPalette": {
 		"placeholder": "Search pages, settings, skills...",
 		"navigation": "Navigation",
-		"dashboard": "Dashboard",
+		"dashboard": "Team",
 		"agents": "Employees",
 		"skills": "Skills",
 		"integrations": "Integrations",
@@ -2102,7 +2102,7 @@
 		"apiModelWorkflow": "Workflow: {name}",
 		"apiMemoryShared": "shared memory: one conversation",
 		"apiMemoryIsolated": "isolated memory: each `user` value is its own conversation",
-		"apiModelsHint": "GET /v1/models returns the same list to any app holding a key.",
+		"apiModelsHint": "Ids follow the employee's name, so renaming the employee changes them. GET /v1/models always returns the current list to any app holding a key.",
 		"apiKeysList": "Keys",
 		"apiKeyModelsField": "Models this key may call",
 		"apiKeyReady": "Key for {label}",
@@ -2884,7 +2884,13 @@
 		"conflict": "Skill changed — discarded",
 		"updateNow": "Update now",
 		"later": "Later",
-		"updated": "Updated"
+		"updated": "Updated",
+		"stagedText": "{action} skill \"{target}\" — this is what would be written",
+		"whatHappened": "What happened",
+		"failedAt": "Failed during \"{activity}\"",
+		"steps": "What it was doing",
+		"output": "Output",
+		"recordGone": "The run record is gone. It was removed along with the employee that owned it, so only this notice remains."
 	},
 	"voice": {
 		"startConversation": "Voice conversation",

@@ -4,7 +4,8 @@
   import { t } from 'svelte-i18n';
   import { setContext, onMount } from 'svelte';
   import { getWebSocketClient } from '$lib/websocket/client';
-  import { AGENT_COLORS_MAP, assignAgentColors } from '$lib/tokens.js';
+  import { AGENT_COLORS_MAP, assignAgentColors, initialsOf } from '$lib/tokens.js';
+  import AgentAvatar from '$lib/components/AgentAvatar.svelte';
   import UserMenu from '$lib/components/UserMenu.svelte';
   import ChristeningModal from '$lib/components/ChristeningModal.svelte';
   import WorkflowBuilder from '$lib/components/workflow/WorkflowBuilder.svelte';
@@ -1208,11 +1209,13 @@
               <svg class="shrink-0 text-base-content/70" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="10 3 5 8 10 13"/></svg>
             {/if}
             <div class="relative shrink-0">
-              <div class="w-8 h-8 rounded-field flex items-center justify-center font-mono text-sm font-semibold {ac.bgClass} {ac.inkClass} {st === 'paused' ? 'opacity-50' : ''}">
-                {#if a.isApp}
+              {#if a.isApp}
+                <div class="w-9 h-9 rounded-xl flex items-center justify-center {ac.bgClass} {ac.inkClass} {st === 'paused' ? 'opacity-50' : ''}">
                   <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M10 4v4"/><path d="M2 8h20"/><path d="M6 4v4"/></svg>
-                {:else}{a.initial}{/if}
-              </div>
+                </div>
+              {:else}
+                <AgentAvatar name={a.name} color={a.color} />
+              {/if}
               <div class="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-base-200 {st === 'running' ? 'bg-warning animate-pulse' : st === 'paused' ? 'bg-base-content/30' : 'bg-success'}"></div>
             </div>
             <div class="flex-1 min-w-0">
@@ -1358,12 +1361,12 @@
         {@const ac = AGENT_COLORS_MAP[a.color] ?? AGENT_COLORS_MAP['teal']}
         <div class="relative">
           <button
-            class="w-8 h-8 rounded-field flex items-center justify-center font-mono text-sm font-semibold shrink-0 cursor-pointer transition-colors border-none {ac.bgClass} {ac.inkClass} {agentId === a.id ? 'ring-2 ring-base-content/40' : ''} {st === 'paused' ? 'opacity-50' : ''}"
+            class="w-9 h-9 rounded-xl flex items-center justify-center text-xs font-semibold tracking-wide shrink-0 cursor-pointer transition-colors border-none {ac.solidClass} {agentId === a.id ? 'ring-2 ring-base-content/40' : ''}"
             onclick={() => selectAgent(a.id)}
             oncontextmenu={(e) => handleAgentContext(e, a.id)}
             data-context-menu
             title="{a.name} — {$t(statusLabel(st))}"
-          >{a.initial}</button>
+          >{initialsOf(a.name)}</button>
           <div class="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-base-200 {st === 'running' ? 'bg-warning animate-pulse' : st === 'paused' ? 'bg-base-content/30' : 'bg-success'}"></div>
         </div>
       {/each}
@@ -1433,8 +1436,8 @@
   section={settingsSection ?? 'general'}
   agentName={agent?.name ?? ''}
   readOnly={agent ? !agent.editable : false}
-  avatarInitial={agent?.initial ?? ''}
-  avatarClass={agentColor ? `${agentColor.bgClass} ${agentColor.inkClass}` : ''}
+  avatarInitial={agent ? initialsOf(agent.name) : ''}
+  avatarClass={agentColor?.solidClass ?? ''}
   onsection={selectSection}
   onclose={closeSettings}
 />
@@ -1493,8 +1496,8 @@
 <ShelfModal
   open={runsOpen}
   title={runsAgent ? `${runsAgent.name} — ${$t('nav.runs')}` : $t('nav.runs')}
-  avatarInitial={runsAgent?.initial ?? ''}
-  avatarClass={runsAgentColor ? `${runsAgentColor.bgClass} ${runsAgentColor.inkClass}` : ''}
+  avatarInitial={runsAgent ? initialsOf(runsAgent.name) : ''}
+  avatarClass={runsAgentColor?.solidClass ?? ''}
   onclose={closeRuns}
 >
   <!-- The run detail pushes in over the list, inside this one shelf: list and

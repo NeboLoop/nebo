@@ -7,6 +7,7 @@ mod store;
 mod queries;
 
 pub use pool::create_pool;
+pub use queries::agent_slug;
 pub use queries::cost_microcents;
 pub use queries::{SessionWake, WAKE_MAX_ATTEMPTS};
 pub use queries::LicenseKeyRow;

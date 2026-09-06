@@ -4,6 +4,7 @@
   import { t } from 'svelte-i18n';
   import { getContext, onDestroy } from 'svelte';
   import { AGENT_COLORS_MAP } from '$lib/tokens.js';
+  import AgentAvatar from '$lib/components/AgentAvatar.svelte';
   import { getActivityType } from '$lib/utils/workflowTypes';
   import type { AgentPageContext, WorkflowConfig, WorkflowActivity } from '$lib/types/agentPage';
   import { getWebSocketClient } from '$lib/websocket/client';
@@ -873,13 +874,12 @@
   <div class="max-w-[480px] flex flex-col gap-5 {isFullHeightEditor ? 'flex-1 min-h-0 w-full' : ''}">
 
     {#if section === 'general'}
-      {@const gc = agent ? AGENT_COLORS_MAP[agent.color] : null}
       <div>
         <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('agentSettings.general')}</div>
         <div class="text-xs text-base-content/70 mt-1">{$t('agentSettings.generalBlurb')}</div>
       </div>
       <div class="flex items-start gap-4 pb-5 border-b border-base-300">
-        <div class="w-12 h-12 rounded-field flex items-center justify-center font-mono text-base font-semibold shrink-0 {gc?.bgClass} {gc?.inkClass}">{agent?.initial}</div>
+        <AgentAvatar name={agent?.name ?? ''} color={agent?.color} size="lg" />
         <div class="flex-1 min-w-0">
           <div class="text-sm font-semibold">{agent?.name}</div>
           <div class="text-xs text-base-content/70">{agent?.role}</div>
@@ -1039,7 +1039,7 @@
           {#each ['violet', 'green', 'sky', 'amber', 'rose', 'mint', 'slate', 'peach'] as color}
             {@const c = AGENT_COLORS_MAP[color]}
             <button
-              class="w-7 h-7 rounded-md border-2 transition-colors {c.bgClass} {editColor === color ? 'border-base-content' : 'border-transparent'} cursor-pointer"
+              class="w-7 h-7 rounded-lg border-2 transition-colors {c.solidClass} {editColor === color ? 'border-base-content' : 'border-transparent'} cursor-pointer"
               title={color}
               onclick={() => selectColor(color)}
             ></button>
@@ -1380,15 +1380,15 @@
           <div class="text-xs text-warning">{$t('agentSettings.webhookKeyOnce')}</div>
           <div class="flex items-center gap-1.5">
             <code class="text-xs font-mono bg-base-200 rounded px-2 py-1 flex-1 min-w-0 truncate">{minted.url}</code>
-            <button class="btn btn-xs btn-ghost shrink-0" onclick={() => copyHook('url', minted?.url ?? '')}>{copiedHook === 'url' ? $t('agentSettings.copied') : $t('agentSettings.copy')}</button>
+            <button class="btn btn-xs btn-ghost shrink-0 min-w-20" onclick={() => copyHook('url', minted?.url ?? '')}>{copiedHook === 'url' ? $t('agentSettings.copied') : $t('agentSettings.copy')}</button>
           </div>
           <div class="flex items-center gap-1.5">
             <code class="text-xs font-mono bg-base-200 rounded px-2 py-1 flex-1 min-w-0 truncate">{minted.key}</code>
-            <button class="btn btn-xs btn-ghost shrink-0" onclick={() => copyHook('key', minted?.key ?? '')}>{copiedHook === 'key' ? $t('agentSettings.copied') : $t('agentSettings.copy')}</button>
+            <button class="btn btn-xs btn-ghost shrink-0 min-w-20" onclick={() => copyHook('key', minted?.key ?? '')}>{copiedHook === 'key' ? $t('agentSettings.copied') : $t('agentSettings.copy')}</button>
           </div>
           <div class="flex items-start gap-1.5">
             <code class="text-xs font-mono bg-base-200 rounded px-2 py-1 flex-1 min-w-0 whitespace-pre-wrap break-all">{curlFor(minted)}</code>
-            <button class="btn btn-xs btn-ghost shrink-0" onclick={() => copyHook('curl', curlFor(minted!))}>{copiedHook === 'curl' ? $t('agentSettings.copied') : $t('agentSettings.copy')}</button>
+            <button class="btn btn-xs btn-ghost shrink-0 min-w-20" onclick={() => copyHook('curl', curlFor(minted!))}>{copiedHook === 'curl' ? $t('agentSettings.copied') : $t('agentSettings.copy')}</button>
           </div>
         </div>
       {/if}
@@ -1413,7 +1413,7 @@
                 </div>
                 <div class="text-xs text-base-content/50 truncate font-mono">{h.url}</div>
               </div>
-              <button class="btn btn-xs btn-ghost shrink-0" onclick={() => copyHook(h.id, h.url)}>{copiedHook === h.id ? $t('agentSettings.copied') : $t('agentSettings.copyUrl')}</button>
+              <button class="btn btn-xs btn-ghost shrink-0 min-w-20" onclick={() => copyHook(h.id, h.url)}>{copiedHook === h.id ? $t('agentSettings.copied') : $t('agentSettings.copyUrl')}</button>
               <button class="btn btn-xs btn-ghost text-error shrink-0" disabled={hookBusy === h.id} onclick={() => revokeWebhook(h.id)}>{$t('agentSettings.webhookRevoke')}</button>
             </div>
           {/each}
@@ -1438,7 +1438,7 @@
               </div>
               <code class="text-sm font-mono break-all">{apiSwitchboardUrl}</code>
             </div>
-            <button class="btn btn-xs btn-ghost shrink-0" onclick={() => copyHook('sb', apiSwitchboardUrl)}>{copiedHook === 'sb' ? $t('agentSettings.copied') : $t('agentSettings.copy')}</button>
+            <button class="btn btn-xs btn-ghost shrink-0 min-w-20" onclick={() => copyHook('sb', apiSwitchboardUrl)}>{copiedHook === 'sb' ? $t('agentSettings.copied') : $t('agentSettings.copy')}</button>
           </div>
         {/if}
         <div class="px-3.5 py-2.5 flex items-center gap-3">
@@ -1446,7 +1446,7 @@
             <div class="text-xs text-base-content/50">{$t('agentSettings.apiLocalUrl')}</div>
             <code class="text-sm font-mono break-all">{apiLocalUrl}</code>
           </div>
-          <button class="btn btn-xs btn-ghost shrink-0" onclick={() => copyHook('local', apiLocalUrl)}>{copiedHook === 'local' ? $t('agentSettings.copied') : $t('agentSettings.copy')}</button>
+          <button class="btn btn-xs btn-ghost shrink-0 min-w-20" onclick={() => copyHook('local', apiLocalUrl)}>{copiedHook === 'local' ? $t('agentSettings.copied') : $t('agentSettings.copy')}</button>
         </div>
       </div>
 
@@ -1462,7 +1462,7 @@
                 · {$t(m.memory === 'isolated' ? 'agentSettings.apiMemoryIsolated' : 'agentSettings.apiMemoryShared')}
               </div>
             </div>
-            <button class="btn btn-xs btn-ghost shrink-0" onclick={() => copyHook(m.id, m.id)}>{copiedHook === m.id ? $t('agentSettings.copied') : $t('agentSettings.copy')}</button>
+            <button class="btn btn-xs btn-ghost shrink-0 min-w-20" onclick={() => copyHook(m.id, m.id)}>{copiedHook === m.id ? $t('agentSettings.copied') : $t('agentSettings.copy')}</button>
           </div>
         {/each}
       </div>
@@ -1524,7 +1524,7 @@
             <div class="text-xs text-base-content/50 mb-1">{$t('agentSettings.apiKeySecret')}</div>
             <div class="flex items-start gap-1.5">
               <code class="text-sm font-mono bg-base-200 rounded px-2 py-1.5 flex-1 min-w-0 break-all">{mintedKey.secret}</code>
-              <button class="btn btn-xs btn-ghost shrink-0" onclick={() => copyHook('secret', mintedKey?.secret ?? '')}>{copiedHook === 'secret' ? $t('agentSettings.copied') : $t('agentSettings.copy')}</button>
+              <button class="btn btn-xs btn-ghost shrink-0 min-w-20" onclick={() => copyHook('secret', mintedKey?.secret ?? '')}>{copiedHook === 'secret' ? $t('agentSettings.copied') : $t('agentSettings.copy')}</button>
             </div>
           </div>
           <div>
@@ -1537,7 +1537,7 @@
             </div>
             <div class="flex items-start gap-1.5">
               <pre class="text-xs font-mono bg-base-200 rounded px-2 py-1.5 flex-1 min-w-0 overflow-x-auto whitespace-pre">{snippetLang === 'curl' ? curlForKey(mintedKey) : pythonForKey(mintedKey)}</pre>
-              <button class="btn btn-xs btn-ghost shrink-0" onclick={() => copyHook('snippet', snippetLang === 'curl' ? curlForKey(mintedKey!) : pythonForKey(mintedKey!))}>{copiedHook === 'snippet' ? $t('agentSettings.copied') : $t('agentSettings.copy')}</button>
+              <button class="btn btn-xs btn-ghost shrink-0 min-w-20" onclick={() => copyHook('snippet', snippetLang === 'curl' ? curlForKey(mintedKey!) : pythonForKey(mintedKey!))}>{copiedHook === 'snippet' ? $t('agentSettings.copied') : $t('agentSettings.copy')}</button>
             </div>
           </div>
           <div class="flex justify-end">

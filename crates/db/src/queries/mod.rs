@@ -33,6 +33,7 @@ pub(crate) mod work;
 mod workflows;
 mod workrooms;
 
+pub use agents::agent_slug;
 pub use run_usage::cost_microcents;
 pub use session_wakes::{SessionWake, WAKE_MAX_ATTEMPTS};
 pub use license_keys::LicenseKeyRow;
