@@ -50,15 +50,7 @@ fn resolve(raw: &str) -> PathBuf {
 /// did not exist; the same modification time three reads in a row settles it.
 /// None when the path cannot be stat'ed; the note then carries no evidence
 /// rather than a guess.
-fn disk_evidence(path: &Path) -> Option<String> {
-    let meta = std::fs::metadata(path).ok()?;
-    let modified: chrono::DateTime<chrono::Local> = meta.modified().ok()?.into();
-    Some(format!("{} bytes, last modified {}", meta.len(), modified.format("%H:%M:%S")))
-}
 
-fn clock_now() -> String {
-    chrono::Local::now().format("%H:%M:%S").to_string()
-}
 
 fn fingerprint(content: &str) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -97,7 +89,6 @@ impl ReadLedger {
         let path = resolve(raw_path);
         let lines = content.lines().count();
         let fp = fingerprint(content);
-        let evidence = disk_evidence(&path);
         let entry = self.entries.entry(path).or_insert(Entry {
             count: 0,
             lines: None,
@@ -111,14 +102,19 @@ impl ReadLedger {
             // a line count takes any number near one. The evidence that settles
             // a repeat read is the length, the disk's size and modification
             // time, and the time of this read; the count lives in the stats.
-            let length = format!("{} {}", lines, if lines == 1 { "line" } else { "lines" });
-            let evidence = evidence.map(|e| format!(", {e}")).unwrap_or_default();
+            // No numbers in the note at all. The line count, byte size, and
+            // clock times all got read as a line count by one model or
+            // another (2026-09-05: "still 1 line, 9 bytes, last modified
+            // 22:15:04" became "the ledger says 4 lines" in three runs of
+            // three). The content above IS the line count; the note only
+            // says whether it changed and that it came from disk.
+            let _ = lines;
             let sentence = match entry.fingerprint {
-                Some(prev) if prev == fp => format!("content unchanged since your previous read: still {length}{evidence}"),
-                Some(_) => format!("content CHANGED since your previous read: now {length}{evidence}"),
-                None => format!("first full read of it this run: {length}{evidence}"),
+                Some(prev) if prev == fp => "content unchanged since your previous read; what is shown above is the whole file, re-read from disk just now",
+                Some(_) => "content CHANGED since your previous read; what is shown above is the whole file as it is now",
+                None => "first full read of it this run; what is shown above is the whole file",
             };
-            Some(format!("\n\n(read ledger: {sentence}; read fresh from disk at {}.)", clock_now()))
+            Some(format!("\n\n(read ledger: {sentence}.)"))
         } else {
             None
         };
@@ -141,17 +137,15 @@ impl ReadLedger {
             let path = resolve(token);
             if let Some(entry) = self.entries.get_mut(&path) {
                 entry.count += 1;
-                let lines = entry
-                    .lines
-                    .map(|l| format!("{} lines at the last full read", l))
-                    .unwrap_or_else(|| "no full read yet this run".to_string());
-                let evidence = disk_evidence(&path).map(|e| format!("; {e}")).unwrap_or_default();
+                // No numbers here either (see observe_read).
+                let seen = if entry.lines.is_some() {
+                    "a file you have already read in full this run"
+                } else {
+                    "a file you have already looked at this run"
+                };
                 return Some(format!(
-                    "\n\n(read ledger: this command touched {}, a file you have already looked at this run; {}{}; checked at {}.)",
+                    "\n\n(read ledger: this command touched {}, {seen}; checked just now.)",
                     path.display(),
-                    lines,
-                    evidence,
-                    clock_now()
                 ));
             }
         }
@@ -171,16 +165,16 @@ mod tests {
         assert!(l.observe_read("/tmp/nonexistent-ledger-test.py", "a\nb\n").is_none());
     }
 
-    /// A repeat read of unchanged content states the count and "unchanged" —
-    /// the fact that dissolves method-hopping distrust.
+    /// A repeat read of unchanged content says "unchanged" and that the
+    /// content shown is the whole file: the fact that dissolves method-hopping.
     #[test]
     fn repeat_read_states_count_and_unchanged() {
         let mut l = ReadLedger::default();
         l.observe_read("/tmp/ledger-a.py", "a\nb\nc\n");
         let note = l.observe_read("/tmp/ledger-a.py", "a\nb\nc\n").unwrap();
         assert!(note.contains("read ledger"), "{note}");
-        assert!(note.contains("3 lines"), "{note}");
         assert!(note.contains("content unchanged"), "{note}");
+        assert!(note.contains("whole file"), "{note}");
     }
 
     /// Changed content must be stated as CHANGED — the ledger is an honest
@@ -203,7 +197,7 @@ mod tests {
         l.observe_read("/tmp/ledger-c.py", "x\ny\n");
         let note = l.observe_command("wc -l /tmp/ledger-c.py").unwrap();
         assert!(note.contains("read ledger"), "{note}");
-        assert!(note.contains("2 lines at the last full read"), "{note}");
+        assert!(note.contains("already read in full"), "{note}");
         assert!(l.observe_command("wc -l /tmp/never-seen.py").is_none());
         assert!(l.observe_command("echo hello").is_none());
     }
@@ -223,9 +217,8 @@ mod tests {
         assert!(note.contains("read ledger"), "{note}");
     }
 
-    /// A repeat read carries the disk's own evidence, size and modification
-    /// time, plus the time of this read: the facts that settle "is this a
-    /// stale copy" without the note ever arguing about it.
+    /// A repeat read says it came from disk just now, with no number of any
+    /// kind in the note: numbers get read as line counts.
     #[test]
     fn a_repeat_read_carries_disk_evidence_when_the_file_exists() {
         let tmp = tempfile::tempdir().unwrap();
@@ -235,22 +228,21 @@ mod tests {
         let mut l = ReadLedger::default();
         l.observe_read(path, "line one\n");
         let note = l.observe_read(path, "line one\n").unwrap();
-        assert!(note.contains("read fresh from disk at"), "{note}");
-        assert!(note.contains("9 bytes, last modified"), "{note}");
-        assert!(note.contains("still 1 line, 9 bytes"), "length with its evidence: {note}");
-        // No count anywhere in the note: every digit in it is the length, the
-        // size, or a clock reading.
+        assert!(note.contains("re-read from disk just now"), "{note}");
+        // No digit anywhere in the note: a line count, a byte size, and a
+        // clock reading were each read as "the file has N lines" by a model.
+        assert!(!note.chars().any(|c| c.is_ascii_digit()), "{note}");
         assert!(!note.contains("second") && !note.contains("number 2") && !note.contains("#2"), "{note}");
         assert!(!note.to_lowercase().contains("cach"), "never names the wrong theory: {note}");
         let cmd = l.observe_command(&format!("wc -l {path}")).unwrap();
-        assert!(cmd.contains("9 bytes, last modified"), "{cmd}");
-        assert!(cmd.contains("checked at"), "{cmd}");
+        assert!(cmd.contains("checked just now"), "{cmd}");
+        assert!(!cmd.chars().any(|c| c.is_ascii_digit()) || cmd.contains(".txt"), "{cmd}");
 
         // A path that is not on disk gets no evidence, not a guess.
         let mut m = ReadLedger::default();
         m.observe_read("/tmp/ledger-not-there.py", "a\n");
         let ghost = m.observe_read("/tmp/ledger-not-there.py", "a\n").unwrap();
-        assert!(ghost.contains("read fresh from disk at"), "{ghost}");
+        assert!(ghost.contains("re-read from disk just now"), "{ghost}");
         assert!(!ghost.contains("bytes"), "{ghost}");
     }
 }

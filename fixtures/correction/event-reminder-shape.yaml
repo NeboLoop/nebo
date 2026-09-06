@@ -13,7 +13,7 @@ induced_errors: 1
 target_component: event
 
 teardown:
-  - "python3 -c \"import json,urllib.request as u; jobs=json.load(u.urlopen('http://localhost:27895/api/v1/tasks')).get('tasks',[]); [u.urlopen(u.Request('http://localhost:27895/api/v1/tasks/'+j['name'], method='DELETE')) for j in jobs if 'call' in j.get('name','').lower() and 'back' in j.get('name','').lower()]\" || true"
+  - "python3 -c \"import json,urllib.request as u; jobs=json.load(u.urlopen('http://localhost:27895/api/v1/tasks')).get('tasks',[]); [u.urlopen(u.Request('http://localhost:27895/api/v1/tasks/'+j['name'], method='DELETE')) for j in jobs if 'kristi' in j.get('name','').lower()]\" || true"
 
 conversation:
   - role: user

@@ -374,7 +374,7 @@ impl ExecuteTool {
         }
 
         match result {
-            Ok(Some(output)) => {
+            Ok(crate::process::Outcome::Done(output)) => {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 let mut stderr_str = String::from_utf8_lossy(&output.stderr).to_string();
 
@@ -407,7 +407,7 @@ impl ExecuteTool {
                 }
             }
             Err(e) => ToolResult::error(format!("failed to execute script: {}", e)),
-            Ok(None) => ToolResult::error(format!(
+            Ok(crate::process::Outcome::TimedOut { .. }) => ToolResult::error(format!(
                 "Script exceeded timeout={} s and was killed; its output was discarded. Raise timeout or narrow the work.",
                 timeout_secs
             )),

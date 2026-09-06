@@ -6,6 +6,7 @@ description: |
   ledger's evidence (read count, size, modification time, unchanged). The
   model must conclude from that evidence that the file is not changing and say
   so, instead of inventing a cache and hopping commands to get around it.
+induced_errors: 2  # the identical-call block and the bounded wait ending at its timeout: the file never changes here
 target_component: os
 
 setup:

@@ -13,6 +13,7 @@ target_component: work
 setup:
   - "curl -s -X POST localhost:27895/api/v1/agents -H 'Content-Type: application/json' -d '{\"blank\":true,\"name\":\"cs-agent\"}' > /dev/null"
 teardown:
+  - "python3 -c \"import json,urllib.request as u; d=json.load(u.urlopen('http://localhost:27895/api/v1/workflows')); ws=d.get('workflows', d) if isinstance(d,dict) else d; [u.urlopen(u.Request('http://localhost:27895/api/v1/workflows/'+str(w['id']), method='DELETE')) for w in ws if 'web-form' in (str(w.get('slug',''))+str(w.get('name',''))).lower().replace(' ','-')]\" || true"
   - "python3 -c \"import json,urllib.request as u; ags=json.load(u.urlopen('http://localhost:27895/api/v1/agents'))['agents']; ids=[a['id'] for a in ags if a.get('name')=='cs-agent']; [u.urlopen(u.Request('http://localhost:27895/api/v1/agents/'+i, method='DELETE')) for i in ids]\""
 
 conversation:

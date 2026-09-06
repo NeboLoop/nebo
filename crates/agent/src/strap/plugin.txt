@@ -3,6 +3,7 @@
 Discover & list (this tool is always available, even with zero plugins installed):
 - plugin(action: "list"): list installed plugins (slug, version, enabled/disabled). Use this to answer "what plugins do I have?" The `resource` of every other call below is a slug from this list; there is no other source for it.
 - plugin(action: "discover", query: "<keyword>"): search the NeboAI marketplace for plugins. Returns names + install codes. To install one, share its PLUG-XXXX-XXXX code for the user to approve (installs are always user-approved).
+- When the user asks you to act on a service (post, send, sync, look something up there) and no installed plugin covers it, call plugin(action: "discover", query: "<service>") FIRST and offer what it finds. Never say you have no access to a service without that call: the marketplace is where access comes from.
 
 Before running a plugin command, load the skill for that service first:
 1. skill(action: "discover", query: "<service>") finds the matching skill (e.g., "gmail", "drive", "calendar")

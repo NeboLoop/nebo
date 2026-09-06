@@ -3048,3 +3048,128 @@ mod tests {
         assert!(select_from(&registry, &rctx(3), &mut cadence).is_some());
     }
 }
+
+/// A reply that IS a tool call written out as text: `os(resource: "shell",
+/// action: "exec", command: "...")` and nothing else. Nothing ran; the model
+/// narrated the call instead of making it (2026-09-05, a whole turn).
+pub fn looks_like_pseudo_call(text: &str) -> bool {
+    let t = text.trim();
+    if t.len() > 600 || !t.ends_with(')') {
+        return false;
+    }
+    let Some(open) = t.find('(') else { return false };
+    let name = &t[..open];
+    name.len() >= 2
+        && name.chars().all(|c| c.is_ascii_lowercase() || c == '_')
+        && (t.contains("action:") || t.contains("resource:") || t.contains("action\":"))
+}
+
+#[cfg(test)]
+mod pseudo_call_tests {
+    use super::looks_like_pseudo_call;
+
+    #[test]
+    fn a_call_written_as_text_is_caught_and_prose_is_not() {
+        assert!(looks_like_pseudo_call(
+            "os(resource: \"shell\", action: \"exec\", command: \"frobnicate --version | head -1\")"
+        ));
+        assert!(looks_like_pseudo_call("  message(resource: coworker, action: send, to: \"x\", text: \"y\")  "));
+        assert!(!looks_like_pseudo_call("I ran the command (it printed nothing)."));
+        assert!(!looks_like_pseudo_call("Use os(action: \"read\") next time (or not)"));
+        assert!(!looks_like_pseudo_call("done"));
+    }
+}
+
+/// Parse tool calls written as text, `name(key: "value", key2: 3, ...)`,
+/// into (tool, arguments) pairs. Values are JSON strings (with \" escapes),
+/// numbers, booleans, or bare words (taken as strings). Returns nothing on
+/// any malformed input rather than guessing.
+pub fn parse_pseudo_calls(text: &str) -> Vec<(String, serde_json::Value)> {
+    let mut out = Vec::new();
+    let mut rest = text.trim();
+    while !rest.is_empty() && out.len() < 3 {
+        let Some(open) = rest.find('(') else { break };
+        let name = rest[..open].trim();
+        if name.is_empty() || !name.chars().all(|c| c.is_ascii_lowercase() || c == '_') {
+            break;
+        }
+        let body = &rest[open + 1..];
+        let Some((args, consumed)) = parse_pseudo_args(body) else { break };
+        out.push((name.to_string(), serde_json::Value::Object(args)));
+        rest = body[consumed..].trim();
+    }
+    out
+}
+
+/// One argument list up to and including its closing paren; returns the map
+/// and how many bytes were consumed.
+fn parse_pseudo_args(s: &str) -> Option<(serde_json::Map<String, serde_json::Value>, usize)> {
+    let b = s.as_bytes();
+    let mut i = 0;
+    let mut map = serde_json::Map::new();
+    let skip_ws = |i: &mut usize| while *i < b.len() && (b[*i] as char).is_whitespace() { *i += 1 };
+    loop {
+        skip_ws(&mut i);
+        if i < b.len() && b[i] == b')' {
+            return Some((map, i + 1));
+        }
+        let start = i;
+        while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'_') { i += 1 }
+        let key = &s[start..i];
+        if key.is_empty() { return None }
+        skip_ws(&mut i);
+        if i >= b.len() || b[i] != b':' { return None }
+        i += 1;
+        skip_ws(&mut i);
+        let value = if i < b.len() && b[i] == b'"' {
+            let mut j = i + 1;
+            let mut val = String::new();
+            loop {
+                if j >= b.len() { return None }
+                match b[j] {
+                    b'\\' if j + 1 < b.len() => { val.push(match b[j + 1] { b'n' => '\n', b't' => '\t', c => c as char }); j += 2; }
+                    b'"' => break,
+                    _ => { let ch = s[j..].chars().next()?; val.push(ch); j += ch.len_utf8(); }
+                }
+            }
+            i = j + 1;
+            serde_json::Value::String(val)
+        } else {
+            let start = i;
+            while i < b.len() && b[i] != b',' && b[i] != b')' { i += 1 }
+            let raw = s[start..i].trim();
+            if raw.is_empty() { return None }
+            if let Ok(n) = raw.parse::<i64>() { serde_json::Value::from(n) }
+            else if let Ok(f) = raw.parse::<f64>() { serde_json::Value::from(f) }
+            else if raw == "true" || raw == "false" { serde_json::Value::Bool(raw == "true") }
+            else { serde_json::Value::String(raw.to_string()) }
+        };
+        map.insert(key.to_string(), value);
+        skip_ws(&mut i);
+        if i < b.len() && b[i] == b',' { i += 1; continue }
+        if i < b.len() && b[i] == b')' { return Some((map, i + 1)) }
+        return None;
+    }
+}
+
+#[cfg(test)]
+mod pseudo_call_parse_tests {
+    use super::parse_pseudo_calls;
+
+    #[test]
+    fn a_call_written_as_text_becomes_a_real_one() {
+        let calls = parse_pseudo_calls(
+            "os(resource: \"shell\", action: \"exec\", command: \"frobnicate --version | head -1\")os(resource: \"shell\", action: \"exec\", command: \"x\")",
+        );
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].0, "os");
+        assert_eq!(calls[0].1["command"], "frobnicate --version | head -1");
+        let one = parse_pseudo_calls("message(resource: coworker, action: send, to: \"Chief of Staff\", text: \"say \\\"hi\\\"\", wait: false)");
+        assert_eq!(one.len(), 1);
+        assert_eq!(one[0].1["resource"], "coworker");
+        assert_eq!(one[0].1["text"], "say \"hi\"");
+        assert_eq!(one[0].1["wait"], false);
+        assert!(parse_pseudo_calls("I ran it (nothing printed).").is_empty());
+        assert!(parse_pseudo_calls("os(action: \"read\"").is_empty());
+    }
+}

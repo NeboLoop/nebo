@@ -645,6 +645,19 @@ impl Registry {
         if let Some(obj) = input.as_object() {
             if obj.len() == 1 {
                 if let Some(raw) = obj.get("_raw").and_then(|v| v.as_str()) {
+                    // A short unparseable payload was never cut off by any
+                    // output cap: the model emitted bad JSON (live 2026-09-05:
+                    // `"limit": }` at 73 bytes). Telling it "do not retry, it
+                    // will be cut off again" sent it to split a glob into pieces.
+                    if raw.len() < 4096 {
+                        return ToolResult::error(format!(
+                            "Your tool call's arguments were not valid JSON ({} bytes): `{}`. \
+                             A value is missing or malformed. Resend the same call with every \
+                             field filled; leave a field out rather than empty.",
+                            raw.len(),
+                            crate::truncate_str(raw, 200)
+                        ));
+                    }
                     return ToolResult::error(format!(
                         "Your tool call's arguments were CUT OFF mid-stream at the output limit ({} bytes of arguments arrived before the cut; JSON incomplete). Do NOT retry the same call: it will be cut off again. Produce large content in PARTS instead: first `os(resource: \"file\", action: \"write\", path: ..., content: <first portion>)`, then repeat with `append: true` for each following portion. Keep each call's content under ~15,000 characters.",
                         raw.len()

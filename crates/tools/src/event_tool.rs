@@ -208,6 +208,12 @@ impl DynTool for EventTool {
                                 .map(|t| format!("; fires at {t}"))
                                 .unwrap_or_default()
                         )),
+                        Err(e) if e.to_string().contains("UNIQUE constraint failed: cron_jobs.name") => {
+                            ToolResult::error(format!(
+                                "A task named '{name}' already exists. Delete it first with \
+                                 event(action: \"delete\", name: \"{name}\") or pick another name."
+                            ))
+                        }
                         Err(e) => ToolResult::error(format!("Failed to create task: {}", e)),
                     }
                 }

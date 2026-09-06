@@ -2600,6 +2600,8 @@ async fn run_loop(
     let mut lost_toolcall_retries = 0usize;
     let mut consecutive_error_iterations = 0usize;
     let mut post_tool_empty_nudges = 0usize;
+    let mut pseudo_call_nudges: usize = 0;
+    let mut no_access_nudges: usize = 0;
     let mut empty_content_retries = 0usize;
     const MAX_EMPTY_CONTENT_RETRIES: usize = 3;
     // Message-stream steering: per-run cadence for <system-reminder> injection.
@@ -3789,6 +3791,7 @@ async fn run_loop(
         // Get tool definitions: active (non-deferred + active deferred) tools get full schemas
         let mut all_tool_defs = tools.list_active(&active_deferred).await;
         let mut agent_tool_names = tools.agent_tool_names(agent_id).await;
+        let mut plugin_offered = all_tool_defs.iter().any(|d| d.name == "plugin");
 
         // Scope filtering: restrict sidecar tools to those listed in the active scope
         if let Some(scope_name) = tool_scope {
@@ -3858,6 +3861,7 @@ async fn run_loop(
                     &memory_tool_names,
                 );
                 all_tool_defs = kept;
+                plugin_offered = all_tool_defs.iter().any(|d| d.name == "plugin");
                 if withheld > 0 {
                     debug!(
                         agent = %agent_id,
@@ -5132,6 +5136,35 @@ async fn run_loop(
             }
         }
 
+        if tool_calls.is_empty() && steering::looks_like_pseudo_call(&assistant_content) {
+            let parsed = steering::parse_pseudo_calls(&assistant_content);
+            if !parsed.is_empty() {
+                // Run what it wrote: the arguments are all there, only the
+                // framing was wrong. Fix the API, not the client.
+                warn!(iteration, session_id, n = parsed.len(), "tool call written as text; running it");
+                for (k, (name, input)) in parsed.into_iter().enumerate() {
+                    let tc = ai::ToolCall {
+                        id: format!("pseudo-{iteration}-{k}"),
+                        name,
+                        input,
+                    };
+                    // Announced like a streamed call, so the thread, the
+                    // harness, and the run receipt all see it.
+                    let _ = tx.send(StreamEvent::tool_call(tc.clone())).await;
+                    tool_calls.push(tc);
+                    block_order.push(("tool", Some(tool_calls.len() - 1)));
+                }
+            } else if pseudo_call_nudges < 1 {
+                pseudo_call_nudges += 1;
+                warn!(iteration, session_id, "tool call written as text; nudging");
+                pending_stream_reminders.push(steering::wrap_system_reminder(
+                    "You wrote a tool call as text instead of calling it. Nothing ran. \
+                     Make that call now as a real tool call, with the same arguments.",
+                ));
+                continue;
+            }
+        }
+
         // CLI providers handle their own tool execution via MCP — skip runner tool loop
         if provider.handles_tools() && !tool_calls.is_empty() {
             info!(
@@ -5303,9 +5336,11 @@ async fn run_loop(
                              different command, returns the same thing. If you are waiting \
                              for a file or a process to change, wait in ONE bounded shell \
                              command instead of re-reading: os(action: \"exec\", command: \
-                             \"for i in $(seq 1 12); do test $(wc -l < FILE) -ge N && break; \
+                             \"for i in $(seq 1 12); do wc -l < FILE; test $(wc -l < FILE) -ge N && break; \
                              sleep 5; done; cat FILE\", timeout: 90), then report what you \
-                             saw, changed or not, with the count and the time. If you need \
+                             saw, changed or not, with the count and the time. Keep the loop \
+                             shorter than the timeout you pass, or the command is killed and \
+                             its output is discarded. If you need \
                              something different, change the arguments. Do NOT work around \
                              this by renaming an output file.",
                             name = tc.name,
@@ -6984,6 +7019,39 @@ async fn run_loop(
                     "You stopped early but your task is not complete. \
                      Keep working — use your tools to make more progress. \
                      Do not summarize or ask to continue. Take the next action.",
+                ));
+                continue;
+            }
+        }
+
+        // A tool call written as text ran nothing. Say so once and let the
+        // model make the call; a reply of "os(resource: ..., action: ...)" is
+        // not an answer the user can use.
+
+        // "I don't have access to X" with the plugin tool on the table and no
+        // discover call is an answer from memory (smoke 2026-09-05: a tweet
+        // request got "no Twitter plugin" and zero calls). Once: point at
+        // discover; the marketplace is where access comes from.
+        if tool_calls.is_empty() && plugin_offered && no_access_nudges < 1 {
+            let lower = assistant_content.to_ascii_lowercase();
+            let denies = (lower.contains("don't have access") || lower.contains("do not have access")
+                || lower.contains("no access to") || lower.contains("not connected") || lower.contains("isn't installed")
+                || lower.contains("is not installed") || lower.contains("don't have a") || lower.contains("do not have a"))
+                && (lower.contains("plugin") || lower.contains("integration") || lower.contains("connect"));
+            let discovered = sessions
+                .get_messages(session_id)
+                .unwrap_or_default()
+                .iter()
+                .rev()
+                .take(12)
+                .any(|m| m.role == "assistant" && m.content.contains("\"discover\""));
+            if denies && !discovered {
+                no_access_nudges += 1;
+                warn!(iteration, session_id, "access denied from memory; nudging to discover");
+                pending_stream_reminders.push(steering::wrap_system_reminder(
+                    "You said a service is unavailable without checking. Call \
+                     plugin(action: \"discover\", query: \"<service>\") now and answer from \
+                     what it returns; if it finds nothing, say that.",
                 ));
                 continue;
             }

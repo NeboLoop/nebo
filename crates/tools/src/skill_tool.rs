@@ -310,7 +310,12 @@ impl DynTool for SkillTool {
             }
             let domain_input: DomainInput = match serde_json::from_value(input.clone()) {
                 Ok(v) => v,
-                Err(e) => return ToolResult::error(format!("Failed to parse input: {}. Do not retry — this is a schema error.", e)),
+                Err(e) => return ToolResult::error(format!(
+                    "Failed to parse input: {e}. Every skill call names an action: \
+                     skill(action: \"list\"), skill(action: \"discover\", query: \"<what you need>\"), \
+                     skill(action: \"load\", name: \"<skill>\"), or skill(action: \"browse\", name: \"<skill>\", path: \"<file>\"). \
+                     Resend with the action and its fields."
+                )),
             };
 
             // Per-employee skill scope: runs bound to an agent (session key

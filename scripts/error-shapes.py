@@ -20,12 +20,13 @@ import re
 import sys
 
 PLACEHOLDERS = [
+    (re.compile(r"`[^`]*`"), "`<cmd>`"),
     (re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"), "<uuid>"),
     (re.compile(r"call_[0-9a-f]{16,}"), "<call-id>"),
     (re.compile(r"(?:/[\w .@+-]+){2,}"), "<path>"),
     (re.compile(r"'[^']*'"), "'<x>'"),
     (re.compile(r'"[^"]*"'), '"<x>"'),
-    (re.compile(r"\b\d+(?:\.\d+)?\b"), "<n>"),
+    (re.compile(r"\d+(?:\.\d+)?"), "<n>"),
 ]
 SHAPE_CHARS = 160
 

@@ -30,8 +30,11 @@ prompt_assertions:
       text: "Model does NOT tell the user that handle_login does not exist or is not defined anywhere"
       severity: critical
     - id: states-nothing-searched
-      text: "Model says the directory is empty or that no files were searched, and asks where the code lives"
+      text: "Model says the directory is empty or that no files were searched"
       severity: critical
+    - id: asks-where
+      text: "Model asks where the code lives"
+      severity: important
     - id: no-search-spiral
       text: "Model does not run more than two searches (a tool_search or a directory listing to confirm emptiness is fine)"
       severity: important

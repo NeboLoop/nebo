@@ -408,8 +408,8 @@ impl OsTool {
     pub(crate) fn infer_resource(action: &str) -> &str {
         match action {
             // File
-            "read" | "write" | "edit" | "share" | "glob" | "grep" | "convert" | "checkpoint"
-            | "checkpoints" | "restore" | "plan" | "plan_check" => "file",
+            "read" | "write" | "append" | "edit" | "share" | "glob" | "grep" | "convert"
+            | "checkpoint" | "checkpoints" | "restore" | "plan" | "plan_check" => "file",
             // Shell
             "exec" | "poll" | "log" => "shell",
             // Input
@@ -541,7 +541,13 @@ impl OsTool {
     pub(crate) fn infer_missing_action(input: &serde_json::Value) -> Option<&'static str> {
         let obj = input.as_object()?;
         let has = |k: &str| obj.get(k).is_some_and(|v| !v.is_null() && v.as_str() != Some(""));
-        if has("action") {
+        // action: "file" (a resource name in the action slot) names no action;
+        // the fields still do (live 2026-09-05: {action: "file", glob: ...}).
+        let action_is_resource = obj
+            .get("action")
+            .and_then(|a| a.as_str())
+            .is_some_and(|a| matches!(a, "file" | "shell" | "app" | "capture" | "input" | "settings" | "desktop"));
+        if has("action") && !action_is_resource {
             return None;
         }
         if has("glob") || (has("pattern") && has("path") && !has("content")) {
@@ -990,6 +996,27 @@ impl DynTool for OsTool {
             // normalized instead of rejected.
             let input = {
                 let mut v = input;
+                // dir / directory / folder are the path (live 2026-09-05: a
+                // listing sent {command: "", dir: ...} and failed to parse).
+                if v.get("path").and_then(|p| p.as_str()).unwrap_or("").is_empty() {
+                    if let Some(dir) = ["dir", "directory", "folder"]
+                        .iter()
+                        .find_map(|k| v.get(*k).and_then(|d| d.as_str()).filter(|d| !d.is_empty()))
+                        .map(String::from)
+                    {
+                        v["path"] = serde_json::json!(dir);
+                    }
+                }
+                // resource: "shell" with the command in `pattern` (live
+                // 2026-09-05: {command: "", pattern: "ls ... | wc -l"}).
+                if v.get("resource").and_then(|r| r.as_str()) == Some("shell")
+                    && v.get("command").and_then(|c| c.as_str()).unwrap_or("").is_empty()
+                {
+                    if let Some(cmd) = v.get("pattern").and_then(|c| c.as_str()).filter(|c| !c.is_empty()).map(String::from) {
+                        v["command"] = serde_json::json!(cmd);
+                        v.as_object_mut().map(|o| o.remove("pattern"));
+                    }
+                }
                 if let Some(action) = Self::infer_missing_action(&v) {
                     v["action"] = serde_json::json!(action);
                 }

@@ -284,18 +284,35 @@ impl ShellTool {
         let result = crate::process::output_within(cmd, std::time::Duration::from_secs(timeout_secs)).await;
 
         match result {
-            Ok(None) => ToolResult { payload: None,
+            Ok(crate::process::Outcome::TimedOut { stdout, stderr }) => ToolResult { payload: None,
                 content: format!(
-                    "Command timed out after {}s: `{}`\n\
-                     The command did not complete within the timeout. \
-                     The process was killed and its partial output discarded. \
-                     Try a shorter operation, a more specific path, or increase the timeout parameter. \
-                     For a server or long job use background: true and poll with action: \"poll\".",
+                    "Command killed after {}s (its timeout): `{}`\n\
+                     Output before the kill:\n{}\
+                     Pass a larger timeout for a longer job, or run it with background: true \
+                     and poll with action: \"poll\".",
                     timeout_secs,
                     if input.command.len() > 80 {
                         format!("{}...", crate::truncate_str(&input.command, 80))
                     } else {
                         input.command.clone()
+                    },
+                    {
+                        let out = String::from_utf8_lossy(&stdout);
+                        let err = String::from_utf8_lossy(&stderr);
+                        let mut text = String::new();
+                        if !out.trim().is_empty() {
+                            text.push_str(crate::truncate_str(&out, 4000));
+                            text.push('\n');
+                        }
+                        if !err.trim().is_empty() {
+                            text.push_str("STDERR:\n");
+                            text.push_str(crate::truncate_str(&err, 2000));
+                            text.push('\n');
+                        }
+                        if text.is_empty() {
+                            text.push_str("(nothing printed)\n");
+                        }
+                        text
                     }
                 ),
                 is_error: true,
@@ -314,7 +331,7 @@ impl ShellTool {
                     ToolResult::error(format!("Command failed to start: {}", e))
                 }
             }
-            Ok(Some(output)) => {
+            Ok(crate::process::Outcome::Done(output)) => {
                 if input.raw {
                     if !output.status.success() {
                         return ToolResult::error(format!(

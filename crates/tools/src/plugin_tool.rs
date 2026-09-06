@@ -161,6 +161,10 @@ struct PluginInput {
     /// Typed input object for a port `operation`; each field becomes a `--key value` flag.
     #[serde(default)]
     input: serde_json::Value,
+    /// Plain-language summary the model attaches to a call; not used to run
+    /// anything, but it names the plugin when `resource` was left out.
+    #[serde(default)]
+    display: String,
 }
 // NOTE: gated operations also carry a `display` arg (declared in the tool
 // schema below) — the approval gate reads it from the RAW tool-call args
@@ -357,8 +361,9 @@ impl PluginTool {
 
     /// List installed plugins (slug, version, enabled/disabled, signature status).
     /// The direct answer to "what plugins are installed?" — parity with skill catalog.
-    fn handle_list(&self) -> ToolResult {
+    fn handle_list(&self, ctx: &crate::ToolContext) -> ToolResult {
         let installed = self.plugin_store.list_installed();
+        let agent_id = types::keyparser::extract_agent_id(&ctx.session_key);
         if installed.is_empty() {
             return ToolResult::ok(
                 "No plugins installed. Use plugin(action: \"discover\", query: \"<keyword>\") to \
@@ -378,12 +383,38 @@ impl PluginTool {
                 .flatten()
                 .map(|r| r.is_enabled != 0)
                 .unwrap_or(true);
+            // A plugin that needs a connected account says whether THIS
+            // employee has one. Live (2026-09-05): list said "enabled", the
+            // model ran commands, and every one failed with "no account is
+            // connected"; the state was known before the first call.
+            let needs_account = self
+                .plugin_store
+                .get_manifest(slug)
+                .and_then(|m| m.auth)
+                .and_then(|a| a.profile_dir_env)
+                .is_some();
+            let account = if !needs_account || agent_id.is_empty() {
+                String::new()
+            } else {
+                let labels: Vec<String> = self
+                    .db_store
+                    .list_plugin_account_profiles(&agent_id, slug)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|p| p.account_label)
+                    .collect();
+                if labels.is_empty() {
+                    ", no account connected for this employee: the user connects one in \
+                     Settings, Plugins before any exec"
+                        .to_string()
+                } else {
+                    format!(", connected: {}", labels.join(", "))
+                }
+            };
             lines.push(format!(
-                "- {} v{} ({}, signature: {})",
-                slug,
-                version,
+                "- {slug} v{version} ({}, signature: {sig}{account}); run it with \
+                 plugin(resource: \"{slug}\", action: \"exec\", command: \"...\")",
                 if enabled { "enabled" } else { "disabled" },
-                sig
             ));
         }
         ToolResult::ok(format!(
@@ -421,6 +452,27 @@ impl PluginTool {
         } else {
             Some(query.trim())
         };
+        // A query that names an installed plugin has nothing to discover. Live
+        // (2026-09-05): "quickbooks connect" searched the marketplace, found
+        // nothing, and the model concluded the plugin needed installing.
+        let words: Vec<String> = query
+            .split(|c: char| !c.is_alphanumeric() && c != '-' && c != '_')
+            .map(|w| w.to_ascii_lowercase())
+            .collect();
+        if let Some((slug, version, _, _)) = self
+            .plugin_store
+            .list_installed()
+            .into_iter()
+            .find(|(slug, ..)| words.iter().any(|w| w == &slug.to_ascii_lowercase()))
+        {
+            return ToolResult::ok(format!(
+                "{slug} v{version} was already installed; nothing to discover or install. \
+                 Use plugin(resource: \"{slug}\", action: \"help\") for its commands and \
+                 plugin(resource: \"{slug}\", action: \"exec\", command: \"...\") to run one. \
+                 If a result says no account is connected, the user connects one in \
+                 Settings, Plugins; there is no command for that."
+            ));
+        }
         // No type straitjacket: the standalone services (Gmail, Drive, …) are
         // `connector`-typed in the catalog, so a plugin-only search made them
         // INVISIBLE to discover — the user asked for Gmail and could never get
@@ -655,6 +707,33 @@ impl PluginTool {
     }
 
     /// List available services (top-level skill names) for a plugin.
+    /// The one installed plugin whose services include `<slug>-<first word>`
+    /// of the command, or None when no plugin or more than one qualifies.
+    fn infer_resource_for_command(&self, command: &str) -> Option<String> {
+        let first = command.split_whitespace().next()?.to_ascii_lowercase();
+        let words: Vec<String> = command
+            .split(|c: char| !c.is_alphanumeric() && c != '-' && c != '_')
+            .map(|w| w.to_ascii_lowercase())
+            .collect();
+        let mut slugs: Vec<String> = self
+            .plugin_store
+            .list_installed()
+            .into_iter()
+            .map(|(slug, ..)| slug)
+            .collect();
+        slugs.sort();
+        slugs.dedup();
+        let mut hits = slugs.into_iter().filter(|slug| {
+            let service = format!("{slug}-{first}");
+            words.iter().any(|w| w == &slug.to_ascii_lowercase())
+                || self.list_services(slug).iter().any(|(name, _)| *name == service)
+        });
+        match (hits.next(), hits.next()) {
+            (Some(slug), None) => Some(slug),
+            _ => None,
+        }
+    }
+
     fn list_services(&self, slug: &str) -> Vec<(String, String)> {
         let skills_dir = match self.skills_dir(slug) {
             Some(d) => d,
@@ -1017,18 +1096,63 @@ impl DynTool for PluginTool {
                     query: String::new(),
                     operation: String::new(),
                     input: serde_json::Value::Null,
+                    display: String::new(),
                 };
                 return self.handle_exec(&port_pi, ctx).await;
             }
 
             // `list` and `discover` don't need a plugin slug; `exec`/`events` do.
             match pi.action.as_str() {
-                "list" => self.handle_list(),
+                "list" => self.handle_list(ctx),
                 "discover" => self.handle_discover(&pi.query, ctx).await,
                 "exec" | "" => {
-                    if pi.resource.is_empty() {
-                        return ToolResult::error(self.resource_required("exec", "exec\", command: \"doctor"));
+                    // A command whose first word is one plugin's own service
+                    // (skills are named <slug>-<command>) names that plugin;
+                    // running it beats an error the model can only echo back.
+                    // doctor with no plugin named is doctor for every plugin:
+                    // the model wants the state of what is installed.
+                    if pi.resource.is_empty() && pi.command.trim() == "doctor" {
+                        let mut slugs: Vec<String> = self
+                            .plugin_store
+                            .list_installed()
+                            .into_iter()
+                            .map(|(slug, ..)| slug)
+                            .collect();
+                        slugs.sort();
+                        slugs.dedup();
+                        if slugs.is_empty() {
+                            return ToolResult::ok("No plugins installed; nothing to diagnose.");
+                        }
+                        let mut report = Vec::new();
+                        for slug in slugs {
+                            let one = PluginInput {
+                                resource: slug.clone(),
+                                action: "exec".to_string(),
+                                command: "doctor".to_string(),
+                                args: Default::default(),
+                                timeout: pi.timeout,
+                                query: String::new(),
+                                operation: String::new(),
+                                input: serde_json::Value::Null,
+                                display: String::new(),
+                            };
+                            let r = self.handle_exec(&one, ctx).await;
+                            report.push(format!("## {slug}\n{}", r.content.trim()));
+                        }
+                        return ToolResult::ok(report.join("\n\n"));
                     }
+                    let pi = if pi.resource.is_empty() {
+                        match self.infer_resource_for_command(&format!("{} {}", pi.command, pi.display)) {
+                            Some(slug) => PluginInput { resource: slug, ..pi },
+                            None => {
+                                return ToolResult::error(
+                                    self.resource_required("exec", "exec\", command: \"doctor"),
+                                )
+                            }
+                        }
+                    } else {
+                        pi
+                    };
                     // Raw exec must not be a side door around the per-employee
                     // operation gate: a command that IS a gated bound operation
                     // (e.g. ballast's `ingest` = kb.article.create) only runs
@@ -1610,6 +1734,16 @@ impl PluginTool {
                              this agent's Settings, Plugins before using {res}.",
                             res = pi.resource
                         );
+                        // doctor and help are how a model checks the state; the
+                        // state is the answer, not an error to recover from.
+                        let first = pi.command.split_whitespace().next().unwrap_or("");
+                        if first == "doctor" || first == "help" || pi.command.contains("--help") {
+                            return ToolResult::ok(format!(
+                                "{res} {first}: not connected. {none_msg} Nothing else to \
+                                 diagnose until then.",
+                                res = pi.resource
+                            ));
+                        }
                         // Nothing connected. Interactive chat renders an inline
                         // connect card via ask_user, which parks THIS tool call
                         // until the account is connected — the run then resumes

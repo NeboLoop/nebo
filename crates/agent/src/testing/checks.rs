@@ -207,7 +207,7 @@ fn check_one_call(
         }
         if let Some(needle) = &check.contains {
             let hay = stringify(value);
-            if !hay.contains(needle.as_str()) {
+            if !hay.to_lowercase().contains(&needle.to_lowercase()) {
                 return Ok(Err(format!(
                     "arg '{}' ({}) does not contain '{}'",
                     arg_path, hay, needle

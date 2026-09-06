@@ -47,3 +47,4 @@ Examples (every call MUST include all required params):
 - os(resource: "shell", action: "kill", session_id: "..."): Kill a background session
 - os(resource: "shell", action: "kill", pid: 1234): Kill a process by pid
 - os(resource: "shell", action: "info", pid: 1234): Process details
+- Waiting for a file or a process to change: ONE bounded wait in a single command, never repeated reads of the same file: os(resource: "shell", action: "exec", command: "for i in $(seq 1 12); do wc -l < FILE; test $(wc -l < FILE) -ge N && break; sleep 5; done; cat FILE", timeout: 90). Keep the loop shorter than the timeout you pass, then report what you saw, changed or not.

@@ -36,25 +36,81 @@ impl MessageTool {
         }
     }
 
-    fn infer_resource(&self, action: &str) -> &str {
+    fn infer_resource(&self, action: &str, input: &serde_json::Value) -> &str {
+        let to = input["to"].as_str().unwrap_or("").trim();
+        let phone_like = !to.is_empty()
+            && to.chars().all(|c| c.is_ascii_digit() || matches!(c, '+' | ' ' | '-' | '(' | ')'));
         match action {
             "notify" => "owner",
             "alert" | "dnd_status" => "notify",
             "conversations" | "read" | "search" => "sms",
+            // send to a phone number is sms; send to anyone else is a
+            // coworker (smoke 2026-09-06: to + text with no resource).
+            "send" if phone_like => "sms",
+            "send" if !to.is_empty() || input.get("text").is_some() => "coworker",
             _ => "",
         }
     }
 
     async fn handle_coworker(&self, ctx: &ToolContext, input: &serde_json::Value) -> ToolResult {
-        let to = input["to"].as_str().unwrap_or("");
         let text = input["text"].as_str().unwrap_or("");
-        if to.is_empty() {
-            return ToolResult::error(errors::missing_param(
-                "send",
-                "to",
-                "message(resource: \"coworker\", action: \"send\", to: \"receptionist\", text: \"...\")",
+        // A send with no `to` that names exactly one installed employee in its
+        // text is addressed to them (smoke, 2026-09-05: "Chief of Staff" was in
+        // the text and the call died on the missing field).
+        let names: Vec<String> = self
+            .store
+            .list_agents(500, 0)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|a| a.name)
+            .filter(|n| !n.trim().is_empty())
+            .collect();
+        // Names are matched with hyphens and underscores as spaces, so the
+        // user's "chief-of-staff" is the employee "Chief of Staff".
+        let norm = |t: &str| t.to_ascii_lowercase().replace(['-', '_'], " ");
+        let unique_name_in = |haystack: &str| -> Option<String> {
+            let hay = norm(haystack);
+            let mut hits = names.iter().filter(|n| hay.contains(&norm(n)));
+            match (hits.next(), hits.next()) {
+                (Some(n), None) => Some(n.clone()),
+                _ => None,
+            }
+        };
+        let inferred: Option<String> = if input["to"].as_str().unwrap_or("").is_empty() {
+            // The text first; then the user's own request in this chat, which
+            // is where the model read the name (smoke 2026-09-06: "Ask the
+            // chief-of-staff agent ..." became text: "Draft my weekly report.").
+            unique_name_in(text).or_else(|| {
+                let chat_id = types::keyparser::chat_id_from_thread_key(&ctx.session_key)?;
+                let last_user = self
+                    .store
+                    .get_recent_chat_messages(chat_id, 8)
+                    .ok()?
+                    .into_iter()
+                    .rev()
+                    .find(|m| m.role == "user")?;
+                unique_name_in(&last_user.content)
+            })
+        } else {
+            None
+        };
+        let to = input["to"].as_str().filter(|t| !t.is_empty()).map(String::from).or(inferred);
+        let Some(to) = to else {
+            let roster = if names.is_empty() {
+                String::new()
+            } else {
+                format!(" Installed employees: {}.", names.join(", "))
+            };
+            return ToolResult::error(format!(
+                "{}{roster}",
+                errors::missing_param(
+                    "send",
+                    "to",
+                    "message(resource: \"coworker\", action: \"send\", to: \"receptionist\", text: \"...\")",
+                )
             ));
-        }
+        };
+        let to = to.as_str();
         if text.is_empty() {
             return ToolResult::error(errors::missing_param(
                 "send",
@@ -199,7 +255,7 @@ impl DynTool for MessageTool {
                     &["coworker", "owner", "sms", "notify"],
                 );
                 if corrected.is_empty() {
-                    self.infer_resource(&domain_input.action).to_string()
+                    self.infer_resource(&domain_input.action, &input).to_string()
                 } else {
                     corrected
                 }

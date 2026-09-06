@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 /// backstop fires (nudge, or turn stop when `hard_stop` is on).
 pub const DEFAULT_SAME_ACTION_LIMIT: usize = 8;
 /// Default: unproductive identical-args repeats before the call is blocked.
-pub const DEFAULT_IDENTICAL_ARGS_BLOCK_AFTER: usize = 3;
+pub const DEFAULT_IDENTICAL_ARGS_BLOCK_AFTER: usize = 2;
 /// Default: auto-continuations per real user message (goals.rs judge).
 pub const DEFAULT_MAX_AUTO_CONTINUATIONS: u32 = 5;
 

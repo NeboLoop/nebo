@@ -65,17 +65,58 @@ impl Drop for GroupGuard {
 /// Run `cmd` to completion or `timeout`. `Ok(None)` is a timeout. Either way
 /// the command's whole process group is gone when this returns; a server the
 /// model wants kept alive belongs in a background session.
+/// What a bounded command produced: its full output, or, when the timeout
+/// killed it, everything it had printed by then. Discarding that output
+/// turned a five-minute wait loop into "killed, partial output discarded",
+/// and the model re-ran the wait from scratch (2026-09-05).
+pub enum Outcome {
+    Done(std::process::Output),
+    TimedOut { stdout: Vec<u8>, stderr: Vec<u8> },
+}
+
 pub async fn output_within(
     mut cmd: Command,
     timeout: std::time::Duration,
-) -> std::io::Result<Option<std::process::Output>> {
+) -> std::io::Result<Outcome> {
     in_own_group(&mut cmd);
     cmd.kill_on_drop(true);
-    let child = cmd.spawn()?;
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+    let mut child = cmd.spawn()?;
     let _group = GroupGuard(child.id().unwrap_or(0));
-    match tokio::time::timeout(timeout, child.wait_with_output()).await {
-        Ok(out) => out.map(Some),
-        Err(_) => Ok(None),
+    let stdout_buf: Arc<Mutex<Vec<u8>>> = Arc::default();
+    let stderr_buf: Arc<Mutex<Vec<u8>>> = Arc::default();
+    let readers = [
+        (child.stdout.take().map(|s| Box::pin(s) as std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>>), stdout_buf.clone()),
+        (child.stderr.take().map(|s| Box::pin(s) as std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>>), stderr_buf.clone()),
+    ]
+    .into_iter()
+    .filter_map(|(pipe, buf)| {
+        let mut pipe = pipe?;
+        Some(tokio::spawn(async move {
+            let mut chunk = [0u8; 8192];
+            while let Ok(n) = pipe.read(&mut chunk).await {
+                if n == 0 {
+                    break;
+                }
+                buf.lock().await.extend_from_slice(&chunk[..n]);
+            }
+        }))
+    })
+    .collect::<Vec<_>>();
+    let status = tokio::time::timeout(timeout, child.wait()).await;
+    if status.is_err() {
+        let _ = child.kill().await;
+    }
+    // Readers end at EOF once the process (group) is gone.
+    for r in readers {
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), r).await;
+    }
+    let stdout = std::mem::take(&mut *stdout_buf.lock().await);
+    let stderr = std::mem::take(&mut *stderr_buf.lock().await);
+    match status {
+        Ok(status) => Ok(Outcome::Done(std::process::Output { status: status?, stdout, stderr })),
+        Err(_) => Ok(Outcome::TimedOut { stdout, stderr }),
     }
 }
 
@@ -623,11 +664,24 @@ mod group_tests {
         cmd.arg("-c").arg(format!("sleep 30 & echo $! > {}; wait", file.display()));
         cmd.stdout(Stdio::null()).stderr(Stdio::null());
         let out = output_within(cmd, Duration::from_millis(400)).await.unwrap();
-        assert!(out.is_none(), "expected a timeout");
+        assert!(matches!(out, Outcome::TimedOut { .. }), "expected a timeout");
         let pid = grandchild_pid(&file).await;
         settle().await;
         assert!(!alive(pid), "the backgrounded grandchild outlived the timeout");
         let _ = std::fs::remove_file(file);
+    }
+
+    #[tokio::test]
+    async fn a_timed_out_command_keeps_what_it_printed() {
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c").arg("echo before; sleep 30; echo after");
+        let out = output_within(cmd, Duration::from_millis(500)).await.unwrap();
+        match out {
+            Outcome::TimedOut { stdout, .. } => {
+                assert_eq!(String::from_utf8_lossy(&stdout).trim(), "before");
+            }
+            Outcome::Done(_) => panic!("expected a timeout"),
+        }
     }
 
     #[tokio::test]

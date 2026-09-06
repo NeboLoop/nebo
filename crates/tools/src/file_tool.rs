@@ -26,7 +26,7 @@ pub struct FileTool {
     lsp: Arc<dyn crate::lsp::LspProvider>,
 }
 
-#[derive(Debug, Deserialize, Default)]
+#[derive(Clone, Debug, Deserialize, Default)]
 struct FileInput {
     action: String,
     #[serde(default)]
@@ -125,6 +125,13 @@ impl FileTool {
         match fi.action.as_str() {
             "read" => self.handle_read(session, &fi),
             "write" => self.handle_write(session, &fi),
+            // append IS write with append: true (live 2026-09-05: the call
+            // carried path and content and was told the action was unknown).
+            "append" => {
+                let mut appending = fi.clone();
+                appending.append = true;
+                self.handle_write(session, &appending)
+            }
             "edit" => self.handle_edit(session, &fi),
             // Checkpoints without destructive git (P6.2): explicit, listed, reversible.
             "checkpoint" => self.handle_checkpoint(ctx, &fi),
@@ -147,6 +154,12 @@ impl FileTool {
             // its defaulted "*" pattern — route to the one implementation. Not
             // advertised in the schema; glob stays the single documented way.
             "list" | "ls" => self.handle_glob(&fi),
+            "screenshot" | "capture" => ToolResult::error(format!(
+                "screenshot is not a file action. To take one: os(resource: \"desktop\", action: \"screenshot\"). \
+                 To find existing screenshots: os(resource: \"file\", action: \"glob\", \
+                 pattern: \"*.png\", path: \"{}\").",
+                if fi.path.is_empty() { "~/Desktop" } else { fi.path.as_str() }
+            )),
             other => ToolResult::error(format!(
                 "Unknown action: {} (valid: read, write, edit, share, glob, grep, checkpoint, checkpoints, restore, plan, plan_check)",
                 other
@@ -372,10 +385,9 @@ impl FileTool {
         };
 
         if metadata.is_dir() {
-            return ToolResult::error(format!(
-                "Path is a directory: {}\nUse glob action to list directory contents",
-                path
-            ));
+            // A read of a directory is a listing; the model asked for what is
+            // there, and glob with the defaulted "*" is the one implementation.
+            return self.handle_glob(input);
         }
 
         // NOTE: A read MUST always return the file's content. We deliberately do NOT

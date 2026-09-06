@@ -1038,7 +1038,17 @@ impl PersonaTool {
             if agent_dir.exists() {
                 let _ = std::fs::write(agent_dir.join("AGENT.md"), &current_md);
             }
-            changes.push(format!("instructions (AGENT.md body) replaced from `{}`; frontmatter kept", field));
+            // A model asked to change the description often sends `prompt`
+            // (audit 2026-09-06) and then reports the description changed.
+            let description_note = if input.get("description").and_then(|d| d.as_str()).is_none() {
+                "; the description is UNCHANGED (pass description: \"...\" to change it)"
+            } else {
+                ""
+            };
+            changes.push(format!(
+                "instructions (AGENT.md body) replaced from `{}`; frontmatter kept{}",
+                field, description_note
+            ));
         }
 
         // Update input_values (user-supplied configuration values)

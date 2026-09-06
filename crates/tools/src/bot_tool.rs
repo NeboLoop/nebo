@@ -879,6 +879,38 @@ impl AgentTool {
 
         match action {
             "spawn" => {
+                // spawn has no name: a spawn that names someone is work for a
+                // coworker, and an anonymous sub-agent would impersonate them
+                // (smoke, 2026-09-05: "Chief of Staff" got a blank sub-agent).
+                let named_in_prompt: Option<String> = {
+                    let prompt = input["prompt"].as_str().unwrap_or("").to_ascii_lowercase();
+                    let names: Vec<String> = self
+                        .store
+                        .list_agents(500, 0)
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|a| a.name)
+                        .filter(|n| n.trim().len() >= 3)
+                        .collect();
+                    let mut hits = names.iter().filter(|n| prompt.contains(&n.to_ascii_lowercase()));
+                    match (hits.next(), hits.next()) {
+                        (Some(n), None) => Some(n.clone()),
+                        _ => None,
+                    }
+                };
+                if let Some(who) = ["name", "to", "employee", "agent"]
+                    .iter()
+                    .find_map(|k| input[*k].as_str().filter(|v| !v.trim().is_empty()))
+                    .map(String::from)
+                    .or(named_in_prompt)
+                {
+                    return ToolResult::error(format!(
+                        "spawn creates an anonymous sub-agent; \"{who}\" is a named employee. \
+                         Work for a named employee is a message: message(resource: \"coworker\", \
+                         action: \"send\", to: \"{who}\", text: \"<what you need>\"). Not retried \
+                         here."
+                    ));
+                }
                 let task_prompt = input["prompt"].as_str().unwrap_or("");
                 let agent_type = input["agent_type"].as_str().unwrap_or("general");
                 let description = input["description"]
