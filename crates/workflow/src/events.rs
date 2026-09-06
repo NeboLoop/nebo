@@ -458,6 +458,51 @@ mod tests {
         assert!(!map.contains_key("payload"));
     }
 
+    /// The assessment thread, through the real dispatcher path: four
+    /// lead-captured events for one person become one case, one first turn,
+    /// and three signals that ride into that turn. No second run, ever.
+    #[test]
+    fn four_lead_captured_events_for_one_person_are_one_case() {
+        let path = std::env::temp_dir().join(format!("nebo-events-case-{}.db", uuid::Uuid::new_v4()));
+        let store = db::Store::new(&path.to_string_lossy()).expect("store");
+        let sub = EventSubscription {
+            pattern: "sales.intake-coordinator.lead-captured".into(),
+            default_inputs: serde_json::json!({"tone": "warm"}),
+            agent_source: "intake".into(),
+            binding_name: "work-lead".into(),
+            definition_json: Some(r#"{"activities":[{"id":"turn","intent":"work the lead"}]}"#.into()),
+            emit_source: None,
+            case: Some(CaseRoute { key_path: "contactEmail,email,phone".into(), default_wait_secs: 86_400 }),
+        };
+        let route = sub.case.clone().unwrap();
+        let def = sub.definition_json.clone().unwrap();
+        let ev = |ts: u64, email: &str| Event {
+            source: "sales.intake-coordinator.lead-captured".into(),
+            payload: serde_json::json!({"email": email, "message": "27-56 hours a week", "capturedAt": ts}),
+            origin: "hub".into(),
+            timestamp: ts,
+        };
+        for ts in [1_000u64, 2_000, 3_000, 4_000] {
+            assert!(route_case(&store, &sub, &route, &def, &ev(ts, "Alma@AboundingGoods.com")), "routed, not run");
+        }
+        // A re-emit of the same moment (same payload, same second) is a duplicate.
+        assert!(route_case(&store, &sub, &route, &def, &ev(4_000, "Alma@AboundingGoods.com")));
+
+        let case = store.engine_run_for_key("email", "alma@aboundinggoods.com").unwrap().expect("one open case");
+        assert_eq!(case.state, "waiting");
+        let turns = store.engine_queued_runs_of_kind("case_turn", 10).unwrap();
+        assert_eq!(turns.len(), 1, "one first turn");
+        assert_eq!(turns[0].parent_run_id.as_deref(), Some(case.id.as_str()));
+        // The signals are recorded against the case's key, durable, once each.
+        let (pending, _) = store.engine_claim_events(10_000, 50).unwrap();
+        assert_eq!(pending.len(), 3, "three later signals wait for the loop; the duplicate is not among them");
+        assert!(pending.iter().all(|e| e.target_id == "email:alma@aboundinggoods.com" && e.retention == "durable"));
+
+        // A payload that names nobody is not routed: the caller runs it the old way.
+        let stray = Event { source: "sales.intake-coordinator.lead-captured".into(), payload: serde_json::json!({"note": "no contact"}), origin: "hub".into(), timestamp: 9_000 };
+        assert!(!route_case(&store, &sub, &route, &def, &stray));
+    }
+
     #[tokio::test]
     async fn test_subscribe_is_idempotent() {
         let dispatcher = EventDispatcher::new();
