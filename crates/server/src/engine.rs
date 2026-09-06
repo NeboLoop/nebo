@@ -151,9 +151,13 @@ fn deliver(
         if event.target_type == "run" && event.kind == "signal" {
             if let Some((kt, kv)) = event.target_id.split_once(':') {
                 if let Ok(Some(case)) = store.engine_run_for_key(kt, kv) {
-                    if steer_into_live_turn(store, &case, event, t, busy, steer) {
-                        report.steered += 1;
-                        return;
+                    match live_turn(store, &case, event, t, busy, steer) {
+                        LiveTurn::Handed => {
+                            report.steered += 1;
+                            return;
+                        }
+                        LiveTurn::Deferred => return,
+                        LiveTurn::None => {}
                     }
                 }
             }
@@ -189,9 +193,19 @@ fn deliver(
             };
             // One live turn per case (design: concurrency). A running or
             // queued turn hears the signal; a second turn never starts.
-            if steer_into_live_turn(store, &parent, event, t, busy, steer) {
-                report.steered += 1;
-                return;
+            match live_turn(store, &parent, event, t, busy, steer) {
+                LiveTurn::Handed => {
+                    report.steered += 1;
+                    return;
+                }
+                LiveTurn::Deferred => {
+                    // A turn is running but cannot take the event right now
+                    // (between provider retries, or finishing). The lease
+                    // expires and the next tick routes it — by then the turn
+                    // has settled and the parent's new wait carries it.
+                    return;
+                }
+                LiveTurn::None => {}
             }
             start_child(store, &parent, event).map(|_| {
                 report.children_started += 1;
@@ -208,42 +222,70 @@ fn deliver(
     }
 }
 
+/// What happened to an event aimed at a case that may have a live turn.
+enum LiveTurn {
+    /// No queued or running turn: the caller may start one.
+    None,
+    /// The live turn took it (steered in, or appended to its inputs);
+    /// the event is completed.
+    Handed,
+    /// A turn is live but cannot take it now. Nothing starts, nothing is
+    /// completed; the lease expires and a later tick routes it.
+    Deferred,
+}
+
 /// If the case has a live turn, hand it the event: a running turn gets it
-/// as steering; a queued one gets it appended to its inputs. Returns true
-/// when the event was handed over (and completed).
-fn steer_into_live_turn(
+/// as steering; a queued one gets it appended to its inputs. A running turn
+/// that is not accepting steering still counts as live — a second turn
+/// never starts beside it.
+fn live_turn(
     store: &Store,
     case: &EngineRun,
     event: &EngineEvent,
     t: i64,
     busy: &dyn Fn(&str) -> bool,
     steer: &dyn Fn(&str, &EngineEvent),
-) -> bool {
+) -> LiveTurn {
     let child = match store.engine_live_child(&case.id) {
         Ok(Some(c)) => c,
-        _ => return false,
+        _ => return LiveTurn::None,
     };
     let handed = match (child.state.as_str(), child.external_ref.as_deref()) {
         ("running", Some(wf_run_id)) => {
-            let session_key = tools::workflow_session_key(&case.agent_id, wf_run_id);
+            // The session the turn's workflow run was created under is the
+            // one the runner marks busy; read it from the run row rather
+            // than recomputing it.
+            let session_key = store
+                .get_workflow_run(wf_run_id)
+                .ok()
+                .flatten()
+                .and_then(|wf| wf.session_key)
+                .unwrap_or_else(|| tools::workflow_session_key(&case.agent_id, wf_run_id));
             if busy(&session_key) {
                 steer(&session_key, event);
                 true
             } else {
-                // Between the runner finishing and reconciliation noticing:
-                // let the lease expire and the next tick route it fresh.
-                false
+                return LiveTurn::Deferred;
             }
         }
-        ("queued", _) => store.engine_append_pending_signal(&child.id, &event.payload).is_ok(),
-        _ => false,
+        ("running", None) => return LiveTurn::Deferred,
+        ("queued", _) => match store.engine_append_pending_signal(&child.id, &event.payload) {
+            Ok(()) => true,
+            Err(e) => {
+                warn!(child = %child.id, error = %e, "engine: could not append signal to the queued turn");
+                return LiveTurn::Deferred;
+            }
+        },
+        _ => return LiveTurn::None,
     };
     if handed {
         if let Err(e) = store.engine_complete_event(event.id, t) {
             warn!(event = event.id, error = %e, "engine: complete after steer failed");
         }
+        LiveTurn::Handed
+    } else {
+        LiveTurn::Deferred
     }
-    handed
 }
 
 // ── driving turns through the workflow runner ─────────────────────────────
@@ -380,6 +422,57 @@ mod tests {
         assert_eq!(children[0].parent_run_id.as_deref(), Some("case-1"));
         assert!(children[0].inputs.as_deref().unwrap().contains("form again"));
         assert_eq!(tick(&s, 300, &idle, &no_steer), TickReport::default(), "delivered: a second tick finds nothing");
+    }
+
+    /// Seen live: after a turn settled, three signals claimed in ONE tick
+    /// each started a child. The second and third must ride the first.
+    #[test]
+    fn three_signals_in_one_tick_start_one_turn_and_ride_the_rest() {
+        let s = store();
+        s.engine_create_run(&NewRun { id: "case-1", kind: "case", session_key: "agent:a:case:k", agent_id: "a", lane: "main", ..Default::default() }).unwrap();
+        s.engine_declare_wait("case-1", &NewWait { action: "trigger_child", on_kind: "signal", key: "email:x", deadline: Some(9_000), reason: "after a failed turn", ..Default::default() }, 100).unwrap();
+        for i in 1..=3 {
+            s.engine_enqueue_event(&NewEvent { kind: "signal", target_type: "run", target_id: "email:x", payload: &format!("sub-{i}"), idem_key: &format!("s{i}"), durable: true, ..Default::default() }).unwrap();
+        }
+        let r = tick(&s, 200, &idle, &no_steer);
+        assert_eq!(r.claimed, 3);
+        assert_eq!(r.children_started, 1, "one turn");
+        assert_eq!(r.steered, 2, "the other two ride it");
+        let turns = s.engine_queued_runs_of_kind("case_turn", 10).unwrap();
+        assert_eq!(turns.len(), 1);
+        let inputs = turns[0].inputs.as_deref().unwrap();
+        assert!(inputs.contains("sub-1") && inputs.contains("sub-2") && inputs.contains("sub-3"));
+    }
+
+    /// Seen live: a turn was running but its session was between provider
+    /// retries, so it did not read as busy — and a second turn started
+    /// beside it. A running turn blocks a second one, busy or not; the event
+    /// waits, and rides the parent's next wait once the turn settles.
+    #[test]
+    fn a_running_turn_that_is_not_busy_defers_the_signal_instead_of_starting_another() {
+        let s = store();
+        s.engine_create_run(&NewRun { id: "case-1", kind: "case", session_key: "agent:a:case:k", agent_id: "a", lane: "main", ..Default::default() }).unwrap();
+        s.engine_declare_wait("case-1", &NewWait { action: "trigger_child", on_kind: "signal", key: "email:x", deadline: None, reason: "first contact", ..Default::default() }, 100).unwrap();
+        s.engine_create_run(&NewRun { id: "turn-1", kind: "case_turn", session_key: "agent:a:case:k", agent_id: "a", lane: "main", parent_run_id: Some("case-1"), inputs: Some(r#"{"_case":{"key_type":"email","key_value":"x","default_wait_secs":86400}}"#), ..Default::default() }).unwrap();
+        s.engine_set_run_state("turn-1", "running", 150, None).unwrap();
+        s.engine_set_external_ref("turn-1", "wf-1").unwrap();
+        s.engine_enqueue_event(&NewEvent { kind: "signal", target_type: "run", target_id: "email:x", payload: "again", idem_key: "s2", durable: true, ..Default::default() }).unwrap();
+
+        let r = tick(&s, 200, &idle, &no_steer);
+        assert_eq!(r.claimed, 1);
+        assert_eq!(r.children_started, 0, "no second turn beside a running one");
+        assert_eq!(r.steered, 0);
+        assert_eq!(s.engine_queued_runs_of_kind("case_turn", 10).unwrap().len(), 0);
+
+        // The turn settles; the parent's new wait carries the deferred event
+        // once its lease has expired.
+        let turn = s.engine_get_run("turn-1").unwrap().unwrap();
+        settle_turn(&s, &turn, Some("sent first response"), false, 300).unwrap();
+        let later = 200 + db::EVENT_LEASE_SECS + 1;
+        let r = tick(&s, later, &idle, &no_steer);
+        assert_eq!(r.children_started, 1, "now it starts the next turn");
+        let next = s.engine_queued_runs_of_kind("case_turn", 10).unwrap();
+        assert!(next[0].inputs.as_deref().unwrap().contains("again"));
     }
 
     #[test]
