@@ -14,7 +14,11 @@
   import { slide } from 'svelte/transition';
   import Crown from 'lucide-svelte/icons/crown';
   import ChevronDown from 'lucide-svelte/icons/chevron-down';
+  import Pencil from 'lucide-svelte/icons/pencil';
+  import NewTeamModal from '$lib/components/teams/NewTeamModal.svelte';
   import { getTeamMessages, sendTeamMessage } from '$lib/api/nebo';
+  import { uploadFiles } from '$lib/api/upload';
+  import { stripAttachmentNotes, type UploadedAttachment } from '$lib/types/attachment';
   import type { Team, TeamMessage } from '$lib/api/neboComponents';
   import { getWebSocketClient } from '$lib/websocket/client';
   import { parseMarkdown } from '$lib/markdown';
@@ -29,15 +33,22 @@
   }: {
     team: Team;
     /** The employee roster, for member chips and sender-name resolution. */
-    roster?: { id: string; name: string; initial: string; color?: string; loopAgentId?: string }[];
+    roster?: { id: string; name: string; initial: string; color?: string; loopAgentId?: string; isApp?: boolean }[];
   } = $props();
+
+  // The member picker, in edit mode. The server broadcasts team_updated on
+  // save; the shell patches its list and this view re-renders from `team`.
+  let editOpen = $state(false);
 
   type TeamMsg = {
     id: string;
     from: string;
     content: string;
     mine: boolean;
+    attachments: UploadedAttachment[];
   };
+  const asAttachments = (v: unknown): UploadedAttachment[] =>
+    Array.isArray(v) ? (v as UploadedAttachment[]) : [];
 
   // Each employee keeps its roster color in the team, so the owner can tell
   // who's who at a glance — same palette as the sidebar avatars.
@@ -77,20 +88,24 @@
   // Dedupe key for the owner's optimistic send vs its server echo: the
   // server copy may carry normalized mention tokens, so tokens are stripped
   // — only the human-typed text has to match.
+  // Attachment notes are stripped too: the server appends them to the
+  // echoed text, the optimistic row never had them.
   const strippedText = (text: string) =>
-    text.replace(/<@[A-Za-z0-9._-]+>/g, '').replace(/\s+/g, ' ').trim();
+    stripAttachmentNotes(text).replace(/<@[A-Za-z0-9._-]+>/g, '').replace(/\s+/g, ' ').trim();
 
   // Who is on the team — resolved against the roster; unknown ids (a departed
   // employee) keep their raw label rather than vanishing.
   const members = $derived(
-    team.memberAgentIds.map(
-      (id) =>
-        roster.find((a) => a.id === id) ?? {
-          id,
-          name: id,
-          initial: (id[0] ?? '?').toUpperCase(),
-        }
-    )
+    team.memberAgentIds
+      .map(
+        (id) =>
+          roster.find((a) => a.id === id) ?? {
+            id,
+            name: id,
+            initial: (id[0] ?? '?').toUpperCase(),
+          }
+      )
+      .sort((a, b) => a.name.localeCompare(b.name))
   );
 
   const nameFor = (from: string) =>
@@ -104,6 +119,7 @@
     from: m.role === 'user' ? '' : nameFor(m.from || m.fromAgentId),
     content: m.content,
     mine: m.role === 'user',
+    attachments: asAttachments(m.attachments),
   });
 
   function clearWorking(senderName: string, fromAgentId?: string) {
@@ -132,6 +148,9 @@
       if (data?.teamId !== team.id) return;
       const text = data.text ?? '';
       if (!text) return;
+      // Already here: the same row can arrive twice (the owner's own echo
+      // after its optimistic render, a reconnect replay).
+      if (data.messageId && messages.some((m) => m.id === data.messageId)) return;
       const senderName = data.senderName || nameFor(data.fromAgentId || data.from || '');
       clearWorking(senderName, data.fromAgentId);
       // The owner's own post echoes back as role "user" — it is MINE, and
@@ -147,6 +166,7 @@
           from: isOwner ? '' : senderName,
           content: text,
           mine: isOwner,
+          attachments: asAttachments(data.attachments),
         },
       ];
       scrollToEnd();
@@ -172,24 +192,50 @@
     };
   });
 
-  async function send(raw: string) {
+  async function send(raw: string, files: { file: File }[] = []) {
     const text = raw.trim();
-    if (!text || sending) return;
+    if ((!text && files.length === 0) || sending) return;
     sending = true;
+    // Render first, then send: the server echoes the post over the socket
+    // BEFORE the request returns, so the row must already exist for the echo
+    // to dedupe against. The temp id is swapped for the server's on return.
+    const tempId = crypto.randomUUID();
+    messages = [...messages, { id: tempId, from: '', content: text, mine: true, attachments: [] }];
+    scrollToEnd();
     try {
-      await sendTeamMessage(team.id, { text });
-      messages = [
-        ...messages,
-        { id: crypto.randomUUID(), from: '', content: text, mine: true },
-      ];
-      scrollToEnd();
+      // Same upload step as a direct chat; the server saves and notes them.
+      const attachments = files.length ? await uploadFiles(files.map((f) => f.file)) : [];
+      if (attachments.length) {
+        messages = messages.map((m) => (m.id === tempId ? { ...m, attachments } : m));
+      }
+      const resp = await sendTeamMessage(team.id, { text, attachments });
+      if (resp?.messageId) {
+        // The echo may have landed as its own row while this request was in
+        // flight: keep one row under the server's id, never two.
+        messages = messages.some((m) => m.id === resp.messageId)
+          ? messages.filter((m) => m.id !== tempId)
+          : messages.map((m) => (m.id === tempId ? { ...m, id: resp.messageId } : m));
+      }
     } catch {
-      /* the composer keeps focus; a failed send simply doesn't render */
+      // The post did not land: take the row back so the thread stays honest.
+      messages = messages.filter((m) => m.id !== tempId);
     } finally {
       sending = false;
     }
   }
 </script>
+
+{#snippet editMembersButton()}
+  <button
+    type="button"
+    class="btn btn-ghost btn-xs gap-1 text-base-content/70"
+    onclick={() => (editOpen = true)}
+    title={$t('teams.editMembers')}
+  >
+    <Pencil class="w-3.5 h-3.5" />
+    {$t('teams.editMembers')}
+  </button>
+{/snippet}
 
 {#snippet memberRows()}
   <!-- One vertical row per member; the organizer (the employee that created
@@ -231,6 +277,7 @@
     {#if membersOpen}
       <div transition:slide={{ duration: 160 }} class="pb-2">
         {@render memberRows()}
+        <div class="px-3 pt-1">{@render editMembersButton()}</div>
       </div>
     {/if}
   </div>
@@ -254,7 +301,8 @@
             mine={m.mine}
             initial={sender?.initial ?? ''}
             avatarClass={sender ? colorClass(sender.color) : ''}
-            html={renderMentionChips(parseMarkdown(m.content), roster)}
+            html={renderMentionChips(parseMarkdown(stripAttachmentNotes(m.content)), roster)}
+            attachments={m.attachments}
           />
         {/each}
         <!-- Who is on it right now — the owner's proof a post was picked up. -->
@@ -276,11 +324,12 @@
   <div class="shrink-0 px-4 pb-3 pt-1">
     <div class="max-w-2xl mx-auto">
       <ChatComposer
+        agentId="team"
+        threadId={team.id}
         placeholder={$t('teams.composerPlaceholder')}
         allAgents={composerAgents}
-        allowAttachments={false}
         isLoading={sending}
-        onsend={(text) => send(text)}
+        onsend={(text, files) => send(text, files)}
       />
     </div>
   </div>
@@ -296,5 +345,10 @@
   </div>
   <span class="text-[10px] font-semibold uppercase tracking-wider text-base-content/45 px-3 mb-1">{$t('teams.inTeam')}</span>
   {@render memberRows()}
+  <div class="px-3 pt-2">{@render editMembersButton()}</div>
 </aside>
 </div>
+
+{#if editOpen}
+  <NewTeamModal {roster} {team} onclose={() => (editOpen = false)} oncreated={() => (editOpen = false)} />
+{/if}

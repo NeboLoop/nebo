@@ -210,7 +210,7 @@ pub(crate) async fn send_coworker_message(
                      your team (not your owner), and you were asked to act on it. Teammates: {roster}. \
                      Your reply is posted to the team automatically — do NOT relay it via other tools. \
                      Report concrete results: artifact, status, blockers, next action. To hand a step to \
-                     a teammate, write their token (<@id>) with a specific ask; a teammate you address \
+                     a teammate, write their token exactly as listed in Teammates with a specific ask; a teammate you address \
                      acts, and if you address no one your reply ends the exchange (each member answers \
                      once per open post; only the organizer or the owner re-opens the floor). \
                      Teammates are persistent experts with their own instructions and access — never \
@@ -347,6 +347,7 @@ pub(crate) async fn send_coworker_message(
                     return;
                 }
                 let post = tools::coworker::TeamPost {
+                    attachments: vec![],
                     team_id,
                     from_agent_id: to_id.clone(),
                     text: reply,

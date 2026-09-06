@@ -14,7 +14,8 @@ pub fn routes() -> Router<AppState> {
         )
         .route(
             "/teams/{teamId}",
-            axum::routing::delete(handlers::teams::remove_team),
+            axum::routing::put(handlers::teams::edit_team)
+                .delete(handlers::teams::remove_team),
         )
         .route(
             "/teams/{teamId}/messages",

@@ -78,7 +78,16 @@ pub(crate) fn post(
             return Err("text required".to_string());
         }
         let roster = tools::team::member_roster(&state.store, &team);
-        let text = tools::team::normalize_mentions(text, &roster);
+        let mut text = tools::team::normalize_mentions(text, &roster);
+        // Attachments: the ONE helper a direct chat uses — files are saved
+        // locally and noted in the text ("[Attached: … saved at …]"), so the
+        // record, the hub mirror, and every member's delivery all carry them.
+        // ponytail: the rail delivers text only, so images reach members as
+        // saved paths (they can open them), not as vision content yet.
+        if !post.attachments.is_empty() {
+            let _images = crate::process_comm_attachments(&state, &post.attachments, &mut text).await;
+        }
+        let attachments_json = serde_json::to_value(&post.attachments).unwrap_or_default();
 
         let (sender_name, role) = if post.from_agent_id.is_empty() {
             ("Owner".to_string(), "user")
@@ -98,7 +107,7 @@ pub(crate) fn post(
         // 1. The record: the team's own thread.
         let message = state
             .store
-            .append_team_message(&team, role, &text, &sender_name, &post.from_agent_id)
+            .append_team_message(&team, role, &text, &sender_name, &post.from_agent_id, &attachments_json)
             .map_err(|e| format!("record team post: {e}"))?;
         state.hub.broadcast(
             tools::team::TEAM_MESSAGE_EVENT,
@@ -110,6 +119,7 @@ pub(crate) fn post(
                 "senderName": sender_name,
                 "role": role,
                 "text": text,
+                "attachments": attachments_json,
             }),
         );
 

@@ -2543,15 +2543,19 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
 
     // Spawn periodic agent_progress broadcaster — broadcasts active run snapshots
     // to all connected clients every 5 seconds so the frontend stays in sync.
+    // The tick after the last run ends sends ONE empty snapshot, so a client
+    // that missed a run's own completion event still learns nobody is working.
     {
         let hub = state.hub.clone();
         let registry = state.run_registry.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+            let mut had_runs = false;
             loop {
                 interval.tick().await;
                 let runs = registry.list_top_level().await;
-                if !runs.is_empty() {
+                if !runs.is_empty() || had_runs {
+                    had_runs = !runs.is_empty();
                     hub.broadcast("agent_progress", serde_json::json!({ "runs": runs }));
                 }
             }
@@ -4396,7 +4400,14 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
             };
             let message_id = state
                 .store
-                .append_team_message(room, role, &text, &sender_name, &from_agent_id)
+                .append_team_message(
+                    room,
+                    role,
+                    &text,
+                    &sender_name,
+                    &from_agent_id,
+                    &serde_json::to_value(&msg.attachments).unwrap_or_default(),
+                )
                 .map(|m| m.id)
                 .unwrap_or_else(|e| {
                     tracing::warn!(error = %e, team = %room.id, "failed to record mirrored hub message in the team thread");

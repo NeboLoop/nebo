@@ -84,6 +84,10 @@ pub struct TeamPost {
     /// Posting agent id (empty = the owner).
     pub from_agent_id: String,
     pub text: String,
+    /// Uploaded files riding the post (the app's composer). The post core
+    /// saves them locally and notes the paths in the text, the same way a
+    /// direct chat does, so every member can open them.
+    pub attachments: Vec<comm::wire::Attachment>,
     /// Members explicitly asked to act (local agent ids). Mentions written in
     /// the text (`<@id>` / `@Name`) count too; the rail unions both.
     pub mention: Vec<String>,

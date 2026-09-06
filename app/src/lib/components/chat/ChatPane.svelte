@@ -22,6 +22,7 @@
   import Table from 'lucide-svelte/icons/table';
   import Presentation from 'lucide-svelte/icons/presentation';
   import type { UploadedAttachment } from '$lib/types/attachment';
+  import { attSrc, stripAttachmentNotes } from '$lib/types/attachment';
   import { flushSync } from 'svelte';
   import type { Snippet } from 'svelte';
   import { getAttachmentType, formatFileSize, attachmentMediaUrl } from '$lib/types/attachment';
@@ -477,12 +478,6 @@
     copiedTimeout = setTimeout(() => { copiedIdx = null; }, 1500);
   }
 
-  /** Loop-uploaded attachments (have a fileId) render through the local
-   *  authenticated proxy; artifact-derived ones resolve against backendBase()
-   *  so they load through the tunnel's /t/<botID> prefix, not the hub origin. */
-  function attSrc(att: UploadedAttachment): string {
-    return att.fileId ? attachmentMediaUrl(att, backendBase()) : backendUrl(att.url);
-  }
 
   /** Hostname for a search-result row (favicon + domain column). */
   function resultHost(url: string): string {
@@ -653,10 +648,6 @@
   // already renders the real attachment chips, so the pointer text is
   // plumbing duplicated into the human view. Strip it from display only;
   // the stored content (the model's context) is untouched.
-  const ATTACHMENT_NOTE_RE = /\n?\[(?:Attached|Audio): [^\]]*\]|\n?\[The audio file is saved at [^\]]*\]/g;
-  function stripAttachmentNotes(content: string): string {
-    return content.replace(ATTACHMENT_NOTE_RE, '').trim();
-  }
 
   const LARGE_INPUT_RE = /^\[This message contained a large [\s\S]*?\((\d+) characters[\s\S]*?Here is a summary:\]\s*/;
   function parseLargeInput(content: string): { chars: string; summary: string } | null {

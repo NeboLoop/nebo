@@ -123,9 +123,9 @@
 		"december": "December"
 	},
 	"dashboard": {
-		"title": "Team",
+		"title": "Workforce",
 		"sidebarLine": "{working, plural, =0 {Nobody working right now} one {1 employee working right now} other {# employees working right now}}",
-		"loadError": "The team page could not load.",
+		"loadError": "The workforce page could not load.",
 		"workingNow": "Working now",
 		"ofEmployees": "of {n} employees, {paused} paused",
 		"waitingOnYou": "Waiting on you",
@@ -227,7 +227,8 @@
 		"newChat": "New chat",
 		"searchChats": "Search chats…",
 		"upgrade": "Upgrade",
-		"restarted": "Restarted"
+		"restarted": "Restarted",
+		"working": "Working"
 	},
 	"chat": {
 		"contextStats": "Context this turn: {files} files were re-read {times} times, {passes} compaction passes.",
@@ -1993,9 +1994,12 @@
 	},
 	"teams": {
 		"section": "Teams",
-		"emptyRoster": "When your employees team up, their teams appear here. Ask any employee to create one.",
+		"emptyRoster": "Put two or more employees on a team and they share one conversation. Press + to start one, or ask any employee.",
 		"inTeam": "On this team",
-		"organizer": "Organizer",
+		"organizer": "Lead",
+		"lead": "Lead",
+		"leadHint": "The lead gets posts that name nobody in particular",
+		"youLead": "you lead",
 		"membersCount": "{count} employees",
 		"emptyTitle": "The team is ready.",
 		"emptyHint": "Post to the team; every member reads it. @-name a member to ask them to act.",
@@ -2005,6 +2009,22 @@
 		"removeTitle": "Remove \"{name}\"?",
 		"removeBody": "The team leaves your sidebar and employees stop working in it. Its conversation history is kept.",
 		"composerPlaceholder": "Message the team",
+		"new": "New team",
+		"newTitle": "New team",
+		"newLede": "Pick the employees. They share one conversation and hand work to each other.",
+		"nameLabel": "Team name",
+		"namePlaceholder": "Team name",
+		"missionLabel": "Mission",
+		"missionPlaceholder": "What this team is for (optional)",
+		"pickedCount": "{count} picked",
+		"needTwoEmployees": "A team needs two employees. Hire one more first.",
+		"create": "Create team",
+		"editTitle": "Edit team",
+		"editLede": "Check who is on the team. A team keeps at least two employees.",
+		"editMembers": "Edit team",
+		"save": "Save",
+		"createFailed": "The team could not be created.",
+		"gone": "This team is gone.",
 		"send": "Send"
 	},
 	"agentIsolation": {

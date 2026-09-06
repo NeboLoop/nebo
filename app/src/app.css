@@ -436,3 +436,42 @@
   background: var(--color-base-100);
   padding-block: 0.25rem;
 }
+
+/* ===== A working employee in the sidebar =====
+   Three signals, so it never rests on color alone: an orbiting arc around
+   the avatar, a sonar pulse from the status dot, and the live verb in the
+   row's second line. The arc is a masked conic gradient, so it hugs any
+   chip shape without a second element. */
+@property --nebo-orbit {
+  syntax: '<angle>';
+  inherits: false;
+  initial-value: 0deg;
+}
+.agent-working::before {
+  content: '';
+  position: absolute;
+  inset: -4px;
+  border-radius: 1rem;
+  padding: 2px;
+  background: conic-gradient(from var(--nebo-orbit), transparent 0 55%, var(--color-success) 100%);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+  animation: nebo-orbit 1.4s linear infinite;
+}
+@keyframes nebo-orbit {
+  to { --nebo-orbit: 360deg; }
+}
+.agent-working-dot {
+  animation: nebo-sonar 1.6s ease-out infinite;
+}
+@keyframes nebo-sonar {
+  0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-success) 55%, transparent); }
+  100% { box-shadow: 0 0 0 8px transparent; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .agent-working::before { animation: none; --nebo-orbit: 200deg; }
+  .agent-working-dot { animation: none; }
+}

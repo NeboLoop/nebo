@@ -50,6 +50,8 @@ pub struct TeamMessage {
     /// `user` for the owner, `assistant` for an employee.
     pub role: String,
     pub content: String,
+    /// Uploaded files on the post (upload metadata, camelCase), if any.
+    pub attachments: Vec<serde_json::Value>,
     pub created_at: i64,
 }
 
@@ -81,6 +83,7 @@ fn message_from_row(m: ChatMessage) -> TeamMessage {
         from_agent_id: meta["fromAgentId"].as_str().unwrap_or("").to_string(),
         role: m.role,
         content: m.content,
+        attachments: meta["attachments"].as_array().cloned().unwrap_or_default(),
         created_at: m.created_at,
     }
 }
@@ -162,6 +165,31 @@ impl Store {
         .db_err("get_team_by_hub_channel")
     }
 
+    /// Replace a team's name, mission, and members in one write. Callers
+    /// validate (the tools crate's `team::update` is the ONE rule set).
+    pub fn update_team(
+        &self,
+        id: &str,
+        name: &str,
+        mission: &str,
+        member_agent_ids: &[String],
+        organizer_agent_id: &str,
+    ) -> Result<Option<Team>, NeboError> {
+        let conn = self.conn()?;
+        let members = serde_json::to_string(member_agent_ids)
+            .map_err(|e| NeboError::Internal(format!("serialize team members: {e}")))?;
+        conn.query_row(
+            &format!(
+                "UPDATE teams SET name = ?2, mission = ?3, member_agent_ids = ?4, organizer_agent_id = ?5
+                 WHERE id = ?1 RETURNING {TEAM_COLUMNS}"
+            ),
+            params![id, name, mission, members, organizer_agent_id],
+            row_to_team,
+        )
+        .optional()
+        .db_err("update_team")
+    }
+
     pub fn set_team_hub_channel(&self, id: &str, hub_channel_id: &str) -> Result<(), NeboError> {
         let conn = self.conn()?;
         conn.execute(
@@ -205,12 +233,14 @@ impl Store {
         content: &str,
         sender_name: &str,
         from_agent_id: &str,
+        attachments: &serde_json::Value,
     ) -> Result<TeamMessage, NeboError> {
         let chat_id = self.ensure_team_thread(&team.id, &team.name)?;
         let meta = serde_json::json!({
             "senderName": sender_name,
             "fromAgentId": from_agent_id,
             "teamId": team.id,
+            "attachments": attachments,
         })
         .to_string();
         let msg = self.create_chat_message_for_runner(
@@ -304,12 +334,12 @@ mod tests {
         let team = s.create_team("t-1", "Ops", "m", &members(), "chief", None).unwrap();
         assert!(s.list_team_messages("t-1", 50).unwrap().is_empty());
 
-        let first = s.append_team_message(&team, "user", "hello team", "Owner", "").unwrap();
+        let first = s.append_team_message(&team, "user", "hello team", "Owner", "", &serde_json::Value::Array(vec![])).unwrap();
         assert_eq!(first.from, "Owner");
         assert_eq!(first.role, "user");
         assert_eq!(first.from_agent_id, "");
-        s.append_team_message(&team, "assistant", "on it", "Chief of Staff", "chief").unwrap();
-        s.append_team_message(&team, "assistant", "booked", "Executive Assistant", "ea").unwrap();
+        s.append_team_message(&team, "assistant", "on it", "Chief of Staff", "chief", &serde_json::Value::Array(vec![])).unwrap();
+        s.append_team_message(&team, "assistant", "booked", "Executive Assistant", "ea", &serde_json::Value::Array(vec![])).unwrap();
 
         let all = s.list_team_messages("t-1", 0).unwrap();
         assert_eq!(all.len(), 3);

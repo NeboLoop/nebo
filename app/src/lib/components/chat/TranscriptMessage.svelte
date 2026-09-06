@@ -5,6 +5,7 @@
   conversation, and this is that record's one shape.
 -->
 <script lang="ts">
+  import { attSrc, getAttachmentType, type UploadedAttachment } from '$lib/types/attachment';
   let {
     name,
     time = '',
@@ -12,7 +13,10 @@
     html,
     initial = '',
     avatarClass = '',
+    attachments = [],
   }: {
+    /** Uploaded files on the message, drawn as the standard chips. */
+    attachments?: UploadedAttachment[];
     name: string;
     time?: string;
     mine?: boolean;
@@ -37,5 +41,20 @@
     ? 'bg-primary/10 rounded-tr-sm'
     : 'bg-base-200 rounded-tl-sm'}">
     {@html html}
+      {#if attachments.length}
+        <div class="flex flex-wrap gap-2 mt-2">
+          {#each attachments as att (att.fileId || att.url)}
+            {#if getAttachmentType(att.mimeType) === 'image'}
+              <a href={attSrc(att)} target="_blank" rel="noopener" class="block">
+                <img src={attSrc(att)} alt={att.filename} class="max-w-[240px] max-h-[180px] rounded-lg border border-base-content/15 object-cover" loading="lazy" />
+              </a>
+            {:else}
+              <a href={attSrc(att)} target="_blank" rel="noopener" class="flex items-center gap-2 px-3 py-2 rounded-lg border border-base-content/15 bg-base-100 text-xs no-underline text-base-content">
+                <span class="font-medium truncate max-w-[220px]">{att.filename}</span>
+              </a>
+            {/if}
+          {/each}
+        </div>
+      {/if}
   </div>
 </div>

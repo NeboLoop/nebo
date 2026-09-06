@@ -1875,6 +1875,13 @@ export function openTeam(req: Record<string, unknown> = {}) {
 }
 
 /**
+ * @description "Edit team"
+ */
+export function editTeam(teamId: string, req: Record<string, unknown> = {}) {
+	return webapi.put<components.EditTeamResponse>(`/api/v1/teams/${teamId}`, req)
+}
+
+/**
  * @description "Remove team"
  */
 export function removeTeam(teamId: string) {

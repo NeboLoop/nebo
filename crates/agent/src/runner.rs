@@ -1405,17 +1405,30 @@ impl Runner {
                 // The owner's words reach the running turn as its next message,
                 // framed so the model knows they arrived mid-work. Untrusted
                 // caller framing (phone lines) rides along.
-                let mut queued = format!(
+                let queued = format!(
                     "[Arrived while you were working, via {}] {}",
                     if req.channel.is_empty() { "chat" } else { req.channel.as_str() },
                     req.prompt
                 );
-                if let Some(ctx) = req.mention_context.as_deref() {
-                    queued.push_str("\n");
-                    queued.push_str(ctx);
-                }
                 if let Err(e) = self.sessions.append_message(&session_id, "user", &queued, None, None, None) {
                     warn!(session_id = %session_id, error = %e, "could not queue a message into the running turn");
+                }
+                // The briefing (team roster, turn rule) is for the model, never
+                // the owner: on the normal path it is an ephemeral reminder, so
+                // here it rides as an owner-invisible isMeta row, not glued
+                // onto the visible post.
+                if let Some(ctx) = req.mention_context.as_deref() {
+                    let meta = serde_json::json!({ "isMeta": true }).to_string();
+                    if let Err(e) = self.sessions.append_message(
+                        &session_id,
+                        "user",
+                        &steering::wrap_system_reminder(ctx),
+                        None,
+                        None,
+                        Some(&meta),
+                    ) {
+                        warn!(session_id = %session_id, error = %e, "could not queue the briefing into the running turn");
+                    }
                 }
                 info!(session_id = %session_id, channel = %req.channel, "second request on a busy session queued into the running turn");
                 // ponytail: no follow-up turn is started if the running loop ends

@@ -123,7 +123,12 @@ impl TeamTool {
         }
         let mission = input["mission"].as_str().unwrap_or("");
 
-        let organizer = Self::caller_agent_id(store, ctx);
+        // The primary employee is the platform, not a teammate: when it
+        // creates a team it does so on the owner's behalf — the owner is the
+        // organizer and the primary stays outside the roster. Every other
+        // employee joins the team it creates, as organizer.
+        let caller = Self::caller_agent_id(store, ctx);
+        let organizer = if caller == PRIMARY_AGENT_ID { String::new() } else { caller };
         let mut member_ids: Vec<String> = Vec::new();
         let mut unknown: Vec<String> = Vec::new();
         for label in Self::labels(&input["agents"]) {
@@ -266,6 +271,7 @@ impl TeamTool {
             );
         };
         let post = crate::coworker::TeamPost {
+            attachments: vec![],
             team_id: t.id.clone(),
             from_agent_id: Self::caller_agent_id(store, ctx),
             text: text.to_string(),

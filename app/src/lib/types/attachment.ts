@@ -1,3 +1,5 @@
+import { backendUrl, backendBase } from '$lib/api/base';
+
 /** Metadata returned by POST /api/v1/files/upload */
 export interface UploadedAttachment {
 	fileId: string;
@@ -33,4 +35,18 @@ export function formatFileSize(bytes: number): string {
 	if (bytes < 1024) return `${bytes} B`;
 	if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
 	return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/** Loop-uploaded attachments (have a fileId) render through the local
+ *  authenticated proxy; artifact-derived ones resolve against backendBase()
+ *  so they load through the tunnel's /t/<botID> prefix, not the hub origin. */
+export function attSrc(att: UploadedAttachment): string {
+	return att.fileId ? attachmentMediaUrl(att, backendBase()) : backendUrl(att.url);
+}
+
+/** The "[Attached: …]" notes the server appends for the model's context are
+ *  not for people: the bubble shows chips instead. Stored content is untouched. */
+const ATTACHMENT_NOTE_RE = /\n?\[(?:Attached|Audio): [^\]]*\]|\n?\[The audio file is saved at [^\]]*\]/g;
+export function stripAttachmentNotes(content: string): string {
+	return content.replace(ATTACHMENT_NOTE_RE, '').trim();
 }

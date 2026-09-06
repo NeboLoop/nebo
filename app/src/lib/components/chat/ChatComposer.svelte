@@ -117,7 +117,13 @@
   }
 
   function restoreDraft() {
-    if (!editor || !draftKey) return;
+    // Hydrated means "the editor exists and any draft is in", with or
+    // without a draft key — a host without one still gets the placeholder.
+    if (!editor) return;
+    if (!draftKey) {
+      hasHydrated = true;
+      return;
+    }
     try {
       const saved = storage.get(draftKey);
       if (saved) {

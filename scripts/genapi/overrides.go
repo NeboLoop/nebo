@@ -12,6 +12,7 @@ package main
 var typeOverrides = map[string]string{
 	// ── Agent chats (enriched with preview, message count, relative time) ──
 	"list_agent_chats.chats": "EnrichedChat[]",
+	"edit_team.team":        "Team",
 
 	// ── Active agents ──
 	"get_active_agents.agents": "ActiveAgent[]",

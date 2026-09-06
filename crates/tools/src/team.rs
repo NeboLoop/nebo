@@ -18,6 +18,8 @@ pub const TEAM_CREATED_EVENT: &str = "team_created";
 /// WS event for every post in a team's thread (the open team view is
 /// event-driven, never polling).
 pub const TEAM_MESSAGE_EVENT: &str = "team_message";
+/// WS event after a team's name, mission, or members change; carries the team.
+pub const TEAM_UPDATED_EVENT: &str = "team_updated";
 /// WS event when a member starts working on a post ("X is working").
 pub const TEAM_ACTIVITY_EVENT: &str = "team_activity";
 
@@ -101,6 +103,66 @@ pub async fn create(
         .ensure_team_thread(&team.id, &team.name)
         .map_err(|e| format!("open team thread: {e}"))?;
     Ok(team)
+}
+
+/// Change a team's name, mission, members, or lead — the ONE rule set both
+/// doors (the app's edit picker, the tool) go through. `None` keeps a field.
+/// Rules: a team never drops below two employees; the lead (organizer) must
+/// be a member or empty (= the owner leads); remove the lead without naming
+/// a new one and the team becomes owner-led.
+pub fn update(
+    store: &Store,
+    team_id: &str,
+    name: Option<&str>,
+    mission: Option<&str>,
+    member_agent_ids: Option<&[String]>,
+    organizer_agent_id: Option<&str>,
+) -> Result<Team, String> {
+    let current = store
+        .get_team(team_id)
+        .map_err(|e| format!("load team: {e}"))?
+        .ok_or_else(|| format!("No team with id {team_id}"))?;
+
+    let name = name.map(str::trim).filter(|n| !n.is_empty()).unwrap_or(&current.name);
+    if !name.eq_ignore_ascii_case(&current.name) {
+        if let Some(existing) = store
+            .get_team_by_name(name)
+            .map_err(|e| format!("check team name: {e}"))?
+        {
+            if existing.id != current.id {
+                return Err(format!("A team named \"{}\" already exists.", existing.name));
+            }
+        }
+    }
+    let mission = mission.map(str::trim).unwrap_or(&current.mission);
+
+    let mut members: Vec<String> = Vec::new();
+    for id in member_agent_ids.unwrap_or(&current.member_agent_ids) {
+        if !id.is_empty() && !members.iter().any(|m| m == id) {
+            members.push(id.clone());
+        }
+    }
+    if members.len() < 2 {
+        return Err("A team needs at least two employees. Keep two or remove the team.".to_string());
+    }
+    let organizer = match organizer_agent_id {
+        Some("") => String::new(),
+        Some(id) if members.iter().any(|m| m == id) => id.to_string(),
+        Some(id) => {
+            return Err(format!(
+                "The lead must be on the team; \"{id}\" is not a member. Add them first or pick a member."
+            ))
+        }
+        None if members.iter().any(|m| m == &current.organizer_agent_id) => {
+            current.organizer_agent_id.clone()
+        }
+        None => String::new(),
+    };
+
+    store
+        .update_team(&current.id, name, mission, &members, &organizer)
+        .map_err(|e| format!("update team: {e}"))?
+        .ok_or_else(|| "team vanished during update".to_string())
 }
 
 /// Best-effort hub mirror: a channel in the bot's hub loop, only when the

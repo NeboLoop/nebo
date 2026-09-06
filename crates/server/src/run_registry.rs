@@ -51,6 +51,9 @@ pub struct RunSnapshot {
     pub iteration_count: u32,
     pub tool_call_count: u32,
     pub current_tool: String,
+    /// Owner-facing phrase for `current_tool` ("checking the workspace"), from
+    /// the ONE humanizer the transcript uses; empty when idle or unmapped.
+    pub activity: String,
     pub elapsed_secs: u64,
     pub parent_run_id: Option<String>,
     pub child_count: usize,
@@ -58,6 +61,11 @@ pub struct RunSnapshot {
 
 impl RunEntry {
     fn snapshot(&self, child_count: usize) -> RunSnapshot {
+        let current_tool = self
+            .current_tool
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
         RunSnapshot {
             run_id: self.run_id.clone(),
             session_key: self.session_key.clone(),
@@ -67,11 +75,10 @@ impl RunEntry {
             channel: self.channel.clone(),
             iteration_count: self.iteration_count.load(Ordering::Relaxed),
             tool_call_count: self.tool_call_count.load(Ordering::Relaxed),
-            current_tool: self
-                .current_tool
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .clone(),
+            current_tool: current_tool.clone(),
+            activity: tools::humanize::activity_label(&current_tool)
+                .unwrap_or("")
+                .to_string(),
             elapsed_secs: self.started_at.elapsed().as_secs(),
             parent_run_id: self.parent_run_id.clone(),
             child_count,

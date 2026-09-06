@@ -1,3 +1,4 @@
+import type { Team } from '$lib/api/neboComponents'
 // Types for the [agentId] layout context shared across child routes.
 
 /** Input field configuration for agent setup forms. */
@@ -148,6 +149,10 @@ export interface AgentPageContext {
 	readonly isApp: boolean
 	readonly devMode: boolean
 	readonly agentStatuses: Record<string, string>
+	/** The sidebar's employee roster — one source for names and colors. */
+	readonly roster: AgentDisplay[]
+	/** Teams on this Nebo, as the sidebar lists them. */
+	readonly teams: Team[]
 	openWorkflow: (name: string, wf: WorkflowConfig) => void
 	/** Open the runs modal. */
 	/** Optional entry filter ("failed"/"running") aims the run list's chips. */

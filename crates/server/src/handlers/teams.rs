@@ -18,6 +18,79 @@ pub struct CreateTeamRequest {
     /// Local agent ids (or exact employee names) of the members.
     #[serde(default)]
     pub agent_ids: Vec<String>,
+    /// The lead (local agent id or exact name). Empty or absent = the owner leads.
+    #[serde(default)]
+    pub organizer_agent_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateTeamRequest {
+    pub name: Option<String>,
+    pub mission: Option<String>,
+    /// Full member list (local agent ids or exact employee names); absent = unchanged.
+    pub agent_ids: Option<Vec<String>>,
+    /// The lead (local agent id or exact name); "" = the owner leads; absent = unchanged.
+    pub organizer_agent_id: Option<String>,
+}
+
+/// PUT /teams/{teamId} — rename, re-mission, or change members (`edit_team`: the
+/// commander graph already owns the `update_team` name). The rules
+/// (two-member floor, organizer stays) live in `tools::team::update`.
+pub async fn edit_team(
+    State(state): State<AppState>,
+    Path(team_id): Path<String>,
+    Json(body): Json<UpdateTeamRequest>,
+) -> HandlerResult<serde_json::Value> {
+    let mut member_ids: Option<Vec<String>> = None;
+    if let Some(labels) = &body.agent_ids {
+        let mut ids: Vec<String> = Vec::new();
+        for label in labels {
+            let Some(agent) = tools::team::resolve_agent(&state.store, label) else {
+                return Err(to_error_response(types::NeboError::Validation(format!(
+                    "No employee named \"{label}\" is installed"
+                ))));
+            };
+            if !ids.contains(&agent.id) {
+                ids.push(agent.id);
+            }
+        }
+        member_ids = Some(ids);
+    }
+    let organizer = match body.organizer_agent_id.as_deref() {
+        None => None,
+        Some("") => Some(String::new()),
+        Some(label) => Some(resolve_label(&state, label)?),
+    };
+    let team = tools::team::update(
+        &state.store,
+        &team_id,
+        body.name.as_deref(),
+        body.mission.as_deref(),
+        member_ids.as_deref(),
+        organizer.as_deref(),
+    )
+    .map_err(|e| to_error_response(types::NeboError::Validation(e)))?;
+
+    state.hub.broadcast(
+        tools::team::TEAM_UPDATED_EVENT,
+        serde_json::json!({ "team": team }),
+    );
+    Ok(Json(serde_json::json!({ "team": team })))
+}
+
+/// An employee label (local id or exact name) → local id, or the 400 that names it.
+fn resolve_label(
+    state: &AppState,
+    label: &str,
+) -> Result<String, (axum::http::StatusCode, Json<crate::handlers::ErrorResponse>)> {
+    tools::team::resolve_agent(&state.store, label)
+        .map(|a| a.id)
+        .ok_or_else(|| {
+            to_error_response(types::NeboError::Validation(format!(
+                "No employee named \"{label}\" is installed"
+            )))
+        })
 }
 
 /// POST /teams — create (open) a team. Never touches the hub unless this Nebo is
@@ -38,14 +111,19 @@ pub async fn open_team(
             member_ids.push(agent.id);
         }
     }
-    // Created from the app: the owner is the organizer.
+    // Created from the app: the owner leads unless a member is named lead.
+    let organizer = if body.organizer_agent_id.is_empty() {
+        String::new()
+    } else {
+        resolve_label(&state, &body.organizer_agent_id)?
+    };
     let team = tools::team::create(
         comm.as_ref(),
         &state.store,
         &body.name,
         &body.mission,
         &member_ids,
-        "",
+        &organizer,
     )
     .await
     .map_err(|e| to_error_response(types::NeboError::Validation(e)))?;
@@ -71,6 +149,9 @@ pub async fn list_teams(State(state): State<AppState>) -> HandlerResult<serde_js
 #[derive(Debug, Deserialize)]
 pub struct SendTeamMessageRequest {
     pub text: String,
+    /// Uploaded files (POST /files/upload metadata), as the chat composer sends them.
+    #[serde(default)]
+    pub attachments: Vec<comm::wire::Attachment>,
     /// Members asked to act (local agent ids or names). Without it, every
     /// member may answer once.
     #[serde(default)]
@@ -100,6 +181,7 @@ pub async fn send_team_message(
     let receipt = crate::team::post(
         state.clone(),
         tools::coworker::TeamPost {
+            attachments: body.attachments,
             team_id: team.id,
             from_agent_id: String::new(),
             text: text.to_string(),

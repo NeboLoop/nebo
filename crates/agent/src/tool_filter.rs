@@ -269,8 +269,11 @@ pub fn coding_signal(text: &str) -> bool {
 /// the model is never blind to its own primary capabilities (and the system
 /// prompt prose lists them as "always available"). The schema rides in the cached
 /// prefix, so the token cost is paid once on cache write and ~10% on cache reads.
+// `team` is core for the same reason `message` is: a team is a local object
+// that needs no hub, and "make a team" carries no keyword a gate could catch
+// before the model has gone looking in the agent registry instead.
 const ALWAYS_INCLUDE_TOOLS: &[&str] =
-    &["agent", "skill", "event", "message", "tool_search", "plugin", "os", "web", "mcp"];
+    &["agent", "skill", "event", "message", "team", "tool_search", "plugin", "os", "web", "mcp"];
 
 // Keyword-based deferred activation removed. Tools now load and unload via
 // message-history scanning (extract_discovered_deferred_tools). Model
@@ -543,6 +546,7 @@ mod tests {
             make_tool("skill"),
             make_tool("event"),
             make_tool("message"),
+            make_tool("team"),
             make_tool("tool_search"),
             make_tool("loop"),
             make_tool("work"),
@@ -556,6 +560,7 @@ mod tests {
         assert!(names.contains(&"skill"), "skill must always be included");
         assert!(names.contains(&"event"), "event must always be included");
         assert!(names.contains(&"message"), "message must always be included");
+        assert!(names.contains(&"team"), "team must always be included");
         assert!(names.contains(&"tool_search"), "tool_search must always be included");
         // web/os are also core (always-on) since the "web is not optional" change.
         assert!(names.contains(&"web"), "web is a core tool, always included");

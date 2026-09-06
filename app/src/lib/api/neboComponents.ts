@@ -860,6 +860,7 @@ export interface TeamMessage {
 	fromAgentId: string
 	role: string
 	content: string
+	attachments: unknown[]
 	createdAt: number
 }
 
@@ -1274,6 +1275,10 @@ export interface DuplicateAgentResponse {
 export interface EditMessageResponse {
 	success: boolean
 	chatId: string
+}
+
+export interface EditTeamResponse {
+	team: Team
 }
 
 export interface EnableAgentChannelResponse {
