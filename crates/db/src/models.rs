@@ -274,7 +274,8 @@ pub struct CronJob {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CronHistory {
-    pub id: i64,
+    /// The engine run this fire executed as.
+    pub id: String,
     pub job_id: i64,
     pub started_at: Option<String>,
     pub finished_at: Option<String>,

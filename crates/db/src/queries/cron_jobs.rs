@@ -1,19 +1,34 @@
+//! Scheduled jobs. `cron_jobs` holds the DEFINITION of a schedule — name,
+//! cron, what to run. Everything durable about it lives in the engine: each
+//! fire is an engine run of kind `task` with `external_ref = cron:<id>`, and
+//! the next occurrence is one pending timer aimed at binding `cron:<id>`.
+//! `last_run`, `run_count` and `last_error` are read from those runs.
+
 use rusqlite::params;
 
 use crate::Store;
 use crate::models::{CronHistory, CronJob};
+use crate::queries::engine::NewRun;
 use types::NeboError;
+
+/// The job row plus its derived columns. Every read goes through this.
+const JOB_SELECT: &str = "SELECT j.id, j.name, j.schedule, j.command, j.task_type, j.message, j.deliver, j.instructions,
+        j.enabled, j.created_at, j.agent_id, j.channel_ctx_json,
+        (SELECT datetime(MAX(r.created_at), 'unixepoch') FROM engine_runs r WHERE r.external_ref = 'cron:' || j.id) AS last_run,
+        (SELECT COUNT(*) FROM engine_runs r WHERE r.external_ref = 'cron:' || j.id) AS run_count,
+        (SELECT r.error FROM engine_runs r WHERE r.external_ref = 'cron:' || j.id ORDER BY r.created_at DESC, r.rowid DESC LIMIT 1) AS last_error
+ FROM cron_jobs j";
+
+/// The engine ref every fire of a job carries.
+pub fn cron_ref(job_id: i64) -> String {
+    format!("cron:{job_id}")
+}
 
 impl Store {
     pub fn list_cron_jobs(&self, limit: i64, offset: i64) -> Result<Vec<CronJob>, NeboError> {
         let conn = self.conn()?;
         let mut stmt = conn
-            .prepare(
-                "SELECT id, name, schedule, command, task_type, message, deliver, instructions,
-                        enabled, last_run, run_count, last_error, created_at,
-                        agent_id, channel_ctx_json
-                 FROM cron_jobs ORDER BY created_at DESC LIMIT ?1 OFFSET ?2",
-            )
+            .prepare(&format!("{JOB_SELECT} ORDER BY j.created_at DESC LIMIT ?1 OFFSET ?2"))
             .map_err(|e| NeboError::Database(e.to_string()))?;
         let rows = stmt
             .query_map(params![limit, offset], row_to_cron_job)
@@ -24,30 +39,16 @@ impl Store {
 
     pub fn get_cron_job(&self, id: i64) -> Result<Option<CronJob>, NeboError> {
         let conn = self.conn()?;
-        conn.query_row(
-            "SELECT id, name, schedule, command, task_type, message, deliver, instructions,
-                    enabled, last_run, run_count, last_error, created_at,
-                    agent_id, channel_ctx_json
-             FROM cron_jobs WHERE id = ?1",
-            params![id],
-            row_to_cron_job,
-        )
-        .optional()
-        .map_err(|e| NeboError::Database(e.to_string()))
+        conn.query_row(&format!("{JOB_SELECT} WHERE j.id = ?1"), params![id], row_to_cron_job)
+            .optional()
+            .map_err(|e| NeboError::Database(e.to_string()))
     }
 
     pub fn get_cron_job_by_name(&self, name: &str) -> Result<Option<CronJob>, NeboError> {
         let conn = self.conn()?;
-        conn.query_row(
-            "SELECT id, name, schedule, command, task_type, message, deliver, instructions,
-                    enabled, last_run, run_count, last_error, created_at,
-                    agent_id, channel_ctx_json
-             FROM cron_jobs WHERE name = ?1",
-            params![name],
-            row_to_cron_job,
-        )
-        .optional()
-        .map_err(|e| NeboError::Database(e.to_string()))
+        conn.query_row(&format!("{JOB_SELECT} WHERE j.name = ?1"), params![name], row_to_cron_job)
+            .optional()
+            .map_err(|e| NeboError::Database(e.to_string()))
     }
 
     pub fn create_cron_job(
@@ -64,16 +65,16 @@ impl Store {
         channel_ctx_json: Option<&str>,
     ) -> Result<CronJob, NeboError> {
         let conn = self.conn()?;
-        conn.query_row(
+        conn.execute(
             "INSERT INTO cron_jobs (name, schedule, command, task_type, message, deliver, instructions, enabled, agent_id, channel_ctx_json)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
-             RETURNING id, name, schedule, command, task_type, message, deliver, instructions,
-                       enabled, last_run, run_count, last_error, created_at,
-                       agent_id, channel_ctx_json",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![name, schedule, command, task_type, message, deliver, instructions, enabled as i64, agent_id, channel_ctx_json],
-            row_to_cron_job,
         )
-        .map_err(|e| NeboError::Database(e.to_string()))
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        let id = conn.last_insert_rowid();
+        drop(conn);
+        self.get_cron_job(id)?
+            .ok_or_else(|| NeboError::Database("cron job vanished after insert".into()))
     }
 
     pub fn upsert_cron_job(
@@ -158,36 +159,6 @@ impl Store {
         Ok(())
     }
 
-    pub fn update_cron_job_last_run(
-        &self,
-        id: i64,
-        last_error: Option<&str>,
-    ) -> Result<(), NeboError> {
-        let conn = self.conn()?;
-        conn.execute(
-            "UPDATE cron_jobs SET last_run = datetime('now'), run_count = run_count + 1, last_error = ?2 WHERE id = ?1",
-            params![id, last_error],
-        )
-        .map_err(|e| NeboError::Database(e.to_string()))?;
-        Ok(())
-    }
-
-    /// Record the outcome of a run without touching last_run/run_count —
-    /// those are written once at dispatch time by `update_cron_job_last_run`.
-    pub fn update_cron_job_last_error(
-        &self,
-        id: i64,
-        last_error: Option<&str>,
-    ) -> Result<(), NeboError> {
-        let conn = self.conn()?;
-        conn.execute(
-            "UPDATE cron_jobs SET last_error = ?2 WHERE id = ?1",
-            params![id, last_error],
-        )
-        .map_err(|e| NeboError::Database(e.to_string()))?;
-        Ok(())
-    }
-
     pub fn count_cron_jobs(&self) -> Result<i64, NeboError> {
         let conn = self.conn()?;
         conn.query_row("SELECT COUNT(*) FROM cron_jobs", [], |row| row.get(0))
@@ -197,12 +168,7 @@ impl Store {
     pub fn list_enabled_cron_jobs(&self) -> Result<Vec<CronJob>, NeboError> {
         let conn = self.conn()?;
         let mut stmt = conn
-            .prepare(
-                "SELECT id, name, schedule, command, task_type, message, deliver, instructions,
-                        enabled, last_run, run_count, last_error, created_at,
-                        agent_id, channel_ctx_json
-                 FROM cron_jobs WHERE enabled = 1 ORDER BY name",
-            )
+            .prepare(&format!("{JOB_SELECT} WHERE j.enabled = 1 ORDER BY j.name"))
             .map_err(|e| NeboError::Database(e.to_string()))?;
         let rows = stmt
             .query_map([], row_to_cron_job)
@@ -211,73 +177,25 @@ impl Store {
             .map_err(|e| NeboError::Database(e.to_string()))
     }
 
-    /// Enabled jobs whose dispatch never recorded an outcome — the process died
-    /// mid-run. last_run is consumed at dispatch time, so without a recovery
-    /// sweep these occurrences would be silently lost. Bounded to the last 24h
-    /// so ancient dangling rows don't resurrect stale work.
-    pub fn list_interrupted_cron_jobs(&self) -> Result<Vec<CronJob>, NeboError> {
-        let conn = self.conn()?;
-        let mut stmt = conn
-            .prepare(
-                "SELECT DISTINCT j.id, j.name, j.schedule, j.command, j.task_type, j.message,
-                        j.deliver, j.instructions, j.enabled, j.last_run, j.run_count,
-                        j.last_error, j.created_at, j.agent_id, j.channel_ctx_json
-                 FROM cron_jobs j
-                 JOIN cron_history h ON h.job_id = j.id
-                 WHERE h.finished_at IS NULL
-                   AND j.enabled = 1
-                   AND h.started_at >= datetime('now', '-1 day')
-                 ORDER BY j.name",
-            )
-            .map_err(|e| NeboError::Database(e.to_string()))?;
-        let rows = stmt
-            .query_map([], row_to_cron_job)
-            .map_err(|e| NeboError::Database(e.to_string()))?;
-        rows.collect::<Result<Vec<_>, _>>()
-            .map_err(|e| NeboError::Database(e.to_string()))
-    }
+    // ── fires ─────────────────────────────────────────────────────────────
 
-    /// Mark every unfinished history row as failed. Called once at startup,
-    /// before the first tick, so interrupted runs read as failed instead of
-    /// forever pending. Returns the number of rows closed.
-    pub fn close_interrupted_cron_history(&self) -> Result<usize, NeboError> {
-        let conn = self.conn()?;
-        conn.execute(
-            "UPDATE cron_history
-             SET finished_at = CURRENT_TIMESTAMP, success = 0,
-                 error = 'interrupted by restart'
-             WHERE finished_at IS NULL",
-            [],
-        )
-        .map_err(|e| NeboError::Database(e.to_string()))
-    }
-
-    pub fn create_cron_history(&self, job_id: i64) -> Result<CronHistory, NeboError> {
-        let conn = self.conn()?;
-        conn.query_row(
-            "INSERT INTO cron_history (job_id, started_at)
-             VALUES (?1, CURRENT_TIMESTAMP)
-             RETURNING id, job_id, started_at, finished_at, success, output, error",
-            params![job_id],
-            row_to_cron_history,
-        )
-        .map_err(|e| NeboError::Database(e.to_string()))
-    }
-
-    pub fn update_cron_history(
-        &self,
-        id: i64,
-        success: bool,
-        output: Option<&str>,
-        error: Option<&str>,
-    ) -> Result<(), NeboError> {
-        let conn = self.conn()?;
-        conn.execute(
-            "UPDATE cron_history SET finished_at = CURRENT_TIMESTAMP, success = ?2, output = ?3, error = ?4 WHERE id = ?1",
-            params![id, success as i64, output, error],
-        )
-        .map_err(|e| NeboError::Database(e.to_string()))?;
-        Ok(())
+    /// Queue one fire of a job as an engine run. The engine loop executes it
+    /// and records the outcome on the same row; `manual` marks a run-now so
+    /// its completion is announced to the UI rather than the desktop.
+    pub fn queue_cron_run(&self, job: &CronJob, manual: bool) -> Result<String, NeboError> {
+        let id = uuid::Uuid::new_v4().to_string();
+        let inputs = serde_json::json!({ "job_id": job.id, "name": job.name, "manual": manual }).to_string();
+        self.engine_create_run(&NewRun {
+            id: &id,
+            kind: "task",
+            session_key: &format!("cron-{}", job.name),
+            agent_id: job.agent_id.as_deref().unwrap_or(""),
+            lane: "main",
+            inputs: Some(&inputs),
+            external_ref: Some(&cron_ref(job.id)),
+            ..Default::default()
+        })?;
+        Ok(id)
     }
 
     pub fn list_cron_history(
@@ -286,20 +204,19 @@ impl Store {
         limit: i64,
         offset: i64,
     ) -> Result<Vec<CronHistory>, NeboError> {
-        let conn = self.conn()?;
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, job_id, started_at, finished_at, success, output, error
-                 FROM cron_history WHERE job_id = ?1 ORDER BY started_at DESC LIMIT ?2 OFFSET ?3",
-            )
-            .map_err(|e| NeboError::Database(e.to_string()))?;
-        let rows = stmt
-            .query_map(params![job_id, limit, offset], |row| {
-                row_to_cron_history(row)
+        let runs = self.engine_runs_for_ref(&cron_ref(job_id), limit, offset)?;
+        Ok(runs
+            .into_iter()
+            .map(|r| CronHistory {
+                id: r.id,
+                job_id,
+                started_at: Some(db_datetime(r.started_at.unwrap_or(r.created_at))),
+                finished_at: r.ended_at.map(db_datetime),
+                success: Some((r.state == "done") as i64),
+                output: r.result,
+                error: r.error,
             })
-            .map_err(|e| NeboError::Database(e.to_string()))?;
-        rows.collect::<Result<Vec<_>, _>>()
-            .map_err(|e| NeboError::Database(e.to_string()))
+            .collect())
     }
 
     pub fn get_recent_cron_history(&self, job_id: i64) -> Result<Vec<CronHistory>, NeboError> {
@@ -307,14 +224,16 @@ impl Store {
     }
 
     pub fn count_cron_history(&self, job_id: i64) -> Result<i64, NeboError> {
-        let conn = self.conn()?;
-        conn.query_row(
-            "SELECT COUNT(*) FROM cron_history WHERE job_id = ?1",
-            params![job_id],
-            |row| row.get(0),
-        )
-        .map_err(|e| NeboError::Database(e.to_string()))
+        self.engine_count_runs_for_ref(&cron_ref(job_id))
     }
+}
+
+/// The `datetime('now')` shape the old columns had, so every reader of
+/// `last_run` / history timestamps sees what it always saw.
+fn db_datetime(ts: i64) -> String {
+    chrono::DateTime::from_timestamp(ts, 0)
+        .map(|d| d.format("%Y-%m-%d %H:%M:%S").to_string())
+        .unwrap_or_default()
 }
 
 fn row_to_cron_job(row: &rusqlite::Row) -> rusqlite::Result<CronJob> {
@@ -334,18 +253,6 @@ fn row_to_cron_job(row: &rusqlite::Row) -> rusqlite::Result<CronJob> {
         created_at: row.get("created_at")?,
         agent_id: row.get("agent_id")?,
         channel_ctx_json: row.get("channel_ctx_json")?,
-    })
-}
-
-fn row_to_cron_history(row: &rusqlite::Row) -> rusqlite::Result<CronHistory> {
-    Ok(CronHistory {
-        id: row.get("id")?,
-        job_id: row.get("job_id")?,
-        started_at: row.get("started_at")?,
-        finished_at: row.get("finished_at")?,
-        success: row.get("success")?,
-        output: row.get("output")?,
-        error: row.get("error")?,
     })
 }
 
@@ -379,42 +286,41 @@ mod tests {
         Store::new(path.to_str().unwrap()).unwrap()
     }
 
+    /// A job's last run, run count, last error and history are its engine
+    /// runs — nothing is stamped on the job row.
     #[test]
-    fn test_interrupted_cron_recovery() {
+    fn derived_columns_and_history_read_from_engine_runs() {
         let store = temp_store();
         let job = store
-            .create_cron_job(
-                "j-enabled", "0 0 9 * * *", "echo hi", "shell",
-                None, None, None, true, None, None,
-            )
+            .create_cron_job("j", "0 0 9 * * *", "echo hi", "shell", None, None, None, true, None, None)
             .unwrap();
-        let disabled = store
-            .create_cron_job(
-                "j-disabled", "0 0 9 * * *", "echo hi", "shell",
-                None, None, None, false, None, None,
-            )
-            .unwrap();
+        assert_eq!(job.run_count, Some(0));
+        assert!(job.last_run.is_none());
+        assert!(store.list_cron_history(job.id, 10, 0).unwrap().is_empty());
 
-        // No dangling history yet
-        assert!(store.list_interrupted_cron_jobs().unwrap().is_empty());
+        let first = store.queue_cron_run(&job, false).unwrap();
+        store.engine_set_run_state(&first, "running", 1_000, None).unwrap();
+        store.engine_set_run_result(&first, "hi", None).unwrap();
+        store.engine_set_run_state(&first, "done", 1_001, None).unwrap();
+        let second = store.queue_cron_run(&job, true).unwrap();
+        store.engine_set_run_state(&second, "running", 2_000, None).unwrap();
+        store.engine_set_run_state(&second, "failed", 2_001, Some("exit code: 1")).unwrap();
 
-        // Dangling rows for both jobs — only the enabled one is recoverable
-        let h1 = store.create_cron_history(job.id).unwrap();
-        let _h2 = store.create_cron_history(disabled.id).unwrap();
+        let job = store.get_cron_job(job.id).unwrap().unwrap();
+        assert_eq!(job.run_count, Some(2));
+        assert!(job.last_run.is_some());
+        assert_eq!(job.last_error.as_deref(), Some("exit code: 1"));
+        assert_eq!(store.count_cron_history(job.id).unwrap(), 2);
 
-        let interrupted = store.list_interrupted_cron_jobs().unwrap();
-        assert_eq!(interrupted.len(), 1);
-        assert_eq!(interrupted[0].id, job.id);
-
-        // A finished row is no longer interrupted
-        store.update_cron_history(h1.id, true, None, None).unwrap();
-        assert!(store.list_interrupted_cron_jobs().unwrap().is_empty());
-
-        // close_interrupted marks every remaining dangling row failed,
-        // regardless of the job's enabled state
-        let _h3 = store.create_cron_history(job.id).unwrap();
-        let closed = store.close_interrupted_cron_history().unwrap();
-        assert_eq!(closed, 2); // disabled job's row + the new dangling row
-        assert!(store.list_interrupted_cron_jobs().unwrap().is_empty());
+        let history = store.list_cron_history(job.id, 10, 0).unwrap();
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0].id, second, "newest first");
+        assert_eq!(history[0].success, Some(0));
+        assert_eq!(history[0].error.as_deref(), Some("exit code: 1"));
+        assert_eq!(history[1].success, Some(1));
+        assert_eq!(history[1].output.as_deref(), Some("hi"));
+        assert_eq!(history[1].started_at.as_deref(), Some("1970-01-01 00:16:40"));
+        assert_eq!(history[1].finished_at.as_deref(), Some("1970-01-01 00:16:41"));
+        assert!(store.engine_has_live_run_for_ref("cron:1").unwrap() == false);
     }
 }

@@ -91,6 +91,9 @@ pub struct EngineRun {
     pub result: Option<String>,
     pub error: Option<String>,
     pub summary: String,
+    pub created_at: i64,
+    pub started_at: Option<i64>,
+    pub ended_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -103,6 +106,7 @@ pub struct NewRun<'a> {
     pub parent_run_id: Option<&'a str>,
     pub definition: Option<&'a str>,
     pub inputs: Option<&'a str>,
+    pub external_ref: Option<&'a str>,
 }
 
 #[derive(Debug, Clone)]
@@ -142,7 +146,7 @@ pub struct EngineEffect {
     pub provider_ref: Option<String>,
 }
 
-const RUN_COLUMNS: &str = "id, kind, state, session_key, agent_id, lane, parent_run_id, definition, inputs, external_ref, current_wait_id, attempts, resume_attempted, result, error, summary";
+const RUN_COLUMNS: &str = "id, kind, state, session_key, agent_id, lane, parent_run_id, definition, inputs, external_ref, current_wait_id, attempts, resume_attempted, result, error, summary, created_at, started_at, ended_at";
 
 fn row_to_run(r: &rusqlite::Row<'_>) -> rusqlite::Result<EngineRun> {
     Ok(EngineRun {
@@ -162,6 +166,9 @@ fn row_to_run(r: &rusqlite::Row<'_>) -> rusqlite::Result<EngineRun> {
         result: r.get(13)?,
         error: r.get(14)?,
         summary: r.get(15)?,
+        created_at: r.get(16)?,
+        started_at: r.get(17)?,
+        ended_at: r.get(18)?,
     })
 }
 
@@ -381,16 +388,51 @@ impl Store {
         Ok(())
     }
 
-    /// I-9: the event named a wait that is no longer current. Dropped, and
-    /// the row says why.
-    pub fn engine_supersede_event(&self, id: i64, now: i64) -> Result<(), NeboError> {
+    /// Dropped on purpose, and the row says why: I-9's older wait
+    /// generation, a schedule that changed under its timer, a fire skipped
+    /// because the last one is still running or the window was missed.
+    pub fn engine_supersede_event(&self, id: i64, now: i64, note: &str) -> Result<(), NeboError> {
         let conn = self.conn()?;
         conn.execute(
-            "UPDATE engine_events SET delivered_at = ?2, note = 'superseded: wait generation replaced' WHERE id = ?1",
-            params![id, now],
+            "UPDATE engine_events SET delivered_at = ?2, note = ?3 WHERE id = ?1",
+            params![id, now, note],
         )
         .db_err("engine_supersede_event")?;
         Ok(())
+    }
+
+    // ── scheduled bindings: one pending timer per schedule ───────────────
+
+    /// Pending timers aimed at one kind of target — the arming worklist.
+    pub fn engine_pending_timers(&self, target_type: &str) -> Result<Vec<EngineEvent>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT {EVENT_COLUMNS} FROM engine_events
+                 WHERE kind = 'timer' AND target_type = ?1 AND delivered_at IS NULL
+                 ORDER BY id"
+            ))
+            .db_err("engine_pending_timers")?;
+        let rows = stmt
+            .query_map(params![target_type], row_to_event)
+            .db_err("engine_pending_timers")?
+            .collect::<Result<Vec<_>, _>>()
+            .db_err("engine_pending_timers")?;
+        Ok(rows)
+    }
+
+    /// The floor the next occurrence is computed from: the last timer this
+    /// target consumed (its due moment) or dropped (the moment it was
+    /// dropped, so a superseded future timer never pushes the floor ahead).
+    pub fn engine_last_timer_floor(&self, target_type: &str, target_id: &str) -> Result<Option<i64>, NeboError> {
+        let conn = self.conn()?;
+        conn.query_row(
+            "SELECT MAX(MIN(due_at, delivered_at)) FROM engine_events
+             WHERE kind = 'timer' AND target_type = ?1 AND target_id = ?2 AND delivered_at IS NOT NULL",
+            params![target_type, target_id],
+            |r| r.get::<_, Option<i64>>(0),
+        )
+        .db_err("engine_last_timer_floor")
     }
 
     /// Durable history of one target, oldest first, bounded.
@@ -428,9 +470,9 @@ impl Store {
     pub fn engine_create_run(&self, r: &NewRun<'_>) -> Result<(), NeboError> {
         let conn = self.conn()?;
         conn.execute(
-            "INSERT INTO engine_runs (id, kind, state, session_key, agent_id, lane, parent_run_id, definition, inputs)
-             VALUES (?1, ?2, 'queued', ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![r.id, r.kind, r.session_key, r.agent_id, r.lane, r.parent_run_id, r.definition, r.inputs],
+            "INSERT INTO engine_runs (id, kind, state, session_key, agent_id, lane, parent_run_id, definition, inputs, external_ref)
+             VALUES (?1, ?2, 'queued', ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![r.id, r.kind, r.session_key, r.agent_id, r.lane, r.parent_run_id, r.definition, r.inputs, r.external_ref],
         )
         .db_err("engine_create_run")?;
         Ok(())
@@ -520,6 +562,45 @@ impl Store {
             .collect::<Result<Vec<_>, _>>()
             .db_err("engine_running_runs_of_kind")?;
         Ok(rows)
+    }
+
+    /// Runs executed as one row elsewhere (a cron job's fires), newest first.
+    pub fn engine_runs_for_ref(&self, external_ref: &str, limit: i64, offset: i64) -> Result<Vec<EngineRun>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT {RUN_COLUMNS} FROM engine_runs WHERE external_ref = ?1
+                 ORDER BY created_at DESC, rowid DESC LIMIT ?2 OFFSET ?3"
+            ))
+            .db_err("engine_runs_for_ref")?;
+        let rows = stmt
+            .query_map(params![external_ref, limit, offset], row_to_run)
+            .db_err("engine_runs_for_ref")?
+            .collect::<Result<Vec<_>, _>>()
+            .db_err("engine_runs_for_ref")?;
+        Ok(rows)
+    }
+
+    pub fn engine_count_runs_for_ref(&self, external_ref: &str) -> Result<i64, NeboError> {
+        let conn = self.conn()?;
+        conn.query_row(
+            "SELECT COUNT(*) FROM engine_runs WHERE external_ref = ?1",
+            params![external_ref],
+            |r| r.get(0),
+        )
+        .db_err("engine_count_runs_for_ref")
+    }
+
+    /// Is a fire of this ref still queued or running? The overlap policy
+    /// (skip) asks before starting another.
+    pub fn engine_has_live_run_for_ref(&self, external_ref: &str) -> Result<bool, NeboError> {
+        let conn = self.conn()?;
+        conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM engine_runs WHERE external_ref = ?1 AND state IN ('queued', 'running'))",
+            params![external_ref],
+            |r| r.get::<_, bool>(0),
+        )
+        .db_err("engine_has_live_run_for_ref")
     }
 
     /// The one live child of a parent, if a turn is running or about to.
@@ -1004,7 +1085,7 @@ mod tests {
         assert_eq!(due.len(), 1);
         assert_eq!(due[0].target_id, w1.to_string());
         assert!(s.engine_match_wait(&due[0]).unwrap().is_none(), "old generation matches nothing");
-        s.engine_supersede_event(due[0].id, 3_000).unwrap();
+        s.engine_supersede_event(due[0].id, 3_000, "superseded: wait generation replaced").unwrap();
         // Friday's timer names w2 and matches.
         let (fri, _) = s.engine_claim_events(5_000, 10).unwrap();
         assert_eq!(fri.len(), 1);

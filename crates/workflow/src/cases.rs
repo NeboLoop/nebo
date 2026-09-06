@@ -161,6 +161,7 @@ pub fn signal_or_open(
         parent_run_id: None,
         definition: Some(b.definition_json),
         inputs: Some(&inputs.to_string()),
+        external_ref: None,
     })?;
     if !store.engine_bind_key(&case_id, key_type, key_value)? {
         // Lost a race to another opener; that case owns the key now.
@@ -211,6 +212,7 @@ pub fn start_child(store: &Store, parent: &EngineRun, event: &EngineEvent) -> Re
         parent_run_id: Some(&parent.id),
         definition: parent.definition.as_deref(),
         inputs: Some(&inputs.to_string()),
+        external_ref: None,
     })
 }
 

@@ -34,6 +34,7 @@ mod workflows;
 mod teams;
 
 pub use agents::agent_slug;
+pub use cron_jobs::cron_ref;
 pub use engine::{
     EngineEffect, EngineEvent, EngineRun, EngineWait, Enqueued, NewEvent, NewRun, NewWait,
     EVENT_LEASE_SECS, EVENT_MAX_ATTEMPTS,

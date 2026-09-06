@@ -2525,11 +2525,8 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // alert lands in the same Slack thread).
     scheduler::spawn(
         state.store.clone(),
-        state.runner.clone(),
-        state.hub.clone(),
         state.snapshot_store.clone(),
         state.workflow_manager.clone(),
-        state.run_registry.clone(),
         state.clone(),
     );
 

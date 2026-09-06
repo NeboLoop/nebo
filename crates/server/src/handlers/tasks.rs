@@ -189,92 +189,16 @@ pub async fn run_task(
         .map_err(to_error_response)?
         .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
 
-    // Create a history entry for this run
-    let history = state
+    // One fire, queued to the engine; it executes the job the same way a
+    // scheduled fire runs and announces `task_complete` when it settles.
+    let run_id = state
         .store
-        .create_cron_history(task.id)
+        .queue_cron_run(&task, true)
         .map_err(to_error_response)?;
-
-    // Mark the run start
-    state
-        .store
-        .update_cron_job_last_run(task.id, None)
-        .map_err(to_error_response)?;
-
-    let history_id = history.id;
-    let store = state.store.clone();
-    let runner = state.runner.clone();
-    let hub = state.hub.clone();
-    let task_type = task.task_type.clone();
-    let command = task.command.clone();
-    let message = task.message.clone();
-    let task_name = name.clone();
-    let task_id = task.id;
-
-    // Execute the task in the background
-    tokio::spawn(async move {
-        let (success, output) = match task_type.as_str() {
-            "bash" => {
-                // Execute shell command
-                match tokio::process::Command::new("bash")
-                    .arg("-c")
-                    .arg(&command)
-                    .output()
-                    .await
-                {
-                    Ok(result) => {
-                        let stdout = String::from_utf8_lossy(&result.stdout).to_string();
-                        let stderr = String::from_utf8_lossy(&result.stderr).to_string();
-                        let output = if stderr.is_empty() {
-                            stdout
-                        } else {
-                            format!("{}\n[stderr] {}", stdout, stderr)
-                        };
-                        (result.status.success(), output)
-                    }
-                    Err(e) => (false, format!("Failed to execute: {}", e)),
-                }
-            }
-            "agent" => {
-                // Execute via agent runner
-                let prompt = message.as_deref().unwrap_or("");
-                if prompt.is_empty() {
-                    (
-                        false,
-                        "No prompt/message configured for agent task".to_string(),
-                    )
-                } else {
-                    match runner.chat(prompt).await {
-                        Ok(response) => (true, response),
-                        Err(e) => (false, format!("Agent error: {}", e)),
-                    }
-                }
-            }
-            other => (false, format!("Unknown task type: {}", other)),
-        };
-
-        // Update history with result
-        let (out, err) = if success {
-            (Some(output.as_str()), None)
-        } else {
-            (None, Some(output.as_str()))
-        };
-        let _ = store.update_cron_history(history_id, success, out, err);
-        let _ = store.update_cron_job_last_run(task_id, Some(&output));
-
-        hub.broadcast(
-            "task_complete",
-            serde_json::json!({
-                "task": task_name,
-                "success": success,
-                "output": crate::truncate_str(&output, 500),
-            }),
-        );
-    });
 
     Ok(Json(serde_json::json!({
         "success": true,
-        "historyId": history_id,
+        "historyId": run_id,
         "message": "Task execution started",
     })))
 }

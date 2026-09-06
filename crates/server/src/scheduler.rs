@@ -1,145 +1,57 @@
+//! Housekeeping loop and the ONE way a scheduled job executes. Firing —
+//! when a job is due, that it fires once, that a fire interrupted by a
+//! restart is retried once — is the engine's (`crate::engine`); this module
+//! runs the job the engine hands it and returns the outcome.
+
 use std::sync::Arc;
 use std::time::Duration;
 
-use chrono::{Local, TimeZone};
-use cron::Schedule;
 use tokio::process::Command;
 use tracing::{error, info, warn};
 
-use agent::{RunRequest, Runner};
+use agent::RunRequest;
 use db::Store;
+use db::models::CronJob;
 use tools::Origin;
 
-use crate::handlers::ws::ClientHub;
-use crate::run_registry::{RegisterParams, RunRegistry};
+use crate::run_registry::RegisterParams;
 use crate::state::AppState;
 
-/// Spawn the cron scheduler loop. Polls enabled cron_jobs every 60 seconds.
+/// Spawn the housekeeping loop: boot-time recovery for workflow runs and
+/// session wakes, then a sweep every 60 seconds.
 pub fn spawn(
     store: Arc<Store>,
-    runner: Arc<Runner>,
-    hub: Arc<ClientHub>,
     snapshot_store: Arc<browser::SnapshotStore>,
     workflow_manager: Arc<dyn tools::workflows::WorkflowManager>,
-    run_registry: RunRegistry,
     state: AppState,
 ) {
     tokio::spawn(async move {
         // Initial delay to let the server boot
         tokio::time::sleep(Duration::from_secs(10)).await;
 
-        // Re-fire runs that a previous process consumed but never completed.
-        // Must run before the first tick so no live runs have open history rows.
-        recover_interrupted_jobs(
-            &store,
-            &runner,
-            &hub,
-            &workflow_manager,
-            &run_registry,
-            &state,
-        );
-
-        // Same sweep moment for workflow runs stranded by process death (WS4):
-        // stamp interrupted, resume from the last completed activity via the
-        // snapshotted definition, fail the unresumable with a narrated reason.
+        // Workflow runs stranded by process death (WS4): stamp interrupted,
+        // resume from the last completed activity via the snapshotted
+        // definition, fail the unresumable with a narrated reason.
         state.workflow_manager.recover_interrupted_runs().await;
 
-        // Same sweep moment for session wakes persisted but not delivered
-        // before a crash (session wake rail, R1): redeliver on boot.
+        // Session wakes persisted but not delivered before a crash (session
+        // wake rail, R1): redeliver on boot.
         crate::wake::recover_pending_wakes(&state).await;
 
         let mut interval = tokio::time::interval(Duration::from_secs(60));
         loop {
             interval.tick().await;
-            // Shutdown drain: no new flows fire while in-flight ones finish.
             if crate::DRAINING.load(std::sync::atomic::Ordering::Relaxed) {
-                tracing::info!("scheduler paused — process is draining for shutdown");
                 continue;
             }
-            if let Err(e) = tick(
-                &store,
-                &runner,
-                &hub,
-                &workflow_manager,
-                &run_registry,
-                &state,
-            )
-            .await
-            {
-                warn!("scheduler tick error: {}", e);
-            }
+            sweep(&store, &workflow_manager);
             // Cleanup expired snapshots
             snapshot_store.cleanup();
         }
     });
 }
 
-/// Outcome of the ONE fire decision for a job at a given instant.
-pub(crate) enum Due {
-    /// The schedule string doesn't parse (even after normalization).
-    Invalid(String),
-    /// No occurrence is due yet (or none will ever be — a passed one-shot
-    /// whose occurrence was already consumed).
-    NotYet,
-    /// An occurrence is due now.
-    At,
-}
-
-/// The ONE fire decision: given a job's schedule and history, is an
-/// occurrence due at `now`?
-///
-/// last_run is stored as SQLite `datetime('now')` (UTC) — parsed as UTC then
-/// converted to Local so the cron comparison stays in one timezone.
-///
-/// When last_run is NULL (never fired), the floor falls back to created_at —
-/// NOT to `now`. With a year-pinned one-shot cron (e.g. an "in 1 minute"
-/// timer with cron `47 37 19 26 5 * 2026`), defaulting to `now` means
-/// `schedule.after(now)` returns the single moment while it's still in the
-/// future, but on the very next tick `now` has advanced past it — so the
-/// task silently never fires. Using `created_at` as the floor guarantees
-/// `schedule.after(floor).next()` always returns the cron's moment.
-pub(crate) fn due_occurrence(
-    schedule_str: &str,
-    last_run: Option<&str>,
-    created_at: Option<&str>,
-    now: chrono::DateTime<Local>,
-) -> Due {
-    // Normalize at read time — handles stale 5-field expressions in DB.
-    let normalized = tools::PersonaTool::normalize_cron(schedule_str);
-    let schedule: Schedule = match normalized.parse() {
-        Ok(s) => s,
-        Err(e) => return Due::Invalid(e.to_string()),
-    };
-    let parse_db_ts = |s: &str| -> Option<i64> {
-        s.parse::<i64>().ok().or_else(|| {
-            chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
-                .ok()
-                .map(|dt| dt.and_utc().timestamp())
-        })
-    };
-    let last_run_ts = last_run
-        .and_then(parse_db_ts)
-        .or_else(|| created_at.and_then(parse_db_ts))
-        .unwrap_or(0);
-    let floor = chrono::Utc
-        .timestamp_opt(last_run_ts, 0)
-        .single()
-        .map(|dt| dt.with_timezone(&Local))
-        .unwrap_or(now);
-    match schedule.after(&floor).next() {
-        Some(next) if next <= now => Due::At,
-        _ => Due::NotYet,
-    }
-}
-
-async fn tick(
-    store: &Arc<Store>,
-    runner: &Arc<Runner>,
-    hub: &Arc<ClientHub>,
-    workflow_manager: &Arc<dyn tools::workflows::WorkflowManager>,
-    run_registry: &RunRegistry,
-    state: &AppState,
-) -> Result<(), String> {
+fn sweep(store: &Arc<Store>, workflow_manager: &Arc<dyn tools::workflows::WorkflowManager>) {
     // Cleanup old completed/failed/cancelled tasks (7-day TTL)
     if let Err(e) = store.delete_completed_tasks() {
         warn!("failed to cleanup old tasks: {}", e);
@@ -178,197 +90,22 @@ async fn tick(
         }
         Err(e) => warn!("failed to expire pending writes: {}", e),
     }
-
-    let jobs = store.list_enabled_cron_jobs().map_err(|e| e.to_string())?;
-
-    // Crons are evaluated in the machine's local timezone — Nebo is a desktop
-    // AI companion, so the host's wall clock IS the user's wall clock. Agent
-    // authors write schedules like "0 0 7 * * 1-5" meaning 7 AM local. If we
-    // compared against `Utc::now()` here, that same cron would fire at 7 AM
-    // UTC — e.g. 1 AM MDT for an MDT user.
-    let now = Local::now();
-
-    // Counts jobs dispatched this tick — used to stagger same-tick starts so
-    // a herd of jobs due at the same minute (e.g. every agent's 9:00 briefing)
-    // ramps up at ~1 job/sec instead of spiking the provider all at once.
-    let mut dispatched: u64 = 0;
-
-    for job in &jobs {
-        match due_occurrence(&job.schedule, job.last_run.as_deref(), job.created_at.as_deref(), now)
-        {
-            Due::Invalid(e) => {
-                warn!(job = job.name.as_str(), schedule = %job.schedule, error = %e, "invalid cron expression");
-                continue;
-            }
-            Due::NotYet => continue,
-            Due::At => {}
-        }
-
-        info!(job = job.name.as_str(), "dispatching scheduled task");
-
-        // Consume this occurrence at dispatch time. Jobs run concurrently in
-        // their own tasks, so waiting until completion (the old sequential
-        // behavior) would let the next tick re-fire the same occurrence while
-        // this run is still in flight. The run outcome is recorded separately
-        // via update_cron_job_last_error + history. If the process dies before
-        // the run completes, the startup recovery sweep re-fires it from the
-        // dangling history row.
-        let _ = store.update_cron_job_last_run(job.id, None);
-
-        let delay = Duration::from_secs(dispatched);
-        dispatched += 1;
-
-        spawn_job_run(
-            store,
-            runner,
-            hub,
-            workflow_manager,
-            run_registry,
-            state,
-            job,
-            delay,
-        );
-    }
-
-    Ok(())
 }
 
-/// Spawn one job run in its own task: creates the history row, waits out the
-/// stagger `delay`, executes, and records the outcome. Occurrence accounting
-/// (`update_cron_job_last_run`) is the caller's concern — the recovery sweep
-/// re-fires an already-consumed occurrence and must not bump it again.
-#[allow(clippy::too_many_arguments)]
-fn spawn_job_run(
-    store: &Arc<Store>,
-    runner: &Arc<Runner>,
-    hub: &Arc<ClientHub>,
-    workflow_manager: &Arc<dyn tools::workflows::WorkflowManager>,
-    run_registry: &RunRegistry,
-    state: &AppState,
-    job: &db::models::CronJob,
-    delay: Duration,
-) {
-    // Record history start
-    let history = store.create_cron_history(job.id).ok();
-
-    let store = store.clone();
-    let runner = runner.clone();
-    let hub = hub.clone();
-    let workflow_manager = workflow_manager.clone();
-    let run_registry = run_registry.clone();
-    let state = state.clone();
-    let job = job.clone();
-
-    tokio::spawn(async move {
-            if !delay.is_zero() {
-                tokio::time::sleep(delay).await;
-            }
-
-            let (success, output, err_msg) = match job.task_type.as_str() {
-                "bash" | "shell" | "" => execute_shell(&job.command).await,
-                "agent" => execute_agent(&runner, &hub, &job, &run_registry, &state).await,
-                "workflow" => execute_workflow_task(&*workflow_manager, &job.command).await,
-                "agent_workflow" | "role_workflow" => {
-                    execute_agent_workflow_task(&*workflow_manager, &store, &job.command).await
-                }
-                other => (
-                    false,
-                    String::new(),
-                    Some(format!("unknown task type: {}", other)),
-                ),
-            };
-
-            // Best-effort: record run outcome (non-critical tracking)
-            let _ = store.update_cron_job_last_error(job.id, err_msg.as_deref());
-
-            // Best-effort: update history record (non-critical tracking)
-            if let Some(h) = history {
-                let _ = store.update_cron_history(
-                    h.id,
-                    success,
-                    if output.is_empty() {
-                        None
-                    } else {
-                        Some(&output)
-                    },
-                    err_msg.as_deref(),
-                );
-            }
-
-            // Suppress the OS-level "Nebo" desktop popup when the job already
-            // delivered its response to a channel (Slack/Discord/etc.). The
-            // channel post IS the user-facing notification; firing an additional
-            // desktop alert is duplicate noise that says "test-timer-live-2
-            // completed" — meaningless to a user who just got the real message
-            // in Slack. Non-channel-bound jobs (shell, system workflows) still
-            // get the desktop notification because they have no other surface.
-            let channel_bound = job.agent_id.as_deref().is_some_and(|s| !s.is_empty())
-                && job
-                    .channel_ctx_json
-                    .as_deref()
-                    .is_some_and(|s| !s.is_empty());
-
-            if success {
-                info!(job = job.name.as_str(), "task completed");
-                if !channel_bound {
-                    notify_crate::send("Nebo", &format!("{} completed", job.name));
-                }
-            } else {
-                let err = err_msg.as_deref().unwrap_or("unknown");
-                warn!(job = job.name.as_str(), error = err, "task failed");
-                // Always surface failures — even for channel-bound jobs — because
-                // the channel-side delivery itself may have failed and the user
-                // needs to know something went wrong.
-                notify_crate::send("Nebo", &format!("{} failed: {}", job.name, err));
-            }
-        });
-}
-
-/// Startup recovery sweep: re-fire jobs whose last dispatch never recorded an
-/// outcome. last_run is consumed at dispatch time, so a process death between
-/// dispatch and completion would otherwise silently lose that occurrence
-/// (at-most-once). Runs once, before the first tick, so no live runs can have
-/// open history rows. Does NOT bump last_run — the occurrence was already
-/// consumed by the original dispatch.
-fn recover_interrupted_jobs(
-    store: &Arc<Store>,
-    runner: &Arc<Runner>,
-    hub: &Arc<ClientHub>,
-    workflow_manager: &Arc<dyn tools::workflows::WorkflowManager>,
-    run_registry: &RunRegistry,
-    state: &AppState,
-) {
-    let jobs = match store.list_interrupted_cron_jobs() {
-        Ok(jobs) => jobs,
-        Err(e) => {
-            warn!("failed to list interrupted cron jobs: {}", e);
-            return;
+/// Execute one fire of a job. Returns (success, output, error).
+pub(crate) async fn execute_job(state: &AppState, job: &CronJob) -> (bool, String, Option<String>) {
+    match job.task_type.as_str() {
+        "bash" | "shell" | "" => execute_shell(&job.command).await,
+        "agent" => execute_agent(state, job).await,
+        "workflow" => execute_workflow_task(&*state.workflow_manager, &job.command).await,
+        "agent_workflow" | "role_workflow" => {
+            execute_agent_workflow_task(&*state.workflow_manager, &state.store, &job.command).await
         }
-    };
-
-    // Close ALL dangling rows (even ones older than the re-fire window) so
-    // history reads as failed instead of forever pending.
-    match store.close_interrupted_cron_history() {
-        Ok(n) if n > 0 => info!(rows = n, "closed interrupted cron history rows"),
-        Ok(_) => {}
-        Err(e) => warn!("failed to close interrupted cron history: {}", e),
-    }
-
-    for (i, job) in jobs.iter().enumerate() {
-        info!(
-            job = job.name.as_str(),
-            "re-firing cron job interrupted by restart"
-        );
-        spawn_job_run(
-            store,
-            runner,
-            hub,
-            workflow_manager,
-            run_registry,
-            state,
-            job,
-            Duration::from_secs(i as u64),
-        );
+        other => (
+            false,
+            String::new(),
+            Some(format!("unknown task type: {}", other)),
+        ),
     }
 }
 
@@ -392,13 +129,7 @@ async fn execute_shell(command: &str) -> (bool, String, Option<String>) {
     }
 }
 
-async fn execute_agent(
-    runner: &Runner,
-    hub: &ClientHub,
-    job: &db::models::CronJob,
-    run_registry: &RunRegistry,
-    state: &AppState,
-) -> (bool, String, Option<String>) {
+async fn execute_agent(state: &AppState, job: &CronJob) -> (bool, String, Option<String>) {
     let prompt = job.message.as_deref().unwrap_or(&job.command);
 
     // If this job was created from an agent-bound channel conversation, route
@@ -409,7 +140,7 @@ async fn execute_agent(
         (job.agent_id.as_deref(), job.channel_ctx_json.as_deref())
     {
         if !agent_id.is_empty() && !ctx_json.is_empty() {
-            return execute_agent_channel_bound(runner, job, run_registry, state, agent_id, ctx_json, prompt).await;
+            return execute_agent_channel_bound(state, job, agent_id, ctx_json, prompt).await;
         }
     }
 
@@ -418,7 +149,8 @@ async fn execute_agent(
     let cancel_token = tokio_util::sync::CancellationToken::new();
 
     // Register in the global RunRegistry so cron runs are visible and cancellable
-    let run_handle = run_registry
+    let run_handle = state
+        .run_registry
         .register(RegisterParams {
             session_key: session_key.clone(),
             entity_id: "main".to_string(),
@@ -436,11 +168,11 @@ async fn execute_agent(
         system,
         origin: Origin::System,
         channel: "cron".to_string(),
-        cancel_token: cancel_token,
+        cancel_token,
         ..Default::default()
     };
 
-    match runner.run(req).await {
+    match state.runner.run(req).await {
         Ok(mut rx) => {
             let mut full_text = String::new();
             while let Some(event) = rx.recv().await {
@@ -448,7 +180,7 @@ async fn execute_agent(
                 match event.event_type {
                     ai::StreamEventType::Text => {
                         full_text.push_str(&event.text);
-                        hub.broadcast(
+                        state.hub.broadcast(
                             "chat_stream",
                             serde_json::json!({
                                 "session_id": session_key,
@@ -481,10 +213,8 @@ async fn execute_agent(
 /// channel-plugin bridge as an `op: "post"` so it lands in the originating
 /// thread.
 async fn execute_agent_channel_bound(
-    runner: &Runner,
-    job: &db::models::CronJob,
-    run_registry: &RunRegistry,
     state: &AppState,
+    job: &CronJob,
     agent_id: &str,
     ctx_json: &str,
     prompt: &str,
@@ -523,7 +253,8 @@ async fn execute_agent_channel_bound(
     );
     let cancel_token = tokio_util::sync::CancellationToken::new();
 
-    let run_handle = run_registry
+    let run_handle = state
+        .run_registry
         .register(RegisterParams {
             session_key: session_key.clone(),
             entity_id: agent_id.to_string(),
@@ -543,13 +274,13 @@ async fn execute_agent_channel_bound(
         origin: Origin::System,
         channel: saved.kind.clone(),
         agent_id: agent_id.to_string(),
-        cancel_token: cancel_token,
+        cancel_token,
         channel_ctx: Some(channel_ctx.clone()),
         ..Default::default()
     };
 
     let mut full_text = String::new();
-    match runner.run(req).await {
+    match state.runner.run(req).await {
         Ok(mut rx) => {
             while let Some(event) = rx.recv().await {
                 run_handle.touch();
@@ -762,107 +493,3 @@ async fn execute_agent_workflow_task(
         Err(e) => (false, String::new(), Some(e)),
     }
 }
-
-#[cfg(test)]
-mod due_tests {
-    use super::*;
-    use chrono::TimeZone;
-
-    fn local(y: i32, mo: u32, d: u32, h: u32, mi: u32, s: u32) -> chrono::DateTime<Local> {
-        Local.with_ymd_and_hms(y, mo, d, h, mi, s).single().unwrap()
-    }
-
-    /// A UTC timestamp string in the SQLite `datetime('now')` shape,
-    /// for a LOCAL wall-clock moment.
-    fn db_ts(t: chrono::DateTime<Local>) -> String {
-        t.with_timezone(&chrono::Utc).format("%Y-%m-%d %H:%M:%S").to_string()
-    }
-
-    #[test]
-    fn recurring_fires_when_due_and_not_before() {
-        // Every 30 minutes; last ran at :00 → due at :30, not at :29.
-        let last = db_ts(local(2026, 8, 23, 9, 0, 0));
-        let sched = "0 0,30 * * * *";
-        assert!(matches!(
-            due_occurrence(sched, Some(&last), None, local(2026, 8, 23, 9, 29, 0)),
-            Due::NotYet
-        ));
-        assert!(matches!(
-            due_occurrence(sched, Some(&last), None, local(2026, 8, 23, 9, 30, 5)),
-            Due::At
-        ));
-    }
-
-    /// THE silent-never-fires bug: a year-pinned one-shot with NULL last_run
-    /// must still fire after its moment passes — the floor is created_at,
-    /// never `now`.
-    #[test]
-    fn one_shot_with_null_last_run_fires_from_created_at() {
-        let created = db_ts(local(2026, 8, 23, 10, 0, 0));
-        // One-shot at 10:05:00 local on 2026-08-23.
-        let sched = "0 5 10 23 8 * 2026";
-        // Before the moment: not yet.
-        assert!(matches!(
-            due_occurrence(sched, None, Some(&created), local(2026, 8, 23, 10, 4, 0)),
-            Due::NotYet
-        ));
-        // A tick 3 minutes AFTER the moment (missed ticks happen): still due.
-        assert!(matches!(
-            due_occurrence(sched, None, Some(&created), local(2026, 8, 23, 10, 8, 0)),
-            Due::At
-        ));
-    }
-
-    /// After the one-shot's occurrence is consumed (last_run stamped at/after
-    /// it), it never fires again.
-    #[test]
-    fn one_shot_never_refires_after_consumption() {
-        let sched = "0 5 10 23 8 * 2026";
-        let last = db_ts(local(2026, 8, 23, 10, 8, 0));
-        assert!(matches!(
-            due_occurrence(sched, Some(&last), None, local(2026, 8, 23, 10, 9, 0)),
-            Due::NotYet
-        ));
-        assert!(matches!(
-            due_occurrence(sched, Some(&last), None, local(2027, 1, 1, 0, 0, 0)),
-            Due::NotYet
-        ));
-    }
-
-    /// Stale 5-field crons in the DB normalize instead of erroring.
-    #[test]
-    fn five_field_cron_normalizes() {
-        let last = db_ts(local(2026, 8, 23, 6, 0, 0));
-        assert!(matches!(
-            due_occurrence("0 7 * * *", Some(&last), None, local(2026, 8, 23, 7, 0, 30)),
-            Due::At
-        ));
-    }
-
-    #[test]
-    fn garbage_is_invalid_not_a_panic() {
-        assert!(matches!(
-            due_occurrence("not a cron", None, None, Local::now()),
-            Due::Invalid(_)
-        ));
-    }
-
-    /// Weekday schedules respect the local calendar: a weekdays-at-7 cron is
-    /// not due on Sunday even long after Friday's run.
-    #[test]
-    fn weekday_cron_skips_the_weekend() {
-        // 2026-08-21 is a Friday; 2026-08-23 is a Sunday.
-        let last = db_ts(local(2026, 8, 21, 7, 0, 30));
-        let sched = "0 0 7 * * Mon-Fri";
-        assert!(matches!(
-            due_occurrence(sched, Some(&last), None, local(2026, 8, 23, 7, 30, 0)),
-            Due::NotYet
-        ));
-        // Monday morning it fires.
-        assert!(matches!(
-            due_occurrence(sched, Some(&last), None, local(2026, 8, 24, 7, 0, 30)),
-            Due::At
-        ));
-    }
-}
-

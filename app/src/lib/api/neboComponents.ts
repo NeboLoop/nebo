@@ -299,7 +299,7 @@ export interface CommanderTeamMember {
 }
 
 export interface CronHistory {
-	id: number
+	id: string
 	jobId: number
 	startedAt?: string
 	finishedAt?: string
