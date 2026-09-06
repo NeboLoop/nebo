@@ -3375,6 +3375,7 @@ mod tests {
             description: String::new(),
             help: None,
             profile_dir_env: None,
+            public_redirect: false,
         });
         assert!(m.validate().is_err());
     }
