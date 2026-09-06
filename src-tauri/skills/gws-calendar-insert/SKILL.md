@@ -48,6 +48,7 @@ gws calendar +insert --summary 'Meet' --start ... --end ... --meet
 
 - Use RFC3339 format for times (e.g. 2026-06-17T09:00:00-07:00).
 - The --meet flag automatically adds a Google Meet link to the event.
+- **Meeting invites:** when the user wants to invite people, ALWAYS use `--attendee` (repeat for each guest). Do NOT send a separate Gmail message instead — `+insert` with attendees creates the calendar event and notifies them. Add `--meet` when they want a video link.
 
 > [!CAUTION]
 > This is a **write** command — confirm with the user before executing.

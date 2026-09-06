@@ -3244,7 +3244,10 @@ async fn try_handle_comm_control(
         tracing::info!(session = %session_key, cancelled, "inbound comm stop command");
         return true;
     }
-    let pending = state.pending_comm_asks.lock().await.remove(session_key);
+    let pending = {
+        let mut asks = state.pending_comm_asks.lock().await;
+        asks.get_mut(session_key).and_then(|q| q.pop_front())
+    };
     if let Some(request_id) = pending {
         if chat_dispatch::answer_ask(state, &request_id, answer.to_string()).await {
             tracing::info!(session = %session_key, "inbound comm message resolved pending ask");
@@ -3295,7 +3298,9 @@ async fn try_handle_channel_control(
     let needle = format!("channel:{}", conversation_id);
     let ask_key = {
         let asks = state.pending_comm_asks.lock().await;
-        asks.keys().find(|k| k.contains(&needle)).cloned()
+        asks.iter()
+            .find(|(k, q)| k.contains(&needle) && !q.is_empty())
+            .map(|(k, _)| k.clone())
     };
     let approval_key = {
         let approvals = state.pending_comm_approvals.lock().await;

@@ -1450,6 +1450,51 @@ async fn create_blank_agent(
         .create_agent(&id, None, name, "", &agent_md, "{}", None, None)
         .map_err(to_error_response)?;
 
+    // Blank hires still get one empty manual workflow so Flows is never a
+    // dead empty state — owner fills it in; no marketplace schedules invented.
+    let frontmatter = serde_json::json!({
+        "workflows": {
+            "Main": {
+                "trigger": { "type": "manual" },
+                "activities": [],
+                "description": ""
+            }
+        }
+    })
+    .to_string();
+    if let Err(e) = state.store.update_agent(
+        &id,
+        &agent.name,
+        &agent.description,
+        &agent.agent_md,
+        &frontmatter,
+        agent.pricing_model.as_deref(),
+        agent.pricing_cost,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    ) {
+        warn!(agent = %id, error = %e, "failed to write blank-hire Main workflow frontmatter");
+    } else if let Err(e) = state.store.upsert_agent_workflow(
+        &id,
+        "Main",
+        "manual",
+        "",
+        None,
+        None,
+        None,
+        Some("[]"),
+        None,
+        false,
+    ) {
+        warn!(agent = %id, error = %e, "failed to upsert blank-hire Main workflow");
+    } else if let Ok(bindings) = state.store.list_agent_workflows(&id) {
+        workflow::triggers::register_agent_triggers(&id, &bindings, &state.store);
+    }
+
     // Auto-activate: insert into agent_registry so it shows in sidebar
     let active = tools::ActiveAgent {
         agent_id: id.clone(),

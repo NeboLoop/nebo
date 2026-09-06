@@ -1084,7 +1084,9 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                 pending_comm_asks
                                     .lock()
                                     .await
-                                    .insert(sid.to_string(), request_id.to_string());
+                                    .entry(sid.to_string())
+                                    .or_default()
+                                    .push_back(request_id.to_string());
                                 let mut meta = HashMap::new();
                                 meta.insert("kind".to_string(), "ask".to_string());
                                 meta.insert("request_id".to_string(), request_id.to_string());

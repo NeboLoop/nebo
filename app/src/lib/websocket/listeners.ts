@@ -16,6 +16,7 @@ import { t } from 'svelte-i18n';
 import { getWebSocketClient } from './client';
 import { notifications, pushNotification, loadNotifications } from '$lib/stores/notifications';
 import { addToast } from '$lib/stores/toast';
+import { pendingPluginAuthUrl } from '$lib/stores/pluginAuth';
 import { onUpdateAvailable, onUpdateProgress, onUpdateReady, onUpdateError } from '$lib/stores/update';
 import { logger } from '$lib/monitoring';
 
@@ -129,7 +130,21 @@ export function attachWebSocketListeners(): void {
   unsubs.push(
     ws.on('plugin_auth_url', (data: any) => {
       if (typeof window !== 'undefined' && data?.url) {
-        window.open(data.url, '_blank');
+        const url = String(data.url);
+        pendingPluginAuthUrl.set(url);
+        const win = window.open(url, '_blank');
+        // Tauri denies in-webview windows after handing the URL to the system
+        // browser, so `win` is null even when open succeeded — don't toast
+        // "blocked" there. On plain web, null usually means a popup blocker.
+        const isTauri = !!(window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
+          || !!(window as Window & { __TAURI__?: unknown }).__TAURI__;
+        if (!win && !isTauri) {
+          addToast(
+            'Sign-in window was blocked. Allow popups, or use the Open sign-in link in the dialog.',
+            'error',
+            10000,
+          );
+        }
       }
     })
   );

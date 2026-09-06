@@ -73,6 +73,7 @@ gws <service> <resource> [sub-resource] <method> [flags]
   ```bash
   gws drive files list --params '{"pageSize": 5}'
   ```
+- **Drive sharing:** New Drive/Docs/Sheets files are private. Before sharing a link or emailing it, grant each named person / recipient with `gws drive permissions create` (`type=user`, their `emailAddress`). See `gws-drive`. Do not default to public `type=anyone`.
 
 ## Community & Feedback Etiquette
 

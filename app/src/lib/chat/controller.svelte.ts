@@ -17,6 +17,7 @@ import { sendInstallCode } from '$lib/marketplace/installCodes';
 import { formatTime } from '$lib/time';
 import { get } from 'svelte/store';
 import { t } from 'svelte-i18n';
+import { humanizeToolCall } from '$lib/chat/humanize';
 
 export interface TokenUsage {
   input: number;
@@ -101,50 +102,9 @@ export interface SendOptions {
   silent?: boolean;
 }
 
-/** Build a display-friendly name for a tool call. */
-export function toolDisplayName(tool: string, input: Record<string, unknown>): string {
-  const resource = input.resource as string | undefined;
-  const action = input.action as string | undefined;
-  if (tool === 'plugin') {
-    const command = input.command as string | undefined;
-    const cmdPrefix = command?.split(/[\s+]/)[0];
-    if (resource && cmdPrefix) return `${resource}: ${cmdPrefix}`;
-    return resource || 'plugin';
-  }
-  if (tool === 'app' && action && input.app) return `${action} ${input.app}`;
-  // Sub-agent spawn: show description or truncated prompt instead of "task: spawn"
-  if (tool === 'agent' && resource === 'task' && action === 'spawn') {
-    const desc = input.description as string | undefined;
-    if (desc) return desc;
-    const prompt = input.prompt as string | undefined;
-    if (prompt) return prompt.length > 60 ? prompt.slice(0, 57) + '...' : prompt;
-    return 'spawning sub-agent';
-  }
-  if (resource && action) return `${resource}: ${action}`;
-  if (resource) return resource;
-  if (['event', 'skill'].includes(tool) && action) return action;
-  return tool;
-}
-
-function toolActivityLabel(toolName: string): string {
-  const labels: Record<string, string> = {
-    bash:    'running a command',
-    grep:    'searching files',
-    glob:    'finding files',
-    read:    'reading a file',
-    write:   'writing a file',
-    edit:    'editing a file',
-
-    web:     'searching the web',
-    browser: 'reading a page',
-    bot:     'thinking it through',
-    desktop: 'using the desktop',
-    event:   'checking the schedule',
-    loop:    'sending a message',
-
-    os:      'checking the workspace',
-  };
-  return labels[toolName] || 'working';
+/** Build a display-friendly name for a tool call (gerund form). */
+export function toolDisplayName(tool: string, input: Record<string, unknown> = {}): string {
+  return humanizeToolCall(tool, input).label;
 }
 
 const IMAGE_VIDEO_EXTS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'mp4', 'webm', 'mov'];
@@ -234,6 +194,9 @@ export function createChatController(config: ChatControllerConfig) {
   // --- Reactive state ---
   let messages = $state<ChatMessage[]>([]);
   let isLoading = $state(false);
+  /** Parked ask_request widgets waiting for the current open ask to finish. */
+  type AskMsg = Extract<ChatMessage, { type: 'ask' }>;
+  let askQueue = $state<AskMsg[]>([]);
   let tokenUsage = $state<TokenUsage | null>(null);
   let quotaWarning = $state('');
   let chatError = $state('');
@@ -383,7 +346,11 @@ export function createChatController(config: ChatControllerConfig) {
     const STATUS_RE = /\n?_Working[^_]*_\n?/g;
     const statusMatch = chunk.match(STATUS_RE);
     if (statusMatch) {
-      activityStatus = statusMatch[statusMatch.length - 1].replace(/_/g, '').trim();
+      // Orchestrator already humanizes ("reading a file"); strip the wrapper.
+      activityStatus = statusMatch[statusMatch.length - 1]
+        .replace(/_/g, '')
+        .trim()
+        .replace(/^Working on:\s*/i, '');
       chunk = chunk.replace(STATUS_RE, '');
     }
     if (!chunk) return;
@@ -518,12 +485,12 @@ export function createChatController(config: ChatControllerConfig) {
     } catch { /* keep empty */ }
     const m = messages[idx];
     if (m.type === 'assistant') {
+      const fallback = humanizeToolCall(data.tool || 'tool', request);
       const tool: ToolUse = {
         toolId: data.tool_id,
-        // Raw tool name so the display formats the signature (MCP → "slug · tool",
-        // STRAP → "name · resource.action"); label + outcome come from the backend.
+        // Raw name kept for dev-mode signature; label is owner-facing.
         name: data.tool || 'tool',
-        label: data.label,
+        label: data.label || fallback.label,
         status: 'running',
         request,
         response: '',
@@ -532,8 +499,8 @@ export function createChatController(config: ChatControllerConfig) {
       messages[idx] = { ...m, tools: [...(m.tools ?? []), tool] };
     }
     // Prefer the backend's humanized label so the live indicator and the
-    // persisted timeline speak the same vocabulary; static map is the fallback.
-    activityStatus = data.label || toolActivityLabel(data.tool || '');
+    // persisted timeline speak the same vocabulary; client humanize is fallback.
+    activityStatus = data.label || humanizeToolCall(data.tool || '', request).label;
   }
 
   function handleToolResult(data: any) {
@@ -567,10 +534,15 @@ export function createChatController(config: ChatControllerConfig) {
     const idx = ensureReply(data.agentId || agentId);
     const m = messages[idx];
     if (m.type === 'assistant') {
+      const name = data.tool_name || 'tool';
+      const friendly = humanizeToolCall(name, {});
       messages[idx] = {
         ...m,
         tools: [...(m.tools ?? []), {
-          toolId, name: data.tool_name || 'tool', status, outcome: data.outcome, request: {}, response,
+          toolId, name, status,
+          label: data.label || friendly.label,
+          outcome: data.outcome || friendly.outcome,
+          request: {}, response,
         }],
       };
     }
@@ -644,12 +616,21 @@ export function createChatController(config: ChatControllerConfig) {
     // The same question can reach the page twice: the live event, the thread's
     // history response, and a reconnect replay all carry it. One card.
     if (messages.some((m) => m.type === 'ask' && m.requestId === requestId)) return;
-    messages = [...messages, {
+    if (askQueue.some((m) => m.requestId === requestId)) return;
+    const ask = {
       type: 'ask' as const,
       requestId,
       prompt: data.prompt as string,
       widgets: (data.widgets ?? [{ type: 'options', multiSelect: false, options: ['Yes', 'No'] }]) as AskWidgetDef[],
-    }];
+    };
+    // One interactive ask at a time (ApprovalGate pattern). Later asks wait
+    // in askQueue and surface when the head is answered.
+    const hasOpenAsk = messages.some((m) => m.type === 'ask' && !m.response);
+    if (hasOpenAsk) {
+      askQueue = [...askQueue, ask];
+    } else {
+      messages = [...messages, ask];
+    }
     // The run is parked on the owner: the last tool's activity line ("browsing
     // the marketplace") would otherwise sit under the card as if still running.
     activityStatus = get(t)('chat.waitingForYou');
@@ -693,6 +674,7 @@ export function createChatController(config: ChatControllerConfig) {
     if (!isMyEvent(data)) return;
     if (data.success) {
       messages = [];
+      askQueue = [];
       resetStreaming();
     }
   }
@@ -838,6 +820,7 @@ export function createChatController(config: ChatControllerConfig) {
 
   function newThread() {
     messages = [];
+    askQueue = [];
     resetStreaming();
     isLoading = false;
     if (config.sessionKey) {
@@ -861,8 +844,16 @@ export function createChatController(config: ChatControllerConfig) {
         ? { ...msg, response: value }
         : msg
     );
-    // Answered: the run is working again; its next tool_start names what it does.
-    activityStatus = '';
+    // Reveal the next parked question, if any.
+    if (askQueue.length) {
+      const [next, ...rest] = askQueue;
+      askQueue = rest;
+      messages = [...messages, next];
+      activityStatus = get(t)('chat.waitingForYou');
+    } else {
+      // Answered: the run is working again; its next tool_start names what it does.
+      activityStatus = '';
+    }
   }
 
   function edit(msgIndex: number, newContent: string) {
@@ -889,11 +880,13 @@ export function createChatController(config: ChatControllerConfig) {
 
   function clearMessages() {
     messages = [];
+    askQueue = [];
     resetStreaming();
   }
 
   function setMessages(msgs: ChatMessage[]) {
     messages = msgs;
+    askQueue = [];
   }
 
   function setAllAgents(agents: AgentInfo[]) {
@@ -937,6 +930,7 @@ export function createChatController(config: ChatControllerConfig) {
     get chatError() { return chatError; },
     get activityStatus() { return activityStatus; },
     set activityStatus(v: string) { activityStatus = v; },
+    get askQueueLength() { return askQueue.length; },
     get allAgents() { return allAgents; },
 
     send,
@@ -957,6 +951,7 @@ export function createChatController(config: ChatControllerConfig) {
         clearDeliveryTimer();
         isLoading = false;
         activityStatus = '';
+        askQueue = [];
         resetStreaming();
       }
     },

@@ -30,6 +30,13 @@ USE THIS when: user mentions email, calendar, contacts, reminders, appointments,
 - os(resource: "calendar", action: "calendars") — List all calendars
 - os(resource: "calendar", action: "configure") — Choose which calendars to track
 
+**Meeting invites (CRITICAL):**
+- NEVER send a meeting invite as email-only (`mail send` / `gws gmail +send`). A plain email does not put the meeting on anyone's calendar.
+- When the user asks to invite people / schedule a meeting with attendees:
+  1. Prefer Google Workspace when available: `gws calendar +insert` with `--attendee` for each guest (and `--meet` if they want a Meet link). That creates the calendar event AND notifies attendees.
+  2. Always create a calendar event for the organizer too (`calendar create` or `gws calendar +insert`) — even if you also send a courtesy email afterward.
+- Local `calendar create` adds an event on the user's calendar only (no attendee invites). Use it for personal blocks; use GWS `+insert --attendee` when others must be invited.
+
 Calendar reads (today/upcoming/list) return the FULL event: start and end times (all-day events are marked), location, notes/description in full, URL, organizer, attendees with their reply status, availability, recurrence, and event ID. Meeting links and agendas are already in that result — read them there instead of asking the user.
 
 Recurrence params (for create): repeat: "daily"/"weekly"/"monthly"/"yearly", repeat_days: "mon,tue,wed" (for weekly), interval: 2 (every 2 weeks), end_repeat: "YYYY-MM-DD"

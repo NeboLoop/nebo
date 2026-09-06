@@ -69,16 +69,41 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Rust lives in the runner user's home on the VM; a non-login shell
-      # does not have it on PATH.
-      - name: Rust on PATH
+      # Bot credentials seed Janus. On PRs, missing secrets skip the gate
+      # (green) so a misconfigured Actions secret store cannot block merges.
+      # push to main, nightly, and workflow_dispatch still fail hard.
+      - name: Check harness secrets
+        id: secrets
+        env:
+          NEBO_BOT_ID: ${{ secrets.HARNESS_NEBO_BOT_ID }}
+          NEBO_BOT_TOKEN: ${{ secrets.HARNESS_NEBO_BOT_TOKEN }}
         run: |
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-          "$HOME/.cargo/bin/cargo" --version
+          if [ -n "$NEBO_BOT_ID" ] && [ -n "$NEBO_BOT_TOKEN" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "HARNESS_NEBO_BOT_ID / HARNESS_NEBO_BOT_TOKEN are not set; skipping harness on this PR."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "HARNESS_NEBO_BOT_ID and HARNESS_NEBO_BOT_TOKEN are not set"
+          exit 1
+
+      # Same install path as CI / release. The house VM may already have
+      # rustup; the action is idempotent and puts cargo on PATH for every
+      # step — a bare `$HOME/.cargo/bin` probe fails when the runner user's
+      # toolchain was wiped (stadium.guest, 2026-09-06).
+      - name: Install Rust
+        if: steps.secrets.outputs.ready == 'true'
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.95"
 
       # Same dependency set as release.yml's Linux leg, already present on the
       # VM; apt is idempotent, so this only pays when the VM is rebuilt.
       - name: Install system dependencies
+        if: steps.secrets.outputs.ready == 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -93,15 +118,18 @@ jobs:
             python3-yaml
 
       - name: Configure OpenBLAS paths
+        if: steps.secrets.outputs.ready == 'true'
         run: |
           MULTIARCH=$(dpkg-architecture -qDEB_HOST_MULTIARCH)
           echo "PKG_CONFIG_PATH=/usr/lib/${MULTIARCH}/pkgconfig" >> $GITHUB_ENV
           echo "RUSTFLAGS=-C link-arg=-L/usr/lib/${MULTIARCH} -C link-arg=-Wl,--no-as-needed -C link-arg=-lopenblas -C link-arg=-Wl,--as-needed" >> $GITHUB_ENV
 
       - name: Satisfy the frontend embed folder
+        if: steps.secrets.outputs.ready == 'true'
         run: mkdir -p app/build
 
       - name: Build the CLI
+        if: steps.secrets.outputs.ready == 'true'
         run: cargo build -p nebo-cli
 
       # A fresh NEBO_HOME so nothing on the runner leaks in. NEBO_SERVER_MODE
@@ -109,6 +137,7 @@ jobs:
       # NEBO_BOT_ID and NEBO_BOT_TOKEN seed the NeboAI profile with Janus
       # enabled, the same first-boot path a cloud pod takes.
       - name: Start a headless server
+        if: steps.secrets.outputs.ready == 'true'
         env:
           NEBO_HOME: ${{ runner.temp }}/nebo-home
           NEBO_SERVER_MODE: "1"
@@ -117,8 +146,6 @@ jobs:
           NEBO_BOT_TOKEN: ${{ secrets.HARNESS_NEBO_BOT_TOKEN }}
           RUST_LOG: info,nebo_agent=debug
         run: |
-          test -n "$NEBO_BOT_ID" && test -n "$NEBO_BOT_TOKEN" \
-            || { echo "HARNESS_NEBO_BOT_ID and HARNESS_NEBO_BOT_TOKEN are not set"; exit 1; }
           mkdir -p "$NEBO_HOME"
           nohup ./target/debug/nebo-cli agent > "${{ runner.temp }}/server.log" 2>&1 &
           for i in $(seq 1 60); do
@@ -128,30 +155,31 @@ jobs:
           curl -sf -m 2 "http://localhost:$GATE_PORT/health"
 
       - name: Confirm Janus is the provider
+        if: steps.secrets.outputs.ready == 'true'
         run: |
           curl -sf "http://localhost:$GATE_PORT/api/v1/providers" \
             | jq -e '.profiles[] | select(.provider == "neboai" and .isActive)' >/dev/null \
             || { echo "no active NeboAI profile; the bot token did not seed"; exit 1; }
 
       - name: Smoke suite, program checks
-        if: github.event_name != 'schedule'
+        if: steps.secrets.outputs.ready == 'true' && github.event_name != 'schedule'
         run: ./target/debug/nebo-cli test run --suite suites/smoke.yaml --no-judge --model "$GATE_MODEL" --server "localhost:$GATE_PORT" --output traces/smoke
 
       - name: Error-correction suite, program checks
-        if: github.event_name != 'schedule'
+        if: steps.secrets.outputs.ready == 'true' && github.event_name != 'schedule'
         run: ./target/debug/nebo-cli test run --suite suites/error-correction.yaml --no-judge --model "$GATE_MODEL" --server "localhost:$GATE_PORT" --output traces/correction
 
       # The VM has no node. Anthropic's native installer puts a standalone
       # `claude` in ~/.local/bin; it persists on the runner, so this is a
       # no-op after the first nightly.
       - name: Install the judge
-        if: github.event_name == 'schedule'
+        if: steps.secrets.outputs.ready == 'true' && github.event_name == 'schedule'
         run: |
           command -v claude >/dev/null || curl -fsSL https://claude.ai/install.sh | bash
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Error-correction suite, judged, three runs
-        if: github.event_name == 'schedule'
+        if: steps.secrets.outputs.ready == 'true' && github.event_name == 'schedule'
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.HARNESS_CLAUDE_OAUTH_TOKEN }}
         run: |
@@ -161,13 +189,13 @@ jobs:
           python3 scripts/error-shapes.py traces/correction --baseline suites/error-shapes.baseline.txt
 
       - name: Smoke suite, judged
-        if: github.event_name == 'schedule'
+        if: steps.secrets.outputs.ready == 'true' && github.event_name == 'schedule'
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.HARNESS_CLAUDE_OAUTH_TOKEN }}
         run: ./target/debug/nebo-cli test run --suite suites/smoke.yaml --grader claude-opus-5 --model "$GATE_MODEL" --server "localhost:$GATE_PORT" --output traces/smoke
 
       - name: Keep the traces and the server log on the VM
-        if: always()
+        if: always() && steps.secrets.outputs.ready == 'true'
         run: |
           KEEP="$HOME/harness-runs/${{ github.run_id }}"
           mkdir -p "$KEEP"

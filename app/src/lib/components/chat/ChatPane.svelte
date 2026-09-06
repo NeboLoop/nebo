@@ -27,6 +27,7 @@
   import { getAttachmentType, formatFileSize, attachmentMediaUrl } from '$lib/types/attachment';
   import { NEAR_BOTTOM_PX, distanceFromBottom } from '$lib/chat/scroll';
   import { threadKey } from '$lib/chat/sessionKey';
+  import { humanizeToolCall } from '$lib/chat/humanize';
 
   interface Artifact {
     /** Stable container id — same across every version of this document. */
@@ -80,7 +81,7 @@
 
   type AgentInfo = { id: string; name: string; color: string; initial: string; role: string; status: string; isApp?: boolean };
 
-  let { messages = [], agentName = 'Agent', agentId = '', threadId = '', sessionId = '', headerTitle = '', headerRight = '', placeholder = '', emptyIcon = '', emptyTitle = '', emptyDesc = '', allAgents = [], onteachsent, activityStatus = '', tokenUsage = null, contextStats = null, quotaWarning = '', chatError = '', onsend, onstop, onedit, onredo, onasksubmit, onrestoreversion, ondismisswarning, ondismisserror, onloadmore, isLoading = false, isLoadingMore = false, hasMore = false, allowAttachments = true, flowsPane, onopenruns, onsettings, isolated = false, isApp = false, onopenapp, onback, composerPrefill = '', onprefilled }: {
+  let { messages = [], agentName = 'Agent', agentId = '', threadId = '', sessionId = '', headerTitle = '', headerRight = '', placeholder = '', emptyIcon = '', emptyTitle = '', emptyDesc = '', allAgents = [], onteachsent, activityStatus = '', tokenUsage = null, contextStats = null, quotaWarning = '', chatError = '', onsend, onstop, onedit, onredo, onasksubmit, onrestoreversion, ondismisswarning, ondismisserror, onloadmore, isLoading = false, isLoadingMore = false, hasMore = false, allowAttachments = true, flowsPane, onopenruns, onsettings, isolated = false, isApp = false, onopenapp, onback, askQueueLength = 0, composerPrefill = '', onprefilled }: {
     messages?: Message[];
     /** Employee-scoped views for the work pane. Omitted on chats with no
      *  employee behind them (channel setup help, the embed), and the matching
@@ -94,9 +95,11 @@
     /** This employee is an app: badge the header and offer Open App. */
     isApp?: boolean;
     onopenapp?: () => void;
-    /** Mobile back-to-list. A real navigation (goto) so the URL changes and
-     *  the browser back button stays truthful; rendered only when provided. */
+    /** Back to the employee roster. A real navigation (goto) so the URL changes
+     *  and the browser back button stays truthful; rendered when provided. */
     onback?: () => void;
+    /** Parked ask widgets waiting behind the current interactive question. */
+    askQueueLength?: number;
     /** Starter text for the composer (prefill, don't send). */
     composerPrefill?: string;
     onprefilled?: () => void;
@@ -1019,8 +1022,17 @@
   function stepOutcome(tool: ToolMsg): string {
     // A failed step says so. "Used agent" for a call that was refused hid a
     // model retrying the same bad call four times in a row.
-    if (tool.status === 'error') return $t('chat.stepFailed', { values: { name: tool.name } });
-    return tool.outcome ?? tool.label ?? $t('chat.usedTool', { values: { name: tool.name } });
+    const req = (tool.request && typeof tool.request === 'object' ? tool.request : {}) as Record<string, unknown>;
+    if (tool.status === 'error') {
+      return $t('chat.stepFailed', { values: { name: humanizeToolCall(tool.name, req).outcome } });
+    }
+    if (tool.outcome || tool.label) return tool.outcome ?? tool.label!;
+    return humanizeToolCall(tool.name, req).outcome;
+  }
+  function stepLabel(tool: ToolMsg): string {
+    if (tool.label) return tool.label;
+    const req = (tool.request && typeof tool.request === 'object' ? tool.request : {}) as Record<string, unknown>;
+    return humanizeToolCall(tool.name, req).label;
   }
   function anyFailed(tools: ToolMsg[]): boolean {
     return tools.some((t) => t.status === 'error');
@@ -1038,7 +1050,7 @@
     const running = tools.filter((t) => t.status === 'running');
     if (running.length) {
       const cur = running[running.length - 1];
-      return `${cur.label ?? $t('chat.workingWithTool', { values: { name: cur.name } })}…`;
+      return `${stepLabel(cur)}…`;
     }
     // Group completed steps by outcome, preserving first-seen order.
     const groups = new Map<string, number>();
@@ -1152,7 +1164,7 @@
            back chevron, not a hamburger. -->
       {#if onback}
       <button
-        class="md:hidden w-10 h-10 -ml-2.5 rounded-md flex items-center justify-center border-none bg-transparent cursor-pointer text-base-content/70 shrink-0"
+        class="w-10 h-10 -ml-2.5 rounded-md flex items-center justify-center border-none bg-transparent cursor-pointer text-base-content/70 shrink-0"
         aria-label="Employees"
         onclick={onback}
       >
@@ -1319,7 +1331,7 @@
                 </div>
                 <div class="flex-1 min-w-0 pb-3">
                   <div class="flex items-baseline gap-2 text-xs">
-                    <span class="truncate {tool.status === 'running' ? 'text-base-content/70' : ''}">{tool.status === 'running' ? (tool.label ?? tool.name) : stepOutcome(tool)}{#if tool.status === 'running' && tool.statusText}<span class="text-base-content/50 ml-1">{tool.statusText}</span>{/if}</span>
+                    <span class="truncate {tool.status === 'running' ? 'text-base-content/70' : ''}">{tool.status === 'running' ? stepLabel(tool) : stepOutcome(tool)}{#if tool.status === 'running' && tool.statusText}<span class="text-base-content/50 ml-1">{tool.statusText}</span>{/if}</span>
                     {#if $devMode}<span class="font-mono text-base-content/40 shrink-0">{strapSig(tool)}</span>{/if}
                     {#if tool.durationMs}<span class="text-base-content/40 shrink-0">{fmtDuration(tool.durationMs)}</span>{/if}
                   </div>
@@ -1591,6 +1603,9 @@
             disabled={!isLoading}
             onSubmit={(id, val) => onasksubmit?.(id, val)}
           />
+          {#if !msg.response && askQueueLength > 0}
+            <p class="mt-1.5 text-xs text-base-content/50">{$t('chat.moreQuestionsWaiting', { values: { count: askQueueLength } })}</p>
+          {/if}
         </div>
 
       {:else if msg.type === 'assistant'}
