@@ -883,20 +883,14 @@ impl AgentTool {
                 // coworker, and an anonymous sub-agent would impersonate them
                 // (smoke, 2026-09-05: "Chief of Staff" got a blank sub-agent).
                 let named_in_prompt: Option<String> = {
-                    let prompt = input["prompt"].as_str().unwrap_or("").to_ascii_lowercase();
                     let names: Vec<String> = self
                         .store
                         .list_agents(500, 0)
                         .unwrap_or_default()
                         .into_iter()
                         .map(|a| a.name)
-                        .filter(|n| n.trim().len() >= 3)
                         .collect();
-                    let mut hits = names.iter().filter(|n| prompt.contains(&n.to_ascii_lowercase()));
-                    match (hits.next(), hits.next()) {
-                        (Some(n), None) => Some(n.clone()),
-                        _ => None,
-                    }
+                    employee_named_in_prompt(input["prompt"].as_str().unwrap_or(""), &names)
                 };
                 if let Some(who) = ["name", "to", "employee", "agent"]
                     .iter()
@@ -2636,9 +2630,50 @@ fn normalise_action(input: &serde_json::Value) -> Option<&'static str> {
     }
 }
 
+
+/// The one employee a spawn prompt names, if exactly one. Whole words only,
+/// and never inside a path: a prompt that points at
+/// "/Library/Application Support/Nebo/sessions/..." is not asking for the
+/// employee called Nebo (live Auto-Categorizer thread, 2026-09-06).
+fn employee_named_in_prompt(prompt: &str, names: &[String]) -> Option<String> {
+    let cleaned: String = prompt
+        .split_whitespace()
+        .filter(|w| !w.contains('/'))
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase();
+    let as_word = |n: &str| -> bool {
+        let n = n.to_ascii_lowercase();
+        cleaned.match_indices(&n).any(|(i, _)| {
+            let before = cleaned[..i].chars().next_back();
+            let after = cleaned[i + n.len()..].chars().next();
+            // "nebo-cli" and "nebo_home" are compounds, not the name.
+            let joins = |c: char| c.is_alphanumeric() || c == '-' || c == '_';
+            !before.is_some_and(joins) && !after.is_some_and(joins)
+        })
+    };
+    let mut hits = names.iter().filter(|n| n.trim().len() >= 3 && as_word(n));
+    match (hits.next(), hits.next()) {
+        (Some(n), None) => Some(n.clone()),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn spawn_prompt_names_employees_as_words_not_paths() {
+        let names = vec!["Nebo".to_string(), "Chief of Staff".to_string()];
+        let path_prompt = "Parse the file at /Users/a/Library/Application Support/Nebo/sessions/x/tool-results/y.txt and summarize it.";
+        assert_eq!(employee_named_in_prompt(path_prompt, &names), None);
+        assert_eq!(
+            employee_named_in_prompt("Ask the Chief of Staff to draft the memo", &names).as_deref(),
+            Some("Chief of Staff")
+        );
+        assert_eq!(employee_named_in_prompt("Compare nebo-cli flags", &names), None);
+    }
 
     #[test]
     fn a_task_update_without_an_action_is_an_update() {

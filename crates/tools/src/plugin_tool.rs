@@ -166,6 +166,22 @@ struct PluginInput {
     #[serde(default)]
     display: String,
 }
+/// `args: {command: "doctor"}` is the command, not a `--command` flag: the
+/// model nests the one field it was asked for under the object it was also
+/// offered, and the binary answers "unexpected argument '--command'" (live
+/// Auto-Categorizer thread, 2026-09-06). Lift it when `command` is empty.
+fn lift_args_command(pi: &mut PluginInput) {
+    if !pi.command.trim().is_empty() {
+        return;
+    }
+    for key in ["command", "cmd"] {
+        if let Some(v) = pi.args.remove(key) {
+            pi.command = v;
+            return;
+        }
+    }
+}
+
 // NOTE: gated operations also carry a `display` arg (declared in the tool
 // schema below) — the approval gate reads it from the RAW tool-call args
 // before dispatch, so it is deliberately absent from this struct and never
@@ -1063,10 +1079,11 @@ impl DynTool for PluginTool {
         input: serde_json::Value,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send + 'a>> {
         Box::pin(async move {
-            let pi: PluginInput = match serde_json::from_value(input) {
+            let mut pi: PluginInput = match serde_json::from_value(input) {
                 Ok(v) => v,
                 Err(e) => return ToolResult::error(format!("invalid input: {}", e)),
             };
+            lift_args_command(&mut pi);
 
             // Typed port pathway: an `operation` resolves to whichever installed plugin
             // declares that binding (provider-agnostic), and `input` becomes flags. This
@@ -2512,6 +2529,25 @@ fn command_matches_binding(command: &str, bound_cmd: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn args_command_is_the_command() {
+        let mut pi: PluginInput = serde_json::from_value(
+            serde_json::json!({"action": "exec", "resource": "quickbooks", "args": {"command": "doctor"}}),
+        )
+        .unwrap();
+        lift_args_command(&mut pi);
+        assert_eq!(pi.command, "doctor");
+        assert!(pi.args.is_empty());
+        // An explicit command wins; args stay as flags.
+        let mut pi: PluginInput = serde_json::from_value(
+            serde_json::json!({"command": "query run", "args": {"command": "x", "query": "SELECT 1"}}),
+        )
+        .unwrap();
+        lift_args_command(&mut pi);
+        assert_eq!(pi.command, "query run");
+        assert_eq!(pi.args.len(), 2);
+    }
 
     fn skill_set(names: &[&str]) -> std::collections::HashSet<String> {
         names.iter().map(|n| n.to_string()).collect()

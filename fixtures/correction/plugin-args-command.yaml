@@ -1,0 +1,41 @@
+id: correction-plugin-args-command
+name: "Correction — a plugin command nested under args still runs"
+description: |
+  Replayed from the Auto-Categorizer's live thread on 2026-09-06. The model
+  called plugin(resource: quickbooks, action: exec, args: {command: "doctor"})
+  and the tool turned the object into a "--command doctor" flag, so the binary
+  answered "unexpected argument '--command'" twice before the model moved the
+  command to the top level. The tool now lifts args.command into the command.
+  This fixture pins that a connection check runs clean on the first call.
+target_component: tool
+
+conversation:
+  - role: user
+    content: "Check my QuickBooks connection with the plugin's doctor command and tell me what company it reaches."
+
+tool_config:
+  plugin:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: doctor-first
+      text: "The first call is plugin(resource: quickbooks, action: exec) running doctor"
+      severity: critical
+      check: { first_call: true, tool: plugin }
+  recovery:
+    - id: no-tool-errors
+      text: "No plugin call errors with 'unexpected argument' or 'exited with code'"
+      severity: critical
+      check: { max_errors: 0 }
+    - id: bounded
+      text: "At most 3 tool calls"
+      severity: critical
+      check: { max_tool_calls: 3 }
+    - id: honest
+      text: "The reply names the company (or says the plugin is not connected) only from the doctor result"
+      severity: important
+
+ideal_behavior:
+  tool_calls: 1
+  narrative: "One doctor call, then a one-line answer naming the company and whether the API is reachable."

@@ -1,0 +1,48 @@
+id: correction-spawn-prompt-with-path
+name: "Correction — a sub-agent prompt that mentions a Nebo file path is not naming an employee"
+description: |
+  Replayed from the Auto-Categorizer's live thread on 2026-09-06. A large
+  QuickBooks result was written to a file under
+  ".../Application Support/Nebo/sessions/..." and the model asked a sub-agent
+  to parse it. The spawn guard saw "Nebo" inside the path, decided the prompt
+  named the employee called Nebo, and refused. Names now match as whole
+  words outside path tokens. This fixture pins that the spawn is accepted.
+target_component: tool
+
+setup:
+  - "mkdir -p /tmp/nebo-fixture/Nebo/sessions && printf '{\"QueryResponse\":{\"Purchase\":[{\"Id\":\"1\",\"TotalAmt\":42.5,\"EntityRef\":{\"name\":\"Acme Supply\"},\"Line\":[{\"DetailType\":\"AccountBasedExpenseLineDetail\",\"AccountBasedExpenseLineDetail\":{\"AccountRef\":{\"name\":\"Office Supplies\"}}}]},{\"Id\":\"2\",\"TotalAmt\":19,\"EntityRef\":{\"name\":\"Corner Cafe\"},\"Line\":[]}]}}' > /tmp/nebo-fixture/Nebo/sessions/purchases.txt"
+teardown:
+  - "rm -rf /tmp/nebo-fixture"
+
+conversation:
+  - role: user
+    content: "Use a sub-agent to read /tmp/nebo-fixture/Nebo/sessions/purchases.txt (QuickBooks Purchase JSON) and report which purchases have no account on their lines. Hand the whole file-reading job to the sub-agent; just relay its findings."
+
+tool_config:
+  agent:
+    enabled: true
+  os:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: spawn-first
+      text: "The first call is agent(resource: task, action: spawn) with a prompt that names the file"
+      severity: critical
+      check: { first_call: true, tool: agent }
+  recovery:
+    - id: spawn-accepted
+      text: "No tool result says the spawn names an employee or tells the model to message a coworker instead"
+      severity: critical
+      check: { no_error_contains: ["named employee"] }
+    - id: no-tool-errors
+      text: "Every call is accepted"
+      severity: critical
+      check: { max_errors: 0 }
+    - id: answer
+      text: "The reply says the Corner Cafe purchase (Id 2) has no account on its line, from the sub-agent's result"
+      severity: important
+
+ideal_behavior:
+  tool_calls: 2
+  narrative: "One spawn with the file path in the prompt, one wait/collect of the sub-agent's result, then a two-line answer naming purchase 2 as uncategorized."

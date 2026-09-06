@@ -21,3 +21,5 @@ fixtures:
   - ../fixtures/correction/plugin-discover-installed.yaml
   - ../fixtures/correction/event-reminder-shape.yaml
   - ../fixtures/correction/team-no-hub.yaml
+  - ../fixtures/correction/plugin-args-command.yaml
+  - ../fixtures/correction/spawn-prompt-with-path.yaml
