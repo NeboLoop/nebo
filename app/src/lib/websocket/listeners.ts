@@ -128,9 +128,21 @@ export function attachWebSocketListeners(): void {
   // page-level UI is mounted. Components only track connect *state* via ws.on.
   unsubs.push(
     ws.on('plugin_auth_url', (data: any) => {
-      if (typeof window !== 'undefined' && data?.url) {
-        window.open(data.url, '_blank');
+      if (typeof window === 'undefined' || !data?.url) return;
+      // The server broadcasts to every connected window; a second Nebo
+      // window (an old one left open after a restart) opened the same
+      // sign-in twice on 2026-09-06. Windows share this origin's storage,
+      // so the first one to claim the URL opens it and the others skip.
+      const key = 'nb:plugin-auth-opened';
+      try {
+        const seen = JSON.parse(localStorage.getItem(key) || '{}');
+        const now = Date.now();
+        if (seen.url === data.url && now - (seen.at || 0) < 20000) return;
+        localStorage.setItem(key, JSON.stringify({ url: data.url, at: now }));
+      } catch {
+        // storage unavailable: open anyway
       }
+      window.open(data.url, '_blank');
     })
   );
 
