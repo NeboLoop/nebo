@@ -200,7 +200,11 @@
                 chat.send(parsed.text);
                 return;
               }
-              // Remount after send already went out — restore bubble, keep waiting.
+              // Remount after send already went out — restore bubble, then ask
+              // the server where the turn stands. A short reply can finish
+              // before this page mounts (CFO, 2026-09-06: turn ended 7s in,
+              // the route landed 2s later), and the completion event it would
+              // have waited for is already gone; history has the answer.
               if (chat.messages.length === 0) {
                 chat.setMessages([{
                   id: 'msg-pending',
@@ -211,6 +215,14 @@
               }
               chat.isLoading = !chat.chatError;
               if (chat.chatError) sessionStorage.removeItem(key);
+              else {
+                loadMessages().then((settled) => {
+                  if (settled) {
+                    chat.isLoading = false;
+                    sessionStorage.removeItem(key);
+                  }
+                });
+              }
               return;
             }
           } catch {
@@ -226,8 +238,10 @@
     }
   });
 
-  async function loadMessages() {
-    if (!threadId) return;
+  /** Loads the transcript. Resolves true when no turn is running on the thread
+   *  (nothing more will arrive by event), false while one is, or on failure. */
+  async function loadMessages(): Promise<boolean> {
+    if (!threadId) return false;
     oldestMessageId = null;
     loadedRawCount = 0;
     totalMessages = 0;
@@ -252,8 +266,10 @@
         chat.isLoading = true;
         chat.showPendingAsk(resp.pendingAsk);
       }
+      return !run && !resp.pendingAsk;
     } catch (e) {
       console.warn('[nebo] Failed to load messages for thread', threadId, e);
+      return false;
     }
   }
 

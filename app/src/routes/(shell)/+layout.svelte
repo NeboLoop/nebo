@@ -1,6 +1,7 @@
 <script lang="ts">
   import { page } from '$app/stores';
-  import { goto, withBase } from '$lib/nav';
+  import { goto, withBase, appPath } from '$lib/nav';
+  import { storage } from '$lib/storage';
   import { t } from 'svelte-i18n';
   import { setContext, onMount } from 'svelte';
   import { getWebSocketClient } from '$lib/websocket/client';
@@ -20,7 +21,7 @@
   import CategoryRail, { hasCategoryRail } from '$lib/components/marketplace/CategoryRail.svelte';
   import ProductDetail from '$lib/components/marketplace/ProductDetail.svelte';
   import CoworkerThreadView from '$lib/components/chat/CoworkerThreadView.svelte';
-  import TeamView from '$lib/components/teams/TeamView.svelte';
+  import NewTeamModal from '$lib/components/teams/NewTeamModal.svelte';
   import AgentSettingsModal from '$lib/components/settings/agent/AgentSettingsModal.svelte';
   import ConfirmModal from '$lib/components/settings/ConfirmModal.svelte';
   import NewEmployeeModal from '$lib/components/NewEmployeeModal.svelte';
@@ -182,7 +183,7 @@
   }
   // ── Teams: local groups of employees that share one mission and one
   // conversation (the thread lives on this Nebo; a hub is only a mirror).
-  // `?team=<id>` opens a team.
+  // A team opens in the main pane at /teams/<id>, like an employee's chat.
   let teams = $state<import('$lib/api/neboComponents').Team[]>([]);
   // Live recency: a team row rises within its section when it talks.
   let teamActivity = $state<Record<string, number>>({});
@@ -195,8 +196,7 @@
       /* section simply stays absent */
     }
   }
-  const teamParam = $derived($page.url.searchParams.get('team'));
-  const openTeamObj = $derived(teams.find((w) => w.id === teamParam) ?? null);
+  const teamParam = $derived(appPath($page.url.pathname).match(/^\/teams\/([^/]+)/)?.[1] ?? null);
   const sortedTeams = $derived(
     [...teams].sort(
       (a, b) =>
@@ -204,8 +204,21 @@
         (teamActivity[a.id] ?? a.createdAt * 1000)
     )
   );
-  const openTeam = (id: string) => setParams((p) => p.set('team', id));
-  const closeTeam = () => setParams((p) => p.delete('team'));
+  const openTeam = (id: string) => goto(`/teams/${id}`);
+  const closeTeam = () => goto('/dashboard');
+  let newTeamOpen = $state(false);
+  // Sidebar sections fold; the choice is remembered per device. Default open.
+  let employeesOpen = $state(storage.get('sidebar.employeesOpen') !== '0');
+  let teamsOpen = $state(storage.get('sidebar.teamsOpen') !== '0');
+  function toggleSection(which: 'employees' | 'teams') {
+    if (which === 'employees') {
+      employeesOpen = !employeesOpen;
+      storage.set('sidebar.employeesOpen', employeesOpen ? '1' : '0');
+    } else {
+      teamsOpen = !teamsOpen;
+      storage.set('sidebar.teamsOpen', teamsOpen ? '1' : '0');
+    }
+  }
   // First two members for the row's stacked-avatars glyph, in their roster
   // colors — the team row previews who's on it.
   const teamFaces = (team: { memberAgentIds: string[] }) =>
@@ -222,6 +235,32 @@
   // conversation history stays); confirm first — it's an audit surface
   // leaving the sidebar.
   let newEmployeeOpen = $state(false);
+  // ── Who is working right now, live. agent id → session id → what it is
+  // doing ("reading a file"). Set by the run's own events (chat_created,
+  // tool_start, chat_complete/error/cancelled); the 5-second agent_progress
+  // snapshot reconciles anything a dropped socket missed. The main employee
+  // runs with an empty agentId on the wire; the roster knows it as 'assistant'.
+  let working = $state<Record<string, Record<string, string>>>({});
+  const workerId = (id: unknown) => (typeof id === 'string' && id ? id : 'assistant');
+  function markWorking(agentId: unknown, sessionId: unknown, label = '') {
+    const id = workerId(agentId);
+    const sid = typeof sessionId === 'string' && sessionId ? sessionId : '_';
+    working[id] = { ...(working[id] ?? {}), [sid]: label || working[id]?.[sid] || '' };
+  }
+  function clearWorking(agentId: unknown, sessionId: unknown) {
+    const id = workerId(agentId);
+    const sid = typeof sessionId === 'string' && sessionId ? sessionId : '_';
+    const rest = { ...(working[id] ?? {}) };
+    delete rest[sid];
+    if (Object.keys(rest).length === 0) delete working[id];
+    else working[id] = rest;
+  }
+  /** The newest live verb for an employee, capitalized, or '' when idle. */
+  function workingLabel(id: string): string {
+    const labels = Object.values(working[id] ?? {});
+    const last = labels[labels.length - 1] ?? '';
+    return last ? last.charAt(0).toUpperCase() + last.slice(1) : '';
+  }
   let teamCtxMenu = $state<{ x: number; y: number; id: string } | null>(null);
   let removeTeamObj = $state<import('$lib/api/neboComponents').Team | null>(null);
   let removeTeamBusy = $state(false);
@@ -493,6 +532,7 @@
       !window.matchMedia('(min-width: 768px)').matches &&
       !$page.params.threadId &&
       !onDashboard &&
+      !teamParam &&
       !$page.url.searchParams.has('list')
     ) {
       showList('1', true);
@@ -510,6 +550,23 @@
       loadAgentRoster();
     });
     onWsEvent('nebo:agent_installed', () => loadAgentRoster());
+
+    // Live "working" state per employee (see `working` above). A reconnect
+    // means a server that may have restarted: forget what the old one said;
+    // the next snapshot repopulates.
+    onWsEvent('nebo:connected', () => { working = {}; });
+    onWsEvent('nebo:chat_created', (data) => markWorking(data?.agentId, data?.session_id));
+    onWsEvent('nebo:thinking', (data) => markWorking(data?.agentId, data?.session_id));
+    onWsEvent('nebo:tool_start', (data) => markWorking(data?.agentId, data?.session_id, data?.label ?? ''));
+    onWsEvent('nebo:chat_complete', (data) => clearWorking(data?.agentId, data?.session_id));
+    onWsEvent('nebo:chat_error', (data) => clearWorking(data?.agentId, data?.session_id));
+    onWsEvent('nebo:chat_cancelled', (data) => clearWorking(data?.agentId, data?.session_id));
+    onWsEvent('nebo:agent_progress', (data) => {
+      const runs: { entityId?: string; sessionKey?: string; activity?: string }[] = data?.runs ?? [];
+      const live = new Set(runs.map((r) => workerId(r.entityId)));
+      for (const id of Object.keys(working)) if (!live.has(id)) delete working[id];
+      for (const r of runs) markWorking(r.entityId, r.sessionKey, r.activity ?? '');
+    });
     onWsEvent('nebo:agent_uninstalled', () => loadAgentRoster());
     onWsEvent('nebo:agent_updated', (data) => {
       // Patch the roster in place from the broadcast payload so the sidebar row
@@ -558,6 +615,12 @@
       if (!team?.id) return;
       teams = [team, ...teams.filter((w) => w.id !== team.id)];
       teamActivity[team.id] = Date.now();
+    });
+    // Name, mission, or members changed (the edit picker, or the model).
+    onWsEvent('nebo:team_updated', (data) => {
+      const team = data?.team;
+      if (!team?.id) return;
+      teams = teams.map((w) => (w.id === team.id ? team : w));
     });
     // Team traffic → bump that team's recency in the sidebar section.
     // The open team view holds its own subscription for the transcript.
@@ -738,7 +801,9 @@
   // dashboard the one named by ?agent=<id>, so the sheet opens in place.
   const runsAgentId = $derived($page.params.agentId ?? $page.url.searchParams.get('agent') ?? '');
   const onDashboard = $derived(($page.route.id ?? '').endsWith('/dashboard'));
-  const workingCount = $derived(Object.values(agentStatuses).filter((s) => s === 'running').length);
+  // Same source as the rows' Working indicator: live turns and background runs
+  // alike. The status field only automations set left a chatting CFO uncounted.
+  const workingCount = $derived(Object.keys(working).length);
   const agent = $derived(allAgents.find(a => a.id === agentId));
   // A stale deep link — the employee was reinstalled (new id) or deleted from
   // another surface — must not strand the owner on a half-broken page fanning
@@ -950,6 +1015,8 @@
     get isApp() { return agent?.isApp ?? false; },
     get devMode() { return $devMode; },
     get agentStatuses() { return agentStatuses; },
+    get roster() { return allAgents; },
+    get teams() { return teams; },
     openWorkflow,
     openRuns,
     openSettings,
@@ -1121,6 +1188,81 @@
 
 <!-- The workspace list: Inbox, then the roster, each employee expanding to
      their chats. This is the app's only navigation. -->
+  {#snippet teamsSection()}
+        <!-- TEAMS — local groups of employees, under the employees (list =
+             conversations; the shelf is for utilities). The + starts one from
+             a picker; employees and the model create them too. -->
+        <div class="flex items-center gap-2 mt-4 mb-1 pl-4 pr-2.5">
+          <button
+            class="flex items-center gap-2 flex-1 min-w-0 bg-transparent border-none cursor-pointer text-left p-0"
+            onclick={() => toggleSection('teams')}
+            aria-expanded={teamsOpen}
+          >
+            <span class="text-[10px] font-semibold uppercase tracking-wider text-base-content/45">{$t('teams.section')}</span>
+            <span class="text-[10px] font-mono text-base-content/40">{sortedTeams.length}</span>
+            <span class="flex-1"></span>
+            <svg class="w-3.5 h-3.5 text-base-content/45 transition-transform {teamsOpen ? '' : '-rotate-90'}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+          </button>
+          <button
+            class="w-5 h-5 rounded-md flex items-center justify-center hover:bg-base-100 cursor-pointer bg-transparent border-none shrink-0 text-base-content/60"
+            onclick={() => (newTeamOpen = true)}
+            title={$t('teams.new')}
+            aria-label={$t('teams.new')}
+          >
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><line x1="8" y1="3" x2="8" y2="13"/><line x1="3" y1="8" x2="13" y2="8"/></svg>
+          </button>
+        </div>
+        {#if !teamsOpen}
+          <!-- folded: nothing but the header -->
+        {:else if sortedTeams.length > 0}
+          {#each sortedTeams as room (room.id)}
+            {@const faces = teamFaces(room)}
+            <!-- Margin lives on the wrapper, width on the button — w-full plus
+                 mx on the same box overflows the column and summons a
+                 scrollbar on hover (the row "jump"). -->
+            <div class="mx-1.5">
+            <button
+              class="group/room w-full flex items-center gap-2.5 py-2 px-2.5 cursor-pointer text-left bg-transparent {teamParam === room.id
+                ? 'rounded-box border border-primary/30 bg-primary/10 shadow-sm'
+                : 'rounded-box border border-transparent hover:bg-base-100/70'}"
+              onclick={() => openTeam(room.id)}
+              oncontextmenu={(e) => handleTeamContext(e, room.id)}
+            >
+              <!-- Stacked-avatars glyph in the avatar slot: this row is a team,
+                   not a person. -->
+              <div class="relative w-8 h-8 shrink-0">
+                {#if faces.length >= 2}
+                  {@const extra = room.memberAgentIds.length - 2}
+                  <div class="absolute top-0 left-0 w-6 h-6 rounded-field flex items-center justify-center font-mono text-[10px] font-semibold {faces[0].cls}">{faces[0].initial}</div>
+                  <div class="absolute bottom-0 right-0 w-6 h-6 rounded-field border border-base-100 flex items-center justify-center font-mono text-[10px] font-semibold {faces[1].cls}">{faces[1].initial}</div>
+                  {#if extra > 0}
+                    <!-- The row says "several"; the full roster is the team's member rail. -->
+                    <div class="absolute -top-1 -right-1 min-w-4 h-4 px-0.5 rounded-full bg-neutral text-neutral-content border border-base-100 flex items-center justify-center font-mono text-[9px] font-semibold">+{extra}</div>
+                  {/if}
+                {:else}
+                  <div class="w-8 h-8 rounded-field bg-base-200 flex items-center justify-center text-base-content/70">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+                  </div>
+                {/if}
+              </div>
+              <div class="flex-1 min-w-0">
+                <div class="flex items-baseline gap-2">
+                  <span class="text-sm font-medium truncate min-w-0">{room.name}</span>
+                  <span class="flex-1"></span>
+                  <span class="text-xs text-base-content/45 shrink-0">{dayLabel(teamActivity[room.id] ? teamActivity[room.id] / 1000 : room.createdAt)}</span>
+                </div>
+                <div class="text-xs text-base-content/60 truncate">{room.mission || $t('teams.membersCount', { values: { count: room.memberAgentIds.length } })}</div>
+              </div>
+            </button>
+            </div>
+          {/each}
+        {:else}
+          <!-- The section teaches what teams ARE before the first one exists —
+               the owner shouldn't have to ask "how do I see the teams". -->
+          <p class="text-xs text-base-content/45 mx-4 mb-1 leading-relaxed">{$t('teams.emptyRoster')}</p>
+        {/if}
+  {/snippet}
+
 <CollapsibleRail
   section="workspace"
   title="Nebo"
@@ -1176,9 +1318,25 @@
             </div>
           </button>
         </div>
+        {#if sortedTeams.length > 0}
+          <!-- Teams lead when they exist: few rows, the shape of the workforce.
+               Before the first team the hint sits below the employees instead. -->
+          {@render teamsSection()}
+        {/if}
+        <button
+          class="w-full flex items-center gap-2 mt-3 mb-1 px-4 bg-transparent border-none cursor-pointer text-left"
+          onclick={() => toggleSection('employees')}
+          aria-expanded={employeesOpen}
+        >
+          <span class="text-[10px] font-semibold uppercase tracking-wider text-base-content/45">{$t('sidebar.agents')}</span>
+          <span class="text-[10px] font-mono text-base-content/40">{listedAgents.length}</span>
+          <span class="flex-1"></span>
+          <svg class="w-3.5 h-3.5 text-base-content/45 transition-transform {employeesOpen ? '' : '-rotate-90'}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+        </button>
       {/if}
-      {#each (drilledAgent ? [drilledAgent] : listedAgents) as a (a.id)}
+      {#each (drilledAgent ? [drilledAgent] : employeesOpen ? listedAgents : []) as a (a.id)}
         {@const st = agentStatus(a.id)}
+        {@const busy = working[a.id] !== undefined}
         {@const ac = AGENT_COLORS_MAP[a.color] ?? AGENT_COLORS_MAP['teal']}
         {@const chats = apiThreads[a.id] ?? []}
         {@const latest = chats[0]}
@@ -1209,7 +1367,7 @@
                    position): this row is the way back to the employee list. -->
               <svg class="shrink-0 text-base-content/70" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="10 3 5 8 10 13"/></svg>
             {/if}
-            <div class="relative shrink-0">
+            <div class="relative shrink-0 {busy ? 'agent-working' : ''}">
               {#if a.isApp}
                 <div class="w-9 h-9 rounded-xl flex items-center justify-center {ac.bgClass} {ac.inkClass} {st === 'paused' ? 'opacity-50' : ''}">
                   <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M10 4v4"/><path d="M2 8h20"/><path d="M6 4v4"/></svg>
@@ -1217,7 +1375,7 @@
               {:else}
                 <AgentAvatar name={a.name} color={a.color} />
               {/if}
-              <div class="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-base-200 {st === 'running' ? 'bg-warning animate-pulse' : st === 'paused' ? 'bg-base-content/30' : 'bg-success'}"></div>
+              <div class="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-base-200 {busy ? 'bg-success agent-working-dot' : st === 'running' ? 'bg-warning animate-pulse' : st === 'paused' ? 'bg-base-content/30' : 'bg-success'}"></div>
             </div>
             <div class="flex-1 min-w-0">
               <div class="flex items-baseline gap-2">
@@ -1232,7 +1390,13 @@
               </div>
               <!-- A restart is a state, not something the employee said: the
                    label carries it and the line keeps the last real status. -->
-              <div class="text-xs text-base-content/60 truncate">{#if latest ? latest.restarted : a.restarted}<span class="badge badge-ghost badge-xs mr-1 align-middle">{$t('sidebar.restarted')}</span>{/if}{latest?.preview || a.lastPreview || a.role}</div>
+              {#if busy}
+                <!-- Working: the live verb replaces the last line, so the row
+                     says what is happening, not what was said. -->
+                <div class="text-xs text-success truncate flex items-center gap-1.5"><span class="loading loading-dots loading-xs shrink-0"></span><span class="truncate">{workingLabel(a.id) || $t('sidebar.working')}</span></div>
+              {:else}
+                <div class="text-xs text-base-content/60 truncate">{#if latest ? latest.restarted : a.restarted}<span class="badge badge-ghost badge-xs mr-1 align-middle">{$t('sidebar.restarted')}</span>{/if}{latest?.preview || a.lastPreview || a.role}</div>
+              {/if}
             </div>
             {#if !isPinned && a.isolated}
               <!-- Drill chevron: an isolated employee opens its list of sealed
@@ -1288,60 +1452,8 @@
           {/each}
         </div>
       {/if}
-      {#if !drilledAgent}
-        <!-- TEAMS — local groups of employees, under the employees (list =
-             conversations; the shelf is for utilities). Teams are created by
-             asking any employee (or by the model itself), never by a form. -->
-        <div class="flex items-center gap-2 mt-4 mb-1 mx-4">
-          <span class="text-[10px] font-semibold uppercase tracking-wider text-base-content/45">{$t('teams.section')}</span>
-        </div>
-        {#if sortedTeams.length > 0}
-          {#each sortedTeams as room (room.id)}
-            {@const faces = teamFaces(room)}
-            <!-- Margin lives on the wrapper, width on the button — w-full plus
-                 mx on the same box overflows the column and summons a
-                 scrollbar on hover (the row "jump"). -->
-            <div class="mx-1.5">
-            <button
-              class="group/room w-full flex items-center gap-2.5 py-2 px-2.5 cursor-pointer text-left bg-transparent {teamParam === room.id
-                ? 'rounded-box border border-primary/30 bg-primary/10 shadow-sm'
-                : 'rounded-box border border-transparent hover:bg-base-100/70'}"
-              onclick={() => openTeam(room.id)}
-              oncontextmenu={(e) => handleTeamContext(e, room.id)}
-            >
-              <!-- Stacked-avatars glyph in the avatar slot: this row is a team,
-                   not a person. -->
-              <div class="relative w-8 h-8 shrink-0">
-                {#if faces.length >= 2}
-                  {@const extra = room.memberAgentIds.length - 2}
-                  <div class="absolute top-0 left-0 w-6 h-6 rounded-field flex items-center justify-center font-mono text-[10px] font-semibold {faces[0].cls}">{faces[0].initial}</div>
-                  <div class="absolute bottom-0 right-0 w-6 h-6 rounded-field border border-base-100 flex items-center justify-center font-mono text-[10px] font-semibold {faces[1].cls}">{faces[1].initial}</div>
-                  {#if extra > 0}
-                    <!-- The row says "several"; the full roster is the team's member rail. -->
-                    <div class="absolute -top-1 -right-1 min-w-4 h-4 px-0.5 rounded-full bg-neutral text-neutral-content border border-base-100 flex items-center justify-center font-mono text-[9px] font-semibold">+{extra}</div>
-                  {/if}
-                {:else}
-                  <div class="w-8 h-8 rounded-field bg-base-200 flex items-center justify-center text-base-content/70">
-                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
-                  </div>
-                {/if}
-              </div>
-              <div class="flex-1 min-w-0">
-                <div class="flex items-baseline gap-2">
-                  <span class="text-sm font-medium truncate min-w-0">{room.name}</span>
-                  <span class="flex-1"></span>
-                  <span class="text-xs text-base-content/45 shrink-0">{dayLabel(teamActivity[room.id] ? teamActivity[room.id] / 1000 : room.createdAt)}</span>
-                </div>
-                <div class="text-xs text-base-content/60 truncate">{room.mission || $t('teams.membersCount', { values: { count: room.memberAgentIds.length } })}</div>
-              </div>
-            </button>
-            </div>
-          {/each}
-        {:else}
-          <!-- The section teaches what teams ARE before the first one exists —
-               the owner shouldn't have to ask "how do I see the teams". -->
-          <p class="text-xs text-base-content/45 mx-4 mb-1 leading-relaxed">{$t('teams.emptyRoster')}</p>
-        {/if}
+      {#if !drilledAgent && sortedTeams.length === 0}
+        {@render teamsSection()}
       {/if}
     {/if}
   {/snippet}
@@ -1358,15 +1470,16 @@
       {#each sortedAgents.concat(sortedAppAgents) as a (a.id)}
         {@const st = agentStatus(a.id)}
         {@const ac = AGENT_COLORS_MAP[a.color] ?? AGENT_COLORS_MAP['teal']}
-        <div class="relative">
+        {@const busy = working[a.id] !== undefined}
+        <div class="relative {busy ? 'agent-working' : ''}">
           <button
             class="w-9 h-9 rounded-xl flex items-center justify-center text-xs font-semibold tracking-wide shrink-0 cursor-pointer transition-colors border-none {ac.solidClass} {agentId === a.id ? 'ring-2 ring-base-content/40' : ''}"
             onclick={() => selectAgent(a.id)}
             oncontextmenu={(e) => handleAgentContext(e, a.id)}
             data-context-menu
-            title="{a.name} — {$t(statusLabel(st))}"
+            title="{a.name} — {busy ? (workingLabel(a.id) || $t('sidebar.working')) : $t(statusLabel(st))}"
           >{initialsOf(a.name)}</button>
-          <div class="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-base-200 {st === 'running' ? 'bg-warning animate-pulse' : st === 'paused' ? 'bg-base-content/30' : 'bg-success'}"></div>
+          <div class="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-base-200 {busy ? 'bg-success agent-working-dot' : st === 'running' ? 'bg-warning animate-pulse' : st === 'paused' ? 'bg-base-content/30' : 'bg-success'}"></div>
         </div>
       {/each}
     </div>
@@ -1522,17 +1635,18 @@
   </div>
 </ShelfModal>
 
-<!-- A team: the owner's live seat in a team's conversation. -->
-<ShelfModal open={openTeamObj !== null} title={openTeamObj?.name ?? ''} onclose={closeTeam}>
-  {#if openTeamObj}
-    {#key openTeamObj.id}
-      <TeamView
-        team={openTeamObj}
-        roster={allAgents.map((a) => ({ id: a.id, name: a.name, initial: a.initial, color: a.color, loopAgentId: a.loopAgentId }))}
-      />
-    {/key}
-  {/if}
-</ShelfModal>
+{#if newTeamOpen}
+  <NewTeamModal
+    roster={allAgents}
+    onclose={() => (newTeamOpen = false)}
+    oncreated={(team) => {
+      newTeamOpen = false;
+      teams = [team, ...teams.filter((w) => w.id !== team.id)];
+      teamActivity[team.id] = Date.now();
+      openTeam(team.id);
+    }}
+  />
+{/if}
 
 <!-- View-only coworker transcript: what one employee told another, verbatim.
      The owner reads; steering happens in the employee's own chat. -->
