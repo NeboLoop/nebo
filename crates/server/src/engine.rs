@@ -366,7 +366,7 @@ pub fn arm_schedules(store: &Store, t: i64) -> usize {
         }
     };
     let mut held: HashSet<String> = HashSet::new();
-    for timer in &pending {
+    for timer in pending.iter().filter(|e| e.target_id.starts_with("cron:")) {
         let job = jobs.iter().find(|j| cron_target(j) == timer.target_id);
         match job {
             Some(j) if timer.schedule.as_deref() == Some(j.schedule.as_str()) => {
@@ -417,11 +417,63 @@ pub fn arm_schedules(store: &Store, t: i64) -> usize {
     armed
 }
 
+/// A binding heartbeat's timer came due: queue ONE fire of the inline
+/// workflow unless the binding is now off or its last run is still going.
+/// Like an entity heartbeat, it is never "too late".
+fn fire_binding_heartbeat(store: &Store, event: &EngineEvent, t: i64, report: &mut TickReport) {
+    let skip = |store: &Store, note: &str, report: &mut TickReport| match store.engine_supersede_event(event.id, t, note) {
+        Ok(()) => report.skipped += 1,
+        Err(e) => warn!(event = event.id, error = %e, "engine: skip failed; lease will expire and retry"),
+    };
+    let Some((agent_id, binding)) = event.target_id.strip_prefix("hb:").and_then(|s| s.split_once(':')) else {
+        skip(store, "skipped: malformed heartbeat binding target", report);
+        return;
+    };
+    if !store.is_agent_workflow_active(agent_id, binding).unwrap_or(false) {
+        skip(store, "skipped: binding inactive", report);
+        return;
+    }
+    let wf_id = types::keyparser::agent_workflow_id(agent_id);
+    if store.has_running_run(&wf_id, binding).unwrap_or(false) || store.engine_has_live_run_for_ref(&event.target_id).unwrap_or(false) {
+        info!(agent = agent_id, binding, "engine: previous heartbeat run still active; this one skipped");
+        skip(store, "skipped: previous run still active", report);
+        return;
+    }
+    let id = uuid::Uuid::new_v4().to_string();
+    let inputs = serde_json::json!({
+        "command": format!("agent:{agent_id}:{binding}"),
+        "trigger": "heartbeat",
+        "label": format!("Heartbeat: {binding}"),
+    })
+    .to_string();
+    let created = store.engine_create_run(&db::NewRun {
+        id: &id,
+        kind: "task",
+        session_key: &format!("heartbeat-binding-{agent_id}-{binding}"),
+        agent_id,
+        lane: "main",
+        inputs: Some(&inputs),
+        external_ref: Some(&event.target_id),
+        ..Default::default()
+    });
+    match created.and_then(|_| store.engine_complete_event(event.id, t)) {
+        Ok(()) => {
+            report.fired += 1;
+            info!(agent = agent_id, binding, "engine: heartbeat binding fired");
+        }
+        Err(e) => warn!(agent = agent_id, binding, error = %e, "engine: could not queue the heartbeat fire; lease will expire and retry"),
+    }
+}
+
 /// A schedule's timer came due. Skip (and say why) when the job is gone or
 /// disabled, when its last fire is still running, or when the occurrence
 /// was missed by more than the catch-up window; otherwise queue ONE run.
 /// The next occurrence is armed on the following tick from this consumed one.
 fn fire_schedule(store: &Store, event: &EngineEvent, t: i64, report: &mut TickReport) {
+    if event.target_id.starts_with("hb:") {
+        fire_binding_heartbeat(store, event, t, report);
+        return;
+    }
     let job = event
         .target_id
         .strip_prefix("cron:")
@@ -465,10 +517,21 @@ fn fire_schedule(store: &Store, event: &EngineEvent, t: i64, report: &mut TickRe
     }
 }
 
-/// Record a fire's outcome on its run and tell whoever is listening: the
-/// desktop for scheduled fires that have no other surface, the UI for a
-/// run-now, and always the desktop on failure.
-fn settle_task(state: &AppState, run: &EngineRun, job: &CronJob, success: bool, output: String, err: Option<String>) {
+/// What a settled fire should say, and to whom.
+struct Settle<'a> {
+    /// The name the owner knows it by.
+    label: &'a str,
+    /// The desktop line on success, if any: a fire that already delivered
+    /// its result where the owner reads it (a channel post) says nothing.
+    success_note: Option<String>,
+    /// A run-now announces itself to the UI instead of the desktop.
+    manual: bool,
+}
+
+/// Record a fire's outcome on its run and tell whoever is listening.
+/// Failures always reach the desktop, because the delivery itself may be
+/// what failed.
+fn settle_task(state: &AppState, run: &EngineRun, s: Settle<'_>, success: bool, output: String, err: Option<String>) {
     let t = now();
     let store = &state.store;
     if !output.is_empty() {
@@ -476,32 +539,25 @@ fn settle_task(state: &AppState, run: &EngineRun, job: &CronJob, success: bool, 
     }
     let _ = store.engine_set_run_state(&run.id, if success { "done" } else { "failed" }, t, err.as_deref());
 
-    let inputs: serde_json::Value = run.inputs.as_deref().and_then(|s| serde_json::from_str(s).ok()).unwrap_or_default();
-    let manual = inputs["manual"].as_bool().unwrap_or(false);
-    if manual {
+    if s.manual {
         state.hub.broadcast(
             "task_complete",
             serde_json::json!({
-                "task": job.name,
+                "task": s.label,
                 "success": success,
                 "output": crate::truncate_str(if success { &output } else { err.as_deref().unwrap_or(&output) }, 500),
             }),
         );
     }
-    // A channel-bound job already delivered its response where the owner
-    // reads it; a desktop popup on top would be noise. Failures always
-    // surface, because the channel delivery itself may be what failed.
-    let channel_bound = job.agent_id.as_deref().is_some_and(|s| !s.is_empty())
-        && job.channel_ctx_json.as_deref().is_some_and(|s| !s.is_empty());
     if success {
-        info!(job = job.name.as_str(), "task completed");
-        if !channel_bound && !manual {
-            notify_crate::send("Nebo", &format!("{} completed", job.name));
+        info!(task = s.label, "task completed");
+        if let Some(note) = s.success_note.filter(|_| !s.manual) {
+            notify_crate::send("Nebo", &note);
         }
     } else {
         let e = err.as_deref().unwrap_or("unknown");
-        warn!(job = job.name.as_str(), error = e, "task failed");
-        notify_crate::send("Nebo", &format!("{} failed: {}", job.name, e));
+        warn!(task = s.label, error = e, "task failed");
+        notify_crate::send("Nebo", &format!("{} failed: {}", s.label, e));
     }
 }
 
@@ -571,6 +627,78 @@ async fn arm_heartbeats(state: &AppState, t: i64) -> usize {
             Ok(db::Enqueued::Inserted(_)) => armed += 1,
             Ok(db::Enqueued::Duplicate) => {}
             Err(e) => warn!(entity = %target, error = %e, "engine: could not arm heartbeat"),
+        }
+    }
+    armed + arm_binding_heartbeats(state, t).await
+}
+
+/// The same reconciliation for workflow bindings with a heartbeat trigger
+/// (`"<duration>|HH:MM-HH:MM"`): one timer per active binding of a live
+/// agent, aimed at binding `hb:<agent>:<binding>`, carrying the config so a
+/// change replaces it. A binding that has never fired is due one interval
+/// from now, as the old loop's first tick was.
+async fn arm_binding_heartbeats(state: &AppState, t: i64) -> usize {
+    let store = &state.store;
+    let bindings = match store.list_active_heartbeat_workflows() {
+        Ok(b) => b,
+        Err(e) => {
+            warn!(error = %e, "engine: could not read heartbeat bindings");
+            return 0;
+        }
+    };
+    let live: Vec<_> = {
+        let registry = state.agent_registry.read().await;
+        bindings.into_iter().filter(|b| registry.contains_key(&b.agent_id)).collect()
+    };
+    let target_of = |b: &db::models::AgentWorkflow| format!("hb:{}:{}", b.agent_id, b.binding_name);
+    let pending = store
+        .engine_pending_timers("binding")
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|e| e.target_id.starts_with("hb:"))
+        .collect::<Vec<_>>();
+    let mut held: HashSet<String> = HashSet::new();
+    for timer in &pending {
+        match live.iter().find(|b| target_of(b) == timer.target_id) {
+            Some(b) if timer.schedule.as_deref() == Some(b.trigger_config.as_str()) => {
+                held.insert(timer.target_id.clone());
+            }
+            _ => {
+                if let Err(e) = store.engine_supersede_event(timer.id, t, "superseded: heartbeat binding changed or off") {
+                    warn!(timer = timer.id, error = %e, "engine: could not drop a stale binding heartbeat timer");
+                }
+            }
+        }
+    }
+    let mut armed = 0;
+    for b in &live {
+        let target = target_of(b);
+        if held.contains(&target) {
+            continue;
+        }
+        let (duration, window) = agent::agent_worker::parse_heartbeat(&b.trigger_config);
+        if duration.is_zero() {
+            warn!(agent = %b.agent_id, binding = %b.binding_name, config = %b.trigger_config, "invalid heartbeat config; this binding will not fire");
+            continue;
+        }
+        let interval = duration.as_secs() as i64;
+        let floor = store.engine_last_timer_floor("binding", &target).ok().flatten();
+        let due = floor.unwrap_or(t) + interval;
+        let due = due.max(t);
+        let window = window.map(|(s, e)| (s.format("%H:%M").to_string(), e.format("%H:%M").to_string()));
+        let due = crate::heartbeat::next_in_window(due, window.as_ref());
+        match store.engine_enqueue_event(&NewEvent {
+            kind: "timer",
+            target_type: "binding",
+            target_id: &target,
+            idem_key: &format!("{target}:{due}:{t}"),
+            due_at: Some(due),
+            schedule: Some(&b.trigger_config),
+            ..Default::default()
+        }) {
+            Ok(db::Enqueued::Inserted(_)) => armed += 1,
+            Ok(db::Enqueued::Duplicate) => {}
+            Err(e) => warn!(binding = %target, error = %e, "engine: could not arm heartbeat binding"),
         }
     }
     armed
@@ -678,11 +806,14 @@ async fn drive(state: &AppState) {
     let tasks = store.engine_queued_runs_of_kind("task", TURNS_PER_TICK).unwrap_or_default();
     for (i, run) in tasks.into_iter().enumerate() {
         let inputs: serde_json::Value = run.inputs.as_deref().and_then(|s| serde_json::from_str(s).ok()).unwrap_or_default();
+        // A fire is either a scheduled job (by id) or a binding heartbeat
+        // (by command); both execute through the scheduler's executors.
         let job = inputs["job_id"].as_i64().and_then(|id| store.get_cron_job(id).ok().flatten());
-        let Some(job) = job else {
+        let command = inputs["command"].as_str().map(str::to_string);
+        if job.is_none() && command.is_none() {
             let _ = store.engine_set_run_state(&run.id, "failed", t, Some("scheduled job no longer exists"));
             continue;
-        };
+        }
         if let Err(e) = store.engine_set_run_state(&run.id, "running", t, None) {
             warn!(run = %run.id, error = %e, "engine: mark running failed");
             continue;
@@ -694,8 +825,29 @@ async fn drive(state: &AppState) {
             if i > 0 {
                 tokio::time::sleep(Duration::from_secs(i as u64)).await;
             }
-            let (success, output, err) = crate::scheduler::execute_job(&state, &job).await;
-            settle_task(&state, &run, &job, success, output, err);
+            match (job, command) {
+                (Some(job), _) => {
+                    let (success, output, err) = crate::scheduler::execute_job(&state, &job).await;
+                    // A channel-bound job already delivered its response where
+                    // the owner reads it; a desktop popup on top would be noise.
+                    let channel_bound = job.agent_id.as_deref().is_some_and(|s| !s.is_empty())
+                        && job.channel_ctx_json.as_deref().is_some_and(|s| !s.is_empty());
+                    let settle = Settle {
+                        label: &job.name,
+                        success_note: (!channel_bound).then(|| format!("{} completed", job.name)),
+                        manual: inputs["manual"].as_bool().unwrap_or(false),
+                    };
+                    settle_task(&state, &run, settle, success, output, err);
+                }
+                (None, Some(command)) => {
+                    let trigger = inputs["trigger"].as_str().unwrap_or("heartbeat");
+                    let label = inputs["label"].as_str().unwrap_or(&command).to_string();
+                    let (success, output, err) = crate::scheduler::execute_binding(&state, &command, trigger).await;
+                    let settle = Settle { label: &label, success_note: Some(label.clone()), manual: false };
+                    settle_task(&state, &run, settle, success, output, err);
+                }
+                (None, None) => unreachable!("checked above"),
+            }
         });
     }
 

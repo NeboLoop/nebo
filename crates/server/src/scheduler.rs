@@ -99,7 +99,7 @@ pub(crate) async fn execute_job(state: &AppState, job: &CronJob) -> (bool, Strin
         "agent" => execute_agent(state, job).await,
         "workflow" => execute_workflow_task(&*state.workflow_manager, &job.command).await,
         "agent_workflow" | "role_workflow" => {
-            execute_agent_workflow_task(&*state.workflow_manager, &state.store, &job.command).await
+            execute_agent_workflow_task(&*state.workflow_manager, &state.store, &job.command, "schedule").await
         }
         other => (
             false,
@@ -107,6 +107,12 @@ pub(crate) async fn execute_job(state: &AppState, job: &CronJob) -> (bool, Strin
             Some(format!("unknown task type: {}", other)),
         ),
     }
+}
+
+/// Execute one fire of an agent's inline workflow binding
+/// (`agent:{agent_id}:{binding}`) under the given trigger label.
+pub(crate) async fn execute_binding(state: &AppState, command: &str, trigger: &str) -> (bool, String, Option<String>) {
+    execute_agent_workflow_task(&*state.workflow_manager, &state.store, command, trigger).await
 }
 
 async fn execute_shell(command: &str) -> (bool, String, Option<String>) {
@@ -390,6 +396,7 @@ async fn execute_agent_workflow_task(
     manager: &dyn tools::workflows::WorkflowManager,
     store: &Store,
     command: &str,
+    trigger: &str,
 ) -> (bool, String, Option<String>) {
     let parts: Vec<&str> = command.splitn(3, ':').collect();
     if parts.len() != 3 || (parts[0] != "agent" && parts[0] != "role") {
@@ -478,7 +485,7 @@ async fn execute_agent_workflow_task(
         .run_inline(
             def_json,
             inputs,
-            "schedule",
+            trigger,
             Some(binding_name.to_string()),
             agent_id,
             emit_source,

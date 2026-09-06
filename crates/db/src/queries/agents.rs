@@ -579,6 +579,26 @@ impl Store {
         Ok(())
     }
 
+    /// Every active heartbeat binding of every enabled agent — the engine's
+    /// arming worklist for binding heartbeats.
+    pub fn list_active_heartbeat_workflows(&self) -> Result<Vec<AgentWorkflow>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT aw.id, aw.agent_id, aw.binding_name,
+                        aw.trigger_type, aw.trigger_config, aw.description, aw.inputs, aw.is_active, aw.emit, aw.activities, aw.last_fired, aw.connections
+                 FROM agent_workflows aw JOIN agents a ON aw.agent_id = a.id
+                 WHERE aw.trigger_type = 'heartbeat' AND aw.is_active = 1 AND a.is_enabled = 1
+                 ORDER BY aw.agent_id, aw.binding_name",
+            )
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map([], row_to_agent_workflow)
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
     pub fn list_agent_workflows(&self, agent_id: &str) -> Result<Vec<AgentWorkflow>, NeboError> {
         let conn = self.conn()?;
         let mut stmt = conn
