@@ -10,6 +10,7 @@ pub mod team;
 pub mod deps;
 pub mod entity_config;
 pub mod handlers;
+mod engine;
 mod heartbeat;
 mod workforce_reporter;
 pub mod import;
@@ -2533,6 +2534,9 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
 
     // Spawn heartbeat scheduler for per-entity heartbeats
     heartbeat::spawn(state.clone());
+    // The one durable-work loop. Dark until the conversion migration moves
+    // the seven mechanisms into its tables; real from day one.
+    engine::spawn(state.clone());
     // The workforce reporter: runs and duties pushed to the platform as they
     // happen, so an owner hears about a failure from us in seconds instead of
     // when they next open the console (accountability W2, bot half).
