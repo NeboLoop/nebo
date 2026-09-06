@@ -228,7 +228,7 @@
         <!-- The story in four numbers: who is working, who needs me, how much
              work happened, how much of it happened without me. -->
         <section class="grid grid-cols-2 lg:grid-cols-4 gap-3 md:gap-4 min-w-0">
-          <div class="rounded-2xl border p-4 min-w-0 flex flex-col gap-2.5 bg-base-100 shadow-sm {data.counts.working > 0 ? 'border-success/40 bg-success/5' : 'border-base-300'}">
+          <div class="rounded-2xl border p-4 min-w-0 flex flex-col gap-2.5 bg-base-100 shadow-sm {data.counts.working > 0 ? 'border-success/60' : 'border-base-content/15'}">
             <div class="w-9 h-9 rounded-xl flex items-center justify-center bg-primary/10 text-primary"><Users class="w-[18px] h-[18px]" /></div>
             <div class="flex items-center gap-2">
               <span class="text-3xl font-semibold leading-none tracking-tight tabular-nums">{data.counts.working}</span>
@@ -239,7 +239,7 @@
               <div class="text-xs text-base-content/50 mt-0.5">{$t('dashboard.ofEmployees', { values: { n: data.counts.employees, paused: data.counts.paused } })}</div>
             </div>
           </div>
-          <div class="rounded-2xl border p-4 min-w-0 flex flex-col gap-2.5 bg-base-100 shadow-sm {data.counts.waiting > 0 ? 'border-warning/60 bg-warning/10' : 'border-base-300'}">
+          <div class="rounded-2xl border p-4 min-w-0 flex flex-col gap-2.5 bg-base-100 shadow-sm {data.counts.waiting > 0 ? 'border-warning/70' : 'border-base-content/15'}">
             <div class="w-9 h-9 rounded-xl flex items-center justify-center bg-warning/15 text-warning"><Clock class="w-[18px] h-[18px]" /></div>
             <span class="text-3xl font-semibold leading-none tracking-tight tabular-nums">{data.counts.waiting}</span>
             <div>
@@ -304,14 +304,14 @@
                 <!-- Every card uses the same four slots, so a working card is
                      marked, not taller: name row, what it is on, the live line
                      (or what comes next), the actions. -->
-                <div class="rounded-2xl border p-4 grid grid-rows-[auto_1fr_auto_auto] gap-3 min-w-0 shadow-sm {working ? 'border-success/40 bg-success/5' : e.status === 'waiting' ? 'border-warning/50 bg-warning/5' : 'border-base-content/15 bg-base-100'}">
+                <div class="rounded-2xl border p-4 grid grid-rows-[auto_1fr_auto_auto] gap-3 min-w-0 shadow-sm bg-base-100 {working ? 'border-success/60' : e.status === 'waiting' ? 'border-warning/70' : 'border-base-content/15'}">
                   <div class="flex items-center gap-3 min-w-0">
                     <AgentAvatar name={e.name} color={colors[e.id]} />
                     <span class="font-semibold text-[15px] truncate">{e.name}</span>
                     <!-- No pill means idle: the pill is reserved for a state worth noticing. -->
                     {#if e.status !== 'idle'}
-                      <span class="ml-auto text-[10px] font-semibold uppercase tracking-wider px-2 py-px rounded-full shrink-0 flex items-center gap-1 {working ? 'bg-success/15 text-success' : e.status === 'waiting' ? 'bg-warning/15 text-warning' : 'bg-base-content/5 text-base-content/55'}">
-                        {#if working}<i class="w-1.5 h-1.5 rounded-full bg-success animate-pulse" aria-hidden="true"></i>{/if}{$t(`dashboard.status.${e.status}`)}
+                      <span class="ml-auto text-[10px] font-semibold uppercase tracking-wider px-2 py-px rounded-full shrink-0 flex items-center gap-1 {working ? 'bg-success text-success-content' : e.status === 'waiting' ? 'bg-warning text-warning-content' : 'bg-base-content/5 text-base-content/55'}">
+                        {#if working}<i class="w-1.5 h-1.5 rounded-full bg-success-content animate-pulse" aria-hidden="true"></i>{/if}{$t(`dashboard.status.${e.status}`)}
                       </span>
                     {/if}
                   </div>
@@ -333,7 +333,7 @@
                       <div class="text-sm leading-snug line-clamp-2 text-base-content/70">{#if e.isolated && e.matters > 0}<span class="text-base-content/50">{$t('dashboard.matters', { values: { n: e.matters } })} · </span>{/if}{e.task}</div>
                     {/if}
                   </div>
-                  <div class="border-t border-base-300/80 pt-2.5 flex items-center gap-2 text-xs min-w-0 {working ? 'text-success' : 'text-base-content/50'}">
+                  <div class="border-t border-base-300/80 pt-2.5 flex items-center gap-2 text-xs min-w-0 text-base-content/70">
                     {#if working}<i class="w-1.5 h-1.5 rounded-full bg-success shrink-0" aria-hidden="true"></i>{/if}
                     <span class="truncate">{e.activity}</span>
                   </div>
@@ -360,8 +360,8 @@
                 <div class="px-4 py-2.5 grid grid-cols-[36px_minmax(0,1fr)_auto_auto] md:grid-cols-[36px_minmax(0,1.2fr)_5.5rem_minmax(0,2fr)_auto] items-center gap-3 min-w-0 {working ? 'bg-success/5' : ''}">
                   <AgentAvatar name={e.name} color={colors[e.id]} />
                   <span class="font-semibold text-[15px] truncate min-w-0">{e.name}</span>
-                  <span class="justify-self-start text-[10px] font-semibold uppercase tracking-wider px-2 py-px rounded-full {working ? 'bg-success/15 text-success' : e.status === 'waiting' ? 'bg-warning/15 text-warning' : 'bg-base-content/5 text-base-content/55'} {e.status === 'idle' ? 'invisible' : ''}">{$t(`dashboard.status.${e.status}`)}</span>
-                  <div class="hidden md:block min-w-0 text-xs truncate {working ? 'text-success' : 'text-base-content/60'}">{working ? `${e.task} · ${e.activity}` : e.lastDetail ? `${e.lastDetail} · ${e.activity}` : e.activity}</div>
+                  <span class="justify-self-start text-[10px] font-semibold uppercase tracking-wider px-2 py-px rounded-full {working ? 'bg-success text-success-content' : e.status === 'waiting' ? 'bg-warning text-warning-content' : 'bg-base-content/5 text-base-content/55'} {e.status === 'idle' ? 'invisible' : ''}">{$t(`dashboard.status.${e.status}`)}</span>
+                  <div class="hidden md:block min-w-0 text-xs truncate text-base-content/70">{working ? `${e.task} · ${e.activity}` : e.lastDetail ? `${e.lastDetail} · ${e.activity}` : e.activity}</div>
                   <div class="grid grid-cols-[6.5rem_auto] items-center gap-3 text-xs shrink-0">
                     {#if working}
                       <button class="link link-primary no-underline font-medium" onclick={() => openWork(e)}>{e.runId ? $t('dashboard.openRun') : $t('dashboard.openChat')}</button>

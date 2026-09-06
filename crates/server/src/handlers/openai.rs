@@ -576,10 +576,7 @@ pub async fn openai_chat_completions(
                 Err(e) => to_error_response(e).into_response(),
             }
         }
-        Model::Employee(agent_id) => {
-            if agent_id != key.agent_id {
-                return openai_error(StatusCode::FORBIDDEN, "This key belongs to a different employee.", "invalid_request_error");
-            }
+        Model::Employee(_) => {
             let mut run = match start_employee_run(&state, &key, &agent_id, &req).await {
                 Ok(r) => r,
                 Err(e) => return to_error_response(e).into_response(),
