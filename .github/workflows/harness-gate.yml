@@ -69,12 +69,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Rust lives in the runner user's home on the VM; a non-login shell
-      # does not have it on PATH.
-      - name: Rust on PATH
-        run: |
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-          "$HOME/.cargo/bin/cargo" --version
+      # Same install path as CI / release. The house VM may already have
+      # rustup; the action is idempotent and puts cargo on PATH for every
+      # step — a bare `$HOME/.cargo/bin` probe fails when the runner user's
+      # toolchain was wiped (stadium.guest, 2026-09-06).
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.95"
 
       # Same dependency set as release.yml's Linux leg, already present on the
       # VM; apt is idempotent, so this only pays when the VM is rebuilt.
