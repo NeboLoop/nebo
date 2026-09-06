@@ -383,8 +383,13 @@ fn spawn_plugin_login(
         // browser can't reach the pod's loopback listener, so hand the plugin
         // the ONE public redirect + an opaque state and register the pending
         // auth for the hub-relayed callback (crate::plugin_oauth). Desktop
-        // never sets the env, so this pathway can't affect it.
-        if crate::plugin_oauth::public_oauth_enabled() {
+        // takes the same path only when the manifest asks for it
+        // (`auth.publicRedirect`): providers like Intuit refuse
+        // `http://localhost` on production credentials.
+        let manifest_wants_public = plugin_store_for_auth
+            .get_auth_info(&slug_owned)
+            .is_some_and(|(_, auth)| auth.public_redirect);
+        if crate::plugin_oauth::public_oauth_enabled() || manifest_wants_public {
             match config::read_bot_id().filter(|id| !id.is_empty()) {
                 Some(bot_id) => match crate::plugin_oauth::begin(&bot_id) {
                     Ok(relay) => {
@@ -1416,7 +1421,13 @@ fn has_url_candidate(text: &str) -> bool {
     }
 }
 
-/// Extract the first HTTP(S) URL from accumulated output text.
+/// Extract the sign-in URL from accumulated output text.
+///
+/// Only an authorize link is opened: one carrying `client_id=`, or one the
+/// plugin explicitly asks the user to visit ("visit this URL", "open this
+/// link"). Plugins also print URLs inside diagnostics (an OpenID discovery
+/// document that failed to load, an API endpoint that 401'd) and opening
+/// those put a JSON blob in the owner's browser next to the real sign-in.
 ///
 /// When `complete` is false (streaming), only returns a URL that is followed by
 /// more text or trailing whitespace — this avoids matching a partial URL that is
@@ -1428,7 +1439,18 @@ fn extract_url(text: &str, complete: bool) -> Option<String> {
         let trimmed = word.trim_matches(|c: char| c == '"' || c == '\'' || c == '<' || c == '>');
         if trimmed.starts_with("https://") || trimmed.starts_with("http://") {
             let is_last = i == words.len() - 1;
-            if complete || !is_last || text.ends_with(char::is_whitespace) {
+            if !(complete || !is_last || text.ends_with(char::is_whitespace)) {
+                continue;
+            }
+            if trimmed.contains("client_id=") {
+                return Some(trimmed.to_string());
+            }
+            let line = text
+                .lines()
+                .find(|l| l.contains(word))
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            if line.contains("visit") || line.contains("open th") {
                 return Some(trimmed.to_string());
             }
         }
@@ -1824,6 +1846,24 @@ pub(crate) async fn revoke_plugin_auth(state: &AppState, revoked: &PluginAuthRev
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn extract_url_opens_only_the_sign_in_link() {
+        // A failed discovery fetch names its URL; that is not a sign-in.
+        let diag = "OpenID discovery at https://developer.api.intuit.com/.well-known/openid_configuration failed (timeout); using built-in endpoints.\n";
+        assert_eq!(extract_url(diag, true), None);
+        // The authorize link carries the client id and is opened even mid-stream.
+        let auth = "Opening browser for authentication...\nIf the browser doesn't open, visit this URL:\nhttps://appcenter.intuit.com/connect/oauth2?client_id=ABC&redirect_uri=x \n";
+        assert_eq!(
+            extract_url(auth, false).as_deref(),
+            Some("https://appcenter.intuit.com/connect/oauth2?client_id=ABC&redirect_uri=x")
+        );
+        // A plugin that asks the user to visit a link without a client id still works.
+        let plain = "Please visit this URL to sign in: https://example.com/device \n";
+        assert_eq!(extract_url(plain, false).as_deref(), Some("https://example.com/device"));
+        // Streaming: a URL still being written is not taken yet.
+        assert_eq!(extract_url("visit https://appcenter.intuit.com/connect?client_id=", false), None);
+    }
 
     fn req() -> AccountLoginRequest {
         AccountLoginRequest {

@@ -183,6 +183,12 @@ pub struct PluginAuth {
     /// declare it remain single-account (machine-global).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile_dir_env: Option<String>,
+    /// The provider refuses plain `http://localhost` redirects on its
+    /// production credentials (Intuit does), so desktop logins must also go
+    /// through the hub's public https redirect and tunnel relay, the path
+    /// cloud bots always take. Off by default: Google accepts loopback.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub public_redirect: bool,
 }
 
 /// Help content that any artifact (plugin, skill, agent, MCP) can declare.
