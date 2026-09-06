@@ -150,6 +150,10 @@ fn deliver(
         fire_schedule(store, event, t, report);
         return;
     }
+    if event.target_type == "entity" && event.kind == "timer" && event.target_id.starts_with("heartbeat:") {
+        fire_heartbeat(store, event, t, report);
+        return;
+    }
     let wait = match store.engine_match_wait(event) {
         Ok(w) => w,
         Err(e) => {
@@ -501,6 +505,120 @@ fn settle_task(state: &AppState, run: &EngineRun, job: &CronJob, success: bool, 
     }
 }
 
+// ── heartbeats: one pending timer per enabled entity ──────────────────────
+
+/// How often the enabled set is re-resolved against settings. Arming is
+/// idempotent, so this only bounds how soon a settings change is noticed.
+const HEARTBEAT_ARM_SECS: i64 = 60;
+
+/// Reconcile pending heartbeat timers with the entities whose heartbeat is
+/// on: a timer for an entity now off (or with a changed interval) is
+/// dropped; every enabled entity without one gets its next fire — the last
+/// consumed one plus the interval, no earlier than now, moved into the
+/// entity's time window. An entity that has never fired is due now.
+async fn arm_heartbeats(state: &AppState, t: i64) -> usize {
+    let enabled = match crate::heartbeat::enabled_entities(state).await {
+        Ok(e) => e,
+        Err(e) => {
+            warn!(error = %e, "engine: could not resolve heartbeat entities");
+            return 0;
+        }
+    };
+    let store = &state.store;
+    let pending = store
+        .engine_pending_timers("entity")
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|e| e.target_id.starts_with("heartbeat:"))
+        .collect::<Vec<_>>();
+    let mut held: HashSet<String> = HashSet::new();
+    for timer in &pending {
+        let entity = enabled.iter().find(|e| e.target() == timer.target_id);
+        match entity {
+            Some(e) if timer.schedule.as_deref() == Some(e.interval_secs.to_string().as_str()) => {
+                held.insert(timer.target_id.clone());
+            }
+            _ => {
+                if let Err(err) = store.engine_supersede_event(timer.id, t, "superseded: heartbeat changed or disabled") {
+                    warn!(timer = timer.id, error = %err, "engine: could not drop a stale heartbeat timer");
+                }
+            }
+        }
+    }
+    let mut armed = 0;
+    for entity in &enabled {
+        let target = entity.target();
+        if held.contains(&target) {
+            continue;
+        }
+        let floor = store
+            .engine_last_timer_floor("entity", &target)
+            .ok()
+            .flatten()
+            .or(entity.last_fired_at);
+        let due = floor.map(|f| f + entity.interval_secs).unwrap_or(t).max(t);
+        let due = crate::heartbeat::next_in_window(due, entity.window.as_ref());
+        let interval = entity.interval_secs.to_string();
+        match store.engine_enqueue_event(&NewEvent {
+            kind: "timer",
+            target_type: "entity",
+            target_id: &target,
+            idem_key: &format!("{target}:{due}:{t}"),
+            due_at: Some(due),
+            schedule: Some(&interval),
+            ..Default::default()
+        }) {
+            Ok(db::Enqueued::Inserted(_)) => armed += 1,
+            Ok(db::Enqueued::Duplicate) => {}
+            Err(e) => warn!(entity = %target, error = %e, "engine: could not arm heartbeat"),
+        }
+    }
+    armed
+}
+
+/// A heartbeat's timer came due: queue ONE run of kind `heartbeat` unless
+/// the previous one is still going. A heartbeat is never "too late" — an
+/// entity that slept through its interval simply gets its turn now, once.
+fn fire_heartbeat(store: &Store, event: &EngineEvent, t: i64, report: &mut TickReport) {
+    let Some(rest) = event.target_id.strip_prefix("heartbeat:") else { return };
+    let Some((entity_type, entity_id)) = rest.split_once(':') else {
+        let _ = store.engine_supersede_event(event.id, t, "skipped: malformed heartbeat target");
+        report.skipped += 1;
+        return;
+    };
+    match store.engine_has_live_run_for_ref(&event.target_id) {
+        Ok(true) => {
+            info!(entity = %event.target_id, "engine: previous heartbeat still running; this one skipped");
+            match store.engine_supersede_event(event.id, t, "skipped: previous heartbeat still running") {
+                Ok(()) => report.skipped += 1,
+                Err(e) => warn!(event = event.id, error = %e, "engine: skip failed; lease will expire and retry"),
+            }
+            return;
+        }
+        Ok(false) => {}
+        Err(e) => {
+            warn!(entity = %event.target_id, error = %e, "engine: overlap check failed; lease will expire and retry");
+            return;
+        }
+    }
+    let id = uuid::Uuid::new_v4().to_string();
+    let inputs = serde_json::json!({ "entity_type": entity_type, "entity_id": entity_id }).to_string();
+    let created = store.engine_create_run(&db::NewRun {
+        id: &id,
+        kind: "heartbeat",
+        session_key: &format!("heartbeat-{entity_type}-{entity_id}"),
+        agent_id: if entity_type == "agent" { entity_id } else { "" },
+        lane: "heartbeat",
+        inputs: Some(&inputs),
+        external_ref: Some(&event.target_id),
+        ..Default::default()
+    });
+    match created.and_then(|_| store.engine_complete_event(event.id, t)) {
+        Ok(()) => report.fired += 1,
+        Err(e) => warn!(entity = %event.target_id, error = %e, "engine: could not queue the heartbeat; lease will expire and retry"),
+    }
+}
+
 // ── driving turns through the workflow runner ─────────────────────────────
 
 /// Start queued case turns and scheduled fires, and reconcile running
@@ -511,6 +629,50 @@ async fn drive(state: &AppState) {
     let t = now();
     if crate::DRAINING.load(std::sync::atomic::Ordering::Relaxed) {
         return;
+    }
+
+    {
+        use std::sync::atomic::{AtomicI64, Ordering};
+        static LAST_ARM: AtomicI64 = AtomicI64::new(0);
+        let last = LAST_ARM.load(Ordering::Relaxed);
+        if t - last >= HEARTBEAT_ARM_SECS && LAST_ARM.compare_exchange(last, t, Ordering::Relaxed, Ordering::Relaxed).is_ok() {
+            let armed = arm_heartbeats(state, t).await;
+            if armed > 0 {
+                info!(armed, "engine: heartbeat timers armed");
+            }
+        }
+    }
+
+    let beats = store.engine_queued_runs_of_kind("heartbeat", TURNS_PER_TICK).unwrap_or_default();
+    for run in beats {
+        let inputs: serde_json::Value = run.inputs.as_deref().and_then(|s| serde_json::from_str(s).ok()).unwrap_or_default();
+        let (Some(entity_type), Some(entity_id)) = (inputs["entity_type"].as_str(), inputs["entity_id"].as_str()) else {
+            let _ = store.engine_set_run_state(&run.id, "failed", t, Some("heartbeat run has no entity"));
+            continue;
+        };
+        let (entity_type, entity_id) = (entity_type.to_string(), entity_id.to_string());
+        if let Err(e) = store.engine_set_run_state(&run.id, "running", t, None) {
+            warn!(run = %run.id, error = %e, "engine: mark running failed");
+            continue;
+        }
+        let state = state.clone();
+        tokio::spawn(async move {
+            let outcome = crate::heartbeat::fire(&state, &entity_type, &entity_id).await;
+            let t = now();
+            match outcome {
+                Ok(true) => {
+                    let _ = state.store.engine_set_run_state(&run.id, "done", t, None);
+                }
+                Ok(false) => {
+                    let _ = state.store.engine_set_run_result(&run.id, "not fired: heartbeat off or empty by the time it came due", None);
+                    let _ = state.store.engine_set_run_state(&run.id, "done", t, None);
+                }
+                Err(e) => {
+                    warn!(run = %run.id, error = %e, "engine: heartbeat failed");
+                    let _ = state.store.engine_set_run_state(&run.id, "failed", t, Some(&e));
+                }
+            }
+        });
     }
 
     let tasks = store.engine_queued_runs_of_kind("task", TURNS_PER_TICK).unwrap_or_default();
@@ -948,6 +1110,30 @@ mod tests {
         assert_eq!((r.armed, r.fired), (1, 0));
         assert_eq!(s.engine_pending_timers("binding").unwrap()[0].due_at, Some(local(2026, 8, 23, 16, 0, 0)));
         assert_eq!(s.engine_count_runs_for_ref("cron:1").unwrap(), 2, "9:00 and 15:00 ran; nothing else");
+    }
+
+    /// A heartbeat timer fires ONE run of kind `heartbeat` on the heartbeat
+    /// lane; while that run is live, the next timer is skipped, not stacked.
+    #[test]
+    fn a_heartbeat_timer_fires_one_run_and_never_stacks_on_a_live_one() {
+        let s = store();
+        let target = "heartbeat:agent:ic";
+        s.engine_enqueue_event(&NewEvent { kind: "timer", target_type: "entity", target_id: target, idem_key: "hb-1", due_at: Some(1_000), schedule: Some("1800"), ..Default::default() }).unwrap();
+        let r = tick(&s, 1_000, &idle, &no_steer);
+        assert_eq!((r.fired, r.skipped), (1, 0));
+        let beats = s.engine_queued_runs_of_kind("heartbeat", 10).unwrap();
+        assert_eq!(beats.len(), 1);
+        assert_eq!(beats[0].lane, "heartbeat");
+        assert_eq!(beats[0].agent_id, "ic");
+        assert_eq!(beats[0].session_key, "heartbeat-agent-ic");
+        assert_eq!(beats[0].external_ref.as_deref(), Some(target));
+        assert_eq!(s.engine_last_timer_floor("entity", target).unwrap(), Some(1_000), "the consumed timer is the floor for the next");
+
+        s.engine_set_run_state(&beats[0].id, "running", 1_001, None).unwrap();
+        s.engine_enqueue_event(&NewEvent { kind: "timer", target_type: "entity", target_id: target, idem_key: "hb-2", due_at: Some(2_800), schedule: Some("1800"), ..Default::default() }).unwrap();
+        let r = tick(&s, 2_800, &idle, &no_steer);
+        assert_eq!((r.fired, r.skipped), (0, 1));
+        assert_eq!(s.engine_queued_runs_of_kind("heartbeat", 10).unwrap().len(), 0);
     }
 
     #[test]

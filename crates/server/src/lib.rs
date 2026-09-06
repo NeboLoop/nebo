@@ -2530,9 +2530,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         state.clone(),
     );
 
-    // Spawn heartbeat scheduler for per-entity heartbeats
-    heartbeat::spawn(state.clone());
-    // The one durable-work loop. Dark until the conversion migration moves
+    // The one durable-work loop (heartbeats and schedules are its timers). Dark until the conversion migration moves
     // the seven mechanisms into its tables; real from day one.
     engine::spawn(state.clone());
     // The workforce reporter: runs and duties pushed to the platform as they

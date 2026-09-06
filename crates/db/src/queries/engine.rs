@@ -401,6 +401,23 @@ impl Store {
         Ok(())
     }
 
+    /// A "seen" mark: the record that something external (a hub wire
+    /// message) was processed. Written already delivered, so it is never
+    /// claimed; its whole job is the unique idempotency key. Returns true
+    /// the first time, false on a replay.
+    pub fn engine_mark_seen(&self, target_id: &str, idem_key: &str) -> Result<bool, NeboError> {
+        let conn = self.conn()?;
+        let inserted = conn
+            .execute(
+                "INSERT INTO engine_events (kind, target_type, target_id, idem_key, delivered_at, attempts)
+                 VALUES ('seen', 'entity', ?1, ?2, unixepoch(), 1)
+                 ON CONFLICT(idem_key) DO NOTHING",
+                params![target_id, idem_key],
+            )
+            .db_err("engine_mark_seen")?;
+        Ok(inserted == 1)
+    }
+
     // ── scheduled bindings: one pending timer per schedule ───────────────
 
     /// Pending timers aimed at one kind of target — the arming worklist.
