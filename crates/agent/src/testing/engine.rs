@@ -332,11 +332,19 @@ async fn run_single(
                         }
                         Some("chat_complete") => break,
                         Some("chat_error") => {
+                            // A run the server stopped (a spiral guard, a
+                            // provider error) still has a story: keep the
+                            // calls made so far and the reason, so the stop
+                            // can be read and turned into a fixture. Two
+                            // SWE-bench runs on 2026-09-06 ended in the
+                            // identical-call stop with nothing on disk.
                             let err = event["data"]["error"]
                                 .as_str()
                                 .unwrap_or("unknown error");
+                            warn!(fixture = %fixture.id, run = %run_id, error = %err, "run stopped by the server; keeping the partial trace");
                             cancel_run(&mut ws, &session_id).await;
-                            return Err(format!("Chat error: {}", err));
+                            all_text.insert(0, format!("[run stopped: {err}]\n"));
+                            break;
                         }
                         _ => {}
                     }
