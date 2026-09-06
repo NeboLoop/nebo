@@ -4126,7 +4126,7 @@ async fn run_loop(
                     ..Default::default()
                 });
             }
-            if let Err(e) = store.mark_session_wakes_delivered(&ids) {
+            if let Err(e) = store.engine_complete_events(&ids, chrono::Utc::now().timestamp()) {
                 warn!(error = %e, "wake: failed to stamp mid-run delivery");
             }
         }

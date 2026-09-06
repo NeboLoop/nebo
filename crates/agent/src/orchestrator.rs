@@ -443,7 +443,7 @@ impl Orchestrator {
                 // not asleep.
                 if is_interactive_session(&parent_session_key) {
                     let ok = store
-                        .enqueue_session_wake(&parent_session_key, "task_done", &wake_payload, "[]", 0)
+                        .engine_enqueue_wake(&parent_session_key, "task_done", &wake_payload, "[]", 0)
                         .is_ok();
                     if ok && let Some(tx) = wake_notify {
                         let _ = tx.send(parent_session_key);

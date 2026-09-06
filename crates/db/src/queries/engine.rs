@@ -257,6 +257,7 @@ impl Store {
                  WHERE id IN (
                      SELECT id FROM engine_events
                      WHERE delivered_at IS NULL
+                       AND target_type != 'session'
                        AND (due_at IS NULL OR due_at <= ?1)
                        AND (lease_until IS NULL OR lease_until < ?1)
                        AND attempts < ?3
@@ -272,6 +273,101 @@ impl Store {
             .collect::<Result<Vec<_>, _>>()
             .db_err("engine_claim_events")?;
         Ok((rows, poisoned))
+    }
+
+    // ── session wakes: events aimed at a session ─────────────────────────
+    //
+    // The wake rail (server `wake.rs`) owns these: it delivers on enqueue,
+    // on run completion, and on boot, with the same write-ahead / at-most-
+    // once / poison discipline it always had. The engine's global claim
+    // skips them, so the two never race for one row.
+
+    /// Write-ahead: persist a wake BEFORE any delivery attempt. Wakes have
+    /// no natural idempotency key (two identical coworker replies are two
+    /// replies), so each gets its own.
+    pub fn engine_enqueue_wake(
+        &self,
+        session_key: &str,
+        kind: &str,
+        payload: &str,
+        provenance: &str,
+        handoff_depth: u8,
+    ) -> Result<i64, NeboError> {
+        let idem = format!("wake:{}", uuid::Uuid::new_v4());
+        match self.engine_enqueue_event(&NewEvent {
+            kind,
+            target_type: "session",
+            target_id: session_key,
+            payload,
+            idem_key: &idem,
+            provenance,
+            handoff_depth: handoff_depth as i64,
+            ..Default::default()
+        })? {
+            Enqueued::Inserted(id) => Ok(id),
+            Enqueued::Duplicate => Err(NeboError::Internal("fresh wake key collided".into())),
+        }
+    }
+
+    /// Undelivered wakes for one session, FIFO, attempts bumped in the same
+    /// statement — claiming IS the attempt. Rows over the poison cap are
+    /// stamped delivered with a note and never returned; the second tuple
+    /// element counts them so a wake may fail loudly, never loop silently.
+    pub fn engine_claim_session_events(&self, session_key: &str, now: i64) -> Result<(Vec<EngineEvent>, usize), NeboError> {
+        let conn = self.conn()?;
+        let poisoned = conn
+            .execute(
+                "UPDATE engine_events
+                 SET delivered_at = ?2, note = 'poisoned: exceeded delivery attempts'
+                 WHERE target_type = 'session' AND target_id = ?1 AND delivered_at IS NULL AND attempts >= ?3",
+                params![session_key, now, EVENT_MAX_ATTEMPTS],
+            )
+            .db_err("engine_claim_session_events poison")?;
+        let mut stmt = conn
+            .prepare(&format!(
+                "UPDATE engine_events SET attempts = attempts + 1, claimed_at = ?2
+                 WHERE target_type = 'session' AND target_id = ?1 AND delivered_at IS NULL
+                 RETURNING {EVENT_COLUMNS}"
+            ))
+            .db_err("engine_claim_session_events")?;
+        let mut rows = stmt
+            .query_map(params![session_key, now], row_to_event)
+            .db_err("engine_claim_session_events")?
+            .collect::<Result<Vec<_>, _>>()
+            .db_err("engine_claim_session_events")?;
+        rows.sort_by_key(|e| e.id);
+        Ok((rows, poisoned))
+    }
+
+    /// Stamp a batch delivered — the woken run carried these payloads.
+    pub fn engine_complete_events(&self, ids: &[i64], now: i64) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        for id in ids {
+            conn.execute(
+                "UPDATE engine_events SET delivered_at = ?2 WHERE id = ?1 AND delivered_at IS NULL",
+                params![id, now],
+            )
+            .db_err("engine_complete_events")?;
+        }
+        Ok(())
+    }
+
+    /// Sessions with undelivered, un-poisoned wakes — the boot sweep's worklist.
+    pub fn engine_sessions_with_pending(&self) -> Result<Vec<String>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT DISTINCT target_id FROM engine_events
+                 WHERE target_type = 'session' AND delivered_at IS NULL AND attempts < ?1
+                 ORDER BY target_id",
+            )
+            .db_err("engine_sessions_with_pending")?;
+        let rows = stmt
+            .query_map(params![EVENT_MAX_ATTEMPTS], |r| r.get(0))
+            .db_err("engine_sessions_with_pending")?
+            .collect::<Result<Vec<String>, _>>()
+            .db_err("engine_sessions_with_pending")?;
+        Ok(rows)
     }
 
     /// The claim's work is done and its observable effects are recorded.
@@ -853,7 +949,7 @@ mod tests {
     #[test]
     fn timers_are_deliverable_only_when_due() {
         let s = store();
-        s.engine_enqueue_event(&NewEvent { kind: "timer", target_type: "session", target_id: "agent:a:web", idem_key: "t1", due_at: Some(5_000), ..Default::default() }).unwrap();
+        s.engine_enqueue_event(&NewEvent { kind: "timer", target_type: "wait", target_id: "7", idem_key: "t1", due_at: Some(5_000), ..Default::default() }).unwrap();
         assert!(s.engine_claim_events(4_999, 10).unwrap().0.is_empty());
         assert_eq!(s.engine_claim_events(5_000, 10).unwrap().0.len(), 1);
     }
@@ -956,6 +1052,41 @@ mod tests {
         // Completing twice is a no-op, never a second action.
         s.engine_effect_completed(id, Some("msg-10"), None, 400).unwrap();
         assert_eq!(s.engine_get_effect(id).unwrap().unwrap().provider_ref.as_deref(), Some("msg-9"));
+    }
+
+    #[test]
+    fn wakes_claim_fifo_per_session_and_the_global_claim_never_touches_them() {
+        let s = store();
+        let a = s.engine_enqueue_wake("agent:x:web", "coworker_reply", "first", "[]", 1).unwrap();
+        let b = s.engine_enqueue_wake("agent:x:web", "coworker_reply", "second", "[\"coworker\"]", 1).unwrap();
+        s.engine_enqueue_wake("agent:y:web", "task_done", "other", "[]", 0).unwrap();
+
+        assert!(s.engine_claim_events(1_000, 10).unwrap().0.is_empty(), "session wakes belong to the rail, not the loop");
+
+        let (claimed, poisoned) = s.engine_claim_session_events("agent:x:web", 1_000).unwrap();
+        assert_eq!(poisoned, 0);
+        assert_eq!(claimed.iter().map(|w| w.id).collect::<Vec<_>>(), vec![a, b], "FIFO per session");
+        assert_eq!(claimed[0].payload, "first");
+        assert_eq!(claimed[1].provenance, "[\"coworker\"]");
+        assert_eq!(claimed[0].attempts, 1, "claiming counts as the attempt");
+
+        s.engine_complete_events(&[a, b], 1_001).unwrap();
+        assert!(s.engine_claim_session_events("agent:x:web", 1_002).unwrap().0.is_empty(), "delivered = gone");
+        assert_eq!(s.engine_sessions_with_pending().unwrap(), vec!["agent:y:web"]);
+    }
+
+    #[test]
+    fn wakes_poison_after_max_attempts() {
+        let s = store();
+        s.engine_enqueue_wake("agent:z:web", "coworker_reply", "cursed", "[]", 0).unwrap();
+        for round in 1..=EVENT_MAX_ATTEMPTS {
+            let (claimed, _) = s.engine_claim_session_events("agent:z:web", 100 + round).unwrap();
+            assert_eq!(claimed.len(), 1, "round {round} still claimable");
+        }
+        let (claimed, poisoned) = s.engine_claim_session_events("agent:z:web", 500).unwrap();
+        assert!(claimed.is_empty());
+        assert_eq!(poisoned, 1, "the failure is counted, never silent");
+        assert!(s.engine_sessions_with_pending().unwrap().is_empty(), "poisoned wakes leave the worklist");
     }
 
     #[test]
