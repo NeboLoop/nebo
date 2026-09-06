@@ -339,6 +339,25 @@ pub struct WorkflowBinding {
     /// Namespaced by agent slug at runtime: "agent-name.briefing.ready".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub emit: Option<String>,
+    /// Present = this binding works CASES: one long-lived run per person or
+    /// thing, keyed from the payload, with every later event for the same
+    /// key routed into it instead of starting a fresh run. Absent (every
+    /// existing binding) = today's behavior, a run per trigger.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub case: Option<CaseConfig>,
+}
+
+/// How a binding names the thing it works and what a turn waits on when it
+/// forgets to say. See "One Engine for Durable Work" (2026-09-06).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CaseConfig {
+    /// Dotted path into the trigger payload naming the person or thing:
+    /// `email`, `phone`, `customer.id`. The leaf name is the key type.
+    pub key: String,
+    /// Wait applied when a turn ends without declaring one: a relative span
+    /// such as `3d`, `12h`, `45m`. Default three days.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_wait: Option<String>,
 }
 
 impl WorkflowBinding {

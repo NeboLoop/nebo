@@ -55,6 +55,9 @@ CREATE TABLE IF NOT EXISTS engine_runs (
     parent_run_id TEXT REFERENCES engine_runs(id) ON DELETE SET NULL,
     definition TEXT,
     inputs TEXT,
+    -- The row in another table this run executes as (today: the workflow
+    -- run a case turn drives). Reconciliation reads that row's outcome.
+    external_ref TEXT,
     current_wait_id INTEGER,
     attempts INTEGER NOT NULL DEFAULT 0,
     resume_attempted INTEGER NOT NULL DEFAULT 0,

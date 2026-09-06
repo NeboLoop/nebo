@@ -83,6 +83,8 @@ pub struct EngineRun {
     pub parent_run_id: Option<String>,
     pub definition: Option<String>,
     pub inputs: Option<String>,
+    /// The row elsewhere this run executes as (a case turn's workflow run).
+    pub external_ref: Option<String>,
     pub current_wait_id: Option<i64>,
     pub attempts: i64,
     pub resume_attempted: i64,
@@ -140,7 +142,7 @@ pub struct EngineEffect {
     pub provider_ref: Option<String>,
 }
 
-const RUN_COLUMNS: &str = "id, kind, state, session_key, agent_id, lane, parent_run_id, definition, inputs, current_wait_id, attempts, resume_attempted, result, error, summary";
+const RUN_COLUMNS: &str = "id, kind, state, session_key, agent_id, lane, parent_run_id, definition, inputs, external_ref, current_wait_id, attempts, resume_attempted, result, error, summary";
 
 fn row_to_run(r: &rusqlite::Row<'_>) -> rusqlite::Result<EngineRun> {
     Ok(EngineRun {
@@ -153,12 +155,13 @@ fn row_to_run(r: &rusqlite::Row<'_>) -> rusqlite::Result<EngineRun> {
         parent_run_id: r.get(6)?,
         definition: r.get(7)?,
         inputs: r.get(8)?,
-        current_wait_id: r.get(9)?,
-        attempts: r.get(10)?,
-        resume_attempted: r.get(11)?,
-        result: r.get(12)?,
-        error: r.get(13)?,
-        summary: r.get(14)?,
+        external_ref: r.get(9)?,
+        current_wait_id: r.get(10)?,
+        attempts: r.get(11)?,
+        resume_attempted: r.get(12)?,
+        result: r.get(13)?,
+        error: r.get(14)?,
+        summary: r.get(15)?,
     })
 }
 
@@ -391,6 +394,82 @@ impl Store {
             .collect::<Result<Vec<_>, _>>()
             .db_err("engine_queued_runs")?;
         Ok(rows)
+    }
+
+    /// Queued runs of one kind across every lane, oldest first.
+    pub fn engine_queued_runs_of_kind(&self, kind: &str, limit: i64) -> Result<Vec<EngineRun>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT {RUN_COLUMNS} FROM engine_runs WHERE state = 'queued' AND kind = ?1 ORDER BY created_at, id LIMIT ?2"
+            ))
+            .db_err("engine_queued_runs_of_kind")?;
+        let rows = stmt
+            .query_map(params![kind, limit], row_to_run)
+            .db_err("engine_queued_runs_of_kind")?
+            .collect::<Result<Vec<_>, _>>()
+            .db_err("engine_queued_runs_of_kind")?;
+        Ok(rows)
+    }
+
+    /// Running runs of one kind — the reconciliation worklist.
+    pub fn engine_running_runs_of_kind(&self, kind: &str) -> Result<Vec<EngineRun>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(&format!("SELECT {RUN_COLUMNS} FROM engine_runs WHERE state = 'running' AND kind = ?1 ORDER BY id"))
+            .db_err("engine_running_runs_of_kind")?;
+        let rows = stmt
+            .query_map(params![kind], row_to_run)
+            .db_err("engine_running_runs_of_kind")?
+            .collect::<Result<Vec<_>, _>>()
+            .db_err("engine_running_runs_of_kind")?;
+        Ok(rows)
+    }
+
+    /// The one live child of a parent, if a turn is running or about to.
+    /// One live turn per case: a signal that arrives while this exists is
+    /// steered into it rather than starting another.
+    pub fn engine_live_child(&self, parent_id: &str) -> Result<Option<EngineRun>, NeboError> {
+        let conn = self.conn()?;
+        conn.query_row(
+            &format!(
+                "SELECT {RUN_COLUMNS} FROM engine_runs
+                 WHERE parent_run_id = ?1 AND state IN ('queued', 'running')
+                 ORDER BY id LIMIT 1"
+            ),
+            params![parent_id],
+            row_to_run,
+        )
+        .optional()
+        .db_err("engine_live_child")
+    }
+
+    /// A signal that arrived while the turn was still queued rides in its
+    /// inputs, so the turn sees everything that happened before it ran.
+    pub fn engine_append_pending_signal(&self, id: &str, payload: &str) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        let value = serde_json::from_str::<serde_json::Value>(payload).unwrap_or_else(|_| serde_json::Value::String(payload.to_string()));
+        conn.execute(
+            "UPDATE engine_runs
+             SET inputs = json_set(
+                     json_set(COALESCE(inputs, '{}'), '$._case.pending_signals',
+                              COALESCE(json_extract(COALESCE(inputs, '{}'), '$._case.pending_signals'), json('[]'))),
+                     '$._case.pending_signals[#]', json(?2))
+             WHERE id = ?1",
+            params![id, value.to_string()],
+        )
+        .db_err("engine_append_pending_signal")?;
+        Ok(())
+    }
+
+    pub fn engine_set_external_ref(&self, id: &str, external_ref: &str) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE engine_runs SET external_ref = ?2 WHERE id = ?1",
+            params![id, external_ref],
+        )
+        .db_err("engine_set_external_ref")?;
+        Ok(())
     }
 
     /// Boot sweep, half one: every run the dead process left `running` is

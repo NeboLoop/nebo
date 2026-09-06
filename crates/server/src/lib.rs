@@ -3345,6 +3345,7 @@ async fn run_webhook_workflow(
     agent_slug: &str,
     binding_name: &str,
     raw: Option<String>,
+    idem_key: &str,
 ) {
     use tools::workflows::WorkflowManager;
 
@@ -3379,6 +3380,34 @@ async fn run_webhook_workflow(
         .as_deref()
         .map(|r| serde_json::from_str::<serde_json::Value>(r).unwrap_or_else(|_| serde_json::json!(r)))
         .unwrap_or(serde_json::Value::Null);
+    // A case binding: the payload names a person, and the engine holds one
+    // case per person. The signal reaches that case or opens it; a fresh
+    // run per submission is exactly the repeat this exists to end.
+    if let Some(case) = &binding.case {
+        let Some(key_value) = engine::key_at(&payload, &case.key) else {
+            tracing::warn!(agent = %agent_id, workflow = %binding_name, key = %case.key, "case webhook: payload has no key at that path");
+            return;
+        };
+        let key_type = case.key.rsplit('.').next().unwrap_or("key");
+        let default_wait_secs = case.default_wait.as_deref().and_then(engine::relative_secs).unwrap_or(3 * 86_400);
+        let b = engine::CaseBinding {
+            agent_id,
+            binding_name,
+            definition_json: &def_json,
+            base_inputs: inputs.clone(),
+            default_wait_secs,
+        };
+        let idem = if idem_key.is_empty() {
+            format!("webhook:{}:{}", binding_name, agent::dedupe::hash_text(&payload.to_string()))
+        } else {
+            idem_key.to_string()
+        };
+        match engine::signal_or_open(&state.store, &b, key_type, &key_value, &payload, &idem, chrono::Utc::now().timestamp()) {
+            Ok(routed) => tracing::info!(agent = %agent_id, workflow = %binding_name, ?routed, "case webhook routed"),
+            Err(e) => tracing::warn!(agent = %agent_id, workflow = %binding_name, error = %e, "case webhook routing failed"),
+        }
+        return;
+    }
     workflow::events::insert_event_envelope(
         &mut inputs,
         &format!("webhook.{}", binding_name),
@@ -3711,7 +3740,7 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
         if let Some(pd) = &webhook_platform {
             if let Some(wf_name) = pd.get("workflowName").and_then(|w| w.as_str()) {
                 let raw = pd.get("raw").and_then(|r| r.as_str()).map(str::to_string);
-                run_webhook_workflow(&state, &agent_id, &agent_slug, wf_name, raw).await;
+                run_webhook_workflow(&state, &agent_id, &agent_slug, wf_name, raw, &msg.id).await;
                 return;
             }
         }
