@@ -576,7 +576,7 @@
   type PluginAccount = { accountLabel: string; isPrimary: boolean; needsReauth?: boolean };
   // A credential the owner fills in when the plugin signs in with values
   // (mail servers, API keys) instead of a browser — as the manifest declares it.
-  type AuthField = { key: string; label: string; type: string; description: string };
+  type AuthField = { key: string; label: string; type: string; description: string; required: boolean };
   type AccountPlugin = { slug: string; name: string; description: string; authType: string; authFields: AuthField[]; accounts: PluginAccount[] };
   let accountPlugins = $state<AccountPlugin[]>([]);
   let accountsLoading = $state(false);
@@ -912,7 +912,7 @@
     const signIn = p.authFields.find((f) => /USER|EMAIL|LOGIN|ACCOUNT/.test(f.key.toUpperCase()));
     const label = addAccountLabel.trim() || (isPhone ? picked?.label || addAccountNumber : (signIn ? (addAccountCreds[signIn.key] ?? '').trim() : ''));
     if (!label || (isPhone && claimableNumbers.length > 0 && !addAccountNumber)) return;
-    if (p.authFields.some((f) => !(addAccountCreds[f.key] ?? '').trim())) return;
+    if (p.authFields.some((f) => f.required && !(addAccountCreds[f.key] ?? '').trim())) return;
     addAccountConnectingSlug = p.slug;
     addAccountError = null;
     try {
@@ -1927,7 +1927,7 @@
         {:else}
           {#each plugin.authFields as field (field.key)}
             <label class="flex flex-col gap-1.5">
-              <span class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{field.label}</span>
+              <span class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{field.label}{#if !field.required} <span class="normal-case tracking-normal font-normal">({$t('common.optional')})</span>{/if}</span>
               <input
                 type={field.type === 'password' ? 'password' : field.type === 'number' ? 'number' : 'text'}
                 class="input input-sm input-bordered w-full text-sm font-body"
@@ -1971,7 +1971,7 @@
             (plugin.slug === 'phonecall'
               ? claimableNumbers.length === 0 || !addAccountNumber
               : plugin.authFields.length
-                ? plugin.authFields.some((f) => !(addAccountCreds[f.key] ?? '').trim())
+                ? plugin.authFields.some((f) => f.required && !(addAccountCreds[f.key] ?? '').trim())
                 : !addAccountLabel.trim())}
           onclick={submitAddAccount}
         >{connecting

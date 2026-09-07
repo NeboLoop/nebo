@@ -344,7 +344,7 @@ fn login_profile(profile_dir_env: Option<String>, slug: &str, req: AccountLoginR
 /// holds (a password or secret is masked, a port is a number).
 fn auth_field(slug: &str, key: &str, schema: &[napp::plugin::PluginConfigField]) -> serde_json::Value {
     if let Some(f) = schema.iter().find(|f| f.key == key) {
-        return serde_json::json!({ "key": key, "label": f.label, "type": f.field_type, "description": f.description });
+        return serde_json::json!({ "key": key, "label": f.label, "type": f.field_type, "description": f.description, "required": f.required });
     }
     let prefix = format!("{}_", slug.replace('-', "_").to_ascii_uppercase());
     let words: Vec<String> = key
@@ -372,7 +372,9 @@ fn auth_field(slug: &str, key: &str, schema: &[napp::plugin::PluginConfigField])
     } else {
         "text"
     };
-    serde_json::json!({ "key": key, "label": label, "type": field_type, "description": "" })
+    // A key the manifest does not describe is required: the plugin asked for
+    // it and said nothing about doing without it.
+    serde_json::json!({ "key": key, "label": label, "type": field_type, "description": "", "required": true })
 }
 
 /// Per-(agent, plugin, account) credential directory. Lives under the Nebo
