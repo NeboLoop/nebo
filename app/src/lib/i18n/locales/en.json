@@ -2248,6 +2248,8 @@
 		"addPluginAccount": "Add {name} account",
 		"addAccountDesc": "Label this account, then sign in to connect it.",
 		"accountLabel": "Account label",
+		"accountLabelOptional": "Account label (optional)",
+		"checkingCredentials": "Checking the sign-in details with the mail server…",
 		"accountLabelPlaceholder": "work@acme.com",
 		"accountLabelHint": "Usually the email address or username for the account.",
 		"signInWindowOpened": "A sign-in window opened in your browser. Finish there — this connects automatically when it completes. Changed your mind? Cancel sign-in to close this and ignore the window.",

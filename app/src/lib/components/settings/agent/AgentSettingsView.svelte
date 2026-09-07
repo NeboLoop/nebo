@@ -574,11 +574,15 @@
   // account's OAuth token expired and can't be refreshed — the user must
   // reconnect it (surfaced as a "Reconnect" badge).
   type PluginAccount = { accountLabel: string; isPrimary: boolean; needsReauth?: boolean };
-  type AccountPlugin = { slug: string; name: string; description: string; accounts: PluginAccount[] };
+  // A credential the owner fills in when the plugin signs in with values
+  // (mail servers, API keys) instead of a browser — as the manifest declares it.
+  type AuthField = { key: string; label: string; type: string; description: string };
+  type AccountPlugin = { slug: string; name: string; description: string; authType: string; authFields: AuthField[]; accounts: PluginAccount[] };
   let accountPlugins = $state<AccountPlugin[]>([]);
   let accountsLoading = $state(false);
   let addAccountPlugin = $state<AccountPlugin | null>(null);
   let addAccountLabel = $state('');
+  let addAccountCreds = $state<Record<string, string>>({});
   let addAccountConnectingSlug = $state<string | null>(null);
   let addAccountError = $state<string | null>(null);
   // Phone-line picker state: which owned number this account attaches.
@@ -798,7 +802,7 @@
     accountsLoading = true;
     try {
       const api = await import('$lib/api/nebo');
-      const resp = await api.listPlugins() as { plugins: { slug: string; name?: string; description?: string; hasAuth?: boolean; multiAccount?: boolean }[] };
+      const resp = await api.listPlugins() as { plugins: { slug: string; name?: string; description?: string; hasAuth?: boolean; multiAccount?: boolean; authType?: string; authFields?: AuthField[] }[] };
       // Only plugins that declare profile_dir_env support multiple accounts
       // per agent (the "resource" model, e.g. gws). Identity-model plugins
       // (one bot per agent, e.g. Slack) are managed under Channels, not here.
@@ -809,7 +813,14 @@
           const r = await api.listPluginAccounts(p.slug, agentId);
           accounts = (r.accounts ?? []) as PluginAccount[];
         } catch { /* plugin may not support multi-account */ }
-        return { slug: p.slug, name: p.name || p.slug, description: p.description || '', accounts };
+        return {
+          slug: p.slug,
+          name: p.name || p.slug,
+          description: p.description || '',
+          authType: p.authType || '',
+          authFields: p.authType === 'env' ? (p.authFields ?? []) : [],
+          accounts,
+        };
       }));
       // Surface plugins that already have connected accounts first; keep the
       // rest so the user can add a first account to a multi-account plugin.
@@ -831,6 +842,7 @@
   function openAddAccount(p: AccountPlugin) {
     addAccountPlugin = p;
     addAccountLabel = '';
+    addAccountCreds = {};
     addAccountError = null;
     addAccountNumber = '';
     claimableNumbers = [];
@@ -858,6 +870,7 @@
     addAccountConnectingSlug = null;
     addAccountPlugin = null;
     addAccountLabel = '';
+    addAccountCreds = {};
     addAccountError = null;
   }
 
@@ -894,13 +907,17 @@
     // A phone account IS a number — the label defaults to the number's own
     // label (or the number itself) so nothing is invented.
     const picked = claimableNumbers.find((n) => n.number === addAccountNumber);
-    const label = addAccountLabel.trim() || (isPhone ? picked?.label || addAccountNumber : '');
+    // A credential account is named by its sign-in name (the address, the
+    // username) unless the owner labels it themselves.
+    const signIn = p.authFields.find((f) => /USER|EMAIL|LOGIN|ACCOUNT/.test(f.key.toUpperCase()));
+    const label = addAccountLabel.trim() || (isPhone ? picked?.label || addAccountNumber : (signIn ? (addAccountCreds[signIn.key] ?? '').trim() : ''));
     if (!label || (isPhone && claimableNumbers.length > 0 && !addAccountNumber)) return;
+    if (p.authFields.some((f) => !(addAccountCreds[f.key] ?? '').trim())) return;
     addAccountConnectingSlug = p.slug;
     addAccountError = null;
     try {
       const api = await import('$lib/api/nebo');
-      await api.authLoginAccount(p.slug, { agentId, accountLabel: label, accountNumber: addAccountNumber });
+      await api.authLoginAccount(p.slug, { agentId, accountLabel: label, accountNumber: addAccountNumber, credentials: addAccountCreds });
       // Login runs in the background; completion arrives via WS.
     } catch (e) {
       addAccountConnectingSlug = null;
@@ -1908,8 +1925,22 @@
             </label>
           {/if}
         {:else}
+          {#each plugin.authFields as field (field.key)}
+            <label class="flex flex-col gap-1.5">
+              <span class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{field.label}</span>
+              <input
+                type={field.type === 'password' ? 'password' : field.type === 'number' ? 'number' : 'text'}
+                class="input input-sm input-bordered w-full text-sm font-body"
+                autocomplete={field.type === 'password' ? 'current-password' : 'off'}
+                bind:value={addAccountCreds[field.key]}
+                disabled={connecting}
+                onkeydown={(e) => { if (e.key === 'Enter') submitAddAccount(); }}
+              />
+              {#if field.description}<span class="text-xs text-base-content/50">{field.description}</span>{/if}
+            </label>
+          {/each}
           <label class="flex flex-col gap-1.5">
-            <span class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('agentSettings.accountLabel')}</span>
+            <span class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{plugin.authFields.length ? $t('agentSettings.accountLabelOptional') : $t('agentSettings.accountLabel')}</span>
             <input
               type="text"
               class="input input-sm input-bordered w-full text-sm font-body"
@@ -1923,7 +1954,7 @@
         {/if}
 
         {#if connecting}
-          <div class="rounded-lg bg-primary/5 border border-primary/30 p-3 text-xs text-base-content/70">{plugin.slug === 'phonecall' ? 'Attaching the number to this employee…' : $t('agentSettings.signInWindowOpened')}</div>
+          <div class="rounded-lg bg-primary/5 border border-primary/30 p-3 text-xs text-base-content/70">{plugin.slug === 'phonecall' ? 'Attaching the number to this employee…' : plugin.authFields.length ? $t('agentSettings.checkingCredentials') : $t('agentSettings.signInWindowOpened')}</div>
         {/if}
 
         {#if addAccountError}
