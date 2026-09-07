@@ -655,7 +655,6 @@ pub struct InterruptedRun {
     pub trigger_detail: Option<String>,
     pub inputs: Option<String>,
     pub definition: Option<String>,
-    pub resume_attempted: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -525,6 +525,24 @@ impl Store {
         Ok(n == 1)
     }
 
+    /// Only the summary tag — the word a finer status keeps (`exited`,
+    /// `denied`) — without touching the result.
+    pub fn engine_set_run_result_tag(&self, id: &str, summary: &str) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute("UPDATE engine_runs SET summary = ?2 WHERE id = ?1", params![id, summary])
+            .db_err("engine_set_run_result_tag")?;
+        Ok(())
+    }
+
+    /// Only the error, state untouched — a run that records what went wrong
+    /// before deciding what it becomes.
+    pub fn engine_set_run_state_error(&self, id: &str, error: &str) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute("UPDATE engine_runs SET error = ?2 WHERE id = ?1", params![id, error])
+            .db_err("engine_set_run_state_error")?;
+        Ok(())
+    }
+
     pub fn engine_set_run_result(&self, id: &str, result: &str, summary: Option<&str>) -> Result<(), NeboError> {
         let conn = self.conn()?;
         conn.execute(
@@ -751,6 +769,24 @@ impl Store {
         }
         tx.commit().db_err("engine_declare_wait commit")?;
         Ok(wait_id)
+    }
+
+    /// The run's live wait is over without an event (the owner resolved an
+    /// approval by hand): the wait is superseded and the run no longer
+    /// points at one. The caller decides the run's next state.
+    pub fn engine_release_wait(&self, run_id: &str, now: i64) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE engine_waits SET superseded_at = ?2 WHERE run_id = ?1 AND superseded_at IS NULL",
+            params![run_id, now],
+        )
+        .db_err("engine_release_wait")?;
+        conn.execute(
+            "UPDATE engine_runs SET current_wait_id = NULL WHERE id = ?1",
+            params![run_id],
+        )
+        .db_err("engine_release_wait run")?;
+        Ok(())
     }
 
     pub fn engine_get_wait(&self, id: i64) -> Result<Option<EngineWait>, NeboError> {

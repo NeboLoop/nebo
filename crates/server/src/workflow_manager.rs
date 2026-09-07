@@ -154,7 +154,7 @@ impl WorkflowManagerImpl {
     /// per run, ever — a run that crashes the process again is poison, not a
     /// boot loop.
     pub async fn recover_interrupted_runs(self: &Arc<Self>) {
-        let rows = match self.store.mark_interrupted_workflow_runs() {
+        let rows = match self.store.claim_interrupted_workflow_runs(chrono::Utc::now().timestamp()) {
             Ok(rows) => rows,
             Err(e) => {
                 warn!(error = %e, "failed to sweep interrupted workflow runs");
@@ -176,10 +176,6 @@ impl WorkflowManagerImpl {
                     None,
                 );
             };
-            if run.resume_attempted != 0 {
-                fail("interrupted again during resume — not retried (poison-run protection)");
-                continue;
-            }
             let Some(agent_id) =
                 types::keyparser::agent_id_from_workflow_id(&run.workflow_id).map(str::to_string)
             else {
@@ -190,10 +186,6 @@ impl WorkflowManagerImpl {
                 fail("interrupted by a restart before definition snapshots existed — re-run manually");
                 continue;
             };
-            if let Err(e) = self.store.mark_workflow_run_resume_attempted(&run.id) {
-                warn!(run_id = %run.id, error = %e, "failed to mark resume attempt");
-                continue;
-            }
             let mut inputs: serde_json::Value = run
                 .inputs
                 .as_deref()
