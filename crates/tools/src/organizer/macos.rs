@@ -285,8 +285,11 @@ pub async fn mail_send(input: &OrganizerInput) -> crate::effects::SendOutcome {
         "\n    send newMsg\n    return \"Handed to Mail for delivery to {}\"\nend tell",
         escape_applescript(&input.to.join(", "))
     ));
-    // Mail.app's scripting sends plain text: the text goes, and the result
-    // says the HTML version was not used — never a silent downgrade.
+    // Mail.app cannot send HTML from a script: its dictionary's `html
+    // content` property is hidden, write-only, and described by Apple as
+    // "Does nothing at all (deprecated)" (checked with `sdef` on macOS 26).
+    // The text goes, and the result says the HTML version was not used —
+    // never a silent downgrade.
     match run_osascript_typed(&script).await.send_outcome() {
         SendOutcome::Sent(msg, r) if !input.html.trim().is_empty() => SendOutcome::Sent(format!("{msg} (Mail.app sends plain text; the html version was not used)"), r),
         other => other,

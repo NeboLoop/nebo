@@ -129,26 +129,10 @@ pub async fn mail_send(input: &OrganizerInput) -> crate::effects::SendOutcome {
             }
         }
         "sendmail" => {
-            // Build RFC 2822 formatted email; with an HTML version too, a
-            // multipart/alternative so the reader's client picks.
-            let mut email = String::new();
-            email.push_str(&format!("To: {}\n", input.to.join(", ")));
-            if !input.cc.is_empty() {
-                email.push_str(&format!("Cc: {}\n", input.cc.join(", ")));
-            }
-            email.push_str(&format!("Subject: {}\n", input.subject));
-            email.push_str("MIME-Version: 1.0\n");
-            if input.html.trim().is_empty() {
-                email.push_str("Content-Type: text/plain; charset=UTF-8\n\n");
-                email.push_str(&input.text);
-            } else {
-                let boundary = format!("=_nebo_{}", uuid::Uuid::new_v4().simple());
-                email.push_str(&format!("Content-Type: multipart/alternative; boundary=\"{boundary}\"\n\n"));
-                email.push_str(&format!("--{boundary}\nContent-Type: text/plain; charset=UTF-8\n\n{}\n", input.text));
-                email.push_str(&format!("--{boundary}\nContent-Type: text/html; charset=UTF-8\n\n{}\n", input.html));
-                email.push_str(&format!("--{boundary}--\n"));
-            }
-
+            // The message as sendmail reads it from stdin (`-t`): RFC 5322
+            // headers and, with an HTML version, a multipart/alternative.
+            // Built by the shared, tested assembler.
+            let email = super::shared::mail_message(&input.to, &input.cc, &input.subject, &input.text, &input.html);
             run_command_with_stdin_typed("sendmail", &["-t"], &email).await.send_outcome()
         }
         _ => SendOutcome::PreSendFailure(format!("Unsupported mail backend: {}", backend)),

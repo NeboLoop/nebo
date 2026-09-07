@@ -152,6 +152,35 @@ pub fn exit_error(cmd: &str, output: &std::process::Output) -> String {
     format!("{} exited {}: {}", cmd, code, body)
 }
 
+/// A mail message as a transport reads it from stdin: RFC 5322 headers,
+/// then either a plain body or — with an HTML version alongside — a
+/// multipart/alternative with the plain part first, so a reader's client
+/// picks and an older one still sees the text (RFC 2046 §5.1.4).
+/// Platform-independent so it is tested on every platform; sendmail on
+/// Linux is the transport that reads it.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub fn mail_message(to: &[String], cc: &[String], subject: &str, text: &str, html: &str) -> String {
+    let mut email = String::new();
+    email.push_str(&format!("To: {}\n", to.join(", ")));
+    if !cc.is_empty() {
+        email.push_str(&format!("Cc: {}\n", cc.join(", ")));
+    }
+    email.push_str(&format!("Subject: {}\n", subject));
+    email.push_str("MIME-Version: 1.0\n");
+    if html.trim().is_empty() {
+        email.push_str("Content-Type: text/plain; charset=UTF-8\n\n");
+        email.push_str(text);
+        email.push('\n');
+    } else {
+        let boundary = format!("=_nebo_{}", uuid::Uuid::new_v4().simple());
+        email.push_str(&format!("Content-Type: multipart/alternative; boundary=\"{boundary}\"\n\n"));
+        email.push_str(&format!("--{boundary}\nContent-Type: text/plain; charset=UTF-8\n\n{text}\n"));
+        email.push_str(&format!("--{boundary}\nContent-Type: text/html; charset=UTF-8\n\n{html}\n"));
+        email.push_str(&format!("--{boundary}--\n"));
+    }
+    email
+}
+
 /// How a subprocess ended, typed so a send it carried can say what it
 /// knows: the command never started, it ran and refused, or it was killed
 /// at the timeout (or lost) with its effect unknown.
@@ -321,6 +350,25 @@ pub fn which_exists(cmd: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    /// With text alone the message is a plain part; with html alongside it
+    /// is a multipart/alternative, plain first, both under the one boundary,
+    /// closed — the shape every mail client and RFC 2046 expect.
+    #[test]
+    fn a_mail_message_is_plain_or_a_closed_multipart_alternative_with_text_first() {
+        let to = vec!["a@example.com".to_string()];
+        let plain = super::mail_message(&to, &[], "Hi", "hello", "");
+        assert!(plain.starts_with("To: a@example.com\nSubject: Hi\nMIME-Version: 1.0\nContent-Type: text/plain; charset=UTF-8\n\nhello\n"), "{plain}");
+        let both = super::mail_message(&to, &["c@example.com".to_string()], "Hi", "hello", "<p>hello</p>");
+        let boundary = both.split("boundary=\"").nth(1).unwrap().split('"').next().unwrap().to_string();
+        assert!(both.contains("Cc: c@example.com\n"));
+        assert!(both.contains("Content-Type: multipart/alternative; boundary=\""));
+        let parts: Vec<&str> = both.split(&format!("--{boundary}")).collect();
+        assert_eq!(parts.len(), 4, "preamble, text part, html part, closing: {both}");
+        assert!(parts[1].starts_with("\nContent-Type: text/plain; charset=UTF-8\n\nhello\n"), "text first");
+        assert!(parts[2].starts_with("\nContent-Type: text/html; charset=UTF-8\n\n<p>hello</p>\n"));
+        assert_eq!(parts[3], "--\n", "closed");
+    }
+
     /// A send the subprocess carried is typed by how the subprocess ended:
     /// refused is a confirmed failure, never started is pre-send, and a
     /// timeout is unknown — the message may have gone.
