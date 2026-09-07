@@ -1010,7 +1010,7 @@ impl Store {
     pub fn engine_children(&self, parent_id: &str) -> Result<Vec<EngineRun>, NeboError> {
         let conn = self.conn()?;
         let mut stmt = conn
-            .prepare(&format!("SELECT {RUN_COLUMNS} FROM engine_runs WHERE parent_run_id = ?1 ORDER BY created_at, id"))
+            .prepare(&format!("SELECT {RUN_COLUMNS} FROM engine_runs WHERE parent_run_id = ?1 ORDER BY created_at, rowid"))
             .db_err("engine_children")?;
         let rows = stmt
             .query_map(params![parent_id], row_to_run)

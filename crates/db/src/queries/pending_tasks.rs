@@ -168,11 +168,19 @@ impl Store {
         Ok(())
     }
 
+    /// Cancelling a parent takes every live descendant with it — children,
+    /// grandchildren, however deep the fan-out went. Finished ones are left
+    /// as they ended.
     pub fn cancel_child_tasks(&self, parent_task_id: &str) -> Result<(), NeboError> {
         let conn = self.conn()?;
         conn.execute(
-            "UPDATE engine_runs SET state = 'cancelled', ended_at = ?2
-             WHERE parent_run_id = ?1 AND state IN ('queued', 'running', 'interrupted')",
+            "WITH RECURSIVE below(id) AS (
+                 SELECT id FROM engine_runs WHERE parent_run_id = ?1
+                 UNION
+                 SELECT r.id FROM engine_runs r JOIN below b ON r.parent_run_id = b.id
+             )
+             UPDATE engine_runs SET state = 'cancelled', ended_at = ?2, current_wait_id = NULL
+             WHERE id IN (SELECT id FROM below) AND state IN ('queued', 'running', 'waiting', 'interrupted')",
             params![parent_task_id, now()],
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;

@@ -378,7 +378,8 @@ pub fn route_recorded(store: &Store, b: &CaseBinding<'_>, subject: &str, event_i
                     &NewWait { action: "trigger_child", on_kind: "signal", key: &key, deadline: None, parked: None, reason: "reopened: they wrote back" },
                     t,
                 )?;
-                let _ = store.engine_enqueue_event(&NewEvent {
+                // A history row: complete on arrival, it wakes nothing.
+                if let Ok(Enqueued::Inserted(note)) = store.engine_enqueue_event(&NewEvent {
                     kind: "reopened",
                     target_type: "run",
                     target_id: &prev.id,
@@ -387,7 +388,9 @@ pub fn route_recorded(store: &Store, b: &CaseBinding<'_>, subject: &str, event_i
                     idem_key: &format!("reopen:{}:{event_id}", prev.id),
                     durable: true,
                     ..Default::default()
-                });
+                }) {
+                    store.engine_complete_event(note, t)?;
+                }
                 // The signal that reopened it starts the next turn now.
                 let case = store.engine_get_run(&prev.id)?.ok_or(NeboError::NotFound)?;
                 if let Some(ev) = store.engine_get_event(event_id)? {
@@ -705,7 +708,11 @@ pub fn settle_turn(store: &Store, child: &EngineRun, output: Option<&str>, faile
             .map(str::to_string)
             .unwrap_or_else(|| "turn finished".to_string()),
         Some(Err(why)) => format!("turn ended without a valid next: {why}"),
-        None => "turn failed".to_string(),
+        // The reason is the audit line, not just the fact.
+        None => match output.map(str::trim).filter(|o| !o.is_empty()) {
+            Some(why) => format!("turn failed: {}", why.chars().take(300).collect::<String>()),
+            None => "turn failed".to_string(),
+        },
     };
     // The receipts behind the words: what the ledger saw this turn. Seen
     // live: a turn closed a case as booked saying "calendar invite sent to

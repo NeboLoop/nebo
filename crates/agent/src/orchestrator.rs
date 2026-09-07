@@ -701,13 +701,15 @@ impl Orchestrator {
     /// Cancel a running task.
     async fn cancel_internal(&self, task_id: &str) -> Result<(), String> {
         let mut active = self.active.write().await;
+        // Cancelling a parent takes its descendants, live or not yet started:
+        // the token cascades to running children, the rows to every one.
         if let Some(agent) = active.remove(task_id) {
             agent.cancel.cancel();
             let _ = self.store.cancel_task(task_id);
+            let _ = self.store.cancel_child_tasks(task_id);
             info!(task_id = %task_id, "Cancelled sub-agent");
             Ok(())
         } else {
-            // Try cancelling children if it's a DAG parent
             let _ = self.store.cancel_task(task_id);
             let _ = self.store.cancel_child_tasks(task_id);
             Ok(())
