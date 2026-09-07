@@ -22,6 +22,7 @@ pub mod desktop_session;
 pub mod desktop_snapshot;
 pub mod desktop_tool;
 pub mod domain;
+pub mod effects;
 pub mod emit_tool;
 pub mod errors;
 pub mod event_tool;

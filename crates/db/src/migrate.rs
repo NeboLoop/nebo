@@ -54,6 +54,31 @@ pub fn run_migrations(conn: &Connection) -> Result<(), NeboError> {
     let mut migration_files = iter_files();
     migration_files.sort();
 
+    // A versioned copy of the database before anything changes, taken by
+    // SQLite itself (consistent, online). Rollback is the previous binary
+    // plus this file. Only for a database that has history: a fresh one has
+    // nothing to lose. One file per starting version, overwritten if the
+    // same upgrade is attempted again.
+    let pending: Vec<&String> = migration_files
+        .iter()
+        .filter(|f| extract_version(f).map(|v| !applied.contains(&v)).unwrap_or(false))
+        .collect();
+    if !pending.is_empty() && !applied.is_empty() {
+        if let Some(path) = conn.path().filter(|p| !p.is_empty() && *p != ":memory:") {
+            let from = applied.iter().max().copied().unwrap_or(0);
+            let backup = format!("{path}.pre-v{from:04}.bak");
+            let _ = std::fs::remove_file(&backup);
+            match conn.execute("VACUUM INTO ?1", rusqlite::params![backup]) {
+                Ok(_) => info!(backup = %backup, from_version = from, pending = pending.len(), "pre-migration database copy written"),
+                Err(e) => {
+                    return Err(NeboError::Migration(format!(
+                        "refusing to migrate without a pre-migration copy ({backup}): {e}"
+                    )));
+                }
+            }
+        }
+    }
+
     let mut applied_count = 0;
 
     for filename in &migration_files {

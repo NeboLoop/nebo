@@ -306,7 +306,7 @@ impl DynTool for MessageTool {
                     let nf = self.notify_fn.read().unwrap().clone();
                     handle_notify(&self.store, nf.as_ref(), &domain_input.action, &input, agent_id.as_deref()).await
                 }
-                "sms" => handle_sms(&self.store, agent_id.as_deref(), &domain_input.action, &input).await,
+                "sms" => handle_sms(&self.store, ctx, agent_id.as_deref(), &domain_input.action, &input).await,
                 other => ToolResult::error(format!(
                     "Resource {:?} not available. Available: coworker, owner, notify, sms",
                     other
@@ -547,12 +547,27 @@ async fn handle_dnd_status() -> ToolResult {
 // SMS resource handlers (macOS Messages.app via chat.db)
 // ---------------------------------------------------------------------------
 
-async fn handle_sms(store: &Store, agent_id: Option<&str>, action: &str, input: &serde_json::Value) -> ToolResult {
+async fn handle_sms(store: &Store, ctx: &ToolContext, agent_id: Option<&str>, action: &str, input: &serde_json::Value) -> ToolResult {
     match action {
-        "send" => match send_from_phone_line(store, agent_id, input).await {
-            Some(r) => r,
-            None => handle_sms_send(input).await,
-        },
+        // A text to a customer goes through the effect ledger: recorded
+        // before it goes, never sent twice for the same input in one run,
+        // held for the owner when the outcome is unknown.
+        "send" => {
+            crate::effects::guarded_send(store, ctx, "messaging", "sms-line", "sms.message.send", input, || async {
+                let r = match send_from_phone_line(store, agent_id, input).await {
+                    Some(r) => r,
+                    None => handle_sms_send(input).await,
+                };
+                if !r.is_error {
+                    crate::effects::SendOutcome::Sent(r.content, None)
+                } else if crate::effects::looks_unknown(&r.content) {
+                    crate::effects::SendOutcome::Unknown(r.content)
+                } else {
+                    crate::effects::SendOutcome::Rejected(r.content)
+                }
+            })
+            .await
+        }
         "conversations" => handle_sms_conversations(input).await,
         "read" => handle_sms_read(input).await,
         "search" => handle_sms_search(input).await,

@@ -389,6 +389,21 @@ pub fn start_child(store: &Store, parent: &EngineRun, event: &EngineEvent) -> Re
     crate::events::insert_event_envelope(&mut inputs, &format!("case.{}", event.kind), payload, "case");
     inputs["_case"]["event_id"] = serde_json::json!(event.id);
     inputs["_case"]["history"] = serde_json::json!(history_lines(store, &parent.id));
+    // What governs this turn, recorded with it: the playbook is read fresh
+    // each turn on purpose, so the record says which one this turn ran
+    // under and what the employee's policy was at the time.
+    inputs["_case"]["governance"] = serde_json::json!({
+        "definition_hash": parent.definition.as_deref().map(fingerprint).unwrap_or_default(),
+        "policy_default": store
+            .get_entity_config("agent", &parent.agent_id)
+            .ok()
+            .flatten()
+            .and_then(|c| c.operation_policy)
+            .map(|j| tools::policy::OperationPolicy::from_json(Some(&j)))
+            .map(|p| format!("{:?}", p.default).to_lowercase())
+            .unwrap_or_else(|| "approval".to_string()),
+        "queued_at": chrono::Utc::now().timestamp(),
+    });
     let binding = inputs["_case"]["binding"].as_str().unwrap_or("").to_string();
     let child_id = uuid::Uuid::new_v4().to_string();
     store.engine_create_run(&NewRun {
@@ -408,6 +423,14 @@ pub fn start_child(store: &Store, parent: &EngineRun, event: &EngineEvent) -> Re
         "case",
         Some(&binding),
     )
+}
+
+/// A short stable fingerprint of a definition, for the governance record.
+fn fingerprint(s: &str) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    s.hash(&mut h);
+    format!("{:016x}", h.finish())
 }
 
 /// The last durable events on a case, one line each, for the turn's prompt.
