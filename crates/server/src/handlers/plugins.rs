@@ -124,6 +124,15 @@ pub async fn list_plugins(State(state): State<AppState>) -> HandlerResult<serde_
             .and_then(|m| m.setup.as_ref())
             .map(|s| serde_json::to_value(s).unwrap_or(serde_json::Value::Null));
 
+        // The credential fields in the order the manifest's configSchema
+        // lists them (the plugin's own sense of the form), then the rest by name.
+        let auth_fields: Vec<serde_json::Value> = {
+            let schema = manifest.as_ref().and_then(|m| m.capabilities.as_ref()).map(|c| c.config_schema.as_slice()).unwrap_or(&[]);
+            let mut keys: Vec<&String> = auth_env_vars.iter().collect();
+            keys.sort_by_key(|k| (schema.iter().position(|f| &f.key == *k).unwrap_or(usize::MAX), (*k).clone()));
+            keys.into_iter().map(|k| auth_field(slug, k, schema)).collect()
+        };
+
         plugins.push(serde_json::json!({
             "slug": slug,
             "version": version.to_string(),
@@ -133,10 +142,7 @@ pub async fn list_plugins(State(state): State<AppState>) -> HandlerResult<serde_
             "hasAuth": has_auth,
             "authLabel": auth_label,
             "authType": auth_type,
-            "authFields": auth_env_vars
-                .iter()
-                .map(|k| auth_field(slug, k, manifest.as_ref().and_then(|m| m.capabilities.as_ref()).map(|c| c.config_schema.as_slice()).unwrap_or(&[])))
-                .collect::<Vec<_>>(),
+            "authFields": auth_fields,
             "authEnvVars": auth_env_vars,
             "hasEvents": event_count > 0,
             "eventCount": event_count,
