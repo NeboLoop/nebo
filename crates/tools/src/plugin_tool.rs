@@ -897,8 +897,12 @@ impl DynTool for PluginTool {
                       Grammar: `<service> <resource> <method> [flags]` (e.g. `calendar events list`).\n");
         // Said only when that plugin is installed: a made-up example slug was
         // copied verbatim by a live run and reported as "not installed".
+        // Mail is NOT named here: an employee whose mail is a different
+        // connected provider (gmail) was steered to google-workspace, which
+        // had no account for it, and the turn died on that first call. The
+        // typed ports below name the provider that actually sends.
         if slugs.iter().any(|s| s == GOOGLE_WORKSPACE_SLUG) {
-            out.push_str(&format!("For Google Calendar/Gmail/Drive use plugin(resource: \"{GOOGLE_WORKSPACE_SLUG}\", ...); for the local Mac calendar use os(resource: \"calendar\").\n\n"));
+            out.push_str(&format!("For Google Calendar/Drive use plugin(resource: \"{GOOGLE_WORKSPACE_SLUG}\", ...) when plugin(action: \"list\") shows an account connected for this employee; for the local Mac calendar use os(resource: \"calendar\").\n\n"));
         } else {
             out.push('\n');
         }
@@ -1798,8 +1802,7 @@ impl PluginTool {
                         // Nothing connected. Interactive chat renders an inline
                         // connect card via ask_user, which parks THIS tool call
                         // until the account is connected — the run then resumes
-                        // at the same call. Unattended runs stop cleanly rather
-                        // than letting the model improvise around the failure.
+                        // at the same call.
                         let interactive = crate::origin::ExecutionMode::from(ctx.origin)
                             == crate::origin::ExecutionMode::Interactive
                             && ctx.ask_channels.is_some();
@@ -1807,7 +1810,48 @@ impl PluginTool {
                             return ToolResult::error(none_msg);
                         };
                         if !interactive {
-                            return ToolResult::terminal(none_msg);
+                            // Unattended: the error steers to what IS connected
+                            // for this employee, and the turn goes on. Seen live:
+                            // an employee with gmail connected called
+                            // google-workspace first, the terminal error ended
+                            // the turn, and the lead was never answered. When
+                            // nothing at all is connected there is nothing to
+                            // steer to, and the run stops cleanly rather than
+                            // improvising around the failure.
+                            let mut connected: Vec<String> = self
+                                .db_store
+                                .list_all_plugin_account_profiles_for_agent(agent_id)
+                                .unwrap_or_default()
+                                .into_iter()
+                                .map(|p| p.plugin_slug)
+                                .filter(|s| s != &pi.resource)
+                                .collect();
+                            connected.sort();
+                            connected.dedup();
+                            let ports: Vec<String> = self
+                                .bound_operations()
+                                .into_iter()
+                                .filter(|(_, slug)| connected.contains(slug))
+                                .map(|(op, slug)| format!("{op} (via {slug})"))
+                                .collect();
+                            if connected.is_empty() {
+                                return ToolResult::terminal(none_msg);
+                            }
+                            let mut msg = format!(
+                                "{none_msg} Connected for this employee: {}.",
+                                connected.join(", ")
+                            );
+                            if !ports.is_empty() {
+                                msg.push_str(&format!(
+                                    " Typed ports those serve: {}; call plugin(operation: \"<op>\", input: {{...}}).",
+                                    ports.join(", ")
+                                ));
+                            }
+                            msg.push_str(
+                                " Do the work with what is connected; if it cannot be done without \
+                                 this account, exit the turn saying so instead of retrying it.",
+                            );
+                            return ToolResult::error(msg);
                         }
                         let display_label = self
                             .plugin_store
@@ -2834,6 +2878,69 @@ mod budget_and_install_tests {
         let resource = &tool.schema()["properties"]["resource"];
         assert_eq!(resource["enum"], serde_json::json!(["quickbooks"]));
         assert!(!tool.description().contains("resource: \"gws\""));
+    }
+
+    /// A plugin whose accounts are per employee, with a manifest that says so.
+    fn install_account_plugin(root: &std::path::Path, slug: &str, bindings: serde_json::Value) {
+        let version_dir = root.join("plugins").join(slug).join("0.1.0");
+        std::fs::create_dir_all(&version_dir).unwrap();
+        std::fs::write(
+            version_dir.join("plugin.json"),
+            serde_json::json!({
+                "id": slug, "slug": slug, "name": slug, "version": "0.1.0", "platforms": {},
+                "auth": {"type": "oauth", "profileDirEnv": format!("{}_CONFIG_DIR", slug.to_uppercase())},
+                "interfaceBindings": bindings,
+            })
+            .to_string(),
+        )
+        .unwrap();
+        std::fs::write(version_dir.join(slug), b"#!/bin/sh\necho ok\n").unwrap();
+    }
+
+    /// Seen live: an employee with gmail connected called google-workspace
+    /// first (nothing connected there), the terminal error ended the turn,
+    /// and the lead was never answered. Unattended, the error now steers to
+    /// what IS connected and the turn goes on; with nothing connected at all
+    /// there is nothing to steer to, and the run stops cleanly.
+    #[tokio::test]
+    async fn unattended_no_account_steers_to_what_is_connected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (plugin_store, db_store) = stores(tmp.path());
+        install_account_plugin(tmp.path(), "gws", serde_json::json!({}));
+        install_account_plugin(tmp.path(), "gmail", serde_json::json!({"mail.message.send": "send"}));
+        let tool = PluginTool::new(plugin_store, db_store.clone());
+        let ctx = ToolContext { session_key: "agent:ic:workflow:run-1".into(), ..Default::default() };
+        let pi: PluginInput = serde_json::from_value(
+            serde_json::json!({"action": "exec", "resource": "gws", "command": "calendar events list"}),
+        )
+        .unwrap();
+
+        let r = tool.run_plugin_command(&pi, &ctx, Duration::from_secs(5)).await;
+        assert!(r.is_error && r.terminal, "nothing connected at all: {}", r.content);
+
+        db_store
+            .upsert_plugin_account_profile("p1", "ic", "gmail", "sales@example.com", tmp.path().join("gmail-acct").to_str().unwrap())
+            .unwrap();
+        let r = tool.run_plugin_command(&pi, &ctx, Duration::from_secs(5)).await;
+        assert!(r.is_error && !r.terminal, "{}", r.content);
+        assert!(r.content.contains("No gws account is connected"), "{}", r.content);
+        assert!(r.content.contains("Connected for this employee: gmail"), "{}", r.content);
+        assert!(r.content.contains("mail.message.send (via gmail)"), "{}", r.content);
+    }
+
+    /// The roster never sends mail to google-workspace by name: the typed
+    /// port names the provider that sends for this install.
+    #[test]
+    fn the_roster_does_not_steer_mail_to_google_workspace() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (plugin_store, db_store) = stores(tmp.path());
+        install_account_plugin(tmp.path(), GOOGLE_WORKSPACE_SLUG, serde_json::json!({}));
+        install_account_plugin(tmp.path(), "gmail", serde_json::json!({"mail.message.send": "send"}));
+        let tool = PluginTool::new(plugin_store, db_store);
+        let d = tool.description();
+        assert!(d.contains("For Google Calendar/Drive use"), "{d}");
+        assert!(!d.contains("Calendar/Gmail"), "{d}");
+        assert!(d.contains("mail.message.send  (via gmail)"), "{d}");
     }
 
     /// A best match that is already installed gets no install card: the

@@ -38,7 +38,7 @@ use crate::state::AppState;
 use db::models::CronJob;
 use db::{EngineEvent, EngineRun, NewEvent, Store};
 use tools::workflows::WorkflowManager;
-use workflow::cases::{needs_attention, settle_turn, start_child};
+use workflow::cases::{needs_attention, parse_turn, settle_turn, start_child};
 
 const TICK: Duration = Duration::from_secs(5);
 const CLAIM_BATCH: i64 = 50;
@@ -985,10 +985,7 @@ async fn drive(state: &AppState) {
         // routed afresh. Drop the stale queue so nothing rides a dead session.
         let _ = agent::steering::drain_wakes(&turn.session_key);
         let failed = turn.state != "done";
-        // A turn that exited early carries its reason where a failure would
-        // (the workflow's exit path); if the model put the contract there,
-        // it still counts.
-        let output = if failed { turn.error.clone().or(turn.result.clone()).or_else(|| Some(turn.state.clone())) } else { turn.result.clone().or(turn.error.clone()) };
+        let output = turn_output(&turn, t);
         if let Err(e) = settle_turn(store, &turn, output.as_deref(), failed, t) {
             warn!(run = %turn.id, error = %e, "engine: settle failed");
         }
@@ -1203,6 +1200,21 @@ pub fn spawn(state: AppState) {
             drive(&state).await;
         }
     });
+}
+
+/// The text a finished turn is settled on. A turn that exited early carries
+/// its reason where a failure would (the workflow's exit path); if the model
+/// put the contract there, it still counts. Seen live: a turn ended through
+/// the exit tool with the contract in its reason and an EMPTY result — the
+/// empty result was read and the contract was missed.
+fn turn_output(turn: &EngineRun, t: i64) -> Option<String> {
+    let texts = || [turn.result.clone(), turn.error.clone()].into_iter().flatten().filter(|s| !s.trim().is_empty());
+    let contract = texts().find(|o| parse_turn(o, t).is_ok());
+    if turn.state != "done" {
+        contract.or_else(|| turn.error.clone()).or_else(|| turn.result.clone()).or_else(|| Some(turn.state.clone()))
+    } else {
+        contract.or_else(|| texts().next())
+    }
 }
 
 #[cfg(test)]
@@ -1905,6 +1917,53 @@ mod tests {
         assert_eq!(tick(&s, t, &idle, &no_steer).children_started, 1);
         let (delay, _) = fail_turn(&s, t);
         assert_eq!(delay, 60, "streak reset by the success");
+    }
+
+    /// Seen live: a turn ended through the exit tool with the contract in
+    /// its reason and an EMPTY result; the empty result was read and the
+    /// contract missed ("turn ended without a valid next"). Whichever text
+    /// carries the contract counts.
+    #[test]
+    fn the_contract_in_an_exit_reason_counts_when_the_result_is_empty() {
+        let s = store();
+        let b = binding();
+        let Routed::Opened { case_id } = signal_or_open(&s, &b, "email", "exit@x.com", &serde_json::json!({"email": "exit@x.com"}), "webhook", "s-exit", 1_000).unwrap() else { panic!() };
+        let turn = s.engine_queued_runs_of_kind("workflow", 1).unwrap().remove(0);
+        let reason = r#"Nothing to do yet. {"result":{"status":"owner_takeover","summary":"needs the owner"},"next":{"action":"wait","deadline":"5m","reason":"owner"}}"#;
+        s.complete_workflow_run(&turn.id, "completed", 5, Some(reason), None, Some("")).unwrap();
+        let turn = s.engine_unsettled_turns(1).unwrap().remove(0);
+        assert_eq!(turn.result.as_deref(), Some(""), "the exit path leaves the result empty");
+        let output = turn_output(&turn, 1_100);
+        settle_turn(&s, &turn, output.as_deref(), turn.state != "done", 1_100).unwrap();
+        let case = s.engine_get_run(&case_id).unwrap().unwrap();
+        let wait = s.engine_get_wait(case.current_wait_id.unwrap()).unwrap().unwrap();
+        assert_eq!(wait.deadline, Some(1_100 + 300), "the exit reason's deadline, not the default: {:?}", wait.reason);
+        let hist = s.engine_events_for("run", &case_id, 50).unwrap();
+        assert!(hist.iter().any(|e| e.kind == "turn_result" && e.payload.contains("needs the owner")), "{hist:?}");
+        assert!(!hist.iter().any(|e| e.payload.contains("without a valid next")), "{hist:?}");
+    }
+
+    /// Seen live: a retry after a failed first turn was handed the failure
+    /// line alone and answered "no lead data available to process". The
+    /// person's own message is in every turn's history.
+    #[test]
+    fn every_turn_reads_the_signal_that_opened_the_case() {
+        let s = store();
+        let b = binding();
+        let payload = serde_json::json!({"email": "lead@x.com", "message": "weekly lawn care on a half-acre lot"});
+        let Routed::Opened { case_id } = signal_or_open(&s, &b, "email", "lead@x.com", &payload, "webhook", "s-hist", 1_000).unwrap() else { panic!() };
+        let turn = s.engine_queued_runs_of_kind("workflow", 1).unwrap().remove(0);
+        s.complete_workflow_run(&turn.id, "failed", 0, Some("blocked: no account"), None, None).unwrap();
+        let turn = s.engine_unsettled_turns(1).unwrap().remove(0);
+        settle_turn(&s, &turn, Some("blocked: no account"), true, 1_010).unwrap();
+        let case = s.engine_get_run(&case_id).unwrap().unwrap();
+        let t = s.engine_get_wait(case.current_wait_id.unwrap()).unwrap().unwrap().deadline.unwrap();
+        assert_eq!(tick(&s, t, &idle, &no_steer).children_started, 1, "the retry turn");
+        let retry = s.engine_queued_runs_of_kind("workflow", 1).unwrap().remove(0);
+        let inputs: serde_json::Value = serde_json::from_str(retry.inputs.as_deref().unwrap()).unwrap();
+        let history = inputs["_case"]["history"].to_string();
+        assert!(history.contains("[signal]") && history.contains("half-acre"), "{history}");
+        assert!(history.contains("[turn_failed]"), "{history}");
     }
 
     /// An engine fault always reaches the owner, whatever the employee's
