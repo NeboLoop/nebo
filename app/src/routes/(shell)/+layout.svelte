@@ -30,6 +30,7 @@
   import { logger } from '$lib/monitoring';
   import MessageSquareLock from 'lucide-svelte/icons/message-square-lock';
   import SettingsIcon from 'lucide-svelte/icons/settings';
+  import Search from 'lucide-svelte/icons/search';
 
   // Sidebar drill choreography: siblings collapse, the clicked row rides to
   // the top, conversations expand under it. Zero-duration under
@@ -135,8 +136,8 @@
   // Where in the storefront the modal is standing. Same shape the /marketplace
   // route reads out of its URL, so both mounts feed MarketplaceBrowse the same
   // way — the modal just keeps it in state instead of the address bar.
-  type MarketLoc = { kind: string; price: string; category: string; publisher: string; filter: string };
-  const MARKET_HOME: MarketLoc = { kind: 'employees', price: 'all', category: '', publisher: '', filter: '' };
+  type MarketLoc = { kind: string; price: string; category: string; publisher: string; filter: string; q: string };
+  const MARKET_HOME: MarketLoc = { kind: 'employees', price: 'all', category: '', publisher: '', filter: '', q: '' };
   let market = $state<MarketLoc>({ ...MARKET_HOME });
   let marketDetail = $state<{ id: string; type: 'agent' | 'app' | 'skill' | 'plugin' | 'connector' | 'collection' } | null>(null);
   // Reopening the modal starts at browse, not wherever it was left.
@@ -152,6 +153,7 @@
       category,
       publisher,
       filter: p.get('filter') ?? '',
+      q: p.get('q') ?? '',
     };
   }
 
@@ -1577,6 +1579,12 @@
           {$t(k.labelKey)}
         </button>
       {/each}
+      <!-- ONE search box for the whole storefront, like the website's: it
+           searches whichever section is open (employees, tools, collections). -->
+      <label class="ml-auto w-72 max-w-[50%] flex items-center gap-2 rounded-full border border-base-300 bg-base-100 px-3 py-1.5 focus-within:border-primary">
+        <Search class="w-4 h-4 text-base-content/50 shrink-0" />
+        <input class="w-full bg-transparent outline-none text-sm" type="search" placeholder={$t('marketplace.searchAllPlaceholder')} bind:value={market.q} />
+      </label>
     </div>
     <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
     <div class="flex-1 min-h-0 flex" onclickcapture={interceptMarketClick}>
@@ -1600,6 +1608,7 @@
               category={market.category}
               publisher={market.publisher}
               filter={market.filter}
+              q={market.q}
             />
           {/key}
         {/if}

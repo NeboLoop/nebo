@@ -34,8 +34,9 @@
 		price = 'all',
 		category = '',
 		publisher = '',
-		filter = ''
-	}: { kind?: string; price?: string; category?: string; publisher?: string; filter?: string } =
+		filter = '',
+		q = ''
+	}: { kind?: string; price?: string; category?: string; publisher?: string; filter?: string; q?: string } =
 		$props();
 	const kindType = $derived(KIND_TYPE[kind] ?? '');
 	const isFiltering = $derived(kind !== 'all' || price !== 'all' || category !== '' || publisher !== '');
@@ -57,15 +58,15 @@
 
 	const isBrowseView = $derived(kind === 'employees' || kind === 'tools');
 
-	// ── Search: server-side (q on /store/browse) for the browse views. A live
-	// query flips the view to a flat ranked result list — grouping by
-	// department is browsing, not finding.
-	let searchQ = $state('');
+	// ── Search: ONE box, owned by whoever hosts this view (the storefront
+	// modal, the /marketplace route), handed down as `q`. Employees and tools
+	// search on the server (q on /store/browse); collections over the catalog
+	// already loaded. A live query flips the view to a flat ranked result
+	// list — grouping by department is browsing, not finding.
+	const searchQ = $derived(q);
 	let searchItems: AppItem[] = $state([]);
 	let searching = $state(false);
 	let searchSeq = 0;
-	// Every tab searches: employees and tools on the server, collections over
-	// the catalog already loaded (there is no server search for them).
 	const searchable = $derived(isBrowseView || kind === 'collections');
 	const searchActive = $derived(searchable && searchQ.trim().length > 1);
 
@@ -231,13 +232,6 @@
 	});
 </script>
 
-{#snippet searchBox(placeholder: string)}
-	<label class="mt-5 max-w-md flex items-center gap-2 rounded-full border border-base-300 bg-base-100 px-4 py-2 focus-within:border-primary">
-		<Search class="w-4 h-4 text-base-content/50 shrink-0" />
-		<input class="w-full bg-transparent outline-none text-sm" type="search" {placeholder} bind:value={searchQ} />
-	</label>
-{/snippet}
-
 {#if loading}
 	<div class="flex justify-center py-16">
 		<span class="loading loading-spinner loading-md text-primary"></span>
@@ -274,7 +268,6 @@
 	<div class="max-w-6xl mx-auto px-6 py-8 pb-12">
 		<h1 class="font-display text-3xl font-bold tracking-tight">{$t('marketplace.employeesHeadline')}</h1>
 		<p class="text-base text-base-content/70 mt-2 max-w-3xl leading-relaxed">{$t('marketplace.employeesLede')}</p>
-		{@render searchBox($t('marketplace.searchPlaceholder'))}
 		{#if searchActive}
 			{#if searching}
 				<div class="flex justify-center py-16"><span class="loading loading-spinner loading-md text-primary"></span></div>
@@ -326,7 +319,6 @@
 	<div class="max-w-6xl mx-auto px-6 py-8 pb-12">
 		<h1 class="font-display text-3xl font-bold tracking-tight">{$t('marketplace.toolsHeadline')}</h1>
 		<p class="text-base text-base-content/70 mt-2 max-w-3xl leading-relaxed">{$t('marketplace.toolsLede')}</p>
-		{@render searchBox($t('marketplace.searchToolsPlaceholder'))}
 		{#if searchActive}
 			{#if searching}
 				<div class="flex justify-center py-16"><span class="loading loading-spinner loading-md text-primary"></span></div>
@@ -378,9 +370,6 @@
 	<div class="max-w-6xl mx-auto px-6 py-6">
 		{#if publisher}
 			<h1 class="font-display text-xl font-bold mb-1">{$t('marketplace.byPublisher', { values: { name: publisher } })}</h1>
-		{/if}
-		{#if kind === 'collections'}
-			<div class="mb-5">{@render searchBox($t('marketplace.searchCollectionsPlaceholder'))}</div>
 		{/if}
 		<div class="mb-4 text-sm text-base-content/70">
 			{filteredItems.length === 1 ? $t('marketplace.resultCountSingular', { values: { count: filteredItems.length } }) : $t('marketplace.resultCount', { values: { count: filteredItems.length } })}
