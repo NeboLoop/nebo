@@ -365,17 +365,18 @@ app-bundle: build-desktop
 	@find "dist/Nebo.app/Contents/Frameworks" -type f \( -perm +111 -o -name '*.dylib' \) 2>/dev/null | while read -r f; do \
 		codesign --force --sign "$(SIGN_IDENTITY)" --timestamp --options runtime "$$f"; \
 	done
-	@# 2. Bundled Obscura sidecars BEFORE the main executable. Tauri leaves
-	@#    externalBin sidecars ad-hoc signed — that passes `codesign --verify` but
-	@#    is REJECTED by notarization (nested Mach-O execs must be Developer-ID
-	@#    signed). obscura.entitlements grants the V8 JIT entitlements they need.
-	@for sidecar in obscura obscura-worker; do \
-		p="dist/Nebo.app/Contents/MacOS/$$sidecar"; \
-		if [ -f "$$p" ]; then \
-			codesign --force --sign "$(SIGN_IDENTITY)" \
-				--entitlements assets/macos/obscura.entitlements \
-				--timestamp --options runtime "$$p" && echo "  signed sidecar: $$sidecar"; \
-		fi; \
+	@# 2. Bundled sidecars BEFORE the main executable — every executable in
+	@#    Contents/MacOS that is not the app itself. Tauri leaves externalBin
+	@#    sidecars ad-hoc signed — that passes `codesign --verify` but is
+	@#    REJECTED by notarization (nested Mach-O execs must be Developer-ID
+	@#    signed with the hardened runtime). The Obscura pair gets the V8 JIT
+	@#    entitlements it needs; other sidecars (rg) get none. Seen live: the
+	@#    ripgrep sidecar alone failed a notarization.
+	@for p in dist/Nebo.app/Contents/MacOS/*; do \
+		s=$$(basename "$$p"); \
+		[ "$$s" = "nebo" ] && continue; \
+		case "$$s" in obscura|obscura-worker) ent="--entitlements assets/macos/obscura.entitlements";; *) ent="";; esac; \
+		codesign --force --sign "$(SIGN_IDENTITY)" $$ent --timestamp --options runtime "$$p" && echo "  signed sidecar: $$s"; \
 	done
 	@# 3. Main executable.
 	codesign --force --sign "$(SIGN_IDENTITY)" \
