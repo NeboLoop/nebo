@@ -1543,7 +1543,10 @@ fn build_activity_prompt_with_context(
     prompt.push_str("You have access to these workflow control tools:\n");
     prompt.push_str(
         "- exit(reason: \"...\") — call this to stop the workflow early if \
-         the condition in your task is not met or there is nothing to do.\n",
+         the condition in your task is not met or there is nothing to do. \
+         In a case turn (inputs carry `_case`) the reason is the turn's \
+         output: it MUST end with the turn's JSON object (result/next), \
+         because the engine reads the next wait from it.\n",
     );
     let has_emit_cmd = activity.cmds.iter().any(|c| c == "emit");
     if has_emit_cmd && emit_source.is_none() {

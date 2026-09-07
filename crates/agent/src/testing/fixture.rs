@@ -209,7 +209,14 @@ pub fn load_fixture(path: &Path) -> Result<Fixture, String> {
 #[derive(Debug, Clone, Deserialize)]
 pub struct Suite {
     pub name: String,
+    #[serde(default)]
     pub fixtures: Vec<String>,
+    /// Shell scripts the suite runs against the same server, relative to
+    /// the repository root, each of which must exit 0. For work that is
+    /// not a conversation — the engine's event-driven proof — a suite can
+    /// be script-backed instead of, or as well as, fixture-backed.
+    #[serde(default)]
+    pub scripts: Vec<String>,
 }
 
 pub fn load_suite(path: &Path) -> Result<Suite, String> {

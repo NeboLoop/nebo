@@ -28,6 +28,78 @@ pub struct EventSubscription {
     pub definition_json: Option<String>,
     /// Namespaced emit source for the last activity (e.g. "chief-of-staff.briefing.ready").
     pub emit_source: Option<String>,
+    /// Present when the binding declares `case`: the event is routed to the
+    /// one case for the person it names instead of starting a run.
+    pub case: Option<CaseRoute>,
+}
+
+/// How an event-triggered case binding names its person.
+#[derive(Debug, Clone)]
+pub struct CaseRoute {
+    /// Dotted paths into the event payload (`contactEmail,email,phone`).
+    pub key_path: String,
+    /// The kind of case; bindings sharing it share the case.
+    pub case_type: String,
+    /// Wait applied when a turn declares none.
+    pub default_wait_secs: i64,
+}
+
+impl CaseRoute {
+    pub fn from_binding(binding_name: &str, binding: &napp::agent::WorkflowBinding) -> Option<Self> {
+        let case = binding.case.as_ref()?;
+        Some(Self {
+            key_path: case.key.clone(),
+            case_type: case
+                .case_type
+                .as_deref()
+                .map(str::trim)
+                .filter(|t| !t.is_empty())
+                .unwrap_or(binding_name)
+                .replace(':', "-"),
+            default_wait_secs: case
+                .default_wait
+                .as_deref()
+                .and_then(crate::cases::relative_secs)
+                .unwrap_or(crate::cases::DEFAULT_WAIT_SECS),
+        })
+    }
+}
+
+/// An event for a case binding: signal the person's case or open it. The
+/// idempotency key is the event's identity — source, payload, and the
+/// second it was emitted — so a re-emit of the same moment is a duplicate
+/// while a genuine second submission minutes later is a new signal.
+fn route_case(store: &db::Store, sub: &EventSubscription, route: &CaseRoute, def_json: &str, event: &Event) -> bool {
+    let aliases = crate::cases::resolve_aliases(&event.payload, &route.key_path);
+    if aliases.is_empty() {
+        warn!(agent = %sub.agent_source, binding = %sub.binding_name, event_source = %event.source, key = %route.key_path, "case event: payload names nobody at those paths; running as a plain event");
+        return false;
+    }
+    let b = crate::cases::CaseBinding {
+        agent_id: &sub.agent_source,
+        binding_name: &sub.binding_name,
+        case_type: route.case_type.clone(),
+        definition_json: def_json,
+        base_inputs: sub.default_inputs.clone(),
+        default_wait_secs: route.default_wait_secs,
+    };
+    let idem = {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        event.source.hash(&mut h);
+        event.payload.to_string().hash(&mut h);
+        event.timestamp.hash(&mut h);
+        // One delivery per subscriber: a second employee on the same source
+        // is a separate signal, so ownership can refuse it as a conflict
+        // instead of the key swallowing it as a replay.
+        format!("event:{}:{}:{}:{:016x}", event.source, sub.agent_source, sub.binding_name, h.finish())
+    };
+    let t = chrono::Utc::now().timestamp();
+    match crate::cases::route_signal(store, &b, &aliases, &event.payload, "event", &idem, t) {
+        Ok(routed) => info!(agent = %sub.agent_source, binding = %sub.binding_name, event_source = %event.source, ?routed, "case event routed"),
+        Err(e) => warn!(agent = %sub.agent_source, binding = %sub.binding_name, event_source = %event.source, error = %e, "case event routing failed"),
+    }
+    true
 }
 
 /// Dispatches events to matching workflow subscriptions.
@@ -95,6 +167,7 @@ impl EventDispatcher {
         self: Arc<Self>,
         mut rx: tokio::sync::mpsc::UnboundedReceiver<Event>,
         manager: Arc<dyn WorkflowManager>,
+        store: Arc<db::Store>,
     ) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
             // No time-based rate limiting — events must fire instantly.
@@ -104,6 +177,16 @@ impl EventDispatcher {
             while let Some(event) = rx.recv().await {
                 let matches = self.match_event(&event).await;
                 for sub in matches {
+                    // A case binding: the event names a person; the engine
+                    // holds one case per person and this event reaches it
+                    // (or opens it). No run starts here.
+                    if let (Some(route), Some(def_json)) = (&sub.case, &sub.definition_json) {
+                        if route_case(&store, &sub, route, def_json, &event) {
+                            continue;
+                        }
+                        // The payload named nobody: fall through to today's
+                        // behavior, a run per event, rather than lose it.
+                    }
                     let mut inputs = sub.default_inputs.clone();
                     // Merge event payload into inputs
                     insert_event_envelope(
@@ -310,7 +393,7 @@ mod tests {
 
     #[test]
     fn test_summarize_small_payload() {
-        let small = serde_json::json!({"from": "alice@test.com", "subject": "Hello"});
+        let small = serde_json::json!({"from": "alice@example.com", "subject": "Hello"});
         let result = summarize_event_payload(&small);
         assert_eq!(result, small); // unchanged — under 8KB
     }
@@ -325,7 +408,7 @@ mod tests {
             "snippet": "invoice attached",
             "payload": {
                 "mimeType": "multipart/mixed",
-                "headers": [{"name": "From", "value": "vendor@test.com"}],
+                "headers": [{"name": "From", "value": "vendor@example.com"}],
                 "parts": [
                     {"filename": "", "mimeType": "multipart/alternative", "parts": [
                         {"filename": "", "mimeType": "text/plain", "body": {"data": "x".repeat(9000)}}
@@ -341,7 +424,7 @@ mod tests {
         assert_eq!(atts[0]["filename"], "invoice.pdf");
         assert_eq!(atts[0]["attachmentId"], "ATT123");
         assert_eq!(atts[0]["size"], 52133);
-        assert_eq!(result["from"], "vendor@test.com");
+        assert_eq!(result["from"], "vendor@example.com");
     }
 
     #[test]
@@ -351,9 +434,9 @@ mod tests {
         for _ in 0..50 {
             headers.push(serde_json::json!({"name": "Received", "value": "x".repeat(200)}));
         }
-        headers.push(serde_json::json!({"name": "From", "value": "alice@test.com"}));
+        headers.push(serde_json::json!({"name": "From", "value": "alice@example.com"}));
         headers.push(serde_json::json!({"name": "Subject", "value": "Meeting tomorrow"}));
-        headers.push(serde_json::json!({"name": "To", "value": "bob@test.com"}));
+        headers.push(serde_json::json!({"name": "To", "value": "bob@example.com"}));
 
         let payload = serde_json::json!({
             "id": "msg123",
@@ -377,15 +460,60 @@ mod tests {
         assert_eq!(map["threadId"], "thread456");
 
         // Headers promoted
-        assert_eq!(map["from"], "alice@test.com");
+        assert_eq!(map["from"], "alice@example.com");
         assert_eq!(map["subject"], "Meeting tomorrow");
-        assert_eq!(map["to"], "bob@test.com");
+        assert_eq!(map["to"], "bob@example.com");
 
         // Labels kept (small array)
         assert!(map.contains_key("labelIds"));
 
         // Massive nested payload removed
         assert!(!map.contains_key("payload"));
+    }
+
+    /// The assessment thread, through the real dispatcher path: four
+    /// lead-captured events for one person become one case, one first turn,
+    /// and three signals that ride into that turn. No second run, ever.
+    #[test]
+    fn four_lead_captured_events_for_one_person_are_one_case() {
+        let path = std::env::temp_dir().join(format!("nebo-events-case-{}.db", uuid::Uuid::new_v4()));
+        let store = db::Store::new(&path.to_string_lossy()).expect("store");
+        let sub = EventSubscription {
+            pattern: "sales.intake-coordinator.lead-captured".into(),
+            default_inputs: serde_json::json!({"tone": "warm"}),
+            agent_source: "intake".into(),
+            binding_name: "work-lead".into(),
+            definition_json: Some(r#"{"activities":[{"id":"turn","intent":"work the lead"}]}"#.into()),
+            emit_source: None,
+            case: Some(CaseRoute { key_path: "contactEmail,email,phone".into(), case_type: "lead".into(), default_wait_secs: 86_400 }),
+        };
+        let route = sub.case.clone().unwrap();
+        let def = sub.definition_json.clone().unwrap();
+        let ev = |ts: u64, email: &str| Event {
+            source: "sales.intake-coordinator.lead-captured".into(),
+            payload: serde_json::json!({"email": email, "message": "27-56 hours a week", "capturedAt": ts}),
+            origin: "hub".into(),
+            timestamp: ts,
+        };
+        for ts in [1_000u64, 2_000, 3_000, 4_000] {
+            assert!(route_case(&store, &sub, &route, &def, &ev(ts, "Alma@example.com")), "routed, not run");
+        }
+        // A re-emit of the same moment (same payload, same second) is a duplicate.
+        assert!(route_case(&store, &sub, &route, &def, &ev(4_000, "Alma@example.com")));
+
+        let case = crate::cases::open_case_for(&store, "lead", "email", "Alma@example.com").expect("one open case");
+        assert_eq!(case.state, "waiting");
+        let turns = store.engine_queued_runs_of_kind("workflow", 10).unwrap();
+        assert_eq!(turns.len(), 1, "one first turn");
+        assert_eq!(turns[0].parent_run_id.as_deref(), Some(case.id.as_str()));
+        // The signals are recorded against the case's key, durable, once each.
+        let (pending, _) = store.engine_claim_events(10_000, 50).unwrap();
+        assert_eq!(pending.len(), 3, "three later signals wait for the loop; the duplicate is not among them");
+        assert!(pending.iter().all(|e| e.target_id.starts_with("case:lead:") && e.retention == "durable"));
+
+        // A payload that names nobody is not routed: the caller runs it the old way.
+        let stray = Event { source: "sales.intake-coordinator.lead-captured".into(), payload: serde_json::json!({"note": "no contact"}), origin: "hub".into(), timestamp: 9_000 };
+        assert!(!route_case(&store, &sub, &route, &def, &stray));
     }
 
     #[tokio::test]
@@ -398,6 +526,7 @@ mod tests {
             binding_name: "auto-reply".into(),
             definition_json: None,
             emit_source: None,
+            case: None,
         };
 
         // Same (agent, binding, pattern) registered twice → ONE subscription,

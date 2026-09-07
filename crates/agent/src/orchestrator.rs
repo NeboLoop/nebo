@@ -260,6 +260,7 @@ impl Orchestrator {
             Some(&req.description),
             Some("subagent"),
             0,
+            None,
         );
 
         let task_prefix = task_prefix_for_type(&agent_type);
@@ -443,7 +444,7 @@ impl Orchestrator {
                 // not asleep.
                 if is_interactive_session(&parent_session_key) {
                     let ok = store
-                        .enqueue_session_wake(&parent_session_key, "task_done", &wake_payload, "[]", 0)
+                        .engine_enqueue_wake(&parent_session_key, "task_done", &wake_payload, "[]", 0)
                         .is_ok();
                     if ok && let Some(tx) = wake_notify {
                         let _ = tx.send(parent_session_key);
@@ -556,6 +557,7 @@ impl Orchestrator {
             Some("DAG orchestration"),
             Some("subagent"),
             0,
+            None,
         );
 
         // 4. Shared cancellation for the entire DAG — derived from parent so
@@ -599,6 +601,7 @@ impl Orchestrator {
                     graph.nodes.get(&task_id).map(|n| n.description.as_str()),
                     Some("subagent"),
                     0,
+                    Some(&parent_task_id),
                 );
 
                 graph.mark_running(&task_id);
@@ -698,13 +701,15 @@ impl Orchestrator {
     /// Cancel a running task.
     async fn cancel_internal(&self, task_id: &str) -> Result<(), String> {
         let mut active = self.active.write().await;
+        // Cancelling a parent takes its descendants, live or not yet started:
+        // the token cascades to running children, the rows to every one.
         if let Some(agent) = active.remove(task_id) {
             agent.cancel.cancel();
             let _ = self.store.cancel_task(task_id);
+            let _ = self.store.cancel_child_tasks(task_id);
             info!(task_id = %task_id, "Cancelled sub-agent");
             Ok(())
         } else {
-            // Try cancelling children if it's a DAG parent
             let _ = self.store.cancel_task(task_id);
             let _ = self.store.cancel_child_tasks(task_id);
             Ok(())
@@ -833,6 +838,7 @@ impl Orchestrator {
                 Some(&description),
                 Some("subagent"),
                 0,
+                None,
             );
 
             // Register active

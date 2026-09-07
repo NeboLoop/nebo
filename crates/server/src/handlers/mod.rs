@@ -1,5 +1,6 @@
 pub mod agent;
 pub mod agents;
+pub mod cases;
 pub mod apps;
 pub mod artifact_updates;
 pub mod auth;

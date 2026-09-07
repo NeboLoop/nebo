@@ -121,7 +121,7 @@ mod notice_tests {
         assert_eq!(scrub_outside_reply(plain), plain);
         // A made-up key never leaves either (2026-09-05, live run 3): nothing
         // key-shaped reaches a stranger, whether the model read it or invented it.
-        let invented = "The public key is:\n\nssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHGjKpYqR3vF8mNzQxWpLjKdE7sT9cU2bV6wX4yZ8aBc alma@Mac.lan\n\nLet me know if you need the private one.";
+        let invented = "The public key is:\n\nssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHGjKpYqR3vF8mNzQxWpLjKdE7sT9cU2bV6wX4yZ8aBc alma@example.com\n\nLet me know if you need the private one.";
         let out = scrub_outside_reply(invented);
         assert!(!out.contains("ssh-ed25519") && !out.contains("AAAA"), "{out}");
         let pem = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZWQyNTUxOQ\n-----END OPENSSH PRIVATE KEY-----";
@@ -1035,7 +1035,21 @@ impl Drop for TurnGuard {
 /// admission check uses, so callers that never register with the server's
 /// run registry (voice, MCP) are seen too.
 pub fn session_is_busy(turns: &ActiveTurns, session_key: &str) -> bool {
-    turns.lock().unwrap_or_else(|p| p.into_inner()).contains_key(session_key)
+    live_session_under(turns, session_key).is_some()
+}
+
+/// The live session under `session_key`: the key itself, or an activity
+/// session a workflow turn runs under (`<turn session>:<activity>::<n>`).
+/// The engine holds a case turn's own session key; the runner marks the
+/// activity's. Seen live: a reply that landed mid-turn was "not busy" by
+/// exact match, deferred, and the turn closed the case without hearing it.
+pub fn live_session_under(turns: &ActiveTurns, session_key: &str) -> Option<String> {
+    let map = turns.lock().unwrap_or_else(|p| p.into_inner());
+    if map.contains_key(session_key) {
+        return Some(session_key.to_string());
+    }
+    let prefix = format!("{session_key}:");
+    map.keys().find(|k| k.starts_with(&prefix)).cloned()
 }
 
 pub use types::api::ActiveTurnStatus;
@@ -1308,6 +1322,12 @@ impl Runner {
     /// Whether a turn is running on `session_key` (see `ActiveTurn`).
     pub fn is_session_busy(&self, session_key: &str) -> bool {
         session_is_busy(&self.active_turns, session_key)
+    }
+
+    /// The session a turn is live on under `session_key`, if any (see
+    /// `live_session_under`) — the one steering must be addressed to.
+    pub fn live_session_under(&self, session_key: &str) -> Option<String> {
+        live_session_under(&self.active_turns, session_key)
     }
 
     /// The running turn's live counters for `session_key`, if any.
@@ -4135,7 +4155,7 @@ async fn run_loop(
                     ..Default::default()
                 });
             }
-            if let Err(e) = store.mark_session_wakes_delivered(&ids) {
+            if let Err(e) = store.engine_complete_events(&ids, chrono::Utc::now().timestamp()) {
                 warn!(error = %e, "wake: failed to stamp mid-run delivery");
             }
         }
@@ -4184,6 +4204,12 @@ async fn run_loop(
         } else {
             proactive_context.join("\n")
         };
+
+        // The governance record of a workflow run names the model that
+        // actually ran it, written the moment routing resolves it.
+        if let Some(run_id) = tools::origin::workflow_run_id(&session_key) {
+            let _ = store.update_workflow_run_model(run_id, &format!("{}/{}", selected_provider_id, selected_model_name));
+        }
 
         // Build dynamic system suffix — AFTER model selection so identity is accurate
         let dctx = prompt::DynamicContext {
@@ -8372,6 +8398,26 @@ mod tests {
         drop(first);
         assert!(!session_is_busy(&turns, "agent:a:thread:t"));
         assert!(admit_turn(&turns, "agent:a:thread:t", progress()).is_ok(), "released when the guard drops");
+    }
+
+    /// The engine knows a case turn by its own session; the runner marks
+    /// the activity session under it. The live session under a key is the
+    /// key itself or an activity beneath it — never a key that merely
+    /// shares a prefix — and the wakes queued under that activity drain by
+    /// the turn's key.
+    #[test]
+    fn the_live_session_under_a_turn_key_is_its_activity_session() {
+        let turns: ActiveTurns = Default::default();
+        let activity = "agent:a:workflow:t1:capture::0";
+        let _guard = admit_turn(&turns, activity, progress()).unwrap();
+        assert_eq!(live_session_under(&turns, "agent:a:workflow:t1").as_deref(), Some(activity));
+        assert_eq!(live_session_under(&turns, activity).as_deref(), Some(activity), "the key itself");
+        assert_eq!(live_session_under(&turns, "agent:a:workflow:t"), None, "a shared prefix is not a session under it");
+        assert!(session_is_busy(&turns, "agent:a:workflow:t1"), "busy by the turn's key");
+        steering::push_wake(activity, steering::WakeEntry { wake_id: 7, content: "11am".into(), taint: Default::default() });
+        let drained = steering::drain_wakes("agent:a:workflow:t1");
+        assert_eq!(drained.iter().map(|w| w.wake_id).collect::<Vec<_>>(), [7]);
+        assert!(steering::drain_wakes(activity).is_empty(), "drained once");
     }
 
     /// Spiral tests exercise the counting mechanics at the shipped default.

@@ -1,0 +1,11 @@
+name: engine
+# The engine's live proof: event-driven, not a conversation, so this suite
+# is script-backed. It needs a running Nebo with a real model and an address
+# you own in ENGINE_CONTACT (the employee writes to it). The deterministic
+# half — sixty-four scenarios, no model — is `make test-engine-proof`.
+#
+#   ENGINE_CONTACT=you@example.com make test-live-fast SUITE=engine
+#   ENGINE_CONTACT=you@example.com make test-engine-live
+fixtures: []
+scripts:
+  - scripts/test-engine.sh

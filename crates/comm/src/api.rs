@@ -104,19 +104,18 @@ impl NeboAIApi {
         let resp = req
             .send()
             .await
-            .map_err(|e| CommError::Other(format!("request failed: {}", e)))?;
+            .map_err(|e| CommError::Transport(e.to_string()))?;
         let status = resp.status();
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
-            return Err(CommError::Other(format!(
-                "NeboAI returned {}: {}",
-                status, body
-            )));
+            return Err(CommError::Http { status: status.as_u16(), body });
         }
 
+        // The server answered success; a body we cannot read is still a
+        // success we cannot confirm, not a refusal.
         resp.json::<T>()
             .await
-            .map_err(|e| CommError::Other(format!("decode response: {}", e)))
+            .map_err(|e| CommError::Transport(format!("decode response: {}", e)))
     }
 
     async fn do_void(

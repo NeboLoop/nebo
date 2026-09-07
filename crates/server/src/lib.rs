@@ -10,6 +10,7 @@ pub mod team;
 pub mod deps;
 pub mod entity_config;
 pub mod handlers;
+mod engine;
 mod heartbeat;
 mod workforce_reporter;
 pub mod import;
@@ -1884,6 +1885,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     event_dispatcher.clone().spawn(
         event_rx,
         workflow_manager.clone() as Arc<dyn tools::WorkflowManager>,
+        store.clone(),
     );
 
     // Create orchestrator and fill the late-binding handle. The wake channel
@@ -2523,16 +2525,14 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // alert lands in the same Slack thread).
     scheduler::spawn(
         state.store.clone(),
-        state.runner.clone(),
-        state.hub.clone(),
         state.snapshot_store.clone(),
         state.workflow_manager.clone(),
-        state.run_registry.clone(),
         state.clone(),
     );
 
-    // Spawn heartbeat scheduler for per-entity heartbeats
-    heartbeat::spawn(state.clone());
+    // The one durable-work loop (heartbeats and schedules are its timers). Dark until the conversion migration moves
+    // the seven mechanisms into its tables; real from day one.
+    engine::spawn(state.clone());
     // The workforce reporter: runs and duties pushed to the platform as they
     // happen, so an owner hears about a failure from us in seconds instead of
     // when they next open the console (accountability W2, bot half).
@@ -2632,6 +2632,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // before the process exits so the gateway sees a clean WebSocket Close frame.
     let shutdown_comm = state.comm_manager.clone();
     let shutdown_registry = state.run_registry.clone();
+    let shutdown_store = state.store.clone();
     let shutdown_lifecycles = state.app_lifecycles.clone();
 
     if !quiet {
@@ -2677,6 +2678,9 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         .with_graceful_shutdown(async move {
             shutdown_signal().await;
             info!("shutdown signal received — pausing scheduler, draining in-flight runs...");
+            // A clean shutdown is not an interruption: case turns still
+            // running are suspended and resume on boot with their budget intact.
+            engine::suspend_for_shutdown(&shutdown_store);
             drain_in_flight_runs(&shutdown_registry).await;
             info!("runs drained, draining in-flight extractions...");
             agent::memory_flush::drain_extractions().await;
@@ -3341,50 +3345,30 @@ async fn run_webhook_workflow(
     agent_slug: &str,
     binding_name: &str,
     raw: Option<String>,
+    idem_key: &str,
 ) {
     use tools::workflows::WorkflowManager;
 
-    let agent_rec = match state.store.get_agent(agent_id) {
-        Ok(Some(a)) => a,
-        _ => {
-            tracing::warn!(agent = %agent_id, workflow = %binding_name, "webhook workflow: agent not found");
+    // The door itself is pure over the store (and proven there): a case
+    // binding routes the person's signal; anything else runs plain.
+    let (def_json, mut inputs, payload, emit) = match workflow::cases::route_webhook(&state.store, agent_id, binding_name, raw.as_deref(), idem_key, chrono::Utc::now().timestamp()) {
+        Ok(workflow::cases::Webhook::Case(routed)) => {
+            tracing::info!(agent = %agent_id, workflow = %binding_name, ?routed, "case webhook routed");
             return;
         }
-    };
-    let config = match napp::agent::parse_agent_config(&agent_rec.frontmatter) {
-        Ok(c) => c,
+        Ok(workflow::cases::Webhook::Plain { def_json, inputs, payload, emit }) => (def_json, inputs, payload, emit),
         Err(e) => {
-            tracing::warn!(agent = %agent_id, workflow = %binding_name, error = %e, "webhook workflow: bad agent config");
+            tracing::warn!(agent = %agent_id, workflow = %binding_name, error = %e, "webhook workflow: not run");
             return;
         }
     };
-    let Some(binding) = config.workflows.get(binding_name) else {
-        tracing::warn!(agent = %agent_id, workflow = %binding_name, "webhook workflow: no such binding");
-        return;
-    };
-    if !binding.has_activities() {
-        tracing::warn!(agent = %agent_id, workflow = %binding_name, "webhook workflow: binding has no activities");
-        return;
-    }
-
-    let def_json = binding.to_workflow_json(binding_name);
-    let mut inputs = serde_json::to_value(&binding.inputs).unwrap_or_default();
-    // The POST body rides the canonical event envelope: JSON bodies as JSON,
-    // anything else as a string.
-    let payload = raw
-        .as_deref()
-        .map(|r| serde_json::from_str::<serde_json::Value>(r).unwrap_or_else(|_| serde_json::json!(r)))
-        .unwrap_or(serde_json::Value::Null);
     workflow::events::insert_event_envelope(
         &mut inputs,
         &format!("webhook.{}", binding_name),
         payload,
         "webhook",
     );
-    let emit_source = binding
-        .emit
-        .as_ref()
-        .map(|emit_name| format!("{}.{}", agent_slug, emit_name));
+    let emit_source = emit.as_ref().map(|emit_name| format!("{}.{}", agent_slug, emit_name));
 
     match state
         .workflow_manager
@@ -3707,7 +3691,7 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
         if let Some(pd) = &webhook_platform {
             if let Some(wf_name) = pd.get("workflowName").and_then(|w| w.as_str()) {
                 let raw = pd.get("raw").and_then(|r| r.as_str()).map(str::to_string);
-                run_webhook_workflow(&state, &agent_id, &agent_slug, wf_name, raw).await;
+                run_webhook_workflow(&state, &agent_id, &agent_slug, wf_name, raw, &msg.id).await;
                 return;
             }
         }

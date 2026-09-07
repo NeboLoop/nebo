@@ -319,88 +319,51 @@ impl DynTool for EventTool {
                     }
                     match self.store.get_cron_job_by_name(name) {
                         Ok(Some(job)) => {
-                            // Create history entry
-                            let history = match self.store.create_cron_history(job.id) {
-                                Ok(h) => h,
+                            // One fire, queued to the engine — the same way a
+                            // scheduled fire runs. Wait for it to settle so the
+                            // caller gets the outcome, not a promise.
+                            let run_id = match self.store.queue_cron_run(&job, true) {
+                                Ok(id) => id,
                                 Err(e) => {
-                                    return ToolResult::error(format!(
-                                        "Failed to create history: {}",
-                                        e
+                                    return ToolResult::error(format!("Failed to queue task: {}", e));
+                                }
+                            };
+                            let deadline = tokio::time::Instant::now()
+                                + std::time::Duration::from_secs(RUN_NOW_WAIT_SECS);
+                            loop {
+                                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                                match self.store.engine_get_run(&run_id) {
+                                    Ok(Some(run)) if run.state == "done" => {
+                                        return ToolResult::ok(format!(
+                                            "Task '{}' executed successfully:\n{}",
+                                            name,
+                                            run.result.unwrap_or_default()
+                                        ));
+                                    }
+                                    Ok(Some(run)) if matches!(run.state.as_str(), "failed" | "cancelled") => {
+                                        return ToolResult::error(format!(
+                                            "Task '{}' failed:\n{}",
+                                            name,
+                                            run.error.or(run.result).unwrap_or_default()
+                                        ));
+                                    }
+                                    Ok(Some(_)) => {}
+                                    Ok(None) => {
+                                        return ToolResult::error(format!(
+                                            "Task '{}' run record disappeared",
+                                            name
+                                        ));
+                                    }
+                                    Err(e) => {
+                                        return ToolResult::error(format!("Failed to read run: {}", e));
+                                    }
+                                }
+                                if tokio::time::Instant::now() >= deadline {
+                                    return ToolResult::ok(format!(
+                                        "Task '{}' is still running after {}s; check event(action: \"history\", name: \"{}\") for the outcome.",
+                                        name, RUN_NOW_WAIT_SECS, name
                                     ));
                                 }
-                            };
-                            let _ = self.store.update_cron_job_last_run(job.id, None);
-
-                            // Execute based on task type
-                            let (success, output) = match job.task_type.as_str() {
-                                "bash" => {
-                                    match tokio::time::timeout(
-                                        std::time::Duration::from_secs(120),
-                                        tokio::process::Command::new("bash")
-                                            .arg("-c")
-                                            .arg(&job.command)
-                                            .output(),
-                                    )
-                                    .await
-                                    {
-                                        Err(_) => (
-                                            false,
-                                            "Command timed out after 120s".to_string(),
-                                        ),
-                                        Ok(Ok(result)) => {
-                                            let stdout =
-                                                String::from_utf8_lossy(&result.stdout).to_string();
-                                            let stderr =
-                                                String::from_utf8_lossy(&result.stderr).to_string();
-                                            let out = if stderr.is_empty() {
-                                                stdout
-                                            } else {
-                                                format!("{}\n[stderr] {}", stdout, stderr)
-                                            };
-                                            (result.status.success(), out)
-                                        }
-                                        Ok(Err(e)) => (false, format!("Failed to execute: {}", e)),
-                                    }
-                                }
-                                "agent" => {
-                                    let prompt = job.message.as_deref().unwrap_or("");
-                                    if prompt.is_empty() {
-                                        (false, "No prompt configured for agent task".to_string())
-                                    } else if let Some(ref runner) = self.runner {
-                                        match runner.deliberate(prompt).await {
-                                            Ok(result) => (true, result),
-                                            Err(e) => (false, format!("Agent task failed: {}", e)),
-                                        }
-                                    } else {
-                                        (
-                                            false,
-                                            format!(
-                                                "Agent task '{}' cannot be run on demand in this context; it will run at its scheduled time ({}).",
-                                                name, job.schedule
-                                            ),
-                                        )
-                                    }
-                                }
-                                other => (false, format!("Unknown task type: {}", other)),
-                            };
-
-                            let (out, err) = if success {
-                                (Some(output.as_str()), None)
-                            } else {
-                                (None, Some(output.as_str()))
-                            };
-                            let _ = self
-                                .store
-                                .update_cron_history(history.id, success, out, err);
-                            let _ = self.store.update_cron_job_last_run(job.id, Some(&output));
-
-                            if success {
-                                ToolResult::ok(format!(
-                                    "Task '{}' executed successfully:\n{}",
-                                    name, output
-                                ))
-                            } else {
-                                ToolResult::error(format!("Task '{}' failed:\n{}", name, output))
                             }
                         }
                         Ok(None) => ToolResult::error(format!("Task '{}' not found", name)),
@@ -471,6 +434,10 @@ impl DynTool for EventTool {
 /// `last_run`, so this side must match.
 /// Cap on the `list` action; the header says "showing N of M" when it applies.
 const LIST_CAP: i64 = 100;
+
+/// How long `run` waits for the engine to settle a run-now before handing
+/// the caller to `history`.
+const RUN_NOW_WAIT_SECS: u64 = 600;
 
 /// Header for the `list` action: "N scheduled tasks" when the list is complete,
 /// "showing N of M scheduled tasks" when the cap cut it.

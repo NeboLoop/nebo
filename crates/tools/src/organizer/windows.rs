@@ -80,6 +80,50 @@ fn folder_id(mailbox: &str) -> &str {
 /// Every mail listing is capped here; the cap is named in the result footer.
 const MAIL_LIMIT_CAP: i64 = 50;
 
+/// Hand a message to Outlook. Reached only through the send ledger in
+/// `os_tool`, which records the send before this runs and never runs the
+/// same one twice.
+pub async fn mail_send(input: &OrganizerInput) -> crate::effects::SendOutcome {
+    use crate::effects::SendOutcome;
+    if input.to.is_empty() {
+        return SendOutcome::PreSendFailure("'to' parameter required for send".into());
+    }
+    if input.subject.is_empty() {
+        return SendOutcome::PreSendFailure("'subject' parameter required for send".into());
+    }
+
+    let to_str = escape_powershell(&input.to.join(";"));
+    let cc_str = escape_powershell(&input.cc.join(";"));
+    let subject = escape_powershell(&input.subject);
+    // Outlook's object model (MailItem.HTMLBody, read/write): setting HTMLBody
+    // updates Body at once, and its documented example sets BodyFormat to
+    // HTML (olFormatHTML = 2) first. Without html, the plain message.
+    let (body_lines, body) = if input.html.trim().is_empty() {
+        ("$mail.Body", escape_powershell(&input.text))
+    } else {
+        ("$mail.BodyFormat = 2\n$mail.HTMLBody", escape_powershell(&input.html))
+    };
+
+    let mut script = format!(
+        r#"
+$ol = New-Object -ComObject Outlook.Application
+$mail = $ol.CreateItem(0)
+$mail.To = "{to_str}"
+$mail.Subject = "{subject}"
+{body_lines} = "{body}""#,
+    );
+
+    if !input.cc.is_empty() {
+        script.push_str(&format!("\n$mail.CC = \"{cc_str}\""));
+    }
+
+    script.push_str(&format!(
+        "\n$mail.Send()\nWrite-Output \"Handed to Outlook for delivery to {}\"",
+        escape_powershell(&input.to.join(", "))
+    ));
+    super::shared::run_powershell_typed(&script).await.send_outcome()
+}
+
 pub async fn handle_mail(action: &str, input: &OrganizerInput) -> ToolResult {
     if let Err(e) = outlook_status() {
         return ToolResult::error(format!("Mail on Windows goes through Outlook, and {}", e));
@@ -151,38 +195,6 @@ if ($output -eq "") {{ Write-Output "0 messages in folder '{name}'" }} else {{ W
                     cap = MAIL_LIMIT_CAP,
                 )
             };
-            run_powershell(&script).await
-        }
-        "send" => {
-            if input.to.is_empty() {
-                return ToolResult::error("'to' parameter required for send");
-            }
-            if input.subject.is_empty() {
-                return ToolResult::error("'subject' parameter required for send");
-            }
-
-            let to_str = escape_powershell(&input.to.join(";"));
-            let cc_str = escape_powershell(&input.cc.join(";"));
-            let subject = escape_powershell(&input.subject);
-            let body = escape_powershell(&input.body);
-
-            let mut script = format!(
-                r#"
-$ol = New-Object -ComObject Outlook.Application
-$mail = $ol.CreateItem(0)
-$mail.To = "{to_str}"
-$mail.Subject = "{subject}"
-$mail.Body = "{body}""#,
-            );
-
-            if !input.cc.is_empty() {
-                script.push_str(&format!("\n$mail.CC = \"{cc_str}\""));
-            }
-
-            script.push_str(&format!(
-                "\n$mail.Send()\nWrite-Output \"Handed to Outlook for delivery to {}\"",
-                escape_powershell(&input.to.join(", "))
-            ));
             run_powershell(&script).await
         }
         "search" => {

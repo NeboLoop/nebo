@@ -72,7 +72,6 @@ fn detect_reminders() -> Option<&'static str> {
 
 pub async fn handle_mail(action: &str, input: &OrganizerInput) -> ToolResult {
     match action {
-        "send" => mail_send(input).await,
         "read" => mail_read(input).await,
         "unread" => mail_unread(input).await,
         "search" => mail_search(input).await,
@@ -84,22 +83,27 @@ pub async fn handle_mail(action: &str, input: &OrganizerInput) -> ToolResult {
     }
 }
 
-async fn mail_send(input: &OrganizerInput) -> ToolResult {
+/// Hand a message to the local mail client. Reached only through the send
+/// ledger in `os_tool`, which records the send before this runs and never
+/// runs the same one twice.
+pub async fn mail_send(input: &OrganizerInput) -> crate::effects::SendOutcome {
+    use crate::effects::SendOutcome;
+    use super::shared::run_command_with_stdin_typed;
     if input.to.is_empty() {
-        return ToolResult::error("'to' parameter required for send");
+        return SendOutcome::PreSendFailure("'to' parameter required for send".into());
     }
     if input.subject.is_empty() {
-        return ToolResult::error("'subject' parameter required for send");
+        return SendOutcome::PreSendFailure("'subject' parameter required for send".into());
     }
-
     let backend = match detect_mail_send() {
         Some(b) => b,
         None => {
-            return ToolResult::error(
+            return SendOutcome::PreSendFailure(
                 "No mail client found. Install one of:\n\
                  - neomutt (recommended): ask the owner to install neomutt\n\
                  - mutt: ask the owner to install mutt\n\
-                 - s-nail: ask the owner to install s-nail",
+                 - s-nail: ask the owner to install s-nail"
+                    .into(),
             );
         }
     };
@@ -116,23 +120,22 @@ async fn mail_send(input: &OrganizerInput) -> ToolResult {
             for to in &input.to {
                 args.push(to);
             }
-            // Body piped via stdin (safe from shell injection)
-            run_command_with_stdin(backend, &args, &input.body).await
+            // Body piped via stdin (safe from shell injection). These clients
+            // send plain text: the text goes, and the result says the HTML
+            // version was not used — never a silent downgrade.
+            match run_command_with_stdin_typed(backend, &args, &input.text).await.send_outcome() {
+                SendOutcome::Sent(msg, r) if !input.html.trim().is_empty() => SendOutcome::Sent(format!("{msg} ({backend} sends plain text; the html version was not used)"), r),
+                other => other,
+            }
         }
         "sendmail" => {
-            // Build RFC 2822 formatted email
-            let mut email = String::new();
-            email.push_str(&format!("To: {}\n", input.to.join(", ")));
-            if !input.cc.is_empty() {
-                email.push_str(&format!("Cc: {}\n", input.cc.join(", ")));
-            }
-            email.push_str(&format!("Subject: {}\n", input.subject));
-            email.push_str("Content-Type: text/plain; charset=UTF-8\n\n");
-            email.push_str(&input.body);
-
-            run_command_with_stdin("sendmail", &["-t"], &email).await
+            // The message as sendmail reads it from stdin (`-t`): RFC 5322
+            // headers and, with an HTML version, a multipart/alternative.
+            // Built by the shared, tested assembler.
+            let email = super::shared::mail_message(&input.to, &input.cc, &input.subject, &input.text, &input.html);
+            run_command_with_stdin_typed("sendmail", &["-t"], &email).await.send_outcome()
         }
-        _ => ToolResult::error(format!("Unsupported mail backend: {}", backend)),
+        _ => SendOutcome::PreSendFailure(format!("Unsupported mail backend: {}", backend)),
     }
 }
 

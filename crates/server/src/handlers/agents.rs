@@ -1153,6 +1153,37 @@ pub async fn update_agent(
 }
 
 /// DELETE /agents/{id}
+/// GET /api/v1/agents/{id}/export — everything the business keeps about an
+/// employee's work, as one JSON document. Works for a deleted employee too.
+pub async fn export_agent_data(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> HandlerResult<serde_json::Value> {
+    if state.store.agent_display_name(&id).map_err(to_error_response)?.is_none() {
+        return Err(to_error_response(types::NeboError::NotFound));
+    }
+    let doc = state.store.export_agent_business_data(&id).map_err(to_error_response)?;
+    Ok(Json(doc))
+}
+
+/// POST /api/v1/agents/{id}/purge — destroy an employee's business history:
+/// its cases, turns, sent communications, approvals, ledger, cards. Never
+/// implied by deleting the employee; only ever asked for by name.
+pub async fn purge_agent_data(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> HandlerResult<serde_json::Value> {
+    let Some(name) = state.store.agent_display_name(&id).map_err(to_error_response)? else {
+        return Err(to_error_response(types::NeboError::NotFound));
+    };
+    let removed = state
+        .store
+        .purge_agent_business_data(&id, chrono::Utc::now().timestamp())
+        .map_err(to_error_response)?;
+    info!(agent = %id, name = %name, ?removed, "purged an employee's business history at the owner's request");
+    Ok(Json(serde_json::json!({ "purged": true, "employee": { "id": id, "name": name }, "removed": removed })))
+}
+
 pub async fn delete_agent(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -1209,12 +1240,16 @@ pub async fn delete_agent(
 
     // DB cleanup only when the agent actually had DB rows. agent_workflows are
     // cascade-deleted via FK; chats before sessions (chats reference session names).
+    // What goes is the employee's own: its row, configuration, memory,
+    // working state. What stays is the business's: cases, turns, sent
+    // communications, approvals, the effect ledger — attributed to this id,
+    // with the name it had. Purging that is a separate, explicit operation.
     if db_agent.is_some() {
+        let _ = state.store.tombstone_agent(&id, &name, chrono::Utc::now().timestamp());
         state.store.delete_agent(&id).map_err(to_error_response)?;
         let _ = state.store.delete_agent_chats(&id);
         let _ = state.store.delete_agent_sessions(&id);
         let _ = state.store.delete_agent_memories(&id);
-        let _ = state.store.delete_agent_workflow_runs(&id);
     }
     // A deleted employee must also leave MEMORY: its own scopes are purged
     // above; memories elsewhere that mention it by name get a deterministic
@@ -4227,105 +4262,33 @@ pub async fn resolve_workflow_approval(
     Path(run_id): Path<String>,
     Json(body): Json<WorkflowApprovalBody>,
 ) -> HandlerResult<serde_json::Value> {
-    let Some((agent_id, binding_name, suspended_activity, _iteration, _step, _messages, _pending_tool, _operation, display)) =
-        state
-            .store
-            .get_workflow_suspension(&run_id)
-            .map_err(to_error_response)?
-    else {
-        return Err(to_error_response(types::NeboError::NotFound));
-    };
-
-    if !body.approved {
-        state
-            .store
-            .delete_workflow_suspension(&run_id)
-            .map_err(to_error_response)?;
-        let _ = state.store.update_workflow_run(
-            &run_id,
-            Some("denied"),
-            None,
-            None,
-            Some(&format!("Owner denied: {}", display)),
-            None,
-        );
-        state.hub.broadcast(
-            "workflow_run_denied",
-            serde_json::json!({ "runId": run_id, "agentId": agent_id }),
-        );
-        // Resolved-delta: clear the mirror row in the owner's web inbox no
-        // matter which surface denied.
-        crate::codes::push_inbox(
-            &state,
-            serde_json::json!({ "id": format!("wf-approval:{}", run_id), "resolved": true }),
-        );
-        return Ok(Json(serde_json::json!({ "status": "denied" })));
-    }
-
-    // Rebuild the binding definition exactly as the scheduler does (agent row →
-    // parsed config → binding → def json), and re-run with the approval token
-    // plus the original run's inputs.
-    let agent_rec = state
+    // The owner's answer is an event aimed at the run's live wait. The
+    // engine delivers it: the wait is released, the run re-queued, and the
+    // loop resumes it at the approved call (with the definition it started
+    // with) or ends it as denied. One answer per wait generation: a second
+    // click on the same card is a duplicate, not a second resume.
+    let run = state
         .store
-        .get_agent(&agent_id)
+        .engine_get_run(&run_id)
         .map_err(to_error_response)?
         .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
-    let config = napp::agent::parse_agent_config(&agent_rec.frontmatter)
-        .map_err(|e| to_error_response(types::NeboError::Internal(format!("parse agent config: {e}"))))?;
-    let binding = config
-        .workflows
-        .get(&binding_name)
-        .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
-    let def_json = binding.to_workflow_json(&binding_name);
-
-    // Definition-drift guard for long-tail resumes (days/months later): if the
-    // seat's current definition no longer contains the suspended activity, a
-    // silent resume would fall through to a fresh full run — refuse instead.
-    if !binding.activities.iter().any(|a| a.id == suspended_activity) {
-        return Err(to_error_response(types::NeboError::Validation(format!(
-            "the workflow definition changed since this run paused (activity '{}' no longer exists); the run cannot be resumed safely — deny it and re-run the workflow",
-            suspended_activity
-        ))));
+    let enqueued = state.store.engine_answer_wait(&run_id, body.approved).map_err(to_error_response)?;
+    let status = if body.approved { "approved" } else { "denied" };
+    match enqueued {
+        db::Enqueued::Inserted(_) => {
+            info!(run_id, agent_id = %run.agent_id, status, "workflow approval recorded for the engine");
+        }
+        db::Enqueued::Duplicate => {
+            info!(run_id, "workflow approval already recorded; nothing more to do");
+        }
     }
-
-    // Durable resume (Temporal semantics): pass the parked run's id through the
-    // ONE run_inline pathway; it consumes the suspension, flips the run back to
-    // running, rehydrates the conversation, executes the approved call, and
-    // continues from exactly where it paused. Same run id throughout.
-    let mut inputs: serde_json::Value = state
-        .store
-        .get_workflow_run(&run_id)
-        .ok()
-        .flatten()
-        .and_then(|r| r.inputs)
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_else(|| serde_json::json!({}));
-    if let Some(m) = inputs.as_object_mut() {
-        m.insert("_resume_run".into(), serde_json::json!(run_id));
-    }
-
-    use tools::workflows::WorkflowManager;
-    let resumed = state
-        .workflow_manager
-        .run_inline(
-            def_json,
-            inputs,
-            "approval",
-            Some(binding_name.clone()),
-            &agent_id,
-            None,
-        )
-        .await
-        .map_err(|e| to_error_response(types::NeboError::Internal(e)))?;
-
-    info!(run_id, resumed, agent_id, "workflow approval accepted — resuming parked run");
     // Resolved-delta: clear the mirror row in the owner's web inbox no matter
-    // which surface approved.
+    // which surface answered.
     crate::codes::push_inbox(
         &state,
         serde_json::json!({ "id": format!("wf-approval:{}", run_id), "resolved": true }),
     );
-    Ok(Json(serde_json::json!({ "status": "approved", "runId": resumed })))
+    Ok(Json(serde_json::json!({ "status": status, "runId": run_id })))
 }
 
 /// GET /api/v1/agents/workflow-runs/{run_id}/approval — approval status for
@@ -4336,14 +4299,6 @@ pub async fn get_workflow_approval_status(
     State(state): State<AppState>,
     Path(run_id): Path<String>,
 ) -> HandlerResult<serde_json::Value> {
-    let pending = state
-        .store
-        .get_workflow_suspension(&run_id)
-        .map_err(to_error_response)?
-        .is_some();
-    if pending {
-        return Ok(Json(serde_json::json!({ "status": "pending" })));
-    }
     let run_status = state
         .store
         .get_workflow_run(&run_id)
@@ -4351,6 +4306,9 @@ pub async fn get_workflow_approval_status(
         .flatten()
         .map(|r| r.status)
         .unwrap_or_else(|| "unknown".to_string());
+    if run_status == "awaiting_approval" {
+        return Ok(Json(serde_json::json!({ "status": "pending" })));
+    }
     // "resumed" means the owner approved and the run was re-executed.
     let status = match run_status.as_str() {
         "resumed" => "approved",

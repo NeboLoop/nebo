@@ -18,13 +18,13 @@ mod windows;
 // ═══════════════════════════════════════════════════════════════════════
 
 #[cfg(target_os = "macos")]
-pub use macos::{handle_calendar, handle_contacts, handle_mail, handle_reminders};
+pub use macos::{handle_calendar, handle_contacts, handle_mail, handle_reminders, mail_send};
 
 #[cfg(target_os = "linux")]
-pub use linux::{handle_calendar, handle_contacts, handle_mail, handle_reminders};
+pub use linux::{handle_calendar, handle_contacts, handle_mail, handle_reminders, mail_send};
 
 #[cfg(target_os = "windows")]
-pub use windows::{handle_calendar, handle_contacts, handle_mail, handle_reminders};
+pub use windows::{handle_calendar, handle_contacts, handle_mail, handle_reminders, mail_send};
 
 // Fallback for unsupported platforms
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
@@ -33,6 +33,10 @@ use crate::registry::ToolResult;
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
 pub async fn handle_mail(_action: &str, _input: &OrganizerInput) -> ToolResult {
     ToolResult::error("Mail is not supported on this platform")
+}
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+pub async fn mail_send(_input: &OrganizerInput) -> crate::effects::SendOutcome {
+    crate::effects::SendOutcome::PreSendFailure("Mail is not supported on this platform".into())
 }
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
 pub async fn handle_contacts(_action: &str, _input: &OrganizerInput) -> ToolResult {
@@ -79,12 +83,18 @@ pub struct OrganizerInput {
     pub cc: Vec<String>,
     #[serde(default)]
     pub subject: String,
+    /// The message of a mail send, plain text. The one field for it.
     #[serde(default)]
-    pub body: String,
+    pub text: String,
+    /// An HTML version of the message, where the provider can send one
+    /// (Outlook). Mail.app and the Linux clients send plain text and
+    /// refuse it, so the caller is told rather than silently downgraded.
+    #[serde(default)]
+    pub html: String,
     #[serde(default)]
     pub mailbox: String,
     /// Mail account filter: account name ("Google") or address
-    /// ("sites@stadium.partners"). Empty = all accounts.
+    /// ("you@example.com"). Empty = all accounts.
     #[serde(default)]
     pub account: String,
 
@@ -218,8 +228,8 @@ mod tests {
     #[test]
     fn test_input_to_as_array() {
         let input: OrganizerInput =
-            serde_json::from_str(r#"{"action":"send","to":["a@b.com","c@d.com"]}"#).unwrap();
-        assert_eq!(input.to, vec!["a@b.com", "c@d.com"]);
+            serde_json::from_str(r#"{"action":"send","to":["a@example.com","c@example.com"]}"#).unwrap();
+        assert_eq!(input.to, vec!["a@example.com", "c@example.com"]);
     }
 
     #[test]

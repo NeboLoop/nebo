@@ -1,127 +1,63 @@
-//! Heartbeat scheduler — fires prompt-based proactive tasks for entities
-//! with heartbeat enabled (main agent, agents, channels).
+//! Heartbeats — prompt-based proactive turns for entities with heartbeat
+//! enabled (main agent, agents, channels). WHEN a heartbeat fires is the
+//! engine's: one pending timer per enabled entity, re-armed from the last
+//! consumed one (`crate::engine`). This module says WHICH entities are due
+//! for a timer and HOW one fires.
 //!
 //! Coexists with AgentWorker workflow-bound heartbeats: AgentWorker runs
-//! workflows, this scheduler runs prompt-based chat dispatches.
+//! workflows, this runs prompt-based chat dispatches.
 
 use std::collections::HashMap;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
 
-use tokio::sync::Mutex;
+use chrono::{Datelike, Local, NaiveTime, TimeZone};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 use tools::Origin;
 use types::constants::lanes;
 
 use crate::chat_dispatch::{ChatConfig, run_chat};
-use crate::entity_config;
+use crate::entity_config::{self, ResolvedEntityConfig};
 use crate::state::AppState;
 
-/// In-memory tracker for last-fire times per entity.
-type LastFired = Arc<Mutex<HashMap<String, Instant>>>;
-
-/// Spawn the heartbeat scheduler. Polls every 60 seconds.
-/// Seeds last-fire times from DB so heartbeats don't re-fire immediately after restart.
-pub fn spawn(state: AppState) {
-    let last_fired: LastFired = Arc::new(Mutex::new(HashMap::new()));
-
-    let lf = last_fired.clone();
-    let store = state.store.clone();
-    tokio::spawn(async move {
-        // Initial delay to let the server boot
-        tokio::time::sleep(Duration::from_secs(15)).await;
-
-        // Seed from DB: load last_heartbeat_at for all heartbeat entities
-        if let Ok(entities) = store.list_heartbeat_entities() {
-            let now = Instant::now();
-            let mut fired = lf.lock().await;
-            let mut seeded = 0;
-            for entity in &entities {
-                if let Some(ref ts) = entity.last_heartbeat_at {
-                    if let Ok(epoch) = ts.parse::<u64>() {
-                        let fired_time = std::time::UNIX_EPOCH + Duration::from_secs(epoch);
-                        let elapsed = std::time::SystemTime::now()
-                            .duration_since(fired_time)
-                            .unwrap_or_default();
-                        if let Some(synthetic) = now.checked_sub(elapsed) {
-                            let key = format!("{}-{}", entity.entity_type, entity.entity_id);
-                            fired.insert(key, synthetic);
-                            seeded += 1;
-                        }
-                    }
-                }
-            }
-            if seeded > 0 {
-                info!(seeded, "seeded heartbeat timers from DB");
-            }
-        }
-
-        let mut interval = tokio::time::interval(Duration::from_secs(60));
-        loop {
-            interval.tick().await;
-            if let Err(e) = tick(&state, &lf).await {
-                warn!("heartbeat tick error: {}", e);
-            }
-        }
-    });
+/// One entity the engine should hold a timer for.
+pub(crate) struct Enabled {
+    pub entity_type: String,
+    pub entity_id: String,
+    pub interval_secs: i64,
+    pub window: Option<(String, String)>,
+    /// The entity's last fire before the engine held its timers, if any —
+    /// the floor for the first arming.
+    pub last_fired_at: Option<i64>,
 }
 
-async fn tick(state: &AppState, last_fired: &LastFired) -> Result<(), String> {
-    // Load global settings for resolution
-    let settings = state
-        .store
-        .get_settings()
-        .map_err(|e| e.to_string())?
-        .unwrap_or_else(|| db::models::Setting {
-            id: 1,
-            auto_install_deps: 0,
-            auto_approve_read: 0,
-            auto_approve_write: 0,
-            auto_approve_bash: 0,
-            heartbeat_interval_minutes: 0,
-            comm_enabled: 0,
-            comm_plugin: String::new(),
-            developer_mode: 0,
-            auto_update: 1,
-            full_access: 0,
-            guardrails: serde_json::json!({}),
-            updated_at: 0,
-        });
+impl Enabled {
+    /// The timer target: `heartbeat:<type>:<id>`.
+    pub fn target(&self) -> String {
+        format!("heartbeat:{}:{}", self.entity_type, self.entity_id)
+    }
+}
 
-    let global_permissions: HashMap<String, bool> = state
-        .store
-        .get_user_profile()
-        .ok()
-        .flatten()
-        .and_then(|p| p.tool_permissions)
-        .and_then(|json| serde_json::from_str(&json).ok())
-        .unwrap_or_default();
+/// Every entity whose heartbeat is on, resolved against global settings:
+/// explicitly enabled rows, plus main when the global interval is set and
+/// main is not explicitly off. Entities with nothing to say, and agents no
+/// longer in the live registry, are not due for a timer.
+pub(crate) async fn enabled_entities(state: &AppState) -> Result<Vec<Enabled>, String> {
+    let (settings, global_permissions, heartbeat_md) = context(state)?;
 
-    let heartbeat_md = config::data_dir()
-        .ok()
-        .map(|d| std::fs::read_to_string(d.join("HEARTBEAT.md")).unwrap_or_default())
-        .unwrap_or_default();
-
-    // Collect entities to check: explicitly enabled + main entity if global interval > 0
     let mut entities = state
         .store
         .list_heartbeat_entities()
         .map_err(|e| e.to_string())?;
 
-    // Also check the main entity: if global heartbeat is set and no explicit entity_config
-    // override disables it, fire for main.
     let main_config = state
         .store
         .get_entity_config("main", "main")
         .map_err(|e| e.to_string())?;
-
     let main_explicitly_listed = entities
         .iter()
         .any(|e| e.entity_type == "main" && e.entity_id == "main");
     if !main_explicitly_listed && settings.heartbeat_interval_minutes > 0 {
-        // Main entity uses global settings — check if not explicitly disabled
         let disabled = main_config
             .as_ref()
             .and_then(|c| c.heartbeat_enabled)
@@ -158,9 +94,7 @@ async fn tick(state: &AppState, last_fired: &LastFired) -> Result<(), String> {
         }
     }
 
-    let now = Instant::now();
-    let mut fired = last_fired.lock().await;
-
+    let mut out = Vec::new();
     for entity in &entities {
         let resolved = entity_config::resolve(
             &entity.entity_type,
@@ -170,34 +104,12 @@ async fn tick(state: &AppState, last_fired: &LastFired) -> Result<(), String> {
             &global_permissions,
             &heartbeat_md,
         );
-
         if !resolved.heartbeat_enabled || resolved.heartbeat_interval_minutes <= 0 {
             continue;
         }
-
-        let key = format!("{}-{}", entity.entity_type, entity.entity_id);
-        let interval_dur = Duration::from_secs(resolved.heartbeat_interval_minutes as u64 * 60);
-
-        // Check if enough time has elapsed
-        if let Some(last) = fired.get(&key) {
-            if now.duration_since(*last) < interval_dur {
-                continue;
-            }
-        }
-
-        // Check time window
-        if let Some((start, end)) = &resolved.heartbeat_window {
-            if !in_time_window(start, end) {
-                debug!(entity = key, "heartbeat outside time window, skipping");
-                continue;
-            }
-        }
-
-        // Skip if heartbeat content is empty
         if resolved.heartbeat_content.trim().is_empty() {
             continue;
         }
-
         // Skip deactivated agents — check the live registry
         if entity.entity_type == "agent" {
             let registry = state.agent_registry.read().await;
@@ -205,72 +117,160 @@ async fn tick(state: &AppState, last_fired: &LastFired) -> Result<(), String> {
                 continue;
             }
         }
-
-        info!(entity = key, "firing heartbeat");
-
-        let session_key = format!("heartbeat-{}-{}", entity.entity_type, entity.entity_id);
-        let agent_id = if entity.entity_type == "agent" {
-            entity.entity_id.clone()
-        } else {
-            String::new()
-        };
-
-        let config = ChatConfig {
-            session_key,
-            prompt: resolved.heartbeat_content.clone(),
-            system: String::new(),
-            user_id: String::new(),
-            channel: "heartbeat".into(),
-            origin: Origin::System,
-            agent_id,
-            cancel_token: CancellationToken::new(),
-            lane: lanes::HEARTBEAT.to_string(),
-            comm_reply: None,
-            entity_config: Some(resolved.clone()),
-            images: vec![],
-            entity_name: String::new(),
-            origin_agent_id: None,
-            mention_context: None,
-            tool_scope: None, plan_mode: false,
-            channel_ctx: None,
-            handoff_depth: 0,
-            seed_taint: vec![],
-            tool_allowlist: None,
-            hidden_prompt: false,
-            audience: None,
-            cwd: None,
-            model_override: None,
-        };
-
-        run_chat(state, config).await;
-        fired.insert(key.clone(), now);
-
-        // Persist to DB so heartbeat timing survives restarts
-        let epoch = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs()
-            .to_string();
-        if let Err(e) = state.store.update_heartbeat_at(
-            &entity.entity_type,
-            &entity.entity_id,
-            &epoch,
-        ) {
-            warn!(entity = %key, error = %e, "failed to persist heartbeat timestamp");
-        }
+        out.push(Enabled {
+            entity_type: entity.entity_type.clone(),
+            entity_id: entity.entity_id.clone(),
+            interval_secs: resolved.heartbeat_interval_minutes * 60,
+            window: resolved.heartbeat_window.clone(),
+            last_fired_at: entity.last_heartbeat_at.as_deref().and_then(|s| s.parse().ok()),
+        });
     }
-
-    Ok(())
+    Ok(out)
 }
 
-/// Check if the current local time is within the given HH:MM window.
-fn in_time_window(start: &str, end: &str) -> bool {
-    let now = chrono::Local::now().format("%H:%M").to_string();
-    let now = now.as_str();
-    if start <= end {
-        now >= start && now <= end
-    } else {
-        // Window wraps midnight (e.g., 22:00 - 06:00)
-        now >= start || now <= end
+/// Fire one heartbeat: resolve the entity fresh (content and window may
+/// have changed since the timer was armed) and run the chat on the
+/// heartbeat lane. Ok(false) means it was not fired — disabled or empty by
+/// the time it came due.
+pub(crate) async fn fire(state: &AppState, entity_type: &str, entity_id: &str) -> Result<bool, String> {
+    let (settings, global_permissions, heartbeat_md) = context(state)?;
+    let entity = state
+        .store
+        .get_entity_config(entity_type, entity_id)
+        .map_err(|e| e.to_string())?;
+    let resolved: ResolvedEntityConfig = entity_config::resolve(
+        entity_type,
+        entity_id,
+        entity.as_ref(),
+        &settings,
+        &global_permissions,
+        &heartbeat_md,
+    );
+    if !resolved.heartbeat_enabled || resolved.heartbeat_content.trim().is_empty() {
+        return Ok(false);
+    }
+
+    let key = format!("{entity_type}-{entity_id}");
+    info!(entity = key, "firing heartbeat");
+
+    let config = ChatConfig {
+        session_key: format!("heartbeat-{entity_type}-{entity_id}"),
+        prompt: resolved.heartbeat_content.clone(),
+        system: String::new(),
+        user_id: String::new(),
+        channel: "heartbeat".into(),
+        origin: Origin::System,
+        agent_id: if entity_type == "agent" { entity_id.to_string() } else { String::new() },
+        cancel_token: CancellationToken::new(),
+        lane: lanes::HEARTBEAT.to_string(),
+        comm_reply: None,
+        entity_config: Some(resolved.clone()),
+        images: vec![],
+        entity_name: String::new(),
+        origin_agent_id: None,
+        mention_context: None,
+        tool_scope: None,
+        plan_mode: false,
+        channel_ctx: None,
+        handoff_depth: 0,
+        seed_taint: vec![],
+        tool_allowlist: None,
+        hidden_prompt: false,
+        audience: None,
+        cwd: None,
+        model_override: None,
+    };
+
+    run_chat(state, config).await;
+
+    // The entity row keeps its last-fired stamp for the settings UI.
+    let epoch = chrono::Utc::now().timestamp().to_string();
+    if let Err(e) = state.store.update_heartbeat_at(entity_type, entity_id, &epoch) {
+        warn!(entity = %key, error = %e, "failed to persist heartbeat timestamp");
+    }
+    Ok(true)
+}
+
+fn context(state: &AppState) -> Result<(db::models::Setting, HashMap<String, bool>, String), String> {
+    let settings = state
+        .store
+        .get_settings()
+        .map_err(|e| e.to_string())?
+        .unwrap_or_else(|| db::models::Setting {
+            id: 1,
+            auto_install_deps: 0,
+            auto_approve_read: 0,
+            auto_approve_write: 0,
+            auto_approve_bash: 0,
+            heartbeat_interval_minutes: 0,
+            comm_enabled: 0,
+            comm_plugin: String::new(),
+            developer_mode: 0,
+            auto_update: 1,
+            full_access: 0,
+            guardrails: serde_json::json!({}),
+            updated_at: 0,
+        });
+    let global_permissions: HashMap<String, bool> = state
+        .store
+        .get_user_profile()
+        .ok()
+        .flatten()
+        .and_then(|p| p.tool_permissions)
+        .and_then(|json| serde_json::from_str(&json).ok())
+        .unwrap_or_default();
+    let heartbeat_md = config::data_dir()
+        .ok()
+        .map(|d| std::fs::read_to_string(d.join("HEARTBEAT.md")).unwrap_or_default())
+        .unwrap_or_default();
+    Ok((settings, global_permissions, heartbeat_md))
+}
+
+/// The first moment at or after `due` that falls inside the HH:MM window
+/// on the local clock. A window that wraps midnight (22:00–06:00) is
+/// honored. An unparseable window is no window.
+pub(crate) fn next_in_window(due: i64, window: Option<&(String, String)>) -> i64 {
+    let Some((start, end)) = window else { return due };
+    let (Ok(start), Ok(end)) = (NaiveTime::parse_from_str(start, "%H:%M"), NaiveTime::parse_from_str(end, "%H:%M")) else {
+        return due;
+    };
+    let Some(at) = Local.timestamp_opt(due, 0).single() else { return due };
+    let t = at.time();
+    let inside = if start <= end { t >= start && t <= end } else { t >= start || t <= end };
+    if inside {
+        return due;
+    }
+    // Next opening: today's start if still ahead, else tomorrow's.
+    let today = at.date_naive();
+    let candidate = if t < start { today } else { today + chrono::Days::new(1) };
+    let _ = candidate.day(); // a date, not a duration: DST-safe
+    Local
+        .from_local_datetime(&candidate.and_time(start))
+        .single()
+        .map(|d| d.timestamp())
+        .unwrap_or(due)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn local(h: u32, m: u32) -> i64 {
+        Local.with_ymd_and_hms(2026, 8, 23, h, m, 0).single().unwrap().timestamp()
+    }
+
+    #[test]
+    fn a_due_moment_outside_the_window_moves_to_the_next_opening() {
+        let w = Some(("09:00".to_string(), "17:00".to_string()));
+        assert_eq!(next_in_window(local(10, 30), w.as_ref()), local(10, 30), "inside stays");
+        assert_eq!(next_in_window(local(6, 0), w.as_ref()), local(9, 0), "before opening → today's opening");
+        let tomorrow = Local.with_ymd_and_hms(2026, 8, 24, 9, 0, 0).single().unwrap().timestamp();
+        assert_eq!(next_in_window(local(18, 0), w.as_ref()), tomorrow, "after closing → tomorrow's opening");
+        // Wrapping window 22:00–06:00: 23:00 is inside, 12:00 waits for 22:00.
+        let night = Some(("22:00".to_string(), "06:00".to_string()));
+        assert_eq!(next_in_window(local(23, 0), night.as_ref()), local(23, 0));
+        assert_eq!(next_in_window(local(12, 0), night.as_ref()), local(22, 0));
+        assert_eq!(next_in_window(local(12, 0), None), local(12, 0));
+        assert_eq!(next_in_window(local(12, 0), Some(&("x".to_string(), "y".to_string()))), local(12, 0));
     }
 }

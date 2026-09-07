@@ -150,125 +150,16 @@ impl AgentWorker {
 
             match binding.trigger_type.as_str() {
                 "heartbeat" => {
-                    let (duration, window) = parse_heartbeat(&binding.trigger_config);
-                    if duration.is_zero() {
-                        warn!(
-                            agent = %agent_id,
-                            binding = %binding.binding_name,
-                            config = %binding.trigger_config,
-                            "invalid heartbeat config, skipping"
-                        );
-                        continue;
-                    }
-                    // Build inline definition JSON from agent config
-                    let def_json = match wf_binding {
-                        Some(wb) if wb.has_activities() => {
-                            wb.to_workflow_json(&binding.binding_name)
-                        }
-                        _ => {
-                            warn!(agent = %agent_id, binding = %binding.binding_name, "no inline activities found, skipping heartbeat");
-                            continue;
-                        }
-                    };
-                    let inputs: serde_json::Value = binding
-                        .inputs
-                        .as_ref()
-                        .and_then(|s| serde_json::from_str(s).ok())
-                        .unwrap_or_else(|| serde_json::json!({}));
-                    // Build emit_source from binding: "{agent-slug}.{emit-name}"
-                    let emit_source = wf_binding.and_then(|wb| wb.emit.as_ref()).map(|emit_name| {
-                        let slug = name.to_lowercase().replace(' ', "-");
-                        format!("{}.{}", slug, emit_name)
-                    });
-                    let mgr = workflow_manager.clone();
-                    let agent = agent_id.clone();
-                    let bname = binding.binding_name.clone();
-                    let token = cancel.clone();
-                    let hb_store = store.clone();
-
-                    tokio::spawn(async move {
-                        let mut interval = tokio::time::interval(duration);
-                        interval.tick().await; // skip first immediate tick
-
-                        let wf_id = types::keyparser::agent_workflow_id(&agent);
-
-                        loop {
-                            tokio::select! {
-                                _ = interval.tick() => {
-                                    // Check time window if configured. A window with
-                                    // start > end wraps past midnight (e.g. 22:00-06:00).
-                                    if let Some((start, end)) = &window {
-                                        let now = chrono::Local::now().time();
-                                        let in_window = if start <= end {
-                                            now >= *start && now <= *end
-                                        } else {
-                                            now >= *start || now <= *end
-                                        };
-                                        if !in_window {
-                                            continue;
-                                        }
-                                    }
-
-                                    // Honor the workflow toggle without requiring a
-                                    // worker restart.
-                                    if let Ok(false) = hb_store.is_agent_workflow_active(&agent, &bname) {
-                                        debug!(agent = %agent, binding = %bname, "heartbeat skipped: binding inactive");
-                                        continue;
-                                    }
-
-                                    // Skip if a previous run for this binding is still active
-                                    match hb_store.has_running_run(&wf_id, &bname) {
-                                        Ok(true) => {
-                                            debug!(
-                                                agent = %agent,
-                                                binding = %bname,
-                                                "heartbeat skipped: previous run still active"
-                                            );
-                                            continue;
-                                        }
-                                        Ok(false) => {}
-                                        Err(e) => {
-                                            warn!(
-                                                agent = %agent,
-                                                binding = %bname,
-                                                error = %e,
-                                                "failed to check running runs, proceeding anyway"
-                                            );
-                                        }
-                                    }
-
-                                    match mgr.run_inline(def_json.clone(), inputs.clone(), "heartbeat", Some(bname.clone()), &agent, emit_source.clone()).await {
-                                        Ok(run_id) => {
-                                            info!(
-                                                agent = %agent,
-                                                binding = %bname,
-                                                run_id = %run_id,
-                                                "heartbeat triggered inline workflow"
-                                            );
-                                            notify_crate::send("Nebo", &format!("Heartbeat: {}", bname));
-                                        }
-                                        Err(e) => {
-                                            warn!(
-                                                agent = %agent,
-                                                binding = %bname,
-                                                error = %e,
-                                                "heartbeat inline workflow run failed"
-                                            );
-                                            notify_crate::send("Nebo", &format!("{} failed: {}", bname, e));
-                                        }
-                                    }
-                                }
-                                _ = token.cancelled() => break,
-                            }
-                        }
-                    });
-
-                    info!(
+                    // A heartbeat binding is a recurring timer the engine
+                    // holds (server `engine::arm_heartbeats`): it survives
+                    // restarts, honors the window at arming time, and fires
+                    // the inline workflow through the same executor a
+                    // scheduled binding uses. Nothing to start here.
+                    debug!(
                         agent = %agent_id,
                         binding = %binding.binding_name,
-                        interval = ?duration,
-                        window = ?window,
-                        "started heartbeat trigger"
+                        config = %binding.trigger_config,
+                        "heartbeat binding: timer held by the engine"
                     );
                 }
                 "event" => {
@@ -302,6 +193,7 @@ impl AgentWorker {
                             binding_name: binding.binding_name.clone(),
                             definition_json: def_json.clone(),
                             emit_source: event_emit_source.clone(),
+                            case: wf_binding.and_then(|wb| workflow::events::CaseRoute::from_binding(&binding.binding_name, wb)),
                         };
                         // Inline (not spawned): subscriptions must be in place
                         // before start() returns, so a restart's awaited stop →
@@ -1039,7 +931,8 @@ pub fn normalize_watch_payload(payload: &mut serde_json::Value) {
 }
 
 
-fn parse_heartbeat(
+/// Parse a heartbeat trigger config: `"<duration>"` or `"<duration>|HH:MM-HH:MM"`.
+pub fn parse_heartbeat(
     config: &str,
 ) -> (
     std::time::Duration,
@@ -1376,10 +1269,30 @@ async fn watch_loop(
                                     (base_source.clone(), payload.clone())
                                 };
 
-                                // Deduplicate: hash the (source + payload) and skip if seen recently.
-                                // Uses DB-backed dedup so fingerprints survive restarts.
+                                // Two different guards (owner's rule, 2026-09-07):
+                                // source idempotency — a provider's own event id
+                                // is durable and unique across all time (I-2), so a
+                                // redelivery hours later is still a replay; and the
+                                // payload fingerprint — a ten-minute debounce for
+                                // "something very similar just happened", which
+                                // must stay short so a legitimate repeat later is
+                                // not swallowed.
+                                let source_id = ["id", "event_id", "eventId", "message_id", "messageId", "msg_id"]
+                                    .iter()
+                                    .find_map(|k| event_payload.get(k))
+                                    .and_then(|v| match v {
+                                        serde_json::Value::String(s) if !s.trim().is_empty() => Some(s.trim().to_string()),
+                                        serde_json::Value::Number(n) => Some(n.to_string()),
+                                        _ => None,
+                                    });
+                                let replay = match &source_id {
+                                    Some(id) => !store
+                                        .engine_mark_seen("event", &format!("event:{}:{}", event_source, id))
+                                        .unwrap_or(true),
+                                    None => false,
+                                };
                                 let fingerprint = hash_text(&format!("{}:{}", event_source, event_payload));
-                                let is_dup = store.check_event_dedup(&fingerprint, 10 * 60).unwrap_or(false);
+                                let is_dup = replay || store.check_event_dedup(&fingerprint, 10 * 60).unwrap_or(false);
                                 if is_dup {
                                     debug!(
                                         agent = %agent_id,
@@ -3472,8 +3385,8 @@ mod watch_payload_tests {
             "event": "email.new",
             "id": "1a033574ee0ae0e2",
             "payload": {"headers": [
-                {"name": "Delivered-To", "value": "orders@vividwindows.com"},
-                {"name": "From", "value": "<WindowConfirmation@alside.com>"},
+                {"name": "Delivered-To", "value": "orders@example.com"},
+                {"name": "From", "value": "<WindowConfirmation@example.com>"},
                 {"name": "Subject", "value": "Open Order Report: 87495 VIVID WINDOWS"}
             ]}
         });
@@ -3489,11 +3402,11 @@ mod watch_payload_tests {
     #[test]
     fn existing_fields_win_and_non_email_untouched() {
         let mut p = serde_json::json!({
-            "from": "reports@alside.com",
-            "payload": {"headers": [{"name": "From", "value": "someone@else.com"}]}
+            "from": "reports@example.com",
+            "payload": {"headers": [{"name": "From", "value": "someone@example.com"}]}
         });
         normalize_watch_payload(&mut p);
-        assert_eq!(p["from"], "reports@alside.com");
+        assert_eq!(p["from"], "reports@example.com");
 
         let mut folder = serde_json::json!({"path": "/tmp/x", "kind": "created"});
         let before = folder.clone();

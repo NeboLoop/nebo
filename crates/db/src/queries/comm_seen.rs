@@ -1,26 +1,14 @@
-use rusqlite::params;
-
 use crate::Store;
 use types::NeboError;
 
 impl Store {
     /// Durable inbound dedupe: record a hub wire msg_id as processed.
-    /// Returns true the FIRST time an id is seen; false on a redelivery.
-    /// Also prunes entries past the retention window — the hub's replay
-    /// horizon is far shorter, so 14 days is generous.
+    /// Returns true the FIRST time an id is seen; false on a redelivery —
+    /// on any connection, across restarts. The record is an engine event
+    /// under idempotency key `comm:<id>`, already delivered, so the engine
+    /// never claims it and a replay is a duplicate by construction (I-2).
     pub fn mark_comm_message_seen(&self, msg_id: &str) -> Result<bool, NeboError> {
-        let conn = self.conn()?;
-        let inserted = conn
-            .execute(
-                "INSERT OR IGNORE INTO comm_seen_messages (id) VALUES (?1)",
-                params![msg_id],
-            )
-            .map_err(|e| NeboError::Database(e.to_string()))?;
-        let _ = conn.execute(
-            "DELETE FROM comm_seen_messages WHERE seen_at < (unixepoch() - 14*86400)",
-            [],
-        );
-        Ok(inserted == 1)
+        self.engine_mark_seen("comm", &format!("comm:{msg_id}"))
     }
 }
 
@@ -38,6 +26,9 @@ mod tests {
         // across what would be reconnects and restarts in production.
         assert!(!store.mark_comm_message_seen("m-1").unwrap());
         assert!(store.mark_comm_message_seen("m-2").unwrap());
+        // Seen rows are never claimable work.
+        let (claimed, _) = store.engine_claim_events(i64::MAX / 2, 10).unwrap();
+        assert!(claimed.is_empty());
     }
 }
 

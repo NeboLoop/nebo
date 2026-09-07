@@ -48,7 +48,7 @@ pub fn enqueue(
     if let Err(e) =
         state
             .store
-            .enqueue_session_wake(session_key, kind, payload, &prov, handoff_depth)
+            .engine_enqueue_wake(session_key, kind, payload, &prov, handoff_depth)
     {
         warn!(error = %e, session = %session_key, "wake: failed to persist — payload lost");
         return;
@@ -66,7 +66,7 @@ pub async fn deliver(state: &AppState, session_key: &str) {
         // the agent hears them mid-work. Rows stamp delivered at injection
         // (runner-side); a run that ends without draining loses nothing —
         // the still-pending rows redeliver from the completion hook.
-        let (batch, poisoned) = match state.store.claim_session_wakes(session_key) {
+        let (batch, poisoned) = match state.store.engine_claim_session_events(session_key, now()) {
             Ok(v) => v,
             Err(e) => {
                 warn!(error = %e, session = %session_key, "wake: busy claim failed");
@@ -101,7 +101,7 @@ pub async fn deliver(state: &AppState, session_key: &str) {
         in_flight.insert(session_key.to_string(), Vec::new());
     }
 
-    let (batch, poisoned) = match state.store.claim_session_wakes(session_key) {
+    let (batch, poisoned) = match state.store.engine_claim_session_events(session_key, now()) {
         Ok(v) => v,
         Err(e) => {
             warn!(error = %e, session = %session_key, "wake: claim failed");
@@ -145,7 +145,7 @@ pub async fn deliver(state: &AppState, session_key: &str) {
     let mut seed_taint: Vec<ProvenanceClass> = Vec::new();
     let mut handoff_depth: u8 = 0;
     for w in &batch {
-        handoff_depth = handoff_depth.max(w.handoff_depth);
+        handoff_depth = handoff_depth.max(w.handoff_depth.clamp(0, u8::MAX as i64) as u8);
         for class in serde_json::from_str::<Vec<ProvenanceClass>>(&w.provenance).unwrap_or_default()
         {
             if !seed_taint.contains(&class) {
@@ -207,12 +207,12 @@ pub fn on_run_finished(state: &AppState, session_key: &str) {
     if let Some(ids) = ids
         && !ids.is_empty()
     {
-        if let Err(e) = state.store.mark_session_wakes_delivered(&ids) {
+        if let Err(e) = state.store.engine_complete_events(&ids, now()) {
             warn!(error = %e, session = %session_key, "wake: failed to stamp delivered");
         }
     }
     let has_pending = matches!(
-        state.store.sessions_with_pending_wakes(),
+        state.store.engine_sessions_with_pending(),
         Ok(keys) if keys.iter().any(|k| k == session_key)
     );
     if has_pending {
@@ -225,7 +225,7 @@ pub fn on_run_finished(state: &AppState, session_key: &str) {
 /// Boot sweep — same recovery moment as `recover_interrupted_runs` (R1):
 /// wakes persisted before a crash deliver on the next boot.
 pub async fn recover_pending_wakes(state: &AppState) {
-    let sessions = match state.store.sessions_with_pending_wakes() {
+    let sessions = match state.store.engine_sessions_with_pending() {
         Ok(s) => s,
         Err(e) => {
             warn!(error = %e, "wake: boot sweep query failed");
@@ -243,7 +243,11 @@ pub async fn recover_pending_wakes(state: &AppState) {
 
 /// The hidden wake context (R2). The agent sees this; the transcript never
 /// does — what the owner sees is only the agent's resulting report.
-fn wake_prompt(batch: &[db::SessionWake]) -> String {
+fn now() -> i64 {
+    chrono::Utc::now().timestamp()
+}
+
+fn wake_prompt(batch: &[db::EngineEvent]) -> String {
     let mut out = String::from("[Background event — not an owner message]\n");
     let shown = batch.len().min(STORM_CAP);
     if batch.len() == 1 {
@@ -287,15 +291,24 @@ fn clip(payload: &str) -> String {
 mod tests {
     use super::*;
 
-    fn wake(kind: &str, payload: &str) -> db::SessionWake {
-        db::SessionWake {
+    fn wake(kind: &str, payload: &str) -> db::EngineEvent {
+        db::EngineEvent {
             id: 1,
-            session_key: "agent:x:web".into(),
             kind: kind.into(),
+            target_type: "session".into(),
+            target_id: "agent:x:web".into(),
             payload: payload.into(),
+            channel: String::new(),
+            r#ref: String::new(),
+            idem_key: "wake:test".into(),
             provenance: "[]".into(),
             handoff_depth: 0,
+            retention: "transient".into(),
+            due_at: None,
+            schedule: None,
             attempts: 1,
+            created_at: 0,
+            delivered_at: None,
         }
     }
 

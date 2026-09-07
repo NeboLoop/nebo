@@ -246,7 +246,7 @@ struct LoginProfile {
 ///
 /// Login from a card or the agent settings, which always ask for an account
 /// on behalf of one agent. Body:
-///   { "agentId": "...", "accountLabel": "work@acme.com" }
+///   { "agentId": "...", "accountLabel": "work@example.com" }
 /// A multi-account plugin (one that declares `profile_dir_env`) gets an
 /// isolated config dir for this (agent, account); the login runs pointed at
 /// it and the profile is recorded on success. A single-account plugin has
@@ -1868,7 +1868,7 @@ mod tests {
     fn req() -> AccountLoginRequest {
         AccountLoginRequest {
             agent_id: "agent-1".into(),
-            account_label: "work@acme.com".into(),
+            account_label: "work@example.com".into(),
             account_number: String::new(),
         }
     }
@@ -1936,9 +1936,9 @@ mod tests {
         let no_slug = hub_delivery(PLUGIN_AUTH_REVOKED_KIND, &[("account_label", "Acme Co")]);
         assert_eq!(parse_plugin_auth_revoked(&no_slug), None, "a revoke without a slug cannot be targeted");
 
-        let minimal = hub_delivery(PLUGIN_AUTH_REVOKED_KIND, &[("slug", "gws"), ("account_label", " work@acme.com ")]);
+        let minimal = hub_delivery(PLUGIN_AUTH_REVOKED_KIND, &[("slug", "gws"), ("account_label", " work@example.com ")]);
         let parsed = parse_plugin_auth_revoked(&minimal).expect("optional fields may be absent");
-        assert_eq!(parsed.account_label, "work@acme.com", "labels are trimmed");
+        assert_eq!(parsed.account_label, "work@example.com", "labels are trimmed");
         assert_eq!(parsed.realm_id, None);
         assert_eq!(parsed.provider, None);
     }

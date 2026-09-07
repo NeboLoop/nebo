@@ -324,7 +324,7 @@ mod tests {
                 "id": "1a033574ee0ae0e2",
                 "payload": {
                     "headers": [
-                        {"name": "From", "value": "<WindowConfirmation@alside.com>"},
+                        {"name": "From", "value": "<WindowConfirmation@example.com>"},
                         {"name": "Subject", "value": "Open Order Report: 87495 VIVID WINDOWS"},
                         {"name": "Date", "value": "Mon, 24 Aug 2026 03:35:55 -0700"},
                         {"name": "ARC-Seal", "value": "i=1; a=rsa-sha256; ..."}
@@ -354,7 +354,7 @@ mod tests {
                 .find(|f| f["key"] == k)
                 .map(|f| f["value"].as_str().unwrap().to_string())
         };
-        assert_eq!(get("from").unwrap(), "<WindowConfirmation@alside.com>");
+        assert_eq!(get("from").unwrap(), "<WindowConfirmation@example.com>");
         assert_eq!(get("attachment").unwrap(), "Open Order Report.xls");
         assert_eq!(get("via").unwrap(), "gmail · email.new");
         // ARC seals and received chains never surface.

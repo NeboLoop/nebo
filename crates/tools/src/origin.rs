@@ -286,6 +286,19 @@ pub struct ToolContext {
 /// (plugin account profiles, memory scope) parse the `agent:<id>:` prefix, so
 /// every launch path must build it identically. Returns an empty string for
 /// standalone (non-agent) runs, which resolve no agent state by design.
+/// The inverse of `workflow_session_key`: the workflow run a session key
+/// names, if it is a workflow session.
+pub fn workflow_run_id(session_key: &str) -> Option<&str> {
+    // An activity's session is the run's session with the activity and
+    // iteration appended (`…:workflow:<run>:<activity>::<n>`); the run is
+    // always the fourth segment.
+    let mut parts = session_key.splitn(5, ':');
+    match (parts.next(), parts.next(), parts.next(), parts.next()) {
+        (Some("agent"), Some(agent), Some("workflow"), Some(run_id)) if !agent.is_empty() && !run_id.is_empty() => Some(run_id),
+        _ => None,
+    }
+}
+
 pub fn workflow_session_key(agent_id: &str, run_id: &str) -> String {
     if agent_id.is_empty() {
         String::new()

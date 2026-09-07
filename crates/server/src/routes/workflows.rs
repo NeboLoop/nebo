@@ -6,6 +6,9 @@ use crate::state::AppState;
 /// Workflow routes.
 pub fn routes() -> Router<AppState> {
     Router::new()
+        // The case inspector: read-only.
+        .route("/cases", axum::routing::get(handlers::cases::list_cases))
+        .route("/cases/{id}", axum::routing::get(handlers::cases::get_case))
         .route(
             "/workflows",
             axum::routing::get(handlers::workflows::list_workflows),

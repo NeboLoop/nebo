@@ -1,7 +1,7 @@
 //! macOS organizer: AppleScript integration with Mail, Contacts, Calendar, Reminders.
 
 use super::OrganizerInput;
-use super::shared::{escape_applescript, run_osascript};
+use super::shared::{escape_applescript, run_osascript, run_osascript_typed};
 use crate::errors::missing_param;
 use crate::origin::ToolContext;
 use crate::registry::ToolResult;
@@ -27,7 +27,7 @@ fn diag(result: ToolResult) -> ToolResult {
 /// lower than `search` to stay inside the 30 s subprocess budget.
 const MAIL_READ_LIMIT_CAP: i64 = 20;
 const MAIL_SEARCH_LIMIT_CAP: i64 = 50;
-const MAIL_SEND_EXAMPLE: &str = "organizer(resource: \"mail\", action: \"send\", to: [\"pat@example.com\"], subject: \"Invoice 42\", body: \"Attached is the invoice.\")";
+const MAIL_SEND_EXAMPLE: &str = "organizer(resource: \"mail\", action: \"send\", to: [\"pat@example.com\"], subject: \"Invoice 42\", text: \"Attached is the invoice.\")";
 
 pub async fn handle_mail(action: &str, input: &OrganizerInput) -> ToolResult {
     match action {
@@ -177,43 +177,6 @@ end tell"#,
             );
             diag(run_osascript(&script).await)
         }
-        "send" => {
-            if input.to.is_empty() {
-                return ToolResult::error(missing_param("send", "to", MAIL_SEND_EXAMPLE));
-            }
-            if input.subject.is_empty() {
-                return ToolResult::error(missing_param("send", "subject", MAIL_SEND_EXAMPLE));
-            }
-
-            let mut script = format!(
-                r#"tell application "Mail"
-    set newMsg to make new outgoing message with properties {{subject:"{subject}", content:"{body}", visible:true}}"#,
-                subject = escape_applescript(&input.subject),
-                body = escape_applescript(&input.body),
-            );
-
-            // To recipients
-            for addr in &input.to {
-                script.push_str(&format!(
-                    "\n    tell newMsg to make new to recipient with properties {{address:\"{}\"}}",
-                    escape_applescript(addr)
-                ));
-            }
-
-            // CC recipients
-            for addr in &input.cc {
-                script.push_str(&format!(
-                    "\n    tell newMsg to make new cc recipient with properties {{address:\"{}\"}}",
-                    escape_applescript(addr)
-                ));
-            }
-
-            script.push_str(&format!(
-                "\n    send newMsg\n    return \"Handed to Mail for delivery to {}\"\nend tell",
-                escape_applescript(&input.to.join(", "))
-            ));
-            run_osascript(&script).await
-        }
         "search" => {
             let query = &input.query;
             if query.is_empty() {
@@ -281,6 +244,55 @@ end tell"#,
             "Unknown mail action '{}'. Use: accounts, unread, read, send, search",
             action
         )),
+    }
+}
+
+/// Hand a message to Mail.app. Reached only through the send ledger in
+/// `os_tool`, which records the send before this runs and never runs the
+/// same one twice.
+pub async fn mail_send(input: &OrganizerInput) -> crate::effects::SendOutcome {
+    use crate::effects::SendOutcome;
+    if input.to.is_empty() {
+        return SendOutcome::PreSendFailure(missing_param("send", "to", MAIL_SEND_EXAMPLE));
+    }
+    if input.subject.is_empty() {
+        return SendOutcome::PreSendFailure(missing_param("send", "subject", MAIL_SEND_EXAMPLE));
+    }
+    let mut script = format!(
+        r#"tell application "Mail"
+    set newMsg to make new outgoing message with properties {{subject:"{subject}", content:"{body}", visible:true}}"#,
+        subject = escape_applescript(&input.subject),
+        body = escape_applescript(&input.text),
+    );
+
+    // To recipients
+    for addr in &input.to {
+        script.push_str(&format!(
+            "\n    tell newMsg to make new to recipient with properties {{address:\"{}\"}}",
+            escape_applescript(addr)
+        ));
+    }
+
+    // CC recipients
+    for addr in &input.cc {
+        script.push_str(&format!(
+            "\n    tell newMsg to make new cc recipient with properties {{address:\"{}\"}}",
+            escape_applescript(addr)
+        ));
+    }
+
+    script.push_str(&format!(
+        "\n    send newMsg\n    return \"Handed to Mail for delivery to {}\"\nend tell",
+        escape_applescript(&input.to.join(", "))
+    ));
+    // Mail.app cannot send HTML from a script: its dictionary's `html
+    // content` property is hidden, write-only, and described by Apple as
+    // "Does nothing at all (deprecated)" (checked with `sdef` on macOS 26).
+    // The text goes, and the result says the HTML version was not used —
+    // never a silent downgrade.
+    match run_osascript_typed(&script).await.send_outcome() {
+        SendOutcome::Sent(msg, r) if !input.html.trim().is_empty() => SendOutcome::Sent(format!("{msg} (Mail.app sends plain text; the html version was not used)"), r),
+        other => other,
     }
 }
 

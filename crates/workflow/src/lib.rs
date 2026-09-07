@@ -1,3 +1,4 @@
+pub mod cases;
 pub mod engine;
 pub mod loop_contract;
 pub mod events;
@@ -51,7 +52,7 @@ pub enum WorkflowError {
     RunawayLoop(String),
     /// The run reached a gated operation whose per-employee policy says
     /// "Needs approval": it SUSPENDED at the checkpoint (state persisted in
-    /// workflow_run_suspensions, run status `awaiting_approval`) and waits for
+    /// the run's engine wait, run status `awaiting_approval`) and waits for
     /// the owner's decision. Not a failure — the manager notifies the owner
     /// and the run resumes (or aborts) via the approval endpoint.
     #[error("awaiting owner approval for operation: {operation}")]

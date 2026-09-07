@@ -30,6 +30,9 @@ pub struct OsTool {
     keychain_tool: KeychainTool,
     spotlight_tool: SpotlightTool,
     store: Option<Arc<db::Store>>,
+    /// To know whether a typed port (`mail.message.send`) has a provider:
+    /// when it does, the local mail app steps aside.
+    plugin_store: Option<Arc<napp::plugin::PluginStore>>,
 }
 
 /// Organizer actions that modify data and require user approval.
@@ -60,10 +63,12 @@ impl OsTool {
             keychain_tool: KeychainTool::new(),
             spotlight_tool: SpotlightTool::new(),
             store: None,
+            plugin_store: None,
         }
     }
 
     pub fn with_plugin_store(mut self, ps: Arc<napp::plugin::PluginStore>) -> Self {
+        self.plugin_store = Some(ps.clone());
         self.shell_tool = self.shell_tool.with_plugin_store(ps);
         self
     }
@@ -650,7 +655,7 @@ impl DynTool for OsTool {
          - music: play, pause, next, previous, status, search, volume, playlists, shuffle\n\
          - keychain: get, find, add (alias: store), delete (account optional — narrows the match)\n\
          - search: search (file search via OS index)\n\
-         - mail: accounts, unread, read, send, search — LOCAL Apple Mail. read/search take optional account (name or address, e.g. \"sites@stadium.partners\") + mailbox; search is a SUBSTRING match on subject/sender (no Gmail operators like from:)\n\
+         - mail: accounts, unread, read, send, search — LOCAL Apple Mail. send takes to, subject, text (the message, plain) and optional html; it is the way to send only when no mail plugin is connected — a connected one is the business's mail and this send refuses and points to plugin(operation: \"mail.message.send\"). read/search take optional account (name or address, e.g. \"you@example.com\") + mailbox; search is a SUBSTRING match on subject/sender (no Gmail operators like from:)\n\
          - contacts: search, get, create, groups\n\
          - calendar: calendars, today, upcoming, create, delete, pending, accept, decline, auto_accept, list, configure — the LOCAL Apple/Mac calendar (for Google Calendar use plugin(resource: \"gws\", ...))\n\
          - reminders: lists, list, create, complete, delete\n\n\
@@ -809,7 +814,8 @@ impl DynTool for OsTool {
             prop("string", "Window or notification title"),
         );
         props.insert("message".into(), prop("string", "Notification message"));
-        props.insert("text".into(), prop("string", "Text to type/write/speak"));
+        props.insert("text".into(), prop("string", "The text: a mail send's message (plain text), or text to type, write, or speak for desktop input/tts."));
+        props.insert("html".into(), prop("string", "Optional HTML version of a mail send's message, where the provider can send one (Outlook). Mail.app and the Linux clients send plain text and refuse it."));
         props.insert("key".into(), prop("string", "Key to press"));
         props.insert("keys".into(), prop("string", "Key combination for hotkey"));
         props.insert("x".into(), prop("integer", "X coordinate for window move. Input actions take coordinate: [x, y] (x and y are read there too)"));
@@ -884,7 +890,6 @@ impl DynTool for OsTool {
         // Organizer
         props.insert("email".into(), prop("string", "Email address"));
         props.insert("subject".into(), prop("string", "Email subject"));
-        props.insert("body".into(), prop("string", "Email/event body"));
         props.insert(
             "to".into(),
             serde_json::json!({
@@ -1221,6 +1226,52 @@ impl DynTool for OsTool {
                         }
                     };
                     match resource.as_str() {
+                        // A mail send is a customer-facing effect: it goes through
+                        // the ledger, which records it before it runs and never runs
+                        // the same one twice. No ledger, no send.
+                        "mail" if parsed.action == "send" => {
+                            // One field for the message, and an error that names the
+                            // mistake: a model that wrote `text` once sent a customer an
+                            // empty email.
+                            if parsed.text.trim().is_empty() {
+                                let misnamed = ["body", "message", "content"].into_iter().find(|k| keys.split(", ").any(|have| have == *k));
+                                return ToolResult::error(match misnamed {
+                                    Some(k) => format!("Not sent: `{k}` is not a field of mail send, so the message would have gone out empty. The message goes in `text` (plain), with `html` alongside it if you have a formatted version). Call again with text."),
+                                    None if !parsed.html.trim().is_empty() => "Not sent: `text` is required — the plain message every client can read. `html` rides alongside it, never instead of it.".to_string(),
+                                    None => "Not sent: the message has no text. The message goes in `text`.".to_string(),
+                                });
+                            }
+                            let Some(store) = self.store.as_deref() else {
+                                return ToolResult::error("This install has no send ledger; not sent.");
+                            };
+                            // A connected mail plugin is the business's mail; the
+                            // desktop app is the way only when there is none. Which
+                            // one is decided here, by what is connected — never by
+                            // the model.
+                            if let Some(ps) = self.plugin_store.as_deref() {
+                                let bound = crate::plugin_tool::bound_providers(ps, store, "mail.message.send");
+                                if !bound.is_empty() {
+                                    return ToolResult::error(format!(
+                                        "Not sent through Apple Mail: this business sends mail through {}. Call plugin(operation: \"mail.message.send\", input: {{to, subject, text, html}}) — same message, the connected account.",
+                                        bound.join(", ")
+                                    ));
+                                }
+                            }
+                            let exact = serde_json::json!({
+                                "to": &parsed.to, "cc": &parsed.cc, "subject": &parsed.subject,
+                                "text": &parsed.text, "html": &parsed.html, "account": &parsed.account,
+                            });
+                            crate::effects::guarded_send(
+                                store,
+                                ctx,
+                                "messaging",
+                                "mail-app",
+                                "mail.message.send",
+                                &exact,
+                                || organizer::mail_send(&parsed),
+                            )
+                            .await
+                        }
                         "mail" => organizer::handle_mail(&parsed.action, &parsed).await,
                         "contacts" => organizer::handle_contacts(&parsed.action, &parsed).await,
                         "calendar" => {
@@ -1633,6 +1684,23 @@ mod tests {
         assert_eq!(schema["properties"]["steps"]["items"]["required"], serde_json::json!(["title", "verify"]));
     }
 
+    /// Seen live: a customer received an empty email because the message
+    /// was in a field the send did not read. The message is `text`, with
+    /// `html` alongside it; a send that puts it anywhere else, or gives only
+    /// html, is refused with the mistake named — nothing sent or recorded.
+    #[tokio::test]
+    async fn a_mail_send_with_the_message_in_the_wrong_field_is_refused_and_steered() {
+        let tool = OsTool::new(crate::policy::Policy::default(), Arc::new(crate::process::ProcessRegistry::new()));
+        let ctx = crate::origin::ToolContext::default();
+        let r = tool.execute_dyn(&ctx, serde_json::json!({"resource": "mail", "action": "send", "to": "a@example.com", "subject": "Re: quote", "body": "hello"})).await;
+        assert!(r.is_error, "{}", r.content);
+        assert!(r.content.contains("`body` is not a field") && r.content.contains("goes in `text`"), "{}", r.content);
+        let r = tool.execute_dyn(&ctx, serde_json::json!({"resource": "mail", "action": "send", "to": "a@example.com", "subject": "Re: quote", "html": "<p>hello</p>"})).await;
+        assert!(r.is_error && r.content.contains("`text` is required"), "{}", r.content);
+        let r = tool.execute_dyn(&ctx, serde_json::json!({"resource": "mail", "action": "send", "to": "a@example.com", "subject": "Re: quote"})).await;
+        assert!(r.is_error && r.content.contains("has no text"), "{}", r.content);
+    }
+
     #[test]
     fn test_approval_map() {
         let tool = OsTool::new(
@@ -1780,7 +1848,7 @@ mod tests {
         // "read" with mail params and no path routes to mail, not file
         let input = serde_json::json!({"action": "read", "mailbox": "INBOX", "limit": 5});
         assert_eq!(OsTool::resolved_resource(&input), "mail");
-        let input = serde_json::json!({"action": "read", "account": "sites@stadium.partners"});
+        let input = serde_json::json!({"action": "read", "account": "you@example.com"});
         assert_eq!(OsTool::resolved_resource(&input), "mail");
         // "read" with a path is still a file read
         let input = serde_json::json!({"action": "read", "path": "/tmp/x"});

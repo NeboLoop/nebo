@@ -201,21 +201,30 @@ static WAKE_INBOX: std::sync::LazyLock<
     std::sync::Mutex<std::collections::HashMap<String, Vec<WakeEntry>>>,
 > = std::sync::LazyLock::new(Default::default);
 
+/// Queue a wake for injection into the session's next model call. The same
+/// wake (by id) is never queued twice: an event whose lease expired and was
+/// handed over again rides the entry it already has.
 pub fn push_wake(session_key: &str, entry: WakeEntry) {
-    WAKE_INBOX
-        .lock()
-        .expect("wake inbox lock")
-        .entry(session_key.to_string())
-        .or_default()
-        .push(entry);
+    let mut inbox = WAKE_INBOX.lock().expect("wake inbox lock");
+    let queue = inbox.entry(session_key.to_string()).or_default();
+    if queue.iter().any(|e| e.wake_id == entry.wake_id) {
+        return;
+    }
+    queue.push(entry);
 }
 
+/// Take every wake queued for the session — and for any activity session
+/// under it (`<session>:<activity>::<n>`), which is where a case turn's
+/// wakes are queued while the engine knows the turn by its own key.
 pub fn drain_wakes(session_key: &str) -> Vec<WakeEntry> {
-    WAKE_INBOX
-        .lock()
-        .expect("wake inbox lock")
-        .remove(session_key)
-        .unwrap_or_default()
+    let mut inbox = WAKE_INBOX.lock().expect("wake inbox lock");
+    let prefix = format!("{session_key}:");
+    let under: Vec<String> = inbox.keys().filter(|k| k.starts_with(&prefix)).cloned().collect();
+    let mut out = inbox.remove(session_key).unwrap_or_default();
+    for k in under {
+        out.extend(inbox.remove(&k).unwrap_or_default());
+    }
+    out
 }
 
 /// Wrap reminder text as a `<system-reminder>` with a gentle, ignorable tail.
