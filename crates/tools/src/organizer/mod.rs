@@ -83,7 +83,9 @@ pub struct OrganizerInput {
     pub cc: Vec<String>,
     #[serde(default)]
     pub subject: String,
-    #[serde(default)]
+    /// The message. `text` is accepted too: a model that wrote `text` once
+    /// sent a customer an empty email.
+    #[serde(default, alias = "text")]
     pub body: String,
     #[serde(default)]
     pub mailbox: String,

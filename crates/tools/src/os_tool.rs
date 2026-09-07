@@ -1225,6 +1225,9 @@ impl DynTool for OsTool {
                         // the ledger, which records it before it runs and never runs
                         // the same one twice. No ledger, no send.
                         "mail" if parsed.action == "send" => {
+                            if parsed.body.trim().is_empty() {
+                                return ToolResult::error("Not sent: the message has no body. Put the message in `body`.");
+                            }
                             let Some(store) = self.store.as_deref() else {
                                 return ToolResult::error("This install has no send ledger; not sent.");
                             };

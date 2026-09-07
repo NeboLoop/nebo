@@ -879,6 +879,35 @@ impl Store {
     }
 
 
+    /// The open cases a person is in, by one of their aliases: an email
+    /// (matched lowercase) or a phone (matched on digits). Who may write to
+    /// them follows from this: the employees holding those cases.
+    pub fn engine_open_cases_for_alias(&self, kind: &str, value: &str) -> Result<Vec<EngineRun>, NeboError> {
+        let conn = self.conn()?;
+        let needle = if kind == "phone" { value.chars().filter(|c| c.is_ascii_digit()).collect::<String>() } else { value.trim().to_lowercase() };
+        let value_sql = if kind == "phone" { "replace(replace(replace(replace(a.value, '+', ''), '-', ''), ' ', ''), '(', '')" } else { "lower(a.value)" };
+        let run_columns = RUN_COLUMNS.split(", ").map(|c| format!("r.{c}")).collect::<Vec<_>>().join(", ");
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT {run_columns} FROM engine_runs r
+                 JOIN engine_run_keys k ON k.run_id = r.id AND k.released_at IS NULL AND k.key_type LIKE 'case:%'
+                 JOIN engine_subjects s ON s.id = k.key_value
+                 JOIN engine_subject_aliases a ON a.subject_id = COALESCE(s.merged_into, s.id) OR a.subject_id = s.id
+                 WHERE r.kind = 'case' AND r.state IN ('waiting', 'queued', 'running')
+                   AND a.kind = ?1
+                   AND (replace({value_sql}, ')', '') = ?2
+                        OR (?1 = 'phone' AND length(?2) >= 10 AND replace({value_sql}, ')', '') LIKE '%' || ?2))
+                 GROUP BY r.id ORDER BY r.created_at"
+            ))
+            .db_err("engine_open_cases_for_alias")?;
+        let rows = stmt
+            .query_map(params![kind, needle], row_to_run)
+            .db_err("engine_open_cases_for_alias")?
+            .collect::<Result<Vec<_>, _>>()
+            .db_err("engine_open_cases_for_alias")?;
+        Ok(rows)
+    }
+
     /// Inspection: every non-timer event nobody has delivered — the
     /// messages and answers still owed to someone. Read-only; takes no
     /// lease.

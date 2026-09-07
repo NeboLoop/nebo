@@ -165,6 +165,37 @@ pub fn counterparty_of(input: &serde_json::Value) -> String {
     String::new()
 }
 
+/// If any of the people this send names is in an open case, and the
+/// sending employee holds none of their cases, the reason it is refused.
+/// A person in nobody's case may be written to by anyone.
+fn held_by_someone_else(store: &Store, ctx: &ToolContext, counterparty: &str) -> Option<String> {
+    let sender = agent_of(ctx).unwrap_or_default();
+    for who in counterparty.split(',').filter(|s| !s.is_empty()) {
+        let kind = if who.contains('@') { "email" } else { "phone" };
+        let cases = match store.engine_open_cases_for_alias(kind, who) {
+            Ok(c) => c,
+            // A send never fails open: if the ledger cannot say whose person
+            // this is, nothing goes out.
+            Err(e) => return Some(format!("Not sent: could not check whose case {who} is in ({e}). Try again; if it persists, tell the owner.")),
+        };
+        if cases.is_empty() || cases.iter().any(|c| c.agent_id == sender) {
+            continue;
+        }
+        let owner = &cases[0];
+        let case_type = owner
+            .inputs
+            .as_deref()
+            .and_then(|i| serde_json::from_str::<serde_json::Value>(i).ok())
+            .and_then(|v| v["_case"]["case_type"].as_str().map(str::to_string))
+            .unwrap_or_else(|| "open".to_string());
+        return Some(format!(
+            "Not sent: {who} is in {}'s open {case_type} case ({}). Only the employee holding a person's case writes to them, so the message lands on that case's record. Hand the message to {} instead of sending it yourself.",
+            owner.agent_id, owner.id, owner.agent_id
+        ));
+    }
+    None
+}
+
 /// Perform one customer-facing send through the ledger.
 pub async fn guarded_send<F, Fut>(
     store: &Store,
@@ -182,6 +213,14 @@ where
     let run = run_ref(ctx);
     let key = send_key(&run, operation, input);
     let counterparty = counterparty_of(input);
+    // A person in an open case is written to by an employee holding one of
+    // their cases, nobody else. Seen live: a case turn asked a coworker to
+    // send the customer's email; the coworker did, from its own run — the
+    // case's history said "no send this turn" and the person could have
+    // had two. The coworker is refused and told whose person this is.
+    if let Some(refusal) = held_by_someone_else(store, ctx, &counterparty) {
+        return ToolResult::error(refusal);
+    }
     // One run, one message to a person — the person, not the wording.
     if !counterparty.is_empty() {
         let prefix = format!("send:{run}:{operation}:");
@@ -353,6 +392,35 @@ mod tests {
         assert!(r.is_error && r.content.contains("outcome is unknown"), "{}", r.content);
         assert_eq!(counterparty_of(&serde_json::json!({"to": [" B@x.com", "a@x.com", "b@x.com"]})), "a@x.com,b@x.com");
         assert_eq!(counterparty_of(&serde_json::json!({"text": "hi"})), "");
+    }
+
+    /// Seen live: a case turn asked a coworker to send the customer's
+    /// email and the coworker did, from its own run. A person in an open
+    /// case is written to only by an employee holding one of their cases;
+    /// a person in nobody's case may be written to by anyone.
+    #[tokio::test]
+    async fn only_the_employee_holding_a_persons_case_writes_to_them() {
+        let s = store();
+        let t = 1_000;
+        let (subject, _) = s.engine_resolve_subject(&[("email".into(), "pat@x.com".into()), ("phone".into(), "+15551234567".into())], "ic:work-lead:event", t).unwrap();
+        s.engine_create_run(&db::NewRun { id: "case-1", kind: "case", session_key: "agent:ic:case:case-1", agent_id: "ic", lane: "main", inputs: Some(r#"{"_case":{"case_type":"lead"}}"#), ..Default::default() }).unwrap();
+        assert!(s.engine_bind_key("case-1", "case:lead", &subject).unwrap());
+        s.engine_set_run_state("case-1", "waiting", t, None).unwrap();
+
+        let receptionist = ToolContext { session_key: "agent:receptionist:coworker:ic".into(), ..Default::default() };
+        let input = serde_json::json!({"to": "Pat@x.com", "body": "your gate code is noted"});
+        let r = guarded_send(&s, &receptionist, "messaging", "mail-app", "mail.message.send", &input, || async { panic!("a coworker must not write to another employee's person") }).await;
+        assert!(r.is_error && r.content.contains("ic's open lead case") && r.content.contains("Hand the message to ic"), "{}", r.content);
+        assert!(s.engine_effects_for_run("agent:receptionist:coworker:ic").unwrap().is_empty(), "nothing recorded");
+        let by_phone = serde_json::json!({"to": "(555) 123-4567", "body": "hi"});
+        assert!(guarded_send(&s, &receptionist, "messaging", "hub-sms", "sms.message.send", &by_phone, || async { panic!("phones too") }).await.is_error);
+
+        let ic = ToolContext { session_key: "agent:ic:workflow:turn-1:run::0".into(), ..Default::default() };
+        let r = guarded_send(&s, &ic, "messaging", "mail-app", "mail.message.send", &input, || async { SendOutcome::Sent("Handed to Mail".into(), None) }).await;
+        assert!(!r.is_error, "the holder writes: {}", r.content);
+        let stranger = serde_json::json!({"to": "nobody@x.com", "body": "hi"});
+        let r = guarded_send(&s, &receptionist, "messaging", "mail-app", "mail.message.send", &stranger, || async { SendOutcome::Sent("ok".into(), None) }).await;
+        assert!(!r.is_error, "a person in nobody's case may be written to by anyone");
     }
 
     /// A plugin vouches for its send with a typed outcome; one that says

@@ -129,6 +129,31 @@ fn uc55_one_audit_history_per_case() {
     assert!(waits.len() >= 4);
 }
 
+/// Seen live: a case turn, missing its mail plugin, asked the Receptionist
+/// to send the customer's email, and the Receptionist did from its own
+/// run — the case's history said "no send this turn" while the person had
+/// a message, and a second could have followed. A person in an open case
+/// is written to only by an employee holding one of their cases; the
+/// coworker is refused and told whose person it is; the holder's own send
+/// lands on the case's record.
+#[tokio::test]
+async fn a_persons_case_holder_is_the_only_one_who_writes_to_them() {
+    let w = World::new();
+    let b = lead();
+    let (case, queued) = w.open(&b, "held@x.com", "hello", "m1");
+    let turn = w.start(&queued.id);
+    let refused = w.send("receptionist", "chat-1", "held@x.com", "Got it — gate code noted", SendOutcome::Sent("must not".into(), None)).await;
+    assert!(refused.is_error && refused.content.contains("ic's open lead case") && refused.content.contains(&case), "{}", refused.content);
+    let sent = w.send("ic", &turn.id, "held@x.com", "Got it — gate code noted", SendOutcome::Sent("Handed to Mail".into(), None)).await;
+    assert!(!sent.is_error, "{}", sent.content);
+    assert_eq!(w.receipts(&turn.id).len(), 1, "the receipt is on the case's turn");
+    w.finish(&w.run(&turn.id), &waits("contacted", "noted the gate code", "signal", "3d", "their answer"));
+    assert!(w.history_has(&case, "turn_result", "1 send(s) on the ledger this turn"));
+    // Someone in nobody's case: anyone may write.
+    let free = w.send("receptionist", "chat-1", "free@x.com", "hi", SendOutcome::Sent("ok".into(), None)).await;
+    assert!(!free.is_error);
+}
+
 /// uc56 — Cross-employee handoffs where one case moves between roles
 /// without losing history. The intake employee hands the case to the
 /// closer: the case keeps its id and history, the closer's binding takes

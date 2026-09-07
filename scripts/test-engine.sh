@@ -55,7 +55,9 @@ case_for() { # $1 email → case id or empty
     '[.cases[] | select(any(.aliases[]?; ascii_downcase | contains($e)))] | sort_by(.opened_at) | last | .id // empty'
 }
 detail() { api "/api/v1/cases/$1"; }
-settled() { detail "$1" | jq '[.turns[] | select(.state == "done" or .state == "failed" or .state == "cancelled")] | length'; }
+# A turn is settled when the engine has written its words to the case's
+# history — the tick after the workflow ends — not merely when it ended.
+settled() { detail "$1" | jq '[.history[] | select(.kind == "turn_result" or .kind == "turn_failed")] | length'; }
 wait_for() { # $1 label, $2 seconds, $3 jq-free shell predicate (command string)
   local i; for i in $(seq 1 "$2"); do if eval "$3" >/dev/null 2>&1; then return 0; fi; sleep 1; done; return 1
 }
