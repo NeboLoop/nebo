@@ -1,7 +1,8 @@
 //! The effect ledger on the send path. Every customer-facing send — a text
-//! from the employee's line, a message handed to Messages.app, a typed
-//! `mail.message.send` or `sms.message.send` through a plugin — passes
-//! through `guarded_send`, and there is no other way to send.
+//! from the employee's line, a message handed to Messages.app, a mail
+//! handed to Mail.app / Outlook / the local mail client by the `os` tool, a
+//! typed `mail.message.send` or `sms.message.send` through a plugin —
+//! passes through `guarded_send`, and there is no other way to send.
 //!
 //! The row is written BEFORE the attempt under a key derived from the run,
 //! the operation, and the exact input (I-6). So:

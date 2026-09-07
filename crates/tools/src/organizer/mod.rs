@@ -18,13 +18,13 @@ mod windows;
 // ═══════════════════════════════════════════════════════════════════════
 
 #[cfg(target_os = "macos")]
-pub use macos::{handle_calendar, handle_contacts, handle_mail, handle_reminders};
+pub use macos::{handle_calendar, handle_contacts, handle_mail, handle_reminders, mail_send};
 
 #[cfg(target_os = "linux")]
-pub use linux::{handle_calendar, handle_contacts, handle_mail, handle_reminders};
+pub use linux::{handle_calendar, handle_contacts, handle_mail, handle_reminders, mail_send};
 
 #[cfg(target_os = "windows")]
-pub use windows::{handle_calendar, handle_contacts, handle_mail, handle_reminders};
+pub use windows::{handle_calendar, handle_contacts, handle_mail, handle_reminders, mail_send};
 
 // Fallback for unsupported platforms
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
@@ -33,6 +33,10 @@ use crate::registry::ToolResult;
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
 pub async fn handle_mail(_action: &str, _input: &OrganizerInput) -> ToolResult {
     ToolResult::error("Mail is not supported on this platform")
+}
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+pub async fn mail_send(_input: &OrganizerInput) -> crate::effects::SendOutcome {
+    crate::effects::SendOutcome::PreSendFailure("Mail is not supported on this platform".into())
 }
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
 pub async fn handle_contacts(_action: &str, _input: &OrganizerInput) -> ToolResult {

@@ -152,9 +152,65 @@ pub fn exit_error(cmd: &str, output: &std::process::Output) -> String {
     format!("{} exited {}: {}", cmd, code, body)
 }
 
+/// How a subprocess ended, typed so a send it carried can say what it
+/// knows: the command never started, it ran and refused, or it was killed
+/// at the timeout (or lost) with its effect unknown.
+#[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+pub enum Ran {
+    Ok(String),
+    NeverRan(String),
+    Refused(String),
+    Unknown(String),
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+impl Ran {
+    /// The typed outcome of a send this subprocess carried.
+    pub fn send_outcome(self) -> crate::effects::SendOutcome {
+        use crate::effects::SendOutcome;
+        match self {
+            Ran::Ok(text) => SendOutcome::Sent(text, None),
+            Ran::NeverRan(why) => SendOutcome::PreSendFailure(why),
+            Ran::Refused(why) => SendOutcome::ConfirmedFailure(why),
+            Ran::Unknown(why) => SendOutcome::Unknown(why),
+        }
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+impl From<Ran> for ToolResult {
+    fn from(r: Ran) -> ToolResult {
+        match r {
+            Ran::Ok(text) => ToolResult::ok(text),
+            Ran::NeverRan(why) | Ran::Refused(why) | Ran::Unknown(why) => ToolResult::error(why),
+        }
+    }
+}
+
+/// Wait for a spawned subprocess under `SUBPROCESS_TIMEOUT`.
+#[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+async fn wait_typed(cmd: &str, child: tokio::process::Child) -> Ran {
+    match tokio::time::timeout(SUBPROCESS_TIMEOUT, child.wait_with_output()).await {
+        Ok(Ok(output)) if output.status.success() => {
+            let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            Ran::Ok(if text.is_empty() { NO_OUTPUT.to_string() } else { text })
+        }
+        Ok(Ok(output)) => Ran::Refused(exit_error(cmd, &output)),
+        Ok(Err(e)) => Ran::Unknown(format!("{} started but could not be waited on: {}", cmd, e)),
+        // the child is killed on drop (kill_on_drop)
+        Err(_) => Ran::Unknown(timeout_error(cmd)),
+    }
+}
+
 /// Run an AppleScript via `osascript -e` and return a ToolResult.
 #[cfg(target_os = "macos")]
 pub async fn run_osascript(script: &str) -> ToolResult {
+    run_osascript_typed(script).await.into()
+}
+
+/// Run an AppleScript via `osascript -e`, typed for the send ledger.
+#[cfg(target_os = "macos")]
+pub async fn run_osascript_typed(script: &str) -> Ran {
     let child = match tokio::process::Command::new("osascript")
         .arg("-e")
         .arg(script)
@@ -164,25 +220,9 @@ pub async fn run_osascript(script: &str) -> ToolResult {
         .spawn()
     {
         Ok(c) => c,
-        Err(e) => return ToolResult::error(format!("Failed to run osascript: {}", e)),
+        Err(e) => return Ran::NeverRan(format!("Failed to run osascript: {}", e)),
     };
-
-    match tokio::time::timeout(SUBPROCESS_TIMEOUT, child.wait_with_output()).await {
-        Ok(Ok(output)) if output.status.success() => {
-            let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            ToolResult::ok(if text.is_empty() {
-                NO_OUTPUT.to_string()
-            } else {
-                text
-            })
-        }
-        Ok(Ok(output)) => ToolResult::error(exit_error("osascript", &output)),
-        Ok(Err(e)) => ToolResult::error(format!("Failed to run osascript: {}", e)),
-        Err(_) => {
-            // child is killed on drop via kill_on_drop(true)
-            ToolResult::error(timeout_error("osascript"))
-        }
-    }
+    wait_typed("osascript", child).await
 }
 
 /// Run a command with arguments and return a ToolResult.
@@ -219,6 +259,12 @@ pub async fn run_command(cmd: &str, args: &[&str]) -> ToolResult {
 /// user-supplied content (email bodies, vCard data, calcurse appointments).
 #[cfg(target_os = "linux")]
 pub async fn run_command_with_stdin(cmd: &str, args: &[&str], stdin_data: &str) -> ToolResult {
+    run_command_with_stdin_typed(cmd, args, stdin_data).await.into()
+}
+
+/// `run_command_with_stdin`, typed for the send ledger.
+#[cfg(target_os = "linux")]
+pub async fn run_command_with_stdin_typed(cmd: &str, args: &[&str], stdin_data: &str) -> Ran {
     use std::process::Stdio;
     use tokio::io::AsyncWriteExt;
 
@@ -231,34 +277,24 @@ pub async fn run_command_with_stdin(cmd: &str, args: &[&str], stdin_data: &str) 
         .spawn()
     {
         Ok(c) => c,
-        Err(e) => return ToolResult::error(format!("Failed to spawn {}: {}", cmd, e)),
+        Err(e) => return Ran::NeverRan(format!("Failed to spawn {}: {}", cmd, e)),
     };
 
     if let Some(mut stdin) = child.stdin.take() {
         let _ = stdin.write_all(stdin_data.as_bytes()).await;
     }
-
-    match tokio::time::timeout(SUBPROCESS_TIMEOUT, child.wait_with_output()).await {
-        Ok(Ok(output)) if output.status.success() => {
-            let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            ToolResult::ok(if text.is_empty() {
-                NO_OUTPUT.to_string()
-            } else {
-                text
-            })
-        }
-        Ok(Ok(output)) => ToolResult::error(exit_error(cmd, &output)),
-        Ok(Err(e)) => ToolResult::error(format!("{} failed: {}", cmd, e)),
-        Err(_) => {
-            // child already consumed by wait_with_output; process is cleaned up on drop
-            ToolResult::error(timeout_error(cmd))
-        }
-    }
+    wait_typed(cmd, child).await
 }
 
 /// Run a PowerShell script with -NoProfile for fast startup.
 #[cfg(target_os = "windows")]
 pub async fn run_powershell(script: &str) -> ToolResult {
+    run_powershell_typed(script).await.into()
+}
+
+/// `run_powershell`, typed for the send ledger.
+#[cfg(target_os = "windows")]
+pub async fn run_powershell_typed(script: &str) -> Ran {
     let mut cmd = tokio::process::Command::new("powershell");
     cmd.args(["-NoProfile", "-Command", script]);
     cmd.stdout(std::process::Stdio::piped());
@@ -268,22 +304,9 @@ pub async fn run_powershell(script: &str) -> ToolResult {
 
     let child = match cmd.spawn() {
         Ok(c) => c,
-        Err(e) => return ToolResult::error(format!("Failed to run PowerShell: {}", e)),
+        Err(e) => return Ran::NeverRan(format!("Failed to run PowerShell: {}", e)),
     };
-
-    match tokio::time::timeout(SUBPROCESS_TIMEOUT, child.wait_with_output()).await {
-        Ok(Ok(output)) if output.status.success() => {
-            let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            ToolResult::ok(if text.is_empty() {
-                NO_OUTPUT.to_string()
-            } else {
-                text
-            })
-        }
-        Ok(Ok(output)) => ToolResult::error(exit_error("powershell", &output)),
-        Ok(Err(e)) => ToolResult::error(format!("Failed to run PowerShell: {}", e)),
-        Err(_) => ToolResult::error(timeout_error("powershell")),
-    }
+    wait_typed("powershell", child).await
 }
 
 /// Check if a binary is available on PATH.
@@ -298,6 +321,20 @@ pub fn which_exists(cmd: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    /// A send the subprocess carried is typed by how the subprocess ended:
+    /// refused is a confirmed failure, never started is pre-send, and a
+    /// timeout is unknown — the message may have gone.
+    #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+    #[test]
+    fn a_subprocess_send_is_typed_by_how_it_ended() {
+        use super::Ran;
+        use crate::effects::SendOutcome;
+        assert_eq!(Ran::Ok("Handed to Mail".into()).send_outcome(), SendOutcome::Sent("Handed to Mail".into(), None));
+        assert_eq!(Ran::Refused("exited 1".into()).send_outcome(), SendOutcome::ConfirmedFailure("exited 1".into()));
+        assert_eq!(Ran::NeverRan("no osascript".into()).send_outcome(), SendOutcome::PreSendFailure("no osascript".into()));
+        assert_eq!(Ran::Unknown("killed at 30 s".into()).send_outcome(), SendOutcome::Unknown("killed at 30 s".into()));
+    }
+
     use super::*;
 
     #[test]

@@ -1221,6 +1221,28 @@ impl DynTool for OsTool {
                         }
                     };
                     match resource.as_str() {
+                        // A mail send is a customer-facing effect: it goes through
+                        // the ledger, which records it before it runs and never runs
+                        // the same one twice. No ledger, no send.
+                        "mail" if parsed.action == "send" => {
+                            let Some(store) = self.store.as_deref() else {
+                                return ToolResult::error("This install has no send ledger; not sent.");
+                            };
+                            let exact = serde_json::json!({
+                                "to": &parsed.to, "cc": &parsed.cc, "subject": &parsed.subject,
+                                "body": &parsed.body, "account": &parsed.account,
+                            });
+                            crate::effects::guarded_send(
+                                store,
+                                ctx,
+                                "messaging",
+                                "mail-app",
+                                "mail.message.send",
+                                &exact,
+                                || organizer::mail_send(&parsed),
+                            )
+                            .await
+                        }
                         "mail" => organizer::handle_mail(&parsed.action, &parsed).await,
                         "contacts" => organizer::handle_contacts(&parsed.action, &parsed).await,
                         "calendar" => {

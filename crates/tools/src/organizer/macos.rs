@@ -1,7 +1,7 @@
 //! macOS organizer: AppleScript integration with Mail, Contacts, Calendar, Reminders.
 
 use super::OrganizerInput;
-use super::shared::{escape_applescript, run_osascript};
+use super::shared::{escape_applescript, run_osascript, run_osascript_typed};
 use crate::errors::missing_param;
 use crate::origin::ToolContext;
 use crate::registry::ToolResult;
@@ -177,43 +177,6 @@ end tell"#,
             );
             diag(run_osascript(&script).await)
         }
-        "send" => {
-            if input.to.is_empty() {
-                return ToolResult::error(missing_param("send", "to", MAIL_SEND_EXAMPLE));
-            }
-            if input.subject.is_empty() {
-                return ToolResult::error(missing_param("send", "subject", MAIL_SEND_EXAMPLE));
-            }
-
-            let mut script = format!(
-                r#"tell application "Mail"
-    set newMsg to make new outgoing message with properties {{subject:"{subject}", content:"{body}", visible:true}}"#,
-                subject = escape_applescript(&input.subject),
-                body = escape_applescript(&input.body),
-            );
-
-            // To recipients
-            for addr in &input.to {
-                script.push_str(&format!(
-                    "\n    tell newMsg to make new to recipient with properties {{address:\"{}\"}}",
-                    escape_applescript(addr)
-                ));
-            }
-
-            // CC recipients
-            for addr in &input.cc {
-                script.push_str(&format!(
-                    "\n    tell newMsg to make new cc recipient with properties {{address:\"{}\"}}",
-                    escape_applescript(addr)
-                ));
-            }
-
-            script.push_str(&format!(
-                "\n    send newMsg\n    return \"Handed to Mail for delivery to {}\"\nend tell",
-                escape_applescript(&input.to.join(", "))
-            ));
-            run_osascript(&script).await
-        }
         "search" => {
             let query = &input.query;
             if query.is_empty() {
@@ -282,6 +245,48 @@ end tell"#,
             action
         )),
     }
+}
+
+/// Hand a message to Mail.app. Reached only through the send ledger in
+/// `os_tool`, which records the send before this runs and never runs the
+/// same one twice.
+pub async fn mail_send(input: &OrganizerInput) -> crate::effects::SendOutcome {
+    use crate::effects::SendOutcome;
+    if input.to.is_empty() {
+        return SendOutcome::PreSendFailure(missing_param("send", "to", MAIL_SEND_EXAMPLE));
+    }
+    if input.subject.is_empty() {
+        return SendOutcome::PreSendFailure(missing_param("send", "subject", MAIL_SEND_EXAMPLE));
+    }
+
+    let mut script = format!(
+        r#"tell application "Mail"
+    set newMsg to make new outgoing message with properties {{subject:"{subject}", content:"{body}", visible:true}}"#,
+        subject = escape_applescript(&input.subject),
+        body = escape_applescript(&input.body),
+    );
+
+    // To recipients
+    for addr in &input.to {
+        script.push_str(&format!(
+            "\n    tell newMsg to make new to recipient with properties {{address:\"{}\"}}",
+            escape_applescript(addr)
+        ));
+    }
+
+    // CC recipients
+    for addr in &input.cc {
+        script.push_str(&format!(
+            "\n    tell newMsg to make new cc recipient with properties {{address:\"{}\"}}",
+            escape_applescript(addr)
+        ));
+    }
+
+    script.push_str(&format!(
+        "\n    send newMsg\n    return \"Handed to Mail for delivery to {}\"\nend tell",
+        escape_applescript(&input.to.join(", "))
+    ));
+    run_osascript_typed(&script).await.send_outcome()
 }
 
 // ═══════════════════════════════════════════════════════════════════════
