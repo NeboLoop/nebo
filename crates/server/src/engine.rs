@@ -753,6 +753,20 @@ async fn arm_heartbeats(state: &AppState, t: i64) -> usize {
             return 0;
         }
     };
+    let bindings = match state.store.list_active_heartbeat_workflows() {
+        Ok(b) => b,
+        Err(e) => {
+            warn!(error = %e, "engine: could not read heartbeat bindings");
+            return 0;
+        }
+    };
+    let live_agents: std::collections::HashSet<String> = state.agent_registry.read().await.keys().cloned().collect();
+    arm_entity_heartbeats(&state.store, t, &enabled) + arm_binding_heartbeats(&state.store, t, bindings, &live_agents)
+}
+
+/// Entity heartbeats, pure over the store: one timer per enabled entity,
+/// its next fire placed inside the entity's window.
+pub(crate) fn arm_entity_heartbeats(store: &Store, t: i64, enabled: &[crate::heartbeat::Enabled]) -> usize {
     let wanted: Vec<Wanted<'_>> = enabled
         .iter()
         .map(|e| Wanted {
@@ -764,27 +778,17 @@ async fn arm_heartbeats(state: &AppState, t: i64) -> usize {
             }),
         })
         .collect();
-    reconcile_timers(&state.store, t, "entity", "heartbeat:", &wanted) + arm_binding_heartbeats(state, t).await
+    reconcile_timers(store, t, "entity", "heartbeat:", &wanted)
 }
 
 /// The same reconciliation for workflow bindings with a heartbeat trigger
 /// (`"<duration>|HH:MM-HH:MM"`): one timer per active binding of a live
 /// agent, aimed at binding `hb:<agent>:<binding>`, carrying the config so a
 /// change replaces it. A binding that has never fired is due one interval
-/// from now, as the old loop's first tick was.
-async fn arm_binding_heartbeats(state: &AppState, t: i64) -> usize {
-    let store = &state.store;
-    let bindings = match store.list_active_heartbeat_workflows() {
-        Ok(b) => b,
-        Err(e) => {
-            warn!(error = %e, "engine: could not read heartbeat bindings");
-            return 0;
-        }
-    };
-    let live: Vec<_> = {
-        let registry = state.agent_registry.read().await;
-        bindings.into_iter().filter(|b| registry.contains_key(&b.agent_id)).collect()
-    };
+/// from now, as the old loop's first tick was. Pure over the store; the
+/// caller says which agents are live.
+pub(crate) fn arm_binding_heartbeats(store: &Store, t: i64, bindings: Vec<db::models::AgentWorkflow>, live_agents: &std::collections::HashSet<String>) -> usize {
+    let live: Vec<_> = bindings.into_iter().filter(|b| live_agents.contains(&b.agent_id)).collect();
     let wanted: Vec<Wanted<'_>> = live
         .iter()
         .filter_map(|b| {
@@ -1010,8 +1014,10 @@ const TURN_QUEUED_ALERT_SECS: i64 = 600;
 /// Turn timeouts (design: start-to-close, heartbeat, queued-too-long). A
 /// cancelled turn ends as cancelled; the next tick settles it as a failed
 /// turn and the case retries on the policy's schedule.
-async fn time_out_turns(state: &AppState, t: i64) {
-    let store = &state.store;
+/// The turns that have run past their limits: past start-to-close, or —
+/// with the runner's word on activity — idle past the heartbeat. Pure over
+/// the store; `idle_secs` is what the runner knows about a session.
+pub(crate) fn turns_to_time_out(store: &Store, t: i64, idle_secs: &dyn Fn(&str) -> Option<u64>) -> Vec<(EngineRun, String)> {
     let mut stuck: Vec<(EngineRun, String)> = Vec::new();
     for turn in store.engine_turns_in_state_since("running", t - TURN_START_TO_CLOSE_SECS).unwrap_or_default() {
         stuck.push((turn, format!("timed out: running for more than {} minutes", TURN_START_TO_CLOSE_SECS / 60)));
@@ -1020,13 +1026,25 @@ async fn time_out_turns(state: &AppState, t: i64) {
         if stuck.iter().any(|(s, _)| s.id == turn.id) {
             continue;
         }
-        if let Some(snap) = state.run_registry.find_by_session(&turn.session_key).await {
-            if snap.idle_secs > TURN_IDLE_SECS {
-                stuck.push((turn, format!("timed out: no activity for {} minutes", snap.idle_secs / 60)));
+        if let Some(idle) = idle_secs(&turn.session_key) {
+            if idle > TURN_IDLE_SECS {
+                stuck.push((turn, format!("timed out: no activity for {} minutes", idle / 60)));
             }
         }
     }
-    for (turn, reason) in stuck {
+    stuck
+}
+
+/// Turns queued past the alert line.
+pub(crate) fn turns_queued_too_long(store: &Store, t: i64) -> Vec<EngineRun> {
+    store.engine_turns_in_state_since("queued", t - TURN_QUEUED_ALERT_SECS).unwrap_or_default()
+}
+
+async fn time_out_turns(state: &AppState, t: i64) {
+    let store = &state.store;
+    let snaps = state.run_registry.list_all().await;
+    let idle = |session: &str| snaps.iter().find(|s| s.session_key == session).map(|s| s.idle_secs);
+    for (turn, reason) in turns_to_time_out(store, t, &idle) {
         warn!(run = %turn.id, reason, "engine: turn timed out; cancelling");
         let _ = store.update_workflow_run(&turn.id, None, None, None, Some(&reason), None);
         if state.workflow_manager.cancel_run(&turn.id).await.is_err() {
@@ -1036,7 +1054,7 @@ async fn time_out_turns(state: &AppState, t: i64) {
         }
     }
 
-    for turn in store.engine_turns_in_state_since("queued", t - TURN_QUEUED_ALERT_SECS).unwrap_or_default() {
+    for turn in turns_queued_too_long(store, t) {
         static WARNED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
         let mut warned = WARNED.lock().unwrap_or_else(|p| p.into_inner());
         if !warned.contains(&turn.id) {

@@ -288,6 +288,28 @@ impl Store {
         self.insert_event(e, Some(now))
     }
 
+    /// The owner's answer to a run's live wait, recorded as the event that
+    /// wait is waiting for: one answer per wait generation (a second click
+    /// on the same card is a duplicate). Refused when the run is not
+    /// waiting, so an answer can never be pinned on the wrong moment.
+    pub fn engine_answer_wait(&self, run_id: &str, approved: bool) -> Result<Enqueued, NeboError> {
+        let run = self.engine_get_run(run_id)?.ok_or(NeboError::NotFound)?;
+        let (Some(wait_id), "waiting") = (run.current_wait_id, run.state.as_str()) else {
+            return Err(NeboError::Validation("this run is not waiting for an approval".into()));
+        };
+        let payload = serde_json::json!({ "approved": approved }).to_string();
+        self.engine_enqueue_event(&NewEvent {
+            kind: "approval",
+            target_type: "run",
+            target_id: &format!("approval:{run_id}"),
+            payload: &payload,
+            channel: "owner",
+            idem_key: &format!("approval:{run_id}:{wait_id}"),
+            durable: true,
+            ..Default::default()
+        })
+    }
+
     /// Hand a leased event to the loop: the next tick may claim it.
     pub fn engine_release_event(&self, id: i64) -> Result<(), NeboError> {
         let conn = self.conn()?;

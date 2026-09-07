@@ -31,6 +31,7 @@ mod parity;
 mod people;
 mod platform;
 mod sales;
+mod server;
 mod service;
 
 pub const DAY: i64 = 86_400;

@@ -4272,26 +4272,7 @@ pub async fn resolve_workflow_approval(
         .engine_get_run(&run_id)
         .map_err(to_error_response)?
         .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
-    let (Some(wait_id), "waiting") = (run.current_wait_id, run.state.as_str()) else {
-        return Err(to_error_response(types::NeboError::Validation(
-            "this run is not waiting for an approval".into(),
-        )));
-    };
-    let payload = serde_json::json!({ "approved": body.approved }).to_string();
-    let idem = format!("approval:{run_id}:{wait_id}");
-    let enqueued = state
-        .store
-        .engine_enqueue_event(&db::NewEvent {
-            kind: "approval",
-            target_type: "run",
-            target_id: &format!("approval:{run_id}"),
-            payload: &payload,
-            channel: "owner",
-            idem_key: &idem,
-            durable: true,
-            ..Default::default()
-        })
-        .map_err(to_error_response)?;
+    let enqueued = state.store.engine_answer_wait(&run_id, body.approved).map_err(to_error_response)?;
     let status = if body.approved { "approved" } else { "denied" };
     match enqueued {
         db::Enqueued::Inserted(_) => {

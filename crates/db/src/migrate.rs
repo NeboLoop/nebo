@@ -26,6 +26,12 @@ fn get_file(name: &str) -> Option<EmbeddedFile> {
 /// Run all pending migrations on the database connection.
 /// Compatible with goose's migration tracking (goose_db_version table).
 pub fn run_migrations(conn: &Connection) -> Result<(), NeboError> {
+    run_migrations_to(conn, i64::MAX)
+}
+
+/// Apply every pending migration up to and including `max_version`. The
+/// proof builds a database in an older shape this way, then upgrades it.
+pub fn run_migrations_to(conn: &Connection, max_version: i64) -> Result<(), NeboError> {
     // Create our migration tracking table if it doesn't exist
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS _nebo_migrations (
@@ -61,7 +67,7 @@ pub fn run_migrations(conn: &Connection) -> Result<(), NeboError> {
     // same upgrade is attempted again.
     let pending: Vec<&String> = migration_files
         .iter()
-        .filter(|f| extract_version(f).map(|v| !applied.contains(&v)).unwrap_or(false))
+        .filter(|f| extract_version(f).map(|v| v <= max_version && !applied.contains(&v)).unwrap_or(false))
         .collect();
     if !pending.is_empty() && !applied.is_empty() {
         if let Some(path) = conn.path().filter(|p| !p.is_empty() && *p != ":memory:") {
@@ -87,7 +93,7 @@ pub fn run_migrations(conn: &Connection) -> Result<(), NeboError> {
             NeboError::Migration(format!("invalid migration filename: {filename}"))
         })?;
 
-        if applied.contains(&version) {
+        if applied.contains(&version) || version > max_version {
             continue;
         }
 
@@ -249,6 +255,87 @@ mod idempotency_tests {
     /// Running the full migration chain twice on the same on-disk DB is a
     /// no-op the second time: no error, no re-applied migrations, no
     /// duplicate schema objects. This is the restart path of every install.
+    /// The upgrade an install like Danny's makes: a database in the shape
+    /// before the engine (version 142), holding a cron job with its history
+    /// and last run, a seen inbound message, a sub-agent fan-out, a
+    /// workflow run parked on an approval, one interrupted, one finished.
+    /// The upgrade writes its copy first, carries every one of those into
+    /// the engine's rows, drops the tables and columns it replaced, and is
+    /// idempotent when the store opens it again.
+    #[test]
+    fn an_install_at_the_pre_engine_shape_upgrades_with_its_history_carried() {
+        let path = std::env::temp_dir().join(format!("nebo-upgrade-{}.db", uuid::Uuid::new_v4()));
+        let path_s = path.to_string_lossy().to_string();
+        let conn = Connection::open(&path).unwrap();
+        run_migrations_to(&conn, 142).unwrap();
+        let applied: i64 = conn.query_row("SELECT MAX(version) FROM _nebo_migrations", [], |r| r.get(0)).unwrap();
+        assert_eq!(applied, 142);
+        assert!(conn.query_row("SELECT COUNT(*) FROM sqlite_master WHERE name = 'engine_runs'", [], |r| r.get::<_, i64>(0)).unwrap() == 0, "no engine yet");
+
+        conn.execute_batch(
+            "INSERT INTO cron_jobs (id, name, schedule, command, task_type, enabled, last_run, run_count, agent_id)
+                 VALUES (1, 'briefing', '0 0 9 * * *', 'echo hi', 'shell', 1, '2026-09-01 09:00:00', 12, 'ic');
+             INSERT INTO cron_history (id, job_id, started_at, finished_at, success, output)
+                 VALUES (7, 1, '2026-09-01 09:00:00', '2026-09-01 09:00:10', 1, 'ran');
+             INSERT INTO comm_seen_messages (id, seen_at) VALUES ('sms-abc', 1700000000);
+             INSERT INTO pending_tasks (id, task_type, status, session_key, prompt, created_at, completed_at)
+                 VALUES ('root', 'subagent', 'completed', 'agent:a:web', 'fan out', 1700000000, 1700000100);
+             INSERT INTO pending_tasks (id, task_type, status, session_key, prompt, created_at, parent_task_id)
+                 VALUES ('child', 'subagent', 'pending', 'agent:a:web', 'part one', 1700000001, 'root');
+             INSERT INTO pending_tasks (id, task_type, status, session_key, prompt, created_at)
+                 VALUES ('track', 'tracking', 'pending', 'agent:a:web', 'watch', 1700000002);
+             INSERT INTO workflow_runs (id, workflow_id, trigger_type, status, inputs, session_key, definition, started_at)
+                 VALUES ('wf-park', 'agent:ic', 'watch', 'awaiting_approval', '{}', 'agent:ic:workflow:wf-park', '{\"activities\":[]}', 1700000000);
+             INSERT INTO workflow_run_suspensions (run_id, agent_id, binding_name, activity_id, iteration, step_index, messages, pending_tool, operation, display, created_at)
+                 VALUES ('wf-park', 'ic', 'watch', 'act-2', 0, 0, '[]', '{}', 'crm.write', 'Create invoice', 1700000050);
+             INSERT INTO workflow_runs (id, workflow_id, trigger_type, status, session_key, definition, started_at)
+                 VALUES ('wf-int', 'agent:ic', 'manual', 'interrupted', 'agent:ic:workflow:wf-int', '{}', 1700000000);
+             INSERT INTO workflow_runs (id, workflow_id, trigger_type, status, output, started_at, completed_at)
+                 VALUES ('wf-done', 'agent:ic', 'manual', 'completed', 'done', 1700000000, 1700000200);",
+        )
+        .unwrap();
+
+        run_migrations(&conn).unwrap();
+
+        // The copy, in the old shape, written before anything changed.
+        let backup = format!("{path_s}.pre-v0142.bak");
+        assert!(std::path::Path::new(&backup).exists(), "pre-migration copy");
+        let old = Connection::open(&backup).unwrap();
+        assert_eq!(old.query_row("SELECT COUNT(*) FROM cron_history", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+        assert_eq!(old.query_row("SELECT MAX(version) FROM _nebo_migrations", [], |r| r.get::<_, i64>(0)).unwrap(), 142);
+
+        let one = |sql: &str| conn.query_row(sql, [], |r| r.get::<_, String>(0)).unwrap();
+        let count = |sql: &str| conn.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap();
+        // The cron history is a task run bound to the job; the last run is the timer floor.
+        assert_eq!(one("SELECT state || ' ' || external_ref FROM engine_runs WHERE id = 'cron-legacy-7'"), "done cron:1");
+        assert_eq!(count("SELECT COUNT(*) FROM engine_events WHERE kind = 'timer' AND target_id = 'cron:1' AND delivered_at IS NOT NULL"), 1);
+        assert_eq!(count("SELECT COUNT(*) FROM pragma_table_info('cron_jobs') WHERE name IN ('last_run', 'run_count', 'last_error')"), 0, "the old columns are gone");
+        // The seen inbound message is a seen event under the same key.
+        assert_eq!(count("SELECT COUNT(*) FROM engine_events WHERE kind = 'seen' AND idem_key = 'comm:sms-abc' AND delivered_at IS NOT NULL"), 1);
+        // The fan-out keeps its parent link and states; tracking rows stay where they were.
+        assert_eq!(one("SELECT state FROM engine_runs WHERE id = 'root'"), "done");
+        assert_eq!(one("SELECT state || ' ' || parent_run_id FROM engine_runs WHERE id = 'child'"), "queued root");
+        assert_eq!(count("SELECT COUNT(*) FROM pending_tasks"), 1, "only the tracking row remains");
+        // The parked workflow is a waiting run with its approval as its live wait.
+        assert_eq!(one("SELECT state FROM engine_runs WHERE id = 'wf-park'"), "waiting");
+        assert_eq!(one("SELECT w.action || ' ' || w.on_kind || ' ' || w.key FROM engine_waits w JOIN engine_runs r ON r.current_wait_id = w.id WHERE r.id = 'wf-park'"), "resume approval approval:wf-park");
+        assert!(one("SELECT parked FROM engine_waits WHERE run_id = 'wf-park'").contains("crm.write"));
+        assert_eq!(one("SELECT state FROM engine_runs WHERE id = 'wf-int'"), "interrupted");
+        assert_eq!(one("SELECT state || ' ' || result FROM engine_runs WHERE id = 'wf-done'"), "done done");
+        for gone in ["cron_history", "comm_seen_messages", "workflow_run_suspensions"] {
+            assert_eq!(count(&format!("SELECT COUNT(*) FROM sqlite_master WHERE name = '{gone}'")), 0, "{gone} is gone");
+        }
+        assert_eq!(count("SELECT COUNT(*) FROM pragma_table_info('workflow_runs') WHERE name IN ('status', 'inputs', 'definition', 'resume_attempted')"), 0);
+        assert_eq!(count("SELECT COUNT(*) FROM pragma_table_info('workflow_runs') WHERE name = 'model'"), 1);
+        drop(conn);
+
+        // The store opens the upgraded file and finds nothing more to do.
+        let store = crate::Store::new(&path_s).unwrap();
+        assert_eq!(store.engine_get_run("wf-park").unwrap().unwrap().state, "waiting");
+        let queued = store.engine_queued_runs("main", 10).unwrap();
+        assert_eq!(queued.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), ["child"], "the pending child is queued on its old lane, ready to run");
+    }
+
     #[test]
     fn run_migrations_twice_is_idempotent() {
         let dir = tempfile::tempdir().expect("tempdir");

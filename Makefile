@@ -571,6 +571,26 @@ endif
 #                            # real model: a lead, a reply, a mid-turn message,
 #                            # the ledger, the inspector; writes to YOUR address
 #   make test-engine ENGINE_CONTACT=you@example.com   # both
+#
+# The canary: the proof plus the live half, on a schedule and before a
+# deploy. `make canary` runs it now; `make canary-install` schedules it
+# daily at 06:30 on this Mac; `make deploy-check` refuses a deploy unless
+# the last canary passed on HEAD within a day. Config: ~/.config/nebo/canary.env
+.PHONY: canary canary-install canary-uninstall deploy-check
+canary:
+	@bash scripts/canary.sh
+canary-install:
+	@bash scripts/canary-install.sh
+canary-uninstall:
+	@bash scripts/canary-install.sh --remove
+deploy-check:
+	@LAST="$$HOME/.config/nebo/canary.last"; [ -f "$$LAST" ] || { echo "deploy-check: no canary has run (make canary)"; exit 1; }; \
+	read -r when commit result < "$$LAST"; head=$$(git rev-parse --short HEAD); \
+	[ "$$result" = PASS ] || { echo "deploy-check: last canary $$result at $$when on $$commit"; exit 1; }; \
+	[ "$$commit" = "$$head" ] || { echo "deploy-check: last PASS was on $$commit, HEAD is $$head — run make canary"; exit 1; }; \
+	age=$$(( $$(date -u +%s) - $$(date -u -j -f %Y%m%dT%H%M%SZ "$$when" +%s 2>/dev/null || echo 0) )); \
+	[ "$$age" -lt 86400 ] || { echo "deploy-check: last PASS is $$((age/3600))h old — run make canary"; exit 1; }; \
+	echo "deploy-check: PASS on $$head, $$((age/60)) minutes ago"
 .PHONY: test-engine test-engine-proof test-engine-live
 test-engine: test-engine-proof test-engine-live
 test-engine-proof:

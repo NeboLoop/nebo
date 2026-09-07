@@ -459,6 +459,57 @@ pub fn route_recorded(store: &Store, b: &CaseBinding<'_>, subject: &str, event_i
     Ok(Routed::Opened { case_id })
 }
 
+/// What the hub's webhook door does with a delivery.
+#[derive(Debug)]
+pub enum Webhook {
+    /// The binding opens cases and the payload named a person: routed.
+    Case(Routed),
+    /// Run it as every webhook runs: the definition, the binding's inputs,
+    /// the payload for the envelope, and the source it emits to.
+    Plain { def_json: String, inputs: serde_json::Value, payload: serde_json::Value, emit: Option<String> },
+}
+
+/// The webhook payload: JSON bodies as JSON, anything else as a string.
+pub fn webhook_payload(raw: Option<&str>) -> serde_json::Value {
+    raw.map(|r| serde_json::from_str::<serde_json::Value>(r).unwrap_or_else(|_| serde_json::json!(r))).unwrap_or(serde_json::Value::Null)
+}
+
+/// The hub's webhook door, pure over the store: the employee's binding as
+/// its playbook has it now; a case binding whose payload names a person
+/// routes the signal to that person's case (or opens it); anything else
+/// is handed back to run as a plain webhook. Errors name what is missing.
+pub fn route_webhook(store: &Store, agent_id: &str, binding_name: &str, raw: Option<&str>, idem_key: &str, t: i64) -> Result<Webhook, NeboError> {
+    let agent = store.get_agent(agent_id)?.ok_or(NeboError::NotFound)?;
+    let config = napp::agent::parse_agent_config(&agent.frontmatter).map_err(|e| NeboError::Validation(format!("bad agent config: {e}")))?;
+    let binding = config.workflows.get(binding_name).ok_or_else(|| NeboError::Validation(format!("no such binding: {binding_name}")))?;
+    if !binding.has_activities() {
+        return Err(NeboError::Validation(format!("binding {binding_name} has no activities")));
+    }
+    let def_json = binding.to_workflow_json(binding_name);
+    let payload = webhook_payload(raw);
+    if let Some(b) = CaseBinding::from_binding(agent_id, binding_name, &def_json, binding) {
+        let key_spec = binding.case.as_ref().map(|c| c.key.as_str()).unwrap_or_default();
+        let aliases = resolve_aliases(&payload, key_spec);
+        if !aliases.is_empty() {
+            let idem = if idem_key.is_empty() {
+                use std::hash::{Hash, Hasher};
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                payload.to_string().hash(&mut h);
+                format!("webhook:{binding_name}:{:016x}", h.finish())
+            } else {
+                idem_key.to_string()
+            };
+            return route_signal(store, &b, &aliases, &payload, "webhook", &idem, t).map(Webhook::Case);
+        }
+        // The payload named nobody: run it the way every webhook runs rather than lose it.
+    }
+    let mut inputs = serde_json::to_value(&binding.inputs).unwrap_or_default();
+    if !inputs.is_object() {
+        inputs = serde_json::json!({});
+    }
+    Ok(Webhook::Plain { def_json, inputs, payload, emit: binding.emit.clone() })
+}
+
 /// `trigger_child`: the parent keeps waiting; a child run carries the event.
 /// The child IS a workflow run — one engine row, queued here under its own
 /// id with the case as parent, started by the engine loop through the same

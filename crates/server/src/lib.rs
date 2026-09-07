@@ -3349,69 +3349,26 @@ async fn run_webhook_workflow(
 ) {
     use tools::workflows::WorkflowManager;
 
-    let agent_rec = match state.store.get_agent(agent_id) {
-        Ok(Some(a)) => a,
-        _ => {
-            tracing::warn!(agent = %agent_id, workflow = %binding_name, "webhook workflow: agent not found");
+    // The door itself is pure over the store (and proven there): a case
+    // binding routes the person's signal; anything else runs plain.
+    let (def_json, mut inputs, payload, emit) = match workflow::cases::route_webhook(&state.store, agent_id, binding_name, raw.as_deref(), idem_key, chrono::Utc::now().timestamp()) {
+        Ok(workflow::cases::Webhook::Case(routed)) => {
+            tracing::info!(agent = %agent_id, workflow = %binding_name, ?routed, "case webhook routed");
             return;
         }
-    };
-    let config = match napp::agent::parse_agent_config(&agent_rec.frontmatter) {
-        Ok(c) => c,
+        Ok(workflow::cases::Webhook::Plain { def_json, inputs, payload, emit }) => (def_json, inputs, payload, emit),
         Err(e) => {
-            tracing::warn!(agent = %agent_id, workflow = %binding_name, error = %e, "webhook workflow: bad agent config");
+            tracing::warn!(agent = %agent_id, workflow = %binding_name, error = %e, "webhook workflow: not run");
             return;
         }
     };
-    let Some(binding) = config.workflows.get(binding_name) else {
-        tracing::warn!(agent = %agent_id, workflow = %binding_name, "webhook workflow: no such binding");
-        return;
-    };
-    if !binding.has_activities() {
-        tracing::warn!(agent = %agent_id, workflow = %binding_name, "webhook workflow: binding has no activities");
-        return;
-    }
-
-    let def_json = binding.to_workflow_json(binding_name);
-    let mut inputs = serde_json::to_value(&binding.inputs).unwrap_or_default();
-    // The POST body rides the canonical event envelope: JSON bodies as JSON,
-    // anything else as a string.
-    let payload = raw
-        .as_deref()
-        .map(|r| serde_json::from_str::<serde_json::Value>(r).unwrap_or_else(|_| serde_json::json!(r)))
-        .unwrap_or(serde_json::Value::Null);
-    // A case binding: the payload names a person, and the engine holds one
-    // case per person. The signal reaches that case or opens it; a fresh
-    // run per submission is exactly the repeat this exists to end.
-    if let Some(b) = workflow::cases::CaseBinding::from_binding(agent_id, binding_name, &def_json, binding) {
-        let key_spec = binding.case.as_ref().map(|c| c.key.as_str()).unwrap_or_default();
-        let aliases = workflow::cases::resolve_aliases(&payload, key_spec);
-        if !aliases.is_empty() {
-            let idem = if idem_key.is_empty() {
-                format!("webhook:{}:{}", binding_name, agent::dedupe::hash_text(&payload.to_string()))
-            } else {
-                idem_key.to_string()
-            };
-            match workflow::cases::route_signal(&state.store, &b, &aliases, &payload, "webhook", &idem, chrono::Utc::now().timestamp()) {
-                Ok(routed) => tracing::info!(agent = %agent_id, workflow = %binding_name, ?routed, "case webhook routed"),
-                Err(e) => tracing::warn!(agent = %agent_id, workflow = %binding_name, error = %e, "case webhook routing failed"),
-            }
-            return;
-        }
-        // The payload named nobody: run it the way every webhook runs
-        // today rather than lose it.
-        tracing::warn!(agent = %agent_id, workflow = %binding_name, key = %key_spec, "case webhook: payload names nobody at those paths; running as a plain webhook");
-    }
     workflow::events::insert_event_envelope(
         &mut inputs,
         &format!("webhook.{}", binding_name),
         payload,
         "webhook",
     );
-    let emit_source = binding
-        .emit
-        .as_ref()
-        .map(|emit_name| format!("{}.{}", agent_slug, emit_name));
+    let emit_source = emit.as_ref().map(|emit_name| format!("{}.{}", agent_slug, emit_name));
 
     match state
         .workflow_manager
