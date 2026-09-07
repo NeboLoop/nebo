@@ -1,0 +1,53 @@
+id: correction-quickbooks-payment-dry-run
+name: "Correction — recording a QuickBooks payment goes through the plugin, JSON in args, no shell"
+description: |
+  Replayed from the CFO's live thread on 2026-09-06. Asked to mark paid
+  invoices as paid, the model spent fifty-seven iterations guessing at the
+  plugin's --line JSON from the command line, then ran the quickbooks
+  binary through the shell with cat | quickbooks payment create --json,
+  which has no account context and 401s. No guard fired because each
+  failing verb counted separately. The plugin now hints the body shape on a
+  400, the shell redirects plugin binaries to plugin(exec), and the spiral
+  counter is keyed on the plugin. This fixture pins the clean path: a
+  dry-run payment request built in one or two plugin calls with the JSON
+  passed through args, never the shell, and nothing posted.
+target_component: tool
+
+conversation:
+  - role: user
+    content: "Without posting anything, show me the exact QuickBooks payment request you would send to apply $1,518.24 against invoice id 11302 for its customer. Use the plugin's dry run."
+
+tool_config:
+  plugin:
+    enabled: true
+  os:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: plugin-first
+      text: "The first call is plugin(resource: quickbooks, action: exec) — a query for the invoice's customer, or the payment create dry run"
+      severity: critical
+      check: { first_call: true, tool: plugin }
+  recovery:
+    - id: no-shell-plugin
+      text: "No os shell call runs the quickbooks binary, pipes JSON into it, or sets QUICKBOOKS_* env vars"
+      severity: critical
+    - id: no-tool-errors
+      text: "Every call is accepted: no 'unexpected argument', 'exited with code 2', or 400 body-shape error"
+      severity: critical
+      check: { max_errors: 0 }
+    - id: bounded
+      text: "At most 4 tool calls"
+      severity: critical
+      check: { max_tool_calls: 4 }
+    - id: dry-run-only
+      text: "The payment create call carries --dry-run and the reply says nothing was posted"
+      severity: critical
+    - id: shape
+      text: "The reply shows a Line with Amount 1518.24 and a LinkedTxn of TxnId 11302, TxnType Invoice"
+      severity: important
+
+ideal_behavior:
+  tool_calls: 2
+  narrative: "One query for invoice 11302's CustomerRef, then one payment create --dry-run with --customer-ref, --total-amt 1518.24 and the line JSON in args, then a short reply showing the request and saying it was not sent."

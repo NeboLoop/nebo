@@ -23,3 +23,4 @@ fixtures:
   - ../fixtures/correction/team-no-hub.yaml
   - ../fixtures/correction/plugin-args-command.yaml
   - ../fixtures/correction/spawn-prompt-with-path.yaml
+  - ../fixtures/correction/quickbooks-payment-dry-run.yaml
