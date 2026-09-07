@@ -83,8 +83,14 @@ pub struct OrganizerInput {
     pub cc: Vec<String>,
     #[serde(default)]
     pub subject: String,
+    /// The message of a mail send, plain text. The one field for it.
     #[serde(default)]
-    pub body: String,
+    pub text: String,
+    /// An HTML version of the message, where the provider can send one
+    /// (Outlook). Mail.app and the Linux clients send plain text and
+    /// refuse it, so the caller is told rather than silently downgraded.
+    #[serde(default)]
+    pub html: String,
     #[serde(default)]
     pub mailbox: String,
     /// Mail account filter: account name ("Google") or address

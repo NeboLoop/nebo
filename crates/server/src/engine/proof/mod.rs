@@ -166,7 +166,7 @@ impl World {
     /// the provider answering as given.
     pub async fn send(&self, agent: &str, run_id: &str, to: &str, text: &str, outcome: SendOutcome) -> tools::ToolResult {
         let ctx = Self::ctx(agent, run_id);
-        let input = serde_json::json!({"to": to, "body": text});
+        let input = serde_json::json!({"to": to, "text": text});
         guarded_send(&self.s, &ctx, "messaging", "mail-app", "mail.message.send", &input, || async { outcome }).await
     }
 

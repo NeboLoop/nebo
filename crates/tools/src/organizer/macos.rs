@@ -27,7 +27,7 @@ fn diag(result: ToolResult) -> ToolResult {
 /// lower than `search` to stay inside the 30 s subprocess budget.
 const MAIL_READ_LIMIT_CAP: i64 = 20;
 const MAIL_SEARCH_LIMIT_CAP: i64 = 50;
-const MAIL_SEND_EXAMPLE: &str = "organizer(resource: \"mail\", action: \"send\", to: [\"pat@example.com\"], subject: \"Invoice 42\", body: \"Attached is the invoice.\")";
+const MAIL_SEND_EXAMPLE: &str = "organizer(resource: \"mail\", action: \"send\", to: [\"pat@example.com\"], subject: \"Invoice 42\", text: \"Attached is the invoice.\")";
 
 pub async fn handle_mail(action: &str, input: &OrganizerInput) -> ToolResult {
     match action {
@@ -258,12 +258,11 @@ pub async fn mail_send(input: &OrganizerInput) -> crate::effects::SendOutcome {
     if input.subject.is_empty() {
         return SendOutcome::PreSendFailure(missing_param("send", "subject", MAIL_SEND_EXAMPLE));
     }
-
     let mut script = format!(
         r#"tell application "Mail"
     set newMsg to make new outgoing message with properties {{subject:"{subject}", content:"{body}", visible:true}}"#,
         subject = escape_applescript(&input.subject),
-        body = escape_applescript(&input.body),
+        body = escape_applescript(&input.text),
     );
 
     // To recipients
@@ -286,7 +285,12 @@ pub async fn mail_send(input: &OrganizerInput) -> crate::effects::SendOutcome {
         "\n    send newMsg\n    return \"Handed to Mail for delivery to {}\"\nend tell",
         escape_applescript(&input.to.join(", "))
     ));
-    run_osascript_typed(&script).await.send_outcome()
+    // Mail.app's scripting sends plain text: the text goes, and the result
+    // says the HTML version was not used — never a silent downgrade.
+    match run_osascript_typed(&script).await.send_outcome() {
+        SendOutcome::Sent(msg, r) if !input.html.trim().is_empty() => SendOutcome::Sent(format!("{msg} (Mail.app sends plain text; the html version was not used)"), r),
+        other => other,
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════

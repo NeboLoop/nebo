@@ -375,13 +375,13 @@ mod tests {
     async fn a_run_sends_one_message_to_a_person_however_it_is_worded() {
         let s = store();
         let c = ctx();
-        let first = serde_json::json!({"to": ["Alma@x.com"], "subject": "Hi", "body": "one"});
+        let first = serde_json::json!({"to": ["Alma@x.com"], "subject": "Hi", "text": "one"});
         let r = guarded_send(&s, &c, "messaging", "mail-app", "mail.message.send", &first, || async { SendOutcome::Sent("Handed to Mail".into(), None) }).await;
         assert!(!r.is_error, "{}", r.content);
-        let reworded = serde_json::json!({"to": "alma@x.com", "subject": "Hello again", "body": "two"});
+        let reworded = serde_json::json!({"to": "alma@x.com", "subject": "Hello again", "text": "two"});
         let r = guarded_send(&s, &c, "messaging", "mail-app", "mail.message.send", &reworded, || async { panic!("a second message to the same person in one run must not go") }).await;
         assert!(r.is_error && r.content.contains("already sent") && r.content.contains("alma@x.com"), "{}", r.content);
-        let other = serde_json::json!({"to": "bob@x.com", "subject": "Hi", "body": "one"});
+        let other = serde_json::json!({"to": "bob@x.com", "subject": "Hi", "text": "one"});
         let r = guarded_send(&s, &c, "messaging", "mail-app", "mail.message.send", &other, || async { SendOutcome::Sent("ok".into(), None) }).await;
         assert!(!r.is_error, "someone else is a different send");
 
@@ -408,17 +408,17 @@ mod tests {
         s.engine_set_run_state("case-1", "waiting", t, None).unwrap();
 
         let receptionist = ToolContext { session_key: "agent:receptionist:coworker:ic".into(), ..Default::default() };
-        let input = serde_json::json!({"to": "Pat@x.com", "body": "your gate code is noted"});
+        let input = serde_json::json!({"to": "Pat@x.com", "text": "your gate code is noted"});
         let r = guarded_send(&s, &receptionist, "messaging", "mail-app", "mail.message.send", &input, || async { panic!("a coworker must not write to another employee's person") }).await;
         assert!(r.is_error && r.content.contains("ic's open lead case") && r.content.contains("Hand the message to ic"), "{}", r.content);
         assert!(s.engine_effects_for_run("agent:receptionist:coworker:ic").unwrap().is_empty(), "nothing recorded");
-        let by_phone = serde_json::json!({"to": "(555) 123-4567", "body": "hi"});
+        let by_phone = serde_json::json!({"to": "(555) 123-4567", "text": "hi"});
         assert!(guarded_send(&s, &receptionist, "messaging", "hub-sms", "sms.message.send", &by_phone, || async { panic!("phones too") }).await.is_error);
 
         let ic = ToolContext { session_key: "agent:ic:workflow:turn-1:run::0".into(), ..Default::default() };
         let r = guarded_send(&s, &ic, "messaging", "mail-app", "mail.message.send", &input, || async { SendOutcome::Sent("Handed to Mail".into(), None) }).await;
         assert!(!r.is_error, "the holder writes: {}", r.content);
-        let stranger = serde_json::json!({"to": "nobody@x.com", "body": "hi"});
+        let stranger = serde_json::json!({"to": "nobody@x.com", "text": "hi"});
         let r = guarded_send(&s, &receptionist, "messaging", "mail-app", "mail.message.send", &stranger, || async { SendOutcome::Sent("ok".into(), None) }).await;
         assert!(!r.is_error, "a person in nobody's case may be written to by anyone");
     }

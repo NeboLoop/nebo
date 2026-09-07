@@ -95,7 +95,6 @@ pub async fn mail_send(input: &OrganizerInput) -> crate::effects::SendOutcome {
     if input.subject.is_empty() {
         return SendOutcome::PreSendFailure("'subject' parameter required for send".into());
     }
-
     let backend = match detect_mail_send() {
         Some(b) => b,
         None => {
@@ -121,19 +120,34 @@ pub async fn mail_send(input: &OrganizerInput) -> crate::effects::SendOutcome {
             for to in &input.to {
                 args.push(to);
             }
-            // Body piped via stdin (safe from shell injection)
-            run_command_with_stdin_typed(backend, &args, &input.body).await.send_outcome()
+            // Body piped via stdin (safe from shell injection). These clients
+            // send plain text: the text goes, and the result says the HTML
+            // version was not used — never a silent downgrade.
+            match run_command_with_stdin_typed(backend, &args, &input.text).await.send_outcome() {
+                SendOutcome::Sent(msg, r) if !input.html.trim().is_empty() => SendOutcome::Sent(format!("{msg} ({backend} sends plain text; the html version was not used)"), r),
+                other => other,
+            }
         }
         "sendmail" => {
-            // Build RFC 2822 formatted email
+            // Build RFC 2822 formatted email; with an HTML version too, a
+            // multipart/alternative so the reader's client picks.
             let mut email = String::new();
             email.push_str(&format!("To: {}\n", input.to.join(", ")));
             if !input.cc.is_empty() {
                 email.push_str(&format!("Cc: {}\n", input.cc.join(", ")));
             }
             email.push_str(&format!("Subject: {}\n", input.subject));
-            email.push_str("Content-Type: text/plain; charset=UTF-8\n\n");
-            email.push_str(&input.body);
+            email.push_str("MIME-Version: 1.0\n");
+            if input.html.trim().is_empty() {
+                email.push_str("Content-Type: text/plain; charset=UTF-8\n\n");
+                email.push_str(&input.text);
+            } else {
+                let boundary = format!("=_nebo_{}", uuid::Uuid::new_v4().simple());
+                email.push_str(&format!("Content-Type: multipart/alternative; boundary=\"{boundary}\"\n\n"));
+                email.push_str(&format!("--{boundary}\nContent-Type: text/plain; charset=UTF-8\n\n{}\n", input.text));
+                email.push_str(&format!("--{boundary}\nContent-Type: text/html; charset=UTF-8\n\n{}\n", input.html));
+                email.push_str(&format!("--{boundary}--\n"));
+            }
 
             run_command_with_stdin_typed("sendmail", &["-t"], &email).await.send_outcome()
         }

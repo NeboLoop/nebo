@@ -650,7 +650,7 @@ impl DynTool for OsTool {
          - music: play, pause, next, previous, status, search, volume, playlists, shuffle\n\
          - keychain: get, find, add (alias: store), delete (account optional — narrows the match)\n\
          - search: search (file search via OS index)\n\
-         - mail: accounts, unread, read, send, search — LOCAL Apple Mail. send takes to, subject, body (the message goes in body — there is no text/html field). read/search take optional account (name or address, e.g. \"you@example.com\") + mailbox; search is a SUBSTRING match on subject/sender (no Gmail operators like from:)\n\
+         - mail: accounts, unread, read, send, search — LOCAL Apple Mail. send takes to, subject, text (the message, plain) and optional html where the provider can send it. read/search take optional account (name or address, e.g. \"you@example.com\") + mailbox; search is a SUBSTRING match on subject/sender (no Gmail operators like from:)\n\
          - contacts: search, get, create, groups\n\
          - calendar: calendars, today, upcoming, create, delete, pending, accept, decline, auto_accept, list, configure — the LOCAL Apple/Mac calendar (for Google Calendar use plugin(resource: \"gws\", ...))\n\
          - reminders: lists, list, create, complete, delete\n\n\
@@ -809,7 +809,8 @@ impl DynTool for OsTool {
             prop("string", "Window or notification title"),
         );
         props.insert("message".into(), prop("string", "Notification message"));
-        props.insert("text".into(), prop("string", "Text to type, write, or speak (desktop input/tts). NOT a mail field: a mail send's message goes in `body`."));
+        props.insert("text".into(), prop("string", "The text: a mail send's message (plain text), or text to type, write, or speak for desktop input/tts."));
+        props.insert("html".into(), prop("string", "Optional HTML version of a mail send's message, where the provider can send one (Outlook). Mail.app and the Linux clients send plain text and refuse it."));
         props.insert("key".into(), prop("string", "Key to press"));
         props.insert("keys".into(), prop("string", "Key combination for hotkey"));
         props.insert("x".into(), prop("integer", "X coordinate for window move. Input actions take coordinate: [x, y] (x and y are read there too)"));
@@ -884,7 +885,6 @@ impl DynTool for OsTool {
         // Organizer
         props.insert("email".into(), prop("string", "Email address"));
         props.insert("subject".into(), prop("string", "Email subject"));
-        props.insert("body".into(), prop("string", "The message of a mail send (plain text), or an event's notes. mail send needs to, subject, body."));
         props.insert(
             "to".into(),
             serde_json::json!({
@@ -1228,11 +1228,12 @@ impl DynTool for OsTool {
                             // One field for the message, and an error that names the
                             // mistake: a model that wrote `text` once sent a customer an
                             // empty email.
-                            if parsed.body.trim().is_empty() {
-                                let misnamed = ["text", "message", "content", "html"].into_iter().find(|k| keys.split(", ").any(|have| have == *k));
+                            if parsed.text.trim().is_empty() {
+                                let misnamed = ["body", "message", "content"].into_iter().find(|k| keys.split(", ").any(|have| have == *k));
                                 return ToolResult::error(match misnamed {
-                                    Some(k) => format!("Not sent: `{k}` is not a field of mail send, so the message would have gone out empty. The message goes in `body`. Call again with body."),
-                                    None => "Not sent: the message has no body. The message goes in `body`.".to_string(),
+                                    Some(k) => format!("Not sent: `{k}` is not a field of mail send, so the message would have gone out empty. The message goes in `text` (plain), with `html` alongside it if you have a formatted version). Call again with text."),
+                                    None if !parsed.html.trim().is_empty() => "Not sent: `text` is required — the plain message every client can read. `html` rides alongside it, never instead of it.".to_string(),
+                                    None => "Not sent: the message has no text. The message goes in `text`.".to_string(),
                                 });
                             }
                             let Some(store) = self.store.as_deref() else {
@@ -1240,7 +1241,7 @@ impl DynTool for OsTool {
                             };
                             let exact = serde_json::json!({
                                 "to": &parsed.to, "cc": &parsed.cc, "subject": &parsed.subject,
-                                "body": &parsed.body, "account": &parsed.account,
+                                "text": &parsed.text, "html": &parsed.html, "account": &parsed.account,
                             });
                             crate::effects::guarded_send(
                                 store,
@@ -1665,18 +1666,21 @@ mod tests {
         assert_eq!(schema["properties"]["steps"]["items"]["required"], serde_json::json!(["title", "verify"]));
     }
 
-    /// Seen live: a model put the message in `text`, the mail send read
-    /// only `body`, and a customer received an empty email. One field, and
-    /// an error that names the mistake — nothing is sent, nothing recorded.
+    /// Seen live: a customer received an empty email because the message
+    /// was in a field the send did not read. The message is `text`, with
+    /// `html` alongside it; a send that puts it anywhere else, or gives only
+    /// html, is refused with the mistake named — nothing sent or recorded.
     #[tokio::test]
     async fn a_mail_send_with_the_message_in_the_wrong_field_is_refused_and_steered() {
         let tool = OsTool::new(crate::policy::Policy::default(), Arc::new(crate::process::ProcessRegistry::new()));
         let ctx = crate::origin::ToolContext::default();
-        let r = tool.execute_dyn(&ctx, serde_json::json!({"resource": "mail", "action": "send", "to": "a@b.c", "subject": "Re: quote", "text": "hello"})).await;
+        let r = tool.execute_dyn(&ctx, serde_json::json!({"resource": "mail", "action": "send", "to": "a@example.com", "subject": "Re: quote", "body": "hello"})).await;
         assert!(r.is_error, "{}", r.content);
-        assert!(r.content.contains("`text` is not a field") && r.content.contains("goes in `body`"), "{}", r.content);
-        let r = tool.execute_dyn(&ctx, serde_json::json!({"resource": "mail", "action": "send", "to": "a@b.c", "subject": "Re: quote"})).await;
-        assert!(r.is_error && r.content.contains("has no body"), "{}", r.content);
+        assert!(r.content.contains("`body` is not a field") && r.content.contains("goes in `text`"), "{}", r.content);
+        let r = tool.execute_dyn(&ctx, serde_json::json!({"resource": "mail", "action": "send", "to": "a@example.com", "subject": "Re: quote", "html": "<p>hello</p>"})).await;
+        assert!(r.is_error && r.content.contains("`text` is required"), "{}", r.content);
+        let r = tool.execute_dyn(&ctx, serde_json::json!({"resource": "mail", "action": "send", "to": "a@example.com", "subject": "Re: quote"})).await;
+        assert!(r.is_error && r.content.contains("has no text"), "{}", r.content);
     }
 
     #[test]

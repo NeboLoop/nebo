@@ -199,7 +199,7 @@ async fn the_store_and_the_ledger_hold_under_contention() {
                 s.engine_declare_wait(&run, &NewWait { action: "resume", on_kind: "signal", key: &format!("k{i}"), reason: "w", ..Default::default() }, t).expect("wait under contention");
                 // Every thread tries to message the same person four times in
                 // four wordings; the ledger lets one through per run.
-                let input = json!({"to": "same@person.com", "body": format!("wording {k}")});
+                let input = json!({"to": "same@person.com", "text": format!("wording {k}")});
                 let r = guarded_send(&s, &ctx, "messaging", "mail-app", "mail.message.send", &input, || async { SendOutcome::Sent("ok".into(), None) }).await;
                 if !r.is_error {
                     sent += 1;

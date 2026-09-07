@@ -95,7 +95,8 @@ pub async fn mail_send(input: &OrganizerInput) -> crate::effects::SendOutcome {
     let to_str = escape_powershell(&input.to.join(";"));
     let cc_str = escape_powershell(&input.cc.join(";"));
     let subject = escape_powershell(&input.subject);
-    let body = escape_powershell(&input.body);
+    // Outlook sends HTML when given it; otherwise the plain message.
+    let (body_prop, body) = if input.html.trim().is_empty() { ("Body", escape_powershell(&input.text)) } else { ("HTMLBody", escape_powershell(&input.html)) };
 
     let mut script = format!(
         r#"
@@ -103,7 +104,7 @@ $ol = New-Object -ComObject Outlook.Application
 $mail = $ol.CreateItem(0)
 $mail.To = "{to_str}"
 $mail.Subject = "{subject}"
-$mail.Body = "{body}""#,
+$mail.{body_prop} = "{body}""#,
     );
 
     if !input.cc.is_empty() {

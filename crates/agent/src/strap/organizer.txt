@@ -4,7 +4,7 @@ USE THIS when: user mentions email, calendar, contacts, reminders, appointments,
 **Mail:**
 - os(resource: "mail", action: "unread") — Check unread email count
 - os(resource: "mail", action: "read", limit: 5) — Read recent emails
-- os(resource: "mail", action: "send", to: ["alice@example.com"], subject: "Hi", body: "Hello!") — Send email
+- os(resource: "mail", action: "send", to: ["alice@example.com"], subject: "Hi", text: "Hello!") — Send email
 - os(resource: "mail", action: "search", query: "invoice") — Search emails
 - os(resource: "mail", action: "accounts") — List email accounts
 

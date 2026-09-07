@@ -179,12 +179,12 @@ async fn uc41_a_newsletter_parks_for_approval_before_send() {
     assert_eq!(s.engine_get_run(&run.id).unwrap().unwrap().state, "queued");
 
     let ctx = ToolContext { session_key: format!("agent:mk:workflow:{}:send::0", run.id), ..Default::default() };
-    let input = json!({"to": "list@x.com", "body": "September newsletter"});
+    let input = json!({"to": "list@x.com", "text": "September newsletter"});
     let sent = guarded_send(&s, &ctx, "messaging", "mail-app", "mail.message.send", &input, || async { SendOutcome::Sent("Sent.".into(), Some("nl-9".into())) }).await;
     assert!(!sent.is_error, "{}", sent.content);
     let receipt = &s.engine_effects_for_run(&run.id).unwrap()[0];
     assert_eq!((receipt.state.as_str(), receipt.provider_ref.as_deref()), ("completed", Some("nl-9")));
     assert!(receipt.completed_at.unwrap() >= approved_at);
-    let again = guarded_send(&s, &ctx, "messaging", "mail-app", "mail.message.send", &json!({"to": "list@x.com", "body": "September newsletter (resend)"}), || async { panic!("one send to the list per run") }).await;
+    let again = guarded_send(&s, &ctx, "messaging", "mail-app", "mail.message.send", &json!({"to": "list@x.com", "text": "September newsletter (resend)"}), || async { panic!("one send to the list per run") }).await;
     assert!(again.is_error && again.content.contains("already sent"));
 }
