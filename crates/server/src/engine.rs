@@ -1372,7 +1372,7 @@ mod tests {
 
         // A receipt: the same close is just a close.
         let (case_id, turn) = open_running("c@d.e", "s2");
-        let id = s.engine_effect_pending(&turn.id, "messaging", "send:k", "mail-app", "").unwrap();
+        let id = s.engine_effect_pending(&turn.id, "messaging", "send:k", "mail-app", "", "").unwrap();
         s.engine_effect_completed(id, Some("msg-7"), Some("Handed to Mail"), 1_300).unwrap();
         settle_turn(&s, &turn, Some(close), false, 1_400).unwrap();
         let history = s.engine_events_for("run", &case_id, 50).unwrap();
@@ -1940,8 +1940,8 @@ mod tests {
         let user = s.ensure_local_user_id().unwrap();
         s.upsert_entity_config("agent", "a", &serde_json::json!({"operationPolicy": {"default": "always"}})).unwrap();
         s.engine_create_run(&NewRun { id: "wf-1", kind: "workflow", session_key: "agent:a:workflow:wf-1", agent_id: "a", lane: "main", ..Default::default() }).unwrap();
-        let charge = s.engine_effect_pending("wf-1", "financial", "charge:inv-1042", "stripe", "pi_1042").unwrap();
-        let note = s.engine_effect_pending("wf-1", "messaging", "email:inv-1042", "smtp", "").unwrap();
+        let charge = s.engine_effect_pending("wf-1", "financial", "charge:inv-1042", "stripe", "pi_1042", "").unwrap();
+        let note = s.engine_effect_pending("wf-1", "messaging", "email:inv-1042", "smtp", "", "").unwrap();
         s.engine_effect_attempted(charge).unwrap();
         s.engine_effect_attempted(note).unwrap();
 

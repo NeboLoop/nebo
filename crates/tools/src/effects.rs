@@ -8,6 +8,10 @@
 //! the operation, and the exact input (I-6). So:
 //! - the same send asked for again in the same run (a relaunched turn, a
 //!   model that repeats itself) finds a completed row and is not sent again;
+//! - a second message to the same person in the same run, however worded,
+//!   is not sent either: one turn, one message to a person. Seen live: a
+//!   turn killed mid-send was relaunched and composed a fresh first contact
+//!   — a different text, a different key, a second message;
 //! - a send whose outcome is unknown (the provider was reached, no answer
 //!   came back) stays pending, is never retried by anyone, and the owner is
 //!   told with the ledger entry to check;
@@ -138,6 +142,29 @@ pub fn send_key(run_ref: &str, operation: &str, input: &serde_json::Value) -> St
     format!("send:{run_ref}:{operation}:{:016x}", h.finish())
 }
 
+/// Who the send is to, as the input names them: `to` (a string or a list),
+/// else `recipient`, `email`, or `phone`; normalized and sorted so the same
+/// people in any order or case are the same counterparty. Empty when the
+/// input names nobody the guard can read.
+pub fn counterparty_of(input: &serde_json::Value) -> String {
+    fn names(v: &serde_json::Value) -> Vec<String> {
+        match v {
+            serde_json::Value::String(s) => vec![s.trim().to_lowercase()],
+            serde_json::Value::Array(a) => a.iter().filter_map(|x| x.as_str()).map(|s| s.trim().to_lowercase()).collect(),
+            _ => vec![],
+        }
+    }
+    for key in ["to", "recipient", "email", "phone"] {
+        let mut v: Vec<String> = names(&input[key]).into_iter().filter(|s| !s.is_empty()).collect();
+        if !v.is_empty() {
+            v.sort();
+            v.dedup();
+            return v.join(",");
+        }
+    }
+    String::new()
+}
+
 /// Perform one customer-facing send through the ledger.
 pub async fn guarded_send<F, Fut>(
     store: &Store,
@@ -154,7 +181,32 @@ where
 {
     let run = run_ref(ctx);
     let key = send_key(&run, operation, input);
-    let id = match store.engine_effect_pending(&run, class, &key, provider, "") {
+    let counterparty = counterparty_of(input);
+    // One run, one message to a person — the person, not the wording.
+    if !counterparty.is_empty() {
+        let prefix = format!("send:{run}:{operation}:");
+        let prior = store.engine_effects_for_run(&run).unwrap_or_default();
+        let same_person = prior.iter().find(|e| {
+            e.idem_key != key
+                && e.idem_key.starts_with(&prefix)
+                && e.counterparty.as_deref() == Some(counterparty.as_str())
+                && (e.state == "completed" || (e.state == "pending" && e.attempts > 0))
+        });
+        if let Some(e) = same_person {
+            if e.state == "completed" {
+                return ToolResult::error(format!(
+                    "This run already sent a {operation} to {counterparty} (ledger #{}). One turn sends one message to a person, so this one was NOT sent. Report what was already sent; do not send again.",
+                    e.id
+                ));
+            }
+            tell_owner(store, ctx, e.id, provider, operation, "its outcome is still unknown");
+            return ToolResult::error(format!(
+                "A {operation} to {counterparty} was already attempted in this run and its outcome is unknown (ledger #{}), so this one was NOT sent — it may already have been delivered. The owner has been asked to confirm it. Do not retry.",
+                e.id
+            ));
+        }
+    }
+    let id = match store.engine_effect_pending(&run, class, &key, provider, "", &counterparty) {
         Ok(id) => id,
         Err(e) => return ToolResult::error(format!("could not record the send before attempting it; not sent: {e}")),
     };
@@ -254,24 +306,53 @@ mod tests {
         assert!(again.content.contains("Already sent") && again.content.contains("SM123"));
         assert_eq!(run_ref(&c), "run-9");
 
-        // A different text is a different send.
-        let other = serde_json::json!({"to": "+15551234567", "text": "hello again"});
+        // A refusal may be retried (to someone else: one run sends one
+        // message to a person, whatever the wording).
+        let other = serde_json::json!({"to": "+15550000002", "text": "hello"});
         let r = guarded_send(&s, &c, "messaging", "hub-sms", "sms.message.send", &other, || async { SendOutcome::ConfirmedFailure("bad number".into()) }).await;
         assert!(r.is_error);
         let r = guarded_send(&s, &c, "messaging", "hub-sms", "sms.message.send", &other, || async { SendOutcome::Sent("Sent.".into(), None) }).await;
         assert!(!r.is_error, "a refusal may be retried");
 
         // Unknown: held, owner told, never retried.
-        let third = serde_json::json!({"to": "+15551234567", "text": "third"});
+        let third = serde_json::json!({"to": "+15550000003", "text": "third"});
         let r = guarded_send(&s, &c, "messaging", "hub-sms", "sms.message.send", &third, || async { SendOutcome::Unknown("no answer".into()) }).await;
         assert!(r.is_error && r.content.contains("NOT retried"));
         let r = guarded_send(&s, &c, "messaging", "hub-sms", "sms.message.send", &third, || async { panic!("held sends are never retried") }).await;
         assert!(r.is_error && r.content.contains("outcome is unknown"));
         let key = send_key("run-9", "sms.message.send", &third);
-        let id = s.engine_effect_pending("run-9", "messaging", &key, "hub-sms", "").unwrap();
+        let id = s.engine_effect_pending("run-9", "messaging", &key, "hub-sms", "", "").unwrap();
         let e = s.engine_get_effect(id).unwrap().unwrap();
         assert_eq!((e.state.as_str(), e.attempts), ("pending", 1));
         assert!(s.get_notification(&format!("attention:effect:{id}"), &user).unwrap().is_some());
+    }
+
+    /// Seen live: a turn killed mid-send was relaunched and composed a new
+    /// first contact to the same person — a different text, a different
+    /// key, a second message. One run sends one message to a person,
+    /// however it is worded; an attempt whose outcome is unknown blocks any
+    /// wording to that person; someone else is a different send.
+    #[tokio::test]
+    async fn a_run_sends_one_message_to_a_person_however_it_is_worded() {
+        let s = store();
+        let c = ctx();
+        let first = serde_json::json!({"to": ["Alma@x.com"], "subject": "Hi", "body": "one"});
+        let r = guarded_send(&s, &c, "messaging", "mail-app", "mail.message.send", &first, || async { SendOutcome::Sent("Handed to Mail".into(), None) }).await;
+        assert!(!r.is_error, "{}", r.content);
+        let reworded = serde_json::json!({"to": "alma@x.com", "subject": "Hello again", "body": "two"});
+        let r = guarded_send(&s, &c, "messaging", "mail-app", "mail.message.send", &reworded, || async { panic!("a second message to the same person in one run must not go") }).await;
+        assert!(r.is_error && r.content.contains("already sent") && r.content.contains("alma@x.com"), "{}", r.content);
+        let other = serde_json::json!({"to": "bob@x.com", "subject": "Hi", "body": "one"});
+        let r = guarded_send(&s, &c, "messaging", "mail-app", "mail.message.send", &other, || async { SendOutcome::Sent("ok".into(), None) }).await;
+        assert!(!r.is_error, "someone else is a different send");
+
+        let c2 = ToolContext { session_key: "agent:a1:workflow:run-10".into(), ..Default::default() };
+        let r = guarded_send(&s, &c2, "messaging", "mail-app", "mail.message.send", &first, || async { SendOutcome::Unknown("killed mid-send".into()) }).await;
+        assert!(r.is_error);
+        let r = guarded_send(&s, &c2, "messaging", "mail-app", "mail.message.send", &reworded, || async { panic!("held: outcome unknown") }).await;
+        assert!(r.is_error && r.content.contains("outcome is unknown"), "{}", r.content);
+        assert_eq!(counterparty_of(&serde_json::json!({"to": [" B@x.com", "a@x.com", "b@x.com"]})), "a@x.com,b@x.com");
+        assert_eq!(counterparty_of(&serde_json::json!({"text": "hi"})), "");
     }
 
     /// A plugin vouches for its send with a typed outcome; one that says

@@ -167,7 +167,7 @@ mod tests {
             s.engine_bind_key(&format!("case-{agent}"), "case:lead", &format!("subj-{agent}")).unwrap();
             s.engine_enqueue_event(&NewEvent { kind: "turn_result", target_type: "run", target_id: &format!("case-{agent}"), payload: "sent the email", idem_key: &format!("t-{agent}"), durable: true, ..Default::default() }).unwrap();
             s.create_workflow_run(&format!("wf-{agent}"), &format!("agent:{agent}"), "case", Some("work-lead"), None, None, Some("{}")).unwrap();
-            s.engine_effect_pending(&format!("wf-{agent}"), "messaging", &format!("send-{agent}"), "sms", "").unwrap();
+            s.engine_effect_pending(&format!("wf-{agent}"), "messaging", &format!("send-{agent}"), "sms", "", "").unwrap();
         }
         s.tombstone_agent("a", "Intake Coordinator", 1_000).unwrap();
         assert_eq!(s.agent_display_name("a").unwrap().as_deref(), Some("Intake Coordinator"));

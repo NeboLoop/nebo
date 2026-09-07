@@ -155,6 +155,9 @@ pub struct EngineEffect {
     pub state: String,
     pub attempts: i64,
     pub provider_ref: Option<String>,
+    /// Who the effect is to, as the input named them (normalized), so a
+    /// run's sends to one person can be found whatever the wording.
+    pub counterparty: Option<String>,
 }
 
 const RUN_COLUMNS: &str = "id, kind, state, session_key, agent_id, lane, parent_run_id, definition, inputs, external_ref, current_wait_id, attempts, resume_attempted, result, error, summary, created_at, started_at, ended_at";
@@ -1235,13 +1238,14 @@ impl Store {
         idem_key: &str,
         provider: &str,
         provider_key: &str,
+        counterparty: &str,
     ) -> Result<i64, NeboError> {
         let conn = self.conn()?;
         conn.execute(
-            "INSERT INTO engine_effects (run_id, class, idem_key, provider, provider_key)
-             VALUES (?1, ?2, ?3, ?4, ?5)
+            "INSERT INTO engine_effects (run_id, class, idem_key, provider, provider_key, counterparty)
+             VALUES (?1, ?2, ?3, ?4, ?5, NULLIF(?6, ''))
              ON CONFLICT(idem_key) DO NOTHING",
-            params![run_id, class, idem_key, provider, provider_key],
+            params![run_id, class, idem_key, provider, provider_key, counterparty],
         )
         .db_err("engine_effect_pending")?;
         conn.query_row(
@@ -1255,7 +1259,7 @@ impl Store {
     pub fn engine_get_effect(&self, id: i64) -> Result<Option<EngineEffect>, NeboError> {
         let conn = self.conn()?;
         conn.query_row(
-            "SELECT id, run_id, class, idem_key, provider, provider_key, state, attempts, provider_ref FROM engine_effects WHERE id = ?1",
+            "SELECT id, run_id, class, idem_key, provider, provider_key, state, attempts, provider_ref, counterparty FROM engine_effects WHERE id = ?1",
             params![id],
             |r| {
                 Ok(EngineEffect {
@@ -1268,6 +1272,7 @@ impl Store {
                     state: r.get(6)?,
                     attempts: r.get(7)?,
                     provider_ref: r.get(8)?,
+                    counterparty: r.get(9)?,
                 })
             },
         )
@@ -1324,7 +1329,7 @@ impl Store {
     fn read_effects<P: rusqlite::Params>(&self, where_sql: &str, params: P) -> Result<Vec<EngineEffect>, NeboError> {
         let conn = self.conn()?;
         let mut stmt = conn
-            .prepare(&format!("SELECT id, run_id, class, idem_key, provider, provider_key, state, attempts, provider_ref FROM engine_effects WHERE {where_sql} ORDER BY id"))
+            .prepare(&format!("SELECT id, run_id, class, idem_key, provider, provider_key, state, attempts, provider_ref, counterparty FROM engine_effects WHERE {where_sql} ORDER BY id"))
             .db_err("engine_pending_effects")?;
         let rows = stmt
             .query_map(params, |r| {
@@ -1338,6 +1343,7 @@ impl Store {
                     state: r.get(6)?,
                     attempts: r.get(7)?,
                     provider_ref: r.get(8)?,
+                    counterparty: r.get(9)?,
                 })
             })
             .db_err("engine_pending_effects")?
@@ -1496,8 +1502,8 @@ mod tests {
     fn i6_effects_are_pending_before_acting_and_a_retry_finds_its_own_row() {
         let s = store();
         s.engine_create_run(&case("c1")).unwrap();
-        let id = s.engine_effect_pending("c1", "messaging", "c1:email:alma:day1", "smtp", "").unwrap();
-        let again = s.engine_effect_pending("c1", "messaging", "c1:email:alma:day1", "smtp", "").unwrap();
+        let id = s.engine_effect_pending("c1", "messaging", "c1:email:alma:day1", "smtp", "", "alma@x.com").unwrap();
+        let again = s.engine_effect_pending("c1", "messaging", "c1:email:alma:day1", "smtp", "", "alma@x.com").unwrap();
         assert_eq!(id, again, "a retried turn finds the same pending effect");
         assert_eq!(s.engine_pending_effects().unwrap().len(), 1, "recovery sees it as unfinished");
         s.engine_effect_attempted(id).unwrap();
