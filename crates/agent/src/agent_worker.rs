@@ -878,7 +878,7 @@ impl AgentWorkerRegistry {
 
 /// Lift the fields workflow authors gate on to the TOP of a watch payload.
 /// Gmail's raw message shape buries From/Subject in payload.headers[] — a
-/// gate written as `_watch_payload.from contains alside.com` evaluated
+/// gate written as `_watch_payload.from contains example.com` evaluated
 /// against nothing and silently dropped the factory's real Open Order
 /// Report on the FIRST live watch event (2026-08-24), after every test with
 /// hand-built payloads had passed. Existing top-level values always win;
@@ -3391,7 +3391,7 @@ mod watch_payload_tests {
             ]}
         });
         normalize_watch_payload(&mut p);
-        assert!(p["from"].as_str().unwrap().contains("alside.com"));
+        assert!(p["from"].as_str().unwrap().contains("example.com"));
         assert!(p["subject"].as_str().unwrap().contains("Open Order Report"));
         // The download step reads message_id; the raw shape says id.
         assert_eq!(p["message_id"], "1a033574ee0ae0e2");

@@ -1147,6 +1147,15 @@ impl DynTool for OsTool {
                         | "reminders"
                 );
                 if never_in_cloud || (x11_backed && !crate::desktop_session::active()) {
+                    // A mail send with the message in the wrong field is
+                    // refused for that reason on every platform: the call's
+                    // shape is the model's mistake to fix before anything
+                    // else, here or on a desktop.
+                    if resource == "mail" && input["action"].as_str() == Some("send") {
+                        if let Some(why) = mail_send_refusal(&input) {
+                            return ToolResult::error(why);
+                        }
+                    }
                     return ToolResult::error(format!(
                         "os(resource: \"{resource}\") is not available in server mode — this Nebo runs in the cloud and has no screen, input devices, or desktop apps. File, shell, and web tools work normally."
                     ));
@@ -1214,7 +1223,7 @@ impl DynTool for OsTool {
                         .as_object()
                         .map(|o| o.keys().cloned().collect::<Vec<_>>().join(", "))
                         .unwrap_or_default();
-                    let parsed: organizer::OrganizerInput = match serde_json::from_value(input) {
+                    let parsed: organizer::OrganizerInput = match serde_json::from_value(input.clone()) {
                         Ok(v) => v,
                         Err(e) => {
                             return ToolResult::error(format!(
@@ -1233,13 +1242,8 @@ impl DynTool for OsTool {
                             // One field for the message, and an error that names the
                             // mistake: a model that wrote `text` once sent a customer an
                             // empty email.
-                            if parsed.text.trim().is_empty() {
-                                let misnamed = ["body", "message", "content"].into_iter().find(|k| keys.split(", ").any(|have| have == *k));
-                                return ToolResult::error(match misnamed {
-                                    Some(k) => format!("Not sent: `{k}` is not a field of mail send, so the message would have gone out empty. The message goes in `text` (plain), with `html` alongside it if you have a formatted version). Call again with text."),
-                                    None if !parsed.html.trim().is_empty() => "Not sent: `text` is required — the plain message every client can read. `html` rides alongside it, never instead of it.".to_string(),
-                                    None => "Not sent: the message has no text. The message goes in `text`.".to_string(),
-                                });
+                            if let Some(why) = mail_send_refusal(&input) {
+                                return ToolResult::error(why);
                             }
                             let Some(store) = self.store.as_deref() else {
                                 return ToolResult::error("This install has no send ledger; not sent.");
@@ -1310,6 +1314,25 @@ impl DynTool for OsTool {
 
 /// Quote one path for a POSIX shell command line. Plain names pass through;
 /// anything with spaces or shell metacharacters is single-quoted.
+/// Why a mail send cannot go out as written, or `None` when the message is
+/// where it belongs. ONE field for the message, and an error that names the
+/// mistake: a model that wrote `body` once sent a customer an empty email.
+/// Checked before anything else about the send — on a desktop or in the
+/// cloud — because the call's shape is the model's to fix first.
+fn mail_send_refusal(input: &serde_json::Value) -> Option<String> {
+    let text = input["text"].as_str().unwrap_or("").trim();
+    if !text.is_empty() {
+        return None;
+    }
+    let misnamed = ["body", "message", "content"].into_iter().find(|k| input.get(k).is_some());
+    let html = input["html"].as_str().unwrap_or("").trim();
+    Some(match misnamed {
+        Some(k) => format!("Not sent: `{k}` is not a field of mail send, so the message would have gone out empty. The message goes in `text` (plain), with `html` alongside it if you have a formatted version). Call again with text."),
+        None if !html.is_empty() => "Not sent: `text` is required — the plain message every client can read. `html` rides alongside it, never instead of it.".to_string(),
+        None => "Not sent: the message has no text. The message goes in `text`.".to_string(),
+    })
+}
+
 fn shell_quote(s: &str) -> String {
     let safe = !s.is_empty()
         && s.chars()
