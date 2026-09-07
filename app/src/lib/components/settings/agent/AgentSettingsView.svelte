@@ -1882,7 +1882,7 @@
       <div class="flex items-center justify-between p-5 border-b border-base-content/10">
         <div class="min-w-0">
           <div class="text-base font-semibold">{$t('agentSettings.addPluginAccount', { values: { name: plugin.name } })}</div>
-          <div class="text-xs text-base-content/50 mt-0.5">{$t('agentSettings.addAccountDesc')}</div>
+          <div class="text-xs text-base-content/50 mt-0.5">{plugin.authFields.length ? $t('agentSettings.addAccountCredentialsDesc') : $t('agentSettings.addAccountDesc')}</div>
         </div>
         <button class="btn btn-ghost btn-sm btn-square" onclick={closeAddAccount} aria-label={$t('common.close')}>
           <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" /></svg>
@@ -1970,13 +1970,17 @@
           disabled={connecting ||
             (plugin.slug === 'phonecall'
               ? claimableNumbers.length === 0 || !addAccountNumber
-              : !addAccountLabel.trim())}
+              : plugin.authFields.length
+                ? plugin.authFields.some((f) => !(addAccountCreds[f.key] ?? '').trim())
+                : !addAccountLabel.trim())}
           onclick={submitAddAccount}
         >{connecting
-            ? $t('agentSettings.signingIn')
+            ? (plugin.authFields.length ? $t('agentSettings.connectingAccount') : $t('agentSettings.signingIn'))
             : plugin.slug === 'phonecall'
               ? 'Attach number'
-              : $t('agentSettings.signIn')}</button>
+              : plugin.authFields.length
+                ? $t('agentSettings.connectAccount')
+                : $t('agentSettings.signIn')}</button>
       </div>
     </div>
   </div>
