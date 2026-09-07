@@ -603,6 +603,36 @@ impl Store {
         Ok(rows)
     }
 
+    /// Test-only: run one statement against the store (fixture setup that
+    /// production code has no reason to do, such as backdating a row).
+    #[doc(hidden)]
+    pub fn conn_exec_for_test(&self, sql: &str) {
+        if let Ok(conn) = self.conn() {
+            let _ = conn.execute(sql, []);
+        }
+    }
+
+    /// Case turns that have been running since before `before`, or queued
+    /// since before it — the timeout worklist.
+    pub fn engine_turns_in_state_since(&self, state: &str, before: i64) -> Result<Vec<EngineRun>, NeboError> {
+        let conn = self.conn()?;
+        let col = if state == "running" { "started_at" } else { "created_at" };
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT {RUN_COLUMNS} FROM engine_runs c
+                 WHERE c.kind = 'workflow' AND c.parent_run_id IS NOT NULL AND c.state = ?1
+                   AND COALESCE(c.{col}, c.created_at) < ?2
+                 ORDER BY c.rowid"
+            ))
+            .db_err("engine_turns_in_state_since")?;
+        let rows = stmt
+            .query_map(params![state, before], row_to_run)
+            .db_err("engine_turns_in_state_since")?
+            .collect::<Result<Vec<_>, _>>()
+            .db_err("engine_turns_in_state_since")?;
+        Ok(rows)
+    }
+
     /// Turns that ended but whose case has not heard it yet: a finished
     /// child of a case with no `turn:<id>:result` event on record.
     pub fn engine_unsettled_turns(&self, limit: i64) -> Result<Vec<EngineRun>, NeboError> {

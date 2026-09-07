@@ -55,6 +55,8 @@ pub struct RunSnapshot {
     /// the ONE humanizer the transcript uses; empty when idle or unmapped.
     pub activity: String,
     pub elapsed_secs: u64,
+    /// Seconds since the run last showed activity (a stream event, a tool).
+    pub idle_secs: u64,
     pub parent_run_id: Option<String>,
     pub child_count: usize,
 }
@@ -80,6 +82,7 @@ impl RunEntry {
                 .unwrap_or("")
                 .to_string(),
             elapsed_secs: self.started_at.elapsed().as_secs(),
+            idle_secs: self.idle_secs(),
             parent_run_id: self.parent_run_id.clone(),
             child_count,
         }

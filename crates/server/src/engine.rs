@@ -817,6 +817,8 @@ async fn drive(state: &AppState) {
         }
     }
 
+    time_out_turns(state, t).await;
+
     // A turn the workflow ended, whose case has not heard it: the turn's
     // declared wait (or the default) becomes the case's next wait.
     for turn in store.engine_unsettled_turns(TURNS_PER_TICK).unwrap_or_default() {
@@ -824,6 +826,53 @@ async fn drive(state: &AppState) {
         let output = if failed { turn.error.clone().or(turn.result.clone()).or_else(|| Some(turn.state.clone())) } else { turn.result.clone() };
         if let Err(e) = settle_turn(store, &turn, output.as_deref(), failed, t) {
             warn!(run = %turn.id, error = %e, "engine: settle failed");
+        }
+    }
+}
+
+/// A turn may run this long from start to close; longer is cancelled and
+/// settled as a failure (the retry policy takes it from there).
+const TURN_START_TO_CLOSE_SECS: i64 = 3600;
+/// A running turn that shows no activity for this long is stuck, not slow.
+const TURN_IDLE_SECS: u64 = 600;
+/// A turn queued this long without starting is worth a loud line.
+const TURN_QUEUED_ALERT_SECS: i64 = 600;
+
+/// Turn timeouts (design: start-to-close, heartbeat, queued-too-long). A
+/// cancelled turn ends as cancelled; the next tick settles it as a failed
+/// turn and the case retries on the policy's schedule.
+async fn time_out_turns(state: &AppState, t: i64) {
+    let store = &state.store;
+    let mut stuck: Vec<(EngineRun, String)> = Vec::new();
+    for turn in store.engine_turns_in_state_since("running", t - TURN_START_TO_CLOSE_SECS).unwrap_or_default() {
+        stuck.push((turn, format!("timed out: running for more than {} minutes", TURN_START_TO_CLOSE_SECS / 60)));
+    }
+    for turn in store.engine_turns_in_state_since("running", t).unwrap_or_default() {
+        if stuck.iter().any(|(s, _)| s.id == turn.id) {
+            continue;
+        }
+        if let Some(snap) = state.run_registry.find_by_session(&turn.session_key).await {
+            if snap.idle_secs > TURN_IDLE_SECS {
+                stuck.push((turn, format!("timed out: no activity for {} minutes", snap.idle_secs / 60)));
+            }
+        }
+    }
+    for (turn, reason) in stuck {
+        warn!(run = %turn.id, reason, "engine: turn timed out; cancelling");
+        let _ = store.update_workflow_run(&turn.id, None, None, None, Some(&reason), None);
+        if state.workflow_manager.cancel_run(&turn.id).await.is_err() {
+            // Not registered as live (between start and register, or the
+            // runner already let go): end the row ourselves.
+            let _ = store.update_workflow_run(&turn.id, Some("cancelled"), None, None, None, None);
+        }
+    }
+
+    for turn in store.engine_turns_in_state_since("queued", t - TURN_QUEUED_ALERT_SECS).unwrap_or_default() {
+        static WARNED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+        let mut warned = WARNED.lock().unwrap_or_else(|p| p.into_inner());
+        if !warned.contains(&turn.id) {
+            warned.push(turn.id.clone());
+            warn!(run = %turn.id, case = ?turn.parent_run_id, "engine: turn queued for more than {} minutes without starting", TURN_QUEUED_ALERT_SECS / 60);
         }
     }
 }
@@ -1383,7 +1432,7 @@ mod tests {
         settle_turn(&s, &unsettled[0], Some("owner cancelled"), true, 5_000).unwrap();
         assert_eq!(s.get_workflow_run(&turn2.id).unwrap().unwrap().status, "cancelled", "settling does not rewrite the outcome");
         let case = s.engine_get_run(&case_id).unwrap().unwrap();
-        assert_eq!(s.engine_get_wait(case.current_wait_id.unwrap()).unwrap().unwrap().deadline, Some(5_000 + 3 * 86_400), "default wait after a failed turn");
+        assert_eq!(s.engine_get_wait(case.current_wait_id.unwrap()).unwrap().unwrap().deadline, Some(5_000 + 60), "a failed turn retries in a minute");
         assert!(s.engine_events_for("run", &case_id, 50).unwrap().iter().any(|e| e.kind == "turn_failed"));
 
         // A DAG child that finishes is not a turn.
@@ -1391,6 +1440,73 @@ mod tests {
         s.create_pending_task("dag-1-a", "subagent", "k", None, "do", None, None, None, 0, Some("dag-1")).unwrap();
         s.update_task_completed("dag-1-a", Some("ok")).unwrap();
         assert!(s.engine_unsettled_turns(10).unwrap().is_empty());
+    }
+
+    /// Failed turns retry on the policy's clock — one minute, then two, then
+    /// four — and after three in a row the case waits its default; the first
+    /// success resets the streak. A turn that declared its own wait is not
+    /// second-guessed.
+    #[test]
+    fn failed_turns_retry_with_backoff_then_give_up_and_a_success_resets_the_streak() {
+        let s = store();
+        let b = binding();
+        let payload = serde_json::json!({"email": "a@b.c"});
+        let Routed::Opened { case_id } = signal_or_open(&s, &b, "email", "a@b.c", &payload, "webhook", "s1", 1_000).unwrap() else { panic!() };
+        let mut t = 1_000;
+        let fail_turn = |s: &Store, t: i64| {
+            let turn = s.engine_queued_runs_of_kind("workflow", 1).unwrap().remove(0);
+            s.complete_workflow_run(&turn.id, "failed", 0, Some("provider down"), None, None).unwrap();
+            let turn = s.engine_unsettled_turns(1).unwrap().remove(0);
+            settle_turn(s, &turn, Some("provider down"), true, t).unwrap();
+            let case = s.engine_get_run(&case_id).unwrap().unwrap();
+            let wait = s.engine_get_wait(case.current_wait_id.unwrap()).unwrap().unwrap();
+            (wait.deadline.unwrap() - t, wait.reason)
+        };
+        for (n, expected) in [(1, 60), (2, 120), (3, 240)] {
+            let (delay, reason) = fail_turn(&s, t);
+            assert_eq!(delay, expected, "retry {n}");
+            assert!(reason.starts_with(&format!("retry {n} of 3")), "{reason}");
+            t += delay;
+            let r = tick(&s, t, &idle, &no_steer);
+            assert_eq!(r.children_started, 1, "the retry timer starts the next turn");
+        }
+        let (delay, reason) = fail_turn(&s, t);
+        assert_eq!(delay, 3 * 86_400, "fourth failure: the binding's default wait");
+        assert!(reason.starts_with("gave up after 3 retries"), "{reason}");
+        t += delay;
+        assert_eq!(tick(&s, t, &idle, &no_steer).children_started, 1);
+
+        // A success resets the streak; the next failure retries at one minute again.
+        let turn = s.engine_queued_runs_of_kind("workflow", 1).unwrap().remove(0);
+        s.complete_workflow_run(&turn.id, "completed", 5, None, None, Some(r#"{"wait":{"deadline":"5m","reason":"sent"}}"#)).unwrap();
+        let turn = s.engine_unsettled_turns(1).unwrap().remove(0);
+        settle_turn(&s, &turn, turn.result.as_deref(), false, t).unwrap();
+        t += 300;
+        assert_eq!(tick(&s, t, &idle, &no_steer).children_started, 1);
+        let (delay, _) = fail_turn(&s, t);
+        assert_eq!(delay, 60, "streak reset by the success");
+    }
+
+    /// The timeout worklists: a turn running since before the cutoff, or
+    /// queued since before it, and nothing else.
+    #[test]
+    fn timeout_worklists_find_only_turns_past_the_cutoff() {
+        let s = store();
+        s.engine_create_run(&NewRun { id: "case-1", kind: "case", session_key: "k", agent_id: "a", lane: "main", ..Default::default() }).unwrap();
+        for (id, state, at) in [("old-run", "running", 100), ("new-run", "running", 900), ("old-q", "queued", 100), ("new-q", "queued", 900)] {
+            s.engine_create_run(&NewRun { id, kind: "workflow", session_key: id, agent_id: "a", lane: "main", parent_run_id: Some("case-1"), ..Default::default() }).unwrap();
+            s.conn_exec_for_test(&format!("UPDATE engine_runs SET created_at = {at} WHERE id = '{id}'"));
+            if state == "running" {
+                s.engine_set_run_state(id, "running", at, None).unwrap();
+            }
+        }
+        // A plain workflow run (no case) is never a turn.
+        s.engine_create_run(&NewRun { id: "plain", kind: "workflow", session_key: "p", agent_id: "a", lane: "main", ..Default::default() }).unwrap();
+        s.engine_set_run_state("plain", "running", 100, None).unwrap();
+        let ids = |v: Vec<EngineRun>| v.into_iter().map(|r| r.id).collect::<Vec<_>>();
+        assert_eq!(ids(s.engine_turns_in_state_since("running", 500).unwrap()), vec!["old-run"]);
+        assert_eq!(ids(s.engine_turns_in_state_since("queued", 500).unwrap()), vec!["old-q"]);
+        assert_eq!(s.engine_turns_in_state_since("running", 1_000).unwrap().len(), 2);
     }
 
     /// A turn whose case already closed is recorded and declares nothing:

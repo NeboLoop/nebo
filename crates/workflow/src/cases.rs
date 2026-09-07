@@ -9,6 +9,24 @@ use types::NeboError;
 
 /// A turn that ends without declaring a wait, on a binding that names none.
 pub const DEFAULT_WAIT_SECS: i64 = 3 * 24 * 3600;
+/// A failed turn is retried this many times, one minute apart at first and
+/// doubling, never more than an hour apart; then the case waits its default.
+pub const TURN_RETRY_ATTEMPTS: i64 = 3;
+pub const TURN_RETRY_FIRST_SECS: i64 = 60;
+pub const TURN_RETRY_MAX_SECS: i64 = 3600;
+
+/// How many turns in a row have failed on this case, counting back from the
+/// newest recorded turn (the one being settled is already recorded).
+fn consecutive_failures(store: &Store, case_id: &str) -> i64 {
+    store
+        .engine_events_for("run", case_id, 50)
+        .unwrap_or_default()
+        .iter()
+        .rev()
+        .filter(|e| e.kind == "turn_failed" || e.kind == "turn_result")
+        .take_while(|e| e.kind == "turn_failed")
+        .count() as i64
+}
 
 /// Where a routed signal went.
 #[derive(Debug, PartialEq, Eq)]
@@ -357,8 +375,21 @@ pub fn settle_turn(store: &Store, child: &EngineRun, output: Option<&str>, faile
         store.engine_set_run_result(parent_id, state, Some(&summary))?;
         return Ok(());
     }
+    // Retry policy for a turn that failed (design: 1m, doubling, at most an
+    // hour, three attempts): the case's next wait is a short timer, so the
+    // next turn retries soon; after three failures in a row it waits the
+    // binding's default like any other turn, and the owner sees the history.
     let (on_kind, deadline, reason) = match spec {
         Some(s) => (s.on_kind, s.deadline.or(Some(t + default_secs)), s.reason),
+        None if failed => {
+            let streak = consecutive_failures(store, parent_id);
+            if streak <= TURN_RETRY_ATTEMPTS {
+                let backoff = (TURN_RETRY_FIRST_SECS << (streak - 1)).min(TURN_RETRY_MAX_SECS);
+                ("signal".to_string(), Some(t + backoff), format!("retry {streak} of {TURN_RETRY_ATTEMPTS}: {summary}"))
+            } else {
+                ("signal".to_string(), Some(t + default_secs), format!("gave up after {TURN_RETRY_ATTEMPTS} retries: {summary}"))
+            }
+        }
         None => ("signal".to_string(), Some(t + default_secs), summary.clone()),
     };
     store.engine_set_run_result(parent_id, "", Some(&summary))?;
