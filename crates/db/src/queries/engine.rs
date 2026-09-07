@@ -1127,6 +1127,41 @@ impl Store {
 
     // ── keys ───────────────────────────────────────────────────────────
 
+    /// The most recently closed run that held this key: the case a later
+    /// signal may reopen, link to, or be refused by, depending on how it
+    /// closed (its `result` is the closure reason).
+    pub fn engine_last_closed_run_for_key(&self, key_type: &str, key_value: &str) -> Result<Option<EngineRun>, NeboError> {
+        let conn = self.conn()?;
+        conn.query_row(
+            &format!(
+                "SELECT {RUN_COLUMNS} FROM engine_runs WHERE id = (
+                     SELECT run_id FROM engine_run_keys
+                     WHERE key_type = ?1 AND key_value = ?2 AND released_at IS NOT NULL
+                     ORDER BY released_at DESC, id DESC LIMIT 1)"
+            ),
+            params![key_type, key_value],
+            row_to_run,
+        )
+        .optional()
+        .db_err("engine_last_closed_run_for_key")
+    }
+
+    /// Reopen a closed run: back to waiting, its closure cleared, its key
+    /// bound again. Returns false when the key is held by another open run.
+    pub fn engine_reopen_run(&self, run_id: &str, key_type: &str, key_value: &str, now: i64) -> Result<bool, NeboError> {
+        if !self.engine_bind_key(run_id, key_type, key_value)? {
+            return Ok(false);
+        }
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE engine_runs SET state = 'waiting', ended_at = NULL, result = NULL, summary = 'reopened' WHERE id = ?1",
+            params![run_id],
+        )
+        .db_err("engine_reopen_run")?;
+        let _ = now;
+        Ok(true)
+    }
+
     /// I-8: bind a key to a run. The partial unique index refuses a second
     /// OPEN run for the same key; that refusal is returned as `Ok(false)`,
     /// never swallowed.

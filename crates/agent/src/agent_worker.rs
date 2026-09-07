@@ -1269,10 +1269,30 @@ async fn watch_loop(
                                     (base_source.clone(), payload.clone())
                                 };
 
-                                // Deduplicate: hash the (source + payload) and skip if seen recently.
-                                // Uses DB-backed dedup so fingerprints survive restarts.
+                                // Two different guards (owner's rule, 2026-09-07):
+                                // source idempotency — a provider's own event id
+                                // is durable and unique across all time (I-2), so a
+                                // redelivery hours later is still a replay; and the
+                                // payload fingerprint — a ten-minute debounce for
+                                // "something very similar just happened", which
+                                // must stay short so a legitimate repeat later is
+                                // not swallowed.
+                                let source_id = ["id", "event_id", "eventId", "message_id", "messageId", "msg_id"]
+                                    .iter()
+                                    .find_map(|k| event_payload.get(k))
+                                    .and_then(|v| match v {
+                                        serde_json::Value::String(s) if !s.trim().is_empty() => Some(s.trim().to_string()),
+                                        serde_json::Value::Number(n) => Some(n.to_string()),
+                                        _ => None,
+                                    });
+                                let replay = match &source_id {
+                                    Some(id) => !store
+                                        .engine_mark_seen("event", &format!("event:{}:{}", event_source, id))
+                                        .unwrap_or(true),
+                                    None => false,
+                                };
                                 let fingerprint = hash_text(&format!("{}:{}", event_source, event_payload));
-                                let is_dup = store.check_event_dedup(&fingerprint, 10 * 60).unwrap_or(false);
+                                let is_dup = replay || store.check_event_dedup(&fingerprint, 10 * 60).unwrap_or(false);
                                 if is_dup {
                                     debug!(
                                         agent = %agent_id,

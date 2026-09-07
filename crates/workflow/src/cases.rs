@@ -92,6 +92,24 @@ pub enum Routed {
     /// employees on one case type is a handoff or a configuration error,
     /// never a silent merge.
     Conflict { case_id: String, owner: String },
+    /// The person's last case of this type closed for inactivity and they
+    /// wrote back: that same case is open again and the signal reaches it.
+    Reopened { case_id: String },
+    /// The person's last case of this type closed because they opted out
+    /// or declined. Nothing reopens; the signal is recorded and the owner
+    /// is told.
+    Refused { case_id: String, reason: String },
+}
+
+/// Closure reasons a later signal reactivates the same case from — the
+/// conversation simply went quiet — as opposed to a real ending.
+pub fn reopens_on_reply(reason: &str) -> bool {
+    matches!(reason, "unresponsive" | "inactive_timeout" | "inactive" | "no_reply")
+}
+
+/// Closure reasons that are the person's own word: nothing reopens.
+pub fn never_reopens(reason: &str) -> bool {
+    matches!(reason, "opted_out" | "declined" | "do_not_contact")
 }
 
 /// Everything a binding brings to the router.
@@ -324,6 +342,47 @@ pub fn route_signal(
         return Ok(Routed::Signaled { case_id: case.id });
     }
 
+    // No open case. What the person's LAST case of this type closed as
+    // decides what happens now (owner's reopen rules, 2026-09-07).
+    let previous = store.engine_last_closed_run_for_key(&key_type, &subject)?;
+    if let Some(prev) = &previous {
+        let reason = prev.result.clone().unwrap_or_default();
+        if never_reopens(&reason) {
+            store.engine_supersede_event(event_id, t, &format!("closed: {reason}; not reopened"))?;
+            let why = format!("A message arrived from someone whose {} case closed as {reason}. Nothing was reopened and no reply was sent; decide whether to respond yourself.", b.case_type);
+            needs_attention(store, &prev.agent_id, &prev.id, &format!("refused:{}:{}", prev.id, event_id), None, &why, t)?;
+            return Ok(Routed::Refused { case_id: prev.id.clone(), reason });
+        }
+        if reopens_on_reply(&reason) && prev.agent_id == b.agent_id {
+            // They wrote back: the same conversation continues.
+            if store.engine_reopen_run(&prev.id, &key_type, &subject, t)? {
+                store.engine_declare_wait(
+                    &prev.id,
+                    &NewWait { action: "trigger_child", on_kind: "signal", key: &key, deadline: None, parked: None, reason: "reopened: they wrote back" },
+                    t,
+                )?;
+                let _ = store.engine_enqueue_event(&NewEvent {
+                    kind: "reopened",
+                    target_type: "run",
+                    target_id: &prev.id,
+                    payload: &format!("reopened after closing as {reason}"),
+                    r#ref: idem_key,
+                    idem_key: &format!("reopen:{}:{event_id}", prev.id),
+                    durable: true,
+                    ..Default::default()
+                });
+                // The signal that reopened it starts the next turn now.
+                let case = store.engine_get_run(&prev.id)?.ok_or(NeboError::NotFound)?;
+                if let Some(ev) = store.engine_get_event(event_id)? {
+                    start_child(store, &case, &ev)?;
+                    store.engine_complete_event(ev.id, t)?;
+                }
+                return Ok(Routed::Reopened { case_id: prev.id.clone() });
+            }
+        }
+        // Won, completed, or closed for any other reason: a new case, linked.
+    }
+
     let case_id = uuid::Uuid::new_v4().to_string();
     let session_key = format!("agent:{}:case:{}", b.agent_id, case_id);
     let mut inputs = b.base_inputs.clone();
@@ -335,6 +394,7 @@ pub fn route_signal(
         "aliases": store.engine_subject_aliases(&subject)?.into_iter().map(|(k, v)| serde_json::json!({"kind": k, "value": v})).collect::<Vec<_>>(),
         "binding": b.binding_name,
         "default_wait_secs": b.default_wait_secs,
+        "previous_case": previous.as_ref().map(|p| serde_json::json!({"id": p.id, "closed_as": p.result, "summary": p.summary})),
     });
     store.engine_create_run(&NewRun {
         id: &case_id,

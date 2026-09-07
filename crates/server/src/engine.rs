@@ -1850,6 +1850,55 @@ mod tests {
         assert!(matches!(signal_or_open(&s, &lead, "email", "a@b.c", &payload, "webhook", "l4", 1_004).unwrap(), Routed::Conflict { .. }));
     }
 
+    /// What a closed case closed AS decides what a later message does: a
+    /// case that went quiet reopens for the person who wrote back; a case
+    /// they ended (opted out, declined) never reopens and the owner is told;
+    /// a case that was won gets a new one, linked to the old.
+    #[test]
+    fn a_later_message_reopens_links_or_is_refused_by_how_the_last_case_closed() {
+        let s = store();
+        let user = s.ensure_local_user_id().unwrap();
+        let b = binding();
+        let payload = serde_json::json!({"email": "a@b.c"});
+        let close_as = |s: &Store, case_id: &str, status: &str, t: i64| {
+            let turn = s.engine_queued_runs_of_kind("workflow", 1).unwrap().remove(0);
+            s.complete_workflow_run(&turn.id, "completed", 1, None, None, Some(&format!(r#"{{"result":{{"status":"{status}","summary":"done"}},"next":{{"action":"close"}}}}"#))).unwrap();
+            let turn = s.engine_unsettled_turns(1).unwrap().remove(0);
+            settle_turn(s, &turn, turn.result.as_deref(), false, t).unwrap();
+            let case = s.engine_get_run(case_id).unwrap().unwrap();
+            assert_eq!((case.state.as_str(), case.result.as_deref()), ("done", Some(status)));
+        };
+
+        // Went quiet, then they wrote back: the same case, open again.
+        let Routed::Opened { case_id } = signal_or_open(&s, &b, "email", "a@b.c", &payload, "webhook", "s1", 1_000).unwrap() else { panic!() };
+        close_as(&s, &case_id, "unresponsive", 2_000);
+        assert!(open_case_for(&s, "lead", "email", "a@b.c").is_none());
+        let r = signal_or_open(&s, &b, "email", "a@b.c", &payload, "webhook", "s2", 3_000).unwrap();
+        assert_eq!(r, Routed::Reopened { case_id: case_id.clone() });
+        let case = s.engine_get_run(&case_id).unwrap().unwrap();
+        assert_eq!((case.state.as_str(), case.result.is_none(), case.summary.as_str()), ("waiting", true, "reopened"));
+        assert_eq!(open_case_for(&s, "lead", "email", "a@b.c").unwrap().id, case_id, "key bound again");
+        let turn = s.engine_queued_runs_of_kind("workflow", 1).unwrap().remove(0);
+        assert_eq!(turn.parent_run_id.as_deref(), Some(case_id.as_str()), "and a turn reads their reply");
+        assert!(s.engine_events_for("run", &case_id, 50).unwrap().iter().any(|e| e.kind == "reopened"));
+
+        // Won: a new case, linked to the old one.
+        close_as(&s, &case_id, "booked", 4_000);
+        let Routed::Opened { case_id: next } = signal_or_open(&s, &b, "email", "a@b.c", &payload, "webhook", "s3", 5_000).unwrap() else { panic!("won → new case") };
+        assert_ne!(next, case_id);
+        let inputs: serde_json::Value = serde_json::from_str(s.engine_get_run(&next).unwrap().unwrap().inputs.as_deref().unwrap()).unwrap();
+        assert_eq!(inputs["_case"]["previous_case"]["id"].as_str(), Some(case_id.as_str()));
+        assert_eq!(inputs["_case"]["previous_case"]["closed_as"].as_str(), Some("booked"));
+
+        // Opted out: nothing reopens, the signal is on the books, the owner is told.
+        close_as(&s, &next, "opted_out", 6_000);
+        let r = signal_or_open(&s, &b, "email", "a@b.c", &payload, "webhook", "s4", 7_000).unwrap();
+        assert_eq!(r, Routed::Refused { case_id: next.clone(), reason: "opted_out".into() });
+        assert!(open_case_for(&s, "lead", "email", "a@b.c").is_none(), "no case opened");
+        assert!(s.engine_queued_runs_of_kind("workflow", 10).unwrap().is_empty(), "no turn, no reply");
+        assert!(s.get_notification(&format!("attention:refused:{next}:{}", s.engine_events_for("run", &format!("case:lead:{}", inputs["_case"]["subject_id"].as_str().unwrap()), 50).unwrap().iter().find(|e| e.idem_key == "s4").map(|e| e.id).unwrap()), &user).unwrap().is_some());
+    }
+
     /// The timeout worklists: a turn running since before the cutoff, or
     /// queued since before it, and nothing else.
     #[test]
