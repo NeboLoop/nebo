@@ -1225,8 +1225,15 @@ impl DynTool for OsTool {
                         // the ledger, which records it before it runs and never runs
                         // the same one twice. No ledger, no send.
                         "mail" if parsed.action == "send" => {
+                            // One field for the message, and an error that names the
+                            // mistake: a model that wrote `text` once sent a customer an
+                            // empty email.
                             if parsed.body.trim().is_empty() {
-                                return ToolResult::error("Not sent: the message has no body. Put the message in `body`.");
+                                let misnamed = ["text", "message", "content", "html"].into_iter().find(|k| keys.split(", ").any(|have| have == *k));
+                                return ToolResult::error(match misnamed {
+                                    Some(k) => format!("Not sent: `{k}` is not a field of mail send, so the message would have gone out empty. The message goes in `body`. Call again with body."),
+                                    None => "Not sent: the message has no body. The message goes in `body`.".to_string(),
+                                });
                             }
                             let Some(store) = self.store.as_deref() else {
                                 return ToolResult::error("This install has no send ledger; not sent.");
@@ -1656,6 +1663,20 @@ mod tests {
             assert!(props.contains_key(p), "schema is missing `{p}`");
         }
         assert_eq!(schema["properties"]["steps"]["items"]["required"], serde_json::json!(["title", "verify"]));
+    }
+
+    /// Seen live: a model put the message in `text`, the mail send read
+    /// only `body`, and a customer received an empty email. One field, and
+    /// an error that names the mistake — nothing is sent, nothing recorded.
+    #[tokio::test]
+    async fn a_mail_send_with_the_message_in_the_wrong_field_is_refused_and_steered() {
+        let tool = OsTool::new(crate::policy::Policy::default(), Arc::new(crate::process::ProcessRegistry::new()));
+        let ctx = crate::origin::ToolContext::default();
+        let r = tool.execute_dyn(&ctx, serde_json::json!({"resource": "mail", "action": "send", "to": "a@b.c", "subject": "Re: quote", "text": "hello"})).await;
+        assert!(r.is_error, "{}", r.content);
+        assert!(r.content.contains("`text` is not a field") && r.content.contains("goes in `body`"), "{}", r.content);
+        let r = tool.execute_dyn(&ctx, serde_json::json!({"resource": "mail", "action": "send", "to": "a@b.c", "subject": "Re: quote"})).await;
+        assert!(r.is_error && r.content.contains("has no body"), "{}", r.content);
     }
 
     #[test]
