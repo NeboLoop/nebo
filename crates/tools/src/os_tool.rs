@@ -650,7 +650,7 @@ impl DynTool for OsTool {
          - music: play, pause, next, previous, status, search, volume, playlists, shuffle\n\
          - keychain: get, find, add (alias: store), delete (account optional — narrows the match)\n\
          - search: search (file search via OS index)\n\
-         - mail: accounts, unread, read, send, search — LOCAL Apple Mail. read/search take optional account (name or address, e.g. \"sites@stadium.partners\") + mailbox; search is a SUBSTRING match on subject/sender (no Gmail operators like from:)\n\
+         - mail: accounts, unread, read, send, search — LOCAL Apple Mail. send takes to, subject, body (the message goes in body — there is no text/html field). read/search take optional account (name or address, e.g. \"sites@stadium.partners\") + mailbox; search is a SUBSTRING match on subject/sender (no Gmail operators like from:)\n\
          - contacts: search, get, create, groups\n\
          - calendar: calendars, today, upcoming, create, delete, pending, accept, decline, auto_accept, list, configure — the LOCAL Apple/Mac calendar (for Google Calendar use plugin(resource: \"gws\", ...))\n\
          - reminders: lists, list, create, complete, delete\n\n\
@@ -809,7 +809,7 @@ impl DynTool for OsTool {
             prop("string", "Window or notification title"),
         );
         props.insert("message".into(), prop("string", "Notification message"));
-        props.insert("text".into(), prop("string", "Text to type/write/speak"));
+        props.insert("text".into(), prop("string", "Text to type, write, or speak (desktop input/tts). NOT a mail field: a mail send's message goes in `body`."));
         props.insert("key".into(), prop("string", "Key to press"));
         props.insert("keys".into(), prop("string", "Key combination for hotkey"));
         props.insert("x".into(), prop("integer", "X coordinate for window move. Input actions take coordinate: [x, y] (x and y are read there too)"));
@@ -884,7 +884,7 @@ impl DynTool for OsTool {
         // Organizer
         props.insert("email".into(), prop("string", "Email address"));
         props.insert("subject".into(), prop("string", "Email subject"));
-        props.insert("body".into(), prop("string", "Email/event body"));
+        props.insert("body".into(), prop("string", "The message of a mail send (plain text), or an event's notes. mail send needs to, subject, body."));
         props.insert(
             "to".into(),
             serde_json::json!({
