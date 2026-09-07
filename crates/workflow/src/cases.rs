@@ -15,6 +15,89 @@ pub const TURN_RETRY_ATTEMPTS: i64 = 3;
 pub const TURN_RETRY_FIRST_SECS: i64 = 60;
 pub const TURN_RETRY_MAX_SECS: i64 = 3600;
 
+/// Does this employee run without asking? The operation policy's default
+/// is the owner's word on it: `Always` means the employee decides; anything
+/// else means the owner is consulted.
+pub fn employee_is_autonomous(store: &Store, agent_id: &str) -> bool {
+    let policy = store
+        .get_entity_config("agent", agent_id)
+        .ok()
+        .flatten()
+        .and_then(|c| c.operation_policy)
+        .map(|j| tools::policy::OperationPolicy::from_json(Some(&j)))
+        .unwrap_or_default();
+    policy.default == tools::policy::OperationAccess::Always
+}
+
+/// The engine gave up on something (a poisoned event, a run interrupted
+/// twice, a turn that failed past its retries, a money effect nobody can
+/// confirm). The give-up is recorded on the run's history, and then routed
+/// by the employee's autonomy: an autonomous employee gets it as a signal on
+/// the open case — its next turn reads what broke and decides — while
+/// anyone else, and anything that is not an open case, becomes a card in
+/// the owner's Inbox. Idempotent per subject: one give-up, one notice.
+pub fn needs_attention(store: &Store, agent_id: &str, run_id: &str, subject: &str, case: Option<&EngineRun>, reason: &str, t: i64) -> Result<(), NeboError> {
+    let idem = format!("attention:{subject}");
+    let history_target = case.map(|c| c.id.clone()).unwrap_or_else(|| run_id.to_string());
+    let recorded = store.engine_enqueue_event(&NewEvent {
+        kind: "needs_attention",
+        target_type: "run",
+        target_id: &history_target,
+        payload: reason,
+        r#ref: subject,
+        idem_key: &idem,
+        durable: true,
+        ..Default::default()
+    })?;
+    if recorded == db::Enqueued::Duplicate {
+        return Ok(());
+    }
+    // History rows never wake anything.
+    if let Ok((claimed, _)) = store.engine_claim_events(t, 50) {
+        for e in claimed.iter().filter(|e| e.idem_key == idem) {
+            store.engine_complete_event(e.id, t)?;
+        }
+    }
+
+    let open_case = case.filter(|c| matches!(c.state.as_str(), "waiting" | "queued" | "running"));
+    if let (Some(c), true) = (open_case, !agent_id.is_empty() && employee_is_autonomous(store, agent_id)) {
+        let inputs: serde_json::Value = c.inputs.as_deref().and_then(|s| serde_json::from_str(s).ok()).unwrap_or_default();
+        let key = format!(
+            "{}:{}",
+            inputs["_case"]["key_type"].as_str().unwrap_or(""),
+            inputs["_case"]["key_value"].as_str().unwrap_or("")
+        );
+        let payload = serde_json::json!({ "needs_attention": reason, "subject": subject }).to_string();
+        store.engine_enqueue_event(&NewEvent {
+            kind: "signal",
+            target_type: "run",
+            target_id: &key,
+            payload: &payload,
+            channel: "engine",
+            r#ref: subject,
+            idem_key: &format!("attention:{subject}:turn"),
+            durable: true,
+            ..Default::default()
+        })?;
+        return Ok(());
+    }
+    let user_id = store.ensure_local_user_id().unwrap_or_default();
+    let title = match case {
+        Some(_) => "A case needs your attention",
+        None => "A run needs your attention",
+    };
+    store.create_notification_if_not_exists(
+        &idem,
+        &user_id,
+        "needs_attention",
+        title,
+        Some(reason),
+        Some("/dashboard?inbox=1"),
+        None,
+        (!agent_id.is_empty()).then_some(agent_id),
+    )
+}
+
 /// How many turns in a row have failed on this case, counting back from the
 /// newest recorded turn (the one being settled is already recorded).
 fn consecutive_failures(store: &Store, case_id: &str) -> i64 {
@@ -387,7 +470,9 @@ pub fn settle_turn(store: &Store, child: &EngineRun, output: Option<&str>, faile
                 let backoff = (TURN_RETRY_FIRST_SECS << (streak - 1)).min(TURN_RETRY_MAX_SECS);
                 ("signal".to_string(), Some(t + backoff), format!("retry {streak} of {TURN_RETRY_ATTEMPTS}: {summary}"))
             } else {
-                ("signal".to_string(), Some(t + default_secs), format!("gave up after {TURN_RETRY_ATTEMPTS} retries: {summary}"))
+                let reason = format!("gave up after {TURN_RETRY_ATTEMPTS} retries: {summary}");
+                needs_attention(store, &child.agent_id, &child.id, &child.id, parent.as_ref(), &reason, t)?;
+                ("signal".to_string(), Some(t + default_secs), reason)
             }
         }
         None => ("signal".to_string(), Some(t + default_secs), summary.clone()),

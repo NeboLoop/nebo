@@ -38,7 +38,7 @@ use crate::state::AppState;
 use db::models::CronJob;
 use db::{EngineEvent, EngineRun, NewEvent, Store};
 use tools::workflows::WorkflowManager;
-use workflow::cases::{settle_turn, start_child};
+use workflow::cases::{needs_attention, settle_turn, start_child};
 
 const TICK: Duration = Duration::from_secs(5);
 const CLAIM_BATCH: i64 = 50;
@@ -85,7 +85,14 @@ pub fn recover(store: &Store) -> usize {
     for run in interrupted {
         match store.engine_resume_once(&run.id, t) {
             Ok(true) => resumed += 1,
-            Ok(false) => warn!(run = %run.id, "engine: run interrupted twice — poisoned, owner to decide"),
+            Ok(false) => {
+                warn!(run = %run.id, "engine: run interrupted twice — failed, not retried");
+                let case = run.parent_run_id.as_deref().and_then(|p| store.engine_get_run(p).ok().flatten());
+                let reason = format!("{} run {} was interrupted by a restart twice and was not retried", run.kind, run.id);
+                if let Err(e) = needs_attention(store, &run.agent_id, &run.id, &run.id, case.as_ref(), &reason, t) {
+                    warn!(run = %run.id, error = %e, "engine: could not route the failed run for attention");
+                }
+            }
             Err(e) => warn!(run = %run.id, error = %e, "engine: resume failed"),
         }
     }
@@ -110,9 +117,15 @@ pub fn tick(store: &Store, t: i64, busy: &dyn Fn(&str) -> bool, steer: &dyn Fn(&
         }
     };
     report.claimed = events.len();
-    report.poisoned = poisoned;
-    if poisoned > 0 {
-        warn!(poisoned, "engine: events poisoned after repeated delivery failure");
+    report.poisoned = poisoned.len();
+    for p in &poisoned {
+        warn!(event = p.id, kind = %p.kind, target = %p.target_id, "engine: event poisoned after repeated delivery failure");
+        let (agent_id, run_id, case) = owner_of_event(store, p);
+        let reason = format!("could not deliver {} to {} after {} attempts", p.kind, p.target_id, p.attempts);
+        let subject = format!("event:{}", p.id);
+        if let Err(e) = needs_attention(store, &agent_id, run_id.as_deref().unwrap_or(&subject), &subject, case.as_ref(), &reason, t) {
+            warn!(event = p.id, error = %e, "engine: could not route the poisoned event for attention");
+        }
     }
     for event in &events {
         deliver(store, event, t, busy, steer, &mut report);
@@ -121,11 +134,20 @@ pub fn tick(store: &Store, t: i64, busy: &dyn Fn(&str) -> bool, steer: &dyn Fn(&
     match store.engine_pending_effects() {
         Ok(pending) => {
             report.pending_effects = pending.len();
-            // Reconciliation needs the providers behind the effect classes;
-            // it lands with them. Until then a pending effect is visible in
-            // the log every tick rather than silently assumed done.
-            for e in pending.iter().take(5) {
+            for e in &pending {
                 info!(effect = e.id, run = %e.run_id, class = %e.class, attempts = e.attempts, "engine: effect pending reconciliation");
+                // Money that was attempted and never confirmed is never
+                // retried by the engine: whoever owns the run is told, once,
+                // and reconciles by the provider's key.
+                if e.class == "financial" && e.attempts > 0 {
+                    let run = store.engine_get_run(&e.run_id).ok().flatten();
+                    let agent_id = run.as_ref().map(|r| r.agent_id.clone()).unwrap_or_default();
+                    let case = run.as_ref().and_then(|r| r.parent_run_id.as_deref()).and_then(|p| store.engine_get_run(p).ok().flatten());
+                    let reason = format!("a {} charge could not be confirmed after {} attempt(s); it was not retried — confirm it with the provider under key {}", e.provider, e.attempts, e.idem_key);
+                    if let Err(err) = needs_attention(store, &agent_id, &e.run_id, &format!("effect:{}", e.id), case.as_ref(), &reason, t) {
+                        warn!(effect = e.id, error = %err, "engine: could not route the unconfirmed effect for attention");
+                    }
+                }
             }
         }
         Err(e) => warn!(error = %e, "engine: pending effects read failed"),
@@ -245,6 +267,52 @@ fn deliver(
         Ok(()) => {}
         Err(e) => warn!(event = event.id, wait = wait.id, error = %e, "engine: delivery failed; lease will expire and retry"),
     }
+}
+
+/// Whose event this is: the employee, the run it was aimed at, and the
+/// open case if it concerns one — so a give-up on it can be routed by that
+/// employee's autonomy.
+fn owner_of_event(store: &Store, e: &EngineEvent) -> (String, Option<String>, Option<EngineRun>) {
+    let run = match e.target_type.as_str() {
+        "run" => store
+            .engine_get_run(&e.target_id)
+            .ok()
+            .flatten()
+            .or_else(|| e.target_id.split_once(':').and_then(|(kt, kv)| store.engine_run_for_key(kt, kv).ok().flatten())),
+        "wait" => e
+            .target_id
+            .parse::<i64>()
+            .ok()
+            .and_then(|id| store.engine_get_wait(id).ok().flatten())
+            .and_then(|w| store.engine_get_run(&w.run_id).ok().flatten()),
+        _ => None,
+    };
+    if let Some(run) = run {
+        let case = if run.kind == "case" {
+            Some(run.clone())
+        } else {
+            run.parent_run_id.as_deref().and_then(|p| store.engine_get_run(p).ok().flatten()).filter(|p| p.kind == "case")
+        };
+        return (run.agent_id.clone(), Some(run.id.clone()), case);
+    }
+    // Binding and entity timers name their employee in the target.
+    let agent = match e.target_type.as_str() {
+        "binding" => e
+            .target_id
+            .strip_prefix("hb:")
+            .and_then(|s| s.split_once(':'))
+            .map(|(a, _)| a.to_string())
+            .or_else(|| {
+                e.target_id
+                    .strip_prefix("cron:")
+                    .and_then(|s| s.parse::<i64>().ok())
+                    .and_then(|id| store.get_cron_job(id).ok().flatten())
+                    .and_then(|j| j.agent_id)
+            }),
+        "entity" => e.target_id.strip_prefix("heartbeat:agent:").map(str::to_string),
+        _ => None,
+    };
+    (agent.unwrap_or_default(), None, None)
 }
 
 /// What happened to an event aimed at a case that may have a live turn.
@@ -1485,6 +1553,111 @@ mod tests {
         assert_eq!(tick(&s, t, &idle, &no_steer).children_started, 1);
         let (delay, _) = fail_turn(&s, t);
         assert_eq!(delay, 60, "streak reset by the success");
+    }
+
+    /// When the engine gives up, the employee's autonomy decides who hears
+    /// it: an autonomous employee gets the give-up as a turn on the case,
+    /// right away; anyone else gets a card in the owner's Inbox and the case
+    /// waits its default. Either way the case history says what happened.
+    #[test]
+    fn a_give_up_reaches_an_autonomous_employee_as_a_turn_and_the_owner_otherwise() {
+        let s = store();
+        let user = s.ensure_local_user_id().unwrap();
+        let fail_four = |s: &Store, b: &CaseBinding<'_>, idem: &str, key: &str| -> (String, i64) {
+            let payload = serde_json::json!({"email": key});
+            let Routed::Opened { case_id } = signal_or_open(s, b, "email", key, &payload, "webhook", idem, 1_000).unwrap() else { panic!() };
+            let mut t = 1_000;
+            for _ in 0..4 {
+                let turn = s.engine_queued_runs_of_kind("workflow", 1).unwrap().remove(0);
+                s.complete_workflow_run(&turn.id, "failed", 0, Some("provider down"), None, None).unwrap();
+                let turn = s.engine_unsettled_turns(1).unwrap().remove(0);
+                settle_turn(s, &turn, Some("provider down"), true, t).unwrap();
+                let case = s.engine_get_run(&case_id).unwrap().unwrap();
+                let wait = s.engine_get_wait(case.current_wait_id.unwrap()).unwrap().unwrap();
+                if wait.reason.starts_with("gave up") {
+                    return (case_id, t);
+                }
+                t = wait.deadline.unwrap();
+                assert_eq!(tick(s, t, &idle, &no_steer).children_started, 1);
+            }
+            panic!("never gave up");
+        };
+
+        // Autonomous employee: the give-up becomes the case's next turn now.
+        s.upsert_entity_config("agent", "ic", &serde_json::json!({"operationPolicy": {"default": "always"}})).unwrap();
+        let b = binding();
+        let (case_id, t) = fail_four(&s, &b, "s-auto", "auto@x.com");
+        assert!(s.engine_events_for("run", &case_id, 50).unwrap().iter().any(|e| e.kind == "needs_attention"), "recorded on the case");
+        let r = tick(&s, t + 1, &idle, &no_steer);
+        assert_eq!(r.children_started, 1, "the employee gets the give-up as a turn, not in three days");
+        let turn = s.engine_queued_runs_of_kind("workflow", 1).unwrap().remove(0);
+        assert!(turn.inputs.as_deref().unwrap().contains("needs_attention"), "the turn reads what broke");
+        assert!(s.get_notification(&format!("attention:{}", turn.id), &user).unwrap().is_none());
+
+        // Owner-consulted employee: a card, and the case waits its default.
+        // (Its own store: the autonomous case above left a queued turn behind.)
+        let s = store();
+        let user = s.ensure_local_user_id().unwrap();
+        let mut owner_b = binding();
+        owner_b.agent_id = "careful";
+        let (case_id2, t2) = fail_four(&s, &owner_b, "s-owner", "owner@x.com");
+        assert_eq!(tick(&s, t2 + 1, &idle, &no_steer).children_started, 0, "nothing starts on its own");
+        let last_turn = s.engine_events_for("run", &case_id2, 50).unwrap().into_iter().filter(|e| e.kind == "needs_attention").last().unwrap();
+        let card = s.get_notification(&format!("attention:{}", last_turn.r#ref), &user).unwrap().expect("an Inbox card for the owner");
+        assert_eq!(card.notification_type, "needs_attention");
+        assert_eq!(card.agent_id.as_deref(), Some("careful"));
+    }
+
+    /// A poisoned event is routed to whoever owns what it was aimed at: for
+    /// a signal on a case key, the case's employee — and an autonomous one
+    /// takes it as a turn.
+    #[test]
+    fn a_poisoned_event_reaches_the_case_it_was_aimed_at() {
+        let s = store();
+        s.upsert_entity_config("agent", "a", &serde_json::json!({"operationPolicy": {"default": "always"}})).unwrap();
+        s.engine_create_run(&NewRun { id: "case-1", kind: "case", session_key: "agent:a:case:k", agent_id: "a", lane: "main", inputs: Some(r#"{"_case":{"key_type":"email","key_value":"x"}}"#), ..Default::default() }).unwrap();
+        s.engine_bind_key("case-1", "email", "x").unwrap();
+        s.engine_declare_wait("case-1", &NewWait { action: "trigger_child", on_kind: "signal", key: "email:x", deadline: None, reason: "waiting", ..Default::default() }, 100).unwrap();
+        // A signal that is claimed five times and never completed.
+        s.engine_enqueue_event(&NewEvent { kind: "signal", target_type: "run", target_id: "email:x", payload: "cursed", idem_key: "cursed", durable: true, ..Default::default() }).unwrap();
+        let mut t = 200;
+        for _ in 0..db::EVENT_MAX_ATTEMPTS {
+            assert_eq!(s.engine_claim_events(t, 10).unwrap().0.len(), 1);
+            t += db::EVENT_LEASE_SECS + 1;
+        }
+        let r = tick(&s, t, &idle, &no_steer);
+        assert_eq!(r.poisoned, 1);
+        assert!(s.engine_events_for("run", "case-1", 50).unwrap().iter().any(|e| e.kind == "needs_attention" && e.payload.contains("email:x")));
+        // The attention signal is delivered in the same tick or the next.
+        let started = r.children_started + tick(&s, t + 5, &idle, &no_steer).children_started;
+        assert_eq!(started, 1, "the autonomous employee takes it as a turn");
+    }
+
+    /// Money that was attempted and never confirmed is never retried by the
+    /// engine, whatever the employee's autonomy: it stays pending and the
+    /// owner is told once. A messaging effect in the same state is not
+    /// escalated — its class is loose.
+    #[test]
+    fn an_unconfirmed_charge_is_never_retried_and_the_owner_is_told_once() {
+        let s = store();
+        let user = s.ensure_local_user_id().unwrap();
+        s.upsert_entity_config("agent", "a", &serde_json::json!({"operationPolicy": {"default": "always"}})).unwrap();
+        s.engine_create_run(&NewRun { id: "wf-1", kind: "workflow", session_key: "agent:a:workflow:wf-1", agent_id: "a", lane: "main", ..Default::default() }).unwrap();
+        let charge = s.engine_effect_pending("wf-1", "financial", "charge:inv-1042", "stripe", "pi_1042").unwrap();
+        let note = s.engine_effect_pending("wf-1", "messaging", "email:inv-1042", "smtp", "").unwrap();
+        s.engine_effect_attempted(charge).unwrap();
+        s.engine_effect_attempted(note).unwrap();
+
+        let r = tick(&s, 100, &idle, &no_steer);
+        assert_eq!(r.pending_effects, 2);
+        let card = s.get_notification(&format!("attention:effect:{charge}"), &user).unwrap().expect("the owner is told about the charge");
+        assert!(card.body.as_deref().unwrap().contains("pi_1042") || card.body.as_deref().unwrap().contains("charge:inv-1042"), "with the key to reconcile by");
+        assert!(s.get_notification(&format!("attention:effect:{note}"), &user).unwrap().is_none(), "a message is not money");
+
+        tick(&s, 200, &idle, &no_steer);
+        assert_eq!(s.engine_get_effect(charge).unwrap().unwrap().attempts, 1, "never retried");
+        assert_eq!(s.engine_get_effect(charge).unwrap().unwrap().state, "pending", "still pending until confirmed by the provider");
+        assert_eq!(s.engine_events_for("run", "wf-1", 50).unwrap().iter().filter(|e| e.kind == "needs_attention").count(), 1, "told once");
     }
 
     /// The timeout worklists: a turn running since before the cutoff, or

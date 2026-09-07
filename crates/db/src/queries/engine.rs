@@ -257,17 +257,23 @@ impl Store {
     /// the lease to expire and the next tick claims again. Rows over the
     /// poison cap are stamped delivered with a note and never returned; the
     /// second tuple element counts them so a failure is loud, never silent.
-    pub fn engine_claim_events(&self, now: i64, limit: i64) -> Result<(Vec<EngineEvent>, usize), NeboError> {
+    pub fn engine_claim_events(&self, now: i64, limit: i64) -> Result<(Vec<EngineEvent>, Vec<EngineEvent>), NeboError> {
         let conn = self.conn()?;
-        let poisoned = conn
-            .execute(
-                "UPDATE engine_events
-                 SET delivered_at = ?1, note = 'poisoned: exceeded delivery attempts'
-                 WHERE delivered_at IS NULL AND attempts >= ?2
-                   AND (lease_until IS NULL OR lease_until < ?1)",
-                params![now, EVENT_MAX_ATTEMPTS],
-            )
-            .db_err("engine_claim_events poison")?;
+        let poisoned = {
+            let mut stmt = conn
+                .prepare(&format!(
+                    "UPDATE engine_events
+                     SET delivered_at = ?1, note = 'poisoned: exceeded delivery attempts'
+                     WHERE delivered_at IS NULL AND target_type != 'session' AND attempts >= ?2
+                       AND (lease_until IS NULL OR lease_until < ?1)
+                     RETURNING {EVENT_COLUMNS}"
+                ))
+                .db_err("engine_claim_events poison")?;
+            stmt.query_map(params![now, EVENT_MAX_ATTEMPTS], row_to_event)
+                .db_err("engine_claim_events poison")?
+                .collect::<Result<Vec<_>, _>>()
+                .db_err("engine_claim_events poison")?
+        };
         let mut stmt = conn
             .prepare(&format!(
                 "UPDATE engine_events
@@ -1123,7 +1129,8 @@ mod tests {
         }
         let (none, poisoned) = s.engine_claim_events(t, 10).unwrap();
         assert!(none.is_empty());
-        assert_eq!(poisoned, 1);
+        assert_eq!(poisoned.len(), 1, "the poisoned row is handed back so someone can be told");
+        assert_eq!(poisoned[0].idem_key, "cursed");
     }
 
     #[test]
