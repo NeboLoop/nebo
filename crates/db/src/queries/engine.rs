@@ -276,12 +276,36 @@ impl Store {
     /// Write-ahead. I-2: the idempotency key is unique across all time; a
     /// repeat is reported, not inserted, and the caller never delivers it.
     pub fn engine_enqueue_event(&self, e: &NewEvent<'_>) -> Result<Enqueued, NeboError> {
+        self.insert_event(e, None)
+    }
+
+    /// Record an event under the recorder's own lease: the loop cannot
+    /// claim it until the recorder either delivers it itself (an opener
+    /// handing the signal to the first turn) or releases it. Seen under
+    /// contention: the loop claimed a signal between the case's wait being
+    /// declared and the opener's hand-off, and started a second first turn.
+    pub fn engine_enqueue_event_leased(&self, e: &NewEvent<'_>, now: i64) -> Result<Enqueued, NeboError> {
+        self.insert_event(e, Some(now))
+    }
+
+    /// Hand a leased event to the loop: the next tick may claim it.
+    pub fn engine_release_event(&self, id: i64) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE engine_events SET claimed_at = NULL, lease_until = NULL WHERE id = ?1 AND delivered_at IS NULL",
+            params![id],
+        )
+        .db_err("engine_release_event")?;
+        Ok(())
+    }
+
+    fn insert_event(&self, e: &NewEvent<'_>, lease_from: Option<i64>) -> Result<Enqueued, NeboError> {
         let conn = self.conn()?;
         let inserted = conn
             .execute(
                 "INSERT INTO engine_events
-                    (kind, target_type, target_id, payload, channel, ref, idem_key, provenance, handoff_depth, retention, due_at, schedule)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+                    (kind, target_type, target_id, payload, channel, ref, idem_key, provenance, handoff_depth, retention, due_at, schedule, claimed_at, lease_until)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
                  ON CONFLICT(idem_key) DO NOTHING",
                 params![
                     e.kind,
@@ -296,6 +320,8 @@ impl Store {
                     if e.durable { "durable" } else { "transient" },
                     e.due_at,
                     e.schedule,
+                    lease_from,
+                    lease_from.map(|t| t + EVENT_LEASE_SECS),
                 ],
             )
             .db_err("engine_enqueue_event")?;
@@ -937,7 +963,7 @@ impl Store {
     /// its wait superseded and is dropped.
     pub fn engine_declare_wait(&self, run_id: &str, w: &NewWait<'_>, now: i64) -> Result<i64, NeboError> {
         let mut conn = self.conn()?;
-        let tx = conn.transaction().db_err("engine_declare_wait tx")?;
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).db_err("engine_declare_wait tx")?;
         tx.execute(
             "UPDATE engine_waits SET superseded_at = ?2 WHERE run_id = ?1 AND superseded_at IS NULL",
             params![run_id, now],
@@ -1085,7 +1111,7 @@ impl Store {
     /// the event's id recorded as what woke it.
     pub fn engine_resume_from_wait(&self, wait_id: i64, event_id: i64, now: i64) -> Result<(), NeboError> {
         let mut conn = self.conn()?;
-        let tx = conn.transaction().db_err("engine_resume_from_wait tx")?;
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).db_err("engine_resume_from_wait tx")?;
         tx.execute(
             "UPDATE engine_waits SET superseded_at = ?2 WHERE id = ?1",
             params![wait_id, now],
@@ -1110,7 +1136,7 @@ impl Store {
     /// ids of any subjects merged into it by this call.
     pub fn engine_resolve_subject(&self, aliases: &[(String, String)], source: &str, now: i64) -> Result<(String, Vec<String>), NeboError> {
         let mut conn = self.conn()?;
-        let tx = conn.transaction().db_err("engine_resolve_subject tx")?;
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).db_err("engine_resolve_subject tx")?;
         // Which subjects the aliases already name, canonicalized.
         let mut found: Vec<String> = Vec::new();
         for (kind, value) in aliases {
@@ -1311,7 +1337,7 @@ impl Store {
     /// new run for the same person can open the instant this one is done.
     pub fn engine_close_run(&self, run_id: &str, state: &str, now: i64) -> Result<(), NeboError> {
         let mut conn = self.conn()?;
-        let tx = conn.transaction().db_err("engine_close_run tx")?;
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).db_err("engine_close_run tx")?;
         tx.execute(
             "UPDATE engine_runs SET state = ?2, ended_at = ?3, current_wait_id = NULL WHERE id = ?1",
             params![run_id, state, now],

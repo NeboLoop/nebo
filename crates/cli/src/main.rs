@@ -1063,6 +1063,20 @@ fn resolve_fixtures(
                 fixture::load_fixture(&full_path).map_err(|e| anyhow::anyhow!(e))?,
             );
         }
+        // Script-backed suites run their scripts here, from the repository
+        // root, before any fixture; a script that fails fails the suite.
+        let root = suite_dir.parent().unwrap_or(Path::new("."));
+        for script in &suite.scripts {
+            println!("suite {}: running {script}", suite.name);
+            let status = std::process::Command::new("bash")
+                .arg(script)
+                .current_dir(root)
+                .status()
+                .map_err(|e| anyhow::anyhow!("could not run {script}: {e}"))?;
+            if !status.success() {
+                anyhow::bail!("suite {}: {script} failed ({status})", suite.name);
+            }
+        }
     }
 
     Ok(fixtures)

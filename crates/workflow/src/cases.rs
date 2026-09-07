@@ -324,7 +324,9 @@ pub fn route_signal(
         durable: true,
         ..Default::default()
     };
-    let Enqueued::Inserted(event_id) = store.engine_enqueue_event(&event)? else {
+    // Recorded under this call's own lease: the loop cannot claim it while
+    // the routing below decides who delivers it.
+    let Enqueued::Inserted(event_id) = store.engine_enqueue_event_leased(&event, t)? else {
         return Ok(Routed::Duplicate);
     };
     route_recorded(store, b, &subject, event_id, idem_key, t)
@@ -356,6 +358,8 @@ pub fn route_recorded(store: &Store, b: &CaseBinding<'_>, subject: &str, event_i
         if case.definition.as_deref() != Some(b.definition_json) {
             store.engine_set_run_definition(&case.id, b.definition_json)?;
         }
+        // The case's wait delivers it: hand it to the loop.
+        store.engine_release_event(event_id)?;
         return Ok(Routed::Signaled { case_id: case.id });
     }
 
@@ -445,11 +449,13 @@ pub fn route_recorded(store: &Store, b: &CaseBinding<'_>, subject: &str, event_i
     let case = store.engine_get_run(&case_id)?.ok_or(NeboError::NotFound)?;
     // The signal just written starts the first turn here, so the case is
     // never open with nothing queued.
+    // The signal is still under the recorder's lease (seen under contention:
+    // without it the loop claimed it here and started a second first turn —
+    // forty people, forty-three first turns), so this is the one hand-off.
     if let Some(ev) = store.engine_get_event(event_id)? {
         start_child(store, &case, &ev)?;
         store.engine_complete_event(ev.id, t)?;
     }
-    // Otherwise another claimer took it in between; the loop routes it.
     Ok(Routed::Opened { case_id })
 }
 

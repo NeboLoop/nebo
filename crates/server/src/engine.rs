@@ -233,10 +233,16 @@ fn deliver(
                     },
                     // The case closed while this signal waited its turn. The
                     // person wrote to a closed case: the reopen rules decide.
+                    // No case at all, open or closed: the opener that recorded
+                    // this signal has not bound its case yet (the loop is
+                    // faster than a transaction). Leave it under its lease; the
+                    // next claim finds the case, and a signal for nobody
+                    // poisons out to the owner after its attempts.
                     Ok(None) => {
-                        if reroute_after_close(store, kt, kv, event, t, report) {
-                            return;
+                        if !reroute_after_close(store, kt, kv, event, t, report) {
+                            info!(event = event.id, target = %event.target_id, "engine: signal names a case that does not exist yet; retrying after its lease");
                         }
+                        return;
                     }
                     Err(_) => {}
                 }

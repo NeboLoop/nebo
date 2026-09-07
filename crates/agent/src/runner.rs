@@ -8391,6 +8391,26 @@ mod tests {
         assert!(admit_turn(&turns, "agent:a:thread:t", progress()).is_ok(), "released when the guard drops");
     }
 
+    /// The engine knows a case turn by its own session; the runner marks
+    /// the activity session under it. The live session under a key is the
+    /// key itself or an activity beneath it — never a key that merely
+    /// shares a prefix — and the wakes queued under that activity drain by
+    /// the turn's key.
+    #[test]
+    fn the_live_session_under_a_turn_key_is_its_activity_session() {
+        let turns: ActiveTurns = Default::default();
+        let activity = "agent:a:workflow:t1:capture::0";
+        let _guard = admit_turn(&turns, activity, progress()).unwrap();
+        assert_eq!(live_session_under(&turns, "agent:a:workflow:t1").as_deref(), Some(activity));
+        assert_eq!(live_session_under(&turns, activity).as_deref(), Some(activity), "the key itself");
+        assert_eq!(live_session_under(&turns, "agent:a:workflow:t"), None, "a shared prefix is not a session under it");
+        assert!(session_is_busy(&turns, "agent:a:workflow:t1"), "busy by the turn's key");
+        steering::push_wake(activity, steering::WakeEntry { wake_id: 7, content: "11am".into(), taint: Default::default() });
+        let drained = steering::drain_wakes("agent:a:workflow:t1");
+        assert_eq!(drained.iter().map(|w| w.wake_id).collect::<Vec<_>>(), [7]);
+        assert!(steering::drain_wakes(activity).is_empty(), "drained once");
+    }
+
     /// Spiral tests exercise the counting mechanics at the shipped default.
     const SAME_ACTION_LIMIT: usize = crate::guardrails::DEFAULT_SAME_ACTION_LIMIT;
 

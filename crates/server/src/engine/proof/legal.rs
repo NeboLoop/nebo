@@ -147,10 +147,23 @@ fn uc50_an_engagement_letter_parks_for_signature() {
     w.finish(&w.run(&turn.id), &waits("engaged", "letter signed; retainer invoiced", "signal", "7d", "retainer payment"));
     assert!(w.history_has(&case, "turn_result", "quickbooks#"));
 
-    // A stray signature later reaches no wait and starts nothing.
+    // A stray signature later reaches no wait and starts nothing — and is
+    // never silently dropped: it stays under its lease, and after its
+    // attempts it is poisoned out to the owner as a signal for nobody.
     w.s.engine_enqueue_event(&NewEvent { idem_key: "sig-late", ..signed }).unwrap();
     let r = w.tick();
-    assert_eq!((r.resumed, r.children_started, r.unrouted), (0, 0, 1));
+    assert_eq!((r.resumed, r.children_started, r.unrouted), (0, 0, 0));
+    assert_eq!(w.undelivered().len(), 1, "still on the books");
+    let mut poisoned = 0;
+    for _ in 0..8 {
+        w.t += db::EVENT_LEASE_SECS + 1;
+        poisoned += w.tick().poisoned;
+        if poisoned > 0 {
+            break;
+        }
+    }
+    assert_eq!(poisoned, 1, "a signal for nobody reaches the owner, not the void");
+    assert!(w.undelivered().is_empty());
 }
 
 /// uc51 — Court or filing deadlines as durable timers with reminders. The

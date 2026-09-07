@@ -95,7 +95,7 @@ impl Store {
     /// what was removed.
     pub fn purge_agent_business_data(&self, agent_id: &str, now: i64) -> Result<serde_json::Value, NeboError> {
         let mut conn = self.conn()?;
-        let tx = conn.transaction().map_err(|e| NeboError::Database(e.to_string()))?;
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|e| NeboError::Database(e.to_string()))?;
         let mut counts = serde_json::Map::new();
         let mut del = |name: &str, sql: &str| -> Result<(), NeboError> {
             let n = tx.execute(sql, params![agent_id]).map_err(|e| NeboError::Database(e.to_string()))?;

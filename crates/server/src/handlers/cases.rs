@@ -167,6 +167,52 @@ fn summarize(store: &db::Store, run: &db::EngineRun) -> Result<CaseSummary, type
     })
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use workflow::cases::{needs_attention, settle_turn, signal_or_open, CaseBinding, Routed};
+
+    /// The inspector reads what the engine wrote: who the case is for, who
+    /// owns it, what it waits on and since when, the last message in, and
+    /// the attention reason once one is raised.
+    #[test]
+    fn the_inspector_summarizes_a_case_from_its_rows() {
+        let path = std::env::temp_dir().join(format!("nebo-inspector-{}.db", uuid::Uuid::new_v4()));
+        let store = db::Store::new(&path.to_string_lossy()).unwrap();
+        let b = CaseBinding {
+            agent_id: "ic",
+            binding_name: "work-lead",
+            case_type: "lead".into(),
+            definition_json: r#"{"activities":[{"id":"run","intent":"work"}]}"#,
+            base_inputs: serde_json::json!({}),
+            default_wait_secs: 86_400,
+        };
+        let payload = serde_json::json!({"email": "Pat@X.com", "message": "hello"});
+        let Routed::Opened { case_id } = signal_or_open(&store, &b, "email", "Pat@X.com", &payload, "event", "m1", 1_000).unwrap() else { panic!() };
+        let turn = store.engine_queued_runs_of_kind("workflow", 1).unwrap().remove(0);
+        store.engine_set_run_state(&turn.id, "running", 1_010, None).unwrap();
+        let turn = store.engine_get_run(&turn.id).unwrap().unwrap();
+        settle_turn(&store, &turn, Some(r#"{"result":{"status":"contacted","summary":"sent first contact"},"next":{"action":"wait","on":"signal","deadline":"2d","reason":"their reply"}}"#), false, 2_000).unwrap();
+
+        let run = store.engine_get_run(&case_id).unwrap().unwrap();
+        let s = summarize(&store, &run).unwrap();
+        assert_eq!((s.owner.as_str(), s.case_type.as_str(), s.state.as_str()), ("ic", "lead", "waiting"));
+        assert_eq!(s.aliases, ["email:pat@x.com"], "normalized");
+        let wait = s.waiting_for.expect("waiting");
+        assert_eq!((wait.on.as_str(), wait.reason.as_str(), wait.wake_at), ("signal", "their reply", Some(2_000 + 2 * 86_400)));
+        assert!(wait.since > 0, "wait since is the row's own clock");
+        assert_eq!(s.summary, "sent first contact");
+        assert!(s.last_inbound.unwrap().text.contains("hello"));
+        assert!(s.last_outbound.is_none(), "no send on the ledger");
+        assert_eq!(s.attention, None);
+
+        needs_attention(&store, "ic", &case_id, "x", Some(&run), "a merge left two open cases", 3_000).unwrap();
+        let s = summarize(&store, &run).unwrap();
+        assert_eq!(s.attention.as_deref(), Some("a merge left two open cases"));
+        assert!(store.engine_cases(Some("ic"), 10).unwrap().iter().any(|c| c.id == case_id));
+    }
+}
+
 /// GET /api/v1/cases?agent=<id>&limit=<n> — cases, newest first.
 pub async fn list_cases(State(state): State<AppState>, Query(q): Query<CasesQuery>) -> HandlerResult<CasesList> {
     let store = &state.store;

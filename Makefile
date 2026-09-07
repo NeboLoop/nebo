@@ -562,6 +562,22 @@ else
 	$(NEBO_CLI) test run --suite suites/$(SUITE).yaml --server $(TEST_SERVER)
 endif
 
+# The engine proof. Two halves:
+#   make test-engine-proof   # sixty-four deterministic scenarios + the engine
+#                            # tests, no model, under a minute (uses its own
+#                            # target dir, so it is safe beside `make dev`)
+#   make test-engine-live ENGINE_CONTACT=you@example.com
+#                            # the live half against the running Nebo with a
+#                            # real model: a lead, a reply, a mid-turn message,
+#                            # the ledger, the inspector; writes to YOUR address
+#   make test-engine ENGINE_CONTACT=you@example.com   # both
+.PHONY: test-engine test-engine-proof test-engine-live
+test-engine: test-engine-proof test-engine-live
+test-engine-proof:
+	CARGO_TARGET_DIR=$(or $(CARGO_TARGET_DIR),target-check) cargo test -p nebo-server -- engine::
+test-engine-live:
+	@ENGINE_CONTACT=$(ENGINE_CONTACT) TEST_SERVER=$(TEST_SERVER) bash scripts/test-engine.sh
+
 # Deterministic tool cases over /agent/mcp — no model, seconds, free. The
 # fastest loop for any tool-shaped change (checkpoint/plan/git refusals).
 #   make test-tools                 # all

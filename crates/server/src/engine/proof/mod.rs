@@ -22,6 +22,7 @@ pub use tools::effects::{guarded_send, SendOutcome};
 pub use tools::origin::ToolContext;
 pub use workflow::cases::{open_case_for, settle_turn, signal_or_open, CaseBinding, Routed};
 
+mod concurrency;
 mod finance;
 mod legal;
 mod marketing;
@@ -46,10 +47,15 @@ pub fn idle(_: &str) -> Option<String> {
 }
 pub fn no_steer(_: &str, _: &EngineEvent) {}
 
+/// A fresh store on its own file.
+pub fn fresh_store() -> Store {
+    let path = std::env::temp_dir().join(format!("nebo-proof-{}.db", uuid::Uuid::new_v4()));
+    Store::new(&path.to_string_lossy()).expect("store")
+}
+
 impl World {
     pub fn new() -> Self {
-        let path = std::env::temp_dir().join(format!("nebo-proof-{}.db", uuid::Uuid::new_v4()));
-        World { s: Store::new(&path.to_string_lossy()).expect("store"), t: 1_700_000_000 }
+        World { s: fresh_store(), t: 1_700_000_000 }
     }
 
     /// A case binding of one employee: `case_type` cases, `default_wait`
