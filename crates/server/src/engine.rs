@@ -74,6 +74,13 @@ pub struct TickReport {
 /// Boot sweep (I-3): nothing is left `running` by a process that is gone.
 pub fn recover(store: &Store) -> usize {
     let t = now();
+    // Turns a clean shutdown suspended are not interruptions: back to the
+    // queue, resume budget untouched.
+    match store.engine_resume_suspended() {
+        Ok(n) if n > 0 => info!(resumed = n, "engine: turns suspended by a clean shutdown are queued again"),
+        Ok(_) => {}
+        Err(e) => warn!(error = %e, "engine: could not resume suspended turns"),
+    }
     let interrupted = match store.engine_mark_interrupted() {
         Ok(rows) => rows,
         Err(e) => {
@@ -344,33 +351,37 @@ fn live_turn(
         Ok(Some(c)) => c,
         _ => return LiveTurn::None,
     };
-    let handed = match child.state.as_str() {
+    match child.state.as_str() {
         "running" => {
-            // The turn's own session is the one the runner marks busy.
+            // The turn's own session is the one the runner marks busy. The
+            // event is queued for the turn's NEXT model call and stays
+            // undelivered until the runner injects it — the injection stamps
+            // it. A turn that ends first never consumed it: its lease
+            // expires and the next tick routes it to the case's next wait.
+            // No event is ever marked heard by a turn that could not hear it.
             if busy(&child.session_key) {
                 steer(&child.session_key, event);
-                true
+                LiveTurn::Handed
             } else {
-                return LiveTurn::Deferred;
+                LiveTurn::Deferred
             }
         }
         "queued" => match store.engine_append_pending_signal(&child.id, &event.payload) {
-            Ok(()) => true,
+            // Appended to inputs the turn has not read yet: consumed for real.
+            Ok(()) => match store.engine_complete_event(event.id, t) {
+                Ok(()) => LiveTurn::Handed,
+                Err(e) => {
+                    warn!(event = event.id, error = %e, "engine: complete after append failed");
+                    LiveTurn::Deferred
+                }
+            },
             Err(e) => {
                 warn!(child = %child.id, error = %e, "engine: could not append signal to the queued turn");
-                return LiveTurn::Deferred;
+                LiveTurn::Deferred
             }
         },
-        "waiting" | "interrupted" => return LiveTurn::Deferred,
-        _ => return LiveTurn::None,
-    };
-    if handed {
-        if let Err(e) = store.engine_complete_event(event.id, t) {
-            warn!(event = event.id, error = %e, "engine: complete after steer failed");
-        }
-        LiveTurn::Handed
-    } else {
-        LiveTurn::Deferred
+        "waiting" | "interrupted" => LiveTurn::Deferred,
+        _ => LiveTurn::None,
     }
 }
 
@@ -890,6 +901,10 @@ async fn drive(state: &AppState) {
     // A turn the workflow ended, whose case has not heard it: the turn's
     // declared wait (or the default) becomes the case's next wait.
     for turn in store.engine_unsettled_turns(TURNS_PER_TICK).unwrap_or_default() {
+        // Wakes queued for a turn that ended before its next model call were
+        // never heard; their events are still undelivered and will be
+        // routed afresh. Drop the stale queue so nothing rides a dead session.
+        let _ = agent::steering::drain_wakes(&turn.session_key);
         let failed = turn.state != "done";
         let output = if failed { turn.error.clone().or(turn.result.clone()).or_else(|| Some(turn.state.clone())) } else { turn.result.clone() };
         if let Err(e) = settle_turn(store, &turn, output.as_deref(), failed, t) {
@@ -1018,6 +1033,18 @@ async fn resume_after_approval(state: &AppState, run: &EngineRun, event_id: i64,
     }
 }
 
+/// A clean shutdown is on its way: running case turns are suspended so the
+/// next boot resumes them without counting an interruption. Called once
+/// the drain begins; a turn that finishes during the drain overwrites the
+/// suspension with its own outcome.
+pub fn suspend_for_shutdown(store: &Store) {
+    match store.engine_suspend_turns() {
+        Ok(n) if n > 0 => info!(suspended = n, "engine: case turns suspended for a clean shutdown"),
+        Ok(_) => {}
+        Err(e) => warn!(error = %e, "engine: could not suspend turns for shutdown"),
+    }
+}
+
 /// The loop. Boot sweep first, then a tick every five seconds for the life
 /// of the process.
 pub fn spawn(state: AppState) {
@@ -1056,7 +1083,7 @@ pub fn spawn(state: AppState) {
 mod tests {
     use super::*;
     use db::{NewEvent, NewRun, NewWait};
-    use workflow::cases::{parse_wait, relative_secs, signal_or_open, CaseBinding, Routed};
+    use workflow::cases::{parse_turn, relative_secs, signal_or_open, CaseBinding, Routed};
 
     fn store() -> Store {
         let path = std::env::temp_dir().join(format!("nebo-engine-loop-{}.db", uuid::Uuid::new_v4()));
@@ -1149,6 +1176,82 @@ mod tests {
         assert!(next[0].inputs.as_deref().unwrap().contains("again"));
     }
 
+    /// A signal handed to a running turn is heard only if the turn's next
+    /// model call injects it: the runner's stamp delivers it. A turn that
+    /// ends first never heard it — the event stays undelivered and rides
+    /// the case's next wait. Exactly one delivery either way.
+    #[test]
+    fn a_steered_signal_is_delivered_by_injection_or_rides_the_next_wait_never_lost() {
+        let s = store();
+        let busy = |_: &str| true;
+        let steered = std::sync::Mutex::new(Vec::<i64>::new());
+        let record = |_: &str, e: &EngineEvent| steered.lock().unwrap().push(e.id);
+        let make = |s: &Store, case: &str, turn: &str, key: &str| {
+            s.engine_create_run(&NewRun { id: case, kind: "case", session_key: "agent:a:case:k", agent_id: "a", lane: "main", ..Default::default() }).unwrap();
+            s.engine_declare_wait(case, &NewWait { action: "trigger_child", on_kind: "signal", key, deadline: None, reason: "first contact", ..Default::default() }, 100).unwrap();
+            let inputs = format!(r#"{{"_case":{{"key_type":"email","key_value":"{}","default_wait_secs":86400}}}}"#, key.trim_start_matches("email:"));
+            s.engine_create_run(&NewRun { id: turn, kind: "workflow", session_key: &format!("agent:a:workflow:{turn}"), agent_id: "a", lane: "main", parent_run_id: Some(case), inputs: Some(&inputs), ..Default::default() }).unwrap();
+            s.engine_set_run_state(turn, "running", 150, None).unwrap();
+        };
+
+        // Heard: the runner injects and stamps it.
+        make(&s, "case-1", "turn-1", "email:x");
+        s.engine_enqueue_event(&NewEvent { kind: "signal", target_type: "run", target_id: "email:x", payload: "reply", idem_key: "s1", durable: true, ..Default::default() }).unwrap();
+        let r = tick(&s, 200, &busy, &record);
+        assert_eq!((r.steered, r.children_started), (1, 0));
+        let id = steered.lock().unwrap()[0];
+        assert!(s.engine_claim_events(200 + db::EVENT_LEASE_SECS + 1, 10).unwrap().0.iter().any(|e| e.id == id), "not marked delivered by the hand-off");
+        s.engine_complete_events(&[id], 210).unwrap(); // what the runner does at injection
+        assert!(s.engine_claim_events(200 + 2 * (db::EVENT_LEASE_SECS + 1), 10).unwrap().0.is_empty(), "delivered once, by injection");
+
+        // Not heard: the turn ends before its next model call. The event
+        // outlives the turn and starts the next one — once.
+        make(&s, "case-2", "turn-2", "email:y");
+        s.engine_enqueue_event(&NewEvent { kind: "signal", target_type: "run", target_id: "email:y", payload: "reply", idem_key: "s2", durable: true, ..Default::default() }).unwrap();
+        let r = tick(&s, 1_000, &busy, &record);
+        assert_eq!(r.steered, 1);
+        s.complete_workflow_run("turn-2", "completed", 1, None, None, Some(r#"{"next":{"action":"wait","deadline":"3d"}}"#)).unwrap();
+        let turn = s.engine_unsettled_turns(1).unwrap().remove(0);
+        settle_turn(&s, &turn, turn.result.as_deref(), false, 1_100).unwrap();
+        let later = 1_000 + db::EVENT_LEASE_SECS + 1;
+        let r = tick(&s, later, &busy, &record);
+        assert_eq!((r.steered, r.children_started), (0, 1), "the unheard signal starts the next turn");
+        assert!(s.engine_queued_runs_of_kind("workflow", 10).unwrap().iter().any(|t| t.parent_run_id.as_deref() == Some("case-2") && t.inputs.as_deref().unwrap().contains("reply")));
+        assert_eq!(tick(&s, later + db::EVENT_LEASE_SECS + 1, &busy, &record).children_started, 0, "and only once");
+    }
+
+    /// A clean shutdown suspends running turns; the next boot queues them
+    /// again without spending their one resume. A crash still spends it.
+    #[test]
+    fn a_clean_shutdown_does_not_count_as_an_interruption() {
+        let s = store();
+        s.engine_create_run(&NewRun { id: "case-1", kind: "case", session_key: "k", agent_id: "a", lane: "main", ..Default::default() }).unwrap();
+        s.engine_create_run(&NewRun { id: "turn-1", kind: "workflow", session_key: "agent:a:workflow:turn-1", agent_id: "a", lane: "main", parent_run_id: Some("case-1"), ..Default::default() }).unwrap();
+        s.engine_set_run_state("turn-1", "running", 100, None).unwrap();
+        s.engine_create_run(&NewRun { id: "plain", kind: "workflow", session_key: "p", agent_id: "a", lane: "main", ..Default::default() }).unwrap();
+        s.engine_set_run_state("plain", "running", 100, None).unwrap();
+
+        suspend_for_shutdown(&s);
+        assert_eq!(s.engine_get_run("turn-1").unwrap().unwrap().state, "interrupted");
+        assert_eq!(s.engine_get_run("plain").unwrap().unwrap().state, "running", "only case turns are suspended");
+
+        // Boot: the suspended turn is queued, budget intact; the crashed
+        // plain run is interrupted and spends its one resume.
+        recover(&s);
+        let turn = s.engine_get_run("turn-1").unwrap().unwrap();
+        assert_eq!((turn.state.as_str(), turn.resume_attempted), ("queued", 0));
+        let plain = s.engine_get_run("plain").unwrap().unwrap();
+        assert_eq!((plain.state.as_str(), plain.resume_attempted), ("queued", 1));
+
+        // Later, a real crash during the same turn still gets exactly one resume.
+        s.engine_set_run_state("turn-1", "running", 200, None).unwrap();
+        recover(&s);
+        assert_eq!(s.engine_get_run("turn-1").unwrap().unwrap().resume_attempted, 1);
+        s.engine_set_run_state("turn-1", "running", 300, None).unwrap();
+        recover(&s);
+        assert_eq!(s.engine_get_run("turn-1").unwrap().unwrap().state, "failed", "the second crash is poison");
+    }
+
     #[test]
     fn a_stale_deadline_is_superseded_and_a_current_one_starts_the_turn() {
         let s = store();
@@ -1223,17 +1326,18 @@ mod tests {
         s.engine_set_run_state(&turn.id, "running", 1_001, None).unwrap();
         let turn = s.engine_get_run(&turn.id).unwrap().unwrap();
 
-        let out = r#"Sent the day-1 email. {"outcome":"sent day-1 follow-up","state":"waiting_on_customer","wait":{"on":"signal","deadline":"3d","reason":"follow up if no reply by Thursday"}}"#;
+        let out = r#"Sent the day-1 email. {"result":{"status":"waiting_on_customer","summary":"sent day-1 follow-up"},"next":{"action":"wait","on":"signal","deadline":"3d","reason":"follow up if no reply by Thursday"}}"#;
         settle_turn(&s, &turn, Some(out), false, 2_000).unwrap();
         assert_eq!(s.engine_get_run(&turn.id).unwrap().unwrap().state, "done");
         let case = s.engine_get_run(&case_id).unwrap().unwrap();
         assert_eq!(case.state, "waiting");
-        assert_eq!(case.summary, "follow up if no reply by Thursday");
+        assert_eq!(case.summary, "sent day-1 follow-up", "the case shows what the employee did");
         let wait = s.engine_get_wait(case.current_wait_id.unwrap()).unwrap().unwrap();
         assert_eq!(wait.deadline, Some(2_000 + 3 * 86_400));
         assert_eq!(wait.key, "email:a@b.c");
+        assert_eq!(wait.reason, "follow up if no reply by Thursday", "the wait shows what it is waiting for");
         let hist = s.engine_events_for("run", &case_id, 50).unwrap();
-        assert!(hist.iter().any(|e| e.kind == "turn_result" && e.payload.contains("Thursday")));
+        assert!(hist.iter().any(|e| e.kind == "turn_result" && e.payload.contains("day-1")));
 
         let (ev, _) = s.engine_claim_events(2_000 + 3 * 86_400, 10).unwrap();
         let mut report = TickReport::default();
@@ -1252,7 +1356,7 @@ mod tests {
             deliver(&s, e, 5_000 + 3 * 86_400, &idle, &no_steer, &mut report);
         }
         let turn3 = s.engine_queued_runs_of_kind("workflow", 1).unwrap().remove(0);
-        settle_turn(&s, &turn3, Some(r#"{"outcome":"booked for Tuesday","state":"booked","wait":{}}"#), false, 9_000).unwrap();
+        settle_turn(&s, &turn3, Some(r#"{"result":{"status":"booked","summary":"booked for Tuesday"},"next":{"action":"close"}}"#), false, 9_000).unwrap();
         let case = s.engine_get_run(&case_id).unwrap().unwrap();
         assert_eq!(case.state, "done");
         assert_eq!(case.result.as_deref(), Some("booked"));
@@ -1479,7 +1583,7 @@ mod tests {
 
         // The workflow ends it, as the manager does: result, then done.
         s.engine_set_run_state(&turn.id, "running", 1_001, None).unwrap();
-        s.complete_workflow_run(&turn.id, "completed", 10, None, None, Some(r#"{"outcome":"sent day-1","wait":{"deadline":"2d","reason":"follow up Wednesday"}}"#)).unwrap();
+        s.complete_workflow_run(&turn.id, "completed", 10, None, None, Some(r#"{"result":{"status":"contacted","summary":"sent day-1"},"next":{"action":"wait","deadline":"2d","reason":"follow up Wednesday"}}"#)).unwrap();
         let unsettled = s.engine_unsettled_turns(10).unwrap();
         assert_eq!(unsettled.len(), 1);
         let t = &unsettled[0];
@@ -1546,7 +1650,7 @@ mod tests {
 
         // A success resets the streak; the next failure retries at one minute again.
         let turn = s.engine_queued_runs_of_kind("workflow", 1).unwrap().remove(0);
-        s.complete_workflow_run(&turn.id, "completed", 5, None, None, Some(r#"{"wait":{"deadline":"5m","reason":"sent"}}"#)).unwrap();
+        s.complete_workflow_run(&turn.id, "completed", 5, None, None, Some(r#"{"next":{"action":"wait","deadline":"5m","reason":"sent"}}"#)).unwrap();
         let turn = s.engine_unsettled_turns(1).unwrap().remove(0);
         settle_turn(&s, &turn, turn.result.as_deref(), false, t).unwrap();
         t += 300;
@@ -1694,7 +1798,7 @@ mod tests {
         // The owner closes the case by hand while the turn runs.
         s.engine_close_run(&case_id, "done", 1_500).unwrap();
         s.engine_set_run_state(&turn.id, "running", 1_001, None).unwrap();
-        s.complete_workflow_run(&turn.id, "completed", 1, None, None, Some(r#"{"wait":{"deadline":"1d"}}"#)).unwrap();
+        s.complete_workflow_run(&turn.id, "completed", 1, None, None, Some(r#"{"next":{"action":"wait","deadline":"1d"}}"#)).unwrap();
         let t = s.engine_unsettled_turns(10).unwrap().remove(0);
         settle_turn(&s, &t, t.result.as_deref(), false, 2_000).unwrap();
         let case = s.engine_get_run(&case_id).unwrap().unwrap();
@@ -1745,20 +1849,51 @@ mod tests {
         assert_eq!(next.due_at, Some(140 + 30), "from the consumed due moment, not from when it was delivered");
     }
 
+    /// The contract is strict: the last thing in the output is one object
+    /// with `next`; the employee's `result` is recorded, never interpreted.
     #[test]
-    fn parse_wait_reads_the_last_declaration_and_relative_or_absolute_deadlines() {
+    fn the_turn_contract_is_strict_and_the_engine_reads_only_next() {
         let t = 1_000;
-        assert_eq!(parse_wait("no json here", t), None);
-        let w = parse_wait(r#"{"wait":{"on":"signal","deadline":"12h","reason":"r"}}"#, t).unwrap();
-        assert_eq!(w.deadline, Some(t + 12 * 3600));
-        assert_eq!(w.on_kind, "signal");
-        let w = parse_wait(r#"prose {"wait":{"deadline":"2026-09-09T09:00:00-06:00"}} trailing"#, t).unwrap();
-        let expected = chrono::DateTime::parse_from_rfc3339("2026-09-09T09:00:00-06:00").unwrap().timestamp();
-        assert_eq!(w.deadline, Some(expected));
-        let w = parse_wait(r#"{"wait":{"deadline":"1d"}} then later {"state":"booked","wait":{}}"#, t).unwrap();
-        assert_eq!(w.state.as_deref(), Some("booked"));
-        assert_eq!(w.deadline, None);
+        let ok = parse_turn(r#"I emailed them. {"result":{"status":"awaiting_documents","summary":"asked for the W-2"},"next":{"action":"wait","on":"signal","deadline":"12h","reason":"documents"}}"#, t).unwrap();
+        assert_eq!((ok.close, ok.on_kind.as_str(), ok.deadline, ok.reason.as_str(), ok.summary.as_str()), (None, "signal", Some(t + 12 * 3600), "documents", "asked for the W-2"));
+        let abs = parse_turn(r#"{"next":{"action":"wait","deadline":"2026-09-09T09:00:00-06:00"}}"#, t).unwrap();
+        assert_eq!(abs.deadline, Some(chrono::DateTime::parse_from_rfc3339("2026-09-09T09:00:00-06:00").unwrap().timestamp()));
+        let fenced = parse_turn("Done.\n```json\n{\"next\":{\"action\":\"wait\"}}\n```\n", t).unwrap();
+        assert_eq!((fenced.deadline, fenced.on_kind.as_str()), (None, "signal"));
+        let close = parse_turn(r#"{"result":{"status":"booked","summary":"Tuesday 10am"},"next":{"action":"close"}}"#, t).unwrap();
+        assert_eq!((close.close.as_deref(), close.summary.as_str()), (Some("booked"), "Tuesday 10am"));
+        let braces_in_strings = parse_turn(r#"{"result":{"summary":"they wrote {not json}"},"next":{"action":"wait"}}"#, t).unwrap();
+        assert_eq!(braces_in_strings.summary, "they wrote {not json}");
+
+        assert!(parse_turn("no json here", t).is_err());
+        assert!(parse_turn(r#"{"next":{"action":"wait"}} and then some prose"#, t).is_err(), "nothing may follow the object");
+        assert!(parse_turn(r#"{"result":{"status":"x"}}"#, t).is_err(), "next is required");
+        assert!(parse_turn(r#"{"next":{"action":"snooze"}}"#, t).is_err(), "unknown action");
+        assert!(parse_turn(r#"{"next":{"action":"wait","deadline":"soon"}}"#, t).is_err(), "unreadable deadline");
+        assert!(parse_turn(r#"{"wait":{"deadline":"1d"}}"#, t).is_err(), "the old shape is not the contract");
+        assert!(parse_turn(r#"{"next":{"action":"wait","snooze":true}}"#, t).is_err(), "unknown fields on next");
         assert_eq!(relative_secs("1d12h"), Some(129_600));
         assert_eq!(relative_secs("soon"), None);
+    }
+
+    /// A turn that ran but did not end with the contract is not retried:
+    /// it may have done real work. It is recorded and the case waits its default.
+    #[test]
+    fn a_turn_without_a_valid_contract_is_recorded_and_not_retried() {
+        let s = store();
+        let b = binding();
+        let payload = serde_json::json!({"email": "a@b.c"});
+        let Routed::Opened { case_id } = signal_or_open(&s, &b, "email", "a@b.c", &payload, "webhook", "s1", 1_000).unwrap() else { panic!() };
+        let turn = s.engine_queued_runs_of_kind("workflow", 1).unwrap().remove(0);
+        s.complete_workflow_run(&turn.id, "completed", 3, None, None, Some("I sent the email and will follow up.")).unwrap();
+        let t = s.engine_unsettled_turns(1).unwrap().remove(0);
+        settle_turn(&s, &t, t.result.as_deref(), false, 2_000).unwrap();
+        let case = s.engine_get_run(&case_id).unwrap().unwrap();
+        let wait = s.engine_get_wait(case.current_wait_id.unwrap()).unwrap().unwrap();
+        assert_eq!(wait.deadline, Some(2_000 + 3 * 86_400), "default wait, no one-minute retry");
+        assert!(wait.reason.starts_with("turn ended without a valid next"), "{}", wait.reason);
+        let hist = s.engine_events_for("run", &case_id, 50).unwrap();
+        assert!(hist.iter().any(|e| e.kind == "turn_result" && e.payload.contains("without a valid next")));
+        assert!(!hist.iter().any(|e| e.kind == "turn_failed"), "not a failure");
     }
 }

@@ -338,51 +338,135 @@ fn history_lines(store: &Store, case_id: &str) -> Vec<String> {
 
 // ── the turn contract ─────────────────────────────────────────────────────
 
-/// What a finished turn asked to wait for.
+/// The turn contract. A case step ENDS with one JSON object, and nothing
+/// after it: `result` is the employee's business state (the playbook owns
+/// it; the engine only records it), `next` is the engine command.
+///
+/// ```json
+/// {"result": {"status": "awaiting_documents", "summary": "Requested W-2 and two bank statements"},
+///  "next":   {"action": "wait", "on": "signal", "deadline": "2026-09-09T18:00:00Z", "reason": "documents"}}
+/// ```
+///
+/// `next.action` is `wait` (with `on`, an optional `deadline` as RFC 3339
+/// or a relative span such as `3d`, and an optional `reason`) or `close`.
+/// Anything else — prose after the object, a missing `next`, an unknown
+/// action, an unreadable deadline — is an invalid turn, never interpreted.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TurnEnvelope {
+    #[serde(default)]
+    pub result: Option<TurnResult>,
+    pub next: TurnNext,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Deserialize)]
+pub struct TurnResult {
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub summary: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TurnNext {
+    pub action: String,
+    #[serde(default = "default_on")]
+    pub on: String,
+    #[serde(default)]
+    pub deadline: Option<String>,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+fn default_on() -> String {
+    "signal".to_string()
+}
+
+/// What the engine does with a valid turn.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WaitSpec {
+pub struct Turn {
+    /// `Some(status)`: close the case in this business state.
+    pub close: Option<String>,
     pub on_kind: String,
     pub deadline: Option<i64>,
     pub reason: String,
-    pub state: Option<String>,
+    pub summary: String,
 }
 
-/// `{"wait": {...}}` anywhere in the turn's output, last occurrence wins.
-/// `deadline` is RFC 3339 or a relative span (`3d`, `12h`, `45m`). A
-/// terminal `state` (booked, declined, opted_out, unresponsive,
-/// owner_takeover, closed) closes the case instead.
-pub fn parse_wait(output: &str, t: i64) -> Option<WaitSpec> {
-    let idx = output.rfind("\"wait\"")?;
-    let bytes = output.as_bytes();
-    // Walk outward to the enclosing object: the nearest '{' before "wait"
-    // that parses together with some '}' after it.
-    let mut starts: Vec<usize> = output[..idx].match_indices('{').map(|(i, _)| i).collect();
-    starts.reverse();
-    let ends: Vec<usize> = output[idx..].match_indices('}').map(|(i, _)| idx + i + 1).collect();
-    for s in starts.iter().take(4) {
-        for e in ends.iter().take(6) {
-            if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes[*s..*e]) {
-                if let Some(spec) = wait_from_value(&v, t) {
-                    return Some(spec);
+/// Strict read of a case step's output: the LAST top-level JSON object,
+/// which must be the last thing in the output (a closing code fence and
+/// whitespace excepted), validated as a `TurnEnvelope`. Prose before the
+/// object is the employee's own words and is fine; anything after it, or
+/// no object at all, is an invalid turn.
+pub fn parse_turn(output: &str, t: i64) -> Result<Turn, String> {
+    let (start, end) = last_json_object(output).ok_or("no JSON object at the end of the turn")?;
+    let tail = output[end..].trim().trim_end_matches("```").trim();
+    if !tail.is_empty() {
+        return Err(format!("text after the turn's JSON object: {:?}", tail.chars().take(40).collect::<String>()));
+    }
+    let env: TurnEnvelope = serde_json::from_str(&output[start..end]).map_err(|e| format!("turn object does not match the contract: {e}"))?;
+    let result = env.result.unwrap_or_default();
+    let reason = env.next.reason.clone().filter(|r| !r.is_empty()).unwrap_or_else(|| result.summary.clone());
+    match env.next.action.as_str() {
+        "close" => Ok(Turn {
+            close: Some(if result.status.is_empty() { "closed".to_string() } else { result.status.clone() }),
+            on_kind: env.next.on,
+            deadline: None,
+            reason,
+            summary: result.summary,
+        }),
+        "wait" => {
+            let deadline = match env.next.deadline.as_deref().map(str::trim).filter(|d| !d.is_empty()) {
+                Some(d) => Some(parse_deadline(d, t).ok_or_else(|| format!("unreadable deadline {d:?}"))?),
+                None => None,
+            };
+            Ok(Turn { close: None, on_kind: env.next.on, deadline, reason, summary: result.summary })
+        }
+        other => Err(format!("unknown next.action {other:?}")),
+    }
+}
+
+/// Byte span of the last top-level `{…}` in `s`, string-aware.
+fn last_json_object(s: &str) -> Option<(usize, usize)> {
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut start = None;
+    let mut last = None;
+    for (i, c) in s.char_indices() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match c {
+            '"' => in_string = true,
+            '{' => {
+                if depth == 0 {
+                    start = Some(i);
+                }
+                depth += 1;
+            }
+            '}' => {
+                if depth > 0 {
+                    depth -= 1;
+                    if depth == 0 {
+                        if let Some(st) = start {
+                            last = Some((st, i + c.len_utf8()));
+                        }
+                    }
                 }
             }
+            _ => {}
         }
     }
-    None
-}
-
-fn wait_from_value(v: &serde_json::Value, t: i64) -> Option<WaitSpec> {
-    let w = v.get("wait")?;
-    let state = v.get("state").and_then(|s| s.as_str()).map(str::to_string);
-    let on_kind = w.get("on").and_then(|s| s.as_str()).unwrap_or("signal").to_string();
-    let deadline = w.get("deadline").and_then(|d| d.as_str()).and_then(|d| parse_deadline(d, t));
-    let reason = w
-        .get("reason")
-        .and_then(|s| s.as_str())
-        .map(str::to_string)
-        .or_else(|| v.get("outcome").and_then(|s| s.as_str()).map(str::to_string))
-        .unwrap_or_default();
-    Some(WaitSpec { on_kind, deadline, reason, state })
+    last
 }
 
 fn parse_deadline(s: &str, t: i64) -> Option<i64> {
@@ -390,10 +474,6 @@ fn parse_deadline(s: &str, t: i64) -> Option<i64> {
         return Some(dt.timestamp());
     }
     Some(t + relative_secs(s)?)
-}
-
-fn is_terminal(state: &str) -> bool {
-    matches!(state, "booked" | "declined" | "opted_out" | "unresponsive" | "owner_takeover" | "closed" | "done")
 }
 
 /// A finished turn: apply what it declared to its case. A turn the
@@ -415,7 +495,10 @@ pub fn settle_turn(store: &Store, child: &EngineRun, output: Option<&str>, faile
     );
     let default_secs = inputs["_case"]["default_wait_secs"].as_i64().unwrap_or(DEFAULT_WAIT_SECS);
 
-    let spec = output.and_then(|o| parse_wait(o, t));
+    // A turn that ran to the end must have ended with the contract. One
+    // that did not is recorded as such and the case waits its default —
+    // it is NOT retried, because the turn may have done real work.
+    let contract = if failed { None } else { Some(parse_turn(output.unwrap_or(""), t)) };
     if !ended {
         if let Some(out) = output {
             store.engine_set_run_result(&child.id, out, None)?;
@@ -428,11 +511,15 @@ pub fn settle_turn(store: &Store, child: &EngineRun, output: Option<&str>, faile
     let parent_open = parent.as_ref().is_some_and(|p| matches!(p.state.as_str(), "waiting" | "queued" | "running"));
 
     // The turn's own words become the case's history.
-    let summary = spec
-        .as_ref()
-        .map(|s| s.reason.clone())
-        .filter(|r| !r.is_empty())
-        .unwrap_or_else(|| if failed { "turn failed".to_string() } else { "turn finished without a declared wait".to_string() });
+    let summary = match &contract {
+        Some(Ok(turn)) => [turn.summary.as_str(), turn.reason.as_str()]
+            .into_iter()
+            .find(|s| !s.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| "turn finished".to_string()),
+        Some(Err(why)) => format!("turn ended without a valid next: {why}"),
+        None => "turn failed".to_string(),
+    };
     let _ = store.engine_enqueue_event(&NewEvent {
         kind: if failed { "turn_failed" } else { "turn_result" },
         target_type: "run",
@@ -453,18 +540,19 @@ pub fn settle_turn(store: &Store, child: &EngineRun, output: Option<&str>, faile
     if !parent_open {
         return Ok(());
     }
-    if let Some(state) = spec.as_ref().and_then(|s| s.state.as_deref()).filter(|s| is_terminal(s)) {
+    if let Some(Ok(Turn { close: Some(status), .. })) = &contract {
         store.engine_close_run(parent_id, "done", t)?;
-        store.engine_set_run_result(parent_id, state, Some(&summary))?;
+        store.engine_set_run_result(parent_id, status, Some(&summary))?;
         return Ok(());
     }
     // Retry policy for a turn that failed (design: 1m, doubling, at most an
     // hour, three attempts): the case's next wait is a short timer, so the
     // next turn retries soon; after three failures in a row it waits the
     // binding's default like any other turn, and the owner sees the history.
-    let (on_kind, deadline, reason) = match spec {
-        Some(s) => (s.on_kind, s.deadline.or(Some(t + default_secs)), s.reason),
-        None if failed => {
+    let (on_kind, deadline, reason) = match contract {
+        Some(Ok(turn)) => (turn.on_kind, turn.deadline.or(Some(t + default_secs)), if turn.reason.is_empty() { summary.clone() } else { turn.reason }),
+        Some(Err(_)) => ("signal".to_string(), Some(t + default_secs), summary.clone()),
+        None => {
             let streak = consecutive_failures(store, parent_id);
             if streak <= TURN_RETRY_ATTEMPTS {
                 let backoff = (TURN_RETRY_FIRST_SECS << (streak - 1)).min(TURN_RETRY_MAX_SECS);
@@ -475,7 +563,6 @@ pub fn settle_turn(store: &Store, child: &EngineRun, output: Option<&str>, faile
                 ("signal".to_string(), Some(t + default_secs), reason)
             }
         }
-        None => ("signal".to_string(), Some(t + default_secs), summary.clone()),
     };
     store.engine_set_run_result(parent_id, "", Some(&summary))?;
     store.engine_declare_wait(

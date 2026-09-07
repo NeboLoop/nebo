@@ -2632,6 +2632,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // before the process exits so the gateway sees a clean WebSocket Close frame.
     let shutdown_comm = state.comm_manager.clone();
     let shutdown_registry = state.run_registry.clone();
+    let shutdown_store = state.store.clone();
     let shutdown_lifecycles = state.app_lifecycles.clone();
 
     if !quiet {
@@ -2677,6 +2678,9 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         .with_graceful_shutdown(async move {
             shutdown_signal().await;
             info!("shutdown signal received — pausing scheduler, draining in-flight runs...");
+            // A clean shutdown is not an interruption: case turns still
+            // running are suspended and resume on boot with their budget intact.
+            engine::suspend_for_shutdown(&shutdown_store);
             drain_in_flight_runs(&shutdown_registry).await;
             info!("runs drained, draining in-flight extractions...");
             agent::memory_flush::drain_extractions().await;

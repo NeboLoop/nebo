@@ -201,13 +201,16 @@ static WAKE_INBOX: std::sync::LazyLock<
     std::sync::Mutex<std::collections::HashMap<String, Vec<WakeEntry>>>,
 > = std::sync::LazyLock::new(Default::default);
 
+/// Queue a wake for injection into the session's next model call. The same
+/// wake (by id) is never queued twice: an event whose lease expired and was
+/// handed over again rides the entry it already has.
 pub fn push_wake(session_key: &str, entry: WakeEntry) {
-    WAKE_INBOX
-        .lock()
-        .expect("wake inbox lock")
-        .entry(session_key.to_string())
-        .or_default()
-        .push(entry);
+    let mut inbox = WAKE_INBOX.lock().expect("wake inbox lock");
+    let queue = inbox.entry(session_key.to_string()).or_default();
+    if queue.iter().any(|e| e.wake_id == entry.wake_id) {
+        return;
+    }
+    queue.push(entry);
 }
 
 pub fn drain_wakes(session_key: &str) -> Vec<WakeEntry> {

@@ -259,6 +259,22 @@ impl Store {
     /// second tuple element counts them so a failure is loud, never silent.
     pub fn engine_claim_events(&self, now: i64, limit: i64) -> Result<(Vec<EngineEvent>, Vec<EngineEvent>), NeboError> {
         let conn = self.conn()?;
+        // An idle tick takes no write lock: nothing to poison and nothing
+        // deliverable means no UPDATE is issued at all.
+        let any: bool = conn
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM engine_events
+                    WHERE delivered_at IS NULL AND target_type != 'session'
+                      AND (due_at IS NULL OR due_at <= ?1)
+                      AND (lease_until IS NULL OR lease_until < ?1))",
+                params![now],
+                |r| r.get(0),
+            )
+            .db_err("engine_claim_events probe")?;
+        if !any {
+            return Ok((Vec::new(), Vec::new()));
+        }
         let poisoned = {
             let mut stmt = conn
                 .prepare(&format!(
@@ -498,6 +514,16 @@ impl Store {
     /// Transient rows older than the TTL are gone; durable rows are history.
     pub fn engine_expire_transient_events(&self, older_than: i64) -> Result<usize, NeboError> {
         let conn = self.conn()?;
+        let any: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM engine_events WHERE retention = 'transient' AND delivered_at IS NOT NULL AND delivered_at < ?1)",
+                params![older_than],
+                |r| r.get(0),
+            )
+            .db_err("engine_expire_transient_events probe")?;
+        if !any {
+            return Ok(0);
+        }
         conn.execute(
             "DELETE FROM engine_events
              WHERE retention = 'transient' AND delivered_at IS NOT NULL AND delivered_at < ?1",
@@ -752,6 +778,32 @@ impl Store {
             .collect::<Result<Vec<_>, _>>()
             .db_err("engine_mark_interrupted")?;
         Ok(rows)
+    }
+
+    /// A clean shutdown: every running case turn is suspended — stamped
+    /// interrupted with the tag that says the process left on purpose — so
+    /// the boot sweep resumes it without spending its one resume. Only
+    /// turns: a plain workflow run stays the manager's to recover.
+    pub fn engine_suspend_turns(&self) -> Result<usize, NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE engine_runs SET state = 'interrupted', summary = 'clean_shutdown'
+             WHERE kind = 'workflow' AND parent_run_id IS NOT NULL AND state = 'running'",
+            [],
+        )
+        .db_err("engine_suspend_turns")
+    }
+
+    /// Boot, before the interruption sweep: turns a clean shutdown suspended
+    /// go straight back to the queue. Not an interruption, not an attempt.
+    pub fn engine_resume_suspended(&self) -> Result<usize, NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE engine_runs SET state = 'queued', summary = ''
+             WHERE state = 'interrupted' AND summary = 'clean_shutdown'",
+            [],
+        )
+        .db_err("engine_resume_suspended")
     }
 
     /// I-3, half two: an interrupted run gets ONE resume. The first call
