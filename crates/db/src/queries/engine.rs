@@ -44,6 +44,8 @@ pub struct EngineEvent {
     pub due_at: Option<i64>,
     pub schedule: Option<String>,
     pub attempts: i64,
+    pub created_at: i64,
+    pub delivered_at: Option<i64>,
 }
 
 /// What to write for a new event. Timers set `due_at`; everything else is
@@ -130,6 +132,8 @@ pub struct EngineWait {
     pub deadline: Option<i64>,
     pub parked: Option<String>,
     pub reason: String,
+    pub created_at: i64,
+    pub superseded_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -158,6 +162,9 @@ pub struct EngineEffect {
     /// Who the effect is to, as the input named them (normalized), so a
     /// run's sends to one person can be found whatever the wording.
     pub counterparty: Option<String>,
+    pub result: Option<String>,
+    pub created_at: i64,
+    pub completed_at: Option<i64>,
 }
 
 const RUN_COLUMNS: &str = "id, kind, state, session_key, agent_id, lane, parent_run_id, definition, inputs, external_ref, current_wait_id, attempts, resume_attempted, result, error, summary, created_at, started_at, ended_at";
@@ -186,7 +193,7 @@ fn row_to_run(r: &rusqlite::Row<'_>) -> rusqlite::Result<EngineRun> {
     })
 }
 
-const EVENT_COLUMNS: &str = "id, kind, target_type, target_id, payload, channel, ref, idem_key, provenance, handoff_depth, retention, due_at, schedule, attempts";
+const EVENT_COLUMNS: &str = "id, kind, target_type, target_id, payload, channel, ref, idem_key, provenance, handoff_depth, retention, due_at, schedule, attempts, created_at, delivered_at";
 
 fn row_to_event(r: &rusqlite::Row<'_>) -> rusqlite::Result<EngineEvent> {
     Ok(EngineEvent {
@@ -204,10 +211,32 @@ fn row_to_event(r: &rusqlite::Row<'_>) -> rusqlite::Result<EngineEvent> {
         due_at: r.get(11)?,
         schedule: r.get(12)?,
         attempts: r.get(13)?,
+        created_at: r.get(14)?,
+        delivered_at: r.get(15)?,
     })
 }
 
-const WAIT_COLUMNS: &str = "id, run_id, action, on_kind, key, deadline, parked, reason";
+const EFFECT_COLUMNS: &str = "id, run_id, class, idem_key, provider, provider_key, state, attempts, provider_ref, counterparty, result, created_at, completed_at";
+
+fn row_to_effect(r: &rusqlite::Row<'_>) -> rusqlite::Result<EngineEffect> {
+    Ok(EngineEffect {
+        id: r.get(0)?,
+        run_id: r.get(1)?,
+        class: r.get(2)?,
+        idem_key: r.get(3)?,
+        provider: r.get(4)?,
+        provider_key: r.get(5)?,
+        state: r.get(6)?,
+        attempts: r.get(7)?,
+        provider_ref: r.get(8)?,
+        counterparty: r.get(9)?,
+        result: r.get(10)?,
+        created_at: r.get(11)?,
+        completed_at: r.get(12)?,
+    })
+}
+
+const WAIT_COLUMNS: &str = "id, run_id, action, on_kind, key, deadline, parked, reason, created_at, superseded_at";
 
 fn row_to_wait(r: &rusqlite::Row<'_>) -> rusqlite::Result<EngineWait> {
     Ok(EngineWait {
@@ -219,6 +248,8 @@ fn row_to_wait(r: &rusqlite::Row<'_>) -> rusqlite::Result<EngineWait> {
         deadline: r.get(5)?,
         parked: r.get(6)?,
         reason: r.get(7)?,
+        created_at: r.get(8)?,
+        superseded_at: r.get(9)?,
     })
 }
 
@@ -931,6 +962,50 @@ impl Store {
         Ok(())
     }
 
+    /// The inspector's list: cases, newest first, for one employee or all.
+    pub fn engine_cases(&self, agent_id: Option<&str>, limit: i64) -> Result<Vec<EngineRun>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT {RUN_COLUMNS} FROM engine_runs WHERE kind = 'case' AND (?1 IS NULL OR agent_id = ?1) ORDER BY created_at DESC, id DESC LIMIT ?2"
+            ))
+            .db_err("engine_cases")?;
+        let rows = stmt
+            .query_map(params![agent_id, limit], row_to_run)
+            .db_err("engine_cases")?
+            .collect::<Result<Vec<_>, _>>()
+            .db_err("engine_cases")?;
+        Ok(rows)
+    }
+
+    /// Every child run of a parent (a case's turns), oldest first.
+    pub fn engine_children(&self, parent_id: &str) -> Result<Vec<EngineRun>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(&format!("SELECT {RUN_COLUMNS} FROM engine_runs WHERE parent_run_id = ?1 ORDER BY created_at, id"))
+            .db_err("engine_children")?;
+        let rows = stmt
+            .query_map(params![parent_id], row_to_run)
+            .db_err("engine_children")?
+            .collect::<Result<Vec<_>, _>>()
+            .db_err("engine_children")?;
+        Ok(rows)
+    }
+
+    /// Every wait a run has declared, oldest first, superseded ones included.
+    pub fn engine_waits_for_run(&self, run_id: &str) -> Result<Vec<EngineWait>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(&format!("SELECT {WAIT_COLUMNS} FROM engine_waits WHERE run_id = ?1 ORDER BY id"))
+            .db_err("engine_waits_for_run")?;
+        let rows = stmt
+            .query_map(params![run_id], row_to_wait)
+            .db_err("engine_waits_for_run")?
+            .collect::<Result<Vec<_>, _>>()
+            .db_err("engine_waits_for_run")?;
+        Ok(rows)
+    }
+
     pub fn engine_get_wait(&self, id: i64) -> Result<Option<EngineWait>, NeboError> {
         let conn = self.conn()?;
         conn.query_row(
@@ -1259,22 +1334,9 @@ impl Store {
     pub fn engine_get_effect(&self, id: i64) -> Result<Option<EngineEffect>, NeboError> {
         let conn = self.conn()?;
         conn.query_row(
-            "SELECT id, run_id, class, idem_key, provider, provider_key, state, attempts, provider_ref, counterparty FROM engine_effects WHERE id = ?1",
+            &format!("SELECT {EFFECT_COLUMNS} FROM engine_effects WHERE id = ?1"),
             params![id],
-            |r| {
-                Ok(EngineEffect {
-                    id: r.get(0)?,
-                    run_id: r.get(1)?,
-                    class: r.get(2)?,
-                    idem_key: r.get(3)?,
-                    provider: r.get(4)?,
-                    provider_key: r.get(5)?,
-                    state: r.get(6)?,
-                    attempts: r.get(7)?,
-                    provider_ref: r.get(8)?,
-                    counterparty: r.get(9)?,
-                })
-            },
+            row_to_effect,
         )
         .optional()
         .db_err("engine_get_effect")
@@ -1329,23 +1391,10 @@ impl Store {
     fn read_effects<P: rusqlite::Params>(&self, where_sql: &str, params: P) -> Result<Vec<EngineEffect>, NeboError> {
         let conn = self.conn()?;
         let mut stmt = conn
-            .prepare(&format!("SELECT id, run_id, class, idem_key, provider, provider_key, state, attempts, provider_ref, counterparty FROM engine_effects WHERE {where_sql} ORDER BY id"))
+            .prepare(&format!("SELECT {EFFECT_COLUMNS} FROM engine_effects WHERE {where_sql} ORDER BY id"))
             .db_err("engine_pending_effects")?;
         let rows = stmt
-            .query_map(params, |r| {
-                Ok(EngineEffect {
-                    id: r.get(0)?,
-                    run_id: r.get(1)?,
-                    class: r.get(2)?,
-                    idem_key: r.get(3)?,
-                    provider: r.get(4)?,
-                    provider_key: r.get(5)?,
-                    state: r.get(6)?,
-                    attempts: r.get(7)?,
-                    provider_ref: r.get(8)?,
-                    counterparty: r.get(9)?,
-                })
-            })
+            .query_map(params, row_to_effect)
             .db_err("engine_pending_effects")?
             .collect::<Result<Vec<_>, _>>()
             .db_err("engine_pending_effects")?;

@@ -307,6 +307,8 @@ mod tests {
             due_at: None,
             schedule: None,
             attempts: 1,
+            created_at: 0,
+            delivered_at: None,
         }
     }
 

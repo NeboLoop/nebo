@@ -273,6 +273,15 @@ impl Store {
         Ok(())
     }
 
+    /// The `provider/model` a run was routed to, once known.
+    pub fn workflow_run_model(&self, id: &str) -> Result<Option<String>, NeboError> {
+        let conn = self.conn()?;
+        conn.query_row("SELECT model FROM workflow_runs WHERE id = ?1", params![id], |r| r.get::<_, Option<String>>(0))
+            .optional()
+            .map(|m| m.flatten().filter(|s| !s.is_empty()))
+            .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
     /// The workflow half of a run whose engine row already exists (a case
     /// turn queued by the engine before the manager starts it).
     pub fn insert_workflow_run_detail(
