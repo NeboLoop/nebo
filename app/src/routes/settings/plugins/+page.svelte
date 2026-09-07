@@ -20,6 +20,8 @@
     authType: string;
     authEnvVars: string[];
     authKeysSet: boolean;
+    /// Accounts live per employee; no plugin-level keys.
+    multiAccount: boolean;
     hasEvents: boolean;
     eventCount: number;
     enabled: boolean;
@@ -85,6 +87,9 @@
           authType: String(p.authType ?? p.auth_type ?? ''),
           authEnvVars: Array.isArray(p.authEnvVars) ? p.authEnvVars.map(String) : [],
           authKeysSet: !!(p.authKeysSet ?? p.auth_keys_set ?? false),
+          // Accounts live per employee (Settings → Accounts on the employee);
+          // there are no plugin-level keys to set.
+          multiAccount: !!(p.multiAccount ?? false),
           hasEvents: !!(p.hasEvents ?? false),
           eventCount: Number(p.eventCount ?? 0),
           enabled: p.enabled !== false,
@@ -310,7 +315,7 @@
             </div>
           {/if}
           {#snippet actions()}
-            {#if plugin.hasAuth && plugin.authEnvVars.length > 0 && !plugin.authKeysSet}
+            {#if plugin.hasAuth && plugin.authEnvVars.length > 0 && !plugin.authKeysSet && !plugin.multiAccount}
               <button class="px-3 py-1 rounded-md border border-primary/30 text-xs text-primary font-medium cursor-pointer bg-transparent hover:bg-primary/5 transition-colors" onclick={() => openPluginDetail(plugin)}>{$t('settingsPlugins.setApiKeys')}</button>
             {:else if plugin.hasAuth && plugin.authType !== 'env'}
               {@const status = authStatuses[plugin.id] ?? 'disconnected'}
@@ -322,7 +327,7 @@
               {:else}
                 <button class="px-3 py-1 rounded-md border border-primary/30 text-xs text-primary font-medium cursor-pointer bg-transparent hover:bg-primary/5 transition-colors" onclick={() => connectPlugin(plugin.id)}>{$t('settingsPlugins.connect')}</button>
               {/if}
-            {:else if plugin.hasAuth && plugin.authType === 'env'}
+            {:else if plugin.hasAuth && plugin.authType === 'env' && !plugin.multiAccount}
               {#if plugin.authKeysSet}
                 <span class="px-2 py-0.5 rounded text-xs font-medium bg-success/10 text-success">{$t('settingsPlugins.keySet')}</span>
               {/if}
@@ -390,7 +395,7 @@
               {:else}
                 <span class="px-2 py-0.5 rounded text-xs font-medium bg-warning/10 text-warning">{$t('settingsProviders.notConnected')}</span>
               {/if}
-            {:else if selectedPlugin.hasAuth && selectedPlugin.authEnvVars.length > 0 && selectedPlugin.authType === 'env'}
+            {:else if selectedPlugin.hasAuth && selectedPlugin.authEnvVars.length > 0 && selectedPlugin.authType === 'env' && !selectedPlugin.multiAccount}
               {#if selectedPlugin.authKeysSet && authStatuses[selectedPlugin.id] === 'connected'}
                 <span class="px-2 py-0.5 rounded text-xs font-medium bg-success/10 text-success">{$t('settingsPlugins.connected')}</span>
               {:else if selectedPlugin.authKeysSet}
@@ -421,7 +426,7 @@
         {/if}
 
         <!-- API Keys / Credentials -->
-        {#if selectedPlugin.hasAuth && selectedPlugin.authEnvVars.length > 0}
+        {#if selectedPlugin.hasAuth && selectedPlugin.authEnvVars.length > 0 && !selectedPlugin.multiAccount}
           {@const hasInput = Object.values(apiKeyInputs).some(v => v.trim())}
           <div>
             <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-2">{$t('settingsProviders.apiKeys')}</div>

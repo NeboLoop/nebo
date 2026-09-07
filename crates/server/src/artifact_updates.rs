@@ -269,6 +269,11 @@ async fn check_plugin(
                     "remoteVersion": remote,
                 }));
             }
+            // Not newer: say so, or a remote version recorded before an
+            // install keeps offering an "update" backwards. Seen live: gmail
+            // 0.1.4 installed, the row still said remote 0.1.2 from August,
+            // and Settings offered "0.1.4 → 0.1.2".
+            let _ = state.store.set_artifact_remote_version(&plugin.slug, "plugin", remote, false, &plugin.name);
         }
         Err(e) => {
             debug!(plugin = %plugin.slug, error = %e, "plugin update check failed");
@@ -313,6 +318,8 @@ async fn check_by_artifact_id(
                     "remoteVersion": remote,
                 }));
             }
+            // Not newer: clear what an earlier check recorded (see check_plugin).
+            let _ = state.store.set_artifact_remote_version(artifact_id, artifact_type, remote, false, &detail.item.name);
         }
         Err(e) => {
             debug!(artifact = %artifact_id, artifact_type, error = %e, "update check failed");

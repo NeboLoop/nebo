@@ -525,7 +525,8 @@ pub fn start_child(store: &Store, parent: &EngineRun, event: &EngineEvent) -> Re
     let payload: serde_json::Value = serde_json::from_str(&event.payload).unwrap_or_else(|_| serde_json::json!(event.payload));
     crate::events::insert_event_envelope(&mut inputs, &format!("case.{}", event.kind), payload, "case");
     inputs["_case"]["event_id"] = serde_json::json!(event.id);
-    inputs["_case"]["history"] = serde_json::json!(history_lines(store, &parent.id));
+    let key = inputs["_case"]["key"].as_str().unwrap_or("").to_string();
+    inputs["_case"]["history"] = serde_json::json!(history_lines(store, &parent.id, &key));
     // What governs this turn, recorded with it: the playbook is read fresh
     // each turn on purpose, so the record says which one this turn ran
     // under and what the employee's policy was at the time.
@@ -577,13 +578,25 @@ fn fingerprint(s: &str) -> String {
     format!("{:016x}", h.finish())
 }
 
-/// The last durable events on a case, one line each, for the turn's prompt.
-fn history_lines(store: &Store, case_id: &str) -> Vec<String> {
-    store
-        .engine_events_for("run", case_id, 50)
-        .unwrap_or_default()
+/// The last durable events on a case, one line each, for the turn's prompt:
+/// what the case recorded (turn results, failures, attention) and what the
+/// person sent it (signals, which target the case's key). Seen live: a
+/// retry after a failed first turn was handed the failure line alone and
+/// answered "no lead data available to process" — the lead's own message
+/// had only ever been the first turn's event.
+fn history_lines(store: &Store, case_id: &str, key: &str) -> Vec<String> {
+    let mut events = store.engine_events_for("run", case_id, 50).unwrap_or_default();
+    if !key.is_empty() {
+        events.extend(store.engine_events_for("run", key, 50).unwrap_or_default().into_iter().filter(|e| e.kind == "signal"));
+    }
+    events.sort_by_key(|e| e.id);
+    events.dedup_by_key(|e| e.id);
+    events
         .into_iter()
-        .map(|e| format!("{} [{}] {}", e.id, e.kind, e.payload.chars().take(200).collect::<String>()))
+        .map(|e| {
+            let keep = if e.kind == "signal" { 600 } else { 200 };
+            format!("{} [{}] {}", e.id, e.kind, e.payload.chars().take(keep).collect::<String>())
+        })
         .collect()
 }
 

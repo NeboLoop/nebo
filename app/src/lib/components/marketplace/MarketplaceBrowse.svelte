@@ -34,8 +34,9 @@
 		price = 'all',
 		category = '',
 		publisher = '',
-		filter = ''
-	}: { kind?: string; price?: string; category?: string; publisher?: string; filter?: string } =
+		filter = '',
+		q = ''
+	}: { kind?: string; price?: string; category?: string; publisher?: string; filter?: string; q?: string } =
 		$props();
 	const kindType = $derived(KIND_TYPE[kind] ?? '');
 	const isFiltering = $derived(kind !== 'all' || price !== 'all' || category !== '' || publisher !== '');
@@ -57,18 +58,21 @@
 
 	const isBrowseView = $derived(kind === 'employees' || kind === 'tools');
 
-	// ── Search: server-side (q on /store/browse) for the browse views. A live
-	// query flips the view to a flat ranked result list — grouping by
-	// department is browsing, not finding.
-	let searchQ = $state('');
+	// ── Search: ONE box, owned by whoever hosts this view (the storefront
+	// modal, the /marketplace route), handed down as `q`. Employees and tools
+	// search on the server (q on /store/browse); collections over the catalog
+	// already loaded. A live query flips the view to a flat ranked result
+	// list — grouping by department is browsing, not finding.
+	const searchQ = $derived(q);
 	let searchItems: AppItem[] = $state([]);
 	let searching = $state(false);
 	let searchSeq = 0;
-	const searchActive = $derived(isBrowseView && searchQ.trim().length > 1);
+	const searchable = $derived(isBrowseView || kind === 'collections');
+	const searchActive = $derived(searchable && searchQ.trim().length > 1);
 
 	$effect(() => {
 		const q = searchQ.trim();
-		if (!searchActive) {
+		if (!searchActive || !isBrowseView) {
 			searchItems = [];
 			return;
 		}
@@ -152,6 +156,10 @@
 		if (kind === 'agents' && deptFilter) result = result.filter((it) => mapOf(it)?.dept === deptFilter);
 		else if (tcFilter && ['apps', 'skills', 'plugins', 'connectors', 'collections'].includes(kind))
 			result = result.filter((it) => mapOf(it)?.tc === tcFilter);
+		if (kind === 'collections' && searchActive) {
+			const q = searchQ.trim().toLowerCase();
+			result = result.filter((it) => `${it.name} ${it.description ?? ''} ${it.author ?? ''}`.toLowerCase().includes(q));
+		}
 		return result;
 	});
 
@@ -224,7 +232,6 @@
 	});
 </script>
 
-
 {#if loading}
 	<div class="flex justify-center py-16">
 		<span class="loading loading-spinner loading-md text-primary"></span>
@@ -261,15 +268,6 @@
 	<div class="max-w-6xl mx-auto px-6 py-8 pb-12">
 		<h1 class="font-display text-3xl font-bold tracking-tight">{$t('marketplace.employeesHeadline')}</h1>
 		<p class="text-base text-base-content/70 mt-2 max-w-3xl leading-relaxed">{$t('marketplace.employeesLede')}</p>
-		<label class="mt-5 max-w-md flex items-center gap-2 rounded-full border border-base-300 bg-base-100 px-4 py-2 focus-within:border-primary">
-			<Search class="w-4 h-4 text-base-content/50 shrink-0" />
-			<input
-				class="w-full bg-transparent outline-none text-sm"
-				type="search"
-				placeholder={$t('marketplace.searchPlaceholder')}
-				bind:value={searchQ}
-			/>
-		</label>
 		{#if searchActive}
 			{#if searching}
 				<div class="flex justify-center py-16"><span class="loading loading-spinner loading-md text-primary"></span></div>
@@ -321,7 +319,24 @@
 	<div class="max-w-6xl mx-auto px-6 py-8 pb-12">
 		<h1 class="font-display text-3xl font-bold tracking-tight">{$t('marketplace.toolsHeadline')}</h1>
 		<p class="text-base text-base-content/70 mt-2 max-w-3xl leading-relaxed">{$t('marketplace.toolsLede')}</p>
-		{#if !mktMap || toolItems.length === 0}
+		{#if searchActive}
+			{#if searching}
+				<div class="flex justify-center py-16"><span class="loading loading-spinner loading-md text-primary"></span></div>
+			{:else if searchItems.length === 0}
+				<div class="flex flex-col items-center justify-center py-16 text-center">
+					<Search class="w-10 h-10 text-base-content/40 mb-3" />
+					<p class="text-base font-medium">{$t('marketplace.nothingHereYet')}</p>
+				</div>
+			{:else}
+				<div class="mt-6">
+					<MarketplaceGrid>
+						{#each searchItems as item (item.id)}
+							<ListCard {item} />
+						{/each}
+					</MarketplaceGrid>
+				</div>
+			{/if}
+		{:else if !mktMap || toolItems.length === 0}
 			<div class="flex flex-col items-center justify-center py-16 text-center">
 				<Search class="w-10 h-10 text-base-content/40 mb-3" />
 				<p class="text-base font-medium">{$t('marketplace.nothingHereYet')}</p>

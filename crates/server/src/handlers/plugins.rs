@@ -124,6 +124,15 @@ pub async fn list_plugins(State(state): State<AppState>) -> HandlerResult<serde_
             .and_then(|m| m.setup.as_ref())
             .map(|s| serde_json::to_value(s).unwrap_or(serde_json::Value::Null));
 
+        // The credential fields in the order the manifest's configSchema
+        // lists them (the plugin's own sense of the form), then the rest by name.
+        let auth_fields: Vec<serde_json::Value> = {
+            let schema = manifest.as_ref().and_then(|m| m.capabilities.as_ref()).map(|c| c.config_schema.as_slice()).unwrap_or(&[]);
+            let mut keys: Vec<&String> = auth_env_vars.iter().collect();
+            keys.sort_by_key(|k| (schema.iter().position(|f| &f.key == *k).unwrap_or(usize::MAX), (*k).clone()));
+            keys.into_iter().map(|k| auth_field(slug, k, schema)).collect()
+        };
+
         plugins.push(serde_json::json!({
             "slug": slug,
             "version": version.to_string(),
@@ -133,6 +142,7 @@ pub async fn list_plugins(State(state): State<AppState>) -> HandlerResult<serde_
             "hasAuth": has_auth,
             "authLabel": auth_label,
             "authType": auth_type,
+            "authFields": auth_fields,
             "authEnvVars": auth_env_vars,
             "hasEvents": event_count > 0,
             "eventCount": event_count,
@@ -240,6 +250,8 @@ struct LoginProfile {
     /// The plugin's profile_dir_env name (e.g. GOOGLE_WORKSPACE_CLI_CONFIG_DIR).
     env_name: String,
     config_dir: String,
+    /// The account's own credentials (declared `auth.env` keys only).
+    credentials: HashMap<String, String>,
 }
 
 /// POST /plugins/{slug}/accounts/login
@@ -262,6 +274,13 @@ pub struct AccountLoginRequest {
     /// Optional resource selector (a phone line's E.164) — see LoginProfile.
     #[serde(default)]
     pub account_number: String,
+    /// This account's own credentials, keyed by the manifest's `auth.env`
+    /// names, for plugins whose accounts live per employee and sign in with
+    /// values rather than a browser. Handed to that account's login as its
+    /// environment; the plugin keeps them in its account directory. Never
+    /// stored by Nebo, never logged.
+    #[serde(default)]
+    pub credentials: HashMap<String, String>,
 }
 
 pub async fn auth_login_account(
@@ -274,6 +293,10 @@ pub async fn auth_login_account(
         .get_auth_info(&slug)
         .ok_or_else(|| to_error_response(NeboError::NotFound))?;
 
+    // Only the credential names the manifest declares reach the login's
+    // environment — nothing else typed into a request becomes a variable.
+    let mut req = req;
+    req.credentials.retain(|k, v| auth.env.contains_key(k) && !v.is_empty());
     let profile = login_profile(auth.profile_dir_env.clone(), &slug, req);
     if let Some(p) = &profile {
         // Allocate an isolated, sanitized config dir for this (agent, account).
@@ -309,7 +332,49 @@ fn login_profile(profile_dir_env: Option<String>, slug: &str, req: AccountLoginR
         account_number: req.account_number,
         env_name,
         config_dir: config_dir.to_string_lossy().into_owned(),
+        credentials: req.credentials,
     })
+}
+
+/// A credential field the owner fills in, as the plugin declares it: the
+/// key from `auth.env`, its label and type from a matching
+/// `capabilities.configSchema` entry when the manifest has one, otherwise
+/// the key read as words with the plugin's own prefix dropped
+/// (`EMAIL_IMAP_HOST` → "IMAP host") and the type by what the name says it
+/// holds (a password or secret is masked, a port is a number).
+fn auth_field(slug: &str, key: &str, schema: &[napp::plugin::PluginConfigField]) -> serde_json::Value {
+    if let Some(f) = schema.iter().find(|f| f.key == key) {
+        return serde_json::json!({ "key": key, "label": f.label, "type": f.field_type, "description": f.description, "required": f.required });
+    }
+    let prefix = format!("{}_", slug.replace('-', "_").to_ascii_uppercase());
+    let words: Vec<String> = key
+        .strip_prefix(&prefix)
+        .unwrap_or(key)
+        .split('_')
+        .filter(|w| !w.is_empty())
+        .map(|w| {
+            let w = w.to_ascii_lowercase();
+            // Protocol and format names stay as they are read.
+            if matches!(w.as_str(), "imap" | "smtp" | "api" | "url" | "id" | "oauth" | "pop3" | "ssl" | "tls") { w.to_ascii_uppercase() } else { w }
+        })
+        .collect();
+    let mut label = words.join(" ");
+    if let Some(first) = label.get(0..1) {
+        if first.chars().all(|c| c.is_ascii_lowercase()) {
+            label = first.to_ascii_uppercase() + &label[1..];
+        }
+    }
+    let upper = key.to_ascii_uppercase();
+    let field_type = if ["PASSWORD", "SECRET", "TOKEN", "PASSPHRASE"].iter().any(|s| upper.contains(s)) {
+        "password"
+    } else if upper.ends_with("_PORT") || upper == "PORT" {
+        "number"
+    } else {
+        "text"
+    };
+    // A key the manifest does not describe is required: the plugin asked for
+    // it and said nothing about doing without it.
+    serde_json::json!({ "key": key, "label": label, "type": field_type, "description": "", "required": true })
 }
 
 /// Per-(agent, plugin, account) credential directory. Lives under the Nebo
@@ -382,6 +447,12 @@ fn spawn_plugin_login(
             // pass it upstream so the same name identifies the account
             // everywhere (e.g. a phone line's label on neboai.com).
             cmd.env("NEBO_ACCOUNT_LABEL", &p.account_label);
+            // The account's own credentials, for plugins that sign in with
+            // values: the plugin validates and keeps them in its account
+            // directory; Nebo holds them only for the length of this login.
+            for (key, value) in &p.credentials {
+                cmd.env(key, value);
+            }
             if !p.account_number.is_empty() {
                 cmd.env("NEBO_ACCOUNT_NUMBER", &p.account_number);
             }
@@ -673,11 +744,7 @@ fn spawn_plugin_login(
                 });
             }
             Ok(_status) => {
-                let error = if all_stderr.trim().is_empty() {
-                    all_stdout.trim().to_string()
-                } else {
-                    all_stderr.trim().to_string()
-                };
+                let error = plain_login_error(&all_stderr, &all_stdout);
                 warn!(plugin = %slug_owned, error = %error, "plugin auth login failed");
                 hub.broadcast(
                     "plugin_auth_error",
@@ -699,6 +766,28 @@ fn spawn_plugin_login(
             }
         }
     });
+}
+
+/// What a failed sign-in says to the owner: the plugin's own message, as a
+/// sentence. Plugins report errors as a JSON object on their last line
+/// (`{"error": {"message": …}}` or `{"message": …}`); the owner sees that
+/// message, never the object. Seen live: a raw `{ "error": { "code": 400,
+/// "message": "EMAIL_IMAP_PORT must be a number", … } }` in the dialog.
+fn plain_login_error(stderr: &str, stdout: &str) -> String {
+    let text = if stderr.trim().is_empty() { stdout.trim() } else { stderr.trim() };
+    let last = text.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("").trim();
+    // The object may span lines: take from the first `{` on the last-object
+    // boundary. Try the last line first, then the whole tail.
+    for candidate in [last.to_string(), text.rsplit_once("\n{").map(|(_, tail)| format!("{{{tail}")).unwrap_or_default(), text.to_string()] {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&candidate) {
+            if let Some(m) = v["error"]["message"].as_str().or_else(|| v["message"].as_str()).or_else(|| v["error"].as_str()) {
+                if !m.trim().is_empty() {
+                    return m.trim().to_string();
+                }
+            }
+        }
+    }
+    if text.is_empty() { "The sign-in did not complete.".to_string() } else { text.to_string() }
 }
 
 /// GET /plugins/oauth/relay?code=...&state=...
@@ -1877,6 +1966,7 @@ mod tests {
             agent_id: "agent-1".into(),
             account_label: "work@example.com".into(),
             account_number: String::new(),
+            credentials: HashMap::new(),
         }
     }
 
@@ -1956,5 +2046,41 @@ mod tests {
         assert_eq!(p.env_name, "GWS_CONFIG_DIR");
         assert!(p.config_dir.contains("gws"), "{}", p.config_dir);
         assert_eq!(p.agent_id, "agent-1");
+    }
+
+    /// A credential field reads as words, with the plugin's own prefix gone
+    /// and secrets masked — unless the manifest labels it itself.
+    #[test]
+    fn credential_fields_read_as_words_or_as_the_manifest_labels_them() {
+        let f = auth_field("email", "EMAIL_IMAP_HOST", &[]);
+        assert_eq!(f["label"], "IMAP host");
+        assert_eq!(f["type"], "text");
+        let f = auth_field("email", "EMAIL_PASSWORD", &[]);
+        assert_eq!(f["label"], "Password");
+        assert_eq!(f["type"], "password");
+        let f = auth_field("email", "EMAIL_SMTP_PORT", &[]);
+        assert_eq!(f["label"], "SMTP port");
+        assert_eq!(f["type"], "number");
+        let f = auth_field("my-crm", "MY_CRM_API_TOKEN", &[]);
+        assert_eq!(f["label"], "API token");
+        assert_eq!(f["type"], "password");
+
+        let schema: Vec<napp::plugin::PluginConfigField> = serde_json::from_value(serde_json::json!([
+            {"key": "EMAIL_USER", "label": "Email address", "fieldType": "string", "description": "The mailbox this employee sends from."}
+        ]))
+        .unwrap();
+        let f = auth_field("email", "EMAIL_USER", &schema);
+        assert_eq!(f["label"], "Email address");
+        assert_eq!(f["description"], "The mailbox this employee sends from.");
+    }
+
+    /// The owner reads the plugin's message, never its JSON.
+    #[test]
+    fn a_failed_sign_in_speaks_in_sentences() {
+        let stderr = "{\n  \"error\": {\n    \"code\": 400,\n    \"message\": \"EMAIL_IMAP_PORT must be a number\",\n    \"reason\": \"validationError\"\n  }\n}\n";
+        assert_eq!(plain_login_error(stderr, ""), "EMAIL_IMAP_PORT must be a number");
+        assert_eq!(plain_login_error("", "{\"message\":\"IMAP login failed: AUTHENTICATIONFAILED\"}"), "IMAP login failed: AUTHENTICATIONFAILED");
+        assert_eq!(plain_login_error("plain text failure\n", ""), "plain text failure");
+        assert_eq!(plain_login_error("", ""), "The sign-in did not complete.");
     }
 }
