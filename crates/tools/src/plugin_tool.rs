@@ -228,6 +228,42 @@ fn port_capability(operation: &str) -> String {
         .to_string()
 }
 
+/// The plugins that count: installed, not disabled, and ready. ONE answer,
+/// shared by the plugin tool and by every tool that must know whether a
+/// typed port has a provider.
+pub fn active_plugin_slugs(plugin_store: &napp::plugin::PluginStore, db_store: &db::Store) -> Vec<String> {
+    let installed = plugin_store.list_installed();
+    let mut seen = std::collections::HashSet::new();
+    let mut slugs = Vec::new();
+    for (slug, _, _, _) in &installed {
+        if !seen.insert(slug.clone()) {
+            continue;
+        }
+        if let Ok(Some(row)) = db_store.get_plugin_by_slug(slug) {
+            if row.is_enabled == 0 {
+                continue;
+            }
+        }
+        if !plugin_store.is_ready(slug) {
+            continue;
+        }
+        slugs.push(slug.clone());
+    }
+    slugs
+}
+
+/// The active plugins that bind a typed operation (`mail.message.send`),
+/// by its `capability.resource.action` suffix. Empty: the port has no
+/// provider, and a local fallback (the desktop mail app) is the way to
+/// send. Non-empty: the port is the way, and the fallback steps aside.
+pub fn bound_providers(plugin_store: &napp::plugin::PluginStore, db_store: &db::Store, operation: &str) -> Vec<String> {
+    let suffix = port_suffix(operation);
+    active_plugin_slugs(plugin_store, db_store)
+        .into_iter()
+        .filter(|slug| plugin_store.get_manifest(slug).is_some_and(|m| m.interface_bindings.contains_key(&suffix)))
+        .collect()
+}
+
 impl PluginTool {
     pub fn new(
         plugin_store: Arc<napp::plugin::PluginStore>,
@@ -247,24 +283,7 @@ impl PluginTool {
 
     /// Build a deduplicated list of active plugin slugs (installed + not disabled + ready).
     fn active_slugs(&self) -> Vec<String> {
-        let installed = self.plugin_store.list_installed();
-        let mut seen = std::collections::HashSet::new();
-        let mut slugs = Vec::new();
-        for (slug, _, _, _) in &installed {
-            if !seen.insert(slug.clone()) {
-                continue;
-            }
-            if let Ok(Some(row)) = self.db_store.get_plugin_by_slug(&slug) {
-                if row.is_enabled == 0 {
-                    continue;
-                }
-            }
-            if !self.plugin_store.is_ready(&slug) {
-                continue;
-            }
-            slugs.push(slug.clone());
-        }
-        slugs
+        active_plugin_slugs(&self.plugin_store, &self.db_store)
     }
 
     /// Resolve a typed capability operation to (plugin slug, command) by scanning

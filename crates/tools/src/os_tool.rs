@@ -30,6 +30,9 @@ pub struct OsTool {
     keychain_tool: KeychainTool,
     spotlight_tool: SpotlightTool,
     store: Option<Arc<db::Store>>,
+    /// To know whether a typed port (`mail.message.send`) has a provider:
+    /// when it does, the local mail app steps aside.
+    plugin_store: Option<Arc<napp::plugin::PluginStore>>,
 }
 
 /// Organizer actions that modify data and require user approval.
@@ -60,10 +63,12 @@ impl OsTool {
             keychain_tool: KeychainTool::new(),
             spotlight_tool: SpotlightTool::new(),
             store: None,
+            plugin_store: None,
         }
     }
 
     pub fn with_plugin_store(mut self, ps: Arc<napp::plugin::PluginStore>) -> Self {
+        self.plugin_store = Some(ps.clone());
         self.shell_tool = self.shell_tool.with_plugin_store(ps);
         self
     }
@@ -650,7 +655,7 @@ impl DynTool for OsTool {
          - music: play, pause, next, previous, status, search, volume, playlists, shuffle\n\
          - keychain: get, find, add (alias: store), delete (account optional — narrows the match)\n\
          - search: search (file search via OS index)\n\
-         - mail: accounts, unread, read, send, search — LOCAL Apple Mail. send takes to, subject, text (the message, plain) and optional html where the provider can send it. read/search take optional account (name or address, e.g. \"you@example.com\") + mailbox; search is a SUBSTRING match on subject/sender (no Gmail operators like from:)\n\
+         - mail: accounts, unread, read, send, search — LOCAL Apple Mail. send takes to, subject, text (the message, plain) and optional html; it is the way to send only when no mail plugin is connected — a connected one is the business's mail and this send refuses and points to plugin(operation: \"mail.message.send\"). read/search take optional account (name or address, e.g. \"you@example.com\") + mailbox; search is a SUBSTRING match on subject/sender (no Gmail operators like from:)\n\
          - contacts: search, get, create, groups\n\
          - calendar: calendars, today, upcoming, create, delete, pending, accept, decline, auto_accept, list, configure — the LOCAL Apple/Mac calendar (for Google Calendar use plugin(resource: \"gws\", ...))\n\
          - reminders: lists, list, create, complete, delete\n\n\
@@ -1239,6 +1244,19 @@ impl DynTool for OsTool {
                             let Some(store) = self.store.as_deref() else {
                                 return ToolResult::error("This install has no send ledger; not sent.");
                             };
+                            // A connected mail plugin is the business's mail; the
+                            // desktop app is the way only when there is none. Which
+                            // one is decided here, by what is connected — never by
+                            // the model.
+                            if let Some(ps) = self.plugin_store.as_deref() {
+                                let bound = crate::plugin_tool::bound_providers(ps, store, "mail.message.send");
+                                if !bound.is_empty() {
+                                    return ToolResult::error(format!(
+                                        "Not sent through Apple Mail: this business sends mail through {}. Call plugin(operation: \"mail.message.send\", input: {{to, subject, text, html}}) — same message, the connected account.",
+                                        bound.join(", ")
+                                    ));
+                                }
+                            }
                             let exact = serde_json::json!({
                                 "to": &parsed.to, "cc": &parsed.cc, "subject": &parsed.subject,
                                 "text": &parsed.text, "html": &parsed.html, "account": &parsed.account,
