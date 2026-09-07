@@ -831,6 +831,18 @@ impl Store {
     }
 
 
+    /// The signals parked on a run have been carried into a turn: clear
+    /// them so no later turn carries them again.
+    pub fn engine_clear_pending_signals(&self, id: &str) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE engine_runs SET inputs = json_remove(inputs, '$._case.pending_signals') WHERE id = ?1 AND inputs IS NOT NULL",
+            params![id],
+        )
+        .db_err("engine_clear_pending_signals")?;
+        Ok(())
+    }
+
     /// Boot sweep, half one: every run the dead process left `running` is
     /// stamped `interrupted` and returned for triage. Never a phantom
     /// `running` after a restart.

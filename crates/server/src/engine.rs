@@ -66,6 +66,8 @@ pub struct TickReport {
     pub unrouted: usize,
     /// Signals that outlived their case and were routed by the reopen rules.
     pub rerouted: usize,
+    /// Signals parked on a case that waits on something else (the owner).
+    pub parked: usize,
     pub pending_effects: usize,
     pub expired: usize,
     pub armed: usize,
@@ -213,7 +215,21 @@ fn deliver(
                             return;
                         }
                         LiveTurn::Deferred => return,
-                        LiveTurn::None => {}
+                        // An open case with no turn and no wait this event
+                        // can wake: it waits on something else (the owner's
+                        // release). The message is parked on the case and
+                        // rides the next turn, whoever starts it.
+                        LiveTurn::None => match store.engine_append_pending_signal(&case.id, &event.payload).and_then(|_| store.engine_complete_event(event.id, t)) {
+                            Ok(()) => {
+                                report.parked += 1;
+                                info!(event = event.id, case = %case.id, "engine: signal parked on a case waiting on something else");
+                                return;
+                            }
+                            Err(e) => {
+                                warn!(event = event.id, error = %e, "engine: could not park the signal; lease will expire and retry");
+                                return;
+                            }
+                        },
                     },
                     // The case closed while this signal waited its turn. The
                     // person wrote to a closed case: the reopen rules decide.
@@ -1164,6 +1180,9 @@ pub fn spawn(state: AppState) {
         }
     });
 }
+
+#[cfg(test)]
+mod proof;
 
 #[cfg(test)]
 mod tests {

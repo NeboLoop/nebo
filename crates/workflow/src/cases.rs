@@ -482,6 +482,9 @@ pub fn start_child(store: &Store, parent: &EngineRun, event: &EngineEvent) -> Re
         "queued_at": chrono::Utc::now().timestamp(),
     });
     let binding = inputs["_case"]["binding"].as_str().unwrap_or("").to_string();
+    // Signals parked on the case while it waited on something else ride
+    // this turn (they are in the copied inputs), and only this turn.
+    let carried_parked = inputs["_case"]["pending_signals"].as_array().is_some_and(|a| !a.is_empty());
     let child_id = uuid::Uuid::new_v4().to_string();
     store.engine_create_run(&NewRun {
         id: &child_id,
@@ -499,7 +502,11 @@ pub fn start_child(store: &Store, parent: &EngineRun, event: &EngineEvent) -> Re
         &types::keyparser::agent_workflow_id(&parent.agent_id),
         "case",
         Some(&binding),
-    )
+    )?;
+    if carried_parked {
+        store.engine_clear_pending_signals(&parent.id)?;
+    }
+    Ok(())
 }
 
 /// A short stable fingerprint of a definition, for the governance record.
