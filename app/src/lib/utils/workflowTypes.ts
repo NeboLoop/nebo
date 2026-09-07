@@ -294,7 +294,7 @@ export const ACTIVITY_TYPES: Record<ActivityType, ActivityTypeDefinition> = {
 				key: 'target',
 				label: 'Target',
 				type: 'text',
-				placeholder: '#general or user@email.com',
+				placeholder: '#general or user@example.com',
 				description: 'Channel name, email, or webhook URL',
 			},
 		],

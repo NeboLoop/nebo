@@ -3385,8 +3385,8 @@ mod watch_payload_tests {
             "event": "email.new",
             "id": "1a033574ee0ae0e2",
             "payload": {"headers": [
-                {"name": "Delivered-To", "value": "orders@vividwindows.com"},
-                {"name": "From", "value": "<WindowConfirmation@alside.com>"},
+                {"name": "Delivered-To", "value": "orders@example.com"},
+                {"name": "From", "value": "<WindowConfirmation@example.com>"},
                 {"name": "Subject", "value": "Open Order Report: 87495 VIVID WINDOWS"}
             ]}
         });
@@ -3402,11 +3402,11 @@ mod watch_payload_tests {
     #[test]
     fn existing_fields_win_and_non_email_untouched() {
         let mut p = serde_json::json!({
-            "from": "reports@alside.com",
-            "payload": {"headers": [{"name": "From", "value": "someone@else.com"}]}
+            "from": "reports@example.com",
+            "payload": {"headers": [{"name": "From", "value": "someone@example.com"}]}
         });
         normalize_watch_payload(&mut p);
-        assert_eq!(p["from"], "reports@alside.com");
+        assert_eq!(p["from"], "reports@example.com");
 
         let mut folder = serde_json::json!({"path": "/tmp/x", "kind": "created"});
         let before = folder.clone();

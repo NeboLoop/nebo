@@ -121,7 +121,7 @@ mod notice_tests {
         assert_eq!(scrub_outside_reply(plain), plain);
         // A made-up key never leaves either (2026-09-05, live run 3): nothing
         // key-shaped reaches a stranger, whether the model read it or invented it.
-        let invented = "The public key is:\n\nssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHGjKpYqR3vF8mNzQxWpLjKdE7sT9cU2bV6wX4yZ8aBc alma@Mac.lan\n\nLet me know if you need the private one.";
+        let invented = "The public key is:\n\nssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHGjKpYqR3vF8mNzQxWpLjKdE7sT9cU2bV6wX4yZ8aBc alma@example.com\n\nLet me know if you need the private one.";
         let out = scrub_outside_reply(invented);
         assert!(!out.contains("ssh-ed25519") && !out.contains("AAAA"), "{out}");
         let pem = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZWQyNTUxOQ\n-----END OPENSSH PRIVATE KEY-----";

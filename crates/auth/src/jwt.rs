@@ -142,7 +142,7 @@ mod tests {
         let now = chrono::Utc::now().timestamp();
         let mut claims = Claims::new();
         claims.insert("userId".into(), serde_json::json!("user-123"));
-        claims.insert("email".into(), serde_json::json!("test@test.com"));
+        claims.insert("email".into(), serde_json::json!("test@example.com"));
         claims.insert("exp".into(), serde_json::json!(now + 3600));
         claims.insert("iat".into(), serde_json::json!(now));
 
@@ -155,6 +155,6 @@ mod tests {
 
         let parsed = validate_jwt_claims(&token, secret).unwrap();
         assert_eq!(parsed.sub, "user-123");
-        assert_eq!(parsed.email, "test@test.com");
+        assert_eq!(parsed.email, "test@example.com");
     }
 }

@@ -393,7 +393,7 @@ mod tests {
 
     #[test]
     fn test_summarize_small_payload() {
-        let small = serde_json::json!({"from": "alice@test.com", "subject": "Hello"});
+        let small = serde_json::json!({"from": "alice@example.com", "subject": "Hello"});
         let result = summarize_event_payload(&small);
         assert_eq!(result, small); // unchanged — under 8KB
     }
@@ -408,7 +408,7 @@ mod tests {
             "snippet": "invoice attached",
             "payload": {
                 "mimeType": "multipart/mixed",
-                "headers": [{"name": "From", "value": "vendor@test.com"}],
+                "headers": [{"name": "From", "value": "vendor@example.com"}],
                 "parts": [
                     {"filename": "", "mimeType": "multipart/alternative", "parts": [
                         {"filename": "", "mimeType": "text/plain", "body": {"data": "x".repeat(9000)}}
@@ -424,7 +424,7 @@ mod tests {
         assert_eq!(atts[0]["filename"], "invoice.pdf");
         assert_eq!(atts[0]["attachmentId"], "ATT123");
         assert_eq!(atts[0]["size"], 52133);
-        assert_eq!(result["from"], "vendor@test.com");
+        assert_eq!(result["from"], "vendor@example.com");
     }
 
     #[test]
@@ -434,9 +434,9 @@ mod tests {
         for _ in 0..50 {
             headers.push(serde_json::json!({"name": "Received", "value": "x".repeat(200)}));
         }
-        headers.push(serde_json::json!({"name": "From", "value": "alice@test.com"}));
+        headers.push(serde_json::json!({"name": "From", "value": "alice@example.com"}));
         headers.push(serde_json::json!({"name": "Subject", "value": "Meeting tomorrow"}));
-        headers.push(serde_json::json!({"name": "To", "value": "bob@test.com"}));
+        headers.push(serde_json::json!({"name": "To", "value": "bob@example.com"}));
 
         let payload = serde_json::json!({
             "id": "msg123",
@@ -460,9 +460,9 @@ mod tests {
         assert_eq!(map["threadId"], "thread456");
 
         // Headers promoted
-        assert_eq!(map["from"], "alice@test.com");
+        assert_eq!(map["from"], "alice@example.com");
         assert_eq!(map["subject"], "Meeting tomorrow");
-        assert_eq!(map["to"], "bob@test.com");
+        assert_eq!(map["to"], "bob@example.com");
 
         // Labels kept (small array)
         assert!(map.contains_key("labelIds"));
@@ -496,12 +496,12 @@ mod tests {
             timestamp: ts,
         };
         for ts in [1_000u64, 2_000, 3_000, 4_000] {
-            assert!(route_case(&store, &sub, &route, &def, &ev(ts, "Alma@AboundingGoods.com")), "routed, not run");
+            assert!(route_case(&store, &sub, &route, &def, &ev(ts, "Alma@example.com")), "routed, not run");
         }
         // A re-emit of the same moment (same payload, same second) is a duplicate.
-        assert!(route_case(&store, &sub, &route, &def, &ev(4_000, "Alma@AboundingGoods.com")));
+        assert!(route_case(&store, &sub, &route, &def, &ev(4_000, "Alma@example.com")));
 
-        let case = crate::cases::open_case_for(&store, "lead", "email", "Alma@AboundingGoods.com").expect("one open case");
+        let case = crate::cases::open_case_for(&store, "lead", "email", "Alma@example.com").expect("one open case");
         assert_eq!(case.state, "waiting");
         let turns = store.engine_queued_runs_of_kind("workflow", 10).unwrap();
         assert_eq!(turns.len(), 1, "one first turn");

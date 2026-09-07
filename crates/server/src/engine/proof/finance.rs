@@ -37,7 +37,7 @@ fn local(y: i32, mo: u32, d: u32, h: u32, mi: u32, s: u32) -> i64 {
 fn uc19_dunning_on_a_schedule_stops_on_payment() {
     let mut w = World::new();
     let b = invoices();
-    let (case, _) = w.open(&b, "ap@customer.com", "invoice 1042 issued, net 7", "inv-1042");
+    let (case, _) = w.open(&b, "ap@example.com", "invoice 1042 issued, net 7", "inv-1042");
     w.turn(&case, &waits("open", "sent invoice 1042", "signal", "7d", "payment or day 7"));
     assert_eq!(w.advance(7 * DAY).children_started, 1);
     assert!(w.queued_turn(&case).unwrap().inputs.as_deref().unwrap().contains("case.timer"), "dunning 1 is the clock's");
@@ -45,7 +45,7 @@ fn uc19_dunning_on_a_schedule_stops_on_payment() {
     let dunning2 = w.wait(&case).unwrap().deadline.unwrap();
 
     w.t += 3 * DAY;
-    assert!(matches!(w.arrive(&b, "email", "ap@customer.com", msg("ap@customer.com", "paid 1042 today"), "pay-1042"), Routed::Signaled { .. }));
+    assert!(matches!(w.arrive(&b, "email", "ap@example.com", msg("ap@example.com", "paid 1042 today"), "pay-1042"), Routed::Signaled { .. }));
     assert_eq!(w.tick().children_started, 1, "the payment starts the closing turn now");
     w.turn(&case, &closes("paid", "payment received; case closed"));
     assert_eq!(w.run(&case).state, "done");
@@ -67,18 +67,18 @@ fn uc19_dunning_on_a_schedule_stops_on_payment() {
 fn uc20_a_charge_is_recorded_under_the_providers_key_before_the_attempt() {
     let w = World::new();
     run(&w, "wf-charge", "ar");
-    let id = w.s.engine_effect_pending("wf-charge", "financial", "charge:inv-1042", "stripe", "pi_idem_1042", "ap@customer.com").unwrap();
+    let id = w.s.engine_effect_pending("wf-charge", "financial", "charge:inv-1042", "stripe", "pi_idem_1042", "ap@example.com").unwrap();
     let row = w.s.engine_get_effect(id).unwrap().unwrap();
     assert_eq!((row.state.as_str(), row.attempts, row.provider_key.as_str()), ("pending", 0, "pi_idem_1042"), "on the books before the attempt");
-    assert_eq!(row.counterparty.as_deref(), Some("ap@customer.com"));
+    assert_eq!(row.counterparty.as_deref(), Some("ap@example.com"));
     assert!(row.completed_at.is_none());
 
-    assert_eq!(w.s.engine_effect_pending("wf-charge", "financial", "charge:inv-1042", "stripe", "pi_idem_1042", "ap@customer.com").unwrap(), id, "the same key is the same row");
+    assert_eq!(w.s.engine_effect_pending("wf-charge", "financial", "charge:inv-1042", "stripe", "pi_idem_1042", "ap@example.com").unwrap(), id, "the same key is the same row");
     w.s.engine_effect_attempted(id).unwrap();
     w.s.engine_effect_completed(id, Some("ch_9f"), Some("charged $120.00"), w.t).unwrap();
 
     // A relaunched turn asks again: same row, already completed, no attempt.
-    assert_eq!(w.s.engine_effect_pending("wf-charge", "financial", "charge:inv-1042", "stripe", "pi_idem_1042", "ap@customer.com").unwrap(), id);
+    assert_eq!(w.s.engine_effect_pending("wf-charge", "financial", "charge:inv-1042", "stripe", "pi_idem_1042", "ap@example.com").unwrap(), id);
     let row = w.s.engine_get_effect(id).unwrap().unwrap();
     assert_eq!((row.state.as_str(), row.attempts, row.provider_ref.as_deref()), ("completed", 1, Some("ch_9f")));
     assert_eq!(w.receipts("wf-charge").len(), 1, "one charge on the ledger");
@@ -222,17 +222,17 @@ fn uc24_a_silent_provider_is_reconciled_not_retried() {
 fn uc25_a_reimbursement_waits_for_the_receipt() {
     let mut w = World::new();
     let b = World::binding("ap", "expenses", "expense", 14 * DAY);
-    let (case, _) = w.open(&b, "jo@team.com", "expense claim $62 client lunch", "e1");
+    let (case, _) = w.open(&b, "jo@example.com", "expense claim $62 client lunch", "e1");
     w.turn(&case, &waits("awaiting_receipt", "asked Jo for the receipt", "signal", "14d", "the receipt"));
     let nudge = w.wait(&case).unwrap().deadline.unwrap();
     assert!(w.s.engine_children(&case).unwrap().iter().all(|t| w.receipts(&t.id).is_empty()), "nothing paid without a receipt");
 
     w.t += 2 * DAY;
-    w.arrive(&b, "email", "jo@team.com", msg("jo@team.com", "receipt attached: lunch-0904.pdf"), "e2");
+    w.arrive(&b, "email", "jo@example.com", msg("jo@example.com", "receipt attached: lunch-0904.pdf"), "e2");
     assert_eq!(w.tick().children_started, 1);
     let paying = w.start(&w.queued_turn(&case).unwrap().id);
     assert!(paying.inputs.as_deref().unwrap().contains("lunch-0904.pdf"));
-    let pay = w.s.engine_effect_pending(&paying.id, "financial", "reimburse:jo:lunch-0904", "payroll", "rb_idem_0904", "jo@team.com").unwrap();
+    let pay = w.s.engine_effect_pending(&paying.id, "financial", "reimburse:jo:lunch-0904", "payroll", "rb_idem_0904", "jo@example.com").unwrap();
     w.s.engine_effect_attempted(pay).unwrap();
     w.s.engine_effect_completed(pay, Some("rb_1"), Some("reimbursed $62.00"), w.t).unwrap();
     w.finish(&w.run(&paying.id), &closes("reimbursed", "receipt received; $62 reimbursed"));

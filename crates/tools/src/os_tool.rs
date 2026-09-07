@@ -650,7 +650,7 @@ impl DynTool for OsTool {
          - music: play, pause, next, previous, status, search, volume, playlists, shuffle\n\
          - keychain: get, find, add (alias: store), delete (account optional — narrows the match)\n\
          - search: search (file search via OS index)\n\
-         - mail: accounts, unread, read, send, search — LOCAL Apple Mail. send takes to, subject, body (the message goes in body — there is no text/html field). read/search take optional account (name or address, e.g. \"sites@stadium.partners\") + mailbox; search is a SUBSTRING match on subject/sender (no Gmail operators like from:)\n\
+         - mail: accounts, unread, read, send, search — LOCAL Apple Mail. send takes to, subject, body (the message goes in body — there is no text/html field). read/search take optional account (name or address, e.g. \"you@example.com\") + mailbox; search is a SUBSTRING match on subject/sender (no Gmail operators like from:)\n\
          - contacts: search, get, create, groups\n\
          - calendar: calendars, today, upcoming, create, delete, pending, accept, decline, auto_accept, list, configure — the LOCAL Apple/Mac calendar (for Google Calendar use plugin(resource: \"gws\", ...))\n\
          - reminders: lists, list, create, complete, delete\n\n\
@@ -1826,7 +1826,7 @@ mod tests {
         // "read" with mail params and no path routes to mail, not file
         let input = serde_json::json!({"action": "read", "mailbox": "INBOX", "limit": 5});
         assert_eq!(OsTool::resolved_resource(&input), "mail");
-        let input = serde_json::json!({"action": "read", "account": "sites@stadium.partners"});
+        let input = serde_json::json!({"action": "read", "account": "you@example.com"});
         assert_eq!(OsTool::resolved_resource(&input), "mail");
         // "read" with a path is still a file read
         let input = serde_json::json!({"action": "read", "path": "/tmp/x"});

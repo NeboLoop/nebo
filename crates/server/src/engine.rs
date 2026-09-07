@@ -1539,28 +1539,28 @@ mod tests {
     fn the_assessment_thread_four_submissions_one_case_one_first_turn() {
         let s = store();
         let b = binding();
-        let payload = serde_json::json!({"email": "alma@aboundinggoods.com", "hours": "27-56"});
-        let first = signal_or_open(&s, &b, "email", "alma@aboundinggoods.com", &payload, "webhook", "sub-aug18", 1_000).unwrap();
+        let payload = serde_json::json!({"email": "alma@example.com", "hours": "27-56"});
+        let first = signal_or_open(&s, &b, "email", "alma@example.com", &payload, "webhook", "sub-aug18", 1_000).unwrap();
         let Routed::Opened { case_id } = first else { panic!("first submission opens a case") };
         let turns = s.engine_queued_runs_of_kind("workflow", 10).unwrap();
         assert_eq!(turns.len(), 1);
         let inputs = turns[0].inputs.as_deref().unwrap();
-        assert!(inputs.contains("aboundinggoods"));
+        assert!(inputs.contains("alma@example"));
         assert!(inputs.contains("\"binding\":\"work-lead\""));
 
         for (i, idem) in ["sub-aug19", "sub-sep4", "sub-sep6"].iter().enumerate() {
-            let r = signal_or_open(&s, &b, "email", "alma@aboundinggoods.com", &payload, "webhook", idem, 2_000 + i as i64).unwrap();
+            let r = signal_or_open(&s, &b, "email", "alma@example.com", &payload, "webhook", idem, 2_000 + i as i64).unwrap();
             assert_eq!(r, Routed::Signaled { case_id: case_id.clone() }, "{idem} reaches the same case");
         }
-        assert_eq!(signal_or_open(&s, &b, "email", "alma@aboundinggoods.com", &payload, "webhook", "sub-sep6", 3_000).unwrap(), Routed::Duplicate);
+        assert_eq!(signal_or_open(&s, &b, "email", "alma@example.com", &payload, "webhook", "sub-sep6", 3_000).unwrap(), Routed::Duplicate);
 
         let r = tick(&s, 4_000, &idle, &no_steer);
         assert_eq!(r.steered, 3);
         assert_eq!(r.children_started, 0);
         assert_eq!(s.engine_queued_runs_of_kind("workflow", 10).unwrap().len(), 1, "still exactly one turn");
         let refreshed = s.engine_get_run(&turns[0].id).unwrap().unwrap();
-        assert!(refreshed.inputs.as_deref().unwrap().matches("aboundinggoods").count() >= 4, "the later submissions rode along");
-        assert_eq!(open_case_for(&s, "lead", "email", "alma@aboundinggoods.com").unwrap().id, case_id);
+        assert!(refreshed.inputs.as_deref().unwrap().matches("alma@example").count() >= 4, "the later submissions rode along");
+        assert_eq!(open_case_for(&s, "lead", "email", "alma@example.com").unwrap().id, case_id);
         assert_eq!(s.engine_get_run(&case_id).unwrap().unwrap().state, "waiting");
     }
 
@@ -2038,7 +2038,7 @@ mod tests {
         assert!(matches!(sig(&s, vec![("email", "alma@x.com")], "e2", 1_001), Routed::Signaled { case_id } if case_id == by_email), "same email, any case");
         let Routed::Opened { case_id: by_phone } = sig(&s, vec![("phone", "555-123-4567")], "p1", 1_002) else { panic!("a phone alone is a different subject") };
         assert_ne!(by_email, by_phone);
-        let Routed::Opened { case_id: other } = sig(&s, vec![("email", "someone@else.com")], "o1", 1_003) else { panic!("a different email is a different subject") };
+        let Routed::Opened { case_id: other } = sig(&s, vec![("email", "someone@example.com")], "o1", 1_003) else { panic!("a different email is a different subject") };
 
         // Observed together: the two subjects join. The older (email) wins;
         // the phone subject is aliased to it and its open case is re-keyed.
@@ -2047,7 +2047,7 @@ mod tests {
         let subj_e = s.engine_subject_for_alias("email", "alma@x.com").unwrap().unwrap();
         let subj_p = s.engine_subject_for_alias("phone", "+15551234567").unwrap().unwrap();
         assert_eq!(subj_e, subj_p, "one subject now");
-        assert_ne!(s.engine_subject_for_alias("email", "someone@else.com").unwrap().unwrap(), subj_e, "similarity never merges; a different email stays apart");
+        assert_ne!(s.engine_subject_for_alias("email", "someone@example.com").unwrap().unwrap(), subj_e, "similarity never merges; a different email stays apart");
         // The phone's case and the email's case are both open leads for one
         // subject now — the re-key collides, and the owner is told instead
         // of the engine picking.

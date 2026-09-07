@@ -114,7 +114,7 @@ fn uc45_reference_checks_wait_on_third_parties() {
     w.turn(&case, &waits("references_requested", "asked two referees", "signal", "7d", "the references or a nudge"));
 
     w.t += 2 * DAY;
-    w.arrive(&b, "email", "nia@x.com", json!({"email": "nia@x.com", "referee": "boss@old.com", "answer": "strong hire"}), "ref-1");
+    w.arrive(&b, "email", "nia@x.com", json!({"email": "nia@x.com", "referee": "boss-old@example.com", "answer": "strong hire"}), "ref-1");
     w.tick();
     w.turn(&case, &waits("one_reference", "one reference in", "signal", "5d", "the second reference or a nudge"));
     assert_eq!(w.run(&case).state, "waiting", "one reference does not close it");
@@ -123,7 +123,7 @@ fn uc45_reference_checks_wait_on_third_parties() {
     w.turn(&case, &waits("one_reference", "nudged the second referee", "signal", "5d", "the second reference"));
 
     w.t += DAY;
-    w.arrive(&b, "email", "nia@x.com", json!({"email": "nia@x.com", "referee": "peer@old.com", "answer": "would rehire"}), "ref-2");
+    w.arrive(&b, "email", "nia@x.com", json!({"email": "nia@x.com", "referee": "peer-old@example.com", "answer": "would rehire"}), "ref-2");
     assert_eq!(w.tick().children_started, 1);
     w.turn(&case, &closes("references_complete", "both references in"));
     assert_eq!(w.run(&case).result.as_deref(), Some("references_complete"));

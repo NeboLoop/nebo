@@ -88,7 +88,7 @@ pub struct OrganizerInput {
     #[serde(default)]
     pub mailbox: String,
     /// Mail account filter: account name ("Google") or address
-    /// ("sites@stadium.partners"). Empty = all accounts.
+    /// ("you@example.com"). Empty = all accounts.
     #[serde(default)]
     pub account: String,
 
@@ -222,8 +222,8 @@ mod tests {
     #[test]
     fn test_input_to_as_array() {
         let input: OrganizerInput =
-            serde_json::from_str(r#"{"action":"send","to":["a@b.com","c@d.com"]}"#).unwrap();
-        assert_eq!(input.to, vec!["a@b.com", "c@d.com"]);
+            serde_json::from_str(r#"{"action":"send","to":["a@example.com","c@example.com"]}"#).unwrap();
+        assert_eq!(input.to, vec!["a@example.com", "c@example.com"]);
     }
 
     #[test]
