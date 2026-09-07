@@ -365,6 +365,13 @@ fn spawn_plugin_login(
         // Unconditional: a GLOBAL (no-profile) login needs the local API too —
         // hub-managed installs exchange their auth code through it. Gating this
         // on the per-account profile silently broke exactly the default path.
+        // The plugin's saved settings (its auth env: hosts, user, password for
+        // an "env" plugin) reach the login the way they reach every exec —
+        // without them an env-auth login had nothing to verify and a
+        // multi-account mailbox could never connect.
+        for (key, value) in plugin_store_for_auth.resolved_auth_env(&slug_owned) {
+            cmd.env(key, value);
+        }
         for (key, value) in napp::plugin::plugin_base_env() {
             cmd.env(key, value);
         }

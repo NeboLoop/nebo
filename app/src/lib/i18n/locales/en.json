@@ -1961,6 +1961,8 @@
 		"packagedDeleteWhy": "{name} was installed from a package, so its role, persona and rules live in that package rather than in your edits.",
 		"packagedDeleteConsequences": "Deleting it uninstalls the package from this computer and permanently removes every chat, run and memory it has. Reinstalling from the marketplace brings back the employee, not the history.",
 		"typeNameToConfirmPrefix": "Type",
+		"copyName": "Copy name",
+		"typeNamePlaceholder": "Type the employee's name",
 		"typeNameToConfirmSuffix": "to confirm",
 		"cannotBeUndone": "This cannot be undone",
 		"deleteWarning": "This removes the employee's settings, memory, and chats. Customer history stays with the business: cases, turns, sent messages, approvals. Export it first if you want a copy; purge it separately if you want it gone.",

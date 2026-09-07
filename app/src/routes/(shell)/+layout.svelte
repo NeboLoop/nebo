@@ -942,6 +942,17 @@
   let deleteTarget = $state<{ id: string; name: string; managed: boolean } | null>(null);
   // A packaged employee is deleted only after the owner types its name.
   let deleteTyped = $state('');
+  // The name to type is shown in a box with a copy button (the DigitalOcean
+  // pattern), so the owner never retypes a long employee name by hand.
+  let deleteNameCopied = $state(false);
+  async function copyDeleteName() {
+    if (!deleteTarget) return;
+    try {
+      await navigator.clipboard.writeText(deleteTarget.name);
+      deleteNameCopied = true;
+      setTimeout(() => (deleteNameCopied = false), 1500);
+    } catch { /* clipboard blocked: the name is still visible to select */ }
+  }
   const deleteArmed = $derived(!deleteTarget?.managed || deleteTyped.trim() === deleteTarget.name.trim());
   let deleting = $state(false);
 
@@ -954,7 +965,9 @@
       await api.deleteAgent(targetId);
       deleteTarget = null;
       deleting = false;
-      loadAgentRoster();
+      // The row goes now; the server's agent_uninstalled broadcast reloads the
+      // roster once. Reloading here as well made the list rebuild twice.
+      allAgents = allAgents.filter((a) => a.id !== targetId);
       // Navigate away if we were viewing the deleted agent
       if (agentId === targetId) goto('/');
     } catch {
@@ -1133,10 +1146,20 @@
         {#if deleteTarget.managed}
           <p class="text-sm text-base-content/70">{$t('agent.packagedDeleteWhy', { values: { name: deleteTarget.name } })}</p>
           <p class="text-sm text-base-content/70 mt-2">{$t('agent.packagedDeleteConsequences')}</p>
-          <label class="block mt-4">
-            <span class="block text-xs font-semibold uppercase tracking-wider mb-1.5">{$t('agent.typeNameToConfirmPrefix')} <code class="normal-case font-mono tracking-normal font-medium text-[12px] text-base-content bg-base-200 border border-base-300 rounded px-1.5 py-0.5">{deleteTarget.name}</code> {$t('agent.typeNameToConfirmSuffix')}</span>
-            <input type="text" bind:value={deleteTyped} autocomplete="off" class="w-full py-[7px] px-2.5 rounded-md border border-error/40 text-sm bg-base-100 outline-none" />
-          </label>
+          <div class="mt-4">
+            <span class="block text-xs font-semibold uppercase tracking-wider mb-1.5">{$t('agent.typeNameToConfirmPrefix')} {$t('agent.typeNameToConfirmSuffix')}</span>
+            <div class="flex items-stretch rounded-md border border-base-300 bg-base-200 mb-2 overflow-hidden">
+              <code class="flex-1 min-w-0 px-2.5 py-[7px] font-mono text-[13px] text-base-content truncate select-all">{deleteTarget.name}</code>
+              <button type="button" class="px-2.5 border-l border-base-300 bg-base-100 hover:bg-base-200 text-base-content/70 cursor-pointer flex items-center gap-1 text-xs" onclick={copyDeleteName} title={$t('agent.copyName')} aria-label={$t('agent.copyName')}>
+                {#if deleteNameCopied}
+                  <span class="text-success">{$t('chat.copied')}</span>
+                {:else}
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                {/if}
+              </button>
+            </div>
+            <input type="text" bind:value={deleteTyped} autocomplete="off" placeholder={$t('agent.typeNamePlaceholder')} class="w-full py-[7px] px-2.5 rounded-md border border-error/40 text-sm bg-base-100 outline-none" aria-label={$t('agent.typeNameToConfirmPrefix')} />
+          </div>
         {:else}
           <p class="text-sm text-base-content/70">{$t('agent.deleteWarning')}</p>
         {/if}
