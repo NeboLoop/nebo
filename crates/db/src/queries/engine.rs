@@ -831,6 +831,22 @@ impl Store {
     }
 
 
+    /// Inspection: every non-timer event nobody has delivered — the
+    /// messages and answers still owed to someone. Read-only; takes no
+    /// lease.
+    pub fn engine_undelivered_signals(&self) -> Result<Vec<EngineEvent>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(&format!("SELECT {EVENT_COLUMNS} FROM engine_events WHERE delivered_at IS NULL AND kind <> 'timer' ORDER BY id"))
+            .db_err("engine_undelivered_signals")?;
+        let rows = stmt
+            .query_map([], row_to_event)
+            .db_err("engine_undelivered_signals")?
+            .collect::<Result<Vec<_>, _>>()
+            .db_err("engine_undelivered_signals")?;
+        Ok(rows)
+    }
+
     /// The signals parked on a run have been carried into a turn: clear
     /// them so no later turn carries them again.
     pub fn engine_clear_pending_signals(&self, id: &str) -> Result<(), NeboError> {

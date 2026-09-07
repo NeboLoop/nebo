@@ -163,10 +163,10 @@ impl World {
         guarded_send(&self.s, &ctx, "messaging", "mail-app", "mail.message.send", &input, || async { outcome }).await
     }
 
-    /// The event ids still undelivered (claimable at a far-future moment).
-    pub fn undelivered(&self) -> Vec<i64> {
-        let (ev, _) = self.s.engine_claim_events(self.t + 365 * DAY, 100).unwrap();
-        ev.iter().map(|e| e.id).collect()
+    /// The messages and answers still owed to someone: every non-timer
+    /// event nobody has delivered. Read-only.
+    pub fn undelivered(&self) -> Vec<EngineEvent> {
+        self.s.engine_undelivered_signals().unwrap()
     }
 }
 
