@@ -47,7 +47,9 @@ emit() { # $1 email, $2 message
   local body
   body=$(jq -cn --arg s "$SOURCE" --arg e "$1" --arg m "$2" \
     '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"nebo",arguments:{action:"emit",source:$s,payload:{email:$e,name:"Engine proof",source:"website-form",message:$m}}}}')
-  curl -s -m 30 -X POST "http://$TEST_SERVER/agent/mcp" -H 'Content-Type: application/json' -d "$body" | jq -e '.result.isError == false' >/dev/null \
+  # A server started with NEBO_MCP_API_KEY set wants the same key here.
+  curl -s -m 30 -X POST "http://$TEST_SERVER/agent/mcp" -H 'Content-Type: application/json' \
+    ${NEBO_MCP_API_KEY:+-H "Authorization: Bearer $NEBO_MCP_API_KEY"} -d "$body" | jq -e '.result.isError == false' >/dev/null \
     || die "emit" "the event was not accepted by /agent/mcp"
 }
 case_for() { # $1 email → case id or empty
