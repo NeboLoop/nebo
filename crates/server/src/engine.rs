@@ -1660,12 +1660,12 @@ mod tests {
         assert_eq!(delay, 60, "streak reset by the success");
     }
 
-    /// When the engine gives up, the employee's autonomy decides who hears
-    /// it: an autonomous employee gets the give-up as a turn on the case,
-    /// right away; anyone else gets a card in the owner's Inbox and the case
-    /// waits its default. Either way the case history says what happened.
+    /// An engine fault always reaches the owner, whatever the employee's
+    /// autonomy: a give-up is a card in the Inbox and a line in the case's
+    /// history, and the case waits its default. The model that just failed
+    /// three times is never handed the fault to improvise around.
     #[test]
-    fn a_give_up_reaches_an_autonomous_employee_as_a_turn_and_the_owner_otherwise() {
+    fn a_give_up_always_reaches_the_owner_whatever_the_employees_autonomy() {
         let s = store();
         let user = s.ensure_local_user_id().unwrap();
         let fail_four = |s: &Store, b: &CaseBinding<'_>, idem: &str, key: &str| -> (String, i64) {
@@ -1688,37 +1688,25 @@ mod tests {
             panic!("never gave up");
         };
 
-        // Autonomous employee: the give-up becomes the case's next turn now.
+        // A fully autonomous employee: still a card, still no turn.
         s.upsert_entity_config("agent", "ic", &serde_json::json!({"operationPolicy": {"default": "always"}})).unwrap();
         let b = binding();
         let (case_id, t) = fail_four(&s, &b, "s-auto", "auto@x.com");
-        assert!(s.engine_events_for("run", &case_id, 50).unwrap().iter().any(|e| e.kind == "needs_attention"), "recorded on the case");
-        let r = tick(&s, t + 1, &idle, &no_steer);
-        assert_eq!(r.children_started, 1, "the employee gets the give-up as a turn, not in three days");
-        let turn = s.engine_queued_runs_of_kind("workflow", 1).unwrap().remove(0);
-        assert!(turn.inputs.as_deref().unwrap().contains("needs_attention"), "the turn reads what broke");
-        assert!(s.get_notification(&format!("attention:{}", turn.id), &user).unwrap().is_none());
-
-        // Owner-consulted employee: a card, and the case waits its default.
-        // (Its own store: the autonomous case above left a queued turn behind.)
-        let s = store();
-        let user = s.ensure_local_user_id().unwrap();
-        let mut owner_b = binding();
-        owner_b.agent_id = "careful";
-        let (case_id2, t2) = fail_four(&s, &owner_b, "s-owner", "owner@x.com");
-        assert_eq!(tick(&s, t2 + 1, &idle, &no_steer).children_started, 0, "nothing starts on its own");
-        let last_turn = s.engine_events_for("run", &case_id2, 50).unwrap().into_iter().filter(|e| e.kind == "needs_attention").last().unwrap();
-        let card = s.get_notification(&format!("attention:{}", last_turn.r#ref), &user).unwrap().expect("an Inbox card for the owner");
+        let fault = s.engine_events_for("run", &case_id, 50).unwrap().into_iter().filter(|e| e.kind == "needs_attention").last().expect("recorded on the case");
+        assert_eq!(tick(&s, t + 1, &idle, &no_steer).children_started, 0, "an engine fault is not handed to the model that just failed");
+        let card = s.get_notification(&format!("attention:{}", fault.r#ref), &user).unwrap().expect("an Inbox card for the owner");
         assert_eq!(card.notification_type, "needs_attention");
-        assert_eq!(card.agent_id.as_deref(), Some("careful"));
+        assert_eq!(card.agent_id.as_deref(), Some("ic"));
+        let case = s.engine_get_run(&case_id).unwrap().unwrap();
+        assert_eq!(s.engine_get_wait(case.current_wait_id.unwrap()).unwrap().unwrap().deadline, Some(t + 3 * 86_400), "the case waits its default");
     }
 
-    /// A poisoned event is routed to whoever owns what it was aimed at: for
-    /// a signal on a case key, the case's employee — and an autonomous one
-    /// takes it as a turn.
+    /// A poisoned event is recorded on the case it was aimed at and the
+    /// owner is told; no turn starts because of it.
     #[test]
     fn a_poisoned_event_reaches_the_case_it_was_aimed_at() {
         let s = store();
+        let user = s.ensure_local_user_id().unwrap();
         s.upsert_entity_config("agent", "a", &serde_json::json!({"operationPolicy": {"default": "always"}})).unwrap();
         s.engine_create_run(&NewRun { id: "case-1", kind: "case", session_key: "agent:a:case:k", agent_id: "a", lane: "main", inputs: Some(r#"{"_case":{"key":"email:x"}}"#), ..Default::default() }).unwrap();
         s.engine_bind_key("case-1", "email", "x").unwrap();
@@ -1732,10 +1720,10 @@ mod tests {
         }
         let r = tick(&s, t, &idle, &no_steer);
         assert_eq!(r.poisoned, 1);
-        assert!(s.engine_events_for("run", "case-1", 50).unwrap().iter().any(|e| e.kind == "needs_attention" && e.payload.contains("email:x")));
-        // The attention signal is delivered in the same tick or the next.
+        let fault = s.engine_events_for("run", "case-1", 50).unwrap().into_iter().find(|e| e.kind == "needs_attention" && e.payload.contains("email:x")).expect("recorded on the case");
+        assert!(s.get_notification(&format!("attention:{}", fault.r#ref), &user).unwrap().is_some(), "the owner is told");
         let started = r.children_started + tick(&s, t + 5, &idle, &no_steer).children_started;
-        assert_eq!(started, 1, "the autonomous employee takes it as a turn");
+        assert_eq!(started, 0, "no turn starts because of a fault, autonomous or not");
     }
 
     /// Money that was attempted and never confirmed is never retried by the
