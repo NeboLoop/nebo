@@ -451,10 +451,19 @@ fn action_key(call: &ai::ToolCall) -> String {
     if !action.is_empty() {
         return format!("{}:{}", call.name, action);
     }
-    // No `action` field — the plugin tool's verb lives in `command` ("gmail
-    // +send …", "drive +upload …"). Without this every plugin call in a turn
-    // collapsed into the single key "plugin:", so eight DIFFERENT commands
-    // tripped the backstop as if they were one retried call.
+    // No `action` field. The plugin tool is keyed on the PLUGIN, not the verb:
+    // only unproductive calls count now, and a run that fails "payment
+    // create", then "batch execute", then "journalentry create" against the
+    // same plugin is one spiral, not three fresh starts (CFO, 2026-09-06: 20
+    // failed QuickBooks calls in one turn, no guard fired because each verb
+    // stayed under the limit). Distinct successful commands never counted.
+    if call.name == "plugin" {
+        if let Some(slug) = call.input.get("resource").and_then(|v| v.as_str()) {
+            if !slug.is_empty() {
+                return format!("plugin:{slug}");
+            }
+        }
+    }
     let verb = call
         .input
         .get("command")
@@ -8736,17 +8745,29 @@ mod tests {
     /// Distinct commands must land in distinct buckets, or a turn that ran eight
     /// different plugin commands trips the backstop as one retried call.
     #[test]
-    fn action_key_separates_plugin_commands() {
+    fn action_key_keys_plugin_calls_on_the_plugin() {
         let call = |cmd: &str| ai::ToolCall {
             id: String::new(),
             name: "plugin".into(),
-            input: serde_json::json!({"resource": "gws", "command": cmd}),
+            input: serde_json::json!({"resource": "quickbooks", "command": cmd}),
         };
-        assert_eq!(action_key(&call("drive +upload --path /a/b")), "plugin:drive +upload");
-        assert_ne!(
-            action_key(&call("drive +upload --path /a/b")),
-            action_key(&call("gmail +send --to a@b.c"))
-        );
+        // Every failed verb against one plugin lands on one counter.
+        assert_eq!(action_key(&call("payment create --line x")), "plugin:quickbooks");
+        assert_eq!(action_key(&call("batch execute --batch-item-request y")), "plugin:quickbooks");
+        // ...and an explicit action does not change that.
+        let with_action = ai::ToolCall {
+            id: String::new(),
+            name: "plugin".into(),
+            input: serde_json::json!({"resource": "quickbooks", "action": "exec", "command": "query run"}),
+        };
+        assert_eq!(action_key(&with_action), "plugin:exec");
+        // Two plugins stay apart.
+        let other = ai::ToolCall {
+            id: String::new(),
+            name: "plugin".into(),
+            input: serde_json::json!({"resource": "gws", "command": "gmail +send --to a@b.c"}),
+        };
+        assert_ne!(action_key(&call("payment create")), action_key(&other));
         // Tools that do carry an action are unchanged.
         assert_eq!(action_key(&os_glob("/tmp")), "os:glob");
     }

@@ -148,6 +148,38 @@ impl ShellTool {
             }
         }
 
+        // Installed plugins are on the shell's PATH for workflow command nodes,
+        // which also get their auth env. A model invoking one from the shell
+        // runs it with no account, no approval gate and no profile, so it
+        // 401s and the model rotates through env vars, stdin pipes and direct
+        // API calls trying to make it work (CFO, 2026-09-06: ten such calls).
+        // Redirect to the plugin tool, which has all three.
+        if !trusted_plugin_env {
+            if let Some(ref ps) = self.plugin_store {
+                let names: std::collections::HashMap<String, String> = ps
+                    .build_env_map()
+                    .into_iter()
+                    .filter(|(k, _)| k.ends_with("_BIN"))
+                    .filter_map(|(k, v)| {
+                        let bin = std::path::Path::new(&v).file_name()?.to_str()?.to_string();
+                        let slug = k.trim_end_matches("_BIN").to_ascii_lowercase().replace('_', "-");
+                        Some((bin, slug))
+                    })
+                    .collect();
+                if let Some((slug, rest)) = plugin_invocation(&input.command, &names) {
+                    return ToolResult::error(format!(
+                        "`{slug}` is an installed plugin, and the shell runs it with no \
+                         account, approval or profile context (that is why it answers 401 \
+                         here). Run it through the plugin tool instead: plugin(resource: \
+                         \"{slug}\", action: \"exec\", command: \"{rest}\"). JSON flag \
+                         values go in `args` so nothing needs shell quoting: \
+                         plugin(resource: \"{slug}\", command: \"payment create\", \
+                         args: {{\"line\": \"{{...}}\"}})."
+                    ));
+                }
+            }
+        }
+
         // A follow/watch with no bound parks the run for the WHOLE timeout and
         // returns nothing useful. Observed live 2026-08-27: an agent told to
         // poll a log reached for `tail -f … | grep READY` with timeout 300 and
@@ -1071,6 +1103,21 @@ fn interpret_exit_code(command: &str, exit_code: i32, output: &str) -> (bool, Op
 #[cfg(test)]
 mod tests {
     #[test]
+    fn shell_spots_a_plugin_binary_in_any_pipeline_stage() {
+        let names: std::collections::HashMap<String, String> =
+            [("quickbooks".to_string(), "quickbooks".to_string())].into_iter().collect();
+        let hit = plugin_invocation(
+            "cat /tmp/p.json | QUICKBOOKS_REALM_ID=1 quickbooks payment create --json 2>&1 || true",
+            &names,
+        );
+        assert_eq!(hit, Some(("quickbooks".to_string(), "payment create --json".to_string())));
+        assert_eq!(plugin_invocation("quickbooks doctor", &names).map(|h| h.1), Some("doctor".to_string()));
+        // A plain command, or the word inside an argument, is not an invocation.
+        assert_eq!(plugin_invocation("grep quickbooks notes.txt", &names), None);
+        assert_eq!(plugin_invocation("ls -la", &names), None);
+    }
+
+    #[test]
     fn the_missing_command_is_the_one_the_shell_named_not_the_last_in_the_pipe() {
         use super::missing_command_name;
         assert_eq!(missing_command_name("sh: foo: command not found\n").as_deref(), Some("foo"));
@@ -1262,4 +1309,27 @@ mod exit_header_tests {
         let failed = std::process::ExitStatus::from_raw(3 << 8);
         assert_eq!(exit_header(&failed), "Command exited with code 3");
     }
+}
+
+/// The installed plugin a shell command invokes, if any: the first word of any
+/// pipeline stage (after `VAR=value` prefixes) that names a plugin binary.
+/// Returns the plugin slug and the rest of that stage's command line.
+fn plugin_invocation(command: &str, names: &std::collections::HashMap<String, String>) -> Option<(String, String)> {
+    for stage in command.split(|c| c == '|' || c == ';' || c == '&' || c == '\n') {
+        let mut words = stage.split_whitespace().skip_while(|w| {
+            w.contains('=') && !w.starts_with('-') && !w.starts_with('"') && !w.starts_with('\'')
+        });
+        let Some(head) = words.next() else { continue };
+        let bin = std::path::Path::new(head).file_name().and_then(|f| f.to_str()).unwrap_or(head);
+        if let Some(slug) = names.get(bin) {
+            // Drop redirections and the `|| true` tail: they are shell, not
+            // plugin arguments.
+            let rest = words
+                .filter(|w| !w.contains('>') && !w.contains('<') && !matches!(*w, "||" | "&&" | "true"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            return Some((slug.clone(), rest));
+        }
+    }
+    None
 }
