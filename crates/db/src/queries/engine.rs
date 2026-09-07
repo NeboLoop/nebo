@@ -1312,12 +1312,22 @@ impl Store {
     /// Recovery worklist: every pending effect, oldest first. Reconcile or
     /// retry; never assume done.
     pub fn engine_pending_effects(&self) -> Result<Vec<EngineEffect>, NeboError> {
+        self.read_effects("state = 'pending'", [])
+    }
+
+    /// Every effect a run attempted, oldest first — the receipts behind
+    /// what the run says it did.
+    pub fn engine_effects_for_run(&self, run_id: &str) -> Result<Vec<EngineEffect>, NeboError> {
+        self.read_effects("run_id = ?1", [run_id])
+    }
+
+    fn read_effects<P: rusqlite::Params>(&self, where_sql: &str, params: P) -> Result<Vec<EngineEffect>, NeboError> {
         let conn = self.conn()?;
         let mut stmt = conn
-            .prepare("SELECT id, run_id, class, idem_key, provider, provider_key, state, attempts, provider_ref FROM engine_effects WHERE state = 'pending' ORDER BY id")
+            .prepare(&format!("SELECT id, run_id, class, idem_key, provider, provider_key, state, attempts, provider_ref FROM engine_effects WHERE {where_sql} ORDER BY id"))
             .db_err("engine_pending_effects")?;
         let rows = stmt
-            .query_map([], |r| {
+            .query_map(params, |r| {
                 Ok(EngineEffect {
                     id: r.get(0)?,
                     run_id: r.get(1)?,

@@ -700,11 +700,27 @@ pub fn settle_turn(store: &Store, child: &EngineRun, output: Option<&str>, faile
         Some(Err(why)) => format!("turn ended without a valid next: {why}"),
         None => "turn failed".to_string(),
     };
+    // The receipts behind the words: what the ledger saw this turn. Seen
+    // live: a turn closed a case as booked saying "calendar invite sent to
+    // both" — every calendar call had failed and nothing was sent. The
+    // history carries the fact beside the claim, so the next turn and the
+    // owner read both.
+    let receipts: Vec<_> = store.engine_effects_for_run(&child.id)?.into_iter().filter(|e| e.state == "completed").collect();
+    let receipt_line = if receipts.is_empty() {
+        "no send on the ledger this turn".to_string()
+    } else {
+        let list = receipts
+            .iter()
+            .map(|e| format!("{}#{}{}", e.provider, e.id, e.provider_ref.as_deref().map(|r| format!(" ({r})")).unwrap_or_default()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("{} send(s) on the ledger this turn: {list}", receipts.len())
+    };
     let _ = store.engine_enqueue_event(&NewEvent {
         kind: if failed { "turn_failed" } else { "turn_result" },
         target_type: "run",
         target_id: parent_id,
-        payload: &summary,
+        payload: &format!("{summary} — {receipt_line}"),
         r#ref: &child.id,
         idem_key: &format!("turn:{}:result", child.id),
         durable: true,
@@ -723,6 +739,22 @@ pub fn settle_turn(store: &Store, child: &EngineRun, output: Option<&str>, faile
     if let Some(Ok(Turn { close: Some(status), .. })) = &contract {
         store.engine_close_run(parent_id, "done", t)?;
         store.engine_set_run_result(parent_id, status, Some(&summary))?;
+        // Closed on an inbound turn with nothing on the ledger: the person
+        // wrote, the turn says the case is settled, and no receipt backs
+        // it. The decision stands — the owner is told, with the fact. A
+        // close that needs no answer (they opted out, they declined) is
+        // not that.
+        let inbound = inputs["_case"]["event_id"]
+            .as_i64()
+            .and_then(|id| store.engine_get_event(id).ok().flatten())
+            .is_some_and(|e| e.kind == "signal");
+        if inbound && receipts.is_empty() && !never_reopens(status) {
+            let why = format!(
+                "The turn closed this {} case as '{status}' saying \"{summary}\", but the ledger shows no message sent this turn. The person may be waiting on an answer that never went out; check before trusting the summary.",
+                inputs["_case"]["case_type"].as_str().unwrap_or("open")
+            );
+            needs_attention(store, &child.agent_id, &child.id, &format!("unreceipted:{}", child.id), parent.as_ref(), &why, t)?;
+        }
         return Ok(());
     }
     // Retry policy for a turn that failed (design: 1m, doubling, at most an

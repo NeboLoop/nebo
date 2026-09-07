@@ -1341,6 +1341,46 @@ mod tests {
         assert_eq!(tick(&s, 9_000, &idle, &no_steer), TickReport::default(), "delivered once");
     }
 
+    /// Seen live: a turn closed the case as booked saying "calendar invite
+    /// sent to both" — every calendar call had failed and the ledger held
+    /// no send. The words are recorded with the receipts beside them, and a
+    /// close on an inbound turn with nothing on the ledger goes to the
+    /// owner; the same close backed by a receipt is just a close.
+    #[test]
+    fn a_close_that_claims_a_send_the_ledger_never_saw_goes_to_the_owner() {
+        let s = store();
+        let b = binding();
+        let user = s.ensure_local_user_id().unwrap();
+        let open_running = |alias: &str, idem: &str| {
+            let payload = serde_json::json!({"email": alias, "message": "11am please"});
+            let Routed::Opened { case_id } = signal_or_open(&s, &b, "email", alias, &payload, "event", idem, 1_000).unwrap() else { panic!("opened") };
+            let turn = s.engine_queued_runs_of_kind("workflow", 10).unwrap().into_iter().find(|t| t.parent_run_id.as_deref() == Some(case_id.as_str())).unwrap();
+            s.engine_set_run_state(&turn.id, "running", 1_100, None).unwrap();
+            (case_id, s.engine_get_run(&turn.id).unwrap().unwrap())
+        };
+        let close = r#"{"result":{"status":"booked","summary":"invite sent to both"},"next":{"action":"close"}}"#;
+
+        // No receipt: the decision stands, the fact is on the history, the owner is told.
+        let (case_id, turn) = open_running("a@b.c", "s1");
+        settle_turn(&s, &turn, Some(close), false, 1_400).unwrap();
+        let case = s.engine_get_run(&case_id).unwrap().unwrap();
+        assert_eq!((case.state.as_str(), case.result.as_deref()), ("done", Some("booked")));
+        let history = s.engine_events_for("run", &case_id, 50).unwrap();
+        assert!(history.iter().any(|e| e.kind == "turn_result" && e.payload.contains("invite sent to both — no send on the ledger this turn")), "{history:?}");
+        assert!(history.iter().any(|e| e.kind == "needs_attention" && e.payload.contains("no message sent this turn")));
+        assert!(s.get_notification(&format!("attention:unreceipted:{}", turn.id), &user).unwrap().is_some());
+
+        // A receipt: the same close is just a close.
+        let (case_id, turn) = open_running("c@d.e", "s2");
+        let id = s.engine_effect_pending(&turn.id, "messaging", "send:k", "mail-app", "").unwrap();
+        s.engine_effect_completed(id, Some("msg-7"), Some("Handed to Mail"), 1_300).unwrap();
+        settle_turn(&s, &turn, Some(close), false, 1_400).unwrap();
+        let history = s.engine_events_for("run", &case_id, 50).unwrap();
+        assert!(history.iter().any(|e| e.kind == "turn_result" && e.payload.contains("1 send(s) on the ledger this turn: mail-app#") && e.payload.contains("(msg-7)")), "{history:?}");
+        assert!(!history.iter().any(|e| e.kind == "needs_attention"));
+        assert!(s.get_notification(&format!("attention:unreceipted:{}", turn.id), &user).unwrap().is_none());
+    }
+
     /// A signal handed to a running turn is heard only if the turn's next
     /// model call injects it: the runner's stamp delivers it. A turn that
     /// ends first never heard it — the event stays undelivered and rides
