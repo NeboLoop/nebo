@@ -119,13 +119,48 @@ pub fn resolve_encryption_key(data_dir: &std::path::Path) -> Encryptor {
 
     // 4. Generate and persist
     let enc = Encryptor::generate();
-    let _ = std::fs::write(&key_file, enc.key_bytes());
+    if std::fs::write(&key_file, enc.key_bytes()).is_ok() {
+        // 0600 before anything else can open it. This is the master key for
+        // every `enc:`-wrapped credential — provider keys, MCP tokens, OAuth
+        // secrets — so a bare write left it at the process umask (0644 on a
+        // normal box), readable by any local user, on exactly the headless
+        // Linux / container / locked-keychain paths where this fallback is
+        // reached. SECURITY.md has claimed 0600 here all along; now it is true.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&key_file, std::fs::Permissions::from_mode(0o600));
+        }
+    }
     enc
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The fallback key file is the master key for every stored credential.
+    /// A bare `fs::write` leaves it at the umask; SECURITY.md promises 0600.
+    #[cfg(unix)]
+    #[test]
+    fn generated_key_file_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("nebo-mcp-key-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // The env vars take priority over the file — clear them for this check.
+        unsafe {
+            std::env::remove_var("MCP_ENCRYPTION_KEY");
+            std::env::remove_var("JWT_SECRET");
+        }
+        let _ = resolve_encryption_key(&dir);
+        let mode = std::fs::metadata(dir.join(".mcp-key"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        std::fs::remove_dir_all(&dir).ok();
+        assert_eq!(mode, 0o600, "master key file must not be group/world readable");
+    }
 
     #[test]
     fn test_encrypt_decrypt() {
