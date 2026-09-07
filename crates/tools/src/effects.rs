@@ -9,12 +9,17 @@
 //!   model that repeats itself) finds a completed row and is not sent again;
 //! - a send whose outcome is unknown (the provider was reached, no answer
 //!   came back) stays pending, is never retried by anyone, and the owner is
-//!   told with the key to check by;
-//! - a send the provider rejected is failed and may be tried again.
+//!   told with the ledger entry to check;
+//! - a send the provider refused, or that failed before anything left the
+//!   machine, is failed and may be tried again.
+//!
+//! The OUTCOME IS TYPED BY THE ADAPTER that talked to the provider — the hub
+//! client's error type, the plugin's declared outcome, the app bridge's
+//! result. The engine never infers whether a message went out from the
+//! words in an error. An adapter that cannot say reports Unknown.
 //!
 //! Unknown-outcome policy is per provider. None of today's providers gives
-//! an idempotency key on send, so every one of them HOLDS on unknown. A
-//! provider that does may retry under its own key; add it to the table.
+//! an idempotency key on send, so every one of them HOLDS on unknown.
 
 use std::future::Future;
 use std::hash::{Hash, Hasher};
@@ -24,15 +29,63 @@ use db::Store;
 use crate::origin::ToolContext;
 use crate::ToolResult;
 
-/// What the provider said.
+/// What the provider said, as the adapter that spoke to it reports it.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SendOutcome {
-    /// Accepted. The message the employee sees, and the provider's
-    /// reference if it gave one.
+    /// The provider confirmed acceptance. The message the employee sees,
+    /// and the provider's reference if it gave one.
     Sent(String, Option<String>),
-    /// Refused before anything went out. Safe to try again differently.
-    Rejected(String),
-    /// Attempted, answer unknown. Never retried; the owner decides.
+    /// The provider answered and refused. Nothing went out; may be tried
+    /// again differently.
+    ConfirmedFailure(String),
+    /// Failed before anything left this machine (bad input, no line, no
+    /// bridge). Nothing went out; may be tried again.
+    PreSendFailure(String),
+    /// The provider was asked and did not answer, or the adapter cannot
+    /// say. Never retried; the owner decides.
     Unknown(String),
+}
+
+impl SendOutcome {
+    /// The contract a plugin's send operation reports on stdout:
+    /// `{"outcome": "confirmed_success" | "confirmed_failure" |
+    /// "retryable_pre_send_failure" | "unknown_outcome", "message": "...",
+    /// "reference": "..."}`. A plugin that says nothing typed is Unknown —
+    /// a send whose fate nobody vouched for is a send that may have gone.
+    pub fn from_plugin_output(output: &str) -> SendOutcome {
+        let json: Option<serde_json::Value> = last_json_object(output).and_then(|s| serde_json::from_str(s).ok());
+        let Some(v) = json else {
+            return SendOutcome::Unknown(format!("the plugin reported no typed outcome: {}", output.chars().take(200).collect::<String>()));
+        };
+        let message = v["message"].as_str().map(str::to_string).unwrap_or_else(|| output.trim().to_string());
+        match v["outcome"].as_str() {
+            Some("confirmed_success") => SendOutcome::Sent(message, v["reference"].as_str().map(str::to_string)),
+            Some("confirmed_failure") => SendOutcome::ConfirmedFailure(message),
+            Some("retryable_pre_send_failure") => SendOutcome::PreSendFailure(message),
+            Some("unknown_outcome") => SendOutcome::Unknown(message),
+            _ => SendOutcome::Unknown(format!("the plugin reported no typed outcome: {message}")),
+        }
+    }
+}
+
+/// The last `{…}` in a string, for plugins that print a line of prose
+/// before their JSON.
+fn last_json_object(s: &str) -> Option<&str> {
+    let end = s.rfind('}')?;
+    let mut depth = 0i32;
+    for (i, c) in s[..=end].char_indices().rev() {
+        match c {
+            '}' => depth += 1,
+            '{' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&s[i..=end]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// What to do when a provider's outcome is unknown.
@@ -63,11 +116,9 @@ pub fn is_customer_send(operation: &str) -> bool {
 /// The run this send belongs to: the workflow run when the session is a
 /// workflow session, otherwise the session itself.
 pub fn run_ref(ctx: &ToolContext) -> String {
-    let parts: Vec<&str> = ctx.session_key.split(':').collect();
-    match parts.as_slice() {
-        ["agent", _, "workflow", run_id] => run_id.to_string(),
-        _ => ctx.session_key.clone(),
-    }
+    crate::origin::workflow_run_id(&ctx.session_key)
+        .map(str::to_string)
+        .unwrap_or_else(|| ctx.session_key.clone())
 }
 
 fn agent_of(ctx: &ToolContext) -> Option<String> {
@@ -135,7 +186,7 @@ where
             let _ = store.engine_effect_completed(id, provider_ref.as_deref(), Some(&msg), now);
             ToolResult::ok(msg)
         }
-        SendOutcome::Rejected(why) => {
+        SendOutcome::ConfirmedFailure(why) | SendOutcome::PreSendFailure(why) => {
             let _ = store.engine_effect_failed(id, &why, now);
             ToolResult::error(why)
         }
@@ -152,15 +203,6 @@ where
             }
         },
     }
-}
-
-/// Words the transports use when the answer never came, as opposed to a
-/// refusal. A refusal is safe to retry differently; these are not.
-pub fn looks_unknown(err: &str) -> bool {
-    let e = err.to_lowercase();
-    ["timed out", "timeout", "connection reset", "connection closed", "broken pipe", "eof", "network", "unreachable", "no response"]
-        .iter()
-        .any(|w| e.contains(w))
 }
 
 fn tell_owner(store: &Store, ctx: &ToolContext, effect_id: i64, provider: &str, operation: &str, why: &str) {
@@ -195,7 +237,7 @@ mod tests {
     }
 
     /// The whole contract: written before the attempt; the same send
-    /// again is answered from the ledger; a rejection may be retried; an
+    /// again is answered from the ledger; a refusal may be retried; an
     /// unknown outcome is held and the owner told, once.
     #[tokio::test]
     async fn a_send_is_recorded_before_it_goes_and_never_goes_twice() {
@@ -213,14 +255,14 @@ mod tests {
 
         // A different text is a different send.
         let other = serde_json::json!({"to": "+15551234567", "text": "hello again"});
-        let r = guarded_send(&s, &c, "messaging", "hub-sms", "sms.message.send", &other, || async { SendOutcome::Rejected("bad number".into()) }).await;
+        let r = guarded_send(&s, &c, "messaging", "hub-sms", "sms.message.send", &other, || async { SendOutcome::ConfirmedFailure("bad number".into()) }).await;
         assert!(r.is_error);
         let r = guarded_send(&s, &c, "messaging", "hub-sms", "sms.message.send", &other, || async { SendOutcome::Sent("Sent.".into(), None) }).await;
-        assert!(!r.is_error, "a rejection may be retried");
+        assert!(!r.is_error, "a refusal may be retried");
 
         // Unknown: held, owner told, never retried.
         let third = serde_json::json!({"to": "+15551234567", "text": "third"});
-        let r = guarded_send(&s, &c, "messaging", "hub-sms", "sms.message.send", &third, || async { SendOutcome::Unknown("connection reset".into()) }).await;
+        let r = guarded_send(&s, &c, "messaging", "hub-sms", "sms.message.send", &third, || async { SendOutcome::Unknown("no answer".into()) }).await;
         assert!(r.is_error && r.content.contains("NOT retried"));
         let r = guarded_send(&s, &c, "messaging", "hub-sms", "sms.message.send", &third, || async { panic!("held sends are never retried") }).await;
         assert!(r.is_error && r.content.contains("outcome is unknown"));
@@ -229,6 +271,20 @@ mod tests {
         let e = s.engine_get_effect(id).unwrap().unwrap();
         assert_eq!((e.state.as_str(), e.attempts), ("pending", 1));
         assert!(s.get_notification(&format!("attention:effect:{id}"), &user).unwrap().is_some());
-        assert!(looks_unknown("request timed out") && !looks_unknown("invalid recipient"));
+    }
+
+    /// A plugin vouches for its send with a typed outcome; one that says
+    /// nothing typed is treated as unknown, never guessed from words.
+    #[test]
+    fn plugin_outcomes_are_typed_or_unknown() {
+        assert_eq!(
+            SendOutcome::from_plugin_output(r#"Sent.\n{"outcome":"confirmed_success","message":"Email sent","reference":"msg-1"}"#),
+            SendOutcome::Sent("Email sent".into(), Some("msg-1".into()))
+        );
+        assert_eq!(SendOutcome::from_plugin_output(r#"{"outcome":"confirmed_failure","message":"invalid recipient"}"#), SendOutcome::ConfirmedFailure("invalid recipient".into()));
+        assert_eq!(SendOutcome::from_plugin_output(r#"{"outcome":"retryable_pre_send_failure","message":"not authenticated"}"#), SendOutcome::PreSendFailure("not authenticated".into()));
+        assert!(matches!(SendOutcome::from_plugin_output(r#"{"outcome":"unknown_outcome","message":"request timed out"}"#), SendOutcome::Unknown(_)));
+        assert!(matches!(SendOutcome::from_plugin_output("Error: connection refused"), SendOutcome::Unknown(_)), "words are not a contract");
+        assert!(matches!(SendOutcome::from_plugin_output(r#"{"ok":true}"#), SendOutcome::Unknown(_)), "untyped JSON is not a contract either");
     }
 }

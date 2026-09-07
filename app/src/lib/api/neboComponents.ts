@@ -1769,6 +1769,12 @@ export interface ProxyPluginRouteResponse {
 	output: unknown
 }
 
+export interface PurgeAgentDataResponse {
+	purged: boolean
+	employee: unknown
+	removed: unknown
+}
+
 export interface ReauthenticateIntegrationResponse {
 	authUrl: string
 }
@@ -1798,7 +1804,7 @@ export interface ResolveLearningResponse {
 
 export interface ResolveWorkflowApprovalResponse {
 	status: string
-	runId: unknown
+	runId: string
 }
 
 export interface RevokeAgentApiKeyResponse {

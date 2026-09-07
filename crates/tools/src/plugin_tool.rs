@@ -1117,18 +1117,16 @@ impl DynTool for PluginTool {
                 };
                 // A customer-facing send goes through the effect ledger:
                 // recorded before it goes, never sent twice for the same
-                // input in one run, held when the outcome is unknown.
+                // input in one run, held when the outcome is unknown. The
+                // plugin vouches for the outcome with a typed report on
+                // stdout (see `SendOutcome::from_plugin_output`); a plugin
+                // that reports nothing typed leaves the send unknown, which
+                // holds it — the words in an error are never the verdict.
                 if crate::effects::is_customer_send(&pi.operation) {
                     let store = self.db_store.clone();
                     return crate::effects::guarded_send(&store, ctx, "messaging", &slug, &pi.operation, &pi.input, || async {
                         let r = self.handle_exec(&port_pi, ctx).await;
-                        if !r.is_error {
-                            crate::effects::SendOutcome::Sent(r.content, None)
-                        } else if crate::effects::looks_unknown(&r.content) {
-                            crate::effects::SendOutcome::Unknown(r.content)
-                        } else {
-                            crate::effects::SendOutcome::Rejected(r.content)
-                        }
+                        crate::effects::SendOutcome::from_plugin_output(&r.content)
                     })
                     .await;
                 }

@@ -261,6 +261,18 @@ impl Store {
             .ok_or_else(|| NeboError::Database("workflow run vanished after insert".into()))
     }
 
+    /// The model routing resolved for this run, as `provider/model`, written
+    /// once per run the moment it is known.
+    pub fn update_workflow_run_model(&self, id: &str, model: &str) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE workflow_runs SET model = ?2 WHERE id = ?1 AND (model IS NULL OR model = '')",
+            params![id, model],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
+
     /// The workflow half of a run whose engine row already exists (a case
     /// turn queued by the engine before the manager starts it).
     pub fn insert_workflow_run_detail(

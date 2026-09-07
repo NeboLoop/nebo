@@ -106,6 +106,43 @@
     }
   }
 
+  // The business history an employee produced is the business's: it is
+  // exported as one document and purged only by an explicit, separate act.
+  let exporting = $state(false);
+  let showPurgeConfirm = $state(false);
+  let purging = $state(false);
+  let purgedNote = $state('');
+  async function handleExportData() {
+    if (!agentId || exporting) return;
+    exporting = true;
+    try {
+      const api = await import('$lib/api/nebo');
+      const doc = await api.exportAgentData(agentId);
+      const blob = new Blob([JSON.stringify(doc, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${(agent?.name ?? 'employee').toLowerCase().replace(/\s+/g, '-')}-history.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } finally {
+      exporting = false;
+    }
+  }
+  async function handlePurgeData() {
+    if (!agentId || purging) return;
+    purging = true;
+    try {
+      const api = await import('$lib/api/nebo');
+      const res = await api.purgeAgentData(agentId);
+      const r = (res?.removed ?? {}) as Record<string, number>;
+      purgedNote = $t('agentSettings.purged', { values: { runs: r.runs ?? 0, events: r.events ?? 0, effects: r.effects ?? 0 } });
+      showPurgeConfirm = false;
+    } finally {
+      purging = false;
+    }
+  }
+
   // Duplicate: clone this agent's persona/skills/workflows/soul/rules/config into a
   // new agent with its own name and identity, then connect its own accounts.
   let showDuplicate = $state(false);
@@ -978,8 +1015,21 @@
                 <button class="btn btn-ghost btn-sm" onclick={() => { showDeleteConfirm = false; deleteTyped = ''; }}>{$t('common.cancel')}</button>
               </div>
             </div>
+          {:else if showPurgeConfirm}
+            <div class="rounded-lg border border-error/30 bg-error/5 p-4">
+              <div class="text-xs text-base-content/70 mb-3">{$t('agentSettings.purgeConfirm')}</div>
+              <div class="flex items-center gap-2">
+                <button class="btn btn-error btn-sm" onclick={handlePurgeData} disabled={purging}>{purging ? $t('agentSettings.purging') : $t('agentSettings.purgeData')}</button>
+                <button class="btn btn-ghost btn-sm" onclick={() => showPurgeConfirm = false}>{$t('common.cancel')}</button>
+              </div>
+            </div>
           {:else}
-            <button class="btn btn-error btn-sm btn-outline" onclick={() => showDeleteConfirm = true}>{$t('agentSettings.deleteAgent')}</button>
+            <div class="flex flex-wrap items-center gap-2">
+              <button class="btn btn-sm btn-outline" onclick={handleExportData} disabled={exporting}>{exporting ? $t('agentSettings.exporting') : $t('agentSettings.exportData')}</button>
+              <button class="btn btn-error btn-sm btn-outline" onclick={() => showPurgeConfirm = true}>{$t('agentSettings.purgeData')}</button>
+              <button class="btn btn-error btn-sm btn-outline" onclick={() => showDeleteConfirm = true}>{$t('agentSettings.deleteAgent')}</button>
+            </div>
+            {#if purgedNote}<div class="text-xs text-base-content/70 mt-2">{purgedNote}</div>{/if}
           {/if}
         </div>
       {/if}

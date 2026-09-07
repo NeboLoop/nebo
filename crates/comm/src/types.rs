@@ -12,6 +12,14 @@ pub enum CommError {
     NoActivePlugin,
     #[error("plugin not found: {0}")]
     PluginNotFound(String),
+    /// The request never got an answer: connection refused, reset, timed
+    /// out. Whatever it asked for MAY have happened.
+    #[error("no answer from NeboAI: {0}")]
+    Transport(String),
+    /// NeboAI answered with a non-success status: what it refused, it did
+    /// not do.
+    #[error("NeboAI returned {status}: {body}")]
+    Http { status: u16, body: String },
     #[error("{0}")]
     Other(String),
 }

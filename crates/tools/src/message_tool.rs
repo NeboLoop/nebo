@@ -553,17 +553,29 @@ async fn handle_sms(store: &Store, ctx: &ToolContext, agent_id: Option<&str>, ac
         // before it goes, never sent twice for the same input in one run,
         // held for the owner when the outcome is unknown.
         "send" => {
-            crate::effects::guarded_send(store, ctx, "messaging", "sms-line", "sms.message.send", input, || async {
-                let r = match send_from_phone_line(store, agent_id, input).await {
-                    Some(r) => r,
-                    None => handle_sms_send(input).await,
-                };
-                if !r.is_error {
-                    crate::effects::SendOutcome::Sent(r.content, None)
-                } else if crate::effects::looks_unknown(&r.content) {
-                    crate::effects::SendOutcome::Unknown(r.content)
-                } else {
-                    crate::effects::SendOutcome::Rejected(r.content)
+            // Bad input never reaches the ledger: nothing was going to leave.
+            let text = input["text"].as_str().unwrap_or("");
+            let phone = input["phone"].as_str().unwrap_or("");
+            if text.is_empty() {
+                return ToolResult::error(errors::missing_param("send", "text", "message(resource: \"sms\", action: \"send\", phone: \"+15551234567\", text: \"Hello!\")"));
+            }
+            if phone.is_empty() {
+                return ToolResult::error(errors::missing_param("send", "phone", "message(resource: \"sms\", action: \"send\", phone: \"+15551234567\", text: \"Hello!\")"));
+            }
+            crate::effects::guarded_send(store, ctx, "messaging", "sms", "sms.message.send", input, || async {
+                match send_from_phone_line(store, agent_id, input).await {
+                    Some(outcome) => outcome,
+                    // No texting line: the owner's Messages.app. AppleScript
+                    // raises before anything is dispatched, so an error is a
+                    // confirmed failure; a clean hand-off is the send.
+                    None => {
+                        let r = handle_sms_send(input).await;
+                        if r.is_error {
+                            crate::effects::SendOutcome::ConfirmedFailure(r.content)
+                        } else {
+                            crate::effects::SendOutcome::Sent(r.content, None)
+                        }
+                    }
                 }
             })
             .await
@@ -582,7 +594,10 @@ async fn handle_sms(store: &Store, ctx: &ToolContext, agent_id: Option<&str>, ac
 /// business number the caller already knows — through the hub. `None` means
 /// this employee has no such line, and the send falls through to the
 /// owner's Messages.app (the pre-existing personal-device path).
-async fn send_from_phone_line(store: &Store, agent_id: Option<&str>, input: &serde_json::Value) -> Option<ToolResult> {
+/// Typed by the hub client's error: a refusal is a confirmed failure, no
+/// answer is unknown, acceptance is the send with its reference.
+async fn send_from_phone_line(store: &Store, agent_id: Option<&str>, input: &serde_json::Value) -> Option<crate::effects::SendOutcome> {
+    use crate::effects::SendOutcome;
     let agent_id = agent_id?;
     let text = input["text"].as_str().unwrap_or("");
     let phone = input["phone"].as_str().unwrap_or("");
@@ -599,22 +614,23 @@ async fn send_from_phone_line(store: &Store, agent_id: Option<&str>, input: &ser
         None => mine.first().copied(),
     };
     if wanted.is_some() && line.is_none() {
-        return Some(ToolResult::error(format!(
+        return Some(SendOutcome::PreSendFailure(format!(
             "{} is not one of your texting lines. Omit `from` to use your first texting line.",
             wanted.unwrap_or("")
         )));
     }
     let line = line?;
     let from = line["number"].as_str()?.to_string();
-    if text.is_empty() {
-        return Some(ToolResult::error(errors::missing_param("send", "text", "message(resource: \"sms\", action: \"send\", phone: \"+15551234567\", text: \"Hello!\")")));
-    }
-    if phone.is_empty() {
-        return Some(ToolResult::error(errors::missing_param("send", "phone", "message(resource: \"sms\", action: \"send\", phone: \"+15551234567\", text: \"Hello!\")")));
-    }
     Some(match api.send_phone_sms(&from, phone, text).await {
-        Ok(_) => ToolResult::ok(format!("Sent by text from your line {from} to {phone}.")),
-        Err(e) => ToolResult::error(format!("Could not text from line {from}: {e}. Do not retry with a different resource; tell the owner if this persists.")),
+        Ok(v) => {
+            let reference = ["id", "sid", "messageId", "message_id"].iter().find_map(|k| v[k].as_str()).map(str::to_string);
+            SendOutcome::Sent(format!("Sent by text from your line {from} to {phone}."), reference)
+        }
+        Err(comm::CommError::Http { status, body }) if (400..500).contains(&status) => {
+            SendOutcome::ConfirmedFailure(format!("Could not text from line {from}: NeboAI refused ({status}): {body}. Do not retry with a different resource; tell the owner if this persists."))
+        }
+        // A server error or no answer: the text may already be on its way.
+        Err(e) => SendOutcome::Unknown(format!("texting from line {from}: {e}")),
     })
 }
 

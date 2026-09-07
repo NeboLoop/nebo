@@ -1153,6 +1153,37 @@ pub async fn update_agent(
 }
 
 /// DELETE /agents/{id}
+/// GET /api/v1/agents/{id}/export — everything the business keeps about an
+/// employee's work, as one JSON document. Works for a deleted employee too.
+pub async fn export_agent_data(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> HandlerResult<serde_json::Value> {
+    if state.store.agent_display_name(&id).map_err(to_error_response)?.is_none() {
+        return Err(to_error_response(types::NeboError::NotFound));
+    }
+    let doc = state.store.export_agent_business_data(&id).map_err(to_error_response)?;
+    Ok(Json(doc))
+}
+
+/// POST /api/v1/agents/{id}/purge — destroy an employee's business history:
+/// its cases, turns, sent communications, approvals, ledger, cards. Never
+/// implied by deleting the employee; only ever asked for by name.
+pub async fn purge_agent_data(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> HandlerResult<serde_json::Value> {
+    let Some(name) = state.store.agent_display_name(&id).map_err(to_error_response)? else {
+        return Err(to_error_response(types::NeboError::NotFound));
+    };
+    let removed = state
+        .store
+        .purge_agent_business_data(&id, chrono::Utc::now().timestamp())
+        .map_err(to_error_response)?;
+    info!(agent = %id, name = %name, ?removed, "purged an employee's business history at the owner's request");
+    Ok(Json(serde_json::json!({ "purged": true, "employee": { "id": id, "name": name }, "removed": removed })))
+}
+
 pub async fn delete_agent(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -1209,12 +1240,16 @@ pub async fn delete_agent(
 
     // DB cleanup only when the agent actually had DB rows. agent_workflows are
     // cascade-deleted via FK; chats before sessions (chats reference session names).
+    // What goes is the employee's own: its row, configuration, memory,
+    // working state. What stays is the business's: cases, turns, sent
+    // communications, approvals, the effect ledger — attributed to this id,
+    // with the name it had. Purging that is a separate, explicit operation.
     if db_agent.is_some() {
+        let _ = state.store.tombstone_agent(&id, &name, chrono::Utc::now().timestamp());
         state.store.delete_agent(&id).map_err(to_error_response)?;
         let _ = state.store.delete_agent_chats(&id);
         let _ = state.store.delete_agent_sessions(&id);
         let _ = state.store.delete_agent_memories(&id);
-        let _ = state.store.delete_agent_workflow_runs(&id);
     }
     // A deleted employee must also leave MEMORY: its own scopes are purged
     // above; memories elsewhere that mention it by name get a deterministic

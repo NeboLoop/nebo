@@ -28,6 +28,14 @@ pub fn routes() -> Router<AppState> {
             axum::routing::delete(handlers::agents::delete_agent),
         )
         .route(
+            "/agents/{id}/export",
+            axum::routing::get(handlers::agents::export_agent_data),
+        )
+        .route(
+            "/agents/{id}/purge",
+            axum::routing::post(handlers::agents::purge_agent_data),
+        )
+        .route(
             "/agents/{id}/toggle",
             axum::routing::post(handlers::agents::toggle_agent),
         )

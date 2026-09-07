@@ -4176,6 +4176,12 @@ async fn run_loop(
             proactive_context.join("\n")
         };
 
+        // The governance record of a workflow run names the model that
+        // actually ran it, written the moment routing resolves it.
+        if let Some(run_id) = tools::origin::workflow_run_id(&session_key) {
+            let _ = store.update_workflow_run_model(run_id, &format!("{}/{}", selected_provider_id, selected_model_name));
+        }
+
         // Build dynamic system suffix — AFTER model selection so identity is accurate
         let dctx = prompt::DynamicContext {
             provider_name: selected_provider_id.to_string(),

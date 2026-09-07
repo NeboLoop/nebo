@@ -363,6 +363,13 @@ export function duplicateAgent(id: string, req: Record<string, unknown> = {}) {
 }
 
 /**
+ * @description "Export agent data"
+ */
+export function exportAgentData(id: string) {
+	return webapi.get<unknown>(`/api/v1/agents/${id}/export`)
+}
+
+/**
  * @description "Update agent inputs"
  */
 export function updateAgentInputs(id: string, req: Record<string, unknown> = {}) {
@@ -374,6 +381,13 @@ export function updateAgentInputs(id: string, req: Record<string, unknown> = {})
  */
 export function getAgentOperations(id: string) {
 	return webapi.get<components.GetAgentOperationsResponse>(`/api/v1/agents/${id}/operations`)
+}
+
+/**
+ * @description "Purge agent data"
+ */
+export function purgeAgentData(id: string, req: Record<string, unknown> = {}) {
+	return webapi.post<components.PurgeAgentDataResponse>(`/api/v1/agents/${id}/purge`, req)
 }
 
 /**
