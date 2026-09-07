@@ -289,9 +289,12 @@ pub struct ToolContext {
 /// The inverse of `workflow_session_key`: the workflow run a session key
 /// names, if it is a workflow session.
 pub fn workflow_run_id(session_key: &str) -> Option<&str> {
-    let parts: Vec<&str> = session_key.split(':').collect();
-    match parts.as_slice() {
-        ["agent", _, "workflow", run_id] if !run_id.is_empty() => Some(run_id),
+    // An activity's session is the run's session with the activity and
+    // iteration appended (`…:workflow:<run>:<activity>::<n>`); the run is
+    // always the fourth segment.
+    let mut parts = session_key.splitn(5, ':');
+    match (parts.next(), parts.next(), parts.next(), parts.next()) {
+        (Some("agent"), Some(agent), Some("workflow"), Some(run_id)) if !agent.is_empty() && !run_id.is_empty() => Some(run_id),
         _ => None,
     }
 }

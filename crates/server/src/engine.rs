@@ -906,11 +906,22 @@ async fn drive(state: &AppState) {
         // routed afresh. Drop the stale queue so nothing rides a dead session.
         let _ = agent::steering::drain_wakes(&turn.session_key);
         let failed = turn.state != "done";
-        let output = if failed { turn.error.clone().or(turn.result.clone()).or_else(|| Some(turn.state.clone())) } else { turn.result.clone() };
+        // A turn that exited early carries its reason where a failure would
+        // (the workflow's exit path); if the model put the contract there,
+        // it still counts.
+        let output = if failed { turn.error.clone().or(turn.result.clone()).or_else(|| Some(turn.state.clone())) } else { turn.result.clone().or(turn.error.clone()) };
         if let Err(e) = settle_turn(store, &turn, output.as_deref(), failed, t) {
             warn!(run = %turn.id, error = %e, "engine: settle failed");
         }
     }
+}
+
+/// A short stable fingerprint of a definition, for the governance record.
+fn fingerprint(s: &str) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    s.hash(&mut h);
+    format!("{:016x}", h.finish())
 }
 
 /// A turn may run this long from start to close; longer is cancelled and
@@ -960,15 +971,31 @@ async fn time_out_turns(state: &AppState, t: i64) {
     }
 }
 
+/// The binding's definition as the employee's playbook has it NOW. A case
+/// turn runs the current playbook (design: read fresh each turn, and the
+/// governance record says which); the snapshot on the run is the fallback
+/// when the employee or the binding is gone.
+fn current_definition(store: &Store, agent_id: &str, binding: &str) -> Option<String> {
+    let agent = store.get_agent(agent_id).ok().flatten()?;
+    let config = napp::agent::parse_agent_config(&agent.frontmatter).ok()?;
+    let wb = config.workflows.get(binding)?;
+    wb.has_activities().then(|| wb.to_workflow_json(binding))
+}
+
 /// Relaunch a queued case turn under its own id.
 async fn start_turn(state: &AppState, run: &EngineRun, t: i64) {
     let store = &state.store;
-    let Some(definition) = run.definition.clone() else {
+    let mut inputs: serde_json::Value = run.inputs.as_deref().and_then(|s| serde_json::from_str(s).ok()).unwrap_or_default();
+    let binding = inputs["_case"]["binding"].as_str().map(str::to_string);
+    let fresh = binding.as_deref().and_then(|b| current_definition(store, &run.agent_id, b));
+    let Some(definition) = fresh.or_else(|| run.definition.clone()) else {
         let _ = store.engine_set_run_state(&run.id, "failed", t, Some("case turn has no definition"));
         return;
     };
-    let mut inputs: serde_json::Value = run.inputs.as_deref().and_then(|s| serde_json::from_str(s).ok()).unwrap_or_default();
-    let binding = inputs["_case"]["binding"].as_str().map(str::to_string);
+    if run.definition.as_deref() != Some(definition.as_str()) {
+        let _ = store.engine_set_run_definition(&run.id, &definition);
+        inputs["_case"]["governance"]["definition_hash"] = serde_json::json!(fingerprint(&definition));
+    }
     inputs["_relaunch_run"] = serde_json::json!(run.id);
     match state
         .workflow_manager

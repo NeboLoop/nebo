@@ -592,6 +592,15 @@ impl Store {
         Ok(n == 1)
     }
 
+    /// The definition a run carries — for a case, the binding as it was
+    /// last seen, refreshed whenever a signal arrives with a current one.
+    pub fn engine_set_run_definition(&self, id: &str, definition: &str) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute("UPDATE engine_runs SET definition = ?2 WHERE id = ?1", params![id, definition])
+            .db_err("engine_set_run_definition")?;
+        Ok(())
+    }
+
     /// Only the summary tag — the word a finer status keeps (`exited`,
     /// `denied`) — without touching the result.
     pub fn engine_set_run_result_tag(&self, id: &str, summary: &str) -> Result<(), NeboError> {

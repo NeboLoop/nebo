@@ -339,6 +339,12 @@ pub fn route_signal(
             needs_attention(store, "", &case.id, &format!("conflict:{}:{}", case.id, b.agent_id), None, &reason, t)?;
             return Ok(Routed::Conflict { case_id: case.id, owner: case.agent_id });
         }
+        // The playbook is read fresh each turn: the case carries the
+        // binding as it is NOW, so the turn this signal starts runs the
+        // current definition, and the turn's governance record says which.
+        if case.definition.as_deref() != Some(b.definition_json) {
+            store.engine_set_run_definition(&case.id, b.definition_json)?;
+        }
         return Ok(Routed::Signaled { case_id: case.id });
     }
 
