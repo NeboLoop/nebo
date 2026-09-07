@@ -3385,23 +3385,22 @@ async fn run_webhook_workflow(
     // run per submission is exactly the repeat this exists to end.
     if let Some(b) = workflow::cases::CaseBinding::from_binding(agent_id, binding_name, &def_json, binding) {
         let key_spec = binding.case.as_ref().map(|c| c.key.as_str()).unwrap_or_default();
-        match workflow::cases::resolve_key(&payload, key_spec) {
-            Some((key_type, key_value)) => {
-                let idem = if idem_key.is_empty() {
-                    format!("webhook:{}:{}", binding_name, agent::dedupe::hash_text(&payload.to_string()))
-                } else {
-                    idem_key.to_string()
-                };
-                match workflow::cases::signal_or_open(&state.store, &b, &key_type, &key_value, &payload, "webhook", &idem, chrono::Utc::now().timestamp()) {
-                    Ok(routed) => tracing::info!(agent = %agent_id, workflow = %binding_name, ?routed, "case webhook routed"),
-                    Err(e) => tracing::warn!(agent = %agent_id, workflow = %binding_name, error = %e, "case webhook routing failed"),
-                }
-                return;
+        let aliases = workflow::cases::resolve_aliases(&payload, key_spec);
+        if !aliases.is_empty() {
+            let idem = if idem_key.is_empty() {
+                format!("webhook:{}:{}", binding_name, agent::dedupe::hash_text(&payload.to_string()))
+            } else {
+                idem_key.to_string()
+            };
+            match workflow::cases::route_signal(&state.store, &b, &aliases, &payload, "webhook", &idem, chrono::Utc::now().timestamp()) {
+                Ok(routed) => tracing::info!(agent = %agent_id, workflow = %binding_name, ?routed, "case webhook routed"),
+                Err(e) => tracing::warn!(agent = %agent_id, workflow = %binding_name, error = %e, "case webhook routing failed"),
             }
-            // The payload named nobody: run it the way every webhook runs
-            // today rather than lose it.
-            None => tracing::warn!(agent = %agent_id, workflow = %binding_name, key = %key_spec, "case webhook: payload names nobody at those paths; running as a plain webhook"),
+            return;
         }
+        // The payload named nobody: run it the way every webhook runs
+        // today rather than lose it.
+        tracing::warn!(agent = %agent_id, workflow = %binding_name, key = %key_spec, "case webhook: payload names nobody at those paths; running as a plain webhook");
     }
     workflow::events::insert_event_envelope(
         &mut inputs,

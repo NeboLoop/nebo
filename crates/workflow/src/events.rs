@@ -36,17 +36,26 @@ pub struct EventSubscription {
 /// How an event-triggered case binding names its person.
 #[derive(Debug, Clone)]
 pub struct CaseRoute {
-    /// Dotted path into the event payload (`contactEmail`, `customer.id`).
+    /// Dotted paths into the event payload (`contactEmail,email,phone`).
     pub key_path: String,
+    /// The kind of case; bindings sharing it share the case.
+    pub case_type: String,
     /// Wait applied when a turn declares none.
     pub default_wait_secs: i64,
 }
 
 impl CaseRoute {
-    pub fn from_binding(binding: &napp::agent::WorkflowBinding) -> Option<Self> {
+    pub fn from_binding(binding_name: &str, binding: &napp::agent::WorkflowBinding) -> Option<Self> {
         let case = binding.case.as_ref()?;
         Some(Self {
             key_path: case.key.clone(),
+            case_type: case
+                .case_type
+                .as_deref()
+                .map(str::trim)
+                .filter(|t| !t.is_empty())
+                .unwrap_or(binding_name)
+                .replace(':', "-"),
             default_wait_secs: case
                 .default_wait
                 .as_deref()
@@ -61,14 +70,15 @@ impl CaseRoute {
 /// second it was emitted — so a re-emit of the same moment is a duplicate
 /// while a genuine second submission minutes later is a new signal.
 fn route_case(store: &db::Store, sub: &EventSubscription, route: &CaseRoute, def_json: &str, event: &Event) -> bool {
-    let Some((key_type, key_value)) = crate::cases::resolve_key(&event.payload, &route.key_path) else {
+    let aliases = crate::cases::resolve_aliases(&event.payload, &route.key_path);
+    if aliases.is_empty() {
         warn!(agent = %sub.agent_source, binding = %sub.binding_name, event_source = %event.source, key = %route.key_path, "case event: payload names nobody at those paths; running as a plain event");
         return false;
-    };
-    let key_type = key_type.as_str();
+    }
     let b = crate::cases::CaseBinding {
         agent_id: &sub.agent_source,
         binding_name: &sub.binding_name,
+        case_type: route.case_type.clone(),
         definition_json: def_json,
         base_inputs: sub.default_inputs.clone(),
         default_wait_secs: route.default_wait_secs,
@@ -79,10 +89,13 @@ fn route_case(store: &db::Store, sub: &EventSubscription, route: &CaseRoute, def
         event.source.hash(&mut h);
         event.payload.to_string().hash(&mut h);
         event.timestamp.hash(&mut h);
-        format!("event:{}:{:016x}", event.source, h.finish())
+        // One delivery per subscriber: a second employee on the same source
+        // is a separate signal, so ownership can refuse it as a conflict
+        // instead of the key swallowing it as a replay.
+        format!("event:{}:{}:{}:{:016x}", event.source, sub.agent_source, sub.binding_name, h.finish())
     };
     let t = chrono::Utc::now().timestamp();
-    match crate::cases::signal_or_open(store, &b, key_type, &key_value, &event.payload, "event", &idem, t) {
+    match crate::cases::route_signal(store, &b, &aliases, &event.payload, "event", &idem, t) {
         Ok(routed) => info!(agent = %sub.agent_source, binding = %sub.binding_name, event_source = %event.source, ?routed, "case event routed"),
         Err(e) => warn!(agent = %sub.agent_source, binding = %sub.binding_name, event_source = %event.source, error = %e, "case event routing failed"),
     }
@@ -472,7 +485,7 @@ mod tests {
             binding_name: "work-lead".into(),
             definition_json: Some(r#"{"activities":[{"id":"turn","intent":"work the lead"}]}"#.into()),
             emit_source: None,
-            case: Some(CaseRoute { key_path: "contactEmail,email,phone".into(), default_wait_secs: 86_400 }),
+            case: Some(CaseRoute { key_path: "contactEmail,email,phone".into(), case_type: "lead".into(), default_wait_secs: 86_400 }),
         };
         let route = sub.case.clone().unwrap();
         let def = sub.definition_json.clone().unwrap();
@@ -488,7 +501,7 @@ mod tests {
         // A re-emit of the same moment (same payload, same second) is a duplicate.
         assert!(route_case(&store, &sub, &route, &def, &ev(4_000, "Alma@AboundingGoods.com")));
 
-        let case = store.engine_run_for_key("email", "alma@aboundinggoods.com").unwrap().expect("one open case");
+        let case = crate::cases::open_case_for(&store, "lead", "email", "Alma@AboundingGoods.com").expect("one open case");
         assert_eq!(case.state, "waiting");
         let turns = store.engine_queued_runs_of_kind("workflow", 10).unwrap();
         assert_eq!(turns.len(), 1, "one first turn");
@@ -496,7 +509,7 @@ mod tests {
         // The signals are recorded against the case's key, durable, once each.
         let (pending, _) = store.engine_claim_events(10_000, 50).unwrap();
         assert_eq!(pending.len(), 3, "three later signals wait for the loop; the duplicate is not among them");
-        assert!(pending.iter().all(|e| e.target_id == "email:alma@aboundinggoods.com" && e.retention == "durable"));
+        assert!(pending.iter().all(|e| e.target_id.starts_with("case:lead:") && e.retention == "durable"));
 
         // A payload that names nobody is not routed: the caller runs it the old way.
         let stray = Event { source: "sales.intake-coordinator.lead-captured".into(), payload: serde_json::json!({"note": "no contact"}), origin: "hub".into(), timestamp: 9_000 };

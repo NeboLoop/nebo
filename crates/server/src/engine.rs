@@ -203,7 +203,7 @@ fn deliver(
         // A signal for an open case that has no live wait — its first turn
         // is still queued or running. It reaches that turn, not a new one.
         if event.target_type == "run" && event.kind == "signal" {
-            if let Some((kt, kv)) = event.target_id.split_once(':') {
+            if let Some((kt, kv)) = event.target_id.rsplit_once(':') {
                 if let Ok(Some(case)) = store.engine_run_for_key(kt, kv) {
                     match live_turn(store, &case, event, t, busy, steer) {
                         LiveTurn::Handed => {
@@ -285,7 +285,7 @@ fn owner_of_event(store: &Store, e: &EngineEvent) -> (String, Option<String>, Op
             .engine_get_run(&e.target_id)
             .ok()
             .flatten()
-            .or_else(|| e.target_id.split_once(':').and_then(|(kt, kv)| store.engine_run_for_key(kt, kv).ok().flatten())),
+            .or_else(|| e.target_id.rsplit_once(':').and_then(|(kt, kv)| store.engine_run_for_key(kt, kv).ok().flatten())),
         "wait" => e
             .target_id
             .parse::<i64>()
@@ -1083,7 +1083,7 @@ pub fn spawn(state: AppState) {
 mod tests {
     use super::*;
     use db::{NewEvent, NewRun, NewWait};
-    use workflow::cases::{parse_turn, relative_secs, signal_or_open, CaseBinding, Routed};
+    use workflow::cases::{normalize_phone, open_case_for, parse_turn, relative_secs, resolve_aliases, route_signal, signal_or_open, CaseBinding, Routed};
 
     fn store() -> Store {
         let path = std::env::temp_dir().join(format!("nebo-engine-loop-{}.db", uuid::Uuid::new_v4()));
@@ -1099,6 +1099,7 @@ mod tests {
         CaseBinding {
             agent_id: "ic",
             binding_name: "work-lead",
+            case_type: "lead".into(),
             definition_json: r#"{"activities":[{"id":"run","intent":"work the lead"}]}"#,
             base_inputs: serde_json::json!({"tone": "warm"}),
             default_wait_secs: 3 * 86_400,
@@ -1155,7 +1156,7 @@ mod tests {
         let s = store();
         s.engine_create_run(&NewRun { id: "case-1", kind: "case", session_key: "agent:a:case:k", agent_id: "a", lane: "main", ..Default::default() }).unwrap();
         s.engine_declare_wait("case-1", &NewWait { action: "trigger_child", on_kind: "signal", key: "email:x", deadline: None, reason: "first contact", ..Default::default() }, 100).unwrap();
-        s.engine_create_run(&NewRun { id: "turn-1", kind: "workflow", session_key: "agent:a:workflow:turn-1", agent_id: "a", lane: "main", parent_run_id: Some("case-1"), inputs: Some(r#"{"_case":{"key_type":"email","key_value":"x","default_wait_secs":86400}}"#), ..Default::default() }).unwrap();
+        s.engine_create_run(&NewRun { id: "turn-1", kind: "workflow", session_key: "agent:a:workflow:turn-1", agent_id: "a", lane: "main", parent_run_id: Some("case-1"), inputs: Some(r#"{"_case":{"key":"email:x","default_wait_secs":86400}}"#), ..Default::default() }).unwrap();
         s.engine_set_run_state("turn-1", "running", 150, None).unwrap();
         s.engine_enqueue_event(&NewEvent { kind: "signal", target_type: "run", target_id: "email:x", payload: "again", idem_key: "s2", durable: true, ..Default::default() }).unwrap();
 
@@ -1189,7 +1190,7 @@ mod tests {
         let make = |s: &Store, case: &str, turn: &str, key: &str| {
             s.engine_create_run(&NewRun { id: case, kind: "case", session_key: "agent:a:case:k", agent_id: "a", lane: "main", ..Default::default() }).unwrap();
             s.engine_declare_wait(case, &NewWait { action: "trigger_child", on_kind: "signal", key, deadline: None, reason: "first contact", ..Default::default() }, 100).unwrap();
-            let inputs = format!(r#"{{"_case":{{"key_type":"email","key_value":"{}","default_wait_secs":86400}}}}"#, key.trim_start_matches("email:"));
+            let inputs = format!(r#"{{"_case":{{"key":"{key}","default_wait_secs":86400}}}}"#);
             s.engine_create_run(&NewRun { id: turn, kind: "workflow", session_key: &format!("agent:a:workflow:{turn}"), agent_id: "a", lane: "main", parent_run_id: Some(case), inputs: Some(&inputs), ..Default::default() }).unwrap();
             s.engine_set_run_state(turn, "running", 150, None).unwrap();
         };
@@ -1312,7 +1313,7 @@ mod tests {
         assert_eq!(s.engine_queued_runs_of_kind("workflow", 10).unwrap().len(), 1, "still exactly one turn");
         let refreshed = s.engine_get_run(&turns[0].id).unwrap().unwrap();
         assert!(refreshed.inputs.as_deref().unwrap().matches("aboundinggoods").count() >= 4, "the later submissions rode along");
-        assert_eq!(s.engine_run_for_key("email", "alma@aboundinggoods.com").unwrap().unwrap().id, case_id);
+        assert_eq!(open_case_for(&s, "lead", "email", "alma@aboundinggoods.com").unwrap().id, case_id);
         assert_eq!(s.engine_get_run(&case_id).unwrap().unwrap().state, "waiting");
     }
 
@@ -1334,7 +1335,7 @@ mod tests {
         assert_eq!(case.summary, "sent day-1 follow-up", "the case shows what the employee did");
         let wait = s.engine_get_wait(case.current_wait_id.unwrap()).unwrap().unwrap();
         assert_eq!(wait.deadline, Some(2_000 + 3 * 86_400));
-        assert_eq!(wait.key, "email:a@b.c");
+        assert!(wait.key.starts_with("case:lead:"), "the wait is keyed by case type and subject: {}", wait.key);
         assert_eq!(wait.reason, "follow up if no reply by Thursday", "the wait shows what it is waiting for");
         let hist = s.engine_events_for("run", &case_id, 50).unwrap();
         assert!(hist.iter().any(|e| e.kind == "turn_result" && e.payload.contains("day-1")));
@@ -1360,7 +1361,7 @@ mod tests {
         let case = s.engine_get_run(&case_id).unwrap().unwrap();
         assert_eq!(case.state, "done");
         assert_eq!(case.result.as_deref(), Some("booked"));
-        assert!(s.engine_run_for_key("email", "a@b.c").unwrap().is_none(), "key released");
+        assert!(open_case_for(&s, "lead", "email", "a@b.c").is_none(), "key released");
     }
 
     // ── schedules ────────────────────────────────────────────────────────
@@ -1559,7 +1560,7 @@ mod tests {
         let s = store();
         s.engine_create_run(&NewRun { id: "case-1", kind: "case", session_key: "agent:a:case:k", agent_id: "a", lane: "main", ..Default::default() }).unwrap();
         s.engine_declare_wait("case-1", &NewWait { action: "trigger_child", on_kind: "signal", key: "email:x", deadline: None, reason: "first contact", ..Default::default() }, 100).unwrap();
-        s.engine_create_run(&NewRun { id: "turn-1", kind: "workflow", session_key: "agent:a:workflow:turn-1", agent_id: "a", lane: "main", parent_run_id: Some("case-1"), inputs: Some(r#"{"_case":{"key_type":"email","key_value":"x"}}"#), ..Default::default() }).unwrap();
+        s.engine_create_run(&NewRun { id: "turn-1", kind: "workflow", session_key: "agent:a:workflow:turn-1", agent_id: "a", lane: "main", parent_run_id: Some("case-1"), inputs: Some(r#"{"_case":{"key":"email:x"}}"#), ..Default::default() }).unwrap();
         s.engine_declare_wait("turn-1", &NewWait { action: "resume", on_kind: "approval", key: "approval:turn-1", parked: Some("{}"), reason: "Create invoice", ..Default::default() }, 150).unwrap();
         s.engine_enqueue_event(&NewEvent { kind: "signal", target_type: "run", target_id: "email:x", payload: "again", idem_key: "s2", durable: true, ..Default::default() }).unwrap();
         let r = tick(&s, 200, &idle, &no_steer);
@@ -1719,7 +1720,7 @@ mod tests {
     fn a_poisoned_event_reaches_the_case_it_was_aimed_at() {
         let s = store();
         s.upsert_entity_config("agent", "a", &serde_json::json!({"operationPolicy": {"default": "always"}})).unwrap();
-        s.engine_create_run(&NewRun { id: "case-1", kind: "case", session_key: "agent:a:case:k", agent_id: "a", lane: "main", inputs: Some(r#"{"_case":{"key_type":"email","key_value":"x"}}"#), ..Default::default() }).unwrap();
+        s.engine_create_run(&NewRun { id: "case-1", kind: "case", session_key: "agent:a:case:k", agent_id: "a", lane: "main", inputs: Some(r#"{"_case":{"key":"email:x"}}"#), ..Default::default() }).unwrap();
         s.engine_bind_key("case-1", "email", "x").unwrap();
         s.engine_declare_wait("case-1", &NewWait { action: "trigger_child", on_kind: "signal", key: "email:x", deadline: None, reason: "waiting", ..Default::default() }, 100).unwrap();
         // A signal that is claimed five times and never completed.
@@ -1764,6 +1765,103 @@ mod tests {
         assert_eq!(s.engine_events_for("run", "wf-1", 50).unwrap().iter().filter(|e| e.kind == "needs_attention").count(), 1, "told once");
     }
 
+    // ── identity: subjects, aliases, case types, ownership ───────────────
+
+    /// Aliases are normalized before they mean anything: an email in any
+    /// case and a phone in any punctuation are one alias; every path
+    /// present in the payload contributes; the leaf names the kind.
+    #[test]
+    fn aliases_are_normalized_and_every_present_path_counts() {
+        let p = serde_json::json!({"contact": {"email": " Alma@X.com ", "phone": "(555) 123-4567"}, "crm_id": " C-9 ", "name": "Alma"});
+        let a = resolve_aliases(&p, "contact.email,email,contact.phone,crm_id,name");
+        assert_eq!(a, vec![
+            ("email".to_string(), "alma@x.com".to_string()),
+            ("phone".to_string(), "+15551234567".to_string()),
+            ("crm".to_string(), "C-9".to_string()),
+            ("name".to_string(), "Alma".to_string()),
+        ]);
+        assert_eq!(normalize_phone("+44 20 7946 0958"), Some("+442079460958".to_string()));
+        assert_eq!(normalize_phone("1-555-123-4567"), Some("+15551234567".to_string()));
+        assert_eq!(normalize_phone("12345"), None);
+        assert!(resolve_aliases(&serde_json::json!({"email": "not-an-email"}), "email").is_empty());
+    }
+
+    /// The merge rules, exactly: the same email or phone is the same
+    /// subject however it is written; two different emails are two
+    /// subjects; an email and a phone observed together join their
+    /// subjects, reversibly, with the losing subject aliased and every
+    /// alias keeping its first home. Nothing else merges.
+    #[test]
+    fn subjects_merge_only_on_the_deterministic_rules() {
+        let s = store();
+        let b = binding();
+        let sig = |s: &Store, aliases: Vec<(&str, &str)>, idem: &str, t: i64| {
+            let a: Vec<(String, String)> = aliases.into_iter().map(|(k, v)| (k.to_string(), workflow::cases::normalize_alias(k, v).unwrap())).collect();
+            route_signal(s, &b, &a, &serde_json::json!({"idem": idem}), "webhook", idem, t).unwrap()
+        };
+        let Routed::Opened { case_id: by_email } = sig(&s, vec![("email", "Alma@X.com")], "e1", 1_000) else { panic!() };
+        assert!(matches!(sig(&s, vec![("email", "alma@x.com")], "e2", 1_001), Routed::Signaled { case_id } if case_id == by_email), "same email, any case");
+        let Routed::Opened { case_id: by_phone } = sig(&s, vec![("phone", "555-123-4567")], "p1", 1_002) else { panic!("a phone alone is a different subject") };
+        assert_ne!(by_email, by_phone);
+        let Routed::Opened { case_id: other } = sig(&s, vec![("email", "someone@else.com")], "o1", 1_003) else { panic!("a different email is a different subject") };
+
+        // Observed together: the two subjects join. The older (email) wins;
+        // the phone subject is aliased to it and its open case is re-keyed.
+        let routed = sig(&s, vec![("email", "ALMA@x.com"), ("phone", "+1 (555) 123-4567")], "both", 1_004);
+        assert_eq!(routed, Routed::Signaled { case_id: by_email.clone() }, "the signal reaches the winner's case");
+        let subj_e = s.engine_subject_for_alias("email", "alma@x.com").unwrap().unwrap();
+        let subj_p = s.engine_subject_for_alias("phone", "+15551234567").unwrap().unwrap();
+        assert_eq!(subj_e, subj_p, "one subject now");
+        assert_ne!(s.engine_subject_for_alias("email", "someone@else.com").unwrap().unwrap(), subj_e, "similarity never merges; a different email stays apart");
+        // The phone's case and the email's case are both open leads for one
+        // subject now — the re-key collides, and the owner is told instead
+        // of the engine picking.
+        let user = s.ensure_local_user_id().unwrap();
+        assert!(s.get_notification(&format!("attention:merge:{}:{}", subj_p_first(&s, "+15551234567"), subj_e), &user).unwrap().is_some(), "duplicate open cases after a merge are the owner's call");
+        assert!(s.engine_get_run(&by_phone).unwrap().unwrap().state == "waiting", "the losing case is not closed behind anyone's back");
+        let _ = other;
+    }
+
+    fn subj_p_first(s: &Store, phone: &str) -> String {
+        s.conn_query_for_test(&format!("SELECT first_subject_id FROM engine_subject_aliases WHERE kind = 'phone' AND value = '{phone}'"))
+    }
+
+    /// One open case per case type and subject: the same person can have a
+    /// lead case and a support case at once, owned by different employees.
+    /// A second employee on the SAME type is a conflict — recorded, told,
+    /// never silently merged — until the case is handed off.
+    #[test]
+    fn a_person_has_one_case_per_type_and_two_employees_on_one_type_is_a_conflict() {
+        let s = store();
+        let user = s.ensure_local_user_id().unwrap();
+        let payload = serde_json::json!({"email": "a@b.c"});
+        let lead = binding();
+        let mut support = binding();
+        support.agent_id = "helpdesk";
+        support.binding_name = "handle-ticket";
+        support.case_type = "support".into();
+        let Routed::Opened { case_id: lead_case } = signal_or_open(&s, &lead, "email", "a@b.c", &payload, "webhook", "l1", 1_000).unwrap() else { panic!() };
+        let Routed::Opened { case_id: support_case } = signal_or_open(&s, &support, "email", "a@b.c", &payload, "webhook", "t1", 1_001).unwrap() else { panic!("a support case beside the lead case") };
+        assert_ne!(lead_case, support_case);
+        assert_eq!(open_case_for(&s, "lead", "email", "a@b.c").unwrap().id, lead_case);
+        assert_eq!(open_case_for(&s, "support", "email", "a@b.c").unwrap().id, support_case);
+
+        // A second employee working leads for the same person.
+        let mut rival = binding();
+        rival.agent_id = "closer";
+        let routed = signal_or_open(&s, &rival, "email", "a@b.c", &payload, "webhook", "l2", 1_002).unwrap();
+        assert_eq!(routed, Routed::Conflict { case_id: lead_case.clone(), owner: "ic".into() });
+        assert!(s.get_notification(&format!("attention:conflict:{lead_case}:closer"), &user).unwrap().is_some(), "the owner is told");
+        assert!(s.engine_claim_events(2_000, 50).unwrap().0.iter().all(|e| e.idem_key != "l2"), "the rival's signal is on the books but goes nowhere");
+        assert_eq!(s.engine_get_run(&lead_case).unwrap().unwrap().agent_id, "ic", "ownership unchanged");
+
+        // Handoff: ownership is an assignment. After it, the rival's next
+        // signal reaches the case and the original owner is the outsider.
+        assert!(s.engine_reassign_run(&lead_case, "closer").unwrap());
+        assert!(matches!(signal_or_open(&s, &rival, "email", "a@b.c", &payload, "webhook", "l3", 1_003).unwrap(), Routed::Signaled { case_id } if case_id == lead_case));
+        assert!(matches!(signal_or_open(&s, &lead, "email", "a@b.c", &payload, "webhook", "l4", 1_004).unwrap(), Routed::Conflict { .. }));
+    }
+
     /// The timeout worklists: a turn running since before the cutoff, or
     /// queued since before it, and nothing else.
     #[test]
@@ -1804,7 +1902,7 @@ mod tests {
         let case = s.engine_get_run(&case_id).unwrap().unwrap();
         assert_eq!(case.state, "done");
         assert!(case.current_wait_id.is_none() || s.engine_get_wait(case.current_wait_id.unwrap()).unwrap().unwrap().deadline != Some(2_000 + 86_400), "no new wait");
-        assert!(s.engine_run_for_key("email", "a@b.c").unwrap().is_none(), "key stays released");
+        assert!(open_case_for(&s, "lead", "email", "a@b.c").is_none(), "key stays released");
         assert!(s.engine_unsettled_turns(10).unwrap().is_empty(), "recorded once");
     }
 

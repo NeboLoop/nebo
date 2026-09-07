@@ -4,7 +4,7 @@
 //! the same code and tests need no runner. Design of record: "One Engine
 //! for Durable Work" (2026-09-06).
 
-use db::{EngineEvent, EngineRun, NewEvent, NewRun, NewWait, Store};
+use db::{EngineEvent, EngineRun, Enqueued, NewEvent, NewRun, NewWait, Store};
 use types::NeboError;
 
 /// A turn that ends without declaring a wait, on a binding that names none.
@@ -62,11 +62,7 @@ pub fn needs_attention(store: &Store, agent_id: &str, run_id: &str, subject: &st
     let open_case = case.filter(|c| matches!(c.state.as_str(), "waiting" | "queued" | "running"));
     if let (Some(c), true) = (open_case, !agent_id.is_empty() && employee_is_autonomous(store, agent_id)) {
         let inputs: serde_json::Value = c.inputs.as_deref().and_then(|s| serde_json::from_str(s).ok()).unwrap_or_default();
-        let key = format!(
-            "{}:{}",
-            inputs["_case"]["key_type"].as_str().unwrap_or(""),
-            inputs["_case"]["key_value"].as_str().unwrap_or("")
-        );
+        let key = inputs["_case"]["key"].as_str().unwrap_or("").to_string();
         let payload = serde_json::json!({ "needs_attention": reason, "subject": subject }).to_string();
         store.engine_enqueue_event(&NewEvent {
             kind: "signal",
@@ -118,14 +114,22 @@ pub enum Routed {
     Duplicate,
     /// Appended to an open case; the loop wakes it.
     Signaled { case_id: String },
-    /// No open case for the key: one opened and its first turn queued.
+    /// No open case for the subject and case type: one opened and its
+    /// first turn queued.
     Opened { case_id: String },
+    /// An open case of this type exists for the subject and another
+    /// employee owns it. Nothing was appended; the owner was told. Two
+    /// employees on one case type is a handoff or a configuration error,
+    /// never a silent merge.
+    Conflict { case_id: String, owner: String },
 }
 
 /// Everything a binding brings to the router.
 pub struct CaseBinding<'a> {
     pub agent_id: &'a str,
     pub binding_name: &'a str,
+    /// The kind of case (`lead`, `support`). Bindings sharing it share the case.
+    pub case_type: String,
     pub definition_json: &'a str,
     pub base_inputs: serde_json::Value,
     pub default_wait_secs: i64,
@@ -149,36 +153,105 @@ impl<'a> CaseBinding<'a> {
         if !base_inputs.is_object() {
             base_inputs = serde_json::json!({});
         }
-        Some(Self { agent_id, binding_name, definition_json, base_inputs, default_wait_secs })
+        let case_type = case
+            .case_type
+            .as_deref()
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .unwrap_or(binding_name)
+            .replace(':', "-");
+        Some(Self { agent_id, binding_name, case_type, definition_json, base_inputs, default_wait_secs })
     }
 }
 
-/// The person a payload names, per the binding's key spec. The spec is one
-/// or more dotted paths, comma-separated, tried in order: the first present
-/// wins, and its leaf becomes the key type (`customer.email` → `email`).
-/// Values are trimmed and lowercased so `Alma@X.com` and `alma@x.com` are
-/// one key. None means this payload does not name anyone.
-pub fn resolve_key(payload: &serde_json::Value, spec: &str) -> Option<(String, String)> {
+/// Every alias a payload carries, per the binding's key spec: one or more
+/// dotted paths, comma-separated; every path that is present contributes
+/// an alias, typed by its leaf (`contact.email` → email, `phone` → phone,
+/// `crm_id` → crm, anything else → the leaf itself) and normalized. Empty
+/// means this payload does not name anyone.
+pub fn resolve_aliases(payload: &serde_json::Value, spec: &str) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
     for path in spec.split(',').map(str::trim).filter(|p| !p.is_empty()) {
-        if let Some(value) = key_at(payload, path) {
-            let key_type = path.rsplit('.').next().unwrap_or("key").to_string();
-            return Some((key_type, value));
+        let Some(raw) = value_at(payload, path) else { continue };
+        let leaf = path.rsplit('.').next().unwrap_or("key").to_lowercase();
+        let kind = if leaf.ends_with("email") {
+            "email"
+        } else if leaf.ends_with("phone") || leaf.ends_with("mobile") {
+            "phone"
+        } else if matches!(leaf.as_str(), "crm_id" | "crmid" | "customer_id" | "customerid" | "contact_id" | "contactid") {
+            "crm"
+        } else {
+            leaf.as_str()
+        };
+        let Some(value) = normalize_alias(kind, &raw) else { continue };
+        let kind = kind.to_string();
+        if !out.iter().any(|(k, v)| *k == kind && *v == value) {
+            out.push((kind, value));
         }
     }
-    None
+    out
 }
 
-fn key_at(payload: &serde_json::Value, path: &str) -> Option<String> {
+/// The first alias a payload carries, for callers that want one key.
+pub fn resolve_key(payload: &serde_json::Value, spec: &str) -> Option<(String, String)> {
+    resolve_aliases(payload, spec).into_iter().next()
+}
+
+/// One alias, the way it is stored: an email lowercased, a phone as E.164
+/// digits, any other id trimmed. None when there is nothing usable.
+pub fn normalize_alias(kind: &str, raw: &str) -> Option<String> {
+    let s = raw.trim();
+    if s.is_empty() {
+        return None;
+    }
+    let v = match kind {
+        "email" => {
+            let e = s.to_lowercase();
+            if !e.contains('@') {
+                return None;
+            }
+            e
+        }
+        "phone" => normalize_phone(s)?,
+        _ => s.to_string(),
+    };
+    Some(v)
+}
+
+/// E.164 from what people type. Digits only; a leading `+` keeps the country
+/// code; ten digits are read as North American; eleven digits starting with
+/// 1 likewise. ponytail: no libphonenumber — anything else is kept as `+`
+/// plus its digits, which is exact-match stable even when not canonical.
+pub fn normalize_phone(s: &str) -> Option<String> {
+    let digits: String = s.chars().filter(|c| c.is_ascii_digit()).collect();
+    if digits.len() < 7 {
+        return None;
+    }
+    let plus = s.trim_start().starts_with('+');
+    Some(match (plus, digits.len()) {
+        (false, 10) => format!("+1{digits}"),
+        (false, 11) if digits.starts_with('1') => format!("+{digits}"),
+        _ => format!("+{digits}"),
+    })
+}
+
+fn value_at(payload: &serde_json::Value, path: &str) -> Option<String> {
     let mut cur = payload;
     for seg in path.split('.').filter(|s| !s.is_empty()) {
         cur = cur.get(seg)?;
     }
-    let s = match cur {
-        serde_json::Value::String(s) => s.trim().to_lowercase(),
-        serde_json::Value::Number(n) => n.to_string(),
-        _ => return None,
-    };
-    (!s.is_empty()).then_some(s)
+    match cur {
+        serde_json::Value::String(s) => Some(s.clone()),
+        serde_json::Value::Number(n) => Some(n.to_string()),
+        _ => None,
+    }
+}
+
+/// The open case of one type for whoever an alias names, if any.
+pub fn open_case_for(store: &Store, case_type: &str, kind: &str, value: &str) -> Option<EngineRun> {
+    let value = normalize_alias(kind, value)?;
+    let subject = store.engine_subject_for_alias(kind, &value).ok().flatten()?;
+    store.engine_run_for_key(&format!("case:{case_type}"), &subject).ok().flatten()
 }
 
 /// `3d`, `12h`, `45m`, `30s`, or combinations (`1d12h`).
@@ -210,10 +283,7 @@ pub fn relative_secs(s: &str) -> Option<i64> {
     Some(total)
 }
 
-/// Signal-with-start. The signal is recorded first (durable, idempotent);
-/// then it either reaches the open case for the key or opens one. The
-/// event's target is the key itself, `<type>:<value>`, which is also what
-/// the case's wait matches on.
+/// Signal-with-start for one alias. See `route_signal`.
 pub fn signal_or_open(
     store: &Store,
     b: &CaseBinding<'_>,
@@ -224,7 +294,37 @@ pub fn signal_or_open(
     idem_key: &str,
     t: i64,
 ) -> Result<Routed, NeboError> {
-    let key = format!("{key_type}:{key_value}");
+    let value = normalize_alias(key_type, key_value).unwrap_or_else(|| key_value.to_string());
+    route_signal(store, b, &[(key_type.to_string(), value)], payload, channel, idem_key, t)
+}
+
+/// Signal-with-start. The aliases name a subject (creating or, when they
+/// were observed together, merging); the signal is recorded first (durable,
+/// idempotent) against the case key `case:<type>:<subject>`; then it either
+/// reaches the open case of that type for the subject or opens one. An
+/// open case owned by another employee is a conflict, never a silent merge.
+pub fn route_signal(
+    store: &Store,
+    b: &CaseBinding<'_>,
+    aliases: &[(String, String)],
+    payload: &serde_json::Value,
+    channel: &str,
+    idem_key: &str,
+    t: i64,
+) -> Result<Routed, NeboError> {
+    if aliases.is_empty() {
+        return Err(NeboError::Validation("a case signal names nobody".into()));
+    }
+    let source = format!("{}:{}:{}", b.agent_id, b.binding_name, channel);
+    let (subject, merged) = store.engine_resolve_subject(aliases, &source, t)?;
+    for loser in &merged {
+        for conflicted in store.engine_rekey_open_runs(loser, &subject)? {
+            let reason = format!("two open cases now name one person after a merge: {conflicted} and the case for subject {subject}; keep one");
+            needs_attention(store, b.agent_id, &conflicted, &format!("merge:{loser}:{subject}"), None, &reason, t)?;
+        }
+    }
+    let key_type = format!("case:{}", b.case_type);
+    let key = format!("{key_type}:{subject}");
     let event = NewEvent {
         kind: "signal",
         target_type: "run",
@@ -236,10 +336,21 @@ pub fn signal_or_open(
         durable: true,
         ..Default::default()
     };
-    if store.engine_enqueue_event(&event)? == db::Enqueued::Duplicate {
+    let Enqueued::Inserted(event_id) = store.engine_enqueue_event(&event)? else {
         return Ok(Routed::Duplicate);
-    }
-    if let Some(case) = store.engine_run_for_key(key_type, key_value)? {
+    };
+    if let Some(case) = store.engine_run_for_key(&key_type, &subject)? {
+        if case.agent_id != b.agent_id {
+            // Recorded, not appended: the signal is on the books with the
+            // reason it went nowhere, and the owner decides the routing.
+            store.engine_supersede_event(event_id, t, &format!("conflict: case owned by {}", case.agent_id))?;
+            let reason = format!(
+                "employees {} and {} both handle {} cases for the same person; the case belongs to {}. Route the source to one of them or hand the case off.",
+                case.agent_id, b.agent_id, b.case_type, case.agent_id
+            );
+            needs_attention(store, "", &case.id, &format!("conflict:{}:{}", case.id, b.agent_id), None, &reason, t)?;
+            return Ok(Routed::Conflict { case_id: case.id, owner: case.agent_id });
+        }
         return Ok(Routed::Signaled { case_id: case.id });
     }
 
@@ -248,8 +359,10 @@ pub fn signal_or_open(
     let mut inputs = b.base_inputs.clone();
     inputs["_case"] = serde_json::json!({
         "id": case_id,
-        "key_type": key_type,
-        "key_value": key_value,
+        "case_type": b.case_type,
+        "subject_id": subject,
+        "key": key,
+        "aliases": store.engine_subject_aliases(&subject)?.into_iter().map(|(k, v)| serde_json::json!({"kind": k, "value": v})).collect::<Vec<_>>(),
         "binding": b.binding_name,
         "default_wait_secs": b.default_wait_secs,
     });
@@ -264,10 +377,10 @@ pub fn signal_or_open(
         inputs: Some(&inputs.to_string()),
         external_ref: None,
     })?;
-    if !store.engine_bind_key(&case_id, key_type, key_value)? {
+    if !store.engine_bind_key(&case_id, &key_type, &subject)? {
         // Lost a race to another opener; that case owns the key now.
         store.engine_close_run(&case_id, "cancelled", t)?;
-        if let Some(case) = store.engine_run_for_key(key_type, key_value)? {
+        if let Some(case) = store.engine_run_for_key(&key_type, &subject)? {
             return Ok(Routed::Signaled { case_id: case.id });
         }
         return Err(NeboError::Internal("case key bound by nobody".into()));
@@ -280,8 +393,9 @@ pub fn signal_or_open(
         t,
     )?;
     let case = store.engine_get_run(&case_id)?.ok_or(NeboError::NotFound)?;
-    let claimed = store.engine_claim_events(t, 1)?; // the signal just written, in order
-    if let Some(ev) = claimed.0.into_iter().find(|e| e.idem_key == idem_key) {
+    // The signal just written starts the first turn here, so the case is
+    // never open with nothing queued.
+    if let Some(ev) = store.engine_get_event(event_id)? {
         start_child(store, &case, &ev)?;
         store.engine_complete_event(ev.id, t)?;
     }
@@ -488,11 +602,7 @@ pub fn settle_turn(store: &Store, child: &EngineRun, output: Option<&str>, faile
         return Ok(());
     };
     let inputs: serde_json::Value = child.inputs.as_deref().and_then(|s| serde_json::from_str(s).ok()).unwrap_or_default();
-    let key = format!(
-        "{}:{}",
-        inputs["_case"]["key_type"].as_str().unwrap_or(""),
-        inputs["_case"]["key_value"].as_str().unwrap_or("")
-    );
+    let key = inputs["_case"]["key"].as_str().unwrap_or("").to_string();
     let default_secs = inputs["_case"]["default_wait_secs"].as_i64().unwrap_or(DEFAULT_WAIT_SECS);
 
     // A turn that ran to the end must have ended with the contract. One

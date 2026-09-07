@@ -193,7 +193,7 @@ impl AgentWorker {
                             binding_name: binding.binding_name.clone(),
                             definition_json: def_json.clone(),
                             emit_source: event_emit_source.clone(),
-                            case: wf_binding.and_then(workflow::events::CaseRoute::from_binding),
+                            case: wf_binding.and_then(|wb| workflow::events::CaseRoute::from_binding(&binding.binding_name, wb)),
                         };
                         // Inline (not spawned): subscriptions must be in place
                         // before start() returns, so a restart's awaited stop →

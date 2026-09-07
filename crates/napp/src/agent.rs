@@ -351,9 +351,16 @@ pub struct WorkflowBinding {
 /// forgets to say. See "One Engine for Durable Work" (2026-09-06).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CaseConfig {
-    /// Dotted path into the trigger payload naming the person or thing:
-    /// `email`, `phone`, `customer.id`. The leaf name is the key type.
+    /// Dotted paths into the trigger payload naming the person or thing,
+    /// comma-separated: `contactEmail,email,phone,crm_id`. Every path that
+    /// is present becomes an alias of the subject; the leaf name is the
+    /// alias kind (email, phone, crm, or the leaf itself).
     pub key: String,
+    /// The kind of case this binding works (`lead`, `support`, `invoice`).
+    /// One open case per case type and subject; bindings that share a type
+    /// share the case. Defaults to the binding's name.
+    #[serde(rename = "type", default, skip_serializing_if = "Option::is_none")]
+    pub case_type: Option<String>,
     /// Wait applied when a turn ends without declaring one: a relative span
     /// such as `3d`, `12h`, `45m`. Default three days.
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -219,6 +219,23 @@ fn row_to_wait(r: &rusqlite::Row<'_>) -> rusqlite::Result<EngineWait> {
     })
 }
 
+/// Follow `merged_into` to the subject that stands for this one now.
+fn canonical_subject(conn: &rusqlite::Connection, id: &str) -> Result<String, NeboError> {
+    let mut cur = id.to_string();
+    for _ in 0..16 {
+        let next: Option<String> = conn
+            .query_row("SELECT merged_into FROM engine_subjects WHERE id = ?1", params![cur], |r| r.get(0))
+            .optional()
+            .db_err("canonical_subject")?
+            .flatten();
+        match next {
+            Some(n) => cur = n,
+            None => return Ok(cur),
+        }
+    }
+    Ok(cur)
+}
+
 impl Store {
     // ── events ─────────────────────────────────────────────────────────
 
@@ -644,6 +661,15 @@ impl Store {
         }
     }
 
+    /// Test-only: one string cell from one query.
+    #[doc(hidden)]
+    pub fn conn_query_for_test(&self, sql: &str) -> String {
+        self.conn()
+            .ok()
+            .and_then(|c| c.query_row(sql, [], |r| r.get::<_, String>(0)).ok())
+            .unwrap_or_default()
+    }
+
     /// Case turns that have been running since before `before`, or queued
     /// since before it — the timeout worklist.
     pub fn engine_turns_in_state_since(&self, state: &str, before: i64) -> Result<Vec<EngineRun>, NeboError> {
@@ -958,6 +984,145 @@ impl Store {
         )
         .db_err("engine_resume_from_wait run")?;
         tx.commit().db_err("engine_resume_from_wait commit")
+    }
+
+    // ── subjects: who a case is about ───────────────────────────────────
+
+    /// The subject these aliases name, creating or merging as the rules
+    /// allow. Every alias in `aliases` was observed together in one
+    /// customer-originated record, which is the one deterministic reason
+    /// two subjects may join. Returns the canonical subject id and the
+    /// ids of any subjects merged into it by this call.
+    pub fn engine_resolve_subject(&self, aliases: &[(String, String)], source: &str, now: i64) -> Result<(String, Vec<String>), NeboError> {
+        let mut conn = self.conn()?;
+        let tx = conn.transaction().db_err("engine_resolve_subject tx")?;
+        // Which subjects the aliases already name, canonicalized.
+        let mut found: Vec<String> = Vec::new();
+        for (kind, value) in aliases {
+            let hit: Option<String> = tx
+                .query_row(
+                    "SELECT subject_id FROM engine_subject_aliases WHERE kind = ?1 AND value = ?2",
+                    params![kind, value],
+                    |r| r.get(0),
+                )
+                .optional()
+                .db_err("engine_resolve_subject lookup")?;
+            if let Some(id) = hit {
+                let canonical = canonical_subject(&tx, &id)?;
+                if !found.contains(&canonical) {
+                    found.push(canonical);
+                }
+            }
+        }
+        let (subject, merged) = match found.len() {
+            0 => {
+                let id = uuid::Uuid::new_v4().to_string();
+                tx.execute("INSERT INTO engine_subjects (id, created_at) VALUES (?1, ?2)", params![id, now])
+                    .db_err("engine_resolve_subject insert")?;
+                (id, Vec::new())
+            }
+            1 => (found.remove(0), Vec::new()),
+            _ => {
+                // Observed together: the oldest subject wins, the others are
+                // aliased to it. Their aliases keep their first home.
+                let mut ordered = found.clone();
+                ordered.sort_by_key(|id| {
+                    tx.query_row("SELECT created_at, id FROM engine_subjects WHERE id = ?1", params![id], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))
+                        .unwrap_or((i64::MAX, id.clone()))
+                });
+                let winner = ordered.remove(0);
+                for loser in &ordered {
+                    tx.execute(
+                        "UPDATE engine_subjects SET merged_into = ?2, merged_at = ?3, merge_reason = ?4 WHERE id = ?1",
+                        params![loser, winner, now, format!("observed together in {source}")],
+                    )
+                    .db_err("engine_resolve_subject merge")?;
+                    tx.execute(
+                        "UPDATE engine_subject_aliases SET subject_id = ?2 WHERE subject_id = ?1",
+                        params![loser, winner],
+                    )
+                    .db_err("engine_resolve_subject realias")?;
+                }
+                (winner, ordered)
+            }
+        };
+        for (kind, value) in aliases {
+            tx.execute(
+                "INSERT INTO engine_subject_aliases (subject_id, kind, value, source, first_subject_id)
+                 VALUES (?1, ?2, ?3, ?4, ?1) ON CONFLICT(kind, value) DO NOTHING",
+                params![subject, kind, value, source],
+            )
+            .db_err("engine_resolve_subject alias")?;
+        }
+        tx.commit().db_err("engine_resolve_subject commit")?;
+        Ok((subject, merged))
+    }
+
+    /// Every alias of a subject, kind and value.
+    pub fn engine_subject_aliases(&self, subject_id: &str) -> Result<Vec<(String, String)>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare("SELECT kind, value FROM engine_subject_aliases WHERE subject_id = ?1 ORDER BY id")
+            .db_err("engine_subject_aliases")?;
+        let rows = stmt
+            .query_map(params![subject_id], |r| Ok((r.get(0)?, r.get(1)?)))
+            .db_err("engine_subject_aliases")?
+            .collect::<Result<Vec<_>, _>>()
+            .db_err("engine_subject_aliases")?;
+        Ok(rows)
+    }
+
+    /// The subject an alias names, if any (canonical, across merges).
+    pub fn engine_subject_for_alias(&self, kind: &str, value: &str) -> Result<Option<String>, NeboError> {
+        let conn = self.conn()?;
+        let hit: Option<String> = conn
+            .query_row(
+                "SELECT subject_id FROM engine_subject_aliases WHERE kind = ?1 AND value = ?2",
+                params![kind, value],
+                |r| r.get(0),
+            )
+            .optional()
+            .db_err("engine_subject_for_alias")?;
+        match hit {
+            Some(id) => Ok(Some(canonical_subject(&conn, &id)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// After a merge: open runs keyed to the losing subject move to the
+    /// winner. Two open cases of the same type collide on the unique index;
+    /// those are returned untouched so someone decides which one lives.
+    pub fn engine_rekey_open_runs(&self, from_subject: &str, to_subject: &str) -> Result<Vec<String>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare("SELECT id, run_id, key_type FROM engine_run_keys WHERE key_value = ?1 AND released_at IS NULL")
+            .db_err("engine_rekey_open_runs")?;
+        let rows = stmt
+            .query_map(params![from_subject], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)))
+            .db_err("engine_rekey_open_runs")?
+            .collect::<Result<Vec<_>, _>>()
+            .db_err("engine_rekey_open_runs")?;
+        let mut conflicts = Vec::new();
+        for (id, run_id, _) in rows {
+            let moved = conn.execute(
+                "UPDATE OR IGNORE engine_run_keys SET key_value = ?2 WHERE id = ?1",
+                params![id, to_subject],
+            );
+            match moved {
+                Ok(1) => {}
+                _ => conflicts.push(run_id),
+            }
+        }
+        Ok(conflicts)
+    }
+
+    /// Ownership is an assignment: hand a run (a case) to another employee.
+    pub fn engine_reassign_run(&self, run_id: &str, agent_id: &str) -> Result<bool, NeboError> {
+        let conn = self.conn()?;
+        let n = conn
+            .execute("UPDATE engine_runs SET agent_id = ?2 WHERE id = ?1", params![run_id, agent_id])
+            .db_err("engine_reassign_run")?;
+        Ok(n == 1)
     }
 
     // ── keys ───────────────────────────────────────────────────────────
