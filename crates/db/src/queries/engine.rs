@@ -96,6 +96,17 @@ pub struct EngineRun {
     pub ended_at: Option<i64>,
 }
 
+impl EngineRun {
+    /// What woke a re-queued run, if an event did: the id
+    /// `engine_resume_from_wait` recorded in its inputs.
+    pub fn woken_by(&self) -> Option<i64> {
+        self.inputs
+            .as_deref()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+            .and_then(|v| v["woken_by"].as_i64())
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct NewRun<'a> {
     pub id: &'a str,
@@ -452,6 +463,13 @@ impl Store {
         .db_err("engine_last_timer_floor")
     }
 
+    pub fn engine_get_event(&self, id: i64) -> Result<Option<EngineEvent>, NeboError> {
+        let conn = self.conn()?;
+        conn.query_row(&format!("SELECT {EVENT_COLUMNS} FROM engine_events WHERE id = ?1"), params![id], row_to_event)
+            .optional()
+            .db_err("engine_get_event")
+    }
+
     /// Durable history of one target, oldest first, bounded.
     pub fn engine_events_for(&self, target_type: &str, target_id: &str, limit: i64) -> Result<Vec<EngineEvent>, NeboError> {
         let conn = self.conn()?;
@@ -585,17 +603,24 @@ impl Store {
         Ok(rows)
     }
 
-    /// Running runs of one kind — the reconciliation worklist.
-    pub fn engine_running_runs_of_kind(&self, kind: &str) -> Result<Vec<EngineRun>, NeboError> {
+    /// Turns that ended but whose case has not heard it yet: a finished
+    /// child of a case with no `turn:<id>:result` event on record.
+    pub fn engine_unsettled_turns(&self, limit: i64) -> Result<Vec<EngineRun>, NeboError> {
         let conn = self.conn()?;
         let mut stmt = conn
-            .prepare(&format!("SELECT {RUN_COLUMNS} FROM engine_runs WHERE state = 'running' AND kind = ?1 ORDER BY id"))
-            .db_err("engine_running_runs_of_kind")?;
+            .prepare(&format!(
+                "SELECT {RUN_COLUMNS} FROM engine_runs c
+                 WHERE c.parent_run_id IS NOT NULL AND c.state IN ('done', 'failed', 'cancelled')
+                   AND EXISTS (SELECT 1 FROM engine_runs p WHERE p.id = c.parent_run_id AND p.kind = 'case')
+                   AND NOT EXISTS (SELECT 1 FROM engine_events e WHERE e.idem_key = 'turn:' || c.id || ':result')
+                 ORDER BY c.ended_at, c.rowid LIMIT ?1"
+            ))
+            .db_err("engine_unsettled_turns")?;
         let rows = stmt
-            .query_map(params![kind], row_to_run)
-            .db_err("engine_running_runs_of_kind")?
+            .query_map(params![limit], row_to_run)
+            .db_err("engine_unsettled_turns")?
             .collect::<Result<Vec<_>, _>>()
-            .db_err("engine_running_runs_of_kind")?;
+            .db_err("engine_unsettled_turns")?;
         Ok(rows)
     }
 
@@ -646,7 +671,7 @@ impl Store {
         conn.query_row(
             &format!(
                 "SELECT {RUN_COLUMNS} FROM engine_runs
-                 WHERE parent_run_id = ?1 AND state IN ('queued', 'running')
+                 WHERE parent_run_id = ?1 AND state IN ('queued', 'running', 'waiting', 'interrupted')
                  ORDER BY id LIMIT 1"
             ),
             params![parent_id],
@@ -674,15 +699,6 @@ impl Store {
         Ok(())
     }
 
-    pub fn engine_set_external_ref(&self, id: &str, external_ref: &str) -> Result<(), NeboError> {
-        let conn = self.conn()?;
-        conn.execute(
-            "UPDATE engine_runs SET external_ref = ?2 WHERE id = ?1",
-            params![id, external_ref],
-        )
-        .db_err("engine_set_external_ref")?;
-        Ok(())
-    }
 
     /// Boot sweep, half one: every run the dead process left `running` is
     /// stamped `interrupted` and returned for triage. Never a phantom

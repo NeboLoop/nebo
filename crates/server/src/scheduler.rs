@@ -109,11 +109,6 @@ pub(crate) async fn execute_job(state: &AppState, job: &CronJob) -> (bool, Strin
     }
 }
 
-/// Execute one fire of an agent's inline workflow binding
-/// (`agent:{agent_id}:{binding}`) under the given trigger label.
-pub(crate) async fn execute_binding(state: &AppState, command: &str, trigger: &str) -> (bool, String, Option<String>) {
-    execute_agent_workflow_task(&*state.workflow_manager, &state.store, command, trigger).await
-}
 
 async fn execute_shell(command: &str) -> (bool, String, Option<String>) {
     match Command::new("sh").arg("-c").arg(command).output().await {
@@ -392,7 +387,7 @@ async fn execute_workflow_task(
 }
 
 /// Execute an agent's inline workflow. Command format: `agent:{agent_id}:{binding_name}`
-async fn execute_agent_workflow_task(
+pub(crate) async fn execute_agent_workflow_task(
     manager: &dyn tools::workflows::WorkflowManager,
     store: &Store,
     command: &str,

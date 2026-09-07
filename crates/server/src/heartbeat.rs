@@ -32,13 +32,10 @@ pub(crate) struct Enabled {
 }
 
 impl Enabled {
+    /// The timer target: `heartbeat:<type>:<id>`.
     pub fn target(&self) -> String {
-        heartbeat_target(&self.entity_type, &self.entity_id)
+        format!("heartbeat:{}:{}", self.entity_type, self.entity_id)
     }
-}
-
-pub(crate) fn heartbeat_target(entity_type: &str, entity_id: &str) -> String {
-    format!("heartbeat:{entity_type}:{entity_id}")
 }
 
 /// Every entity whose heartbeat is on, resolved against global settings:

@@ -490,7 +490,7 @@ mod tests {
 
         let case = store.engine_run_for_key("email", "alma@aboundinggoods.com").unwrap().expect("one open case");
         assert_eq!(case.state, "waiting");
-        let turns = store.engine_queued_runs_of_kind("case_turn", 10).unwrap();
+        let turns = store.engine_queued_runs_of_kind("workflow", 10).unwrap();
         assert_eq!(turns.len(), 1, "one first turn");
         assert_eq!(turns[0].parent_run_id.as_deref(), Some(case.id.as_str()));
         // The signals are recorded against the case's key, durable, once each.

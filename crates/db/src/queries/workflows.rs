@@ -9,29 +9,26 @@ use crate::models::{
 use crate::queries::engine::{NewRun, NewWait};
 use types::NeboError;
 
-/// A workflow run is an engine run (its durable half: state, definition,
-/// inputs, session, result, error) joined to its workflow detail. The
-/// engine's state reads back as the status vocabulary every caller speaks.
-const RUN_SELECT: &str = "SELECT w.id, w.workflow_id, w.trigger_type, w.trigger_detail,
-        CASE r.state
-          WHEN 'done' THEN CASE WHEN r.summary = 'exited' THEN 'exited' ELSE 'completed' END
-          WHEN 'cancelled' THEN CASE WHEN r.summary = 'denied' THEN 'denied' ELSE 'cancelled' END
-          WHEN 'waiting' THEN 'awaiting_approval'
-          WHEN 'queued' THEN 'interrupted'
-          ELSE r.state
-        END AS status,
-        r.inputs, w.current_activity, w.total_tokens_used, r.error, w.error_activity,
-        NULLIF(r.session_key, '') AS session_key, r.result AS output, w.started_at, w.completed_at
- FROM workflow_runs w JOIN engine_runs r ON r.id = w.id";
-
-/// The same status vocabulary, as a SQL expression over an aliased
-/// engine_runs row `r`, for aggregate queries.
+/// The engine's state read back as the status vocabulary every caller
+/// speaks, as a SQL expression over an aliased engine_runs row `r`.
 const STATUS_EXPR: &str = "CASE r.state
           WHEN 'done' THEN CASE WHEN r.summary = 'exited' THEN 'exited' ELSE 'completed' END
           WHEN 'cancelled' THEN CASE WHEN r.summary = 'denied' THEN 'denied' ELSE 'cancelled' END
           WHEN 'waiting' THEN 'awaiting_approval'
           WHEN 'queued' THEN 'interrupted'
           ELSE r.state END";
+
+/// A workflow run is an engine run (its durable half: state, definition,
+/// inputs, session, result, error) joined to its workflow detail.
+const RUN_SELECT: &str = "SELECT w.id, w.workflow_id, w.trigger_type, w.trigger_detail, STATUS_EXPR AS status,
+        r.inputs, w.current_activity, w.total_tokens_used, r.error, w.error_activity,
+        NULLIF(r.session_key, '') AS session_key, r.result AS output, w.started_at, w.completed_at
+ FROM workflow_runs w JOIN engine_runs r ON r.id = w.id";
+
+/// `RUN_SELECT` with the status expression spliced in.
+fn run_select() -> String {
+    RUN_SELECT.replace("STATUS_EXPR", STATUS_EXPR)
+}
 
 /// A workflow status → the engine state it is, plus the summary tag that
 /// keeps the finer word (`exited`, `denied`) readable.
@@ -259,15 +256,27 @@ impl Store {
             ..Default::default()
         })?;
         self.engine_set_run_state(id, "running", now(), None)?;
+        self.insert_workflow_run_detail(id, workflow_id, trigger_type, trigger_detail)?;
+        self.get_workflow_run(id)?
+            .ok_or_else(|| NeboError::Database("workflow run vanished after insert".into()))
+    }
+
+    /// The workflow half of a run whose engine row already exists (a case
+    /// turn queued by the engine before the manager starts it).
+    pub fn insert_workflow_run_detail(
+        &self,
+        id: &str,
+        workflow_id: &str,
+        trigger_type: &str,
+        trigger_detail: Option<&str>,
+    ) -> Result<(), NeboError> {
         let conn = self.conn()?;
         conn.execute(
             "INSERT INTO workflow_runs (id, workflow_id, trigger_type, trigger_detail) VALUES (?1, ?2, ?3, ?4)",
             params![id, workflow_id, trigger_type, trigger_detail],
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;
-        drop(conn);
-        self.get_workflow_run(id)?
-            .ok_or_else(|| NeboError::Database("workflow run vanished after insert".into()))
+        Ok(())
     }
 
     /// Boot recovery worklist (WS4): every workflow run the engine's sweep
@@ -418,7 +427,7 @@ impl Store {
         let conn = self.conn()?;
         let mut stmt = conn
             .prepare(&format!(
-                "{RUN_SELECT} WHERE w.workflow_id = ?1 ORDER BY w.started_at DESC LIMIT ?2 OFFSET ?3"
+                "{} WHERE w.workflow_id = ?1 ORDER BY w.started_at DESC LIMIT ?2 OFFSET ?3", run_select()
             ))
             .db_err("list_workflow_runs prepare")?;
         let rows = stmt
@@ -456,7 +465,7 @@ impl Store {
         let conn = self.conn()?;
         let mut stmt = conn
             .prepare(&format!(
-                "{RUN_SELECT} WHERE w.started_at >= ?1 ORDER BY w.started_at DESC LIMIT ?2"
+                "{} WHERE w.started_at >= ?1 ORDER BY w.started_at DESC LIMIT ?2", run_select()
             ))
             .db_err("list_workflow_runs_since prepare")?;
         let rows = stmt
@@ -503,7 +512,7 @@ impl Store {
     pub fn get_workflow_run(&self, id: &str) -> Result<Option<WorkflowRun>, NeboError> {
         let conn = self.conn()?;
         conn.query_row(
-            &format!("{RUN_SELECT} WHERE w.id = ?1"),
+            &format!("{} WHERE w.id = ?1", run_select()),
             params![id],
             row_to_workflow_run,
         )
@@ -771,17 +780,25 @@ impl Store {
         )>,
         NeboError,
     > {
-        let Some(wait_id) = self.engine_get_run(run_id)?.and_then(|r| r.current_wait_id) else {
+        // The run's latest approval wait, live or just resolved: the parked
+        // state is read AFTER the approval event released the wait, when
+        // the manager rehydrates the conversation. Whether the run is still
+        // parked is the run's status, not this row's existence.
+        let conn = self.conn()?;
+        let parked: Option<String> = conn
+            .query_row(
+                "SELECT parked FROM engine_waits WHERE run_id = ?1 AND on_kind = 'approval' ORDER BY id DESC LIMIT 1",
+                params![run_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| NeboError::Database(e.to_string()))?
+            .flatten();
+        let Some(parked) = parked else {
             return Ok(None);
         };
-        let Some(wait) = self.engine_get_wait(wait_id)?.filter(|w| w.on_kind == "approval") else {
-            return Ok(None);
-        };
-        let p: serde_json::Value = wait
-            .parked
-            .as_deref()
-            .and_then(|s| serde_json::from_str(s).ok())
-            .ok_or_else(|| NeboError::Database(format!("run {run_id}: parked approval is unreadable")))?;
+        let p: serde_json::Value = serde_json::from_str(&parked)
+            .map_err(|_| NeboError::Database(format!("run {run_id}: parked approval is unreadable")))?;
         let s = |k: &str| p[k].as_str().unwrap_or("").to_string();
         Ok(Some((
             s("agent_id"),
@@ -924,8 +941,9 @@ impl Store {
         let conn = self.conn()?;
         let mut stmt = conn
             .prepare(&format!(
-                "{RUN_SELECT} WHERE r.state IN ('done', 'failed') AND w.reported_at IS NULL
-                 ORDER BY w.completed_at ASC LIMIT ?1"
+                "{} WHERE r.state IN ('done', 'failed') AND w.reported_at IS NULL
+                 ORDER BY w.completed_at ASC LIMIT ?1",
+                run_select()
             ))
             .map_err(|e| NeboError::Database(e.to_string()))?;
         let rows = stmt
@@ -1042,10 +1060,12 @@ mod durability_tests {
         assert_eq!(listed.len(), 1);
         assert_eq!((listed[0].0.as_str(), listed[0].1.as_str(), listed[0].3.as_str()), ("r1", "a1", "Create invoice 1042"));
 
-        // Denied: wait released, run reads as denied.
+        // Denied: wait released, run reads as denied; the parked state is
+        // still readable (the resume path reads it after release), but it
+        // is no longer listed as pending.
         s.delete_workflow_suspension("r1").unwrap();
         s.update_workflow_run("r1", Some("denied"), None, None, Some("Owner denied: Create invoice 1042"), None).unwrap();
-        assert!(s.get_workflow_suspension("r1").unwrap().is_none());
+        assert!(s.get_workflow_suspension("r1").unwrap().is_some());
         assert!(s.list_workflow_suspensions().unwrap().is_empty());
         let run = s.get_workflow_run("r1").unwrap().unwrap();
         assert_eq!(run.status, "denied");

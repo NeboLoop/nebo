@@ -261,8 +261,9 @@ enum LiveTurn {
 
 /// If the case has a live turn, hand it the event: a running turn gets it
 /// as steering; a queued one gets it appended to its inputs. A running turn
-/// that is not accepting steering still counts as live — a second turn
-/// never starts beside it.
+/// that is not accepting steering, a turn parked on an approval, and a turn
+/// interrupted by a restart all still count as live — a second turn never
+/// starts beside one.
 fn live_turn(
     store: &Store,
     case: &EngineRun,
@@ -275,32 +276,24 @@ fn live_turn(
         Ok(Some(c)) => c,
         _ => return LiveTurn::None,
     };
-    let handed = match (child.state.as_str(), child.external_ref.as_deref()) {
-        ("running", Some(wf_run_id)) => {
-            // The session the turn's workflow run was created under is the
-            // one the runner marks busy; read it from the run row rather
-            // than recomputing it.
-            let session_key = store
-                .get_workflow_run(wf_run_id)
-                .ok()
-                .flatten()
-                .and_then(|wf| wf.session_key)
-                .unwrap_or_else(|| tools::workflow_session_key(&case.agent_id, wf_run_id));
-            if busy(&session_key) {
-                steer(&session_key, event);
+    let handed = match child.state.as_str() {
+        "running" => {
+            // The turn's own session is the one the runner marks busy.
+            if busy(&child.session_key) {
+                steer(&child.session_key, event);
                 true
             } else {
                 return LiveTurn::Deferred;
             }
         }
-        ("running", None) => return LiveTurn::Deferred,
-        ("queued", _) => match store.engine_append_pending_signal(&child.id, &event.payload) {
+        "queued" => match store.engine_append_pending_signal(&child.id, &event.payload) {
             Ok(()) => true,
             Err(e) => {
                 warn!(child = %child.id, error = %e, "engine: could not append signal to the queued turn");
                 return LiveTurn::Deferred;
             }
         },
+        "waiting" | "interrupted" => return LiveTurn::Deferred,
         _ => return LiveTurn::None,
     };
     if handed {
@@ -337,14 +330,75 @@ pub fn next_occurrence(schedule: &str, floor: i64) -> Result<Option<i64>, String
 /// else the job's creation, and never further back than the catch-up
 /// window — so a job that slept through a hundred occurrences fires at most
 /// one late and then its next real one.
-fn schedule_floor(store: &Store, job: &CronJob, t: i64) -> i64 {
-    let consumed = store.engine_last_timer_floor("binding", &cron_target(job)).ok().flatten();
+fn schedule_floor(job: &CronJob, consumed: Option<i64>, t: i64) -> i64 {
     let created = job.created_at.as_deref().and_then(|s| {
         chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
             .ok()
             .map(|d| d.and_utc().timestamp())
     });
     consumed.or(created).unwrap_or(t).max(t - CATCH_UP_SECS)
+}
+
+// ── recurring timers: one pending timer per wanted target ─────────────────
+
+/// A timer the engine should be holding: for what, carrying which config,
+/// and — given the last consumed one — due when.
+struct Wanted<'a> {
+    target: String,
+    /// The config the timer carries. A change replaces the pending timer.
+    schedule: String,
+    /// The next due moment from the floor (the last consumed timer's
+    /// moment, if any). None: nothing to arm (a one-shot that passed).
+    due: Box<dyn Fn(Option<i64>) -> Option<i64> + Send + Sync + 'a>,
+}
+
+/// The ONE reconciliation every recurring timer uses. Pending timers under
+/// `prefix` are compared with `wanted`: one for a target no longer wanted,
+/// or carrying a different config, is dropped with a note; every wanted
+/// target without a pending timer gets one. Returns how many were armed.
+fn reconcile_timers(store: &Store, t: i64, target_type: &str, prefix: &str, wanted: &[Wanted<'_>]) -> usize {
+    let pending = match store.engine_pending_timers(target_type) {
+        Ok(p) => p,
+        Err(e) => {
+            warn!(error = %e, target_type, "engine: could not read pending timers");
+            return 0;
+        }
+    };
+    let mut held: HashSet<String> = HashSet::new();
+    for timer in pending.iter().filter(|e| e.target_id.starts_with(prefix)) {
+        match wanted.iter().find(|w| w.target == timer.target_id) {
+            Some(w) if timer.schedule.as_deref() == Some(w.schedule.as_str()) => {
+                held.insert(timer.target_id.clone());
+            }
+            _ => {
+                if let Err(e) = store.engine_supersede_event(timer.id, t, "superseded: schedule changed or target gone") {
+                    warn!(timer = timer.id, error = %e, "engine: could not drop a stale timer");
+                }
+            }
+        }
+    }
+    let mut armed = 0;
+    for w in wanted {
+        if held.contains(&w.target) {
+            continue;
+        }
+        let floor = store.engine_last_timer_floor(target_type, &w.target).ok().flatten();
+        let Some(due) = (w.due)(floor) else { continue };
+        match store.engine_enqueue_event(&NewEvent {
+            kind: "timer",
+            target_type,
+            target_id: &w.target,
+            idem_key: &format!("{}:{due}:{t}", w.target),
+            due_at: Some(due),
+            schedule: Some(&w.schedule),
+            ..Default::default()
+        }) {
+            Ok(db::Enqueued::Inserted(_)) => armed += 1,
+            Ok(db::Enqueued::Duplicate) => {}
+            Err(e) => warn!(target = %w.target, error = %e, "engine: could not arm timer"),
+        }
+    }
+    armed
 }
 
 /// Reconcile pending timers with the enabled jobs: a timer whose job is
@@ -358,63 +412,28 @@ pub fn arm_schedules(store: &Store, t: i64) -> usize {
             return 0;
         }
     };
-    let pending = match store.engine_pending_timers("binding") {
-        Ok(p) => p,
-        Err(e) => {
-            warn!(error = %e, "engine: could not read pending timers");
-            return 0;
-        }
-    };
-    let mut held: HashSet<String> = HashSet::new();
-    for timer in pending.iter().filter(|e| e.target_id.starts_with("cron:")) {
-        let job = jobs.iter().find(|j| cron_target(j) == timer.target_id);
-        match job {
-            Some(j) if timer.schedule.as_deref() == Some(j.schedule.as_str()) => {
-                held.insert(timer.target_id.clone());
-            }
-            _ => {
-                if let Err(e) = store.engine_supersede_event(timer.id, t, "superseded: schedule changed or job gone") {
-                    warn!(timer = timer.id, error = %e, "engine: could not drop a stale schedule timer");
-                }
-            }
-        }
-    }
-    let mut armed = 0;
-    for job in &jobs {
-        let target = cron_target(job);
-        if held.contains(&target) {
-            continue;
-        }
-        let due = match next_occurrence(&job.schedule, schedule_floor(store, job, t)) {
-            Ok(Some(due)) => due,
-            Ok(None) => continue,
-            Err(e) => {
+    let wanted: Vec<Wanted<'_>> = jobs
+        .iter()
+        .filter(|job| {
+            let ok = next_occurrence(&job.schedule, t).is_ok();
+            if !ok {
                 // Once per job per process, not once per tick.
                 static WARNED: std::sync::Mutex<Vec<i64>> = std::sync::Mutex::new(Vec::new());
                 let mut warned = WARNED.lock().unwrap_or_else(|p| p.into_inner());
                 if !warned.contains(&job.id) {
                     warned.push(job.id);
-                    warn!(job = job.name.as_str(), schedule = %job.schedule, error = %e, "invalid cron expression; this job will not fire");
+                    warn!(job = job.name.as_str(), schedule = %job.schedule, "invalid cron expression; this job will not fire");
                 }
-                continue;
             }
-        };
-        let idem = format!("cron:{}:{due}:{t}", job.id);
-        match store.engine_enqueue_event(&NewEvent {
-            kind: "timer",
-            target_type: "binding",
-            target_id: &target,
-            idem_key: &idem,
-            due_at: Some(due),
-            schedule: Some(&job.schedule),
-            ..Default::default()
-        }) {
-            Ok(db::Enqueued::Inserted(_)) => armed += 1,
-            Ok(db::Enqueued::Duplicate) => {}
-            Err(e) => warn!(job = job.name.as_str(), error = %e, "engine: could not arm schedule"),
-        }
-    }
-    armed
+            ok
+        })
+        .map(|job| Wanted {
+            target: cron_target(job),
+            schedule: job.schedule.clone(),
+            due: Box::new(move |consumed| next_occurrence(&job.schedule, schedule_floor(job, consumed, t)).ok().flatten()),
+        })
+        .collect();
+    reconcile_timers(store, t, "binding", "cron:", &wanted)
 }
 
 /// A binding heartbeat's timer came due: queue ONE fire of the inline
@@ -580,56 +599,18 @@ async fn arm_heartbeats(state: &AppState, t: i64) -> usize {
             return 0;
         }
     };
-    let store = &state.store;
-    let pending = store
-        .engine_pending_timers("entity")
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|e| e.target_id.starts_with("heartbeat:"))
-        .collect::<Vec<_>>();
-    let mut held: HashSet<String> = HashSet::new();
-    for timer in &pending {
-        let entity = enabled.iter().find(|e| e.target() == timer.target_id);
-        match entity {
-            Some(e) if timer.schedule.as_deref() == Some(e.interval_secs.to_string().as_str()) => {
-                held.insert(timer.target_id.clone());
-            }
-            _ => {
-                if let Err(err) = store.engine_supersede_event(timer.id, t, "superseded: heartbeat changed or disabled") {
-                    warn!(timer = timer.id, error = %err, "engine: could not drop a stale heartbeat timer");
-                }
-            }
-        }
-    }
-    let mut armed = 0;
-    for entity in &enabled {
-        let target = entity.target();
-        if held.contains(&target) {
-            continue;
-        }
-        let floor = store
-            .engine_last_timer_floor("entity", &target)
-            .ok()
-            .flatten()
-            .or(entity.last_fired_at);
-        let due = floor.map(|f| f + entity.interval_secs).unwrap_or(t).max(t);
-        let due = crate::heartbeat::next_in_window(due, entity.window.as_ref());
-        let interval = entity.interval_secs.to_string();
-        match store.engine_enqueue_event(&NewEvent {
-            kind: "timer",
-            target_type: "entity",
-            target_id: &target,
-            idem_key: &format!("{target}:{due}:{t}"),
-            due_at: Some(due),
-            schedule: Some(&interval),
-            ..Default::default()
-        }) {
-            Ok(db::Enqueued::Inserted(_)) => armed += 1,
-            Ok(db::Enqueued::Duplicate) => {}
-            Err(e) => warn!(entity = %target, error = %e, "engine: could not arm heartbeat"),
-        }
-    }
-    armed + arm_binding_heartbeats(state, t).await
+    let wanted: Vec<Wanted<'_>> = enabled
+        .iter()
+        .map(|e| Wanted {
+            target: e.target(),
+            schedule: e.interval_secs.to_string(),
+            due: Box::new(move |consumed| {
+                let due = consumed.or(e.last_fired_at).map(|f| f + e.interval_secs).unwrap_or(t).max(t);
+                Some(crate::heartbeat::next_in_window(due, e.window.as_ref()))
+            }),
+        })
+        .collect();
+    reconcile_timers(&state.store, t, "entity", "heartbeat:", &wanted) + arm_binding_heartbeats(state, t).await
 }
 
 /// The same reconciliation for workflow bindings with a heartbeat trigger
@@ -650,58 +631,27 @@ async fn arm_binding_heartbeats(state: &AppState, t: i64) -> usize {
         let registry = state.agent_registry.read().await;
         bindings.into_iter().filter(|b| registry.contains_key(&b.agent_id)).collect()
     };
-    let target_of = |b: &db::models::AgentWorkflow| format!("hb:{}:{}", b.agent_id, b.binding_name);
-    let pending = store
-        .engine_pending_timers("binding")
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|e| e.target_id.starts_with("hb:"))
-        .collect::<Vec<_>>();
-    let mut held: HashSet<String> = HashSet::new();
-    for timer in &pending {
-        match live.iter().find(|b| target_of(b) == timer.target_id) {
-            Some(b) if timer.schedule.as_deref() == Some(b.trigger_config.as_str()) => {
-                held.insert(timer.target_id.clone());
+    let wanted: Vec<Wanted<'_>> = live
+        .iter()
+        .filter_map(|b| {
+            let (duration, window) = agent::agent_worker::parse_heartbeat(&b.trigger_config);
+            if duration.is_zero() {
+                warn!(agent = %b.agent_id, binding = %b.binding_name, config = %b.trigger_config, "invalid heartbeat config; this binding will not fire");
+                return None;
             }
-            _ => {
-                if let Err(e) = store.engine_supersede_event(timer.id, t, "superseded: heartbeat binding changed or off") {
-                    warn!(timer = timer.id, error = %e, "engine: could not drop a stale binding heartbeat timer");
-                }
-            }
-        }
-    }
-    let mut armed = 0;
-    for b in &live {
-        let target = target_of(b);
-        if held.contains(&target) {
-            continue;
-        }
-        let (duration, window) = agent::agent_worker::parse_heartbeat(&b.trigger_config);
-        if duration.is_zero() {
-            warn!(agent = %b.agent_id, binding = %b.binding_name, config = %b.trigger_config, "invalid heartbeat config; this binding will not fire");
-            continue;
-        }
-        let interval = duration.as_secs() as i64;
-        let floor = store.engine_last_timer_floor("binding", &target).ok().flatten();
-        let due = floor.unwrap_or(t) + interval;
-        let due = due.max(t);
-        let window = window.map(|(s, e)| (s.format("%H:%M").to_string(), e.format("%H:%M").to_string()));
-        let due = crate::heartbeat::next_in_window(due, window.as_ref());
-        match store.engine_enqueue_event(&NewEvent {
-            kind: "timer",
-            target_type: "binding",
-            target_id: &target,
-            idem_key: &format!("{target}:{due}:{t}"),
-            due_at: Some(due),
-            schedule: Some(&b.trigger_config),
-            ..Default::default()
-        }) {
-            Ok(db::Enqueued::Inserted(_)) => armed += 1,
-            Ok(db::Enqueued::Duplicate) => {}
-            Err(e) => warn!(binding = %target, error = %e, "engine: could not arm heartbeat binding"),
-        }
-    }
-    armed
+            let interval = duration.as_secs() as i64;
+            let window = window.map(|(s, e)| (s.format("%H:%M").to_string(), e.format("%H:%M").to_string()));
+            Some(Wanted {
+                target: format!("hb:{}:{}", b.agent_id, b.binding_name),
+                schedule: b.trigger_config.clone(),
+                due: Box::new(move |consumed| {
+                    let due = (consumed.unwrap_or(t) + interval).max(t);
+                    Some(crate::heartbeat::next_in_window(due, window.as_ref()))
+                }),
+            })
+        })
+        .collect();
+    reconcile_timers(store, t, "binding", "hb:", &wanted)
 }
 
 /// A heartbeat's timer came due: queue ONE run of kind `heartbeat` unless
@@ -842,7 +792,8 @@ async fn drive(state: &AppState) {
                 (None, Some(command)) => {
                     let trigger = inputs["trigger"].as_str().unwrap_or("heartbeat");
                     let label = inputs["label"].as_str().unwrap_or(&command).to_string();
-                    let (success, output, err) = crate::scheduler::execute_binding(&state, &command, trigger).await;
+                    let (success, output, err) =
+                        crate::scheduler::execute_agent_workflow_task(&*state.workflow_manager, &state.store, &command, trigger).await;
                     let settle = Settle { label: &label, success_note: Some(label.clone()), manual: false };
                     settle_task(&state, &run, settle, success, output, err);
                 }
@@ -851,51 +802,101 @@ async fn drive(state: &AppState) {
         });
     }
 
-    let queued = store.engine_queued_runs_of_kind("case_turn", TURNS_PER_TICK).unwrap_or_default();
+    // Queued workflow runs are the engine's to start: a run an approval
+    // just woke resumes (or is denied) at the parked call; a case turn is
+    // relaunched under its own id. Both go through the same `run_inline`
+    // every workflow uses; a run the boot sweep resumed is taken by
+    // whichever of this loop and the manager's recovery sees it first — the
+    // call is the same.
+    let queued = store.engine_queued_runs_of_kind("workflow", TURNS_PER_TICK).unwrap_or_default();
     for run in queued {
-        let Some(definition) = run.definition.clone() else {
-            let _ = store.engine_set_run_state(&run.id, "failed", t, Some("case turn has no definition"));
-            continue;
-        };
-        let inputs: serde_json::Value = run.inputs.as_deref().and_then(|s| serde_json::from_str(s).ok()).unwrap_or_default();
-        let binding = inputs["_case"]["binding"].as_str().map(str::to_string);
-        if let Err(e) = store.engine_set_run_state(&run.id, "running", t, None) {
-            warn!(run = %run.id, error = %e, "engine: mark running failed");
-            continue;
-        }
-        match state
-            .workflow_manager
-            .run_inline(definition, inputs, "case", binding, &run.agent_id, None)
-            .await
-        {
-            Ok(wf_run_id) => {
-                let _ = store.engine_set_external_ref(&run.id, &wf_run_id);
-                info!(run = %run.id, workflow_run = %wf_run_id, "engine: case turn started");
-            }
-            Err(e) => {
-                warn!(run = %run.id, error = %e, "engine: case turn failed to start");
-                let _ = settle_turn(store, &run, Some(&format!("turn failed to start: {e}")), true, t);
-            }
+        if let Some(event_id) = run.woken_by() {
+            resume_after_approval(state, &run, event_id, t).await;
+        } else if run.parent_run_id.is_some() {
+            start_turn(state, &run, t).await;
         }
     }
 
-    let running = store.engine_running_runs_of_kind("case_turn").unwrap_or_default();
-    for run in running {
-        let Some(wf_run_id) = run.external_ref.as_deref() else { continue };
-        let Ok(Some(wf)) = store.get_workflow_run(wf_run_id) else { continue };
-        match wf.status.as_str() {
-            "completed" => {
-                if let Err(e) = settle_turn(store, &run, wf.output.as_deref(), false, t) {
-                    warn!(run = %run.id, error = %e, "engine: settle failed");
-                }
-            }
-            "failed" | "cancelled" => {
-                let msg = wf.error.clone().unwrap_or_else(|| wf.status.clone());
-                if let Err(e) = settle_turn(store, &run, Some(&msg), true, t) {
-                    warn!(run = %run.id, error = %e, "engine: settle failed");
-                }
-            }
-            _ => {}
+    // A turn the workflow ended, whose case has not heard it: the turn's
+    // declared wait (or the default) becomes the case's next wait.
+    for turn in store.engine_unsettled_turns(TURNS_PER_TICK).unwrap_or_default() {
+        let failed = turn.state != "done";
+        let output = if failed { turn.error.clone().or(turn.result.clone()).or_else(|| Some(turn.state.clone())) } else { turn.result.clone() };
+        if let Err(e) = settle_turn(store, &turn, output.as_deref(), failed, t) {
+            warn!(run = %turn.id, error = %e, "engine: settle failed");
+        }
+    }
+}
+
+/// Relaunch a queued case turn under its own id.
+async fn start_turn(state: &AppState, run: &EngineRun, t: i64) {
+    let store = &state.store;
+    let Some(definition) = run.definition.clone() else {
+        let _ = store.engine_set_run_state(&run.id, "failed", t, Some("case turn has no definition"));
+        return;
+    };
+    let mut inputs: serde_json::Value = run.inputs.as_deref().and_then(|s| serde_json::from_str(s).ok()).unwrap_or_default();
+    let binding = inputs["_case"]["binding"].as_str().map(str::to_string);
+    inputs["_relaunch_run"] = serde_json::json!(run.id);
+    match state
+        .workflow_manager
+        .run_inline(definition, inputs, "case", binding, &run.agent_id, None)
+        .await
+    {
+        Ok(_) => info!(run = %run.id, "engine: case turn started"),
+        Err(e) => {
+            warn!(run = %run.id, error = %e, "engine: case turn failed to start");
+            let _ = settle_turn(store, run, Some(&format!("turn failed to start: {e}")), true, t);
+        }
+    }
+}
+
+/// An approval event resumed a parked run: continue it at the approved
+/// call, or end it as denied. The event's payload is the owner's answer.
+async fn resume_after_approval(state: &AppState, run: &EngineRun, event_id: i64, t: i64) {
+    let store = &state.store;
+    let approved = store
+        .engine_get_event(event_id)
+        .ok()
+        .flatten()
+        .and_then(|e| serde_json::from_str::<serde_json::Value>(&e.payload).ok())
+        .and_then(|p| p["approved"].as_bool());
+    let Some(approved) = approved else {
+        // Woken by something that is not an answer; nothing to continue.
+        let _ = store.engine_set_run_state(&run.id, "failed", t, Some("woken without an approval decision"));
+        return;
+    };
+    let suspension = store.get_workflow_suspension(&run.id).ok().flatten();
+    let (agent_id, binding, display) = match &suspension {
+        Some((a, b, _, _, _, _, _, _, d)) => (a.clone(), b.clone(), d.clone()),
+        None => {
+            let _ = store.engine_set_run_state(&run.id, "failed", t, Some("resumed with no parked state to continue from"));
+            return;
+        }
+    };
+    if !approved {
+        let _ = store.delete_workflow_suspension(&run.id);
+        let _ = store.update_workflow_run(&run.id, Some("denied"), None, None, Some(&format!("Owner denied: {display}")), None);
+        state.hub.broadcast("workflow_run_denied", serde_json::json!({ "runId": run.id, "agentId": agent_id }));
+        info!(run = %run.id, "engine: approval denied; run ended");
+        return;
+    }
+    let Some(definition) = run.definition.clone() else {
+        let _ = store.engine_set_run_state(&run.id, "failed", t, Some("parked run has no definition snapshot to resume"));
+        return;
+    };
+    let mut inputs: serde_json::Value = run.inputs.as_deref().and_then(|s| serde_json::from_str(s).ok()).unwrap_or_default();
+    inputs.as_object_mut().map(|m| m.remove("woken_by"));
+    inputs["_resume_run"] = serde_json::json!(run.id);
+    match state
+        .workflow_manager
+        .run_inline(definition, inputs, "approval", Some(binding), &agent_id, None)
+        .await
+    {
+        Ok(_) => info!(run = %run.id, "engine: approval accepted; parked run resumed"),
+        Err(e) => {
+            warn!(run = %run.id, error = %e, "engine: parked run failed to resume");
+            let _ = store.update_workflow_run(&run.id, Some("failed"), None, None, Some(&format!("resume after approval failed: {e}")), None);
         }
     }
 }
@@ -973,7 +974,9 @@ mod tests {
         assert_eq!(s.engine_get_run("case-1").unwrap().unwrap().state, "waiting", "parent still waits");
         let children = s.engine_queued_runs("main", 10).unwrap();
         assert_eq!(children.len(), 1);
-        assert_eq!(children[0].kind, "case_turn");
+        assert_eq!(children[0].kind, "workflow", "a turn is one run: the workflow run itself");
+        assert_eq!(children[0].session_key, format!("agent:a:workflow:{}", children[0].id));
+        assert!(s.get_workflow_run(&children[0].id).unwrap().is_some(), "with its workflow detail row");
         assert_eq!(children[0].parent_run_id.as_deref(), Some("case-1"));
         assert!(children[0].inputs.as_deref().unwrap().contains("form again"));
         assert_eq!(tick(&s, 300, &idle, &no_steer), TickReport::default(), "delivered: a second tick finds nothing");
@@ -993,7 +996,7 @@ mod tests {
         assert_eq!(r.claimed, 3);
         assert_eq!(r.children_started, 1, "one turn");
         assert_eq!(r.steered, 2, "the other two ride it");
-        let turns = s.engine_queued_runs_of_kind("case_turn", 10).unwrap();
+        let turns = s.engine_queued_runs_of_kind("workflow", 10).unwrap();
         assert_eq!(turns.len(), 1);
         let inputs = turns[0].inputs.as_deref().unwrap();
         assert!(inputs.contains("sub-1") && inputs.contains("sub-2") && inputs.contains("sub-3"));
@@ -1008,16 +1011,15 @@ mod tests {
         let s = store();
         s.engine_create_run(&NewRun { id: "case-1", kind: "case", session_key: "agent:a:case:k", agent_id: "a", lane: "main", ..Default::default() }).unwrap();
         s.engine_declare_wait("case-1", &NewWait { action: "trigger_child", on_kind: "signal", key: "email:x", deadline: None, reason: "first contact", ..Default::default() }, 100).unwrap();
-        s.engine_create_run(&NewRun { id: "turn-1", kind: "case_turn", session_key: "agent:a:case:k", agent_id: "a", lane: "main", parent_run_id: Some("case-1"), inputs: Some(r#"{"_case":{"key_type":"email","key_value":"x","default_wait_secs":86400}}"#), ..Default::default() }).unwrap();
+        s.engine_create_run(&NewRun { id: "turn-1", kind: "workflow", session_key: "agent:a:workflow:turn-1", agent_id: "a", lane: "main", parent_run_id: Some("case-1"), inputs: Some(r#"{"_case":{"key_type":"email","key_value":"x","default_wait_secs":86400}}"#), ..Default::default() }).unwrap();
         s.engine_set_run_state("turn-1", "running", 150, None).unwrap();
-        s.engine_set_external_ref("turn-1", "wf-1").unwrap();
         s.engine_enqueue_event(&NewEvent { kind: "signal", target_type: "run", target_id: "email:x", payload: "again", idem_key: "s2", durable: true, ..Default::default() }).unwrap();
 
         let r = tick(&s, 200, &idle, &no_steer);
         assert_eq!(r.claimed, 1);
         assert_eq!(r.children_started, 0, "no second turn beside a running one");
         assert_eq!(r.steered, 0);
-        assert_eq!(s.engine_queued_runs_of_kind("case_turn", 10).unwrap().len(), 0);
+        assert_eq!(s.engine_queued_runs_of_kind("workflow", 10).unwrap().len(), 0);
 
         // The turn settles; the parent's new wait carries the deferred event
         // once its lease has expired.
@@ -1026,7 +1028,7 @@ mod tests {
         let later = 200 + db::EVENT_LEASE_SECS + 1;
         let r = tick(&s, later, &idle, &no_steer);
         assert_eq!(r.children_started, 1, "now it starts the next turn");
-        let next = s.engine_queued_runs_of_kind("case_turn", 10).unwrap();
+        let next = s.engine_queued_runs_of_kind("workflow", 10).unwrap();
         assert!(next[0].inputs.as_deref().unwrap().contains("again"));
     }
 
@@ -1072,7 +1074,7 @@ mod tests {
         let payload = serde_json::json!({"email": "alma@aboundinggoods.com", "hours": "27-56"});
         let first = signal_or_open(&s, &b, "email", "alma@aboundinggoods.com", &payload, "webhook", "sub-aug18", 1_000).unwrap();
         let Routed::Opened { case_id } = first else { panic!("first submission opens a case") };
-        let turns = s.engine_queued_runs_of_kind("case_turn", 10).unwrap();
+        let turns = s.engine_queued_runs_of_kind("workflow", 10).unwrap();
         assert_eq!(turns.len(), 1);
         let inputs = turns[0].inputs.as_deref().unwrap();
         assert!(inputs.contains("aboundinggoods"));
@@ -1087,7 +1089,7 @@ mod tests {
         let r = tick(&s, 4_000, &idle, &no_steer);
         assert_eq!(r.steered, 3);
         assert_eq!(r.children_started, 0);
-        assert_eq!(s.engine_queued_runs_of_kind("case_turn", 10).unwrap().len(), 1, "still exactly one turn");
+        assert_eq!(s.engine_queued_runs_of_kind("workflow", 10).unwrap().len(), 1, "still exactly one turn");
         let refreshed = s.engine_get_run(&turns[0].id).unwrap().unwrap();
         assert!(refreshed.inputs.as_deref().unwrap().matches("aboundinggoods").count() >= 4, "the later submissions rode along");
         assert_eq!(s.engine_run_for_key("email", "alma@aboundinggoods.com").unwrap().unwrap().id, case_id);
@@ -1100,7 +1102,7 @@ mod tests {
         let b = binding();
         let payload = serde_json::json!({"email": "a@b.c"});
         let Routed::Opened { case_id } = signal_or_open(&s, &b, "email", "a@b.c", &payload, "webhook", "s1", 1_000).unwrap() else { panic!() };
-        let turn = s.engine_queued_runs_of_kind("case_turn", 1).unwrap().remove(0);
+        let turn = s.engine_queued_runs_of_kind("workflow", 1).unwrap().remove(0);
         s.engine_set_run_state(&turn.id, "running", 1_001, None).unwrap();
         let turn = s.engine_get_run(&turn.id).unwrap().unwrap();
 
@@ -1122,7 +1124,7 @@ mod tests {
             deliver(&s, e, 2_000 + 3 * 86_400, &idle, &no_steer, &mut report);
         }
         assert_eq!(report.children_started, 1, "the deadline started the next turn");
-        let turn2 = s.engine_queued_runs_of_kind("case_turn", 1).unwrap().remove(0);
+        let turn2 = s.engine_queued_runs_of_kind("workflow", 1).unwrap().remove(0);
         settle_turn(&s, &turn2, Some("Called, left a voicemail."), false, 5_000).unwrap();
         let case = s.engine_get_run(&case_id).unwrap().unwrap();
         let wait = s.engine_get_wait(case.current_wait_id.unwrap()).unwrap().unwrap();
@@ -1132,7 +1134,7 @@ mod tests {
         for e in &ev {
             deliver(&s, e, 5_000 + 3 * 86_400, &idle, &no_steer, &mut report);
         }
-        let turn3 = s.engine_queued_runs_of_kind("case_turn", 1).unwrap().remove(0);
+        let turn3 = s.engine_queued_runs_of_kind("workflow", 1).unwrap().remove(0);
         settle_turn(&s, &turn3, Some(r#"{"outcome":"booked for Tuesday","state":"booked","wait":{}}"#), false, 9_000).unwrap();
         let case = s.engine_get_run(&case_id).unwrap().unwrap();
         assert_eq!(case.state, "done");
@@ -1286,6 +1288,172 @@ mod tests {
         let r = tick(&s, 2_800, &idle, &no_steer);
         assert_eq!((r.fired, r.skipped), (0, 1));
         assert_eq!(s.engine_queued_runs_of_kind("heartbeat", 10).unwrap().len(), 0);
+    }
+
+    // ── approvals, parked turns, settling, and the arming helper ────────
+
+    /// The owner's answer is an event aimed at the run's live wait. One
+    /// answer per wait generation: a second click is a duplicate, and an
+    /// answer for a run that is not waiting wakes nothing.
+    #[test]
+    fn an_approval_event_resumes_the_parked_run_once_and_a_second_answer_is_a_duplicate() {
+        let s = store();
+        s.create_workflow_run("wf-1", "agent:a", "watch", Some("intake:x"), Some("{}"), Some("agent:a:workflow:wf-1"), Some("{}")).unwrap();
+        s.create_workflow_suspension("wf-1", "a", "intake", "act-2", "", None, "[msgs]", "{}", "crm.write", "Create invoice").unwrap();
+        s.update_workflow_run("wf-1", Some("awaiting_approval"), None, None, None, None).unwrap();
+        let wait_id = s.engine_get_run("wf-1").unwrap().unwrap().current_wait_id.unwrap();
+        let answer = |approved: bool| NewEvent {
+            kind: "approval",
+            target_type: "run",
+            target_id: "approval:wf-1",
+            payload: if approved { r#"{"approved":true}"# } else { r#"{"approved":false}"# },
+            channel: "owner",
+            idem_key: "approval:wf-1:1",
+            durable: true,
+            ..Default::default()
+        };
+        assert!(matches!(s.engine_enqueue_event(&answer(true)).unwrap(), db::Enqueued::Inserted(_)));
+        assert_eq!(s.engine_enqueue_event(&answer(false)).unwrap(), db::Enqueued::Duplicate, "the same wait answered twice is one answer");
+
+        let r = tick(&s, 100, &idle, &no_steer);
+        assert_eq!((r.resumed, r.unrouted), (1, 0));
+        let run = s.engine_get_run("wf-1").unwrap().unwrap();
+        assert_eq!(run.state, "queued", "re-queued for the loop to resume at the parked call");
+        assert!(run.woken_by().is_some(), "the answer is on the run");
+        assert!(s.get_workflow_suspension("wf-1").unwrap().is_some(), "the parked state is still readable for the resume");
+        assert!(s.list_workflow_suspensions().unwrap().is_empty(), "but nothing is pending");
+        let _ = wait_id;
+
+        // A later answer for a run that is no longer waiting reaches no wait.
+        s.engine_enqueue_event(&NewEvent { idem_key: "approval:wf-1:late", ..answer(true) }).unwrap();
+        let r = tick(&s, 200, &idle, &no_steer);
+        assert_eq!((r.resumed, r.unrouted), (0, 1));
+        assert_eq!(s.engine_get_run("wf-1").unwrap().unwrap().state, "queued", "untouched");
+    }
+
+    /// A turn parked on an approval is still the case's live turn: a signal
+    /// that arrives meanwhile waits for it, and never starts a second turn.
+    #[test]
+    fn a_signal_for_a_case_whose_turn_is_parked_on_approval_waits_its_turn() {
+        let s = store();
+        s.engine_create_run(&NewRun { id: "case-1", kind: "case", session_key: "agent:a:case:k", agent_id: "a", lane: "main", ..Default::default() }).unwrap();
+        s.engine_declare_wait("case-1", &NewWait { action: "trigger_child", on_kind: "signal", key: "email:x", deadline: None, reason: "first contact", ..Default::default() }, 100).unwrap();
+        s.engine_create_run(&NewRun { id: "turn-1", kind: "workflow", session_key: "agent:a:workflow:turn-1", agent_id: "a", lane: "main", parent_run_id: Some("case-1"), inputs: Some(r#"{"_case":{"key_type":"email","key_value":"x"}}"#), ..Default::default() }).unwrap();
+        s.engine_declare_wait("turn-1", &NewWait { action: "resume", on_kind: "approval", key: "approval:turn-1", parked: Some("{}"), reason: "Create invoice", ..Default::default() }, 150).unwrap();
+        s.engine_enqueue_event(&NewEvent { kind: "signal", target_type: "run", target_id: "email:x", payload: "again", idem_key: "s2", durable: true, ..Default::default() }).unwrap();
+        let r = tick(&s, 200, &idle, &no_steer);
+        assert_eq!((r.claimed, r.children_started, r.steered), (1, 0, 0), "deferred: the parked turn is the live one");
+        assert_eq!(s.engine_live_child("case-1").unwrap().unwrap().id, "turn-1");
+    }
+
+    /// A turn is the workflow run itself. When the workflow ends it, the
+    /// next tick finds it unsettled and hands the case its declared wait;
+    /// once settled it is never found again. A cancelled turn settles as a
+    /// failure with the default wait. A DAG child is not a turn.
+    #[test]
+    fn a_turn_the_workflow_ended_is_settled_once_by_the_next_tick() {
+        let s = store();
+        let b = binding();
+        let payload = serde_json::json!({"email": "a@b.c"});
+        let Routed::Opened { case_id } = signal_or_open(&s, &b, "email", "a@b.c", &payload, "webhook", "s1", 1_000).unwrap() else { panic!() };
+        let turn = s.engine_queued_runs_of_kind("workflow", 1).unwrap().remove(0);
+        assert_eq!(turn.parent_run_id.as_deref(), Some(case_id.as_str()));
+        assert!(s.engine_unsettled_turns(10).unwrap().is_empty(), "a queued turn is not finished");
+
+        // The workflow ends it, as the manager does: result, then done.
+        s.engine_set_run_state(&turn.id, "running", 1_001, None).unwrap();
+        s.complete_workflow_run(&turn.id, "completed", 10, None, None, Some(r#"{"outcome":"sent day-1","wait":{"deadline":"2d","reason":"follow up Wednesday"}}"#)).unwrap();
+        let unsettled = s.engine_unsettled_turns(10).unwrap();
+        assert_eq!(unsettled.len(), 1);
+        let t = &unsettled[0];
+        settle_turn(&s, t, t.result.as_deref(), false, 2_000).unwrap();
+        assert!(s.engine_unsettled_turns(10).unwrap().is_empty(), "settled once");
+        let case = s.engine_get_run(&case_id).unwrap().unwrap();
+        assert_eq!(case.state, "waiting");
+        assert_eq!(s.engine_get_wait(case.current_wait_id.unwrap()).unwrap().unwrap().deadline, Some(2_000 + 2 * 86_400));
+        assert_eq!(s.get_workflow_run(&turn.id).unwrap().unwrap().status, "completed", "the turn keeps the workflow's own outcome");
+
+        // The deadline starts the next turn; the owner cancels it.
+        let r = tick(&s, 2_000 + 2 * 86_400, &idle, &no_steer);
+        assert_eq!(r.children_started, 1);
+        let turn2 = s.engine_queued_runs_of_kind("workflow", 1).unwrap().remove(0);
+        s.complete_workflow_run(&turn2.id, "cancelled", 0, Some("owner cancelled"), None, None).unwrap();
+        let unsettled = s.engine_unsettled_turns(10).unwrap();
+        assert_eq!(unsettled.len(), 1);
+        settle_turn(&s, &unsettled[0], Some("owner cancelled"), true, 5_000).unwrap();
+        assert_eq!(s.get_workflow_run(&turn2.id).unwrap().unwrap().status, "cancelled", "settling does not rewrite the outcome");
+        let case = s.engine_get_run(&case_id).unwrap().unwrap();
+        assert_eq!(s.engine_get_wait(case.current_wait_id.unwrap()).unwrap().unwrap().deadline, Some(5_000 + 3 * 86_400), "default wait after a failed turn");
+        assert!(s.engine_events_for("run", &case_id, 50).unwrap().iter().any(|e| e.kind == "turn_failed"));
+
+        // A DAG child that finishes is not a turn.
+        s.create_pending_task("dag-1", "dag", "k", None, "plan", None, None, None, 0, None).unwrap();
+        s.create_pending_task("dag-1-a", "subagent", "k", None, "do", None, None, None, 0, Some("dag-1")).unwrap();
+        s.update_task_completed("dag-1-a", Some("ok")).unwrap();
+        assert!(s.engine_unsettled_turns(10).unwrap().is_empty());
+    }
+
+    /// A turn whose case already closed is recorded and declares nothing:
+    /// the case stays closed and its key stays released.
+    #[test]
+    fn a_turn_of_a_closed_case_is_recorded_but_declares_no_wait() {
+        let s = store();
+        let b = binding();
+        let payload = serde_json::json!({"email": "a@b.c"});
+        let Routed::Opened { case_id } = signal_or_open(&s, &b, "email", "a@b.c", &payload, "webhook", "s1", 1_000).unwrap() else { panic!() };
+        let turn = s.engine_queued_runs_of_kind("workflow", 1).unwrap().remove(0);
+        // The owner closes the case by hand while the turn runs.
+        s.engine_close_run(&case_id, "done", 1_500).unwrap();
+        s.engine_set_run_state(&turn.id, "running", 1_001, None).unwrap();
+        s.complete_workflow_run(&turn.id, "completed", 1, None, None, Some(r#"{"wait":{"deadline":"1d"}}"#)).unwrap();
+        let t = s.engine_unsettled_turns(10).unwrap().remove(0);
+        settle_turn(&s, &t, t.result.as_deref(), false, 2_000).unwrap();
+        let case = s.engine_get_run(&case_id).unwrap().unwrap();
+        assert_eq!(case.state, "done");
+        assert!(case.current_wait_id.is_none() || s.engine_get_wait(case.current_wait_id.unwrap()).unwrap().unwrap().deadline != Some(2_000 + 86_400), "no new wait");
+        assert!(s.engine_run_for_key("email", "a@b.c").unwrap().is_none(), "key stays released");
+        assert!(s.engine_unsettled_turns(10).unwrap().is_empty(), "recorded once");
+    }
+
+    /// The ONE reconciliation: unchanged timers are held, a changed config
+    /// replaces its timer, an unwanted target loses its timer, a target with
+    /// nothing due is not armed, and the floor is the last consumed one.
+    #[test]
+    fn reconcile_timers_holds_replaces_drops_and_arms_from_the_consumed_floor() {
+        let s = store();
+        let want = |target: &str, schedule: &str, step: i64| Wanted {
+            target: target.to_string(),
+            schedule: schedule.to_string(),
+            due: Box::new(move |floor| if step == 0 { None } else { Some(floor.unwrap_or(1_000) + step) }),
+        };
+        let wanted = vec![want("x:a", "1", 10), want("x:b", "2", 20), want("x:never", "0", 0)];
+        assert_eq!(reconcile_timers(&s, 100, "entity", "x:", &wanted), 2, "two armed; nothing due for the third");
+        assert_eq!(reconcile_timers(&s, 105, "entity", "x:", &wanted), 0, "held");
+        let pending = s.engine_pending_timers("entity").unwrap();
+        assert_eq!(pending.iter().map(|e| e.due_at.unwrap()).collect::<Vec<_>>(), vec![1_010, 1_020]);
+
+        // b's config changes: its timer is replaced; a is untouched.
+        let wanted = vec![want("x:a", "1", 10), want("x:b", "3", 30)];
+        assert_eq!(reconcile_timers(&s, 110, "entity", "x:", &wanted), 1);
+        let pending = s.engine_pending_timers("entity").unwrap();
+        assert_eq!(pending.len(), 2);
+        let b = pending.iter().find(|e| e.target_id == "x:b").unwrap();
+        assert_eq!(b.schedule.as_deref(), Some("3"));
+        assert_eq!(b.due_at, Some(110 + 30), "a replaced timer floors at the moment it was replaced, never at its old future due");
+
+        // a is no longer wanted: its timer goes. A timer under another prefix is not touched.
+        s.engine_enqueue_event(&NewEvent { kind: "timer", target_type: "entity", target_id: "y:other", idem_key: "y", due_at: Some(9_999), ..Default::default() }).unwrap();
+        let wanted = vec![want("x:b", "3", 30)];
+        assert_eq!(reconcile_timers(&s, 120, "entity", "x:", &wanted), 0);
+        let pending = s.engine_pending_timers("entity").unwrap();
+        assert_eq!(pending.iter().map(|e| e.target_id.as_str()).collect::<Vec<_>>(), vec!["x:b", "y:other"]);
+
+        // b's timer is consumed at its due moment: the next is armed from it.
+        let b_timer = pending.iter().find(|e| e.target_id == "x:b").unwrap().id;
+        s.engine_complete_event(b_timer, 145).unwrap();
+        assert_eq!(reconcile_timers(&s, 146, "entity", "x:", &wanted), 1);
+        let next = s.engine_pending_timers("entity").unwrap().into_iter().find(|e| e.target_id == "x:b").unwrap();
+        assert_eq!(next.due_at, Some(140 + 30), "from the consumed due moment, not from when it was delivered");
     }
 
     #[test]

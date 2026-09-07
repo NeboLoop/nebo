@@ -134,36 +134,6 @@ impl Store {
         )
     }
 
-    pub fn get_tasks_by_lane_and_status(
-        &self,
-        lane: &str,
-        status: &str,
-    ) -> Result<Vec<PendingTask>, NeboError> {
-        self.query_tasks(
-            &format!("{TASK_SELECT} WHERE kind IN {TASK_KINDS} AND lane = ?1 AND state = ?2 ORDER BY priority DESC, created_at ASC"),
-            params![lane, engine_state(status)],
-        )
-    }
-
-    pub fn get_tasks_by_user(&self, user_id: &str) -> Result<Vec<PendingTask>, NeboError> {
-        self.query_tasks(
-            &format!("{TASK_SELECT} WHERE kind IN {TASK_KINDS} AND json_extract(inputs, '$.user_id') = ?1 AND state IN ('queued', 'running', 'interrupted') ORDER BY created_at DESC"),
-            params![user_id],
-        )
-    }
-
-    pub fn get_child_tasks(&self, parent_task_id: &str) -> Result<Vec<PendingTask>, NeboError> {
-        self.query_tasks(
-            &format!("{TASK_SELECT} WHERE parent_run_id = ?1 ORDER BY created_at ASC"),
-            params![parent_task_id],
-        )
-    }
-
-    pub fn update_task_status(&self, id: &str, status: &str) -> Result<(), NeboError> {
-        self.engine_set_run_state(id, engine_state(status), now(), None)?;
-        Ok(())
-    }
-
     pub fn update_task_running(&self, id: &str) -> Result<(), NeboError> {
         self.engine_set_run_state(id, "running", now(), None)?;
         Ok(())
@@ -207,18 +177,6 @@ impl Store {
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;
         Ok(())
-    }
-
-    /// Returns all pending/running tasks plus recently completed tasks (within the last hour).
-    pub fn get_active_and_recent_tasks(&self) -> Result<Vec<PendingTask>, NeboError> {
-        self.query_tasks(
-            &format!(
-                "{TASK_SELECT} WHERE kind IN {TASK_KINDS} AND (state IN ('queued', 'running', 'interrupted')
-                    OR (state = 'done' AND ended_at > ?1 - 3600))
-                 ORDER BY CASE state WHEN 'running' THEN 0 WHEN 'queued' THEN 1 WHEN 'interrupted' THEN 1 ELSE 2 END, created_at DESC"
-            ),
-            params![now()],
-        )
     }
 
     fn query_tasks<P: rusqlite::Params>(&self, sql: &str, p: P) -> Result<Vec<PendingTask>, NeboError> {
@@ -332,21 +290,6 @@ impl Store {
             .map_err(|e| NeboError::Database(e.to_string()))?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(|e| NeboError::Database(e.to_string()))
-    }
-
-    /// Delete tracking task lists completed more than N days ago.
-    pub fn cleanup_old_task_lists(&self, days: i64) -> Result<(), NeboError> {
-        let conn = self.conn()?;
-        conn.execute(
-            "DELETE FROM pending_tasks WHERE task_type = 'tracking' AND list_id IN (
-                SELECT DISTINCT list_id FROM pending_tasks WHERE task_type = 'tracking'
-                GROUP BY list_id
-                HAVING MAX(COALESCE(completed_at, created_at)) < unixepoch() - (?1 * 86400)
-            )",
-            params![days],
-        )
-        .map_err(|e| NeboError::Database(e.to_string()))?;
-        Ok(())
     }
 
     /// The seven-day TTL on finished tasks — sub-agent runs and checklist
@@ -470,7 +413,6 @@ mod tests {
             .unwrap();
         assert_eq!(child.parent_task_id.as_deref(), Some("dag-1"));
         assert_eq!(child.priority, Some(5));
-        assert_eq!(s.get_child_tasks("dag-1").unwrap().len(), 1);
         assert_eq!(s.get_recoverable_tasks().unwrap().len(), 2);
 
         // Two failures re-queue, the third fails for good.

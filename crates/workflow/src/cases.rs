@@ -189,8 +189,11 @@ pub fn signal_or_open(
 }
 
 /// `trigger_child`: the parent keeps waiting; a child run carries the event.
-/// The child's inputs name the event that started it so the turn reads the
-/// signal and the parent's history, not a guess.
+/// The child IS a workflow run — one engine row, queued here under its own
+/// id with the case as parent, started by the engine loop through the same
+/// `run_inline` every workflow uses, finished by the workflow itself. Its
+/// inputs name the event that started it so the turn reads the signal and
+/// the parent's history, not a guess.
 pub fn start_child(store: &Store, parent: &EngineRun, event: &EngineEvent) -> Result<(), NeboError> {
     let mut inputs: serde_json::Value = parent
         .inputs
@@ -201,23 +204,29 @@ pub fn start_child(store: &Store, parent: &EngineRun, event: &EngineEvent) -> Re
     crate::events::insert_event_envelope(&mut inputs, &format!("case.{}", event.kind), payload, "case");
     inputs["_case"]["event_id"] = serde_json::json!(event.id);
     inputs["_case"]["history"] = serde_json::json!(history_lines(store, &parent.id));
+    let binding = inputs["_case"]["binding"].as_str().unwrap_or("").to_string();
     let child_id = uuid::Uuid::new_v4().to_string();
-    let kind = if parent.kind == "case" { "case_turn" } else { "task" };
     store.engine_create_run(&NewRun {
         id: &child_id,
-        kind,
-        session_key: &parent.session_key,
+        kind: "workflow",
+        session_key: &tools::workflow_session_key(&parent.agent_id, &child_id),
         agent_id: &parent.agent_id,
         lane: &parent.lane,
         parent_run_id: Some(&parent.id),
         definition: parent.definition.as_deref(),
         inputs: Some(&inputs.to_string()),
         external_ref: None,
-    })
+    })?;
+    store.insert_workflow_run_detail(
+        &child_id,
+        &types::keyparser::agent_workflow_id(&parent.agent_id),
+        "case",
+        Some(&binding),
+    )
 }
 
 /// The last durable events on a case, one line each, for the turn's prompt.
-pub fn history_lines(store: &Store, case_id: &str) -> Vec<String> {
+fn history_lines(store: &Store, case_id: &str) -> Vec<String> {
     store
         .engine_events_for("run", case_id, 50)
         .unwrap_or_default()
@@ -282,14 +291,19 @@ fn parse_deadline(s: &str, t: i64) -> Option<i64> {
     Some(t + relative_secs(s)?)
 }
 
-pub fn is_terminal(state: &str) -> bool {
+fn is_terminal(state: &str) -> bool {
     matches!(state, "booked" | "declined" | "opted_out" | "unresponsive" | "owner_takeover" | "closed" | "done")
 }
 
-/// A finished turn: apply what it declared to its case.
+/// A finished turn: apply what it declared to its case. A turn the
+/// workflow already ended keeps its state and result; one that never
+/// started (`failed` here) is ended here.
 pub fn settle_turn(store: &Store, child: &EngineRun, output: Option<&str>, failed: bool, t: i64) -> Result<(), NeboError> {
+    let ended = matches!(child.state.as_str(), "done" | "failed" | "cancelled");
     let Some(parent_id) = child.parent_run_id.as_deref() else {
-        store.engine_set_run_state(&child.id, if failed { "failed" } else { "done" }, t, None)?;
+        if !ended {
+            store.engine_set_run_state(&child.id, if failed { "failed" } else { "done" }, t, None)?;
+        }
         return Ok(());
     };
     let inputs: serde_json::Value = child.inputs.as_deref().and_then(|s| serde_json::from_str(s).ok()).unwrap_or_default();
@@ -301,10 +315,16 @@ pub fn settle_turn(store: &Store, child: &EngineRun, output: Option<&str>, faile
     let default_secs = inputs["_case"]["default_wait_secs"].as_i64().unwrap_or(DEFAULT_WAIT_SECS);
 
     let spec = output.and_then(|o| parse_wait(o, t));
-    if let Some(out) = output {
-        store.engine_set_run_result(&child.id, out, None)?;
+    if !ended {
+        if let Some(out) = output {
+            store.engine_set_run_result(&child.id, out, None)?;
+        }
+        store.engine_set_run_state(&child.id, if failed { "failed" } else { "done" }, t, None)?;
     }
-    store.engine_set_run_state(&child.id, if failed { "failed" } else { "done" }, t, None)?;
+    // A case that already closed (a terminal state, or a merge) has no
+    // next wait to declare; the turn's words are still recorded below.
+    let parent = store.engine_get_run(parent_id)?;
+    let parent_open = parent.as_ref().is_some_and(|p| matches!(p.state.as_str(), "waiting" | "queued" | "running"));
 
     // The turn's own words become the case's history.
     let summary = spec
@@ -329,6 +349,9 @@ pub fn settle_turn(store: &Store, child: &EngineRun, output: Option<&str>, faile
         }
     }
 
+    if !parent_open {
+        return Ok(());
+    }
     if let Some(state) = spec.as_ref().and_then(|s| s.state.as_deref()).filter(|s| is_terminal(s)) {
         store.engine_close_run(parent_id, "done", t)?;
         store.engine_set_run_result(parent_id, state, Some(&summary))?;
