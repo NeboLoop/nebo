@@ -64,6 +64,8 @@ pub struct TickReport {
     pub steered: usize,
     pub superseded: usize,
     pub unrouted: usize,
+    /// Signals that outlived their case and were routed by the reopen rules.
+    pub rerouted: usize,
     pub pending_effects: usize,
     pub expired: usize,
     pub armed: usize,
@@ -113,7 +115,7 @@ pub fn recover(store: &Store) -> usize {
 /// an AppState. `busy` answers whether a session has a live turn; a matched
 /// signal for a case whose turn is live is steered through `steer` instead
 /// of starting another turn.
-pub fn tick(store: &Store, t: i64, busy: &dyn Fn(&str) -> bool, steer: &dyn Fn(&str, &EngineEvent)) -> TickReport {
+pub fn tick(store: &Store, t: i64, live: &dyn Fn(&str) -> Option<String>, steer: &dyn Fn(&str, &EngineEvent)) -> TickReport {
     let mut report = TickReport::default();
     report.armed = arm_schedules(store, t);
     let (events, poisoned) = match store.engine_claim_events(t, CLAIM_BATCH) {
@@ -135,7 +137,7 @@ pub fn tick(store: &Store, t: i64, busy: &dyn Fn(&str) -> bool, steer: &dyn Fn(&
         }
     }
     for event in &events {
-        deliver(store, event, t, busy, steer, &mut report);
+        deliver(store, event, t, live, steer, &mut report);
     }
 
     match store.engine_pending_effects() {
@@ -171,7 +173,7 @@ fn deliver(
     store: &Store,
     event: &EngineEvent,
     t: i64,
-    busy: &dyn Fn(&str) -> bool,
+    live: &dyn Fn(&str) -> Option<String>,
     steer: &dyn Fn(&str, &EngineEvent),
     report: &mut TickReport,
 ) {
@@ -204,15 +206,23 @@ fn deliver(
         // is still queued or running. It reaches that turn, not a new one.
         if event.target_type == "run" && event.kind == "signal" {
             if let Some((kt, kv)) = event.target_id.rsplit_once(':') {
-                if let Ok(Some(case)) = store.engine_run_for_key(kt, kv) {
-                    match live_turn(store, &case, event, t, busy, steer) {
+                match store.engine_run_for_key(kt, kv) {
+                    Ok(Some(case)) => match live_turn(store, &case, event, t, live, steer) {
                         LiveTurn::Handed => {
                             report.steered += 1;
                             return;
                         }
                         LiveTurn::Deferred => return,
                         LiveTurn::None => {}
+                    },
+                    // The case closed while this signal waited its turn. The
+                    // person wrote to a closed case: the reopen rules decide.
+                    Ok(None) => {
+                        if reroute_after_close(store, kt, kv, event, t, report) {
+                            return;
+                        }
                     }
+                    Err(_) => {}
                 }
             }
         }
@@ -247,7 +257,7 @@ fn deliver(
             };
             // One live turn per case (design: concurrency). A running or
             // queued turn hears the signal; a second turn never starts.
-            match live_turn(store, &parent, event, t, busy, steer) {
+            match live_turn(store, &parent, event, t, live, steer) {
                 LiveTurn::Handed => {
                     report.steered += 1;
                     return;
@@ -274,6 +284,46 @@ fn deliver(
         Ok(()) => {}
         Err(e) => warn!(event = event.id, wait = wait.id, error = %e, "engine: delivery failed; lease will expire and retry"),
     }
+}
+
+/// A signal recorded for an open case that closed before it was delivered:
+/// claimed while a turn was running, deferred, and the turn closed the case
+/// without hearing it (seen live: the customer's "11am, not 10am" arrived
+/// 23 s before the turn booked 10am and closed). Routed again by the reopen
+/// rules, exactly as if the message had arrived a minute later — never
+/// completed as "no wait to wake". False when there is no closed case to
+/// route by, so the caller records it as unrouted.
+fn reroute_after_close(store: &Store, key_type: &str, subject: &str, event: &EngineEvent, t: i64, report: &mut TickReport) -> bool {
+    let Ok(Some(prev)) = store.engine_last_closed_run_for_key(key_type, subject) else {
+        return false;
+    };
+    let inputs: serde_json::Value = prev.inputs.as_deref().and_then(|s| serde_json::from_str(s).ok()).unwrap_or_default();
+    let binding_name = inputs["_case"]["binding"].as_str().unwrap_or_default().to_string();
+    let current = current_binding(store, &prev.agent_id, &binding_name);
+    let rebuilt = current
+        .as_ref()
+        .and_then(|(def, wb)| workflow::cases::CaseBinding::from_binding(&prev.agent_id, &binding_name, def, wb));
+    let Some(b) = rebuilt else {
+        // Nobody can work it: the binding is gone or no longer a case. The
+        // owner decides; the message is on the books with the reason.
+        let why = format!(
+            "A message arrived for a closed {} case, but the playbook binding '{}' no longer exists or no longer opens cases. Nothing was reopened and no reply was sent.",
+            key_type.strip_prefix("case:").unwrap_or(key_type),
+            binding_name
+        );
+        let _ = workflow::cases::needs_attention(store, &prev.agent_id, &prev.id, &format!("orphan:{}:{}", prev.id, event.id), Some(&prev), &why, t);
+        let _ = store.engine_supersede_event(event.id, t, "closed case; binding gone");
+        report.unrouted += 1;
+        return true;
+    };
+    match workflow::cases::route_recorded(store, &b, subject, event.id, &event.idem_key, t) {
+        Ok(routed) => {
+            info!(event = event.id, case = %prev.id, ?routed, "engine: signal outlived its case; routed by the reopen rules");
+            report.rerouted += 1;
+        }
+        Err(e) => warn!(event = event.id, error = %e, "engine: reroute failed; lease will expire and retry"),
+    }
+    true
 }
 
 /// Whose event this is: the employee, the run it was aimed at, and the
@@ -344,7 +394,7 @@ fn live_turn(
     case: &EngineRun,
     event: &EngineEvent,
     t: i64,
-    busy: &dyn Fn(&str) -> bool,
+    live: &dyn Fn(&str) -> Option<String>,
     steer: &dyn Fn(&str, &EngineEvent),
 ) -> LiveTurn {
     let child = match store.engine_live_child(&case.id) {
@@ -353,17 +403,20 @@ fn live_turn(
     };
     match child.state.as_str() {
         "running" => {
-            // The turn's own session is the one the runner marks busy. The
-            // event is queued for the turn's NEXT model call and stays
-            // undelivered until the runner injects it — the injection stamps
-            // it. A turn that ends first never consumed it: its lease
-            // expires and the next tick routes it to the case's next wait.
-            // No event is ever marked heard by a turn that could not hear it.
-            if busy(&child.session_key) {
-                steer(&child.session_key, event);
-                LiveTurn::Handed
-            } else {
-                LiveTurn::Deferred
+            // The runner says which session the turn is live on — the
+            // activity session under the turn's key. The event is queued for
+            // that session's NEXT model call and stays undelivered until the
+            // runner injects it — the injection stamps it. A turn that ends
+            // first never consumed it: its lease expires and the next tick
+            // routes it to the case's next wait, or by the reopen rules if
+            // the turn closed the case. No event is ever marked heard by a
+            // turn that could not hear it.
+            match live(&child.session_key) {
+                Some(session) => {
+                    steer(&session, event);
+                    LiveTurn::Handed
+                }
+                None => LiveTurn::Deferred,
             }
         }
         "queued" => match store.engine_append_pending_signal(&child.id, &event.payload) {
@@ -976,10 +1029,16 @@ async fn time_out_turns(state: &AppState, t: i64) {
 /// governance record says which); the snapshot on the run is the fallback
 /// when the employee or the binding is gone.
 fn current_definition(store: &Store, agent_id: &str, binding: &str) -> Option<String> {
+    current_binding(store, agent_id, binding).map(|(def, _)| def)
+}
+
+/// The binding itself as the playbook has it now, with its definition —
+/// for a signal that must be routed again after its case closed.
+fn current_binding(store: &Store, agent_id: &str, binding: &str) -> Option<(String, napp::agent::WorkflowBinding)> {
     let agent = store.get_agent(agent_id).ok().flatten()?;
     let config = napp::agent::parse_agent_config(&agent.frontmatter).ok()?;
     let wb = config.workflows.get(binding)?;
-    wb.has_activities().then(|| wb.to_workflow_json(binding))
+    wb.has_activities().then(|| (wb.to_workflow_json(binding), wb.clone()))
 }
 
 /// Relaunch a queued case turn under its own id.
@@ -1084,7 +1143,7 @@ pub fn spawn(state: AppState) {
             let s = store.clone();
             let runner = state.runner.clone();
             let report = tokio::task::spawn_blocking(move || {
-                let busy = |session: &str| runner.is_session_busy(session);
+                let live = |session: &str| runner.live_session_under(session);
                 let steer = |session: &str, event: &EngineEvent| {
                     let content = agent::steering::wrap_system_reminder(&format!(
                         "[Case event — not an owner message]\n{}:\n{}\n\nHandle this alongside your current work, and include the outcome in your report.",
@@ -1094,7 +1153,7 @@ pub fn spawn(state: AppState) {
                     let taint = serde_json::from_str(&event.provenance).unwrap_or_default();
                     agent::steering::push_wake(session, agent::steering::WakeEntry { wake_id: event.id, content, taint });
                 };
-                tick(&s, now(), &busy, &steer)
+                tick(&s, now(), &live, &steer)
             })
             .await
             .unwrap_or_default();
@@ -1117,8 +1176,8 @@ mod tests {
         Store::new(&path.to_string_lossy()).expect("store")
     }
 
-    fn idle(_: &str) -> bool {
-        false
+    fn idle(_: &str) -> Option<String> {
+        None
     }
     fn no_steer(_: &str, _: &EngineEvent) {}
 
@@ -1204,6 +1263,84 @@ mod tests {
         assert!(next[0].inputs.as_deref().unwrap().contains("again"));
     }
 
+    /// Seen live: the engine knows a case turn by its own session key, the
+    /// runner marks the ACTIVITY session under it busy, and an exact-match
+    /// "busy?" said no — so the customer's correction was deferred and the
+    /// turn closed the case without hearing it. The runner answers with the
+    /// live session under the key; steering goes there; a settle drains it.
+    #[test]
+    fn a_signal_that_lands_mid_turn_is_steered_into_the_activity_session_the_turn_runs_under() {
+        let s = store();
+        s.engine_create_run(&NewRun { id: "case-1", kind: "case", session_key: "agent:a:case:k", agent_id: "a", lane: "main", ..Default::default() }).unwrap();
+        s.engine_declare_wait("case-1", &NewWait { action: "trigger_child", on_kind: "signal", key: "email:x", deadline: None, reason: "first contact", ..Default::default() }, 100).unwrap();
+        s.engine_create_run(&NewRun { id: "turn-1", kind: "workflow", session_key: "agent:a:workflow:turn-1", agent_id: "a", lane: "main", parent_run_id: Some("case-1"), inputs: Some(r#"{"_case":{"key":"email:x","default_wait_secs":86400}}"#), ..Default::default() }).unwrap();
+        s.engine_set_run_state("turn-1", "running", 150, None).unwrap();
+        s.engine_enqueue_event(&NewEvent { kind: "signal", target_type: "run", target_id: "email:x", payload: "11am, not 10am", idem_key: "s2", durable: true, ..Default::default() }).unwrap();
+
+        // The runner's answer: the activity session under the turn's key.
+        let activity = "agent:a:workflow:turn-1:capture-and-respond::0";
+        let live = |k: &str| (k == "agent:a:workflow:turn-1").then(|| activity.to_string());
+        let handed = std::sync::Mutex::new(Vec::<(String, i64)>::new());
+        let record = |session: &str, e: &EngineEvent| {
+            handed.lock().unwrap().push((session.to_string(), e.id));
+            agent::steering::push_wake(session, agent::steering::WakeEntry { wake_id: e.id, content: e.payload.clone(), taint: Default::default() });
+        };
+        let r = tick(&s, 200, &live, &record);
+        assert_eq!((r.steered, r.children_started), (1, 0));
+        assert_eq!(handed.lock().unwrap()[0].0, activity, "steered to the session the turn is live on");
+        // The queued wake sits under the activity key; the turn's key drains it.
+        let drained = agent::steering::drain_wakes("agent:a:workflow:turn-1");
+        assert_eq!(drained.len(), 1);
+        assert_eq!(drained[0].content, "11am, not 10am");
+        assert!(agent::steering::drain_wakes(activity).is_empty());
+    }
+
+    /// Seen live: a correction ("11am, not 10am") was claimed while the
+    /// turn ran, deferred, and the turn closed the case as booked 23 s
+    /// later. When the lease expired the case was gone and the correction
+    /// was completed as "no wait to wake" — lost. A signal that outlives
+    /// its case is routed by the reopen rules: booked never reopens, so a
+    /// new case opens, linked to the booked one, and its first turn carries
+    /// the correction.
+    #[test]
+    fn a_signal_that_outlives_its_case_is_routed_by_the_reopen_rules_never_dropped() {
+        let s = store();
+        let playbook = r#"{"workflows":{"work-lead":{"trigger":{"type":"manual"},"activities":[{"id":"run","intent":"work the lead"}],"case":{"type":"lead","key":"email","default_wait":"3d"}}}}"#;
+        s.create_agent("ic", None, "Intake", "", "", playbook, None, None).unwrap();
+        let b = binding();
+        let first = serde_json::json!({"email": "a@b.c", "message": "can we talk Tuesday 10am?"});
+        let Routed::Opened { case_id } = signal_or_open(&s, &b, "email", "a@b.c", &first, "event", "s1", 1_000).unwrap() else { panic!("opened") };
+        let turn = s.engine_queued_runs_of_kind("workflow", 10).unwrap().remove(0);
+        s.engine_set_run_state(&turn.id, "running", 1_100, None).unwrap();
+
+        // The correction lands mid-turn; the turn is not live for steering.
+        let correction = serde_json::json!({"email": "a@b.c", "message": "11am, not 10am"});
+        assert!(matches!(signal_or_open(&s, &b, "email", "a@b.c", &correction, "event", "s2", 1_200).unwrap(), Routed::Signaled { .. }));
+        let r = tick(&s, 1_300, &idle, &no_steer);
+        assert_eq!((r.claimed, r.steered, r.children_started), (1, 0, 0), "deferred behind the running turn");
+
+        // The turn closes the case as booked before the lease expires.
+        let turn = s.engine_get_run(&turn.id).unwrap().unwrap();
+        settle_turn(&s, &turn, Some(r#"{"result":{"status":"booked","summary":"Tue 10am"},"next":{"action":"close","reason":"booked"}}"#), false, 1_400).unwrap();
+        let closed = s.engine_get_run(&case_id).unwrap().unwrap();
+        assert_eq!((closed.state.as_str(), closed.result.as_deref()), ("done", Some("booked")));
+
+        // The lease expires: the correction reaches a closed case.
+        let r = tick(&s, 1_300 + db::EVENT_LEASE_SECS + 1, &idle, &no_steer);
+        assert_eq!((r.unrouted, r.rerouted), (0, 1), "routed by the reopen rules, not dropped");
+        let next = open_case_for(&s, "lead", "email", "a@b.c").expect("a new open case for the person");
+        assert_ne!(next.id, case_id);
+        let inputs: serde_json::Value = serde_json::from_str(next.inputs.as_deref().unwrap()).unwrap();
+        assert_eq!(inputs["_case"]["previous_case"]["id"], serde_json::json!(case_id));
+        assert_eq!(inputs["_case"]["previous_case"]["closed_as"], serde_json::json!("booked"));
+        let turns = s.engine_queued_runs_of_kind("workflow", 10).unwrap();
+        assert!(
+            turns.iter().any(|t| t.parent_run_id.as_deref() == Some(next.id.as_str()) && t.inputs.as_deref().unwrap().contains("11am, not 10am")),
+            "the new case's first turn carries the correction"
+        );
+        assert_eq!(tick(&s, 9_000, &idle, &no_steer), TickReport::default(), "delivered once");
+    }
+
     /// A signal handed to a running turn is heard only if the turn's next
     /// model call injects it: the runner's stamp delivers it. A turn that
     /// ends first never heard it — the event stays undelivered and rides
@@ -1211,7 +1348,7 @@ mod tests {
     #[test]
     fn a_steered_signal_is_delivered_by_injection_or_rides_the_next_wait_never_lost() {
         let s = store();
-        let busy = |_: &str| true;
+        let busy = |k: &str| Some(k.to_string());
         let steered = std::sync::Mutex::new(Vec::<i64>::new());
         let record = |_: &str, e: &EngineEvent| steered.lock().unwrap().push(e.id);
         let make = |s: &Store, case: &str, turn: &str, key: &str| {

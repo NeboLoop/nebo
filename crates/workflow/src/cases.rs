@@ -327,7 +327,18 @@ pub fn route_signal(
     let Enqueued::Inserted(event_id) = store.engine_enqueue_event(&event)? else {
         return Ok(Routed::Duplicate);
     };
-    if let Some(case) = store.engine_run_for_key(&key_type, &subject)? {
+    route_recorded(store, b, &subject, event_id, idem_key, t)
+}
+
+/// Route a signal that is already on the books: from `route_signal` the
+/// moment it is recorded, or from the engine loop when a claimed signal
+/// outlived the case it was aimed at. The open case takes it; otherwise the
+/// person's last case of this type decides (the reopen rules); otherwise a
+/// new case, linked to the last.
+pub fn route_recorded(store: &Store, b: &CaseBinding<'_>, subject: &str, event_id: i64, idem_key: &str, t: i64) -> Result<Routed, NeboError> {
+    let key_type = format!("case:{}", b.case_type);
+    let key = format!("{key_type}:{subject}");
+    if let Some(case) = store.engine_run_for_key(&key_type, subject)? {
         if case.agent_id != b.agent_id {
             // Recorded, not appended: the signal is on the books with the
             // reason it went nowhere, and the owner decides the routing.

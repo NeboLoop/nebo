@@ -1026,7 +1026,21 @@ impl Drop for TurnGuard {
 /// admission check uses, so callers that never register with the server's
 /// run registry (voice, MCP) are seen too.
 pub fn session_is_busy(turns: &ActiveTurns, session_key: &str) -> bool {
-    turns.lock().unwrap_or_else(|p| p.into_inner()).contains_key(session_key)
+    live_session_under(turns, session_key).is_some()
+}
+
+/// The live session under `session_key`: the key itself, or an activity
+/// session a workflow turn runs under (`<turn session>:<activity>::<n>`).
+/// The engine holds a case turn's own session key; the runner marks the
+/// activity's. Seen live: a reply that landed mid-turn was "not busy" by
+/// exact match, deferred, and the turn closed the case without hearing it.
+pub fn live_session_under(turns: &ActiveTurns, session_key: &str) -> Option<String> {
+    let map = turns.lock().unwrap_or_else(|p| p.into_inner());
+    if map.contains_key(session_key) {
+        return Some(session_key.to_string());
+    }
+    let prefix = format!("{session_key}:");
+    map.keys().find(|k| k.starts_with(&prefix)).cloned()
 }
 
 pub use types::api::ActiveTurnStatus;
@@ -1299,6 +1313,12 @@ impl Runner {
     /// Whether a turn is running on `session_key` (see `ActiveTurn`).
     pub fn is_session_busy(&self, session_key: &str) -> bool {
         session_is_busy(&self.active_turns, session_key)
+    }
+
+    /// The session a turn is live on under `session_key`, if any (see
+    /// `live_session_under`) — the one steering must be addressed to.
+    pub fn live_session_under(&self, session_key: &str) -> Option<String> {
+        live_session_under(&self.active_turns, session_key)
     }
 
     /// The running turn's live counters for `session_key`, if any.
