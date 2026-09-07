@@ -1905,6 +1905,8 @@
 		"employeesLede": "Pre-built employees, organized by department. Each one runs locally with persistent memory and starts working the moment you hire them.",
 		"toolsHeadline": "Tools",
 		"toolsLede": "Connect the software you already use — organized by what it does.",
+		"searchToolsPlaceholder": "Search tools…",
+		"searchCollectionsPlaceholder": "Search collections…",
 		"departments": "Departments",
 		"allDepartments": "All departments",
 		"toolCategories": "Tool categories",

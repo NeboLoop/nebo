@@ -64,11 +64,14 @@
 	let searchItems: AppItem[] = $state([]);
 	let searching = $state(false);
 	let searchSeq = 0;
-	const searchActive = $derived(isBrowseView && searchQ.trim().length > 1);
+	// Every tab searches: employees and tools on the server, collections over
+	// the catalog already loaded (there is no server search for them).
+	const searchable = $derived(isBrowseView || kind === 'collections');
+	const searchActive = $derived(searchable && searchQ.trim().length > 1);
 
 	$effect(() => {
 		const q = searchQ.trim();
-		if (!searchActive) {
+		if (!searchActive || !isBrowseView) {
 			searchItems = [];
 			return;
 		}
@@ -152,6 +155,10 @@
 		if (kind === 'agents' && deptFilter) result = result.filter((it) => mapOf(it)?.dept === deptFilter);
 		else if (tcFilter && ['apps', 'skills', 'plugins', 'connectors', 'collections'].includes(kind))
 			result = result.filter((it) => mapOf(it)?.tc === tcFilter);
+		if (kind === 'collections' && searchActive) {
+			const q = searchQ.trim().toLowerCase();
+			result = result.filter((it) => `${it.name} ${it.description ?? ''} ${it.author ?? ''}`.toLowerCase().includes(q));
+		}
 		return result;
 	});
 
@@ -224,6 +231,12 @@
 	});
 </script>
 
+{#snippet searchBox(placeholder: string)}
+	<label class="mt-5 max-w-md flex items-center gap-2 rounded-full border border-base-300 bg-base-100 px-4 py-2 focus-within:border-primary">
+		<Search class="w-4 h-4 text-base-content/50 shrink-0" />
+		<input class="w-full bg-transparent outline-none text-sm" type="search" {placeholder} bind:value={searchQ} />
+	</label>
+{/snippet}
 
 {#if loading}
 	<div class="flex justify-center py-16">
@@ -261,15 +274,7 @@
 	<div class="max-w-6xl mx-auto px-6 py-8 pb-12">
 		<h1 class="font-display text-3xl font-bold tracking-tight">{$t('marketplace.employeesHeadline')}</h1>
 		<p class="text-base text-base-content/70 mt-2 max-w-3xl leading-relaxed">{$t('marketplace.employeesLede')}</p>
-		<label class="mt-5 max-w-md flex items-center gap-2 rounded-full border border-base-300 bg-base-100 px-4 py-2 focus-within:border-primary">
-			<Search class="w-4 h-4 text-base-content/50 shrink-0" />
-			<input
-				class="w-full bg-transparent outline-none text-sm"
-				type="search"
-				placeholder={$t('marketplace.searchPlaceholder')}
-				bind:value={searchQ}
-			/>
-		</label>
+		{@render searchBox($t('marketplace.searchPlaceholder'))}
 		{#if searchActive}
 			{#if searching}
 				<div class="flex justify-center py-16"><span class="loading loading-spinner loading-md text-primary"></span></div>
@@ -321,7 +326,25 @@
 	<div class="max-w-6xl mx-auto px-6 py-8 pb-12">
 		<h1 class="font-display text-3xl font-bold tracking-tight">{$t('marketplace.toolsHeadline')}</h1>
 		<p class="text-base text-base-content/70 mt-2 max-w-3xl leading-relaxed">{$t('marketplace.toolsLede')}</p>
-		{#if !mktMap || toolItems.length === 0}
+		{@render searchBox($t('marketplace.searchToolsPlaceholder'))}
+		{#if searchActive}
+			{#if searching}
+				<div class="flex justify-center py-16"><span class="loading loading-spinner loading-md text-primary"></span></div>
+			{:else if searchItems.length === 0}
+				<div class="flex flex-col items-center justify-center py-16 text-center">
+					<Search class="w-10 h-10 text-base-content/40 mb-3" />
+					<p class="text-base font-medium">{$t('marketplace.nothingHereYet')}</p>
+				</div>
+			{:else}
+				<div class="mt-6">
+					<MarketplaceGrid>
+						{#each searchItems as item (item.id)}
+							<ListCard {item} />
+						{/each}
+					</MarketplaceGrid>
+				</div>
+			{/if}
+		{:else if !mktMap || toolItems.length === 0}
 			<div class="flex flex-col items-center justify-center py-16 text-center">
 				<Search class="w-10 h-10 text-base-content/40 mb-3" />
 				<p class="text-base font-medium">{$t('marketplace.nothingHereYet')}</p>
@@ -355,6 +378,9 @@
 	<div class="max-w-6xl mx-auto px-6 py-6">
 		{#if publisher}
 			<h1 class="font-display text-xl font-bold mb-1">{$t('marketplace.byPublisher', { values: { name: publisher } })}</h1>
+		{/if}
+		{#if kind === 'collections'}
+			<div class="mb-5">{@render searchBox($t('marketplace.searchCollectionsPlaceholder'))}</div>
 		{/if}
 		<div class="mb-4 text-sm text-base-content/70">
 			{filteredItems.length === 1 ? $t('marketplace.resultCountSingular', { values: { count: filteredItems.length } }) : $t('marketplace.resultCount', { values: { count: filteredItems.length } })}

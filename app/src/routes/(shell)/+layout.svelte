@@ -955,8 +955,11 @@
       deleteTarget = null;
       deleting = false;
       loadAgentRoster();
-      // Navigate away if we were viewing the deleted agent
-      if (agentId === targetId) goto('/');
+      // Viewing the deleted employee: move to the dashboard, which stays
+      // inside this shell. `/` is the startup redirector outside it — going
+      // there unmounted the whole workspace and remounted it, which read as
+      // a full page reload.
+      if (agentId === targetId) goto('/dashboard');
     } catch {
       deleting = false;
     }

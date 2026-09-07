@@ -100,7 +100,9 @@
     try {
       const api = await import('$lib/api/nebo');
       await api.deleteAgent(agentId);
-      goto('/');
+      // The dashboard stays inside the shell; `/` is the startup redirector
+      // outside it and remounted the whole workspace.
+      goto('/dashboard');
     } catch {
       deleting = false;
     }
