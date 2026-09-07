@@ -87,7 +87,16 @@ impl agent::ChannelDispatcher for ChannelDispatchImpl {
                 system: String::new(),
                 user_id: String::new(),
                 channel: channel_kind.clone(),
-                origin: tools::Origin::User,
+                // A Slack/Discord/Teams interlocutor is a third party typing
+                // into someone else's product — the same standing as any other
+                // inbound loop traffic, which `comm_origin` already gives to
+                // everyone who is not the owner on their own personal loop.
+                // As `User` this path skipped the deny wall, kept Full Access,
+                // and could raise an approval modal on the owner's desktop, so
+                // anyone who could post in a connected channel had the standing
+                // of the owner typing locally. The taint seed below was already
+                // calling this input untrusted; the origin now agrees with it.
+                origin: tools::Origin::Comm,
                 agent_id: agent_id.to_string(),
                 cancel_token: cancel_token.clone(),
                 lane: types::constants::lanes::COMM.to_string(),

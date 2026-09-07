@@ -1313,9 +1313,24 @@ impl WorkflowManager for WorkflowManagerImpl {
                 // driving approval-gated CRM writes) — the checkpoint decides
                 // as Comm even though the origin is Workflow. The taint check
                 // is deliberately the reserved keys the launch paths stamp.
+                //
+                // `_event_source` is the canonical envelope key
+                // (workflow::events::insert_event_envelope), and it was missing
+                // here: a webhook body from the open internet reached
+                // approval-gated operations — invoice send, mail send — with
+                // `tainted` false, because the envelope stamps `_event_*` and
+                // this check only looked for `_watch_*`/`_comm_*`. Every
+                // envelope carries outside content except the synthesized
+                // "manual" one, which is the owner pressing run (see
+                // `run_binding` below) and stays trusted.
+                let external_event = inputs
+                    .get("_event_source")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|s| s != "manual");
                 let tainted = inputs.get("_watch_payload").is_some()
                     || inputs.get("_watch_source").is_some()
-                    || inputs.get("_comm_payload").is_some();
+                    || inputs.get("_comm_payload").is_some()
+                    || external_event;
                 let ctx = if policy.is_some() || tainted {
                     Some(workflow::engine::CheckpointCtx {
                         operation_policy: policy,

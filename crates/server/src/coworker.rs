@@ -251,7 +251,14 @@ pub(crate) async fn send_coworker_message(
         system: String::new(),
         user_id: String::new(),
         channel: COWORKER_CHANNEL.to_string(),
-        origin: tools::Origin::User,
+        // Another employee's words, which is exactly what `Origin::Comm`
+        // names ("a peer Nebo, a loop, an agent space"). The prompt built
+        // above already tells the receiver this is "not from your owner" and
+        // must not be read as owner instructions — an origin of `User` made
+        // that a request rather than a boundary. It also closed the escalation
+        // path: an employee prompt-injected over Slack, email or a web page
+        // could hand the work to a coworker that still held shell and files.
+        origin: tools::Origin::Comm,
         agent_id: to_id.clone(),
         cancel_token: cancel_token.clone(),
         lane: types::constants::lanes::COMM.to_string(),
