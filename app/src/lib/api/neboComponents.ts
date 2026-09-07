@@ -219,6 +219,73 @@ export interface BillingSubscription {
 	currentPeriodEnd?: string
 }
 
+export interface CaseDetail {
+	case: CaseSummary
+	turns: CaseTurn[]
+	history: CaseHistoryLine[]
+	waits: CaseWait[]
+}
+
+export interface CaseHistoryLine {
+	id: number
+	kind: string
+	text: string
+	at: number
+}
+
+export interface CaseReceipt {
+	id: number
+	provider: string
+	state: string
+	attempts: number
+	to?: string
+	reference?: string
+	result?: string
+	at: number
+}
+
+export interface CaseSummary {
+	id: string
+	owner: string
+	case_type: string
+	subject_id: string
+	aliases: string[]
+	state: string
+	result?: string
+	summary: string
+	opened_at: number
+	ended_at?: number
+	waiting_for?: CaseWait
+	last_inbound?: CaseHistoryLine
+	last_outbound?: CaseReceipt
+	last_transition?: number
+	attention?: string
+	previous_case?: string
+}
+
+export interface CaseTurn {
+	id: string
+	state: string
+	model?: string
+	started_at?: number
+	ended_at?: number
+	output?: string
+	receipts: CaseReceipt[]
+}
+
+export interface CaseWait {
+	id: number
+	on: string
+	reason: string
+	since: number
+	wake_at?: number
+	superseded_at?: number
+}
+
+export interface CasesList {
+	cases: CaseSummary[]
+}
+
 export interface Channel {
 	id: string
 	name: string

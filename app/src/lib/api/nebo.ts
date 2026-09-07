@@ -629,6 +629,20 @@ export function browserStatus() {
 }
 
 /**
+ * @description "List cases"
+ */
+export function listCases(agent?: string, limit?: number) {
+	return webapi.get<components.CasesList>(`/api/v1/cases`, { agent, limit })
+}
+
+/**
+ * @description "Get case"
+ */
+export function getCase(id: string) {
+	return webapi.get<components.CaseDetail>(`/api/v1/cases/${id}`)
+}
+
+/**
  * @description "List chats"
  */
 export function listChats(limit?: number, offset?: number) {
