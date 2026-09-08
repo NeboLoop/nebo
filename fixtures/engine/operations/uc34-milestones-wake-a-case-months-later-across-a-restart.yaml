@@ -1,0 +1,9 @@
+id: uc34-milestones-wake-a-case-months-later-across-a-restart
+name: "UC34 — Contract milestones that wake a case months later"
+description: |
+  uc34 — Contract milestones that wake a case months later. Milestone one at
+  ninety days wakes the case once; its turn declares milestone two at a
+  hundred and eighty; a restart between them changes nothing.
+target_component: engine
+proof: engine::proof::operations::uc34_milestones_wake_a_case_months_later_across_a_restart
+conversation: []

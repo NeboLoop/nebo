@@ -1,0 +1,10 @@
+id: uc36-a-drip-pauses-on-reply-and-resumes-on-silence
+name: "UC36 — Drip campaigns that pause per contact on reply and resume on silence"
+description: |
+  uc36 — Drip campaigns that pause per contact on reply and resume on silence.
+  Step two is the case's wait; a reply replaces it with a turn now, whose wait
+  resumes the drip only after five silent days. The scheduled step never
+  fires; the resume fires once.
+target_component: engine
+proof: engine::proof::marketing::uc36_a_drip_pauses_on_reply_and_resumes_on_silence
+conversation: []

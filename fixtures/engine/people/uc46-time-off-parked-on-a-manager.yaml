@@ -1,0 +1,10 @@
+id: uc46-time-off-parked-on-a-manager
+name: "UC46 — Time-off and approval flows parked on a manager"
+description: |
+  uc46 — Time-off and approval flows parked on a manager. The turn parks on
+  the manager; nothing is actioned while parked; the employee's nudge
+  meanwhile waits its turn and is not lost; the manager's answer resumes the
+  turn once, a second click is a duplicate.
+target_component: engine
+proof: engine::proof::people::uc46_time_off_parked_on_a_manager
+conversation: []

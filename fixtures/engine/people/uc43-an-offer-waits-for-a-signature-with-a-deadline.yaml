@@ -1,0 +1,9 @@
+id: uc43-an-offer-waits-for-a-signature-with-a-deadline
+name: "UC43 — Offer follow-ups that wait for a signature with a deadline"
+description: |
+  uc43 — Offer follow-ups that wait for a signature with a deadline. The
+  signature arrives on day three: the case closes accepted, and the day-five
+  follow-up never fires.
+target_component: engine
+proof: engine::proof::people::uc43_an_offer_waits_for_a_signature_with_a_deadline
+conversation: []

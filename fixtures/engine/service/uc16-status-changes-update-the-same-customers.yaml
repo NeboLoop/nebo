@@ -1,0 +1,9 @@
+id: uc16-status-changes-update-the-same-customers
+name: "UC16 — Outage communication that updates the same customers as status changes"
+description: |
+  uc16 — Outage communication that updates the same customers as status
+  changes. Each subscriber is a case; each status change reaches every case as
+  one turn; each turn sends that customer exactly one update.
+target_component: engine
+proof: engine::proof::service::uc16_status_changes_update_the_same_customers
+conversation: []

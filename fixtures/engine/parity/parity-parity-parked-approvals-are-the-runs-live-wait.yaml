@@ -1,0 +1,11 @@
+id: parity-parity-parked-approvals-are-the-runs-live-wait
+name: "Parity parked approvals are the runs live wait"
+description: |
+  Parked approvals. Before: a side table, and the approve button re-ran the
+  workflow itself. Now: the run's live wait; the owner's answer is an event,
+  one per wait generation; a second click is a duplicate; an answer for a run
+  that is not waiting wakes nothing; the resumed run is re-queued at its
+  parked call with the answer on it.
+target_component: engine
+proof: engine::proof::parity::parity_parked_approvals_are_the_runs_live_wait
+conversation: []

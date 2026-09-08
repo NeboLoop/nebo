@@ -1,0 +1,9 @@
+id: uc32-dispatch-from-booking-to-sign-off
+name: "UC32 — Field-service dispatch that follows a job from booking to sign-off"
+description: |
+  uc32 — Field-service dispatch that follows a job from booking to sign-off.
+  Booking, en route, and sign-off are three signals into one case, three turns
+  in order; while a turn runs nothing starts beside it.
+target_component: engine
+proof: engine::proof::operations::uc32_dispatch_from_booking_to_sign_off
+conversation: []

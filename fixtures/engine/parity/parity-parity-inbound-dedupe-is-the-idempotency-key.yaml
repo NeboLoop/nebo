@@ -1,0 +1,8 @@
+id: parity-parity-inbound-dedupe-is-the-idempotency-key
+name: "Parity inbound dedupe is the idempotency key"
+description: |
+  Inbound dedupe. Before: a table of seen ids, pruned by hand. Now: the
+  idempotency key every event has — one namespace, the same guarantee.
+target_component: engine
+proof: engine::proof::parity::parity_inbound_dedupe_is_the_idempotency_key
+conversation: []

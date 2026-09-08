@@ -1,0 +1,10 @@
+id: uc10-a-discount-parks-for-approval-before-the-email
+name: "UC10 — A discount over a threshold parks for approval before the email goes out"
+description: |
+  uc10 — A discount over a threshold parks for approval before the email goes
+  out. The turn parks; the owner's answer resumes it exactly once; a second
+  click is a duplicate; the email's receipt is dated after the approval; a
+  customer reply during the park waits its turn.
+target_component: engine
+proof: engine::proof::sales::uc10_a_discount_parks_for_approval_before_the_email
+conversation: []

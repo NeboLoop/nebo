@@ -37,6 +37,54 @@ mod service;
 pub const DAY: i64 = 86_400;
 pub const HOUR: i64 = 3_600;
 
+/// Every scenario here is listed as a fixture in `fixtures/engine/` and in
+/// `suites/engine.yaml`, and every fixture's `proof` names a scenario here.
+/// The list the owner reads and the tests that run are one set, or this
+/// fails.
+#[test]
+fn every_proof_is_a_fixture_in_the_engine_suite_and_every_fixture_proves_something() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let sources = [
+        ("concurrency", include_str!("concurrency.rs")),
+        ("finance", include_str!("finance.rs")),
+        ("legal", include_str!("legal.rs")),
+        ("marketing", include_str!("marketing.rs")),
+        ("operations", include_str!("operations.rs")),
+        ("parity", include_str!("parity.rs")),
+        ("people", include_str!("people.rs")),
+        ("platform", include_str!("platform.rs")),
+        ("sales", include_str!("sales.rs")),
+        ("server", include_str!("server.rs")),
+        ("service", include_str!("service.rs")),
+    ];
+    // The scenarios: every test fn in the proof modules, fully qualified.
+    let mut proofs = std::collections::BTreeSet::new();
+    for (module, src) in sources {
+        let mut lines = src.lines().peekable();
+        while let Some(line) = lines.next() {
+            if line.trim().starts_with("#[test]") || line.trim().starts_with("#[tokio::test") {
+                let next = lines.next().unwrap_or("").trim();
+                let name = next.trim_start_matches("async ").trim_start_matches("fn ").split('(').next().unwrap_or("");
+                assert!(!name.is_empty(), "{module}: a test attribute with no fn under it");
+                proofs.insert(format!("engine::proof::{module}::{name}"));
+            }
+        }
+    }
+    // The fixtures the suite lists, and the proof each names.
+    let suite = std::fs::read_to_string(root.join("suites/engine.yaml")).expect("suites/engine.yaml");
+    let mut listed = std::collections::BTreeSet::new();
+    for rel in suite.lines().filter_map(|l| l.trim().strip_prefix("- ")) {
+        let path = root.join("suites").join(rel.trim());
+        let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        let proof = text.lines().find_map(|l| l.strip_prefix("proof: ")).unwrap_or_else(|| panic!("{} names no proof", path.display())).trim();
+        assert!(proofs.contains(proof), "{} names a proof that does not exist: {proof}", path.display());
+        assert!(listed.insert(proof.to_string()), "{proof} is listed twice");
+    }
+    let missing: Vec<_> = proofs.difference(&listed).collect();
+    assert!(missing.is_empty(), "scenarios with no fixture in suites/engine.yaml: {missing:?}");
+    assert_eq!(listed.len(), proofs.len());
+}
+
 /// A fresh store and a clock. Time only moves when a scenario moves it.
 pub struct World {
     pub s: Store,

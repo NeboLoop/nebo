@@ -564,9 +564,10 @@ else
 endif
 
 # The engine proof. Two halves:
-#   make test-engine-proof   # sixty-four deterministic scenarios + the engine
-#                            # tests, no model, under a minute (uses its own
-#                            # target dir, so it is safe beside `make dev`)
+#   make test-engine-proof   # every use case as a fixture (suites/engine.yaml,
+#                            # fixtures/engine/), each running its Rust proof:
+#                            # no model, no server, its own target dir, so it
+#                            # is safe beside `make dev`
 #   make test-engine-live ENGINE_CONTACT=you@example.com
 #                            # the live half against the running Nebo with a
 #                            # real model: a lead, a reply, a mid-turn message,
@@ -594,8 +595,12 @@ deploy-check:
 	echo "deploy-check: PASS on $$head, $$((age/60)) minutes ago"
 .PHONY: test-engine test-engine-proof test-engine-live
 test-engine: test-engine-proof test-engine-live
-test-engine-proof:
-	CARGO_TARGET_DIR=$(or $(CARGO_TARGET_DIR),target-check) cargo test -p nebo-server -- engine::
+# Every use case, one fixture each (suites/engine.yaml → fixtures/engine/):
+# each fixture names the Rust proof that holds it; no model, no server.
+test-engine-proof: $(NEBO_CLI)
+	$(NEBO_CLI) test run --suite suites/engine.yaml --no-judge
+# The real-model half (suites/engine-live.yaml): a running Nebo and an
+# address you own.
 test-engine-live:
 	@ENGINE_CONTACT=$(ENGINE_CONTACT) TEST_SERVER=$(TEST_SERVER) bash scripts/test-engine.sh
 

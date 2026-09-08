@@ -1,0 +1,10 @@
+id: uc22-a-refund-above-the-threshold-parks-for-approval
+name: "UC22 — Refunds that require an approval above a threshold"
+description: |
+  uc22 — Refunds that require an approval above a threshold. The turn parks on
+  the owner; no refund is on the ledger until the answer; the answer resumes
+  the turn once and the refund follows it. Must never: a refund before the
+  approval, or two refunds for one answer.
+target_component: engine
+proof: engine::proof::finance::uc22_a_refund_above_the_threshold_parks_for_approval
+conversation: []

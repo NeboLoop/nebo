@@ -1,0 +1,11 @@
+id: uc56-a-case-moves-between-employees-with-its-history
+name: "UC56 — Cross-employee handoffs where one case moves between roles without losing history"
+description: |
+  uc56 — Cross-employee handoffs where one case moves between roles without
+  losing history. The intake employee hands the case to the closer: the case
+  keeps its id and history, the closer's binding takes the next message, the
+  intake binding is refused as a conflict, and the turns show who worked it
+  when.
+target_component: engine
+proof: engine::proof::platform::uc56_a_case_moves_between_employees_with_its_history
+conversation: []

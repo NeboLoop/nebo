@@ -1,0 +1,9 @@
+id: uc02-a-reply-stops-the-cadence
+name: "UC02 — Follow-up cadences that stop the moment the person replies"
+description: |
+  uc02 — Follow-up cadences that stop the moment the person replies. The reply
+  starts a turn now; the touch that was scheduled for day three never fires,
+  because the turn the reply started replaced that wait.
+target_component: engine
+proof: engine::proof::sales::uc02_a_reply_stops_the_cadence
+conversation: []

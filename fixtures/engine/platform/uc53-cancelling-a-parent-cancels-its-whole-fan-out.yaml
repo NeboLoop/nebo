@@ -1,0 +1,10 @@
+id: uc53-cancelling-a-parent-cancels-its-whole-fan-out
+name: "UC53 — Sub-agent fan-out with real parent links, so cancelling a parent cancels its children"
+description: |
+  uc53 — Sub-agent fan-out with real parent links, so cancelling a parent
+  cancels its children. A root with two children and a grandchild: cancelling
+  the root takes every live descendant, and leaves the child that had already
+  finished as it ended.
+target_component: engine
+proof: engine::proof::platform::uc53_cancelling_a_parent_cancels_its_whole_fan_out
+conversation: []

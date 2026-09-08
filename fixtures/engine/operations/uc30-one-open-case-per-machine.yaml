@@ -1,0 +1,9 @@
+id: uc30-one-open-case-per-machine
+name: "UC30 — Maintenance schedules keyed to equipment, one open case per machine"
+description: |
+  uc30 — Maintenance schedules keyed to equipment, one open case per machine.
+  Two readings for one press are one case; a second press is a second case;
+  the key is the machine, not the message.
+target_component: engine
+proof: engine::proof::operations::uc30_one_open_case_per_machine
+conversation: []

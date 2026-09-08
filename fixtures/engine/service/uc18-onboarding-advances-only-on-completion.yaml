@@ -1,0 +1,10 @@
+id: uc18-onboarding-advances-only-on-completion
+name: "UC18 — Onboarding sequences that advance only when the customer completes each step"
+description: |
+  uc18 — Onboarding sequences that advance only when the customer completes
+  each step. Silence brings a nudge that keeps the same step; only the
+  customer's completion moves the case to the next one, and the pending nudge
+  for the finished step never fires.
+target_component: engine
+proof: engine::proof::service::uc18_onboarding_advances_only_on_completion
+conversation: []

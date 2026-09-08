@@ -1,0 +1,9 @@
+id: uc15-a-satisfaction-check-three-days-after-resolution
+name: "UC15 — Post-resolution satisfaction checks three days later"
+description: |
+  uc15 — Post-resolution satisfaction checks three days later. Resolved is not
+  closed: the case waits three days, the timer's turn sends the check once — a
+  reworded second send in the same turn is refused — and then closes.
+target_component: engine
+proof: engine::proof::service::uc15_a_satisfaction_check_three_days_after_resolution
+conversation: []

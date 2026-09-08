@@ -1,0 +1,10 @@
+id: uc29-heartbeats-keep-the-window-and-never-stack
+name: "UC29 — Heartbeat monitors that respect a working window and never stack"
+description: |
+  uc29 — Heartbeat monitors that respect a working window and never stack. A
+  thirty-minute heartbeat armed at 22:00 under an 08:00–18:00 window is placed
+  at 08:00 tomorrow, not at 22:30; when it fires while the previous beat is
+  still running, it is skipped, not stacked.
+target_component: engine
+proof: engine::proof::operations::uc29_heartbeats_keep_the_window_and_never_stack
+conversation: []

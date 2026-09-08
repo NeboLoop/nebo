@@ -1,0 +1,9 @@
+id: uc42-one-case-per-applicant-across-interviews
+name: "UC42 — Candidate pipelines with one case per applicant across interviews"
+description: |
+  uc42 — Candidate pipelines with one case per applicant across interviews.
+  Two applicants, two cases; each interview result lands in its own case; a
+  second application from the same person joins theirs.
+target_component: engine
+proof: engine::proof::people::uc42_one_case_per_applicant_across_interviews
+conversation: []

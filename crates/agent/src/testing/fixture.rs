@@ -21,6 +21,13 @@ pub struct Fixture {
     /// payload). None = the primary assistant.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
+    /// A deterministic proof instead of a conversation: the fully qualified
+    /// Rust test in `nebo-server` that proves this scenario, run with no
+    /// model and no server (`engine::proof::sales::uc01_…`). A proof-backed
+    /// fixture has an empty conversation; the runner executes the test and
+    /// the fixture passes when it does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proof: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub setup: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

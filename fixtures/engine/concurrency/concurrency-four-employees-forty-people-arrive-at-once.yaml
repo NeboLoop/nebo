@@ -1,0 +1,9 @@
+id: concurrency-four-employees-forty-people-arrive-at-once
+name: "Four employees forty people arrive at once"
+description: |
+  Four employees, forty people, eight threads arriving at once, one tick
+  thread running the whole time. Every person gets exactly one case and one
+  first turn; no employee's work waits on another's.
+target_component: engine
+proof: engine::proof::concurrency::four_employees_forty_people_arrive_at_once
+conversation: []

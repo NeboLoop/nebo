@@ -1,0 +1,11 @@
+id: uc51-filing-deadlines-are-durable-timers-with-reminders
+name: "UC51 — Court or filing deadlines as durable timers with reminders"
+description: |
+  uc51 — Court or filing deadlines as durable timers with reminders. The
+  filing date is a real date; reminders are the case's waits at seven days and
+  one day out; the timers are rows that survive a restart and fire on the day,
+  never twice, never early. Must never: a deadline that forgets itself because
+  the machine was off.
+target_component: engine
+proof: engine::proof::legal::uc51_filing_deadlines_are_durable_timers_with_reminders
+conversation: []

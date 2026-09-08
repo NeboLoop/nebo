@@ -1,0 +1,10 @@
+id: server-the-owners-answer-is-one-event-per-wait
+name: "The owners answer is one event per wait"
+description: |
+  The owner's answer is one event per wait generation, recorded only while the
+  run is waiting: the first click resumes the run, the second is a duplicate,
+  and an answer for a run that is not waiting is refused rather than pinned on
+  the wrong moment.
+target_component: engine
+proof: engine::proof::server::the_owners_answer_is_one_event_per_wait
+conversation: []

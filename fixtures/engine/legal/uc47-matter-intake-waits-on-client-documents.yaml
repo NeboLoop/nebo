@@ -1,0 +1,11 @@
+id: uc47-matter-intake-waits-on-client-documents
+name: "UC47 — Matter intake that waits on client documents"
+description: |
+  uc47 — Matter intake that waits on client documents. The matter waits on the
+  client with a two-week nudge; the documents start the next turn the moment
+  they arrive; the nudge that was due never fires; a second send of the same
+  documents is a duplicate, not a second turn. Must never: a "still waiting on
+  your documents" after they arrived.
+target_component: engine
+proof: engine::proof::legal::uc47_matter_intake_waits_on_client_documents
+conversation: []

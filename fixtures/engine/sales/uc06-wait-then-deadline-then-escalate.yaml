@@ -1,0 +1,9 @@
+id: uc06-wait-then-deadline-then-escalate
+name: "UC06 — Quote follow-up that waits for the customer, then a deadline, then escalates"
+description: |
+  uc06 — Quote follow-up that waits for the customer, then a deadline, then
+  escalates. Two silent deadlines start two touches; the third turn hands the
+  case to the owner and closes it. Never two turns at once.
+target_component: engine
+proof: engine::proof::sales::uc06_wait_then_deadline_then_escalate
+conversation: []

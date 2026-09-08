@@ -1,0 +1,10 @@
+id: uc25-a-reimbursement-waits-for-the-receipt
+name: "UC25 — Expense reimbursements that wait for a receipt"
+description: |
+  uc25 — Expense reimbursements that wait for a receipt. The case waits on the
+  receipt with a deadline; nothing is paid before it arrives; the receipt
+  starts the paying turn; the deadline nudge never fires after. Must never: a
+  reimbursement with no receipt on the case.
+target_component: engine
+proof: engine::proof::finance::uc25_a_reimbursement_waits_for_the_receipt
+conversation: []

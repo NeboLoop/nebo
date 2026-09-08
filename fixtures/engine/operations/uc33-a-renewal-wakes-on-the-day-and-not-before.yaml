@@ -1,0 +1,9 @@
+id: uc33-a-renewal-wakes-on-the-day-and-not-before
+name: "UC33 — Compliance renewals such as licenses and certifications with long horizons"
+description: |
+  uc33 — Compliance renewals such as licenses and certifications with long
+  horizons. A renewal wait two hundred days out is one row with that deadline;
+  ticks at day 100 and 199 wake nothing; the day itself wakes it exactly once.
+target_component: engine
+proof: engine::proof::operations::uc33_a_renewal_wakes_on_the_day_and_not_before
+conversation: []

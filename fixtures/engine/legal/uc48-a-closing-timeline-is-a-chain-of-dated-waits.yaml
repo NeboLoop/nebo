@@ -1,0 +1,11 @@
+id: uc48-a-closing-timeline-is-a-chain-of-dated-waits
+name: "UC48 — Closing timelines with inspection, appraisal, and financing waits"
+description: |
+  uc48 — Closing timelines with inspection, appraisal, and financing waits.
+  Each stage is a wait on a real date (RFC3339); the date starts the stage's
+  turn; a stage finished early by a message advances without waiting for its
+  date, and that date then passes with nothing. Must never: a stage's turn
+  fired twice, or one stage's turn beside another.
+target_component: engine
+proof: engine::proof::legal::uc48_a_closing_timeline_is_a_chain_of_dated_waits
+conversation: []

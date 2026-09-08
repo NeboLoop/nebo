@@ -1,0 +1,10 @@
+id: uc21-authorize-now-capture-later-as-two-linked-effects
+name: "UC21 — Authorize now, capture later, as two linked effects"
+description: |
+  uc21 — Authorize now, capture later, as two linked effects. The capture row
+  names the authorization it draws on (the provider's reference), so the
+  ledger shows the pair as one story; each is effectively-once on its own key.
+  Must never: a capture with no authorization behind it.
+target_component: engine
+proof: engine::proof::finance::uc21_authorize_now_capture_later_as_two_linked_effects
+conversation: []

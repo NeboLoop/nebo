@@ -1,0 +1,9 @@
+id: uc07-a-referral-from-introduction-to-close
+name: "UC07 — Referral tracking from introduction to close"
+description: |
+  uc07 — Referral tracking from introduction to close. Three signals over
+  weeks are one case; once won, the person's next message opens a new case
+  linked to the won one, never a reopening of it.
+target_component: engine
+proof: engine::proof::sales::uc07_a_referral_from_introduction_to_close
+conversation: []

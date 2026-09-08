@@ -1,0 +1,10 @@
+id: uc19-dunning-on-a-schedule-stops-on-payment
+name: "UC19 — Invoice collection that dunns on a schedule and stops on payment"
+description: |
+  uc19 — Invoice collection that dunns on a schedule and stops on payment. Two
+  silent weeks are two dunning turns started by the clock; the payment starts
+  the closing turn; the dunning that was due next never fires. Must never: a
+  dunning message after payment.
+target_component: engine
+proof: engine::proof::finance::uc19_dunning_on_a_schedule_stops_on_payment
+conversation: []

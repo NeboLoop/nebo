@@ -1,0 +1,9 @@
+id: uc37-each-piece-is-one-case-from-brief-to-publish
+name: "UC37 — Content calendars where each piece is a case from brief to publish"
+description: |
+  uc37 — Content calendars where each piece is a case from brief to publish. A
+  piece is keyed by its id: brief, draft, and approval are one case; another
+  piece is another case; publish closes the piece.
+target_component: engine
+proof: engine::proof::marketing::uc37_each_piece_is_one_case_from_brief_to_publish
+conversation: []

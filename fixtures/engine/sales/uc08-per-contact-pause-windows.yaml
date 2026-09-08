@@ -1,0 +1,9 @@
+id: uc08-per-contact-pause-windows
+name: "UC08 — Trade-show lead sequences with a per-contact pause window"
+description: |
+  uc08 — Trade-show lead sequences with a per-contact pause window. Two
+  contacts, two cases, two clocks: one asked for two weeks, the other gets day
+  three; day three touches exactly one of them.
+target_component: engine
+proof: engine::proof::sales::uc08_per_contact_pause_windows
+conversation: []

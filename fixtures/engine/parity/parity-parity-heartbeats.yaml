@@ -1,0 +1,12 @@
+id: parity-parity-heartbeats
+name: "Parity heartbeats"
+description: |
+  Heartbeats. Before: an in-memory map that forgot everything on restart, and
+  per-binding loops that waited a full interval before the first fire. Now: a
+  timer row is the heartbeat; it fires one run on the heartbeat lane; the
+  consumed timer is the floor for the next; a timer due while the last run is
+  live is skipped, never stacked; and the rows survive a restart because they
+  are rows.
+target_component: engine
+proof: engine::proof::parity::parity_heartbeats
+conversation: []

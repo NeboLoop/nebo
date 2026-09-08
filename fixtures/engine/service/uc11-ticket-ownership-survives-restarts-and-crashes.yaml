@@ -1,0 +1,11 @@
+id: uc11-ticket-ownership-survives-restarts-and-crashes
+name: "UC11 — Ticket ownership that survives restarts and crashes"
+description: |
+  uc11 — Ticket ownership that survives restarts and crashes. The process dies
+  mid-turn: the turn resumes once, the case and its key are untouched, a reply
+  meanwhile rides the resumed turn. A second death is poison: the owner is
+  told, the case retries on its ladder. A clean shutdown spends no resume.
+  Never a second case for the same ticket, never a lost reply.
+target_component: engine
+proof: engine::proof::service::uc11_ticket_ownership_survives_restarts_and_crashes
+conversation: []

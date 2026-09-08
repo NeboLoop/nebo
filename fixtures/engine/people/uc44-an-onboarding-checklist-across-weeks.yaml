@@ -1,0 +1,9 @@
+id: uc44-an-onboarding-checklist-across-weeks
+name: "UC44 — Employee onboarding checklists spanning weeks"
+description: |
+  uc44 — Employee onboarding checklists spanning weeks. Day one, day seven,
+  day thirty: each is the case's own deadline, each fires once at its moment,
+  and a restart in between leaves the waiting case exactly where it was.
+target_component: engine
+proof: engine::proof::people::uc44_an_onboarding_checklist_across_weeks
+conversation: []

@@ -1,0 +1,12 @@
+id: server-heartbeats-are-armed-inside-their-windows
+name: "Heartbeats are armed inside their windows"
+description: |
+  Heartbeat timers are placed inside the entity's window: a fire due at 18:20
+  against an 08:00–18:00 window lands at 08:00 the next day; one due inside
+  the window keeps its time; an entity with no window is due exactly an
+  interval after its last fire; an entity that never fired is due now. A
+  binding heartbeat of a live agent gets its timer; a binding of an agent that
+  is not live gets none.
+target_component: engine
+proof: engine::proof::server::heartbeats_are_armed_inside_their_windows
+conversation: []

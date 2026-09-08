@@ -1,0 +1,9 @@
+id: uc17-a-renewal-reminder-on-the-contract-date
+name: "UC17 — Renewal reminders tied to the contract date, not a guess"
+description: |
+  uc17 — Renewal reminders tied to the contract date, not a guess. The turn
+  names the exact moment (RFC3339); the wait carries it, not the binding's
+  default; the moment before fires nothing, the moment fires once.
+target_component: engine
+proof: engine::proof::service::uc17_a_renewal_reminder_on_the_contract_date
+conversation: []

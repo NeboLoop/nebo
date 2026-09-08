@@ -1,0 +1,10 @@
+id: parity-parity-subagent-tasks-are-linked-and-bounded
+name: "Parity subagent tasks are linked and bounded"
+description: |
+  Sub-agent tasks. Before: a parent link that was never written; cancelling a
+  parent cancelled nothing. Now: the link is a row, a cancel takes the whole
+  fan-out (uc53), and a task's retries are bounded — one resume after a crash,
+  then the owner decides.
+target_component: engine
+proof: engine::proof::parity::parity_subagent_tasks_are_linked_and_bounded
+conversation: []

@@ -1,0 +1,10 @@
+id: uc52-an-external-system-is-the-source-of-truth-and-the-case-holds-a-reference
+name: "UC52 — Any external system as the source of truth, with the case holding only a reference"
+description: |
+  uc52 — Any external system as the source of truth, with the case holding
+  only a reference. A ticket keyed by the CRM's id: the case carries the id as
+  its alias, every update to that record rides the one case, and a run bound
+  to the record is found by the reference alone.
+target_component: engine
+proof: engine::proof::platform::uc52_an_external_system_is_the_source_of_truth_and_the_case_holds_a_reference
+conversation: []

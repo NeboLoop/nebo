@@ -1,0 +1,9 @@
+id: uc01-one-thread-of-memory-across-weeks
+name: "UC01 — Work a lead across weeks with one thread of memory instead of a fresh email each time"
+description: |
+  uc01 — Work a lead across weeks with one thread of memory instead of a fresh
+  email each time. Three turns over ten days: each later turn reads what the
+  earlier ones did, and the person has one case throughout.
+target_component: engine
+proof: engine::proof::sales::uc01_one_thread_of_memory_across_weeks
+conversation: []

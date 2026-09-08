@@ -1,0 +1,9 @@
+id: concurrency-the-store-and-the-ledger-hold-under-contention
+name: "The store and the ledger hold under contention"
+description: |
+  The store under contention: sixteen threads writing waits, events, and
+  ledger rows while a tick thread runs. No write fails, every row lands, and
+  the ledger's one-message-per-person rule holds across threads.
+target_component: engine
+proof: engine::proof::concurrency::the_store_and_the_ledger_hold_under_contention
+conversation: []

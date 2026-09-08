@@ -868,6 +868,20 @@ async fn run_test_command(cfg: &config::Config, command: TestCommands) -> anyhow
             let mut critical_check_failures: Vec<String> = Vec::new();
 
             for fix in &fixtures {
+                // A proof-backed fixture is a deterministic test, not a
+                // conversation: it runs in the workspace with no model and
+                // no server, and passes when the test does.
+                if let Some(proof) = fix.proof.as_deref() {
+                    println!("Running proof: {} ({proof})", fix.id);
+                    match run_proof(proof) {
+                        Ok(()) => println!("  ok"),
+                        Err(e) => {
+                            eprintln!("  FAILED: {e}");
+                            failed_fixtures.push(fix.id.clone());
+                        }
+                    }
+                    continue;
+                }
                 println!("Running fixture: {} ({}x)", fix.id, runs);
 
                 let mut traces = match engine::run_live(fix, &server, model.as_deref(), &overrides, runs).await {
@@ -1080,6 +1094,36 @@ fn resolve_fixtures(
     }
 
     Ok(fixtures)
+}
+
+/// Run one deterministic proof — a named test in `nebo-server` — from the
+/// workspace root, in the check target directory so it never contends with
+/// a running `make dev`. The proof passes when the test does.
+fn run_proof(proof: &str) -> anyhow::Result<()> {
+    let root = workspace_root().ok_or_else(|| anyhow::anyhow!("not inside the Nebo workspace; proofs run from a checkout"))?;
+    let target = std::env::var_os("CARGO_TARGET_DIR").unwrap_or_else(|| root.join("target-check").into());
+    let status = std::process::Command::new("cargo")
+        .args(["test", "-p", "nebo-server", "--lib", "--quiet", "--", proof, "--exact"])
+        .env("CARGO_TARGET_DIR", target)
+        .current_dir(&root)
+        .status()
+        .map_err(|e| anyhow::anyhow!("could not run cargo: {e}"))?;
+    if status.success() { Ok(()) } else { anyhow::bail!("{proof} failed ({status})") }
+}
+
+/// The Cargo workspace this binary was run inside, by walking up from the
+/// current directory to the `Cargo.toml` that declares `[workspace]`.
+fn workspace_root() -> Option<std::path::PathBuf> {
+    let mut dir = std::env::current_dir().ok()?;
+    loop {
+        let manifest = dir.join("Cargo.toml");
+        if manifest.is_file() && std::fs::read_to_string(&manifest).ok()?.contains("[workspace]") {
+            return Some(dir);
+        }
+        if !dir.pop() {
+            return None;
+        }
+    }
 }
 
 fn run_onboard(cfg: &config::Config) -> anyhow::Result<()> {

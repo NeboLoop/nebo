@@ -1,0 +1,11 @@
+id: server-the-webhook-door-routes-people-to-their-case-and-the-rest-to-a-plain-run
+name: "The webhook door routes people to their case and the rest to a plain run"
+description: |
+  The hub's webhook door: a delivery to a case binding that names a person
+  opens their case; the hub's redelivery of the same message is a duplicate; a
+  second submission reaches the same case; a delivery that names nobody, or to
+  a plain binding, is handed back to run as a plain webhook with the payload
+  in the envelope; a missing binding is an error.
+target_component: engine
+proof: engine::proof::server::the_webhook_door_routes_people_to_their_case_and_the_rest_to_a_plain_run
+conversation: []

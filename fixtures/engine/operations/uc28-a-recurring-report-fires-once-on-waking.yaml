@@ -1,0 +1,10 @@
+id: uc28-a-recurring-report-fires-once-on-waking
+name: "UC28 — Recurring reports that fire once when the laptop wakes, not fifty times"
+description: |
+  uc28 — Recurring reports that fire once when the laptop wakes, not fifty
+  times. A daily 09:00 report sleeps through thirty days: on waking twenty
+  minutes after nine it fires once; on waking mid-afternoon it skips today and
+  arms tomorrow. Never a replay of the missed month.
+target_component: engine
+proof: engine::proof::operations::uc28_a_recurring_report_fires_once_on_waking
+conversation: []
