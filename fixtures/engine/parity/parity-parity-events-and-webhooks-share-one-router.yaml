@@ -1,0 +1,11 @@
+id: parity-parity-events-and-webhooks-share-one-router
+name: "Parity events and webhooks share one router"
+description: |
+  The source-event and webhook entry. Both routes call the same
+  `route_signal`: an event names a person, the person's open case takes it, a
+  replay of the same moment is a duplicate, and a second employee subscribed
+  to the same source is a separate signal that ownership refuses as a conflict
+  instead of the key swallowing it.
+target_component: engine
+proof: engine::proof::parity::parity_events_and_webhooks_share_one_router
+conversation: []

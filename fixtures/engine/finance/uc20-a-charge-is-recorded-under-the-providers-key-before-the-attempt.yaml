@@ -1,0 +1,10 @@
+id: uc20-a-charge-is-recorded-under-the-providers-key-before-the-attempt
+name: "UC20 — Effectively-once charges with a provider idempotency key written before the attempt"
+description: |
+  uc20 — Effectively-once charges with a provider idempotency key written
+  before the attempt. The row exists, pending, under the provider's key before
+  anything is attempted; the same key asked again is the same row; once
+  completed it is never charged again. Must never: two charges for one key.
+target_component: engine
+proof: engine::proof::finance::uc20_a_charge_is_recorded_under_the_providers_key_before_the_attempt
+conversation: []

@@ -1,0 +1,11 @@
+id: uc24-a-silent-provider-is-reconciled-not-retried
+name: "UC24 — Payouts that reconcile rather than retry when the provider goes silent"
+description: |
+  uc24 — Payouts that reconcile rather than retry when the provider goes
+  silent. Attempted, never confirmed: the row stays pending, attempts stay at
+  one, the owner is told once with the provider key, and the engine never
+  retries it. When a person reconciles it, it leaves the worklist. Must never:
+  a second attempt at money the provider may have moved.
+target_component: engine
+proof: engine::proof::finance::uc24_a_silent_provider_is_reconciled_not_retried
+conversation: []

@@ -1,0 +1,10 @@
+id: parity-parity-workflow-runs-resume-once
+name: "Parity workflow runs resume once"
+description: |
+  Workflow runs. Before: their own interrupted-and-resume bookkeeping. Now:
+  the engine's one rule — resume once after a restart, then a human decides —
+  for plain workflow runs and case turns alike; a clean shutdown suspends case
+  turns without spending their resume.
+target_component: engine
+proof: engine::proof::parity::parity_workflow_runs_resume_once
+conversation: []

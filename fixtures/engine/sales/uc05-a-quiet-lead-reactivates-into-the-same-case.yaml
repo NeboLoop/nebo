@@ -1,0 +1,9 @@
+id: uc05-a-quiet-lead-reactivates-into-the-same-case
+name: "UC05 — Reactivation of leads that went quiet ninety days ago"
+description: |
+  uc05 — Reactivation of leads that went quiet ninety days ago. A case closed
+  as unresponsive reopens on the person's next message, with its history
+  intact, and the message starts the next turn.
+target_component: engine
+proof: engine::proof::sales::uc05_a_quiet_lead_reactivates_into_the_same_case
+conversation: []

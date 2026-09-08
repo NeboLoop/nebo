@@ -1,0 +1,10 @@
+id: uc26-subscription-retries-never-storm-after-downtime
+name: "UC26 — Subscription retries with a bounded catch-up window, never a storm after downtime"
+description: |
+  uc26 — Subscription retries with a bounded catch-up window, never a storm
+  after downtime. An hourly retry job that slept six hours fires at most once
+  late, inside the catch-up window, then resumes its cadence. Must never: six
+  fires for six missed hours.
+target_component: engine
+proof: engine::proof::finance::uc26_subscription_retries_never_storm_after_downtime
+conversation: []

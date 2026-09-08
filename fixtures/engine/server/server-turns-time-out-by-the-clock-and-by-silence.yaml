@@ -1,0 +1,11 @@
+id: server-turns-time-out-by-the-clock-and-by-silence
+name: "Turns time out by the clock and by silence"
+description: |
+  A turn running past the hour is timed out whatever it is doing; one running
+  ten minutes with no activity for eleven is stuck; a fresh turn and a busy
+  long one are not touched. A turn queued past ten minutes is on the alert
+  list. The timed-out turn is cancelled and settles as a failure: the case
+  retries on the ladder and the owner sees why.
+target_component: engine
+proof: engine::proof::server::turns_time_out_by_the_clock_and_by_silence
+conversation: []

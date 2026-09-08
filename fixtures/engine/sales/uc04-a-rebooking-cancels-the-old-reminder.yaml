@@ -1,0 +1,9 @@
+id: uc04-a-rebooking-cancels-the-old-reminder
+name: "UC04 — Appointment reminders that cancel themselves when the booking changes"
+description: |
+  uc04 — Appointment reminders that cancel themselves when the booking
+  changes. The reminder is the case's wait; a rebooking turn declares a new
+  one, and the old moment passes with nothing sent.
+target_component: engine
+proof: engine::proof::sales::uc04_a_rebooking_cancels_the_old_reminder
+conversation: []

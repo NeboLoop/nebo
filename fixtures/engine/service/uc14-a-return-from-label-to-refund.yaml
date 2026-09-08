@@ -1,0 +1,11 @@
+id: uc14-a-return-from-label-to-refund
+name: "UC14 — Warranty and return cases spanning shipping, receipt, and refund"
+description: |
+  uc14 — Warranty and return cases spanning shipping, receipt, and refund. One
+  case waits for the package for two weeks; the warehouse's receipt starts the
+  refund turn; the refund is a money effect written before it is attempted,
+  one row per RMA however often it is asked for. The engine proves the
+  ledger's mechanics; the provider's charge is a plugin's.
+target_component: engine
+proof: engine::proof::service::uc14_a_return_from_label_to_refund
+conversation: []

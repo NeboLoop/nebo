@@ -1,0 +1,10 @@
+id: parity-parity-cases-rules-in-one-flow
+name: "Parity cases rules in one flow"
+description: |
+  Cases. Did not exist. One open case per person per case type; aliases
+  normalized; the turn contract strict; a failed turn retried on the ladder
+  (1m, 2m, 4m) then the default with the owner told; a turn that runs too long
+  is on the timeout worklist.
+target_component: engine
+proof: engine::proof::parity::parity_cases_rules_in_one_flow
+conversation: []

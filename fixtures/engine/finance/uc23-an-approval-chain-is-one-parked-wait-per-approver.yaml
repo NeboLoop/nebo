@@ -1,0 +1,11 @@
+id: uc23-an-approval-chain-is-one-parked-wait-per-approver
+name: "UC23 — Vendor bill approval chains with a parked wait per approver"
+description: |
+  uc23 — Vendor bill approval chains with a parked wait per approver. Each
+  approver is one wait generation with its own key; an answer for a wait that
+  is not current wakes nothing; the chain runs in order and each answer
+  resumes exactly once. Must never: a later approver's answer counted as an
+  earlier one's.
+target_component: engine
+proof: engine::proof::finance::uc23_an_approval_chain_is_one_parked_wait_per_approver
+conversation: []

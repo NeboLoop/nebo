@@ -1,0 +1,10 @@
+id: uc39-rsvps-deduplicate-across-channels-on-the-deterministic-rule
+name: "UC39 — Event RSVPs and reminders that de-duplicate across channels"
+description: |
+  uc39 — Event RSVPs and reminders that de-duplicate across channels. An RSVP
+  that names an email and a phone together makes them one person; a later
+  message on either channel alone reaches that case. A phone never seen with
+  that email is deliberately someone else.
+target_component: engine
+proof: engine::proof::marketing::uc39_rsvps_deduplicate_across_channels_on_the_deterministic_rule
+conversation: []

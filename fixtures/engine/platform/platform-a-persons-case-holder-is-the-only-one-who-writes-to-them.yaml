@@ -1,0 +1,12 @@
+id: platform-a-persons-case-holder-is-the-only-one-who-writes-to-them
+name: "A person's case holder is the only one who writes to them"
+description: |
+  Seen live: a case turn, missing its mail plugin, asked the Receptionist to
+  send the customer's email, and the Receptionist did from its own run — the
+  case's history said "no send this turn" while the person had a message, and
+  a second could have followed. A person in an open case is written to only by
+  an employee holding one of their cases; the coworker is refused and told
+  whose person it is; the holder's own send lands on the case's record.
+target_component: engine
+proof: engine::proof::platform::a_persons_case_holder_is_the_only_one_who_writes_to_them
+conversation: []

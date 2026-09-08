@@ -1,0 +1,10 @@
+id: uc09-a-handoff-freezes-the-case-and-holds-replies
+name: "UC09 — Handoff to a human owner that freezes the case until the owner releases it"
+description: |
+  uc09 — Handoff to a human owner that freezes the case until the owner
+  releases it. The case waits on the owner; a customer reply meanwhile is
+  parked on the case, not lost; the owner's release starts a turn that carries
+  the reply, and the parked reply is not carried twice.
+target_component: engine
+proof: engine::proof::sales::uc09_a_handoff_freezes_the_case_and_holds_replies
+conversation: []

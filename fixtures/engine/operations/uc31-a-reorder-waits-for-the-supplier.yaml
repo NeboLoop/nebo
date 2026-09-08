@@ -1,0 +1,9 @@
+id: uc31-a-reorder-waits-for-the-supplier
+name: "UC31 — Inventory reorder cases that wait for the supplier's confirmation"
+description: |
+  uc31 — Inventory reorder cases that wait for the supplier's confirmation.
+  The case waits on the supplier's message with a chase deadline; the
+  confirmation starts the turn and the chase never fires.
+target_component: engine
+proof: engine::proof::operations::uc31_a_reorder_waits_for_the_supplier
+conversation: []

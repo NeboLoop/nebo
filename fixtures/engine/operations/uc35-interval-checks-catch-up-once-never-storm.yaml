@@ -1,0 +1,10 @@
+id: uc35-interval-checks-catch-up-once-never-storm
+name: "UC35 — Fleet or asset checks on interval with catch-up rules"
+description: |
+  uc35 — Fleet or asset checks on interval with catch-up rules. A six-hourly
+  check sleeps three days: waking twenty minutes after an occurrence runs one
+  late check; the eleven missed ones are never replayed; the next check is the
+  next six-hour mark.
+target_component: engine
+proof: engine::proof::operations::uc35_interval_checks_catch_up_once_never_storm
+conversation: []

@@ -1,0 +1,10 @@
+id: uc55-one-audit-history-per-case
+name: "UC55 — A single audit history per case, readable by the owner"
+description: |
+  uc55 — A single audit history per case, readable by the owner. Every durable
+  thing that happened — turns, a failure, a give-up, a reopening — is one
+  ordered history on the case, read by the same store queries the inspector
+  uses, and history rows wake nothing.
+target_component: engine
+proof: engine::proof::platform::uc55_one_audit_history_per_case
+conversation: []

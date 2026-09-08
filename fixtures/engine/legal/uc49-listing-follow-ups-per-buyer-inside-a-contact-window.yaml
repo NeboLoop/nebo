@@ -1,0 +1,11 @@
+id: uc49-listing-follow-ups-per-buyer-inside-a-contact-window
+name: "UC49 — Listing follow-ups per buyer with a contact window"
+description: |
+  uc49 — Listing follow-ups per buyer with a contact window. Two buyers are
+  two cases on one listing; each waits until the window opens (a real time),
+  and nothing starts before it; when it opens, each buyer gets exactly one
+  turn. Must never: a touch outside the window, or one buyer's turn carrying
+  another buyer's thread.
+target_component: engine
+proof: engine::proof::legal::uc49_listing_follow_ups_per_buyer_inside_a_contact_window
+conversation: []

@@ -1,0 +1,10 @@
+id: uc54-one-resume-after-a-crash-then-a-human-decides
+name: "UC54 — Restart-safe everything: at most one resume, then a human decides"
+description: |
+  uc54 — Restart-safe everything: at most one resume, then a human decides. A
+  turn interrupted by a crash resumes once; interrupted again it fails, the
+  owner is told, and the case's history says so. A clean shutdown spends none
+  of that budget.
+target_component: engine
+proof: engine::proof::platform::uc54_one_resume_after_a_crash_then_a_human_decides
+conversation: []

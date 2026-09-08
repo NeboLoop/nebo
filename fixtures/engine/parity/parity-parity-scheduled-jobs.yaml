@@ -1,0 +1,12 @@
+id: parity-parity-scheduled-jobs
+name: "Parity scheduled jobs"
+description: |
+  Scheduled jobs. Before: a poll every minute over a last-run column, and a
+  laptop closed for a day replayed every missed fire. Now: one pending timer
+  per job; fires once when due; re-arms from the consumed occurrence; a missed
+  run catches up once inside the window and is skipped beyond it; a reschedule
+  replaces the timer; disabling removes it; a one-shot fires once and leaves
+  no timer behind.
+target_component: engine
+proof: engine::proof::parity::parity_scheduled_jobs
+conversation: []

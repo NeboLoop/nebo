@@ -109,6 +109,7 @@ pub fn fixture_from_run(
             session_key, exit_reason
         ),
         target_component: String::new(),
+        proof: None,
         setup: Vec::new(),
         teardown: Vec::new(),
         conversation,

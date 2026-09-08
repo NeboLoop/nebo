@@ -1,0 +1,8 @@
+id: uc03-four-submissions-one-case-one-first-turn
+name: "UC03 — four submissions one case one first turn"
+description: |
+  uc03 — Four form submissions from one person become one case, not four
+  emails: one case, one first turn, the later three ride it.
+target_component: engine
+proof: engine::proof::sales::uc03_four_submissions_one_case_one_first_turn
+conversation: []

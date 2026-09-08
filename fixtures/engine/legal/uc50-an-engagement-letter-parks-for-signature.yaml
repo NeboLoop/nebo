@@ -1,0 +1,11 @@
+id: uc50-an-engagement-letter-parks-for-signature
+name: "UC50 — Engagement letters that park for signature and resume on receipt"
+description: |
+  uc50 — Engagement letters that park for signature and resume on receipt. The
+  run parks on the signature; nothing is billed while parked; the signature
+  resumes it exactly once; the same signature sent twice is one; a signature
+  for a letter that is not out wakes nothing. Must never: work billed before
+  the letter is signed.
+target_component: engine
+proof: engine::proof::legal::uc50_an_engagement_letter_parks_for_signature
+conversation: []

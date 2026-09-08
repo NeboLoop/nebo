@@ -1,0 +1,11 @@
+id: uc27-a-close-checklist-is-durable-runs-with-an-audit-trail
+name: "UC27 — Bookkeeping close checklists where each step is a durable run with an audit trail"
+description: |
+  uc27 — Bookkeeping close checklists where each step is a durable run with an
+  audit trail. Steps are child runs of the close under real parent links; each
+  leaves a durable line; a step interrupted by a crash resumes once and a
+  second crash fails it for a person. Must never: a step that silently
+  vanishes on restart.
+target_component: engine
+proof: engine::proof::finance::uc27_a_close_checklist_is_durable_runs_with_an_audit_trail
+conversation: []

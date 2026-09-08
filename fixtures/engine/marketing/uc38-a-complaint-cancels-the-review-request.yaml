@@ -1,0 +1,10 @@
+id: uc38-a-complaint-cancels-the-review-request
+name: "UC38 — Review solicitation timed to delivery, cancelled on complaint"
+description: |
+  uc38 — Review solicitation timed to delivery, cancelled on complaint. The
+  review request is the case's wait three days after delivery; a complaint on
+  day one starts a turn that hands the case to the owner; day three passes
+  with no request sent and no turn started.
+target_component: engine
+proof: engine::proof::marketing::uc38_a_complaint_cancels_the_review_request
+conversation: []

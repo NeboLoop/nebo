@@ -1,11 +1,95 @@
 name: engine
-# The engine's live proof: event-driven, not a conversation, so this suite
-# is script-backed. It needs a running Nebo with a real model and an address
-# you own in ENGINE_CONTACT (the employee writes to it). The deterministic
-# half — sixty-four scenarios, no model — is `make test-engine-proof`.
+# The engine's deterministic proof: every business use case, the parity of the
+# seven mechanisms the engine replaced, and the concurrency and server paths,
+# one fixture each. Each fixture names the Rust test that proves it; the
+# runner executes that test with no model and no server.
 #
-#   ENGINE_CONTACT=you@example.com make test-live-fast SUITE=engine
-#   ENGINE_CONTACT=you@example.com make test-engine-live
-fixtures: []
-scripts:
-  - scripts/test-engine.sh
+#   make test-engine-proof
+#   nebo-cli test run --suite suites/engine.yaml
+#
+# The real-model half is suites/engine-live.yaml.
+fixtures:
+  # Sales
+  - ../fixtures/engine/sales/uc01-one-thread-of-memory-across-weeks.yaml
+  - ../fixtures/engine/sales/uc02-a-reply-stops-the-cadence.yaml
+  - ../fixtures/engine/sales/uc03-four-submissions-one-case-one-first-turn.yaml
+  - ../fixtures/engine/sales/uc04-a-rebooking-cancels-the-old-reminder.yaml
+  - ../fixtures/engine/sales/uc05-a-quiet-lead-reactivates-into-the-same-case.yaml
+  - ../fixtures/engine/sales/uc06-wait-then-deadline-then-escalate.yaml
+  - ../fixtures/engine/sales/uc07-a-referral-from-introduction-to-close.yaml
+  - ../fixtures/engine/sales/uc08-per-contact-pause-windows.yaml
+  - ../fixtures/engine/sales/uc09-a-handoff-freezes-the-case-and-holds-replies.yaml
+  - ../fixtures/engine/sales/uc10-a-discount-parks-for-approval-before-the-email.yaml
+  # Customer service
+  - ../fixtures/engine/service/uc11-ticket-ownership-survives-restarts-and-crashes.yaml
+  - ../fixtures/engine/service/uc12-nudge-at-day-two-closure-at-day-seven.yaml
+  - ../fixtures/engine/service/uc13-escalation-steps-fire-only-on-silence.yaml
+  - ../fixtures/engine/service/uc14-a-return-from-label-to-refund.yaml
+  - ../fixtures/engine/service/uc15-a-satisfaction-check-three-days-after-resolution.yaml
+  - ../fixtures/engine/service/uc16-status-changes-update-the-same-customers.yaml
+  - ../fixtures/engine/service/uc17-a-renewal-reminder-on-the-contract-date.yaml
+  - ../fixtures/engine/service/uc18-onboarding-advances-only-on-completion.yaml
+  # Finance
+  - ../fixtures/engine/finance/uc19-dunning-on-a-schedule-stops-on-payment.yaml
+  - ../fixtures/engine/finance/uc20-a-charge-is-recorded-under-the-providers-key-before-the-attempt.yaml
+  - ../fixtures/engine/finance/uc21-authorize-now-capture-later-as-two-linked-effects.yaml
+  - ../fixtures/engine/finance/uc22-a-refund-above-the-threshold-parks-for-approval.yaml
+  - ../fixtures/engine/finance/uc23-an-approval-chain-is-one-parked-wait-per-approver.yaml
+  - ../fixtures/engine/finance/uc24-a-silent-provider-is-reconciled-not-retried.yaml
+  - ../fixtures/engine/finance/uc25-a-reimbursement-waits-for-the-receipt.yaml
+  - ../fixtures/engine/finance/uc26-subscription-retries-never-storm-after-downtime.yaml
+  - ../fixtures/engine/finance/uc27-a-close-checklist-is-durable-runs-with-an-audit-trail.yaml
+  # Operations
+  - ../fixtures/engine/operations/uc28-a-recurring-report-fires-once-on-waking.yaml
+  - ../fixtures/engine/operations/uc29-heartbeats-keep-the-window-and-never-stack.yaml
+  - ../fixtures/engine/operations/uc30-one-open-case-per-machine.yaml
+  - ../fixtures/engine/operations/uc31-a-reorder-waits-for-the-supplier.yaml
+  - ../fixtures/engine/operations/uc32-dispatch-from-booking-to-sign-off.yaml
+  - ../fixtures/engine/operations/uc33-a-renewal-wakes-on-the-day-and-not-before.yaml
+  - ../fixtures/engine/operations/uc34-milestones-wake-a-case-months-later-across-a-restart.yaml
+  - ../fixtures/engine/operations/uc35-interval-checks-catch-up-once-never-storm.yaml
+  # Marketing
+  - ../fixtures/engine/marketing/uc36-a-drip-pauses-on-reply-and-resumes-on-silence.yaml
+  - ../fixtures/engine/marketing/uc37-each-piece-is-one-case-from-brief-to-publish.yaml
+  - ../fixtures/engine/marketing/uc38-a-complaint-cancels-the-review-request.yaml
+  - ../fixtures/engine/marketing/uc39-rsvps-deduplicate-across-channels-on-the-deterministic-rule.yaml
+  - ../fixtures/engine/marketing/uc40-follow-ups-branch-on-attendance.yaml
+  - ../fixtures/engine/marketing/uc41-a-newsletter-parks-for-approval-before-send.yaml
+  # People
+  - ../fixtures/engine/people/uc42-one-case-per-applicant-across-interviews.yaml
+  - ../fixtures/engine/people/uc43-an-offer-waits-for-a-signature-with-a-deadline.yaml
+  - ../fixtures/engine/people/uc44-an-onboarding-checklist-across-weeks.yaml
+  - ../fixtures/engine/people/uc45-reference-checks-wait-on-third-parties.yaml
+  - ../fixtures/engine/people/uc46-time-off-parked-on-a-manager.yaml
+  # Legal and real estate
+  - ../fixtures/engine/legal/uc47-matter-intake-waits-on-client-documents.yaml
+  - ../fixtures/engine/legal/uc48-a-closing-timeline-is-a-chain-of-dated-waits.yaml
+  - ../fixtures/engine/legal/uc49-listing-follow-ups-per-buyer-inside-a-contact-window.yaml
+  - ../fixtures/engine/legal/uc50-an-engagement-letter-parks-for-signature.yaml
+  - ../fixtures/engine/legal/uc51-filing-deadlines-are-durable-timers-with-reminders.yaml
+  # Platform
+  - ../fixtures/engine/platform/uc52-an-external-system-is-the-source-of-truth-and-the-case-holds-a-reference.yaml
+  - ../fixtures/engine/platform/uc53-cancelling-a-parent-cancels-its-whole-fan-out.yaml
+  - ../fixtures/engine/platform/uc54-one-resume-after-a-crash-then-a-human-decides.yaml
+  - ../fixtures/engine/platform/uc55-one-audit-history-per-case.yaml
+  - ../fixtures/engine/platform/platform-a-persons-case-holder-is-the-only-one-who-writes-to-them.yaml
+  - ../fixtures/engine/platform/uc56-a-case-moves-between-employees-with-its-history.yaml
+  # Parity with the seven replaced mechanisms
+  - ../fixtures/engine/parity/parity-parity-scheduled-jobs.yaml
+  - ../fixtures/engine/parity/parity-parity-heartbeats.yaml
+  - ../fixtures/engine/parity/parity-parity-subagent-tasks-are-linked-and-bounded.yaml
+  - ../fixtures/engine/parity/parity-parity-workflow-runs-resume-once.yaml
+  - ../fixtures/engine/parity/parity-parity-parked-approvals-are-the-runs-live-wait.yaml
+  - ../fixtures/engine/parity/parity-parity-inbound-dedupe-is-the-idempotency-key.yaml
+  - ../fixtures/engine/parity/parity-parity-events-and-webhooks-share-one-router.yaml
+  - ../fixtures/engine/parity/parity-parity-cases-rules-in-one-flow.yaml
+  # Concurrency
+  - ../fixtures/engine/concurrency/concurrency-four-employees-forty-people-arrive-at-once.yaml
+  - ../fixtures/engine/concurrency/concurrency-one-employee-many-things-at-once.yaml
+  - ../fixtures/engine/concurrency/concurrency-a-burst-is-drained-over-ticks-without-loss.yaml
+  - ../fixtures/engine/concurrency/concurrency-the-store-and-the-ledger-hold-under-contention.yaml
+  # Server paths
+  - ../fixtures/engine/server/server-turns-time-out-by-the-clock-and-by-silence.yaml
+  - ../fixtures/engine/server/server-heartbeats-are-armed-inside-their-windows.yaml
+  - ../fixtures/engine/server/server-the-owners-answer-is-one-event-per-wait.yaml
+  - ../fixtures/engine/server/server-the-webhook-door-routes-people-to-their-case-and-the-rest-to-a-plain-run.yaml

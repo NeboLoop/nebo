@@ -1,0 +1,10 @@
+id: uc45-reference-checks-wait-on-third-parties
+name: "UC45 — Reference checks that wait on third parties"
+description: |
+  uc45 — Reference checks that wait on third parties. The case is the
+  candidate's; each referee's answer names the candidate and lands in it. One
+  reference is not enough to close: the case waits for the second, nudges when
+  it is late, and closes only when both are in.
+target_component: engine
+proof: engine::proof::people::uc45_reference_checks_wait_on_third_parties
+conversation: []

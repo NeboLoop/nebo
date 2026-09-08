@@ -1,0 +1,10 @@
+id: uc40-follow-ups-branch-on-attendance
+name: "UC40 — Webinar follow-ups branching on attendance"
+description: |
+  uc40 — Webinar follow-ups branching on attendance. Two registrants wait for
+  the webinar's end; the attendance signal starts one turn with "attended" in
+  hand; the other's deadline starts the no-show branch on the timer. Each
+  person gets one turn, on their own branch.
+target_component: engine
+proof: engine::proof::marketing::uc40_follow_ups_branch_on_attendance
+conversation: []

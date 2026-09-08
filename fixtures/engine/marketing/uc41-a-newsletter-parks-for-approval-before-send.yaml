@@ -1,0 +1,10 @@
+id: uc41-a-newsletter-parks-for-approval-before-send
+name: "UC41 — Newsletter production as a scheduled binding with approval before send"
+description: |
+  uc41 — Newsletter production as a scheduled binding with approval before
+  send. The weekly schedule fires one task run; the run parks on the owner's
+  approval; the answer resumes it once; the send's receipt is dated after the
+  approval; a second click is a duplicate.
+target_component: engine
+proof: engine::proof::marketing::uc41_a_newsletter_parks_for_approval_before_send
+conversation: []

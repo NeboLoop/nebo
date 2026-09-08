@@ -1,0 +1,9 @@
+id: uc12-nudge-at-day-two-closure-at-day-seven
+name: "UC12 — Waiting on a customer for information: a nudge at day two, closure at day seven"
+description: |
+  uc12 — Waiting on a customer for information: a nudge at day two, closure at
+  day seven. Both are the case's own deadlines; the nudge is one send with one
+  receipt; the closure starts nothing further.
+target_component: engine
+proof: engine::proof::service::uc12_nudge_at_day_two_closure_at_day_seven
+conversation: []

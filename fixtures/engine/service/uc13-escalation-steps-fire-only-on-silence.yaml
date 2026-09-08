@@ -1,0 +1,9 @@
+id: uc13-escalation-steps-fire-only-on-silence
+name: "UC13 — Escalation ladders that fire only if the previous step got no answer"
+description: |
+  uc13 — Escalation ladders that fire only if the previous step got no answer.
+  Step two fires because step one was silent; the answer arrives before step
+  three's moment, and that moment passes with nothing fired.
+target_component: engine
+proof: engine::proof::service::uc13_escalation_steps_fire_only_on_silence
+conversation: []

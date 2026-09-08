@@ -1,0 +1,9 @@
+id: concurrency-one-employee-many-things-at-once
+name: "One employee many things at once"
+description: |
+  One employee with everything in flight at once: twenty cases, five tasks, a
+  heartbeat, a parked approval. One tick delivers all of it; the twenty first
+  turns run side by side; each case still has exactly one.
+target_component: engine
+proof: engine::proof::concurrency::one_employee_many_things_at_once
+conversation: []

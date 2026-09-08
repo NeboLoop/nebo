@@ -1,0 +1,9 @@
+id: concurrency-a-burst-is-drained-over-ticks-without-loss
+name: "A burst is drained over ticks without loss"
+description: |
+  A burst larger than one tick's claim batch is drained over ticks with
+  nothing lost and nothing doubled: a hundred and twenty people in one second
+  become a hundred and twenty cases and a hundred and twenty turns.
+target_component: engine
+proof: engine::proof::concurrency::a_burst_is_drained_over_ticks_without_loss
+conversation: []
