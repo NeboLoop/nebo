@@ -1832,7 +1832,11 @@ async fn channel_loop(
                 .unwrap_or(types::constants::DEFAULT_PORT);
             runtime = runtime
                 .with_env("NEBO_LOCAL_URL", format!("http://127.0.0.1:{port}"))
-                .with_env("NEBO_AGENT_ID", agent_id.clone());
+                .with_env("NEBO_AGENT_ID", agent_id.clone())
+                // And which bot this Nebo is, so the bridge can say so when
+                // it registers — the gateway logs a mismatch, and an empty
+                // assertion reads as one.
+                .with_env("NEBO_BOT_ID", config::read_bot_id().unwrap_or_default());
         }
 
         // A multi-account plugin's bridge serves EVERY account the agent has
