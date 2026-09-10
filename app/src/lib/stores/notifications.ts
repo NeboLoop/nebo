@@ -19,8 +19,65 @@ export interface Notification {
 
 export const notifications = writable<Notification[]>([]);
 
-export const unreadCount = derived(notifications, ($n) =>
-  $n.filter(n => !n.read).length
+// ── Approvals ───────────────────────────────────────────────────────────
+// A pending decision is a task, not mail: reading it does not settle it.
+// The inbox pins `wf-approval:<run>`, `learn:<pending>` and
+// `artifact-update:<type>:<artifact>:<version>` rows in an approval band
+// while they are pending, but the sidebar badge counted only unread rows,
+// so five open approvals the owner had looked at showed as a badge of 1
+// (Danny, 2026-09-09). The statuses live here so the badge and the band
+// read the same map, and a decision made in the band updates both.
+export type ApprovalRef = { kind: 'workflow' | 'learning' | 'update'; id: string };
+
+export const approvalRef = (id: string): ApprovalRef | null =>
+  id.startsWith('wf-approval:')
+    ? { kind: 'workflow', id: id.slice('wf-approval:'.length) }
+    : id.startsWith('learn:')
+      ? { kind: 'learning', id: id.slice('learn:'.length) }
+      : id.startsWith('artifact-update:')
+        ? { kind: 'update', id: id.split(':')[2] ?? '' }
+        : null;
+
+/** notification id → 'pending' | 'approved' | 'denied' | 'applied' | ... */
+export const approvalStatuses = writable<Record<string, string>>({});
+const statusFetched = new Set<string>();
+
+export function setApprovalStatus(id: string, status: string) {
+  statusFetched.add(id);
+  approvalStatuses.update(m => ({ ...m, [id]: status }));
+}
+
+/** Fetch the status of every approval-shaped notification not yet known. */
+export async function ensureApprovalStatuses(): Promise<void> {
+  const list = get(notifications);
+  const api = await import('$lib/api/nebo');
+  let updates: Promise<Awaited<ReturnType<typeof api.listUpdates>>> | null = null;
+  await Promise.all(list.map(async (n) => {
+    const ref = approvalRef(n.id);
+    if (!ref || statusFetched.has(n.id)) return;
+    statusFetched.add(n.id);
+    try {
+      let status: string;
+      if (ref.kind === 'workflow') {
+        status = ((await api.getWorkflowApprovalStatus(ref.id)) as { status?: string }).status ?? 'unknown';
+      } else if (ref.kind === 'learning') {
+        status = ((await api.getLearning(ref.id)) as { status?: string }).status ?? 'unknown';
+      } else {
+        updates ??= api.listUpdates();
+        const u = ((await updates).updates ?? []).find(x => x.artifactId === ref.id);
+        status = u?.updateAvailable ? 'pending' : 'applied';
+      }
+      approvalStatuses.update(m => ({ ...m, [n.id]: status }));
+    } catch {
+      statusFetched.delete(n.id);
+    }
+  }));
+}
+
+/** What needs the owner: unread rows, plus approvals still pending however
+ *  many times they were read. This is the sidebar badge. */
+export const unreadCount = derived([notifications, approvalStatuses], ([$n, $s]) =>
+  $n.filter(n => !n.read || (approvalRef(n.id) !== null && $s[n.id] === 'pending')).length
 );
 
 let loaded = false;
@@ -52,6 +109,7 @@ async function fetchPage(offset: number): Promise<void> {
       return [...list, ...mapped.filter(m => !seen.has(m.id))];
     });
   }
+  void ensureApprovalStatuses();
 }
 
 /**

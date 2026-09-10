@@ -13,10 +13,11 @@
   import ExternalLink from 'lucide-svelte/icons/external-link';
   import {
     notifications, unreadCount, hasMore, loadNotifications, loadMore, markAsRead, markAllRead, removeNotification, type Notification,
+    approvalStatuses, setApprovalStatus, ensureApprovalStatuses,
   } from '$lib/stores/notifications';
 
   import Hand from 'lucide-svelte/icons/hand';
-  import { applyUpdate, getLearning, getRun, getWorkflowApprovalStatus, listUpdates, resolveLearning, resolveWorkflowApproval } from '$lib/api/nebo';
+  import { applyUpdate, getLearning, getRun, resolveLearning, resolveWorkflowApproval } from '$lib/api/nebo';
   import type { GetRunResponse, PendingTask } from '$lib/api/neboComponents';
 
   let copied = $state(false);
@@ -77,40 +78,20 @@
           ? { kind: 'update', id: n.id.split(':')[2] ?? '' }
           : null;
 
-  /** Pending-update status for the approval band: still listed with an
-   *  available update → pending; otherwise it was applied (or superseded). */
-  async function updateStatus(artifactId: string): Promise<{ status: string }> {
-    const r = await listUpdates();
-    const u = (r.updates ?? []).find(x => x.artifactId === artifactId);
-    return { status: u?.updateAvailable ? 'pending' : 'applied' };
-  }
   // Status/deciding maps are keyed by the full notification id (unique across kinds).
+  // The status map lives in the notifications store: the sidebar badge counts
+  // pending approvals from the same map this band renders from.
   const approvalRunId = (n: Notification): string | null => (approvalRef(n) ? n.id : null);
 
-  let approvalStatuses = $state<Record<string, string>>({});
   let deciding = $state<Record<string, boolean>>({});
-  const statusFetched = new Set<string>();
 
   $effect(() => {
-    for (const n of $notifications) {
-      const ref = approvalRef(n);
-      if (!ref || statusFetched.has(n.id)) continue;
-      statusFetched.add(n.id);
-      const fetch =
-        ref.kind === 'workflow' ? getWorkflowApprovalStatus(ref.id)
-        : ref.kind === 'learning' ? getLearning(ref.id)
-        : updateStatus(ref.id);
-      fetch
-        .then((r) => {
-          approvalStatuses = { ...approvalStatuses, [n.id]: (r as { status?: string }).status ?? 'unknown' };
-        })
-        .catch(() => statusFetched.delete(n.id));
-    }
+    if ($notifications.length) void ensureApprovalStatuses();
   });
 
   const pendingApprovals = $derived(
     [...$notifications]
-      .filter(n => { const r = approvalRunId(n); return r && approvalStatuses[r] === 'pending'; })
+      .filter(n => { const r = approvalRunId(n); return r && $approvalStatuses[r] === 'pending'; })
       .sort((a, b) => b.createdAt - a.createdAt)
   );
 
@@ -118,7 +99,7 @@
   function approvalChip(n: Notification): string | null {
     const r = approvalRunId(n);
     if (!r) return null;
-    const s = approvalStatuses[r];
+    const s = $approvalStatuses[r];
     if (s === 'approved') return 'inbox.approved';
     if (s === 'denied' || s === 'rejected') return 'inbox.denied';
     if (s === 'conflict') return 'inbox.conflict';
@@ -146,7 +127,7 @@
         // "Later" — drop out of the band; the update stays in Settings → Updates.
         status = 'dismissed';
       }
-      approvalStatuses = { ...approvalStatuses, [n.id]: status };
+      setApprovalStatus(n.id, status);
       markAsRead(n.id);
     } finally {
       deciding = { ...deciding, [n.id]: false };
@@ -183,7 +164,7 @@
       })
       .sort((a, b) => b.createdAt - a.createdAt)
       // Pending approvals live in the pinned band, not the stream.
-      .filter(n => { const r = approvalRunId(n); return !(r && approvalStatuses[r] === 'pending'); })
+      .filter(n => { const r = approvalRunId(n); return !(r && $approvalStatuses[r] === 'pending'); })
   );
 
   const deptLabel = (slug: string) => slug.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
@@ -511,7 +492,7 @@
       </div>
       {#if approvalRunId(selected)}
         {@const runId = approvalRunId(selected)!}
-        {@const status = approvalStatuses[runId]}
+        {@const status = $approvalStatuses[runId]}
         <div class="shrink-0 border-t border-base-content/10 bg-base-100">
           <div class="max-w-2xl mx-auto px-6 py-3">
             {#if status === 'pending'}
