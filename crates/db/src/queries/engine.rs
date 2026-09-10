@@ -665,7 +665,12 @@ impl Store {
                  SET state = ?2,
                      started_at = CASE WHEN ?2 = 'running' AND started_at IS NULL THEN ?3 ELSE started_at END,
                      ended_at = CASE WHEN ?2 IN ('done','failed','cancelled') THEN ?3 ELSE ended_at END,
-                     attempts = CASE WHEN ?2 = 'running' THEN attempts + 1 ELSE attempts END,
+                     -- An attempt is a start: the move INTO running. A run
+                     -- already running that is marked running again (a
+                     -- workflow at each activity boundary) is the same
+                     -- attempt. Seen live: a fourteen-activity run that ran
+                     -- once read as fifteen attempts.
+                     attempts = CASE WHEN ?2 = 'running' AND state != 'running' THEN attempts + 1 ELSE attempts END,
                      error = COALESCE(?4, error)
                  WHERE id = ?1",
                 params![id, state, now, error],
@@ -1588,6 +1593,26 @@ mod tests {
         let r = s.engine_get_run("r1").unwrap().unwrap();
         assert_eq!(r.state, "failed");
         assert!(r.error.unwrap().contains("poison"));
+    }
+
+    /// A run's attempts are its starts. A workflow marks itself running at
+    /// every activity boundary; that is one attempt, not one per activity.
+    /// A resume after an interruption is a second start.
+    #[test]
+    fn attempts_count_starts_not_activity_boundaries() {
+        let s = store();
+        s.engine_create_run(&case("r1")).unwrap();
+        s.engine_set_run_state("r1", "running", 100, None).unwrap();
+        for t in 101..115 {
+            s.engine_set_run_state("r1", "running", t, None).unwrap();
+        }
+        assert_eq!(s.engine_get_run("r1").unwrap().unwrap().attempts, 1, "fourteen activity boundaries, one attempt");
+        s.engine_mark_interrupted().unwrap();
+        assert!(s.engine_resume_once("r1", 200).unwrap());
+        s.engine_set_run_state("r1", "running", 201, None).unwrap();
+        assert_eq!(s.engine_get_run("r1").unwrap().unwrap().attempts, 2, "the resume is the second start");
+        s.engine_set_run_state("r1", "done", 300, None).unwrap();
+        assert_eq!(s.engine_get_run("r1").unwrap().unwrap().attempts, 2);
     }
 
     #[test]
