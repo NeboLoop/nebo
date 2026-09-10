@@ -257,9 +257,20 @@ impl WorkTool {
                 match runs.first() {
                     Some(run) => {
                         let json = serde_json::to_value(run).unwrap_or_default();
-                        let result = ToolResult::ok(
-                            serde_json::to_string_pretty(&json).unwrap_or_default(),
-                        );
+                        let mut body = serde_json::to_string_pretty(&json).unwrap_or_default();
+                        // A run in flight answers the same way every time it is
+                        // asked, so a model that polls it hits the repeat guard
+                        // on the third call and then wanders (Underwriter,
+                        // 2026-09-09). Say how to wait on the first answer.
+                        if matches!(run.status.as_str(), "running" | "pending") {
+                            body.push_str(
+                                "\n\nStill running. Do not call status again to wait: the run \
+                                 reports here when it finishes. To check later, set a timed \
+                                 check with event(action: \"create\", at: \"in 5 minutes\", \
+                                 prompt: \"check the run\"), or go on with other work.",
+                            );
+                        }
+                        let result = ToolResult::ok(body);
                         // Finished run → attach the narrator's receipt so the
                         // app renders a rich card (kind: run_receipt) instead
                         // of raw JSON. Running/pending runs stay plain — a

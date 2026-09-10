@@ -1,0 +1,49 @@
+id: correction-pasted-document-read-whole
+name: "Correction — a pasted document arrives as one long line and is read whole"
+description: |
+  Replayed from the Underwriter's live thread on 2026-09-09. A loan
+  application pasted into the composer became an attachment with its
+  newlines lost, one 3,787-byte line. The read clipped the line at 2,000
+  bytes with a truncation marker and no way to get the rest, so the model
+  re-read the same file until the repeat guard blocked it, then tried
+  offsets that cannot help a one-line file. A line is now shown whole up
+  to the read's byte budget. This fixture pins one read and the right
+  answer from the end of the line.
+target_component: tool
+
+setup:
+  - "mkdir -p /tmp/nebo-fixture && python3 -c \"open('/tmp/nebo-fixture/pasted-application.md','w').write('UNIFORM RESIDENTIAL LOAN APPLICATION Lender Case No: 2026-N993012 ' + ' '.join('Field%d: value%d' % (i,i) for i in range(1,420)) + ' Total Monthly Payment: $665.00 Total Unpaid Balance: $37,900.00 Underwriter Routing Code: UW-REGION-04 END-OF-APPLICATION')\""
+teardown:
+  - "rm -rf /tmp/nebo-fixture"
+
+conversation:
+  - role: user
+    content: "Read /tmp/nebo-fixture/pasted-application.md and tell me the Total Unpaid Balance and the Underwriter Routing Code it lists."
+
+tool_config:
+  os:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: read-first
+      text: "The first call is an os file read of /tmp/nebo-fixture/pasted-application.md"
+      severity: critical
+      check: { first_call: true, tool: os }
+  recovery:
+    - id: one-read
+      text: "The file is read once; no second read of the same path, no offset or limit retries, no grep or shell to recover a clipped line"
+      severity: critical
+      check: { max_tool_calls: 2 }
+    - id: no-tool-errors
+      text: "No tool result is an error or a Blocked repeat guard"
+      severity: critical
+      check: { max_errors: 0 }
+    - id: answer
+      text: "The reply gives $37,900.00 as the Total Unpaid Balance and UW-REGION-04 as the routing code"
+      severity: critical
+      check: { contains: "UW-REGION-04" }
+
+ideal_behavior:
+  tool_calls: 1
+  narrative: "One read that shows the whole line, then a two-line answer with the balance and the routing code taken from near the end of it."

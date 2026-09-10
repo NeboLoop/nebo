@@ -555,7 +555,19 @@ impl OsTool {
         if has("action") && !action_is_resource {
             return None;
         }
-        if has("glob") || (has("pattern") && has("path") && !has("content")) {
+        // A `glob` key names the action even when its value is empty, and a
+        // path that is itself a pattern is a glob whatever the keys say. Live
+        // 2026-09-09: os({glob: "", path: "/data/files/*N993012*"}) fell
+        // through to read and answered "file not found" for the pattern,
+        // five times, until the repeat guard blocked it.
+        let path_is_pattern = obj
+            .get("path")
+            .and_then(|v| v.as_str())
+            .is_some_and(|p| p.contains('*') || p.contains('?') || p.contains('{'));
+        if obj.contains_key("glob")
+            || (has("pattern") && has("path") && !has("content"))
+            || (path_is_pattern && !has("content") && !has("old_string"))
+        {
             return Some("glob");
         }
         if has("command") {
@@ -1439,6 +1451,11 @@ mod tests {
             (serde_json::json!({"path": "/tmp/x", "content": "hello"}), Some("write")),
             (serde_json::json!({"path": "/tmp/x", "old_string": "a", "new_string": "b"}), Some("edit")),
             (serde_json::json!({"path": "/tmp/x"}), Some("read")),
+            // An empty glob key still names the action; a path that is a
+            // pattern is a glob on its own (live 2026-09-09).
+            (serde_json::json!({"glob": "", "path": "/data/files/*N993012*"}), Some("glob")),
+            (serde_json::json!({"path": "/data/files/underwriting-memo*"}), Some("glob")),
+            (serde_json::json!({"path": "/tmp/{a,b}.txt", "content": "x"}), Some("write")),
             (serde_json::json!({"action": "grep", "glob": "*.md", "path": "/tmp"}), None),
             (serde_json::json!({"action": "", "path": "/tmp/x"}), Some("read")),
             (serde_json::json!({"pattern": "TODO"}), None),

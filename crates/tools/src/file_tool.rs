@@ -494,6 +494,9 @@ impl FileTool {
             Some(text) => Box::new(std::io::Cursor::new(text)),
             None => Box::new(BufReader::with_capacity(1024 * 1024, file)),
         };
+        // Cap on the whole rendered result, and on any single line inside it.
+        const FILE_READ_MAX_BYTES: usize = 50_000;
+        const LINE_MAX_BYTES: usize = 48_000;
         let mut result = String::new();
         let mut line_num = 0usize;
         let mut lines_read = 0usize;
@@ -543,10 +546,18 @@ impl FileTool {
                 break;
             }
 
-            let display_line = if line.len() > 2000 {
+            // A line is shown whole up to the read's own byte budget. The old
+            // 2,000-byte clip cut a pasted document (one long line, newlines
+            // lost in the paste) off mid-table with no way to read the rest,
+            // and the model re-read it until the repeat guard blocked it
+            // (Underwriter, 2026-09-09). Only a line that alone would overrun
+            // the result is clipped, under the budget so the footer below does
+            // not fire on top of this marker.
+            let display_line = if line.len() > LINE_MAX_BYTES {
                 format!(
-                    "{}  [line truncated: 2000 of {} bytes shown]",
-                    crate::truncate_str(&line, 2000),
+                    "{}  [line truncated: {} of {} bytes shown]",
+                    crate::truncate_str(&line, LINE_MAX_BYTES),
+                    LINE_MAX_BYTES,
                     line.len()
                 )
             } else {
@@ -595,7 +606,6 @@ impl FileTool {
         // Cap total result size to prevent huge files from blowing up context.
         // The cut lands on a line boundary and the footer names the last whole
         // line shown, so the next read can start exactly after it.
-        const FILE_READ_MAX_BYTES: usize = 50_000;
         let mut char_truncated = false;
         if result.len() > FILE_READ_MAX_BYTES {
             char_truncated = true;
@@ -2683,16 +2693,31 @@ mod tests {
         assert!(footer.contains(&format!("Use offset: {}.", n + 1)), "{footer}");
     }
 
-    /// A line over 2000 bytes says how much of it is shown.
+    /// A pasted document is one long line; it is shown whole.
     #[test]
-    fn long_line_states_bytes_shown() {
+    fn long_line_is_shown_whole() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("long.txt");
-        fs::write(&path, format!("{}\n", "y".repeat(2500))).unwrap();
+        fs::write(&path, format!("{}END\n", "y".repeat(3800))).unwrap();
         let tool = FileTool::new();
         let r = tool.execute(&ctx(), json!({"action":"read","path": path.to_str().unwrap()}));
         assert!(!r.is_error, "{}", r.content);
-        assert!(r.content.contains("[line truncated: 2000 of 2500 bytes shown]"), "{}", crate::truncate_str(&r.content, 100));
+        assert!(r.content.contains("yyyyEND"), "the end of the line is shown");
+        assert!(!r.content.contains("truncated"), "{}", crate::truncate_str(&r.content, 100));
+    }
+
+    /// Only a line that alone would overrun the result is clipped, and it
+    /// says how much of it is shown; the byte-cap footer does not pile on.
+    #[test]
+    fn huge_line_states_bytes_shown() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("huge.txt");
+        fs::write(&path, format!("{}\n", "y".repeat(60_000))).unwrap();
+        let tool = FileTool::new();
+        let r = tool.execute(&ctx(), json!({"action":"read","path": path.to_str().unwrap()}));
+        assert!(!r.is_error, "{}", r.content);
+        assert!(r.content.contains("[line truncated: 48000 of 60000 bytes shown]"), "{}", crate::truncate_str(&r.content, 100));
+        assert!(!r.content.contains("[Output truncated"), "{}", crate::truncate_str(&r.content, 100));
     }
 
     /// Create and overwrite are distinct observations, and an edit names the line.

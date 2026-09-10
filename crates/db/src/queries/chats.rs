@@ -692,6 +692,12 @@ impl Store {
                    -- not conversations; they bled raw session keys into the
                    -- Chats tab.
                    AND c.session_name NOT LIKE '%:help:%'
+                   -- A workflow run's activity sessions
+                   -- (agent:<id>:workflow:<run>:<activity>::<n>) are the
+                   -- run's plumbing, hidden from the global list since day
+                   -- one; the employee's own list showed every one of them
+                   -- as a chat titled with its raw key (2026-09-09).
+                   AND c.session_name NOT LIKE '%:workflow:%'
                  ORDER BY c.updated_at DESC",
                 last_visible = last_visible_message_sql("m.chat_id")
             ))
@@ -840,7 +846,8 @@ impl Store {
     pub fn count_agent_chats(&self, agent_id: &str) -> Result<i64, NeboError> {
         let conn = self.conn()?;
         conn.query_row(
-            "SELECT COUNT(*) FROM chats WHERE session_name LIKE 'agent:' || ?1 || ':%'",
+            "SELECT COUNT(*) FROM chats WHERE session_name LIKE 'agent:' || ?1 || ':%'
+               AND session_name NOT LIKE '%:workflow:%'",
             params![agent_id],
             |row| row.get(0),
         )
@@ -889,6 +896,7 @@ impl Store {
                  ) AS last_activity
                  FROM chats
                  WHERE session_name LIKE 'agent:' || ?1 || ':%'
+                   AND session_name NOT LIKE '%:workflow:%'
                  ORDER BY last_activity DESC
                  LIMIT ?2",
             )

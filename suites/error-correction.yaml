@@ -24,3 +24,4 @@ fixtures:
   - ../fixtures/correction/plugin-args-command.yaml
   - ../fixtures/correction/spawn-prompt-with-path.yaml
   - ../fixtures/correction/quickbooks-payment-dry-run.yaml
+  - ../fixtures/correction/pasted-document-read-whole.yaml
