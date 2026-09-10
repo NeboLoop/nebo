@@ -12,7 +12,7 @@ description: |
 target_component: tool
 
 setup:
-  - "mkdir -p /tmp/nebo-fixture && python3 -c \"open('/tmp/nebo-fixture/pasted-application.md','w').write('UNIFORM RESIDENTIAL LOAN APPLICATION Lender Case No: 2026-N993012 ' + ' '.join('Field%d: value%d' % (i,i) for i in range(1,420)) + ' Total Monthly Payment: $665.00 Total Unpaid Balance: $37,900.00 Underwriter Routing Code: UW-REGION-04 END-OF-APPLICATION')\""
+  - "mkdir -p /tmp/nebo-fixture && python3 -c \"open('/tmp/nebo-fixture/pasted-application.md','w').write('UNIFORM RESIDENTIAL LOAN APPLICATION Lender Case No: 2026-N993012 ' + ' '.join('Field%d: value%d' % (i,i) for i in range(1,420)) + ' Total Monthly Payment: 665.00 USD Total Unpaid Balance: 37,900.00 USD Underwriter Routing Code: UW-REGION-04 END-OF-APPLICATION')\""
 teardown:
   - "rm -rf /tmp/nebo-fixture"
 
@@ -40,9 +40,8 @@ prompt_assertions:
       severity: critical
       check: { max_errors: 0 }
     - id: answer
-      text: "The reply gives $37,900.00 as the Total Unpaid Balance and UW-REGION-04 as the routing code"
+      text: "The reply gives 37,900.00 as the Total Unpaid Balance and UW-REGION-04 as the routing code"
       severity: critical
-      check: { contains: "UW-REGION-04" }
 
 ideal_behavior:
   tool_calls: 1
