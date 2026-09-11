@@ -706,6 +706,22 @@ impl OperationPolicy {
     }
 }
 
+/// The origin a GATED operation is decided against — which is not always the
+/// origin the run arrived on.
+///
+/// A workflow run whose inputs carry untrusted content decides as `Comm`
+/// however it arrived (WS2-R7): a trusted `Workflow` run working a tainted
+/// email gets the same `Always` → `Approval` floor a comm run would. This is
+/// the ONE place that rule lives, so the chat gate and anything that inherits
+/// a run's authority (a spawn) cannot disagree about it.
+pub fn gate_origin(origin: Origin, tainted: bool) -> Origin {
+    if tainted {
+        Origin::Comm
+    } else {
+        origin
+    }
+}
+
 /// Default per-origin tool restrictions.
 fn default_origin_deny_list() -> HashMap<Origin, HashSet<String>> {
     // The shell pathway is `os(resource:"shell")`, matched by the `os:shell`

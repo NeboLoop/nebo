@@ -5,6 +5,51 @@ use std::sync::{Arc, OnceLock};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+/// The authority a spawn inherits from the run that asked for it.
+///
+/// A sub-agent runs at its parent's authority and never above it. Before this
+/// was carried, a spawn was the most privileged context in the process: every
+/// child got `Origin::System` (which `is_trusted()`) and no policy, so a
+/// comm- or visitor-driven parent whose gated operations were floored to
+/// `Approval` produced a child with no floor at all, and a restricted parent
+/// produced a child with an unrestricted toolset.
+///
+/// Build it with [`SpawnAuthority::of`] rather than field by field — the whole
+/// point is that one call carries every part of it, so a new spawn pathway
+/// cannot inherit half.
+#[derive(Debug, Clone)]
+pub struct SpawnAuthority {
+    /// The origin the child decides gated operations against. This is the
+    /// parent's GATE origin, not necessarily the origin it arrived on.
+    pub origin: crate::Origin,
+    /// The spawning employee's per-operation policy. `None` only when the
+    /// parent itself had none.
+    pub operation_policy: Option<crate::policy::OperationPolicy>,
+    /// The spawning run's restricted-run allowlist: a spawn must not be the way
+    /// a restricted run gets an unrestricted toolset. `None` for a normal run.
+    pub tool_allowlist: Option<std::collections::HashSet<String>>,
+    /// The denial text that goes with that allowlist — it teaches the recovery
+    /// for the run's actual situation, and the child is in the same situation.
+    pub tool_denial_hint: Option<String>,
+}
+
+impl SpawnAuthority {
+    /// Read the authority off the tool context that asked for the spawn.
+    ///
+    /// The origin is the GATE origin (`policy::gate_origin`): a run carrying
+    /// tainted inputs hands its child the `Comm` floor rather than the
+    /// nominally-trusted origin it arrived on, so the child of a tainted
+    /// workflow cannot decide a gated `Always` the parent could not.
+    pub fn of(ctx: &crate::ToolContext) -> Self {
+        Self {
+            origin: crate::policy::gate_origin(ctx.origin, ctx.tainted),
+            operation_policy: ctx.operation_policy.clone(),
+            tool_allowlist: ctx.tool_whitelist.clone(),
+            tool_denial_hint: ctx.whitelist_denial_hint.clone(),
+        }
+    }
+}
+
 /// Request to spawn a single sub-agent or execute a DAG.
 #[derive(Debug, Clone)]
 pub struct SpawnRequest {
@@ -39,15 +84,8 @@ pub struct SpawnRequest {
     /// Parent run's agent-to-agent hop count — inherited so a sub-agent cannot
     /// restart the coworker chain cap at zero.
     pub handoff_depth: u8,
-    /// The spawning run's origin. A sub-agent runs at its parent's authority
-    /// and never above it: an untrusted parent's child stays untrusted, so the
-    /// per-operation origin floor and the per-origin deny list still apply.
-    /// Without this a spawn was the most privileged context in the process —
-    /// `Origin::System` is trusted, so fan-out silently escalated.
-    pub origin: crate::Origin,
-    /// The spawning employee's per-operation policy, inherited for the same
-    /// reason. `None` only when the parent itself had none.
-    pub operation_policy: Option<crate::policy::OperationPolicy>,
+    /// The authority this spawn inherits — see [`SpawnAuthority`].
+    pub authority: SpawnAuthority,
     /// spawn_parallel only: "worktree" gives each child its own copy of the
     /// project (a git worktree when `workspace` is a repo, a scratch copy
     /// otherwise) and merges the results back. Empty = share the tree.
@@ -74,18 +112,16 @@ pub trait SubAgentOrchestrator: Send + Sync {
         req: SpawnRequest,
     ) -> Pin<Box<dyn Future<Output = Result<SpawnResult, String>> + Send + '_>>;
 
-    /// Decompose a complex task into a DAG and execute it. `origin` and
-    /// `operation_policy` are the spawning run's authority — every task the
-    /// DAG produces inherits them, so a decomposed task is no more privileged
-    /// than the run that asked for it.
+    /// Decompose a complex task into a DAG and execute it. `authority` is the
+    /// spawning run's — every task the DAG produces inherits it, so a
+    /// decomposed task is no more privileged than the run that asked for it.
     fn execute_dag(
         &self,
         prompt: &str,
         user_id: &str,
         parent_session_id: &str,
         parent_cancel: Option<CancellationToken>,
-        origin: crate::Origin,
-        operation_policy: Option<crate::policy::OperationPolicy>,
+        authority: SpawnAuthority,
     ) -> Pin<Box<dyn Future<Output = Result<SpawnResult, String>> + Send + '_>>;
 
     /// Cancel a running sub-agent or DAG task.

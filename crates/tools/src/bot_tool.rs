@@ -988,8 +988,7 @@ impl AgentTool {
                     tools,
                     parent_stream_tx: ctx.stream_tx.clone(),
                     handoff_depth: ctx.handoff_depth,
-                    origin: ctx.origin,
-                    operation_policy: ctx.operation_policy.clone(),
+                    authority: crate::orchestrator::SpawnAuthority::of(ctx),
                     isolate: String::new(),
                     workspace: String::new(),
                 };
@@ -1108,8 +1107,7 @@ impl AgentTool {
                             tools: task_tools,
                             parent_stream_tx: ctx.stream_tx.clone(),
                             handoff_depth: ctx.handoff_depth,
-                            origin: ctx.origin,
-                            operation_policy: ctx.operation_policy.clone(),
+                            authority: crate::orchestrator::SpawnAuthority::of(ctx),
                             isolate: t["isolate"].as_str().map(str::to_string).unwrap_or_else(|| batch_isolate.clone()),
                             workspace: t["workspace"].as_str().map(str::to_string).unwrap_or_else(|| batch_workspace.clone()),
                         }
@@ -1166,8 +1164,7 @@ impl AgentTool {
                         "",
                         &ctx.session_id,
                         Some(ctx.cancel_token.clone()),
-                        ctx.origin,
-                        ctx.operation_policy.clone(),
+                        crate::orchestrator::SpawnAuthority::of(ctx),
                     )
                     .await
                 {

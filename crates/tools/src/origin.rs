@@ -169,6 +169,13 @@ pub struct ToolContext {
     /// gate falls back to the seat's declared defaults. The single decision
     /// function both the chat gate and the workflow checkpoint consult.
     pub operation_policy: Option<crate::policy::OperationPolicy>,
+    /// This run's inputs carry untrusted content. Not a permission by itself —
+    /// it is what makes a GATED operation decide against `Origin::Comm`
+    /// regardless of how the run arrived (`policy::gate_origin`), so a trusted
+    /// `Workflow` run working a tainted email gets the same floor a comm run
+    /// would. Carried here so a spawn can inherit the floor; without it a
+    /// child of a tainted run decided as trusted `Workflow`.
+    pub tainted: bool,
     /// Per-entity resource grant overrides (resource → "allow"|"deny"|"inherit").
     pub resource_grants: Option<std::collections::HashMap<String, String>>,
     /// Dispatch-time tool whitelist for restricted internal runs (the

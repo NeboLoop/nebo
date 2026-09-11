@@ -5263,6 +5263,10 @@ async fn run_loop(
                     .map(|r| r.whitelist.clone())
                     .or_else(|| tool_allowlist.cloned()),
                 whitelist_denial_hint: tool_denial_hint.clone(),
+                // The run's taint, carried so a spawn inherits the gate floor
+                // (tools::orchestrator::SpawnAuthority::of) rather than the
+                // nominally-trusted origin a workflow run arrives on.
+                tainted: workflow_mode.is_some_and(|m| m.tainted),
                 learned_write_agent: review_fork.as_ref().map(|r| r.owner_agent_id.clone()),
                 learned_write_staged: review_fork.as_ref().map(|r| r.staged).unwrap_or(false),
                 skills_read: review_fork
@@ -5750,12 +5754,12 @@ async fn run_loop(
                             op,
                             // Tainted workflow inputs decide as Comm: a gated
                             // Always floors to Approval (WS2-R7), the same
-                            // rule the engine checkpoint applied.
-                            if workflow_mode.map_or(false, |m| m.tainted) {
-                                tools::Origin::Comm
-                            } else {
-                                origin
-                            },
+                            // rule the engine checkpoint applied. ONE
+                            // definition, shared with what a spawn inherits.
+                            tools::policy::gate_origin(
+                                origin,
+                                workflow_mode.is_some_and(|m| m.tainted),
+                            ),
                         )
                     });
                     if let (Some(access), Some(op)) = (access, op.as_deref()) {

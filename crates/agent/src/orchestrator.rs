@@ -406,8 +406,7 @@ impl Orchestrator {
                     &user_id,
                     &cancel,
                     max_iterations,
-                    spawn_req.origin,
-                    spawn_req.operation_policy.clone(),
+                    &spawn_req.authority,
                 );
                 apply_spawn_context(&mut run_req, &spawn_req);
 
@@ -494,8 +493,7 @@ impl Orchestrator {
             user_id,
             &cancel,
             max_iterations,
-            spawn_req.origin,
-            spawn_req.operation_policy.clone(),
+            &spawn_req.authority,
         );
         apply_spawn_context(&mut req, spawn_req);
         run_and_collect(&self.runner, req, cancel, None, parent_stream_tx, Some(SUBAGENT_INACTIVITY_TIMEOUT)).await
@@ -508,8 +506,7 @@ impl Orchestrator {
         user_id: &str,
         parent_session_id: &str,
         parent_cancel: Option<CancellationToken>,
-        origin: tools::Origin,
-        operation_policy: Option<tools::policy::OperationPolicy>,
+        authority: tools::orchestrator::SpawnAuthority,
     ) -> Result<SpawnResult, String> {
         // 1. Decompose task into sub-tasks
         info!("Decomposing task into sub-tasks");
@@ -535,8 +532,7 @@ impl Orchestrator {
                 tools: Vec::new(),
                 parent_stream_tx: None,
                 handoff_depth: 0,
-                origin,
-                operation_policy: operation_policy.clone(),
+                authority: authority.clone(),
                 isolate: String::new(),
                 workspace: String::new(),
             };
@@ -591,7 +587,7 @@ impl Orchestrator {
                 let model_override = node.model_override.clone();
                 let user_id = user_id.to_string();
                 let cancel = dag_cancel.clone();
-                let task_policy = operation_policy.clone();
+                let task_authority = authority.clone();
                 let session_key = format!("subagent:{}:{}", parent_session_id, task_id);
 
                 let runner = self.runner.clone();
@@ -635,8 +631,7 @@ impl Orchestrator {
                         &user_id,
                         &cancel,
                         0,
-                        origin,
-                        task_policy,
+                        &task_authority,
                     );
 
                     let result = run_and_collect(&runner, req, cancel, None, None, None).await;
@@ -888,8 +883,7 @@ impl Orchestrator {
                 &req.user_id,
                 &cancel,
                 req.max_iterations,
-                req.origin,
-                req.operation_policy.clone(),
+                &req.authority,
             );
             apply_spawn_context(&mut run_req, &req);
             if isolate {
@@ -1217,10 +1211,10 @@ fn subagent_origin(parent: tools::Origin) -> tools::Origin {
     }
 }
 
-/// Build a sub-agent's run request. `origin` and `operation_policy` are the
-/// SPAWNING run's — passed rather than defaulted so that a new spawn pathway
-/// cannot quietly inherit nothing (which is exactly how the gate came to be
-/// skipped in sub-agents).
+/// Build a sub-agent's run request. `auth` is the SPAWNING run's authority —
+/// passed rather than defaulted so that a new spawn pathway cannot quietly
+/// inherit nothing (which is exactly how the gate came to be skipped in
+/// sub-agents).
 fn build_subagent_request(
     session_key: &str,
     prompt: &str,
@@ -1228,8 +1222,7 @@ fn build_subagent_request(
     user_id: &str,
     cancel: &CancellationToken,
     max_iterations: usize,
-    origin: tools::Origin,
-    operation_policy: Option<tools::policy::OperationPolicy>,
+    auth: &tools::orchestrator::SpawnAuthority,
 ) -> RunRequest {
     RunRequest {
         session_key: session_key.to_string(),
@@ -1237,8 +1230,10 @@ fn build_subagent_request(
         model_override: model_override.to_string(),
         user_id: user_id.to_string(),
         skip_memory_extract: true,
-        origin: subagent_origin(origin),
-        operation_policy,
+        origin: subagent_origin(auth.origin),
+        operation_policy: auth.operation_policy.clone(),
+        tool_allowlist: auth.tool_allowlist.clone(),
+        tool_denial_hint: auth.tool_denial_hint.clone(),
         channel: "subagent".to_string(),
         cancel_token: cancel.clone(),
         prompt_mode: crate::prompt::PromptMode::Minimal,
@@ -1493,8 +1488,7 @@ impl SubAgentOrchestrator for Orchestrator {
         user_id: &str,
         parent_session_id: &str,
         parent_cancel: Option<CancellationToken>,
-        origin: tools::Origin,
-        operation_policy: Option<tools::policy::OperationPolicy>,
+        authority: tools::orchestrator::SpawnAuthority,
     ) -> Pin<Box<dyn Future<Output = Result<SpawnResult, String>> + Send + '_>> {
         let prompt = prompt.to_string();
         let user_id = user_id.to_string();
@@ -1505,8 +1499,7 @@ impl SubAgentOrchestrator for Orchestrator {
                 &user_id,
                 &parent_session_id,
                 parent_cancel,
-                origin,
-                operation_policy,
+                authority,
             )
             .await
         })
@@ -1590,12 +1583,20 @@ mod tests {
             assert!(!subagent_origin(untrusted).is_trusted(), "{untrusted:?}");
         }
 
-        // And the seat's policy rides along, so Blocked stays blocked.
+        // Everything the authority carries reaches the child: the seat's
+        // policy (so Blocked stays blocked) AND the restricted-run allowlist
+        // (so a spawn is not how a restricted run gets a full toolset).
         let mut policy = tools::policy::OperationPolicy::default();
         policy.operations.insert(
             "ledger.billpayment.create".to_string(),
             tools::policy::OperationAccess::Blocked,
         );
+        let auth = tools::orchestrator::SpawnAuthority {
+            origin: tools::Origin::Comm,
+            operation_policy: Some(policy),
+            tool_allowlist: Some(["agent".to_string()].into_iter().collect()),
+            tool_denial_hint: Some("take a message".to_string()),
+        };
         let req = build_subagent_request(
             "subagent:agent:ic:chat:t1",
             "p",
@@ -1603,8 +1604,7 @@ mod tests {
             "u",
             &CancellationToken::new(),
             1,
-            tools::Origin::Comm,
-            Some(policy),
+            &auth,
         );
         assert_eq!(req.origin, tools::Origin::Comm);
         assert_eq!(
@@ -1613,6 +1613,45 @@ mod tests {
                 .expect("policy inherited")
                 .decide("ledger.billpayment.create", req.origin),
             tools::policy::OperationAccess::Blocked
+        );
+        assert_eq!(
+            req.tool_allowlist.as_ref().map(|w| w.len()),
+            Some(1),
+            "a restricted parent's child must stay restricted"
+        );
+        assert_eq!(req.tool_denial_hint.as_deref(), Some("take a message"));
+    }
+
+    /// A tainted run's child inherits the taint FLOOR, not the nominally
+    /// trusted origin the parent arrived on. `SpawnAuthority::of` resolves the
+    /// gate origin once so the gate and the spawn cannot disagree: a workflow
+    /// run working an untrusted email is trusted `Workflow` for everything
+    /// else, and `Comm` for deciding a gated operation.
+    #[test]
+    fn a_tainted_parent_hands_down_its_floor() {
+        let clean = tools::ToolContext {
+            origin: tools::Origin::Workflow,
+            tainted: false,
+            ..Default::default()
+        };
+        assert_eq!(
+            tools::orchestrator::SpawnAuthority::of(&clean).origin,
+            tools::Origin::Workflow
+        );
+        assert_eq!(subagent_origin(tools::Origin::Workflow), tools::Origin::System);
+
+        let tainted = tools::ToolContext {
+            origin: tools::Origin::Workflow,
+            tainted: true,
+            ..Default::default()
+        };
+        let auth = tools::orchestrator::SpawnAuthority::of(&tainted);
+        assert_eq!(auth.origin, tools::Origin::Comm, "taint floor not inherited");
+        assert!(!auth.origin.is_trusted());
+        assert_eq!(
+            subagent_origin(auth.origin),
+            tools::Origin::Comm,
+            "the floor must survive the spawn"
         );
     }
 
@@ -1638,8 +1677,12 @@ mod tests {
             tools: vec![],
             parent_stream_tx: Some(tx),
             handoff_depth: 0,
-            origin: tools::Origin::User,
-            operation_policy: None,
+            authority: tools::orchestrator::SpawnAuthority {
+                origin: tools::Origin::User,
+                operation_policy: None,
+                tool_allowlist: None,
+                tool_denial_hint: None,
+            },
             isolate: String::new(),
             workspace: String::new(),
         };
