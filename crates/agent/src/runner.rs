@@ -5725,8 +5725,13 @@ async fn run_loop(
                 // A gated interface operation (the `plugin` tool with a typed
                 // `operation`) is decided by the employee's OperationPolicy: Always
                 // runs, Approval asks the owner (interactive) / refuses when
-                // unattended, Blocked is refused (the toolset also omits it — this
-                // is the hard backstop). Origin-aware (WS2): an untrusted origin
+                // unattended, Blocked is refused. Blocked is refused a second time
+                // inside the plugin tool's typed-port pathway, which is the real
+                // backstop: it holds for callers that never run this loop. (The
+                // declared roster does NOT omit blocked operations — it stays
+                // byte-stable for prompt-cache parity, the same reason
+                // `tool_whitelist` restricts at dispatch instead of narrowing the
+                // registry.) Origin-aware (WS2): an untrusted origin
                 // floors gated Always to Approval, and with NO policy set a
                 // trusted origin keeps "installation is the grant" while an
                 // untrusted one falls back to the safe default — the decision

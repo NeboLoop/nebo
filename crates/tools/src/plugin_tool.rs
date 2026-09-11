@@ -1113,6 +1113,29 @@ impl DynTool for PluginTool {
             // is how a seat's capability port (`department.role.ledger.bill.create`) runs
             // without naming a vendor tool.
             if !pi.operation.is_empty() {
+                // Blocked is enforced HERE as well as in the runner's gate —
+                // two independent layers, because this one holds for callers
+                // that never run the chat loop (the voice fallback path, a
+                // sub-agent, a direct registry call). The runner comment used
+                // to claim the declared roster omitted blocked operations;
+                // it never did, and the roster deliberately stays byte-stable
+                // for prompt-cache parity, so the second layer belongs at the
+                // dispatch boundary instead. Approval is NOT decided here: it
+                // needs the owner round-trip only the runner can do, and two
+                // places asking would be two pathways for one decision.
+                if crate::policy::OperationPolicy::decide_optional(
+                    ctx.operation_policy.as_ref(),
+                    &pi.operation,
+                    ctx.origin,
+                ) == Some(crate::policy::OperationAccess::Blocked)
+                {
+                    return ToolResult::error(format!(
+                        "The operation '{}' is turned OFF (Blocked) for this AI employee in its \
+                         Controls. Tell the user it's blocked and stop — do not retry, and do not \
+                         look for another way to do it.",
+                        pi.operation
+                    ));
+                }
                 let (slug, command) = match self.resolve_port(&pi.operation) {
                     Ok(x) => x,
                     Err(e) => return ToolResult::error(e),
@@ -2926,6 +2949,60 @@ mod budget_and_install_tests {
         assert!(r.content.contains("No gws account is connected"), "{}", r.content);
         assert!(r.content.contains("Connected for this employee: gmail"), "{}", r.content);
         assert!(r.content.contains("mail.message.send (via gmail)"), "{}", r.content);
+    }
+
+    /// A Blocked operation is refused by the TOOL, not only by the runner's
+    /// gate. The gate covers the chat loop; this layer covers everything that
+    /// reaches dispatch without it — a sub-agent, the voice fallback path, a
+    /// direct registry call. Live shape: the roster was documented as omitting
+    /// blocked operations and never did, so the gate was the only thing
+    /// standing between a blocked money/outbound op and its provider.
+    #[tokio::test]
+    async fn a_blocked_operation_is_refused_at_dispatch_without_the_runner() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (plugin_store, db_store) = stores(tmp.path());
+        install_account_plugin(
+            tmp.path(),
+            "gmail",
+            serde_json::json!({"mail.message.send": "send"}),
+        );
+        let tool = PluginTool::new(plugin_store, db_store);
+
+        let mut policy = crate::policy::OperationPolicy::default();
+        policy.operations.insert(
+            "mail.message.send".to_string(),
+            crate::policy::OperationAccess::Blocked,
+        );
+        let ctx = ToolContext {
+            session_key: "agent:ic:chat".into(),
+            operation_policy: Some(policy),
+            ..Default::default()
+        };
+
+        let r = tool
+            .execute_dyn(
+                &ctx,
+                serde_json::json!({
+                    "operation": "mail.message.send",
+                    "input": {"to": "someone@example.com"},
+                    "display": "Email someone@example.com",
+                }),
+            )
+            .await;
+        assert!(r.is_error, "a blocked operation ran: {}", r.content);
+        assert!(r.content.contains("Blocked"), "{}", r.content);
+
+        // The same call with no policy still runs the normal pathway — this
+        // layer refuses what is blocked, it does not gate everything.
+        let open = ToolContext { session_key: "agent:ic:chat".into(), ..Default::default() };
+        let r = tool
+            .execute_dyn(&open, serde_json::json!({"operation": "mail.message.send", "input": {}}))
+            .await;
+        assert!(
+            !r.content.contains("Blocked"),
+            "an unblocked operation was refused as blocked: {}",
+            r.content
+        );
     }
 
     /// The roster never sends mail to google-workspace by name: the typed
