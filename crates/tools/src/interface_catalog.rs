@@ -52,6 +52,13 @@ const GATED: &[&str] = &[
     "ads.campaign.update",
     "tickets.issue.create",
     "tickets.issue.update",
+    // calendar — writes to the owner's real calendar. Added to the YAML on
+    // 2026-08-16 with the Intake Coordinator and never mirrored here: four
+    // seats called these "(gated)" in their own intents while the runtime
+    // gated nothing. The drift this file's header predicts, observed.
+    "calendar.event.create",
+    "calendar.event.update",
+    "calendar.event.cancel",
     // ledger
     "ledger.bill.create",
     "ledger.billpayment.create",
