@@ -406,6 +406,8 @@ impl Orchestrator {
                     &user_id,
                     &cancel,
                     max_iterations,
+                    spawn_req.origin,
+                    spawn_req.operation_policy.clone(),
                 );
                 apply_spawn_context(&mut run_req, &spawn_req);
 
@@ -492,6 +494,8 @@ impl Orchestrator {
             user_id,
             &cancel,
             max_iterations,
+            spawn_req.origin,
+            spawn_req.operation_policy.clone(),
         );
         apply_spawn_context(&mut req, spawn_req);
         run_and_collect(&self.runner, req, cancel, None, parent_stream_tx, Some(SUBAGENT_INACTIVITY_TIMEOUT)).await
@@ -504,6 +508,8 @@ impl Orchestrator {
         user_id: &str,
         parent_session_id: &str,
         parent_cancel: Option<CancellationToken>,
+        origin: tools::Origin,
+        operation_policy: Option<tools::policy::OperationPolicy>,
     ) -> Result<SpawnResult, String> {
         // 1. Decompose task into sub-tasks
         info!("Decomposing task into sub-tasks");
@@ -529,6 +535,8 @@ impl Orchestrator {
                 tools: Vec::new(),
                 parent_stream_tx: None,
                 handoff_depth: 0,
+                origin,
+                operation_policy: operation_policy.clone(),
                 isolate: String::new(),
                 workspace: String::new(),
             };
@@ -583,6 +591,7 @@ impl Orchestrator {
                 let model_override = node.model_override.clone();
                 let user_id = user_id.to_string();
                 let cancel = dag_cancel.clone();
+                let task_policy = operation_policy.clone();
                 let session_key = format!("subagent:{}:{}", parent_session_id, task_id);
 
                 let runner = self.runner.clone();
@@ -626,6 +635,8 @@ impl Orchestrator {
                         &user_id,
                         &cancel,
                         0,
+                        origin,
+                        task_policy,
                     );
 
                     let result = run_and_collect(&runner, req, cancel, None, None, None).await;
@@ -877,6 +888,8 @@ impl Orchestrator {
                 &req.user_id,
                 &cancel,
                 req.max_iterations,
+                req.origin,
+                req.operation_policy.clone(),
             );
             apply_spawn_context(&mut run_req, &req);
             if isolate {
@@ -1187,6 +1200,27 @@ fn is_interactive_session(session_key: &str) -> bool {
         && !session_key.contains(":workflow:")
 }
 
+/// The origin a sub-agent runs under, given its parent's.
+///
+/// A spawn is system-initiated — no human is watching it, so it must never
+/// reach the ask tool or raise an approval modal, which is what `System`
+/// buys. But `System.is_trusted()` is true, so handing every child `System`
+/// made a spawn an authority ESCALATION: a comm- or visitor-driven parent
+/// whose gated operations were floored to `Approval` produced a child for
+/// which the floor (and the per-origin deny list) no longer applied. Trust is
+/// the parent's; only the attendedness is the spawn's.
+fn subagent_origin(parent: tools::Origin) -> tools::Origin {
+    if parent.is_trusted() {
+        tools::Origin::System
+    } else {
+        parent
+    }
+}
+
+/// Build a sub-agent's run request. `origin` and `operation_policy` are the
+/// SPAWNING run's — passed rather than defaulted so that a new spawn pathway
+/// cannot quietly inherit nothing (which is exactly how the gate came to be
+/// skipped in sub-agents).
 fn build_subagent_request(
     session_key: &str,
     prompt: &str,
@@ -1194,6 +1228,8 @@ fn build_subagent_request(
     user_id: &str,
     cancel: &CancellationToken,
     max_iterations: usize,
+    origin: tools::Origin,
+    operation_policy: Option<tools::policy::OperationPolicy>,
 ) -> RunRequest {
     RunRequest {
         session_key: session_key.to_string(),
@@ -1201,7 +1237,8 @@ fn build_subagent_request(
         model_override: model_override.to_string(),
         user_id: user_id.to_string(),
         skip_memory_extract: true,
-        origin: tools::Origin::System,
+        origin: subagent_origin(origin),
+        operation_policy,
         channel: "subagent".to_string(),
         cancel_token: cancel.clone(),
         prompt_mode: crate::prompt::PromptMode::Minimal,
@@ -1456,13 +1493,22 @@ impl SubAgentOrchestrator for Orchestrator {
         user_id: &str,
         parent_session_id: &str,
         parent_cancel: Option<CancellationToken>,
+        origin: tools::Origin,
+        operation_policy: Option<tools::policy::OperationPolicy>,
     ) -> Pin<Box<dyn Future<Output = Result<SpawnResult, String>> + Send + '_>> {
         let prompt = prompt.to_string();
         let user_id = user_id.to_string();
         let parent_session_id = parent_session_id.to_string();
         Box::pin(async move {
-            self.execute_dag_internal(&prompt, &user_id, &parent_session_id, parent_cancel)
-                .await
+            self.execute_dag_internal(
+                &prompt,
+                &user_id,
+                &parent_session_id,
+                parent_cancel,
+                origin,
+                operation_policy,
+            )
+            .await
         })
     }
 
@@ -1520,6 +1566,56 @@ impl SubAgentOrchestrator for Orchestrator {
 mod tests {
     use super::*;
 
+    /// A sub-agent never runs at more authority than the run that spawned it.
+    /// Before this, every spawn got `Origin::System` — which is_trusted() —
+    /// and no operation policy, so `decide_optional` answered "the gate does
+    /// not apply" and fan-out became the most privileged context in the
+    /// process: a comm- or visitor-driven parent whose gated operations were
+    /// floored to Approval produced a child with no floor at all.
+    #[test]
+    fn a_subagent_never_outranks_its_parent() {
+        // Trust is the parent's; the spawn only supplies attendedness.
+        assert_eq!(subagent_origin(tools::Origin::User), tools::Origin::System);
+        assert_eq!(subagent_origin(tools::Origin::System), tools::Origin::System);
+        assert_eq!(subagent_origin(tools::Origin::Workflow), tools::Origin::System);
+        for untrusted in [
+            tools::Origin::Comm,
+            tools::Origin::App,
+            tools::Origin::Skill,
+            tools::Origin::Mcp,
+            tools::Origin::Caller,
+            tools::Origin::Visitor,
+        ] {
+            assert_eq!(subagent_origin(untrusted), untrusted, "{untrusted:?} was escalated");
+            assert!(!subagent_origin(untrusted).is_trusted(), "{untrusted:?}");
+        }
+
+        // And the seat's policy rides along, so Blocked stays blocked.
+        let mut policy = tools::policy::OperationPolicy::default();
+        policy.operations.insert(
+            "ledger.billpayment.create".to_string(),
+            tools::policy::OperationAccess::Blocked,
+        );
+        let req = build_subagent_request(
+            "subagent:agent:ic:chat:t1",
+            "p",
+            "",
+            "u",
+            &CancellationToken::new(),
+            1,
+            tools::Origin::Comm,
+            Some(policy),
+        );
+        assert_eq!(req.origin, tools::Origin::Comm);
+        assert_eq!(
+            req.operation_policy
+                .as_ref()
+                .expect("policy inherited")
+                .decide("ledger.billpayment.create", req.origin),
+            tools::policy::OperationAccess::Blocked
+        );
+    }
+
     /// The background-spawn acknowledgement must carry the no-prediction
     /// constraint AT THE DECISION POINT — a spawn ack that only says "you
     /// will be woken" invites the model to narrate results it does not have.
@@ -1542,6 +1638,8 @@ mod tests {
             tools: vec![],
             parent_stream_tx: Some(tx),
             handoff_depth: 0,
+            origin: tools::Origin::User,
+            operation_policy: None,
             isolate: String::new(),
             workspace: String::new(),
         };

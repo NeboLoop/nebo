@@ -39,6 +39,15 @@ pub struct SpawnRequest {
     /// Parent run's agent-to-agent hop count — inherited so a sub-agent cannot
     /// restart the coworker chain cap at zero.
     pub handoff_depth: u8,
+    /// The spawning run's origin. A sub-agent runs at its parent's authority
+    /// and never above it: an untrusted parent's child stays untrusted, so the
+    /// per-operation origin floor and the per-origin deny list still apply.
+    /// Without this a spawn was the most privileged context in the process —
+    /// `Origin::System` is trusted, so fan-out silently escalated.
+    pub origin: crate::Origin,
+    /// The spawning employee's per-operation policy, inherited for the same
+    /// reason. `None` only when the parent itself had none.
+    pub operation_policy: Option<crate::policy::OperationPolicy>,
     /// spawn_parallel only: "worktree" gives each child its own copy of the
     /// project (a git worktree when `workspace` is a repo, a scratch copy
     /// otherwise) and merges the results back. Empty = share the tree.
@@ -65,13 +74,18 @@ pub trait SubAgentOrchestrator: Send + Sync {
         req: SpawnRequest,
     ) -> Pin<Box<dyn Future<Output = Result<SpawnResult, String>> + Send + '_>>;
 
-    /// Decompose a complex task into a DAG and execute it.
+    /// Decompose a complex task into a DAG and execute it. `origin` and
+    /// `operation_policy` are the spawning run's authority — every task the
+    /// DAG produces inherits them, so a decomposed task is no more privileged
+    /// than the run that asked for it.
     fn execute_dag(
         &self,
         prompt: &str,
         user_id: &str,
         parent_session_id: &str,
         parent_cancel: Option<CancellationToken>,
+        origin: crate::Origin,
+        operation_policy: Option<crate::policy::OperationPolicy>,
     ) -> Pin<Box<dyn Future<Output = Result<SpawnResult, String>> + Send + '_>>;
 
     /// Cancel a running sub-agent or DAG task.
