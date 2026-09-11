@@ -108,6 +108,20 @@ impl Store {
         Ok(())
     }
 
+    /// Remove the empty `api-…` rows an earlier API handler left beside every
+    /// conversation it ran (the run wrote to a different row). Rows with any
+    /// message are conversations and stay. Returns how many were removed.
+    pub fn delete_empty_api_chats(&self) -> Result<usize, NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "DELETE FROM chats
+              WHERE id LIKE 'api-%'
+                AND NOT EXISTS (SELECT 1 FROM chat_messages m WHERE m.chat_id = chats.id)",
+            [],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
     pub fn delete_chat(&self, id: &str) -> Result<(), NeboError> {
         let conn = self.conn()?;
         conn.execute("DELETE FROM chats WHERE id = ?1", params![id])
@@ -1133,6 +1147,21 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use crate::Store;
+
+    /// The sweep removes only empty `api-` rows; a conversation with a
+    /// message keeps its row whatever its id.
+    #[test]
+    fn empty_api_rows_are_swept_and_conversations_stay() {
+        let (_dir, store) = store();
+        store.create_chat_for_session("api-abc-deal-1", "agent:a:api:deal-1", "API · deal-1", None).unwrap();
+        store.create_chat_for_session("api-abc-deal-2", "agent:a:api:deal-2", "API · deal-2", None).unwrap();
+        store.create_chat_message("m1", "api-abc-deal-2", "user", "hello", None).unwrap();
+        store.create_chat_for_session("agent:a:api:deal-3", "agent:a:api:deal-3", "Legacy", None).unwrap();
+        assert_eq!(store.delete_empty_api_chats().unwrap(), 1);
+        assert!(store.get_chat("api-abc-deal-1").unwrap().is_none(), "empty api row is gone");
+        assert!(store.get_chat("api-abc-deal-2").unwrap().is_some(), "a conversation stays");
+        assert!(store.get_chat("agent:a:api:deal-3").unwrap().is_some(), "legacy rows are untouched");
+    }
 
     fn store() -> (tempfile::TempDir, Store) {
         let dir = tempfile::tempdir().expect("tempdir");

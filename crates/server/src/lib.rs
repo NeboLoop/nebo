@@ -666,6 +666,13 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // generic crons carrying a named agent's duty into that agent's own
     // workflow bindings. Must run before the scheduler spawns.
     migration::migrate_orphaned_agent_crons(&store);
+    // The API handler used to leave an empty, titled row beside every
+    // conversation it ran; they sat in each employee's chat list forever.
+    match store.delete_empty_api_chats() {
+        Ok(n) if n > 0 => info!(removed = n, "swept empty API chat rows"),
+        Ok(_) => {}
+        Err(e) => warn!(error = %e, "could not sweep empty API chat rows"),
+    }
 
     // Cloud/container deploys are provisioned as a specific bot up front, so
     // there is no interactive pairing flow to run. NEBO_BOT_ID seeds the same

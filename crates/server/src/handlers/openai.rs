@@ -237,7 +237,46 @@ async fn resolve_thread(state: &AppState, agent_id: &str, agent_name: &str, user
         let ctx = conversation_ctx(user);
         let chat_id = format!("api-{}-{}", &agent_id[..agent_id.len().min(8)], ctx);
         let session_key = format!("agent:{agent_id}:{CHANNEL}:{ctx}");
-        super::voice::ensure_chat_row(state, &chat_id, &session_key, Some(&format!("API · {}", user.unwrap_or("conversation"))));
+        // The row this call creates must be the row the run writes to. The
+        // run resolves its chat from the SESSION, and a session for a key
+        // like `agent:<id>:api:deal-x` falls back to a chat named after the
+        // key itself, so every conversation had two rows: this titled one,
+        // empty forever, and the one holding the messages, auto-named from
+        // its first turn (Deal Desk, 2026-09-10: five keys, ten rows). Bind
+        // the session to this row; a session that already holds its
+        // conversation elsewhere keeps it, history and summary intact.
+        let sessions = state.runner.sessions();
+        let bound = match sessions.get_or_create(&session_key, "") {
+            Ok(session) => {
+                let existing = session
+                    .active_chat_id
+                    .clone()
+                    .filter(|cid| cid != &chat_id && state.store.count_chat_messages(cid).unwrap_or(0) > 0);
+                match existing {
+                    Some(cid) => Some(cid),
+                    None => {
+                        if let Err(e) = sessions.set_active_chat(&session.id, &chat_id) {
+                            warn!(error = %e, session = %session_key, "api: could not bind the conversation's chat");
+                        }
+                        None
+                    }
+                }
+            }
+            Err(e) => {
+                warn!(error = %e, session = %session_key, "api: could not resolve the conversation's session");
+                None
+            }
+        };
+        let chat_id = bound.unwrap_or(chat_id);
+        // Titled after the caller's key but not protected: the auto-namer
+        // may replace it with what the conversation is about, the way it
+        // names every other thread; the key stays on the session.
+        if matches!(state.store.get_chat(&chat_id), Ok(None)) {
+            let title = format!("API · {}", user.unwrap_or("conversation"));
+            if let Err(e) = state.store.create_chat_for_session(&chat_id, &session_key, &title, None) {
+                warn!(error = %e, chat = %chat_id, "api: could not create the conversation's chat row");
+            }
+        }
         (session_key, chat_id)
     } else {
         // One conversation: join the working thread, as a voice call does.
