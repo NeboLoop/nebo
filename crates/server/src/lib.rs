@@ -562,6 +562,26 @@ pub fn build_providers(
 }
 
 /// Run the Nebo HTTP server.
+/// The "installs" topic, wherever it arrives. The boot-window handler and the
+/// full handler both call this, so there is ONE routine and ONE broadcast.
+/// Before this, the full handler (which replaces the boot-window one once the
+/// runner is up) sent installs straight to the napp registry, which handles
+/// only uninstall and revoke — every hub-pushed tool_installed/tool_updated
+/// after boot was a silent no-op.
+async fn handle_installs_message(state: &AppState, event: napp::InstallEvent) {
+    match handle_comm_install_event(state, event).await {
+        Ok(()) => state
+            .hub
+            .broadcast("tool_event", serde_json::json!({"status": "ok"})),
+        Err(e) => {
+            tracing::warn!("install event handling failed: {}", e);
+            state
+                .hub
+                .broadcast("tool_error", serde_json::json!({"error": e}));
+        }
+    }
+}
+
 /// Handle a comm "installs" event. tool_installed/tool_updated route through the
 /// canonical install pathway (`codes::handle_code`), resolving the artifact from
 /// its id — reusing the store/code install's robust download (JSON-indirection
@@ -2036,16 +2056,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
                 if msg.topic == "installs" {
                     if let Ok(event) = serde_json::from_str::<napp::InstallEvent>(&msg.content) {
                         tokio::spawn(async move {
-                            if let Err(e) = handle_comm_install_event(&st, event).await {
-                                tracing::warn!("install event handling failed: {}", e);
-                                st.hub.broadcast(
-                                    "tool_error",
-                                    serde_json::json!({"error": e}),
-                                );
-                            } else {
-                                st.hub
-                                    .broadcast("tool_event", serde_json::json!({"status": "ok"}));
-                            }
+                            handle_installs_message(&st, event).await;
                         });
                         return;
                     }
@@ -3512,15 +3523,7 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
     // Route install events to napp registry
     if msg.topic == "installs" {
         if let Ok(event) = serde_json::from_str::<napp::InstallEvent>(&msg.content) {
-            let reg = state.napp_registry.clone();
-            let hub = state.hub.clone();
-            match reg.handle_install_event(event).await {
-                Ok(()) => hub.broadcast("tool_event", serde_json::json!({"status": "ok"})),
-                Err(e) => {
-                    tracing::warn!("install event handling failed: {}", e);
-                    hub.broadcast("tool_error", serde_json::json!({"error": e.to_string()}));
-                }
-            }
+            handle_installs_message(&state, event).await;
             return;
         }
     }
