@@ -163,6 +163,59 @@ impl NeboAIApi {
             .await
     }
 
+    /// Forward one plugin API call to the hub's credential-injecting proxy
+    /// (`/api/v1/plugins/{slug}/proxy/{path}`) and hand back exactly what the
+    /// provider answered: status, content type, raw body. Raw, not JSON — the
+    /// body is the provider's, whatever shape it has, and it carries the
+    /// customer's account data: callers must never log it.
+    pub async fn plugin_proxy(
+        &self,
+        method: reqwest::Method,
+        slug: &str,
+        path: &str,
+        query: Option<&str>,
+        headers: reqwest::header::HeaderMap,
+        body: Vec<u8>,
+    ) -> Result<(u16, Option<String>, Vec<u8>), CommError> {
+        if !slug.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+            return Err(CommError::Other("invalid plugin slug".into()));
+        }
+        let mut url = format!(
+            "{}/api/v1/plugins/{}/proxy/{}",
+            self.api_server,
+            slug,
+            path.trim_start_matches('/')
+        );
+        if let Some(q) = query.filter(|q| !q.is_empty()) {
+            url.push('?');
+            url.push_str(q);
+        }
+        debug!(method = %method, url = %url, "neboai plugin proxy");
+        let resp = self
+            .client
+            .request(method, &url)
+            .headers(headers)
+            .bearer_auth(self.token())
+            .body(body)
+            // Provider calls (a transactions sync, a report) outlive the
+            // client's default budget; the hub allows the same.
+            .timeout(std::time::Duration::from_secs(60))
+            .send()
+            .await
+            .map_err(|e| CommError::Transport(e.to_string()))?;
+        let status = resp.status().as_u16();
+        let content_type = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .map(String::from);
+        let bytes = resp
+            .bytes()
+            .await
+            .map_err(|e| CommError::Transport(format!("read response: {}", e)))?;
+        Ok((status, content_type, bytes.to_vec()))
+    }
+
     /// Public client id for a plugin's CLOUD OAuth app (relay-mode logins).
     /// Identifier only — the hub never returns the secret. Slugs are validated
     /// to the marketplace's kebab charset so the path needs no URL-encoding.

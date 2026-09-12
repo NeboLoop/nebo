@@ -25,6 +25,12 @@ pub fn routes() -> Router<AppState> {
             "/plugins/oauth/token",
             axum::routing::post(handlers::plugins::oauth_token),
         )
+        // Relay for plugins whose provider secret rides on every request:
+        // the hub fills the credentials and calls the provider (plugin_proxy).
+        .route(
+            "/plugins/{slug}/proxy/{*path}",
+            axum::routing::any(handlers::plugins::plugin_proxy),
+        )
         .route(
             "/plugins/{slug}",
             axum::routing::delete(handlers::plugins::remove_plugin),

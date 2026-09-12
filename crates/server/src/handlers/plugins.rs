@@ -1491,6 +1491,87 @@ pub async fn proxy_plugin_route(
     }
 }
 
+/// ANY /plugins/{slug}/proxy/{*path} — relay one plugin API call to the hub's
+/// credential-injecting proxy. The counterpart of `oauth_token` for plugins
+/// whose provider secret rides on every request (Plaid): the plugin sends its
+/// request here with `{{client_id}}` / `{{client_secret}}` placeholders in its
+/// own credential headers, this attaches the bot's identity, and the hub fills
+/// the values and calls the provider. The provider's answer comes back
+/// verbatim — status, content type, body — and is never logged.
+pub async fn plugin_proxy(
+    State(state): State<AppState>,
+    Path((slug, path)): Path<(String, String)>,
+    method: axum::http::Method,
+    uri: axum::http::Uri,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let refuse = |status: axum::http::StatusCode, msg: String| {
+        (status, Json(serde_json::json!({ "error": msg }))).into_response()
+    };
+
+    let Some(bot_id) = config::read_bot_id() else {
+        return refuse(
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            "not connected to NeboAI — this plugin's credentials are held by the hub, which requires a connected instance (or set the plugin's own credentials locally)"
+                .to_string(),
+        );
+    };
+    let profile = match state.store.list_all_active_auth_profiles_by_provider("neboai") {
+        Ok(profiles) => match profiles.into_iter().next() {
+            Some(p) => p,
+            None => {
+                return refuse(
+                    axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                    "not connected to NeboAI — redeem a NEBO code first".to_string(),
+                )
+            }
+        },
+        Err(e) => {
+            return refuse(
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                format!("failed to query auth profiles: {e}"),
+            )
+        }
+    };
+
+    // The plugin's own headers travel; the local hop's framing and anything
+    // that could pass as this server's identity do not.
+    let mut forwarded = axum::http::HeaderMap::new();
+    for (name, value) in headers.iter() {
+        if matches!(
+            name.as_str(),
+            "host" | "authorization" | "cookie" | "content-length" | "connection"
+        ) {
+            continue;
+        }
+        forwarded.append(name.clone(), value.clone());
+    }
+
+    let api = comm::api::NeboAIApi::new(
+        state.config.neboai.api_url.clone(),
+        bot_id,
+        profile.api_key.clone(),
+    );
+    match api
+        .plugin_proxy(method, &slug, &path, uri.query(), forwarded, body.to_vec())
+        .await
+    {
+        Ok((status, content_type, bytes)) => {
+            let status = axum::http::StatusCode::from_u16(status)
+                .unwrap_or(axum::http::StatusCode::BAD_GATEWAY);
+            let mut resp = (status, bytes).into_response();
+            if let Some(ct) = content_type.and_then(|ct| ct.parse().ok()) {
+                resp.headers_mut()
+                    .insert(axum::http::header::CONTENT_TYPE, ct);
+            }
+            resp
+        }
+        Err(e) => refuse(axum::http::StatusCode::BAD_GATEWAY, e.to_string()),
+    }
+}
+
 /// Open an OAuth URL: broadcast it to the frontend via WebSocket so the
 /// frontend can call `window.open()`.
 fn open_auth_url(slug: &str, url: &str, hub: &super::ws::ClientHub) {
