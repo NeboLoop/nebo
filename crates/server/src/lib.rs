@@ -1701,6 +1701,14 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
                     None,
                 ) {
                     Ok(_) => {
+                        // The row must know its directory: the settings page writes
+                        // agent.json back through napp_path, and a NULL here made
+                        // every such save a silent no-op for an agent discovered on
+                        // disk.
+                        let _ = store.set_agent_napp_path(
+                            &agent_id,
+                            &loaded.source_path.to_string_lossy(),
+                        );
                         // The primary agent ("Nebo") is exposed to the loop by
                         // default. Set it once at row creation — the migration
                         // only covers installs that predate this row, so fresh
@@ -2836,6 +2844,12 @@ async fn handle_agent_fs_events(
                         None,
                     ) {
                         Ok(_) => {
+                            // Same reason as the boot path: without napp_path the
+                            // settings page cannot write this agent's agent.json.
+                            let _ = state.store.set_agent_napp_path(
+                                &agent_id,
+                                &loaded.source_path.to_string_lossy(),
+                            );
                             // Implicit reconcile cascade for an agent newly discovered
                             // on disk — gated by `auto_install_deps` (default OFF).
                             if !loaded.frontmatter.is_empty()
