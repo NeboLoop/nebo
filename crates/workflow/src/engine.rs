@@ -452,7 +452,17 @@ pub async fn execute_workflow(
 
         // Inject emit tool if event bus is available (always available, no declaration needed)
         let emit_tool_box: Option<Box<dyn DynTool>> =
-            event_bus.map(|bus| Box::new(tools::EmitTool::new(bus.clone())) as Box<dyn DynTool>);
+            event_bus.map(|bus| {
+                // The producing seat rides every emitted payload (R6), so a
+                // subscriber to an un-namespaced company event knows who spoke.
+                let producer = store
+                    .get_agent(agent_id)
+                    .ok()
+                    .flatten()
+                    .map(|a| db::agent_slug(&a.name))
+                    .unwrap_or_else(|| agent_id.to_string());
+                Box::new(tools::EmitTool::new(bus.clone()).with_producer(producer)) as Box<dyn DynTool>
+            });
         if let Some(ref emit) = emit_tool_box {
             activity_tools.push(emit);
         }

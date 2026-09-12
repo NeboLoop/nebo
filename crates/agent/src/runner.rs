@@ -3384,6 +3384,7 @@ async fn run_loop(
             active_agent: active_agent_body,
             agent_soul: active_agent_entry.as_ref().and_then(|r| r.soul.clone()),
             agent_rules: active_agent_entry.as_ref().and_then(|r| r.rules.clone()),
+            context_section: active_agent_entry.as_ref().and_then(|r| r.context_section.clone()),
             agent_plugin_context,
             agent_self_context,
             research_prompt: None,
@@ -5739,7 +5740,53 @@ async fn run_loop(
                         .and_then(|v| v.as_str())
                         .filter(|s| !s.is_empty())
                         .map(str::to_string);
-                    let access = op.as_deref().and_then(|op| {
+                    // The operation's parameters, as far as the call states
+                    // them: a standing grant is checked against amount,
+                    // counterparty, and today's counters (R16). A call that
+                    // states no amount is checked against count and freshness
+                    // only.
+                    let params = tools::policy::OperationParams {
+                        amount_cents: tool_calls[idx]
+                            .input
+                            .get("amount_cents")
+                            .and_then(|v| v.as_i64()),
+                        counterparty: tool_calls[idx]
+                            .input
+                            .get("counterparty")
+                            .and_then(|v| v.as_str())
+                            .map(str::to_string),
+                        counterparty_has_source_id: tool_calls[idx]
+                            .input
+                            .get("counterparty_id")
+                            .and_then(|v| v.as_str())
+                            .is_some_and(|s| !s.is_empty()),
+                        irreversible: op
+                            .as_deref()
+                            .is_some_and(tools::interface_catalog::is_critical),
+                    };
+                    let company_policy = store
+                        .get_company_policy()
+                        .ok()
+                        .flatten()
+                        .map(|j| tools::policy::CompanyPolicy::from_json(Some(&j)));
+                    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+                    let rule_key = op
+                        .as_deref()
+                        .map(|op| format!("{}:{}", agent_id, tools::plugin_tool::port_suffix(op)))
+                        .unwrap_or_default();
+                    let counters = {
+                        let cp = params.counterparty.clone().unwrap_or_default();
+                        let mine = store.day_counters(&rule_key, &today, &cp).ok();
+                        let company = store.day_counters(db::COMPANY_COUNTER_KEY, &today, "").ok();
+                        mine.map(|m| tools::policy::DayCounters {
+                            count: m.count,
+                            cents: m.cents,
+                            counterparty_cents: m.counterparty_cents,
+                            company_count: company.as_ref().map(|c| c.count).unwrap_or(0),
+                            company_cents: company.as_ref().map(|c| c.cents).unwrap_or(0),
+                        })
+                    };
+                    let decision = op.as_deref().and_then(|op| {
                         tools::policy::OperationPolicy::decide_optional(
                             operation_policy,
                             op,
@@ -5751,18 +5798,41 @@ async fn run_loop(
                             } else {
                                 origin
                             },
+                            &params,
+                            company_policy.as_ref(),
+                            counters.as_ref(),
+                            // The projection is proven current once the cache
+                            // exists (Playbook PRD 6.4); until then local policy
+                            // is the only copy and is current by definition.
+                            true,
                         )
                     });
-                    if let (Some(access), Some(op)) = (access, op.as_deref()) {
-                        match access {
-                            tools::policy::OperationAccess::Always => {}
+                    if let (Some(decision), Some(op)) = (decision, op.as_deref()) {
+                        match decision.access {
+                            tools::policy::OperationAccess::Always => {
+                                // A standing grant spent: count it against the
+                                // day before the call runs, so a crash between
+                                // decision and execution can never under-count.
+                                if decision.layer == tools::policy::PolicyLayer::StandingAuthority {
+                                    let cp = params.counterparty.clone().unwrap_or_default();
+                                    let cents = params.amount_cents.unwrap_or(0);
+                                    let _ = store.bump_counters(&rule_key, &today, &cp, cents);
+                                    let _ = store.bump_counters(db::COMPANY_COUNTER_KEY, &today, "", cents);
+                                    tracing::info!(
+                                        agent = %agent_id, op = %op, rule = %rule_key, reason = %decision.reason,
+                                        "operation approved by standing authority"
+                                    );
+                                }
+                            }
                             tools::policy::OperationAccess::Blocked => {
                                 blocked_results[idx] = Some((
                                     tool_calls[idx].clone(),
                                     ToolResult::error(format!(
-                                        "The operation '{op}' is turned OFF (Blocked) for this AI \
-                                         employee in its Controls. Tell the user it's blocked and \
-                                         stop — do not retry or work around it."
+                                        "The operation '{op}' is Blocked for this AI employee \
+                                         ({layer}: {reason}). Tell the user it's blocked and \
+                                         stop — do not retry or work around it.",
+                                        layer = decision.layer.as_str(),
+                                        reason = decision.reason,
                                     )),
                                 ));
                             }
@@ -5820,10 +5890,17 @@ async fn run_loop(
                                                         let mut policy = operation_policy
                                                             .cloned()
                                                             .unwrap_or_default();
-                                                        policy.operations.insert(
-                                                            tools::plugin_tool::port_suffix(op),
-                                                            tools::policy::OperationAccess::Always,
-                                                        );
+                                                        // A locked entry (the seat's
+                                                        // ceiling or a law) refuses the
+                                                        // edit: the button cannot loosen it.
+                                                        if let Err(e) = policy.apply_edit(
+                                                            &tools::plugin_tool::port_suffix(op),
+                                                            tools::policy::OperationRule::access(
+                                                                tools::policy::OperationAccess::Always,
+                                                            ),
+                                                        ) {
+                                                            tracing::warn!(op = %op, error = %e, "Approve Always refused by the policy");
+                                                        }
                                                         let patch = serde_json::json!({
                                                             "operationPolicy": policy.to_json()
                                                         });

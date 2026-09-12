@@ -126,6 +126,9 @@ export interface AgentDisplay {
 	loopAgentId?: string
 	/** Realtime voice id (xAI voice id; empty = default). */
 	voice?: string
+	/** The seat's own reading of its layers (R15), read-only on the page. */
+	contextSection?: string
+	contextStamp?: string
 }
 
 /** The agentPage context shape provided by [agentId]/+layout.svelte. */

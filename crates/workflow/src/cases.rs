@@ -823,6 +823,8 @@ pub fn settle_turn(store: &Store, child: &EngineRun, output: Option<&str>, faile
     if let Some(Ok(Turn { close: Some(status), .. })) = &contract {
         store.engine_close_run(parent_id, "done", t)?;
         store.engine_set_run_result(parent_id, status, Some(&summary))?;
+        // An assignment's case closing IS the assignment's outcome (R5).
+        settle_assignment(store, &inputs, status, &summary, t)?;
         // Closed on an inbound turn with nothing on the ledger: the person
         // wrote, the turn says the case is settled, and no receipt backs
         // it. The decision stands — the owner is told, with the fact. A
@@ -867,4 +869,274 @@ pub fn settle_turn(store: &Store, child: &EngineRun, output: Option<&str>, faile
         t,
     )?;
     Ok(())
+}
+
+// ── assignments (R5) ──────────────────────────────────────────────────────
+
+/// The case type every assignment runs as; the key value is the assignment id.
+pub const ASSIGNMENT_CASE_TYPE: &str = "assignment";
+/// A turn that names no wait on an assignment waits this long (the General
+/// Manager's `assign` binding says 2d; the default matches it).
+pub const ASSIGNMENT_DEFAULT_WAIT_SECS: i64 = 2 * 24 * 3600;
+
+pub fn assignment_case_key(assignment_id: &str) -> String {
+    format!("case:{ASSIGNMENT_CASE_TYPE}:{assignment_id}")
+}
+
+/// What `open_assignment` needs. `parent_run_id` links the assignee's case
+/// to the assigner's run so the record reads as one chain.
+pub struct NewAssignmentRequest<'a> {
+    pub assigner_agent_id: &'a str,
+    pub assigner_name: &'a str,
+    pub assigner_session_key: &'a str,
+    pub parent_run_id: Option<&'a str>,
+    pub assignee_agent_id: &'a str,
+    pub subject: &'a str,
+    pub done_means: &'a str,
+    pub due: Option<&'a str>,
+}
+
+/// The inline definition an assignment runs under when the assignee's own
+/// package declares no `assignment` binding (a seat that does declares its
+/// procedure, and `start_turn` reads that one fresh each turn).
+pub fn default_assignment_definition() -> String {
+    serde_json::json!({
+        "version": "1.0",
+        "id": ASSIGNMENT_CASE_TYPE,
+        "name": ASSIGNMENT_CASE_TYPE,
+        "type": "",
+        "inputs": {},
+        "activities": [{
+            "id": "work",
+            "type": "custom",
+            "intent": "Work assigned to you by a coworker, as your own work: read `_assignment` in your inputs for the subject, what done means, who assigned it, and the date. Do the work with your tools. When it is done, end the turn by closing the case with status \"done\" and a summary of what you produced. If you cannot proceed without someone else, close with status \"blocked\" and say what is missing. If the work cannot be done, close with status \"failed\" and why. If you are waiting on a reply, declare a wait instead of closing."
+        }],
+        "connections": [{"from": "__trigger__", "to": "work"}],
+        "budget": {"total_per_run": 12000},
+        "dependencies": {"skills": [], "workflows": []}
+    })
+    .to_string()
+}
+
+/// Hand work to another seat as that seat's own work: an assignment row, a
+/// case on the assignee keyed on the assignment id and linked to the
+/// assigner's run, and the first turn started. Returns the assignment id.
+pub fn open_assignment(store: &Store, req: &NewAssignmentRequest<'_>, t: i64) -> Result<String, NeboError> {
+    let assignment_id = uuid::Uuid::new_v4().to_string();
+    let key_type = format!("case:{ASSIGNMENT_CASE_TYPE}");
+    let key = assignment_case_key(&assignment_id);
+    let case_id = uuid::Uuid::new_v4().to_string();
+    let session_key = format!("agent:{}:case:{}", req.assignee_agent_id, case_id);
+    let assignment = serde_json::json!({
+        "id": assignment_id,
+        "assigner_agent_id": req.assigner_agent_id,
+        "assigner_name": req.assigner_name,
+        "assigner_session_key": req.assigner_session_key,
+        "assignee_agent_id": req.assignee_agent_id,
+        "subject": req.subject,
+        "done_means": req.done_means,
+        "due": req.due,
+    });
+    let inputs = serde_json::json!({
+        "subject": req.subject,
+        "done_means": req.done_means,
+        "due": req.due,
+        "assigned_by": req.assigner_name,
+        "_assignment": assignment,
+        "_case": {
+            "id": case_id,
+            "case_type": ASSIGNMENT_CASE_TYPE,
+            "subject_id": assignment_id,
+            "key": key,
+            "aliases": [],
+            "binding": ASSIGNMENT_CASE_TYPE,
+            "default_wait_secs": ASSIGNMENT_DEFAULT_WAIT_SECS,
+            "previous_case": serde_json::Value::Null,
+        },
+    });
+    let definition = default_assignment_definition();
+    store.create_assignment(&db::NewAssignment {
+        id: &assignment_id,
+        assigner_agent_id: req.assigner_agent_id,
+        assigner_session_key: req.assigner_session_key,
+        assignee_agent_id: req.assignee_agent_id,
+        subject: req.subject,
+        done_means: req.done_means,
+        due: req.due,
+        parent_run_id: req.parent_run_id,
+        case_key: &key,
+    })?;
+    store.engine_create_run(&NewRun {
+        id: &case_id,
+        kind: "case",
+        session_key: &session_key,
+        agent_id: req.assignee_agent_id,
+        lane: "main",
+        parent_run_id: req.parent_run_id,
+        definition: Some(&definition),
+        inputs: Some(&inputs.to_string()),
+        external_ref: None,
+    })?;
+    if !store.engine_bind_key(&case_id, &key_type, &assignment_id)? {
+        store.engine_close_run(&case_id, "cancelled", t)?;
+        return Err(NeboError::Internal("assignment key already bound".into()));
+    }
+    store.engine_declare_wait(
+        &case_id,
+        &NewWait { action: "trigger_child", on_kind: "signal", key: &key, deadline: None, parked: None, reason: "assigned" },
+        t,
+    )?;
+    let idem = format!("assignment:{assignment_id}:open");
+    let opened = store.engine_enqueue_event_leased(
+        &NewEvent {
+            kind: "signal",
+            target_type: "run",
+            target_id: &key,
+            payload: &assignment.to_string(),
+            channel: "assignment",
+            r#ref: &idem,
+            idem_key: &idem,
+            durable: true,
+            ..Default::default()
+        },
+        t,
+    )?;
+    if let Enqueued::Inserted(event_id) = opened {
+        let case = store.engine_get_run(&case_id)?.ok_or(NeboError::NotFound)?;
+        if let Some(ev) = store.engine_get_event(event_id)? {
+            start_child(store, &case, &ev)?;
+            store.engine_complete_event(ev.id, t)?;
+        }
+    }
+    Ok(assignment_id)
+}
+
+/// A closed case status as an assignment state: done, blocked, failed. Any
+/// other close is done with the status kept as the outcome.
+pub fn assignment_state_for(status: &str) -> &'static str {
+    match status.trim().to_ascii_lowercase().as_str() {
+        "blocked" => "blocked",
+        "failed" | "failure" | "cannot" => "failed",
+        _ => "done",
+    }
+}
+
+/// Settle the assignment a closing case carried: the row closes once, the
+/// assigner is woken with the outcome, and `assignment.<state>` goes out as
+/// a company event with the assignee as producer. A case that carries no
+/// assignment is untouched.
+pub fn settle_assignment(store: &Store, case_inputs: &serde_json::Value, status: &str, summary: &str, t: i64) -> Result<(), NeboError> {
+    let a = &case_inputs["_assignment"];
+    let Some(id) = a["id"].as_str().filter(|s| !s.is_empty()) else {
+        return Ok(());
+    };
+    let state = assignment_state_for(status);
+    if !store.close_assignment(id, state, Some(status), t)? {
+        return Ok(()); // already settled
+    }
+    let assignee = a["assignee_agent_id"].as_str().unwrap_or("");
+    let payload = serde_json::json!({
+        "assignment_id": id,
+        "state": state,
+        "outcome": status,
+        "summary": summary,
+        "subject": a["subject"],
+        "assignee_agent_id": assignee,
+        "assigner_agent_id": a["assigner_agent_id"],
+    });
+    let name = format!("assignment.{state}");
+    if let Some(session) = a["assigner_session_key"].as_str().filter(|s| !s.is_empty()) {
+        let _ = store.engine_enqueue_wake(session, &name, &payload.to_string(), "[]", 0);
+    }
+    let producer = store.get_agent(assignee).ok().flatten().map(|ag| db::agent_slug(&ag.name)).unwrap_or_else(|| assignee.to_string());
+    crate::events::emit_company_event(&name, payload, &producer);
+    Ok(())
+}
+
+/// The opener the `agent` tool calls through (installed by the server at
+/// boot: `tools::assignments::install_assignment_opener`).
+pub struct CaseAssignmentOpener {
+    pub store: std::sync::Arc<Store>,
+}
+
+impl tools::assignments::AssignmentOpener for CaseAssignmentOpener {
+    fn open(&self, req: &tools::assignments::AssignmentRequest) -> Result<String, String> {
+        let r = NewAssignmentRequest {
+            assigner_agent_id: &req.assigner_agent_id,
+            assigner_name: &req.assigner_name,
+            assigner_session_key: &req.assigner_session_key,
+            parent_run_id: req.parent_run_id.as_deref(),
+            assignee_agent_id: &req.assignee_agent_id,
+            subject: &req.subject,
+            done_means: &req.done_means,
+            due: req.due.as_deref(),
+        };
+        open_assignment(&self.store, &r, chrono::Utc::now().timestamp()).map_err(|e| e.to_string())
+    }
+}
+
+#[cfg(test)]
+mod assignment_tests {
+    use super::*;
+
+    fn store() -> Store {
+        let path = std::env::temp_dir().join(format!("nebo-assign-{}.db", uuid::Uuid::new_v4()));
+        Store::new(&path.to_string_lossy()).expect("store")
+    }
+
+    #[test]
+    fn an_assignment_is_the_assignees_own_case_and_its_close_tells_the_assigner() {
+        let s = store();
+        let t = 1_700_000_000;
+        let req = NewAssignmentRequest {
+            assigner_agent_id: "gm",
+            assigner_name: "General Manager",
+            assigner_session_key: "agent:gm:web",
+            parent_run_id: None,
+            assignee_agent_id: "bk",
+            subject: "Close the books",
+            done_means: "Reports posted",
+            due: Some("2026-10-05"),
+        };
+        let id = open_assignment(&s, &req, t).expect("opened");
+        let row = s.get_assignment(&id).unwrap().expect("row");
+        assert_eq!(row.state, "open");
+        assert_eq!(row.assignee_agent_id, "bk");
+        // The case is the assignee's, keyed on the assignment, with a first turn queued.
+        let case = s.engine_run_for_key("case:assignment", &id).unwrap().expect("case bound");
+        assert_eq!(case.agent_id, "bk");
+        assert_eq!(case.kind, "case");
+        let turns = s.engine_children(&case.id).unwrap();
+        assert_eq!(turns.len(), 1, "one first turn");
+        let inputs: serde_json::Value = serde_json::from_str(turns[0].inputs.as_deref().unwrap()).unwrap();
+        assert_eq!(inputs["_assignment"]["id"], id);
+
+        // The assignee closes it as blocked: the row settles once and the
+        // assigner's session is woken with assignment.blocked.
+        settle_assignment(&s, &inputs, "blocked", "waiting on the bank feed", t + 60).unwrap();
+        let row = s.get_assignment(&id).unwrap().unwrap();
+        assert_eq!(row.state, "blocked");
+        assert_eq!(row.outcome.as_deref(), Some("blocked"));
+        let (woken, _) = s.engine_claim_session_events("agent:gm:web", t + 61).unwrap();
+        assert_eq!(woken.len(), 1);
+        assert_eq!(woken[0].kind, "assignment.blocked");
+        let payload: serde_json::Value = serde_json::from_str(&woken[0].payload).unwrap();
+        assert_eq!(payload["assignment_id"], id);
+        // Claiming is the attempt, not delivery: mark it delivered as the
+        // wake rail would, so the next claim shows only NEW wakes.
+        s.engine_complete_event(woken[0].id, t + 62).unwrap();
+        // A second settle is a no-op: nobody is told twice.
+        settle_assignment(&s, &inputs, "done", "again", t + 120).unwrap();
+        assert_eq!(s.get_assignment(&id).unwrap().unwrap().state, "blocked");
+        let (again, _) = s.engine_claim_session_events("agent:gm:web", t + 121).unwrap();
+        assert!(again.is_empty());
+    }
+
+    #[test]
+    fn close_statuses_map_to_the_three_outcomes() {
+        assert_eq!(assignment_state_for("done"), "done");
+        assert_eq!(assignment_state_for("Blocked"), "blocked");
+        assert_eq!(assignment_state_for("failed"), "failed");
+        assert_eq!(assignment_state_for("shipped"), "done");
+    }
 }

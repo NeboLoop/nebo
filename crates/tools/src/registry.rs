@@ -980,6 +980,9 @@ impl Registry {
             self.register(Box::new(web_tool)).await;
         }
 
+        // The seat's own context section (R15): the write half of the layers.
+        self.register(Box::new(crate::context_tool::ContextTool::new(store.clone(), active_agent.clone()))).await;
+
         // Agent tool (memory, tasks, sessions, context, advisors, ask, runs, registry) — always registered (core)
         let mut agent_tool = crate::bot_tool::AgentTool::new(store.clone(), orchestrator.clone())
             .with_notify_fn(self.notify_fn.clone());
@@ -1125,6 +1128,12 @@ impl Registry {
             self.coworker_rail.clone(),
         )))
         .await;
+
+        // Authority tool (standing authority inside the constitution). Deferred:
+        // it reaches the model only when a seat's `requires.tools` names
+        // "authority" (the General Manager) or a turn discovers it.
+        self.register_deferred(Box::new(crate::authority_tool::AuthorityTool::new(store.clone())))
+            .await;
 
         // Loop tool (NeboAI comms: dm, channel, loop, topic) — requires "loop" permission.
         // The comm handle exists from startup; the real LoopTool's per-action

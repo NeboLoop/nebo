@@ -30,6 +30,7 @@ pub mod desktop;
 pub mod voice;
 pub mod workflows;
 pub mod teams;
+pub mod org;
 pub mod ws;
 
 use axum::http::StatusCode;

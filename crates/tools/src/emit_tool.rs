@@ -10,11 +10,20 @@ use crate::registry::{DynTool, ToolResult};
 /// Tool that emits events into the EventBus.
 pub struct EmitTool {
     bus: EventBus,
+    /// The emitting seat's slug, stamped on every payload as `producer` so
+    /// a subscriber to an un-namespaced company event knows who spoke.
+    producer: Option<String>,
 }
 
 impl EmitTool {
     pub fn new(bus: EventBus) -> Self {
-        Self { bus }
+        Self { bus, producer: None }
+    }
+
+    pub fn with_producer(mut self, producer: impl Into<String>) -> Self {
+        let p = producer.into();
+        self.producer = (!p.is_empty()).then_some(p);
+        self
     }
 }
 
@@ -63,10 +72,13 @@ impl DynTool for EmitTool {
                 )),
             };
 
-            let payload = input
+            let mut payload = input
                 .get("payload")
                 .cloned()
                 .unwrap_or(serde_json::json!({}));
+            if let (Some(producer), Some(obj)) = (&self.producer, payload.as_object_mut()) {
+                obj.entry("producer").or_insert_with(|| serde_json::json!(producer));
+            }
 
             let timestamp = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

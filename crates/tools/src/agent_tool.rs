@@ -43,6 +43,9 @@ pub struct ActiveAgent {
     pub soul: Option<String>,
     /// Per-agent rules: behavior constraints and guardrails.
     pub rules: Option<String>,
+    /// The seat's own reading of its layers (industry, franchise, company),
+    /// written in its update run; rendered above the cache boundary.
+    pub context_section: Option<String>,
 }
 
 /// Registry of all currently active agents. Multiple agents run concurrently.
@@ -388,6 +391,7 @@ impl PersonaTool {
                     degraded: None,
                     soul: None,
                     rules: None,
+                    context_section: None,
                 };
                 self.agent_registry
                     .write()
@@ -847,6 +851,7 @@ impl PersonaTool {
             degraded: None,
             soul: None,
             rules: None,
+            context_section: None,
         };
         self.agent_registry.write().await.insert(id.clone(), active);
         result.push_str("\nAgent activated and visible in sidebar.");
@@ -3336,6 +3341,7 @@ mod tests {
                 degraded: None,
                 soul: None,
                 rules: None,
+                context_section: None,
             });
             // Agent with no config — should remain non-degraded
             reg.insert(
@@ -3349,6 +3355,7 @@ mod tests {
                     degraded: None,
                     soul: None,
                     rules: None,
+                    context_section: None,
                 },
             );
         }
@@ -3409,6 +3416,7 @@ mod tests {
                     degraded: None,
                     soul: None,
                     rules: None,
+                    context_section: None,
                 },
             );
         }

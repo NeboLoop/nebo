@@ -8,7 +8,9 @@ mod queries;
 
 pub use pool::create_pool;
 pub use queries::agent_slug;
+pub use queries::{Assignment, NewAssignment};
 pub use queries::cron_ref;
+pub use queries::{OperationCounters, COMPANY_COUNTER_KEY};
 pub use queries::{
     EngineEffect, EngineEvent, EngineRun, EngineWait, Enqueued, NewEvent, NewRun, NewWait,
     EVENT_LEASE_SECS, EVENT_MAX_ATTEMPTS,

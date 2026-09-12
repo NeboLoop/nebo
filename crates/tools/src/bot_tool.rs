@@ -281,6 +281,22 @@ fn continuation_hint(task_id: &str) -> String {
 }
 
 impl AgentTool {
+    /// An employee by id, exact name, or case-insensitive name.
+    fn find_agent(&self, who: &str) -> Option<db::models::Agent> {
+        if let Ok(Some(a)) = self.store.get_agent(who) {
+            return Some(a);
+        }
+        if let Ok(Some(a)) = self.store.get_agent_by_name(who) {
+            return Some(a);
+        }
+        let want = who.trim().to_lowercase();
+        self.store
+            .list_agents(500, 0)
+            .unwrap_or_default()
+            .into_iter()
+            .find(|a| a.name.trim().to_lowercase() == want)
+    }
+
     pub fn new(store: Arc<Store>, orchestrator: OrchestratorHandle) -> Self {
         Self {
             store,
@@ -389,7 +405,8 @@ impl AgentTool {
             "list" | "clear" if has("namespace") => "memory",
             "status" if !has("task_id") => "",
             "spawn" | "spawn_parallel" | "orchestrate" | "status" | "cancel" | "send"
-            | "create" | "update" | "delete" | "get" | "list" | "clear" => "task",
+            | "create" | "update" | "delete" | "get" | "list" | "clear" | "assign"
+            | "assignments" => "task",
             "research" | "deep_research" | "submit_findings" => "research",
             "open_billing" => "profile",
             "history" | "query" => "session",
@@ -1367,6 +1384,101 @@ impl AgentTool {
                 {
                     Ok(_) => ToolResult::ok(format!("Task {} updated to {}", task_id, status)),
                     Err(e) => ToolResult::error(format!("Failed to update task: {}", e)),
+                }
+            }
+            "assign" => {
+                let to = input["to"].as_str().map(str::trim).unwrap_or("");
+                let subject = input["subject"].as_str().map(str::trim).unwrap_or("");
+                if to.is_empty() || subject.is_empty() {
+                    return ToolResult::error(errors::missing_param(
+                        "assign",
+                        "to, subject",
+                        "agent(resource: \"task\", action: \"assign\", to: \"Bookkeeper\", subject: \"Close the September books\", done_means: \"Reports posted and reconciled\")",
+                    ));
+                }
+                let assignee = match self.find_agent(to) {
+                    Some(a) => a,
+                    None => {
+                        return ToolResult::error(format!(
+                            "No employee named \"{to}\". Use the employee's exact name from the roster."
+                        ))
+                    }
+                };
+                let assigner_id = {
+                    let id = types::keyparser::extract_agent_id(&ctx.session_key);
+                    if id.is_empty() { "main".to_string() } else { id }
+                };
+                if assignee.id == assigner_id {
+                    return ToolResult::error(
+                        "That is you. An assignment is work for another employee; do your own work directly.",
+                    );
+                }
+                let assigner_name = self
+                    .store
+                    .get_agent(&assigner_id)
+                    .ok()
+                    .flatten()
+                    .map(|a| a.name)
+                    .unwrap_or_else(|| "the owner".to_string());
+                let done_means = input["done_means"].as_str().map(str::trim).unwrap_or("");
+                let due = input["due"].as_str().map(str::trim).filter(|d| !d.is_empty());
+                let req = crate::assignments::AssignmentRequest {
+                    assigner_agent_id: assigner_id,
+                    assigner_name,
+                    assigner_session_key: ctx.session_key.clone(),
+                    parent_run_id: ctx.run_id.clone(),
+                    assignee_agent_id: assignee.id.clone(),
+                    subject: subject.to_string(),
+                    done_means: done_means.to_string(),
+                    due: due.map(String::from),
+                };
+                let Some(opener) = crate::assignments::assignment_opener() else {
+                    return ToolResult::error(
+                        "Assignments are not ready: the server has not installed the opener yet. Try again in a moment.",
+                    );
+                };
+                match opener.open(&req) {
+                    Ok(id) => ToolResult::ok(format!(
+                        "Assigned to {} as their own work (assignment {}). You will hear assignment.done, assignment.blocked, or assignment.failed when it closes; until then it is theirs — do not do it yourself.",
+                        assignee.name, id
+                    )),
+                    Err(e) => ToolResult::error(format!("Failed to assign: {e}")),
+                }
+            }
+            "assignments" => {
+                let me = {
+                    let id = types::keyparser::extract_agent_id(&ctx.session_key);
+                    if id.is_empty() { "main".to_string() } else { id }
+                };
+                let all = input["all"].as_bool().unwrap_or(false);
+                match self.store.list_assignments_for_agent(&me, !all) {
+                    Ok(list) if list.is_empty() => ToolResult::ok("No assignments."),
+                    Ok(list) => {
+                        let name_of = |id: &str| -> String {
+                            self.store.get_agent(id).ok().flatten().map(|a| a.name).unwrap_or_else(|| id.to_string())
+                        };
+                        let lines: Vec<String> = list
+                            .iter()
+                            .map(|a| {
+                                let dir = if a.assignee_agent_id == me {
+                                    format!("from {}", name_of(&a.assigner_agent_id))
+                                } else {
+                                    format!("to {}", name_of(&a.assignee_agent_id))
+                                };
+                                format!(
+                                    "{} [{}] {} ({}){}{}",
+                                    a.id,
+                                    a.state,
+                                    a.subject,
+                                    dir,
+                                    a.due.as_deref().map(|d| format!(", due {d}")).unwrap_or_default(),
+                                    a.outcome.as_deref().filter(|_| a.state != "open").map(|o| format!(" → {o}")).unwrap_or_default()
+                                )
+                            })
+                            .collect();
+                        ToolResult::ok(format!("{} assignment(s):\n{}", list.len(), lines.join("\n")))
+                    }
+                    Err(e) => ToolResult::error(format!("Failed to list assignments: {e}")),
                 }
             }
             "list" => {
@@ -2382,7 +2494,9 @@ impl DynTool for AgentTool {
          Work tracking (only for work spanning MANY tool calls in several distinct stages; never for a small job you can finish in a handful of calls, a single request, or a quick fix — every create/update is a paid call):\n\
          - agent(resource: \"task\", action: \"create\", subject: \"Test shell tool\") — Create a trackable step\n\
          - agent(resource: \"task\", action: \"update\", task_id: \"1\", status: \"completed\") — Mark done\n\
-         - agent(resource: \"task\", action: \"list\") — See all tasks and sub-agents\n\n\
+         - agent(resource: \"task\", action: \"list\") — See all tasks and sub-agents\n\
+         - agent(resource: \"task\", action: \"assign\", to: \"Bookkeeper\", subject: \"Close the September books\", done_means: \"P&L and balance sheet posted, reconciled to the bank\", due: \"2026-10-05\") — Hand work to a coworker as THEIR OWN work (not a sub-agent of yours). They work it as a case; you are told assignment.done / blocked / failed when it closes. Use this to delegate real work to a named employee; spawn is for anonymous helpers\n\
+         - agent(resource: \"task\", action: \"assignments\") — Your open assignments, given and received (all: true includes closed)\n\n\
          Memory (3-tier persistence):\n\
          - agent(resource: \"memory\", action: \"store\", key: \"user/name\", value: \"Alice\", layer: \"tacit\") — Store a fact\n\
          - agent(resource: \"memory\", action: \"recall\", key: \"user/name\") — Recall a specific fact\n\

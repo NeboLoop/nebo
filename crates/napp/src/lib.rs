@@ -4,6 +4,7 @@ pub mod child_guard;
 pub mod hooks;
 pub mod manifest;
 pub mod napp;
+pub mod pack;
 pub mod plugin;
 pub mod plugin_runtime;
 pub mod reader;
@@ -18,6 +19,10 @@ pub mod version;
 pub use agent_loader::{AgentFsEvent, AgentLoader, AgentSource, LoadedAgent};
 pub use hooks::{HookCaller, HookDispatcher, HookType, register_plugin_hooks};
 pub use manifest::{Manifest, ManifestSignature, QualifiedName};
+pub use pack::{
+    Pack, PackEntry, PackError, PackLaw, PackLayer, PackQuestion, PackRule, PackStandard,
+    load_pack, scan_packs, watch_packs,
+};
 pub use registry::{Registry, RegistryConfig};
 pub use runtime::{Process, Runtime};
 pub use plugin_runtime::PluginRuntime;

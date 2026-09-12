@@ -1322,6 +1322,13 @@ export function markRead(id: string, req: Record<string, unknown> = {}) {
 }
 
 /**
+ * @description "Install org"
+ */
+export function installOrg(req: Record<string, unknown> = {}) {
+	return webapi.post<components.InstallOrgResponse>(`/api/v1/org/install`, req)
+}
+
+/**
  * @description "Nebo a i phone answer"
  */
 export function neboAIPhoneAnswer(req: Record<string, unknown> = {}) {

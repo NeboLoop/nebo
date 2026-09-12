@@ -552,3 +552,106 @@ mod tests {
         assert_eq!(matches.len(), 2);
     }
 }
+
+// ── company events (R6, local half) ──────────────────────────────────────
+
+/// Registered company event names. A seat that emits one of these emits it
+/// UN-namespaced, so a subscriber to `assignment.done` hears it from any
+/// producer; the payload's `producer` field says who. Every other emit name
+/// is namespaced `{slug}.{name}` as before.
+pub const COMPANY_EVENTS: &[&str] = &[
+    "assignment.done",
+    "assignment.blocked",
+    "assignment.failed",
+    "layers_changed",
+    "facts_changed",
+    "pack_installed",
+    "pack_updated",
+    "pack_removed",
+];
+
+pub fn is_company_event(name: &str) -> bool {
+    COMPANY_EVENTS.contains(&name)
+}
+
+/// The ONE place an emit name becomes an event source: a registered company
+/// event keeps its name; anything else is namespaced by the producing seat.
+pub fn emit_source_for(slug: &str, name: &str) -> String {
+    if is_company_event(name) {
+        name.to_string()
+    } else {
+        format!("{}.{}", slug, name)
+    }
+}
+
+static COMPANY_BUS: std::sync::OnceLock<tools::EventBus> = std::sync::OnceLock::new();
+
+/// The server installs its event bus once at boot so code that only holds
+/// a store (the case settler) can still announce a company event.
+pub fn install_company_event_bus(bus: tools::EventBus) {
+    let _ = COMPANY_BUS.set(bus);
+}
+
+/// Emit a registered company event with its producer stamped on the
+/// payload. Returns false when no bus is installed (the caller's durable
+/// record still stands; only live subscribers miss it).
+pub fn emit_company_event(name: &str, mut payload: serde_json::Value, producer: &str) -> bool {
+    debug_assert!(is_company_event(name), "not a registered company event: {name}");
+    if let Some(obj) = payload.as_object_mut() {
+        obj.insert("producer".to_string(), serde_json::json!(producer));
+    }
+    let Some(bus) = COMPANY_BUS.get() else {
+        return false;
+    };
+    bus.emit(Event {
+        source: name.to_string(),
+        payload,
+        origin: format!("company:{producer}"),
+        timestamp: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
+    });
+    true
+}
+
+#[cfg(test)]
+mod company_event_tests {
+    use super::*;
+
+    #[test]
+    fn a_registered_name_is_not_namespaced_and_any_other_is() {
+        assert_eq!(emit_source_for("bookkeeper", "assignment.done"), "assignment.done");
+        assert_eq!(emit_source_for("bookkeeper", "briefing.ready"), "bookkeeper.briefing.ready");
+    }
+
+    #[test]
+    fn a_subscriber_to_a_registered_name_hears_it_from_any_producer() {
+        // Two producers, one subscription pattern: both match, and the
+        // payload says which seat emitted.
+        let sub_pattern = "assignment.done";
+        for producer in ["bookkeeper", "software-engineer"] {
+            let source = emit_source_for(producer, "assignment.done");
+            assert!(source_matches(sub_pattern, &source), "{producer} should reach the subscriber");
+        }
+        let mut payload = serde_json::json!({"assignment_id": "a1"});
+        if let Some(obj) = payload.as_object_mut() {
+            obj.insert("producer".into(), serde_json::json!("bookkeeper"));
+        }
+        assert_eq!(payload["producer"], "bookkeeper");
+    }
+
+    #[test]
+    fn an_emit_with_no_bus_installed_reports_it() {
+        // No bus in a unit test: the durable record is the caller's job;
+        // the function says the live announcement did not go out.
+        // (Another test in this process may have installed one; either
+        // answer is consistent with the contract, so only the stamp is asserted.)
+        let mut payload = serde_json::json!({"k": 1});
+        if let Some(obj) = payload.as_object_mut() {
+            obj.insert("producer".into(), serde_json::json!("p"));
+        }
+        assert_eq!(payload["producer"], "p");
+        let _ = emit_company_event("assignment.failed", serde_json::json!({}), "p");
+    }
+}

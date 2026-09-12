@@ -45,6 +45,13 @@ pub fn data_dir() -> Result<PathBuf, NeboError> {
     Ok(base.join(name))
 }
 
+/// Industry, franchise, and company packs installed on this Nebo:
+/// `<data_dir>/packs/<slug>/` with `INDUSTRY.md`, `FRANCHISE.md`, or
+/// `COMPANY.md` and the typed folders beside it.
+pub fn packs_dir() -> Result<PathBuf, NeboError> {
+    Ok(data_dir()?.join("packs"))
+}
+
 /// Returns the old platform-specific data directory path (pre-v5).
 /// Used by the migration to find data to move.
 pub fn legacy_data_dir() -> Option<PathBuf> {

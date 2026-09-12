@@ -1516,6 +1516,7 @@ async fn create_blank_agent(
         degraded: None,
                     soul: agent.soul.clone(),
                     rules: agent.rules.clone(),
+                    context_section: agent.context_section.clone(),
     };
     state
         .agent_registry
@@ -1995,6 +1996,7 @@ pub async fn apply_agent_update(
                     degraded: None,
                     soul: updated.soul.clone(),
                     rules: updated.rules.clone(),
+                    context_section: updated.context_section.clone(),
                 };
                 state
                     .agent_registry
@@ -2478,6 +2480,7 @@ pub async fn activate_agent(
         degraded: None,
                     soul: agent.soul.clone(),
                     rules: agent.rules.clone(),
+                    context_section: agent.context_section.clone(),
     };
 
     state
@@ -2809,6 +2812,7 @@ pub async fn duplicate_agent(
         degraded: None,
         soul: source.soul.clone(),
         rules: source.rules.clone(),
+        context_section: source.context_section.clone(),
     };
     state
         .agent_registry
@@ -4246,12 +4250,17 @@ pub async fn get_agent_operations(
                 "operation": op,
                 "capability": op.split('.').next().unwrap_or(""),
                 "critical": tools::interface_catalog::is_critical(op),
-                "override": policy.operations.get(&suffix).map(|a| a.as_str()),
+                "override": policy.operations.get(&suffix).map(|r| r.access.as_str()),
+                "locked": policy.operations.get(&suffix).map(|r| r.locked).unwrap_or(false),
+                "bounds": policy.operations.get(&suffix).and_then(|r| r.bounds.clone()),
                 // The Controls view shows the policy as configured — the
                 // trusted-origin resolution. Untrusted origins (inbound
                 // email/DM, apps, skills, MCP, callers) additionally floor
                 // gated Always to Approval at run time (WS2).
-                "effective": policy.decide(op, tools::Origin::User).as_str(),
+                "effective": policy
+                    .decide(op, tools::Origin::User, &tools::policy::OperationParams::default(), None, None, true)
+                    .access
+                    .as_str(),
             })
         })
         .collect();

@@ -41,6 +41,10 @@ pub struct PromptContext {
     pub agent_soul: Option<String>,
     /// Per-agent rules: behavior constraints and guardrails.
     pub agent_rules: Option<String>,
+    /// The seat's own reading of its industry, franchise, and company layers,
+    /// written in its update run. Resident above the cache boundary; nothing
+    /// about the layers is fetched at work time.
+    pub context_section: Option<String>,
     /// Focused context for agent-required plugins (descriptions + skill names).
     pub agent_plugin_context: String,
     /// Agent self-awareness: workflows, skills, and capabilities the agent knows about itself.
@@ -749,6 +753,14 @@ pub fn build_static(pctx: &PromptContext) -> String {
     if let Some(ref agent_md) = pctx.active_agent {
         if !agent_md.is_empty() {
             parts.push(format!("## Your Persona\n\n{}", agent_md));
+        }
+    }
+    if let Some(ref section) = pctx.context_section {
+        if !section.trim().is_empty() {
+            parts.push(format!(
+                "## What you know about this company and its trade\n\nYou wrote this yourself from the company's industry and company layers. It is in force. Work by it without looking anything up.\n\n{}",
+                section.trim()
+            ));
         }
     }
 

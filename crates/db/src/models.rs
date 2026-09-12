@@ -729,6 +729,10 @@ pub struct Agent {
     /// a locked name (owner wins, same contract as memory.context_isolated).
     #[serde(default)]
     pub name_locked: i64,
+    /// The seat's own reading of its layers, written in its update run.
+    pub context_section: Option<String>,
+    /// JSON: what the section was written against and the run's status.
+    pub context_stamp: Option<String>,
 }
 
 fn default_input_values() -> String {

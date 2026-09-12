@@ -142,6 +142,9 @@ pub struct AppState {
     pub plugin_store: Arc<napp::plugin::PluginStore>,
     /// Agent filesystem loader — scans nebo/agents/ and user/agents/ for content
     pub agent_loader: Arc<napp::AgentLoader>,
+    /// The packs on disk, keyed `layer:slug`, as last seen: the previous set
+    /// the pack watcher diffs against when raising `layers_changed`.
+    pub packs: Arc<tokio::sync::RwLock<std::collections::HashMap<String, napp::Pack>>>,
     /// User presence tracker — per-session focused/unfocused/away state
     pub presence: Arc<agent::PresenceTracker>,
     /// True while the management tunnel to the hub is up — the switchboard

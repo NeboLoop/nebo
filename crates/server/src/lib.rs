@@ -25,6 +25,7 @@ pub mod run_display;
 pub mod run_registry;
 mod scheduler;
 pub mod wake;
+pub mod layers_update;
 mod spa;
 mod state;
 pub mod workflow_manager;
@@ -1610,6 +1611,12 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // Create event bus and dispatcher for workflow-to-workflow events
     let (event_bus, event_rx) = tools::EventBus::new();
     let event_dispatcher = Arc::new(workflow::events::EventDispatcher::new());
+    // Company events (R6) go out on this bus under their bare registered
+    // names; assignments (R5) open cases through the workflow crate.
+    workflow::events::install_company_event_bus(event_bus.clone());
+    tools::assignments::install_assignment_opener(Arc::new(
+        workflow::cases::CaseAssignmentOpener { store: store.clone() },
+    ));
 
     // Register EmitTool so it appears in tools list and is available to all origins
     tool_registry
@@ -1904,6 +1911,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
                         degraded: None,
                         soul: agent.soul.clone(),
                         rules: agent.rules.clone(),
+                        context_section: agent.context_section.clone(),
                     },
                 );
             }
@@ -2009,6 +2017,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         janus_usage: Arc::new(tokio::sync::RwLock::new(None)),
         plugin_store,
         agent_loader,
+        packs: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
         presence: Arc::new(agent::PresenceTracker::new()),
         tunnel_online: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         proactive_inbox: Arc::new(agent::ProactiveInbox::new()),
@@ -2022,6 +2031,33 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         channel_engagement: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         store_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
     };
+
+    // Packs on disk (R8, R15): load the previous set without raising, give
+    // seats that have never read them their first read, then watch for
+    // changes and raise `layers_changed` per pack that differs.
+    match config::packs_dir() {
+        Ok(dir) => {
+            let _ = std::fs::create_dir_all(&dir);
+            let current = napp::scan_packs(&dir);
+            {
+                let mut packs = state.packs.write().await;
+                for p in current {
+                    packs.insert(format!("{}:{}", p.layer.as_str(), p.slug), p);
+                }
+                layers_update::first_read_for_unstamped_seats(&state, &packs);
+            }
+            let watch_state = state.clone();
+            let handle = tokio::runtime::Handle::current();
+            let _detached = napp::watch_packs(dir, move |packs| {
+                let st = watch_state.clone();
+                handle.spawn(async move {
+                    let mut previous = st.packs.write().await;
+                    layers_update::diff_and_raise(&st, &mut previous, packs);
+                });
+            });
+        }
+        Err(e) => warn!(error = %e, "packs directory unavailable; layers disabled"),
+    }
 
     // Pump task-completion wake notifications into the ONE delivery rail.
     {
@@ -2861,6 +2897,11 @@ async fn handle_agent_fs_events(
                                 &agent_id,
                                 &loaded.source_path.to_string_lossy(),
                             );
+                            // A seat hired after the packs exist reads them now (R15).
+                            {
+                                let packs = state.packs.read().await.clone();
+                                layers_update::first_read_for_unstamped_seats(&state, &packs);
+                            }
                             // Implicit reconcile cascade for an agent newly discovered
                             // on disk — gated by `auto_install_deps` (default OFF).
                             if !loaded.frontmatter.is_empty()
@@ -2944,6 +2985,7 @@ async fn handle_agent_fs_events(
                                 degraded: None,
                                 soul: db.soul.clone(),
                                 rules: db.rules.clone(),
+                                context_section: db.context_section.clone(),
                             },
                         );
                         state.agent_workers.start_agent(&final_id, &db.name, None).await;

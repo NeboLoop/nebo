@@ -1,4 +1,5 @@
 mod a2ui_surfaces;
+mod assignments;
 mod advisors;
 mod agent_profile;
 mod agents;
@@ -10,6 +11,7 @@ mod auth_profiles;
 mod chats;
 mod comm_seen;
 mod commander;
+mod company_policy;
 mod cron_jobs;
 mod embeddings;
 mod engine;
@@ -35,7 +37,9 @@ mod workflows;
 mod teams;
 
 pub use agents::agent_slug;
+pub use assignments::{Assignment, NewAssignment};
 pub use cron_jobs::cron_ref;
+pub use company_policy::{OperationCounters, COMPANY_COUNTER_KEY};
 pub use engine::{
     EngineEffect, EngineEvent, EngineRun, EngineWait, Enqueued, NewEvent, NewRun, NewWait,
     EVENT_LEASE_SECS, EVENT_MAX_ATTEMPTS,

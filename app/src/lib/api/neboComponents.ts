@@ -71,6 +71,8 @@ export interface Agent {
 	department?: string
 	voice?: string
 	nameLocked?: number
+	contextSection?: string
+	contextStamp?: string
 }
 
 export interface AgentProfile {
@@ -176,6 +178,22 @@ export interface ArtifactUpdateSettings {
 	plugins: boolean
 	connectors?: boolean
 	checkIntervalHours: number
+}
+
+export interface Assignment {
+	id: string
+	assignerAgentId: string
+	assignerSessionKey: string
+	assigneeAgentId: string
+	subject: string
+	doneMeans: string
+	due?: string
+	state: string
+	outcome?: string
+	parentRunId?: string
+	caseKey: string
+	createdAt: number
+	closedAt?: number
 }
 
 export interface AuthProfile {
@@ -1527,6 +1545,13 @@ export interface HttpProxyResponse {
 	body: unknown
 }
 
+export interface InstallOrgResponse {
+	employees: unknown
+	packs: unknown
+	teams: unknown
+	teamsSkipped: unknown
+}
+
 export interface InstallStoreProductResponse {
 	success: boolean
 	agentId: string
@@ -1686,7 +1711,7 @@ export interface ListTaskHistoryResponse {
 }
 
 export interface ListTasksResponse {
-	tasks: CronJob[]
+	tasks: unknown[]
 	total: number
 }
 
@@ -1817,6 +1842,10 @@ export interface PickFilesResponse {
 
 export interface PickFolderResponse {
 	path: string
+}
+
+export interface PluginProxyResponse {
+	error: string
 }
 
 export interface PluginSetupRunResponse {

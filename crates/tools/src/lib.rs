@@ -2,7 +2,10 @@
 
 pub mod a2ui_tool;
 pub mod agent_tool;
+pub mod authority_tool;
+pub mod context_tool;
 pub mod app_tool;
+pub mod assignments;
 pub mod bot_tool;
 pub mod capabilities;
 pub mod checkpoint;

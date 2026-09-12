@@ -613,24 +613,353 @@ impl OperationAccess {
     }
 }
 
+/// One rule for one gated operation. Three sources feed ONE policy: the seat
+/// package (its ceiling, locked), a pack's laws (Blocked, locked), and the
+/// General Manager's standing grants (Always with bounds). The wire form is
+/// backward compatible: a bare `"always" | "approval" | "blocked"` string is
+/// a rule with no bounds, no source, not locked.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct OperationRule {
+    pub access: OperationAccess,
+    /// Present only on a standing grant: the bounds inside which the seat
+    /// runs unattended. An `Always` without bounds is the owner's own
+    /// unbounded setting from the Controls page.
+    pub bounds: Option<Bounds>,
+    /// Who wrote the rule: `seat`, `pack:<slug>`, `law:<name>`,
+    /// `general_manager`, `owner`.
+    pub source: Option<String>,
+    /// What a grant or widening was granted on (record ids, a sentence).
+    pub evidence: Option<String>,
+    pub granted_at: Option<i64>,
+    /// A locked rule is a ceiling or a law: the settings page and the
+    /// General Manager cannot change it.
+    pub locked: bool,
+}
+
+impl OperationRule {
+    pub fn access(access: OperationAccess) -> Self {
+        Self { access, ..Default::default() }
+    }
+
+    pub fn is_law(&self) -> bool {
+        self.access == OperationAccess::Blocked
+            && self.source.as_deref().is_some_and(|s| s.starts_with("law:"))
+    }
+
+    pub fn is_standing_grant(&self) -> bool {
+        self.access == OperationAccess::Always && self.bounds.is_some()
+    }
+
+    fn is_bare(&self) -> bool {
+        self.bounds.is_none()
+            && self.source.is_none()
+            && self.evidence.is_none()
+            && self.granted_at.is_none()
+            && !self.locked
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+struct OperationRuleObject {
+    access: OperationAccess,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    bounds: Option<Bounds>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    evidence: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    granted_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    locked: bool,
+}
+
+impl Serialize for OperationRule {
+    fn serialize<S: serde::Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
+        if self.is_bare() {
+            self.access.serialize(ser)
+        } else {
+            OperationRuleObject {
+                access: self.access,
+                bounds: self.bounds.clone(),
+                source: self.source.clone(),
+                evidence: self.evidence.clone(),
+                granted_at: self.granted_at,
+                locked: self.locked,
+            }
+            .serialize(ser)
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for OperationRule {
+    fn deserialize<D: serde::Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Wire {
+            Bare(OperationAccess),
+            Object(OperationRuleObject),
+        }
+        Ok(match Wire::deserialize(de)? {
+            Wire::Bare(access) => OperationRule::access(access),
+            Wire::Object(o) => OperationRule {
+                access: o.access,
+                bounds: o.bounds,
+                source: o.source,
+                evidence: o.evidence,
+                granted_at: o.granted_at,
+                locked: o.locked,
+            },
+        })
+    }
+}
+
+/// The bounds of a standing grant, or of the constitution per operation.
+/// Every field is optional; an absent field is no bound on that axis.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct Bounds {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_amount_cents: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub per_day_cents: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub per_day_count: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub per_counterparty_day_cents: Option<i64>,
+    /// `ledger_id`: the counterparty must carry a source-system id. A grant
+    /// with a class applies only to counterparties that satisfy it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub counterparty_class: Option<String>,
+    /// The grant runs unattended only when the policy projection was refreshed
+    /// within this window; otherwise it asks, never silently blocks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub freshness_secs: Option<i64>,
+}
+
+impl Bounds {
+    /// `self` fits inside `outer`: every bound `outer` sets, `self` sets too
+    /// and no looser. Used to refuse a grant beyond the constitution.
+    pub fn fits_inside(&self, outer: &Bounds) -> Result<(), PolicyError> {
+        fn check(name: &str, inner: Option<i64>, outer: Option<i64>) -> Result<(), PolicyError> {
+            match (outer, inner) {
+                (None, _) => Ok(()),
+                (Some(o), Some(i)) if i <= o => Ok(()),
+                (Some(o), Some(i)) => Err(PolicyError::BeyondCompany(format!(
+                    "{name} {i} exceeds the company's {o}"
+                ))),
+                (Some(o), None) => Err(PolicyError::BeyondCompany(format!(
+                    "{name} is unbounded; the company bounds it at {o}"
+                ))),
+            }
+        }
+        check("max_amount_cents", self.max_amount_cents, outer.max_amount_cents)?;
+        check("per_day_cents", self.per_day_cents, outer.per_day_cents)?;
+        check("per_day_count", self.per_day_count, outer.per_day_count)?;
+        check(
+            "per_counterparty_day_cents",
+            self.per_counterparty_day_cents,
+            outer.per_counterparty_day_cents,
+        )?;
+        Ok(())
+    }
+}
+
+/// What the operation being decided carries, so a grant's bounds can be
+/// checked against it. Callers that know nothing pass the default.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct OperationParams {
+    pub amount_cents: Option<i64>,
+    pub counterparty: Option<String>,
+    pub counterparty_has_source_id: bool,
+    pub irreversible: bool,
+}
+
+/// Today's tallies for one rule key (and the company as a whole), read by
+/// the caller from `operation_counters` before deciding.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct DayCounters {
+    pub count: i64,
+    pub cents: i64,
+    pub counterparty_cents: i64,
+    pub company_count: i64,
+    pub company_cents: i64,
+}
+
+/// Which layer decided.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PolicyLayer {
+    Law,
+    Ceiling,
+    StandingAuthority,
+    Company,
+    Industry,
+    Default,
+    OriginFloor,
+}
+
+impl PolicyLayer {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            PolicyLayer::Law => "law",
+            PolicyLayer::Ceiling => "ceiling",
+            PolicyLayer::StandingAuthority => "standing_authority",
+            PolicyLayer::Company => "company",
+            PolicyLayer::Industry => "industry",
+            PolicyLayer::Default => "default",
+            PolicyLayer::OriginFloor => "origin_floor",
+        }
+    }
+}
+
+/// The decision, with the layer that made it, so the record can say why.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Decision {
+    pub access: OperationAccess,
+    pub layer: PolicyLayer,
+    /// The operation suffix whose rule decided, when a rule did.
+    pub rule_key: Option<String>,
+    pub reason: String,
+}
+
+impl Decision {
+    fn new(access: OperationAccess, layer: PolicyLayer, rule_key: Option<&str>, reason: impl Into<String>) -> Self {
+        Self { access, layer, rule_key: rule_key.map(str::to_string), reason: reason.into() }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum PolicyError {
+    #[error("the rule for {0} is locked (a ceiling or a law) and cannot be changed")]
+    Locked(String),
+    #[error("{0} is reserved to the owner")]
+    Reserved(String),
+    #[error("beyond the company's policy: {0}")]
+    BeyondCompany(String),
+    #[error("the company blocks {0}")]
+    CompanyBlocked(String),
+}
+
+/// The company level of the ONE policy: the constitution. The owner writes
+/// it once; every seat rule must fit inside it; the General Manager cannot
+/// grant past it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompanyPolicy {
+    #[serde(default)]
+    pub default: OperationAccess,
+    /// Per-operation bounds and blocks at company level, keyed by suffix.
+    #[serde(default)]
+    pub operations: HashMap<String, OperationRule>,
+    /// Operation suffixes reserved to the owner's own hand: never Always,
+    /// never grantable.
+    #[serde(default)]
+    pub reserved: Vec<String>,
+    /// Company-wide per-day totals across every seat and operation.
+    #[serde(default)]
+    pub daily: Bounds,
+    #[serde(default)]
+    pub purpose: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pages: Option<serde_json::Value>,
+}
+
+impl Default for CompanyPolicy {
+    fn default() -> Self {
+        Self {
+            default: OperationAccess::Approval,
+            operations: HashMap::new(),
+            reserved: Vec::new(),
+            daily: Bounds::default(),
+            purpose: String::new(),
+            pages: None,
+        }
+    }
+}
+
+impl CompanyPolicy {
+    pub fn from_json(json: Option<&str>) -> Self {
+        json.and_then(|s| serde_json::from_str(s).ok()).unwrap_or_default()
+    }
+
+    pub fn to_json(&self) -> String {
+        serde_json::to_string(self).unwrap_or_else(|_| "{}".to_string())
+    }
+
+    pub fn is_reserved(&self, suffix: &str) -> bool {
+        self.reserved.iter().any(|r| r == suffix)
+    }
+
+    /// Whether a seat rule may exist under this constitution. A grant on a
+    /// reserved or company-blocked operation is refused; a grant's bounds
+    /// must fit inside the company's per-operation and daily bounds.
+    pub fn permits(&self, operation: &str, rule: &OperationRule) -> Result<(), PolicyError> {
+        let suffix = crate::plugin_tool::port_suffix(operation);
+        if rule.access != OperationAccess::Always {
+            return Ok(());
+        }
+        if self.is_reserved(&suffix) {
+            return Err(PolicyError::Reserved(suffix));
+        }
+        let company_rule = self.operations.get(&suffix);
+        if company_rule.is_some_and(|r| r.access == OperationAccess::Blocked) {
+            return Err(PolicyError::CompanyBlocked(suffix));
+        }
+        let inner = rule.bounds.clone().unwrap_or_default();
+        if let Some(outer) = company_rule.and_then(|r| r.bounds.as_ref()) {
+            inner.fits_inside(outer)?;
+        }
+        // The company's daily totals cap every grant at run time through the
+        // counters, so a grant need not restate them; but a grant may not
+        // state a larger figure than the company's, and a single operation
+        // may never exceed what the company allows in a day.
+        fn no_larger(name: &str, inner: Option<i64>, outer: Option<i64>) -> Result<(), PolicyError> {
+            match (inner, outer) {
+                (Some(i), Some(o)) if i > o => Err(PolicyError::BeyondCompany(format!(
+                    "{name} {i} exceeds the company's {o}"
+                ))),
+                _ => Ok(()),
+            }
+        }
+        no_larger("per_day_cents", inner.per_day_cents, self.daily.per_day_cents)?;
+        no_larger("per_day_count", inner.per_day_count, self.daily.per_day_count)?;
+        no_larger(
+            "per_counterparty_day_cents",
+            inner.per_counterparty_day_cents,
+            self.daily.per_counterparty_day_cents,
+        )?;
+        let single_op_cap = self.daily.max_amount_cents.or(self.daily.per_day_cents);
+        match (inner.max_amount_cents, single_op_cap) {
+            (None, Some(o)) => Err(PolicyError::BeyondCompany(format!(
+                "max_amount_cents is unbounded; the company allows at most {o} per operation"
+            ))),
+            (Some(i), Some(o)) if i > o => Err(PolicyError::BeyondCompany(format!(
+                "max_amount_cents {i} exceeds the company's {o}"
+            ))),
+            _ => Ok(()),
+        }
+    }
+}
+
 /// Per-employee approval policy over gated interface operations: an employee-wide
-/// default plus per-operation overrides, persisted as JSON on the agent's
+/// default plus per-operation rules, persisted as JSON on the agent's
 /// `entity_config.operation_policy`. `decide()` is the single decision function
 /// both the chat gate and the workflow checkpoint consult (Rule 8.1).
 ///
-/// Precedence: explicit per-operation override > employee default (with critical
-/// protection) > (non-gated ops are never gated). A "critical" op (money movement
-/// / contract formation, per `interface_catalog`) is never auto-loosened to
-/// `Always` by the employee-wide default — the customer must set it explicitly.
+/// Precedence, highest first: a law's Blocked; the seat's locked ceiling
+/// (Approval means authority required); a standing grant inside its bounds
+/// and the constitution; the company's reserved list; the employee default
+/// with critical protection; the origin floor. A "critical" op (money
+/// movement / contract formation, per `interface_catalog`) is never
+/// auto-loosened to `Always` by the employee-wide default.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OperationPolicy {
-    /// Employee-wide default for gated operations without an explicit override.
+    /// Employee-wide default for gated operations without an explicit rule.
     #[serde(default)]
     pub default: OperationAccess,
-    /// Per-operation overrides, keyed by operation suffix
+    /// Per-operation rules, keyed by operation suffix
     /// (`capability.resource.action`). Beat the default.
     #[serde(default)]
-    pub operations: HashMap<String, OperationAccess>,
+    pub operations: HashMap<String, OperationRule>,
 }
 
 impl Default for OperationPolicy {
@@ -654,34 +983,155 @@ impl OperationPolicy {
         serde_json::to_string(self).unwrap_or_else(|_| "{}".to_string())
     }
 
+    /// The ONE way a rule changes: refused when the existing rule is locked
+    /// (a ceiling or a law). The settings page, the General Manager's tool,
+    /// and the pack loader all go through here.
+    pub fn apply_edit(&mut self, operation: &str, rule: OperationRule) -> Result<(), PolicyError> {
+        let suffix = crate::plugin_tool::port_suffix(operation);
+        if self.operations.get(&suffix).is_some_and(|r| r.locked) {
+            return Err(PolicyError::Locked(suffix));
+        }
+        self.operations.insert(suffix, rule);
+        Ok(())
+    }
+
+    /// Remove an unlocked rule; a locked one stays.
+    pub fn remove_rule(&mut self, operation: &str) -> Result<(), PolicyError> {
+        let suffix = crate::plugin_tool::port_suffix(operation);
+        if self.operations.get(&suffix).is_some_and(|r| r.locked) {
+            return Err(PolicyError::Locked(suffix));
+        }
+        self.operations.remove(&suffix);
+        Ok(())
+    }
+
     /// The access decision for one operation (bare op or fully-qualified port),
-    /// from the origin the request arrived over.
-    /// Non-gated operations are never gated (`Always`). For a gated op: an explicit
-    /// per-operation override wins; otherwise the employee default applies, except
-    /// a `critical` op is never auto-loosened to `Always` by the default.
-    ///
-    /// Then the origin floor (WS2): a gated op resolved to `Always` — by
-    /// default OR by explicit override — is floored to `Approval` when the
-    /// origin is untrusted. Untrusted input driving an outbound/irreversible
-    /// op always gets an owner decision; `Blocked` stays blocked.
-    pub fn decide(&self, operation: &str, origin: Origin) -> OperationAccess {
+    /// from the origin the request arrived over, with what the operation
+    /// carries, the constitution, today's counters, and whether the policy
+    /// projection is fresh. Non-gated operations are never gated (`Always`).
+    pub fn decide(
+        &self,
+        operation: &str,
+        origin: Origin,
+        params: &OperationParams,
+        company: Option<&CompanyPolicy>,
+        counters: Option<&DayCounters>,
+        fresh: bool,
+    ) -> Decision {
         if !crate::interface_catalog::is_gated(operation) {
-            return OperationAccess::Always;
+            return Decision::new(OperationAccess::Always, PolicyLayer::Default, None, "not gated");
         }
         let suffix = crate::plugin_tool::port_suffix(operation);
-        let resolved = if let Some(access) = self.operations.get(&suffix) {
-            *access
-        } else if self.default == OperationAccess::Always
-            && crate::interface_catalog::is_critical(operation)
-        {
-            OperationAccess::Approval
-        } else {
-            self.default
-        };
-        if resolved == OperationAccess::Always && !origin.is_trusted() {
-            return OperationAccess::Approval;
+        let rule = self.operations.get(&suffix);
+        let company_rule = company.and_then(|c| c.operations.get(&suffix));
+
+        // A law ends it, wherever it is written.
+        if let Some(r) = rule.filter(|r| r.is_law()) {
+            return Decision::new(
+                OperationAccess::Blocked,
+                PolicyLayer::Law,
+                Some(&suffix),
+                r.source.clone().unwrap_or_default(),
+            );
         }
-        resolved
+        if let Some(r) = company_rule.filter(|r| r.is_law()) {
+            return Decision::new(
+                OperationAccess::Blocked,
+                PolicyLayer::Law,
+                Some(&suffix),
+                r.source.clone().unwrap_or_default(),
+            );
+        }
+
+        let mut d = match rule {
+            Some(r) if r.access == OperationAccess::Blocked => Decision::new(
+                OperationAccess::Blocked,
+                if r.locked { PolicyLayer::Ceiling } else { PolicyLayer::Default },
+                Some(&suffix),
+                "blocked for this employee",
+            ),
+            Some(r) if r.is_standing_grant() => {
+                match grant_admits(r, params, counters, company, fresh) {
+                    Ok(()) => Decision::new(
+                        OperationAccess::Always,
+                        PolicyLayer::StandingAuthority,
+                        Some(&suffix),
+                        format!(
+                            "approved by standing authority granted by {}{}",
+                            r.source.as_deref().unwrap_or("the owner"),
+                            r.evidence
+                                .as_deref()
+                                .map(|e| format!(" on: {e}"))
+                                .unwrap_or_default()
+                        ),
+                    ),
+                    Err(reason) => Decision::new(
+                        OperationAccess::Approval,
+                        PolicyLayer::StandingAuthority,
+                        Some(&suffix),
+                        reason,
+                    ),
+                }
+            }
+            Some(r) if r.access == OperationAccess::Always => Decision::new(
+                OperationAccess::Always,
+                PolicyLayer::Default,
+                Some(&suffix),
+                "always, by this employee's setting",
+            ),
+            Some(r) => Decision::new(
+                OperationAccess::Approval,
+                if r.locked { PolicyLayer::Ceiling } else { PolicyLayer::Default },
+                Some(&suffix),
+                if r.locked { "authority required: this seat's ceiling" } else { "asks, by this employee's setting" },
+            ),
+            None => {
+                if self.default == OperationAccess::Always
+                    && crate::interface_catalog::is_critical(operation)
+                {
+                    Decision::new(
+                        OperationAccess::Approval,
+                        PolicyLayer::Default,
+                        None,
+                        "critical operation: the employee-wide default never loosens it",
+                    )
+                } else {
+                    Decision::new(self.default, PolicyLayer::Default, None, "employee default")
+                }
+            }
+        };
+
+        // Company level: a block or a reservation holds over any seat rule.
+        if d.access != OperationAccess::Blocked {
+            if let Some(cr) = company_rule.filter(|r| r.access == OperationAccess::Blocked) {
+                return Decision::new(
+                    OperationAccess::Blocked,
+                    PolicyLayer::Company,
+                    Some(&suffix),
+                    cr.source.clone().unwrap_or_else(|| "blocked by the company".to_string()),
+                );
+            }
+        }
+        if d.access == OperationAccess::Always && company.is_some_and(|c| c.is_reserved(&suffix)) {
+            d = Decision::new(
+                OperationAccess::Approval,
+                PolicyLayer::Company,
+                Some(&suffix),
+                "reserved to the owner",
+            );
+        }
+
+        // Origin floor (WS2): a gated op resolved to `Always` is floored to
+        // `Approval` when the origin is untrusted; `Blocked` stays blocked.
+        if d.access == OperationAccess::Always && !origin.is_trusted() {
+            return Decision::new(
+                OperationAccess::Approval,
+                PolicyLayer::OriginFloor,
+                d.rule_key.as_deref(),
+                "untrusted origin",
+            );
+        }
+        d
     }
 
     /// The complete gate decision including the no-policy case (WS2-R3), so
@@ -695,15 +1145,79 @@ impl OperationPolicy {
         policy: Option<&OperationPolicy>,
         operation: &str,
         origin: Origin,
-    ) -> Option<OperationAccess> {
+        params: &OperationParams,
+        company: Option<&CompanyPolicy>,
+        counters: Option<&DayCounters>,
+        fresh: bool,
+    ) -> Option<Decision> {
         match policy {
-            Some(p) => Some(p.decide(operation, origin)),
-            None if !origin.is_trusted() => {
-                Some(OperationPolicy::default().decide(operation, origin))
-            }
+            Some(p) => Some(p.decide(operation, origin, params, company, counters, fresh)),
+            None if !origin.is_trusted() => Some(OperationPolicy::default().decide(
+                operation, origin, params, company, counters, fresh,
+            )),
             None => None,
         }
     }
+}
+
+/// Whether a standing grant admits this operation right now. `Err` names the
+/// bound that stopped it, which becomes the Approval's reason.
+fn grant_admits(
+    rule: &OperationRule,
+    params: &OperationParams,
+    counters: Option<&DayCounters>,
+    company: Option<&CompanyPolicy>,
+    fresh: bool,
+) -> Result<(), String> {
+    let b = rule.bounds.as_ref().ok_or("no bounds")?;
+    if b.freshness_secs.is_some() && !fresh {
+        return Err("the grant requires a fresh policy projection and it could not be proven current".into());
+    }
+    if let Some(class) = b.counterparty_class.as_deref() {
+        if class == "ledger_id" && !params.counterparty_has_source_id {
+            return Err("the counterparty has no source-system id; the grant covers only known counterparties".into());
+        }
+    }
+    let amount = params.amount_cents.unwrap_or(0);
+    if let Some(max) = b.max_amount_cents {
+        if amount > max {
+            return Err(format!("amount {amount} exceeds the grant's {max} per operation"));
+        }
+    }
+    let c = counters.cloned().unwrap_or_default();
+    if let Some(n) = b.per_day_count {
+        if c.count + 1 > n {
+            return Err(format!("the grant's {n} operations per day are used"));
+        }
+    }
+    if let Some(day) = b.per_day_cents {
+        if c.cents + amount > day {
+            return Err(format!("the grant's {day} per day would be exceeded"));
+        }
+    }
+    if let Some(cp) = b.per_counterparty_day_cents {
+        if c.counterparty_cents + amount > cp {
+            return Err(format!("the grant's {cp} per counterparty per day would be exceeded"));
+        }
+    }
+    if let Some(co) = company {
+        if let Some(n) = co.daily.per_day_count {
+            if c.company_count + 1 > n {
+                return Err(format!("the company's {n} operations per day are used"));
+            }
+        }
+        if let Some(day) = co.daily.per_day_cents {
+            if c.company_cents + amount > day {
+                return Err(format!("the company's {day} per day would be exceeded"));
+            }
+        }
+        if let Some(max) = co.daily.max_amount_cents {
+            if amount > max {
+                return Err(format!("amount {amount} exceeds the company's {max} per operation"));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Default per-origin tool restrictions.
@@ -790,6 +1304,10 @@ mod tests {
         assert!(p.allowlist.contains("git status"));
     }
 
+    fn d(p: &OperationPolicy, op: &str) -> OperationAccess {
+        p.decide(op, Origin::User, &OperationParams::default(), None, None, true).access
+    }
+
     /// A read-only AI employee: KB search still runs, KB writes are refused.
     /// This is the whole read/write split for the knowledge base plugin — it has
     /// no capability toggle of its own (plugin tools are exempt from
@@ -799,82 +1317,235 @@ mod tests {
         let mut read_only = OperationPolicy::default();
         read_only
             .operations
-            .insert("kb.article.create".to_string(), OperationAccess::Blocked);
+            .insert("kb.article.create".to_string(), OperationRule::access(OperationAccess::Blocked));
         read_only
             .operations
-            .insert("kb.article.update".to_string(), OperationAccess::Blocked);
+            .insert("kb.article.update".to_string(), OperationRule::access(OperationAccess::Blocked));
 
-        // Reads are ungated, so they resolve to Always no matter what is stored.
-        assert_eq!(
-            read_only.decide("ballast.kb.article.search", Origin::User),
-            OperationAccess::Always
-        );
-        // Writes are refused, and the block survives the provenance prefix a seat
-        // adds to the port.
-        assert_eq!(
-            read_only.decide("ballast.kb.article.create", Origin::User),
-            OperationAccess::Blocked
-        );
-        assert_eq!(
-            read_only.decide("research.analyst.kb.article.update", Origin::User),
-            OperationAccess::Blocked
-        );
+        assert_eq!(d(&read_only, "ballast.kb.article.search"), OperationAccess::Always);
+        assert_eq!(d(&read_only, "ballast.kb.article.create"), OperationAccess::Blocked);
+        assert_eq!(d(&read_only, "research.analyst.kb.article.update"), OperationAccess::Blocked);
 
-        // A full-autonomy employee runs KB writes without prompting — a KB write
-        // is not `critical`, so nothing forces it back to Approval.
         let autonomous = OperationPolicy {
             default: OperationAccess::Always,
             operations: HashMap::new(),
         };
-        assert_eq!(
-            autonomous.decide("ballast.kb.article.create", Origin::User),
-            OperationAccess::Always
-        );
+        assert_eq!(d(&autonomous, "ballast.kb.article.create"), OperationAccess::Always);
 
-        // The default employee is asked before a KB write, never before a read.
         let default = OperationPolicy::default();
-        assert_eq!(
-            default.decide("ballast.kb.article.create", Origin::User),
-            OperationAccess::Approval
-        );
-        assert_eq!(
-            default.decide("ballast.kb.article.search", Origin::User),
-            OperationAccess::Always
-        );
+        assert_eq!(d(&default, "ballast.kb.article.create"), OperationAccess::Approval);
+        assert_eq!(d(&default, "ballast.kb.article.search"), OperationAccess::Always);
     }
 
     #[test]
     fn operation_policy_decide_precedence_and_critical() {
-        // Non-gated ops are never gated.
         let p = OperationPolicy::default();
-        assert_eq!(p.decide("ledger.vendor.find", Origin::User), OperationAccess::Always);
-        // Default (Approval) applies to a gated op with no override.
-        assert_eq!(p.decide("mail.message.send", Origin::User), OperationAccess::Approval);
+        assert_eq!(d(&p, "ledger.vendor.find"), OperationAccess::Always);
+        assert_eq!(d(&p, "mail.message.send"), OperationAccess::Approval);
 
-        // Employee default = Always loosens ordinary gated ops...
         let mut auto = OperationPolicy {
             default: OperationAccess::Always,
             operations: HashMap::new(),
         };
-        assert_eq!(auto.decide("mail.message.send", Origin::User), OperationAccess::Always);
-        // ...but NOT critical (money/contract) ops — those stay Approval.
-        assert_eq!(
-            auto.decide("ledger.billpayment.create", Origin::User),
-            OperationAccess::Approval
-        );
-        // An explicit per-op override wins, even opting a critical op into Always.
+        assert_eq!(d(&auto, "mail.message.send"), OperationAccess::Always);
+        assert_eq!(d(&auto, "ledger.billpayment.create"), OperationAccess::Approval);
         auto.operations.insert(
             "ledger.billpayment.create".to_string(),
-            OperationAccess::Always,
+            OperationRule::access(OperationAccess::Always),
         );
         assert_eq!(
-            auto.decide("accounting.ap-specialist.ledger.billpayment.create", Origin::User),
+            d(&auto, "accounting.ap-specialist.ledger.billpayment.create"),
             OperationAccess::Always
         );
-        // Blocked override on a gated op.
         auto.operations
-            .insert("esign.document.send".to_string(), OperationAccess::Blocked);
-        assert_eq!(auto.decide("esign.document.send", Origin::User), OperationAccess::Blocked);
+            .insert("esign.document.send".to_string(), OperationRule::access(OperationAccess::Blocked));
+        assert_eq!(d(&auto, "esign.document.send"), OperationAccess::Blocked);
+    }
+
+    #[test]
+    fn bare_string_rules_still_parse_and_round_trip_as_strings() {
+        let p = OperationPolicy::from_json(Some(
+            r#"{"default":"approval","operations":{"mail.message.send":"always","esign.document.send":"blocked"}}"#,
+        ));
+        assert_eq!(p.operations["mail.message.send"], OperationRule::access(OperationAccess::Always));
+        assert_eq!(p.operations["esign.document.send"].access, OperationAccess::Blocked);
+        let json = p.to_json();
+        assert!(json.contains(r#""mail.message.send":"always""#), "{json}");
+        // An object form parses too, and survives a round trip as an object.
+        let q = OperationPolicy::from_json(Some(
+            r#"{"operations":{"ledger.billpayment.create":{"access":"always","bounds":{"max_amount_cents":250000},"source":"general_manager","locked":false}}}"#,
+        ));
+        let r = &q.operations["ledger.billpayment.create"];
+        assert!(r.is_standing_grant());
+        assert_eq!(r.bounds.as_ref().unwrap().max_amount_cents, Some(250000));
+        assert!(q.to_json().contains(r#""max_amount_cents":250000"#));
+    }
+
+    fn grant(max: i64, per_day_count: i64) -> OperationRule {
+        OperationRule {
+            access: OperationAccess::Always,
+            bounds: Some(Bounds {
+                max_amount_cents: Some(max),
+                per_day_count: Some(per_day_count),
+                ..Default::default()
+            }),
+            source: Some("general_manager".into()),
+            evidence: Some("thirty clean days".into()),
+            granted_at: Some(1),
+            locked: false,
+        }
+    }
+
+    fn constitution() -> CompanyPolicy {
+        CompanyPolicy {
+            daily: Bounds {
+                per_day_cents: Some(1_000_000),
+                per_day_count: Some(20),
+                per_counterparty_day_cents: Some(500_000),
+                max_amount_cents: Some(250_000),
+                ..Default::default()
+            },
+            reserved: vec!["esign.document.send".into()],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_law_beats_a_grant() {
+        let mut p = OperationPolicy::default();
+        p.operations.insert("ledger.billpayment.create".into(), grant(250_000, 20));
+        let mut co = constitution();
+        co.operations.insert(
+            "ledger.billpayment.create".into(),
+            OperationRule {
+                access: OperationAccess::Blocked,
+                source: Some("law:no-unattended-payments".into()),
+                locked: true,
+                ..Default::default()
+            },
+        );
+        let dec = p.decide(
+            "ledger.billpayment.create",
+            Origin::User,
+            &OperationParams { amount_cents: Some(100), ..Default::default() },
+            Some(&co),
+            None,
+            true,
+        );
+        assert_eq!(dec.access, OperationAccess::Blocked);
+        assert_eq!(dec.layer, PolicyLayer::Law);
+        assert!(dec.reason.contains("no-unattended-payments"));
+    }
+
+    #[test]
+    fn a_grant_inside_bounds_is_always_and_over_the_day_count_asks_naming_the_bound() {
+        let mut p = OperationPolicy::default();
+        p.operations.insert("ledger.billpayment.create".into(), grant(250_000, 20));
+        let co = constitution();
+        let params = OperationParams { amount_cents: Some(40_000), ..Default::default() };
+        let inside = p.decide(
+            "ledger.billpayment.create",
+            Origin::User,
+            &params,
+            Some(&co),
+            Some(&DayCounters { count: 19, cents: 760_000, ..Default::default() }),
+            true,
+        );
+        assert_eq!(inside.access, OperationAccess::Always);
+        assert_eq!(inside.layer, PolicyLayer::StandingAuthority);
+        assert!(inside.reason.contains("general_manager"));
+
+        let over = p.decide(
+            "ledger.billpayment.create",
+            Origin::User,
+            &params,
+            Some(&co),
+            Some(&DayCounters { count: 20, cents: 800_000, ..Default::default() }),
+            true,
+        );
+        assert_eq!(over.access, OperationAccess::Approval);
+        assert_eq!(over.layer, PolicyLayer::StandingAuthority);
+        assert!(over.reason.contains("20 operations per day"), "{}", over.reason);
+
+        // Over the single-operation amount, too.
+        let big = p.decide(
+            "ledger.billpayment.create",
+            Origin::User,
+            &OperationParams { amount_cents: Some(300_000), ..Default::default() },
+            Some(&co),
+            None,
+            true,
+        );
+        assert_eq!(big.access, OperationAccess::Approval);
+        assert!(big.reason.contains("exceeds the grant"), "{}", big.reason);
+    }
+
+    #[test]
+    fn a_grant_beyond_the_company_is_refused_by_permits() {
+        let co = constitution();
+        assert!(co.permits("ledger.billpayment.create", &grant(250_000, 20)).is_ok());
+        let err = co.permits("ledger.billpayment.create", &grant(1_200_000, 20)).unwrap_err();
+        assert!(matches!(err, PolicyError::BeyondCompany(_)), "{err}");
+        let err = co.permits("ledger.billpayment.create", &grant(250_000, 21)).unwrap_err();
+        assert!(matches!(err, PolicyError::BeyondCompany(_)), "{err}");
+        // An unbounded Always cannot be granted where the company bounds the day.
+        let err = co
+            .permits("ledger.billpayment.create", &OperationRule::access(OperationAccess::Always))
+            .unwrap_err();
+        assert!(matches!(err, PolicyError::BeyondCompany(_)), "{err}");
+        // Approval and Blocked always fit.
+        assert!(co.permits("ledger.billpayment.create", &OperationRule::access(OperationAccess::Approval)).is_ok());
+    }
+
+    #[test]
+    fn a_locked_rule_cannot_be_edited() {
+        let mut p = OperationPolicy::default();
+        p.operations.insert(
+            "ledger.billpayment.create".into(),
+            OperationRule { access: OperationAccess::Approval, locked: true, source: Some("seat".into()), ..Default::default() },
+        );
+        let err = p.apply_edit("ledger.billpayment.create", grant(1, 1)).unwrap_err();
+        assert!(matches!(err, PolicyError::Locked(_)));
+        assert!(p.remove_rule("ledger.billpayment.create").is_err());
+        // The locked ceiling means authority required, decided as the ceiling.
+        let dec = p.decide("ledger.billpayment.create", Origin::User, &OperationParams::default(), None, None, true);
+        assert_eq!(dec.access, OperationAccess::Approval);
+        assert_eq!(dec.layer, PolicyLayer::Ceiling);
+        // An unlocked rule edits fine.
+        assert!(p.apply_edit("mail.message.send", grant(1, 1)).is_ok());
+    }
+
+    #[test]
+    fn a_reserved_operation_is_never_always_regardless_of_grant() {
+        let mut p = OperationPolicy::default();
+        p.operations.insert("esign.document.send".into(), grant(250_000, 20));
+        let co = constitution();
+        assert!(matches!(
+            co.permits("esign.document.send", &grant(1, 1)).unwrap_err(),
+            PolicyError::Reserved(_)
+        ));
+        let dec = p.decide("esign.document.send", Origin::User, &OperationParams::default(), Some(&co), None, true);
+        assert_eq!(dec.access, OperationAccess::Approval);
+        assert_eq!(dec.layer, PolicyLayer::Company);
+        assert!(dec.reason.contains("reserved"));
+    }
+
+    #[test]
+    fn a_stale_projection_on_a_freshness_grant_asks_never_blocks() {
+        let mut p = OperationPolicy::default();
+        let mut g = grant(250_000, 20);
+        g.bounds.as_mut().unwrap().freshness_secs = Some(86_400);
+        p.operations.insert("ledger.billpayment.create".into(), g);
+        let params = OperationParams { amount_cents: Some(100), ..Default::default() };
+        let stale = p.decide("ledger.billpayment.create", Origin::User, &params, None, None, false);
+        assert_eq!(stale.access, OperationAccess::Approval);
+        assert!(stale.reason.contains("fresh"));
+        let fresh = p.decide("ledger.billpayment.create", Origin::User, &params, None, None, true);
+        assert_eq!(fresh.access, OperationAccess::Always);
+        // An untrusted origin floors a live grant to Approval.
+        let comm = p.decide("ledger.billpayment.create", Origin::Comm, &params, None, None, true);
+        assert_eq!(comm.access, OperationAccess::Approval);
+        assert_eq!(comm.layer, PolicyLayer::OriginFloor);
     }
 
     #[test]
@@ -1164,30 +1835,38 @@ mod tests {
             Origin::Mcp,
             Origin::Caller,
         ];
+        let dec = |p: &OperationPolicy, op: &str, o: Origin| {
+            p.decide(op, o, &OperationParams::default(), None, None, true).access
+        };
 
         // default Always (full autonomy) + per-op Always on the critical op
         let auto = OperationPolicy {
             default: Always,
-            operations: HashMap::from([("ledger.billpayment.create".to_string(), Always)]),
+            operations: HashMap::from([(
+                "ledger.billpayment.create".to_string(),
+                OperationRule::access(Always),
+            )]),
         };
         for o in trusted {
-            assert_eq!(auto.decide(GATED, o), Always, "trusted keeps Always: {o:?}");
-            assert_eq!(auto.decide(CRITICAL, o), Always, "explicit critical override holds: {o:?}");
-            assert_eq!(auto.decide(READ, o), Always);
+            assert_eq!(dec(&auto, GATED, o), Always, "trusted keeps Always: {o:?}");
+            assert_eq!(dec(&auto, CRITICAL, o), Always, "explicit critical override holds: {o:?}");
+            assert_eq!(dec(&auto, READ, o), Always);
         }
         for o in untrusted {
-            assert_eq!(auto.decide(GATED, o), Approval, "untrusted floors default-Always: {o:?}");
-            assert_eq!(auto.decide(CRITICAL, o), Approval, "untrusted floors per-op Always: {o:?}");
-            assert_eq!(auto.decide(READ, o), Always, "non-gated is never gated: {o:?}");
+            assert_eq!(dec(&auto, GATED, o), Approval, "untrusted floors default-Always: {o:?}");
+            assert_eq!(dec(&auto, CRITICAL, o), Approval, "untrusted floors per-op Always: {o:?}");
+            assert_eq!(dec(&auto, READ, o), Always, "non-gated is never gated: {o:?}");
         }
 
         // default Approval: unchanged everywhere; Blocked never loosens.
         let mut default = OperationPolicy::default();
-        default.operations.insert("mail.message.send".to_string(), Blocked);
+        default
+            .operations
+            .insert("mail.message.send".to_string(), OperationRule::access(Blocked));
         for o in trusted.iter().chain(untrusted.iter()) {
-            assert_eq!(default.decide(GATED, *o), Blocked, "Blocked holds: {o:?}");
-            assert_eq!(default.decide(CRITICAL, *o), Approval);
-            assert_eq!(default.decide(READ, *o), Always);
+            assert_eq!(dec(&default, GATED, *o), Blocked, "Blocked holds: {o:?}");
+            assert_eq!(dec(&default, CRITICAL, *o), Approval);
+            assert_eq!(dec(&default, READ, *o), Always);
         }
     }
 
@@ -1197,26 +1876,14 @@ mod tests {
     #[test]
     fn origin_matrix_no_policy_path() {
         use OperationAccess::*;
-        assert_eq!(
-            OperationPolicy::decide_optional(None, "mail.message.send", Origin::User),
-            None,
-            "trusted + no policy: gate does not apply"
-        );
-        assert_eq!(
-            OperationPolicy::decide_optional(None, "mail.message.send", Origin::Comm),
-            Some(Approval),
-            "untrusted + no policy: gated op needs the owner"
-        );
-        assert_eq!(
-            OperationPolicy::decide_optional(None, "ledger.vendor.find", Origin::Comm),
-            Some(Always),
-            "untrusted + no policy: reads still flow"
-        );
+        let none = OperationParams::default();
+        let opt = |p: Option<&OperationPolicy>, op: &str, o: Origin| {
+            OperationPolicy::decide_optional(p, op, o, &none, None, None, true).map(|d| d.access)
+        };
+        assert_eq!(opt(None, "mail.message.send", Origin::User), None, "trusted + no policy: gate does not apply");
+        assert_eq!(opt(None, "mail.message.send", Origin::Comm), Some(Approval), "untrusted + no policy: gated op needs the owner");
+        assert_eq!(opt(None, "ledger.vendor.find", Origin::Comm), Some(Always), "untrusted + no policy: reads still flow");
         let auto = OperationPolicy { default: Always, operations: HashMap::new() };
-        assert_eq!(
-            OperationPolicy::decide_optional(Some(&auto), "mail.message.send", Origin::Comm),
-            Some(Approval),
-            "with a policy, decide_optional defers to decide (floored)"
-        );
+        assert_eq!(opt(Some(&auto), "mail.message.send", Origin::Comm), Some(Approval), "with a policy, decide_optional defers to decide (floored)");
     }
 }
