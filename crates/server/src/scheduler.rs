@@ -163,6 +163,11 @@ async fn execute_agent(state: &AppState, job: &CronJob) -> (bool, String, Option
         })
         .await;
 
+    // A cron run carried no operation policy, and a trusted origin with none
+    // passes every gated operation unattended. Resolve it the way chat does.
+    let (_, _, _, _, _, operation_policy) = crate::chat_dispatch::entity_run_params(
+        crate::entity_config::resolve_for_chat(&state.store, "main", "main").as_ref(),
+    );
     let req = RunRequest {
         session_key: session_key.clone(),
         prompt: prompt.to_string(),
@@ -170,6 +175,7 @@ async fn execute_agent(state: &AppState, job: &CronJob) -> (bool, String, Option
         origin: Origin::System,
         channel: "cron".to_string(),
         cancel_token,
+        operation_policy,
         ..Default::default()
     };
 
@@ -268,6 +274,11 @@ async fn execute_agent_channel_bound(
         .await;
 
     let system = job.instructions.as_deref().unwrap_or("").to_string();
+    // The employee's own operation policy governs its cron runs exactly as it
+    // governs its chat turns; without it a scheduled run was ungated.
+    let (_, _, _, _, _, operation_policy) = crate::chat_dispatch::entity_run_params(
+        crate::entity_config::resolve_for_chat(&state.store, "agent", agent_id).as_ref(),
+    );
     let req = RunRequest {
         session_key: session_key.clone(),
         prompt: prompt.to_string(),
@@ -277,6 +288,7 @@ async fn execute_agent_channel_bound(
         agent_id: agent_id.to_string(),
         cancel_token,
         channel_ctx: Some(channel_ctx.clone()),
+        operation_policy,
         ..Default::default()
     };
 
