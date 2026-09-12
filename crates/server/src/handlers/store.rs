@@ -253,8 +253,21 @@ pub async fn get_store_product(
         .map_err(|e| to_error_response(NeboError::Internal(format!("get_product: {e}"))))?;
     let mut val = serde_json::to_value(resp).unwrap_or_default();
 
-    // Enrich single product with local install state
-    enrich_installed_item(&mut val, &InstalledIndex::build(&state.store));
+    // An installed product's page is the place an update is looked for, so
+    // look for it NOW rather than waiting for the periodic sweep: the check
+    // records what it finds in the same pref row the page and apply-update
+    // read, and the enrichment below picks it up.
+    let idx = InstalledIndex::build(&state.store);
+    let slug = val.get("slug").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let artifact_type = val.get("type").and_then(|v| v.as_str()).unwrap_or("skill").to_string();
+    let idx = if !slug.is_empty() && idx.contains(&slug, &artifact_type) {
+        let key = if artifact_type == "plugin" { slug.as_str() } else { id.as_str() };
+        crate::artifact_updates::check_one(&state, &artifact_type, key).await;
+        InstalledIndex::build(&state.store)
+    } else {
+        idx
+    };
+    enrich_installed_item(&mut val, &idx);
 
     Ok(Json(val))
 }

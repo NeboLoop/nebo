@@ -168,6 +168,40 @@ pub async fn check_all(state: &AppState) -> Result<(), String> {
     Ok(())
 }
 
+/// Check ONE installed artifact against the marketplace, right now, through
+/// the same per-type checkers the periodic sweep uses — so a product page
+/// can show "Update to …" the moment a newer version exists instead of
+/// waiting up to an interval for the sweep to notice. `key` is the slug for
+/// plugins and the marketplace id for everything else (what the sweep keys
+/// the pref row on, and what apply-update looks the row up by).
+pub async fn check_one(state: &AppState, artifact_type: &str, key: &str) -> Option<serde_json::Value> {
+    let api = build_api_client(state).ok()?;
+    match artifact_type {
+        "plugin" => {
+            let plugin = state
+                .store
+                .list_installed_plugins()
+                .ok()?
+                .into_iter()
+                .find(|p| p.slug == key)?;
+            check_plugin(state, &api, &plugin).await
+        }
+        "agent" => {
+            let agent = state.store.get_agent(key).ok().flatten()?;
+            check_agent(state, &api, &agent).await
+        }
+        _ => {
+            let pref = state
+                .store
+                .list_artifact_update_prefs()
+                .ok()?
+                .into_iter()
+                .find(|p| p.artifact_type == artifact_type && p.artifact_id == key)?;
+            check_by_artifact_id(state, &api, artifact_type, key, &pref.local_version).await
+        }
+    }
+}
+
 async fn check_agent(
     state: &AppState,
     api: &comm::api::NeboAIApi,

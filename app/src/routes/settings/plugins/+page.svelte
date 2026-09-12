@@ -70,9 +70,39 @@
         if (slug) {
           authStatuses[slug] = 'disconnected';
         }
+      }),
+      // An update applied (or failed) — from this page, the product page, or
+      // the Updates page: the row's version and badge come from the reload.
+      client.on('artifact_update_applied', (data: Record<string, unknown>) => {
+        const id = String(data.id ?? '');
+        if (id) updating = { ...updating, [id]: false };
+        loadPlugins();
+      }),
+      client.on('artifact_update_failed', (data: Record<string, unknown>) => {
+        const id = String(data.id ?? '');
+        if (id) updating = { ...updating, [id]: false };
       })
     );
 
+    await loadPlugins();
+  });
+
+  // Plugin ids mid-update (button → "Updating…"); cleared by the WS result.
+  let updating = $state<Record<string, boolean>>({});
+
+  async function updatePlugin(plugin: Plugin) {
+    updating = { ...updating, [plugin.id]: true };
+    try {
+      const api = await import('$lib/api/nebo');
+      // The pending-update row for a plugin is keyed by its slug — the same
+      // id the Updates page and the product page apply with.
+      await api.applyUpdate(plugin.id);
+    } catch {
+      updating = { ...updating, [plugin.id]: false };
+    }
+  }
+
+  async function loadPlugins() {
     try {
       const api = await import('$lib/api/nebo');
       const resp = await api.listPlugins();
@@ -109,7 +139,7 @@
         }
       }
     } catch {}
-  });
+  }
 
   onDestroy(() => {
     unsubscribers.forEach((fn) => fn());
@@ -295,7 +325,7 @@
               <span class="text-xs text-base-content/50 font-mono">{plugin.version}</span>
             {/if}
             {#if plugin.updateAvailable}
-              <a href="/settings/updates" class="py-0.5 px-2 rounded bg-primary/15 text-primary text-xs font-medium no-underline hover:bg-primary/25 transition-colors">{$t('agentSettings.updateTo', { values: { version: plugin.updateAvailable } })}</a>
+              <button type="button" class="py-0.5 px-2 rounded bg-primary/15 text-primary text-xs font-medium border-none cursor-pointer hover:bg-primary/25 transition-colors disabled:opacity-60 disabled:cursor-default" disabled={updating[plugin.id]} onclick={() => updatePlugin(plugin)}>{updating[plugin.id] ? $t('agentSettings.updating') : $t('agentSettings.updateTo', { values: { version: plugin.updateAvailable } })}</button>
             {/if}
           </div>
           {#if plugin.desc}
@@ -498,7 +528,7 @@
             <button class="px-3 py-1.5 rounded-md border border-base-content/10 text-xs cursor-pointer bg-transparent hover:bg-base-200 transition-colors" disabled={apiKeySaving} onclick={() => clearApiKeys(selectedPlugin!)}>{$t('settingsPlugins.clearKeys')}</button>
           {/if}
           {#if selectedPlugin.updateAvailable}
-            <a href="/marketplace/plugins/{selectedPlugin.id}" class="px-3 py-1.5 rounded-md border border-primary/30 text-xs text-primary font-medium cursor-pointer bg-transparent hover:bg-primary/5 transition-colors no-underline">{$t('settingsPlugins.upgradeTo', { values: { version: selectedPlugin.updateAvailable } })}</a>
+            <button type="button" class="px-3 py-1.5 rounded-md border border-primary/30 text-xs text-primary font-medium cursor-pointer bg-transparent hover:bg-primary/5 transition-colors disabled:opacity-60 disabled:cursor-default" disabled={updating[selectedPlugin.id]} onclick={() => selectedPlugin && updatePlugin(selectedPlugin)}>{updating[selectedPlugin.id] ? $t('agentSettings.updating') : $t('settingsPlugins.upgradeTo', { values: { version: selectedPlugin.updateAvailable } })}</button>
           {/if}
         </div>
         <div>
