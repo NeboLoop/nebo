@@ -278,9 +278,15 @@ impl AgentLoader {
                             continue;
                         }
 
-                        if last_reload.elapsed() < debounce {
-                            continue;
+                        // Coalesce a burst into ONE rescan after it settles. The
+                        // old debounce discarded events inside the window, so the
+                        // last directories of a bulk copy stayed uninstalled until
+                        // an unrelated change fired the watcher again.
+                        let since = last_reload.elapsed();
+                        if since < debounce {
+                            tokio::time::sleep(debounce - since).await;
                         }
+                        while rx.try_recv().is_ok() {}
                         last_reload = std::time::Instant::now();
 
                         debug!("agents directory changed, reloading");
