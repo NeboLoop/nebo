@@ -64,7 +64,12 @@ pub async fn install_org(
     let mut packs_copied = Vec::new();
     for layer_dir in ["industry", "franchise", "company"] {
         let src = root.join(layer_dir);
-        if !src.is_dir() {
+        // A layer folder is a pack only when it carries its marker; a
+        // company/ folder holding just the constitution is not one.
+        let has_marker = ["INDUSTRY.md", "FRANCHISE.md", "COMPANY.md"]
+            .iter()
+            .any(|m| src.join(m).is_file());
+        if !src.is_dir() || !has_marker {
             continue;
         }
         let slug = pack_slug(&src).unwrap_or_else(|| layer_dir.to_string());
