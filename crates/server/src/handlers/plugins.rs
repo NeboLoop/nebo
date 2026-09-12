@@ -1537,12 +1537,14 @@ pub async fn plugin_proxy(
     };
 
     // The plugin's own headers travel; the local hop's framing and anything
-    // that could pass as this server's identity do not.
+    // that could pass as this server's identity do not. Accept-Encoding stays
+    // behind too: an HTTP client only decompresses what it negotiated itself,
+    // so a forwarded one comes back as raw gzip bytes the plugin cannot parse.
     let mut forwarded = axum::http::HeaderMap::new();
     for (name, value) in headers.iter() {
         if matches!(
             name.as_str(),
-            "host" | "authorization" | "cookie" | "content-length" | "connection"
+            "host" | "authorization" | "cookie" | "content-length" | "connection" | "accept-encoding"
         ) {
             continue;
         }
