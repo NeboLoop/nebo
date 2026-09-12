@@ -38,6 +38,33 @@ pub(crate) fn app_tool_dir(agent: &db::models::Agent) -> Option<std::path::PathB
 }
 
 /// Extract agentJson from request body — handles both string and object values.
+/// The frontmatter a save writes back. It starts from what is on file and
+/// replaces only the keys this handler owns, so `requires`, `tools`, `scopes`,
+/// `defaults`, `inputs`, and whatever a package adds next survive a visit to
+/// the settings page. Rebuilding from a whitelist silently dropped them on
+/// every save.
+fn saved_frontmatter(
+    existing: &serde_json::Value,
+    workflows: serde_json::Value,
+    skills: serde_json::Value,
+    pricing: Option<serde_json::Value>,
+    memory: serde_json::Value,
+) -> serde_json::Value {
+    let mut out = match existing {
+        serde_json::Value::Object(_) => existing.clone(),
+        _ => serde_json::json!({}),
+    };
+    out["workflows"] = workflows;
+    out["skills"] = skills;
+    out["pricing"] = pricing.unwrap_or(serde_json::Value::Null);
+    if memory.as_object().is_some_and(|o| !o.is_empty()) {
+        out["memory"] = memory;
+    } else if let Some(o) = out.as_object_mut() {
+        o.remove("memory");
+    }
+    out
+}
+
 fn extract_agent_json_str(body: &serde_json::Value) -> Option<String> {
     let val = &body["agentJson"];
     if let Some(s) = val.as_str() {
@@ -1054,21 +1081,15 @@ pub async fn update_agent(
         memory_cfg["context_isolated"] = serde_json::json!(iso);
     }
 
-    let mut frontmatter_json = serde_json::json!({
-        "workflows": workflows,
-        "skills": fm.skills,
-        "pricing": fm.pricing.as_ref().map(|p| serde_json::json!({
-            "model": p.model,
-            "cost": p.cost,
-        })),
-    });
-    if memory_cfg.as_object().is_some_and(|o| !o.is_empty()) {
-        frontmatter_json["memory"] = memory_cfg;
-    }
-    // Inputs schema/values config likewise ride along untouched.
-    if let Some(inputs) = existing_fm.get("inputs") {
-        frontmatter_json["inputs"] = inputs.clone();
-    }
+    let frontmatter_json = saved_frontmatter(
+        &existing_fm,
+        workflows,
+        serde_json::json!(fm.skills),
+        fm.pricing
+            .as_ref()
+            .map(|p| serde_json::json!({ "model": p.model, "cost": p.cost })),
+        memory_cfg,
+    );
 
     let pricing_model = fm.pricing.as_ref().map(|p| p.model.as_str());
     let pricing_cost = fm.pricing.as_ref().map(|p| p.cost);
@@ -4586,5 +4607,52 @@ mod thread_preview_tests {
         assert!(rule.contains("m2.role != 'tool'"), "tool rows are hidden: {rule}");
         assert!(rule.contains("m2.content != ''"), "empty rows are hidden: {rule}");
         assert!(rule.contains(r#"NOT LIKE '%\"hidden\":true%'"#), "hidden rows are hidden: {rule}");
+    }
+}
+
+#[cfg(test)]
+mod frontmatter_save_tests {
+    use super::saved_frontmatter;
+
+    #[test]
+    fn a_save_keeps_the_keys_the_page_does_not_own() {
+        let on_file = serde_json::json!({
+            "workflows": {"old": {}},
+            "skills": ["a"],
+            "inputs": [{"key": "mailbox"}],
+            "requires": {"interfaces": ["mail"], "plugins": ["gmail"]},
+            "tools": ["agent", "team"],
+            "scopes": {"embed": {"tools": ["web"]}},
+            "defaults": {"timezone": "America/Denver"},
+            "memory": {"context_isolated": true}
+        });
+        let saved = saved_frontmatter(
+            &on_file,
+            serde_json::json!({"new": {}}),
+            serde_json::json!(["b"]),
+            None,
+            serde_json::json!({"context_isolated": false}),
+        );
+        assert_eq!(saved["workflows"], serde_json::json!({"new": {}}));
+        assert_eq!(saved["skills"], serde_json::json!(["b"]));
+        assert!(saved["pricing"].is_null());
+        assert_eq!(saved["memory"]["context_isolated"], serde_json::json!(false));
+        for key in ["inputs", "requires", "tools", "scopes", "defaults"] {
+            assert_eq!(saved[key], on_file[key], "{key} must survive a save");
+        }
+    }
+
+    #[test]
+    fn an_empty_memory_config_is_removed_not_written_as_an_empty_object() {
+        let on_file = serde_json::json!({"memory": {"context_isolated": true}, "requires": {}});
+        let saved = saved_frontmatter(
+            &on_file,
+            serde_json::json!({}),
+            serde_json::json!([]),
+            None,
+            serde_json::json!({}),
+        );
+        assert!(saved.get("memory").is_none());
+        assert_eq!(saved["requires"], serde_json::json!({}));
     }
 }
