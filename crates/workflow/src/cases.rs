@@ -352,7 +352,7 @@ pub fn route_recorded(store: &Store, b: &CaseBinding<'_>, subject: &str, event_i
             needs_attention(store, "", &case.id, &format!("conflict:{}:{}", case.id, b.agent_id), None, &reason, t)?;
             return Ok(Routed::Conflict { case_id: case.id, owner: case.agent_id });
         }
-        // The playbook is read fresh each turn: the case carries the
+        // The workflow is read fresh each turn: the case carries the
         // binding as it is NOW, so the turn this signal starts runs the
         // current definition, and the turn's governance record says which.
         if case.definition.as_deref() != Some(b.definition_json) {
@@ -475,7 +475,7 @@ pub fn webhook_payload(raw: Option<&str>) -> serde_json::Value {
 }
 
 /// The hub's webhook door, pure over the store: the employee's binding as
-/// its playbook has it now; a case binding whose payload names a person
+/// its workflows have it now; a case workflow whose payload names a person
 /// routes the signal to that person's case (or opens it); anything else
 /// is handed back to run as a plain webhook. Errors name what is missing.
 pub fn route_webhook(store: &Store, agent_id: &str, binding_name: &str, raw: Option<&str>, idem_key: &str, t: i64) -> Result<Webhook, NeboError> {
@@ -527,7 +527,7 @@ pub fn start_child(store: &Store, parent: &EngineRun, event: &EngineEvent) -> Re
     inputs["_case"]["event_id"] = serde_json::json!(event.id);
     let key = inputs["_case"]["key"].as_str().unwrap_or("").to_string();
     inputs["_case"]["history"] = serde_json::json!(history_lines(store, &parent.id, &key));
-    // What governs this turn, recorded with it: the playbook is read fresh
+    // What governs this turn, recorded with it: the workflow is read fresh
     // each turn on purpose, so the record says which one this turn ran
     // under and what the employee's policy was at the time.
     inputs["_case"]["governance"] = serde_json::json!({
@@ -603,7 +603,7 @@ fn history_lines(store: &Store, case_id: &str, key: &str) -> Vec<String> {
 // ── the turn contract ─────────────────────────────────────────────────────
 
 /// The turn contract. A case step ENDS with one JSON object, and nothing
-/// after it: `result` is the employee's business state (the playbook owns
+/// after it: `result` is the employee's business state (the workflow owns
 /// it; the engine only records it), `next` is the engine command.
 ///
 /// ```json

@@ -136,11 +136,11 @@ fn the_owners_answer_is_one_event_per_wait() {
 #[test]
 fn the_webhook_door_routes_people_to_their_case_and_the_rest_to_a_plain_run() {
     let w = World::new();
-    let playbook = r#"{"workflows":{
+    let workflows = r#"{"workflows":{
         "work-lead":{"trigger":{"type":"manual"},"activities":[{"id":"run","intent":"work the lead"}],"case":{"type":"lead","key":"email","default_wait":"3d"}},
         "notify":{"trigger":{"type":"manual"},"activities":[{"id":"run","intent":"post it"}],"emit":"posted"}
     }}"#;
-    w.s.create_agent("ic", None, "Intake", "", "", playbook, None, None).unwrap();
+    w.s.create_agent("ic", None, "Intake", "", "", workflows, None, None).unwrap();
     let body = r#"{"email":"hook@x.com","message":"from the website"}"#;
     let Webhook::Case(Routed::Opened { case_id }) = route_webhook(&w.s, "ic", "work-lead", Some(body), "msg-1", w.t).unwrap() else { panic!("opens a case") };
     assert!(matches!(route_webhook(&w.s, "ic", "work-lead", Some(body), "msg-1", w.t).unwrap(), Webhook::Case(Routed::Duplicate)), "the hub's redelivery");

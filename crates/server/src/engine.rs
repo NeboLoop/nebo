@@ -329,7 +329,7 @@ fn reroute_after_close(store: &Store, key_type: &str, subject: &str, event: &Eng
         // Nobody can work it: the binding is gone or no longer a case. The
         // owner decides; the message is on the books with the reason.
         let why = format!(
-            "A message arrived for a closed {} case, but the playbook binding '{}' no longer exists or no longer opens cases. Nothing was reopened and no reply was sent.",
+            "A message arrived for a closed {} case, but the workflow '{}' no longer exists or no longer opens cases. Nothing was reopened and no reply was sent.",
             key_type.strip_prefix("case:").unwrap_or(key_type),
             binding_name
         );
@@ -1061,15 +1061,15 @@ async fn time_out_turns(state: &AppState, t: i64) {
     }
 }
 
-/// The binding's definition as the employee's playbook has it NOW. A case
-/// turn runs the current playbook (design: read fresh each turn, and the
+/// The workflow's definition as the employee has it NOW. A case
+/// turn runs the current workflow (design: read fresh each turn, and the
 /// governance record says which); the snapshot on the run is the fallback
 /// when the employee or the binding is gone.
 fn current_definition(store: &Store, agent_id: &str, binding: &str) -> Option<String> {
     current_binding(store, agent_id, binding).map(|(def, _)| def)
 }
 
-/// The binding itself as the playbook has it now, with its definition —
+/// The workflow itself as the employee has it now, with its definition —
 /// for a signal that must be routed again after its case closed.
 fn current_binding(store: &Store, agent_id: &str, binding: &str) -> Option<(String, napp::agent::WorkflowBinding)> {
     let agent = store.get_agent(agent_id).ok().flatten()?;
@@ -1360,8 +1360,8 @@ mod tests {
     #[test]
     fn a_signal_that_outlives_its_case_is_routed_by_the_reopen_rules_never_dropped() {
         let s = store();
-        let playbook = r#"{"workflows":{"work-lead":{"trigger":{"type":"manual"},"activities":[{"id":"run","intent":"work the lead"}],"case":{"type":"lead","key":"email","default_wait":"3d"}}}}"#;
-        s.create_agent("ic", None, "Intake", "", "", playbook, None, None).unwrap();
+        let workflows = r#"{"workflows":{"work-lead":{"trigger":{"type":"manual"},"activities":[{"id":"run","intent":"work the lead"}],"case":{"type":"lead","key":"email","default_wait":"3d"}}}}"#;
+        s.create_agent("ic", None, "Intake", "", "", workflows, None, None).unwrap();
         let b = binding();
         let first = serde_json::json!({"email": "a@b.c", "message": "can we talk Tuesday 10am?"});
         let Routed::Opened { case_id } = signal_or_open(&s, &b, "email", "a@b.c", &first, "event", "s1", 1_000).unwrap() else { panic!("opened") };
