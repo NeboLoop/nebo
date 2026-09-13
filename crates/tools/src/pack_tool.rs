@@ -59,8 +59,13 @@ fn create_in(input: &Value, slug: &str, staging: &Path) -> Result<String, String
     let marker = match layer {
         "industry" => "INDUSTRY.md",
         "franchise" => "FRANCHISE.md",
-        "company" => "COMPANY.md",
-        other => return Err(format!("`layer` must be industry, franchise, or company, not `{other}`")),
+        // The company layer is the owner's hand. The owner writes COMPANY.md
+        // and the folders beside it directly, and the save is the assertion;
+        // no seat writes there, whatever it was asked to do.
+        "company" => {
+            return Err("the company layer is the owner's: COMPANY.md and the folders beside it are edited by the owner directly. Build an industry or franchise pack, or propose the change into the record for the owner to confirm.".into())
+        }
+        other => return Err(format!("`layer` must be industry or franchise, not `{other}`")),
     };
     let body = input.get("body").and_then(|v| v.as_str()).unwrap_or("").trim();
     if body.is_empty() {
@@ -233,6 +238,9 @@ fn remove(input: &Value) -> Result<String, String> {
     if !dest.is_dir() {
         return Err(format!("no pack `{slug}`"));
     }
+    if dest.join("COMPANY.md").is_file() {
+        return Err("that is the company layer, and it is the owner's. It is not removed from here.".into());
+    }
     std::fs::remove_dir_all(&dest).map_err(|e| e.to_string())?;
     Ok(format!("pack `{slug}` removed. Every employee will drop what came only from it."))
 }
@@ -258,7 +266,7 @@ impl DynTool for PackTool {
             "properties": {
                 "action": { "type": "string", "enum": ["create", "add", "list", "show", "remove"] },
                 "slug": { "type": "string", "description": "Pack id: lowercase, digits, hyphens. Required for create, show, remove." },
-                "layer": { "type": "string", "enum": ["industry", "franchise", "company"], "description": "create: which layer this pack is (default industry)." },
+                "layer": { "type": "string", "enum": ["industry", "franchise"], "description": "create: which layer this pack is (default industry). The company layer is the owner's own and is not written from here." },
                 "name": { "type": "string", "description": "create: display name." },
                 "version": { "type": "string", "description": "create: semver, default 0.1.0." },
                 "capabilities": { "type": "array", "items": { "type": "string" }, "description": "create: the capabilities the trade uses (mail, calendar, crm, ledger, billing, support, ...)." },

@@ -126,10 +126,22 @@ pub struct PackRule {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PackLaw {
     pub entry: PackEntry,
-    /// Operation suffixes this law blocks for every seat that can perform them.
+    /// Operation suffixes this law holds: Blocked for every seat, unless the
+    /// law is `reserved_to: owner`, in which case they are the owner's own
+    /// hand instead — reachable with the owner's approval, never grantable.
     pub ceiling: Vec<String>,
     /// `required` or `eventual` (Playbook PRD 6.4 freshness).
     pub freshness: Option<String>,
+    /// `owner` when the law reserves its operations to the owner rather than
+    /// blocking them outright. Only the company layer writes this.
+    pub reserved_to: Option<String>,
+}
+
+impl PackLaw {
+    /// The owner's own hand: `reserved_to: owner` in the law's frontmatter.
+    pub fn is_owner_reserved(&self) -> bool {
+        self.reserved_to.as_deref() == Some("owner")
+    }
 }
 
 /// A resolved value the pack supplies (`standards/` with `id` and `value`).
@@ -397,7 +409,12 @@ pub fn load_pack(dir: &Path) -> Result<Pack, PackError> {
                 .get("freshness")
                 .and_then(|v| v.as_str())
                 .map(str::to_string);
-            PackLaw { entry, ceiling, freshness }
+            let reserved_to = entry
+                .frontmatter
+                .get("reserved_to")
+                .and_then(|v| v.as_str())
+                .map(|s| s.trim().to_ascii_lowercase());
+            PackLaw { entry, ceiling, freshness, reserved_to }
         })
         .collect();
 
@@ -533,10 +550,12 @@ impl Pack {
             for l in &self.laws {
                 out.push_str(&format!("\n### {}\n\n{}\n", l.entry.title, l.entry.body.trim()));
                 if !l.ceiling.is_empty() {
-                    out.push_str(&format!(
-                        "\nBlocked for every seat, not the seat's to decide: {}\n",
-                        l.ceiling.join(", ")
-                    ));
+                    let holding = if l.is_owner_reserved() {
+                        "The owner's own hand, never yours and never granted to you"
+                    } else {
+                        "Blocked for every seat, not the seat's to decide"
+                    };
+                    out.push_str(&format!("\n{}: {}\n", holding, l.ceiling.join(", ")));
                 }
             }
         }
@@ -623,15 +642,28 @@ impl Pack {
         out
     }
 
-    /// Every operation a law blocks, with the law that blocks it.
+    /// Every operation a law blocks, with the law that blocks it. A law
+    /// reserved to the owner is not here: it is not blocked, it is the
+    /// owner's, and `reserved_ops` carries it.
     pub fn ceilings(&self) -> Vec<(String, String)> {
         let mut out = Vec::new();
-        for l in &self.laws {
+        for l in self.laws.iter().filter(|l| !l.is_owner_reserved()) {
             for op in &l.ceiling {
                 out.push((op.clone(), l.entry.title.clone()));
             }
         }
         out
+    }
+
+    /// Every operation a law reserves to the owner's own hand. No standing
+    /// grant may cover these and the General Manager may never grant them;
+    /// they reach the owner as a decision.
+    pub fn reserved_ops(&self) -> Vec<String> {
+        self.laws
+            .iter()
+            .filter(|l| l.is_owner_reserved())
+            .flat_map(|l| l.ceiling.iter().cloned())
+            .collect()
     }
 
     /// Values this pack supplies by semantic id: standards' values and
@@ -796,6 +828,27 @@ mod tests {
         assert_eq!(p.reference[0].title, "The long guide");
         assert_eq!(p.stamp(), "industry:sample-trade@0.1.0");
         assert_eq!(p.content_hash.len(), 64);
+    }
+
+    #[test]
+    fn a_law_reserved_to_the_owner_is_not_blocked_for_everyone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let d = sample_pack(tmp.path(), "split");
+        write(
+            &d,
+            "laws/equity.md",
+            "---\nlaw: Equity\nceiling: [\"equity.issue\"]\nreserved_to: owner\n---\n\nThe owner's.\n",
+        );
+        let p = load_pack(&d).unwrap();
+        // The owner's own hand: reserved, never Blocked, or the owner could
+        // not approve it either.
+        assert_eq!(p.reserved_ops(), vec!["equity.issue".to_string()]);
+        let ceilings = p.ceilings();
+        let blocked: Vec<&str> = ceilings.iter().map(|(op, _)| op.as_str()).collect();
+        assert!(!blocked.contains(&"equity.issue"), "reserved is not blocked: {blocked:?}");
+        // The sample pack's own law has no `reserved_to`, so it still blocks.
+        assert!(blocked.contains(&"ledger.payment.create"), "{blocked:?}");
+        assert!(p.prompt_text().contains("The owner's own hand"));
     }
 
     #[test]

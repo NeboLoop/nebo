@@ -253,7 +253,95 @@ pub fn diff_and_raise(
 /// pack's standards and question defaults become the seat's input values
 /// where it declares the same semantic id and has no value yet. Company
 /// packs win over franchise over industry.
+/// The six standards the runtime itself reads, and the only ids reserved to
+/// it. A company names everything else in its own namespace; these six are
+/// the same in every company or Nebo could not read a stranger's company at
+/// all. They are the company's unattended bounds: what the whole workforce
+/// may spend in a day, per counterparty, in one operation, how many
+/// irreversible operations a day, how fresh a money grant must be, and when
+/// the owner is paged.
+mod company_ids {
+    pub const PER_DAY_CENTS: &str = "company.unattended.spend_per_day_cents";
+    pub const PER_COUNTERPARTY_DAY_CENTS: &str =
+        "company.unattended.spend_per_counterparty_day_cents";
+    pub const MAX_AMOUNT_CENTS: &str = "company.unattended.spend_per_operation_cents";
+    pub const IRREVERSIBLE_PER_DAY: &str = "company.unattended.irreversible_per_day";
+    pub const FRESHNESS_SECS: &str = "company.unattended.grant_freshness_secs";
+    pub const PAGES: &str = "company.owner.pages";
+}
+
+/// The company level of the one policy, read from the company layer itself.
+///
+/// There is no artifact above the company: the owner's purpose is
+/// `COMPANY.md`'s own, the unattended bounds are standards under the six
+/// reserved ids, and the operations reserved to the owner's own hand are the
+/// company's laws marked `reserved_to: owner`. A franchise or industry layer
+/// cannot set any of this; only the company pack is read here.
+fn company_policy_from(packs: &HashMap<String, napp::Pack>) -> Option<tools::policy::CompanyPolicy> {
+    let pack = packs
+        .values()
+        .find(|p| matches!(p.layer, napp::pack::PackLayer::Company))?;
+    let values = pack.defaults();
+    let num = |id: &str| -> Option<i64> {
+        values.get(id).and_then(|v| match v {
+            serde_json::Value::Number(n) => n.as_i64(),
+            serde_json::Value::String(s) => s.replace([',', '$', '_'], "").trim().parse().ok(),
+            _ => None,
+        })
+    };
+    let purpose = pack
+        .frontmatter
+        .get("purpose")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().trim_matches('"').to_string())
+        .or_else(|| {
+            pack.body
+                .lines()
+                .map(str::trim)
+                .find(|l| !l.is_empty() && !l.starts_with('#'))
+                .map(String::from)
+        })
+        .unwrap_or_default();
+    Some(tools::policy::CompanyPolicy {
+        purpose,
+        reserved: pack
+            .reserved_ops()
+            .iter()
+            .map(|op| tools::plugin_tool::port_suffix(op))
+            .collect(),
+        daily: tools::policy::Bounds {
+            max_amount_cents: num(company_ids::MAX_AMOUNT_CENTS),
+            per_day_cents: num(company_ids::PER_DAY_CENTS),
+            per_day_count: num(company_ids::IRREVERSIBLE_PER_DAY),
+            per_counterparty_day_cents: num(company_ids::PER_COUNTERPARTY_DAY_CENTS),
+            counterparty_class: None,
+            freshness_secs: num(company_ids::FRESHNESS_SECS),
+        },
+        pages: values.get(company_ids::PAGES).cloned(),
+        // Per-operation company rules are not written from files: laws give
+        // Blocked, the reserved list gives the owner's hand, and nothing else
+        // at company level needs a rule of its own.
+        ..Default::default()
+    })
+}
+
 pub fn apply_pack_floors(state: &AppState, packs: &HashMap<String, napp::Pack>) {
+    // The company layer's own policy, before the seats: a seat's grant is
+    // checked against it, so it must be current when the seats are written.
+    if let Some(policy) = company_policy_from(packs) {
+        let current = tools::policy::CompanyPolicy::from_json(
+            state.store.get_company_policy().ok().flatten().as_deref(),
+        );
+        if current != policy {
+            match state.store.set_company_policy(&policy.to_json()) {
+                Ok(_) => info!(
+                    reserved = policy.reserved.len(),
+                    "company layer: policy read from COMPANY.md, its standards and its laws"
+                ),
+                Err(e) => warn!(error = %e, "company layer: policy write failed"),
+            }
+        }
+    }
     let mut ordered: Vec<&napp::Pack> = packs.values().collect();
     ordered.sort_by_key(|p| p.layer.rank());
     let mut laws: Vec<(String, String)> = Vec::new();
@@ -385,7 +473,8 @@ pub fn first_read_for_unstamped_seats(state: &AppState, packs: &HashMap<String, 
 
 #[cfg(test)]
 mod tests {
-    use super::subscribes;
+    use super::{company_policy_from, subscribes};
+    use std::collections::HashMap;
 
     #[test]
     fn a_subscription_covers_its_domain_and_children_only() {
@@ -397,5 +486,62 @@ mod tests {
         assert!(!subscribes(fm, "parties.carriers.x"));
         assert!(!subscribes("{}", "finance.ar"));
         assert!(subscribes(r#"{"subscribes": ["*"]}"#, "anything"));
+    }
+
+    /// The company layer's own policy: the money bounds come from the six
+    /// reserved standard ids, the owner's hand comes from a law marked
+    /// `reserved_to: owner`, and the purpose comes from COMPANY.md itself.
+    /// If this drifts, a company's spending ceiling silently becomes no
+    /// ceiling, so it is checked rather than trusted.
+    #[test]
+    fn the_company_layer_is_the_policy() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("acme");
+        let w = |rel: &str, body: &str| {
+            let f = dir.join(rel);
+            std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+            std::fs::write(f, body).unwrap();
+        };
+        w(
+            "COMPANY.md",
+            "---\ntype: company\ncompany: Acme\nversion: 1.0.0\npurpose: \"Fix roofs and get paid.\"\n---\n\nFix roofs and get paid.\n",
+        );
+        w("standards/day.md", "---\nid: company.unattended.spend_per_day_cents\nvalue: 1000000\n---\n\nA day.\n");
+        w("standards/op.md", "---\nid: company.unattended.spend_per_operation_cents\nvalue: 250000\n---\n\nOne.\n");
+        w("standards/cp.md", "---\nid: company.unattended.spend_per_counterparty_day_cents\nvalue: 500000\n---\n\nOne party.\n");
+        w("standards/irr.md", "---\nid: company.unattended.irreversible_per_day\nvalue: 20\n---\n\nCount.\n");
+        w("standards/fresh.md", "---\nid: company.unattended.grant_freshness_secs\nvalue: 86400\n---\n\nFresh.\n");
+        w("standards/own.md", "---\nid: acme.crew_size\nvalue: 6\n---\n\nOurs, not the runtime's.\n");
+        w("laws/equity.md", "---\nlaw: Equity\nceiling: [\"equity.issue\"]\nreserved_to: owner\n---\n\nThe owner's.\n");
+        w("laws/pay.md", "---\nlaw: Payments\nceiling: [\"ledger.payment.send\"]\n---\n\nNo seat pays unattended.\n");
+
+        let pack = napp::pack::load_pack(&dir).unwrap();
+        let mut packs = HashMap::new();
+        packs.insert("company:acme".to_string(), pack);
+        let policy = company_policy_from(&packs).expect("the company layer is the policy");
+
+        assert_eq!(policy.purpose, "Fix roofs and get paid.");
+        assert_eq!(policy.daily.per_day_cents, Some(1_000_000));
+        assert_eq!(policy.daily.max_amount_cents, Some(250_000));
+        assert_eq!(policy.daily.per_counterparty_day_cents, Some(500_000));
+        assert_eq!(policy.daily.per_day_count, Some(20));
+        assert_eq!(policy.daily.freshness_secs, Some(86_400));
+        // The owner's hand is reserved. The blocked law is not: it reaches
+        // every seat as a law, which is a different mechanism.
+        assert_eq!(policy.reserved, vec!["equity.issue".to_string()]);
+        assert!(!policy.is_reserved("ledger.payment.send"));
+        // A standing grant past the company's per-operation bound is refused.
+        let beyond = tools::policy::OperationRule {
+            access: tools::policy::OperationAccess::Always,
+            bounds: Some(tools::policy::Bounds {
+                max_amount_cents: Some(300_000),
+                ..Default::default()
+            }),
+            source: None,
+            evidence: None,
+            granted_at: None,
+            locked: false,
+        };
+        assert!(policy.permits("ledger.payment.send", &beyond).is_err());
     }
 }

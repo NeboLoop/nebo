@@ -64,8 +64,7 @@ pub async fn install_org(
     let mut packs_copied = Vec::new();
     for layer_dir in ["industry", "franchise", "company"] {
         let src = root.join(layer_dir);
-        // A layer folder is a pack only when it carries its marker; a
-        // company/ folder holding just the constitution is not one.
+        // A layer folder is a pack only when it carries its marker.
         let has_marker = ["INDUSTRY.md", "FRANCHISE.md", "COMPANY.md"]
             .iter()
             .any(|m| src.join(m).is_file());
@@ -176,45 +175,12 @@ pub async fn install_org(
         }
     }
 
-    // 4b. The constitution: the owner's one artifact, the General Manager's
-    //     ceiling (R16). `company/constitution.md` frontmatter → the company
-    //     policy row. Written only from here and by the owner; the General
-    //     Manager's grants must fit inside it.
-    let mut constitution_written = false;
-    let constitution = root.join("company").join("constitution.md");
-    if constitution.is_file() {
-        let text = std::fs::read_to_string(&constitution).map_err(io_err)?;
-        let (fm, body) = frontmatter(&text);
-        let num = |k: &str| fm.get(k).and_then(|v| v.trim().replace([',', '$', '"'], "").parse::<i64>().ok());
-        let reserved: Vec<String> = fm
-            .get("reserved")
-            .and_then(|m| serde_json::from_str::<Vec<String>>(m).ok())
-            .unwrap_or_default();
-        let purpose = fm
-            .get("purpose")
-            .map(|p| p.trim_matches('"').to_string())
-            .unwrap_or_else(|| body.lines().map(str::trim).find(|l| !l.is_empty() && !l.starts_with('#')).unwrap_or("").to_string());
-        let mut policy = tools::policy::CompanyPolicy::from_json(state.store.get_company_policy().ok().flatten().as_deref());
-        policy.purpose = purpose;
-        policy.reserved = reserved;
-        policy.daily = tools::policy::Bounds {
-            max_amount_cents: num("max_amount_cents"),
-            per_day_cents: num("per_day_cents"),
-            per_day_count: num("irreversible_per_day"),
-            per_counterparty_day_cents: num("per_counterparty_day_cents"),
-            counterparty_class: None,
-            freshness_secs: num("freshness_secs"),
-        };
-        if let Some(p) = fm.get("pages") {
-            policy.pages = serde_json::from_str(p).ok();
-        }
-        state.store.set_company_policy(&policy.to_json()).map_err(to_error_response)?;
-        constitution_written = true;
-    }
-
     // 5. Every seat reads the packs. The watcher on packs/ raises the change
     //    for later edits; the install raises it now so nobody waits on a
-    //    debounce.
+    //    debounce. `diff_and_raise` also reads the company layer's own policy
+    //    — its purpose, its unattended bounds, the operations it reserves to
+    //    the owner — because there is no artifact above the company layer to
+    //    read it from.
     let current = napp::scan_packs(&packs_dir);
     {
         let mut previous = state.packs.write().await;
@@ -227,7 +193,6 @@ pub async fn install_org(
         "packs": packs_copied,
         "teams": teams_written,
         "teamsSkipped": teams_skipped,
-        "constitution": constitution_written,
     })))
 }
 
