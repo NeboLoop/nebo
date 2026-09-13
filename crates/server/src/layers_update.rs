@@ -162,9 +162,9 @@ async fn run_for_seat(state: &AppState, seat: &db::models::Agent, change: &Layer
                 .and_then(|v| v.get("status").and_then(|s| s.as_str()).map(String::from))
                 .unwrap_or_default();
             if status == "written" {
-                info!(agent = %seat.name, against = %change.stamp, "context section written");
+                info!(agent = %seat.name, against = %change.stamp, "package part of the rules written");
             } else {
-                warn!(agent = %seat.name, against = %change.stamp, "update run ended without a context write; previous section kept, marked stale");
+                warn!(agent = %seat.name, against = %change.stamp, "update run ended without a context write; previous package part kept, marked stale");
             }
         }
         _ => {}
@@ -172,22 +172,23 @@ async fn run_for_seat(state: &AppState, seat: &db::models::Agent, change: &Layer
 }
 
 fn update_prompt(seat: &db::models::Agent, change: &LayerChange) -> String {
-    let current = seat
-        .context_section
-        .as_deref()
-        .map(str::trim)
+    let rules = seat.rules.as_deref().map(str::trim).unwrap_or("");
+    let current = tools::context_tool::package_block(rules)
         .filter(|s| !s.is_empty())
         .unwrap_or("(none yet)");
+    let owners = if rules.is_empty() { "(none)" } else { rules };
     format!(
         "[Update run — not an owner message]\n\
-A layer your company works by has changed: {layer} ({stamp}).\n\n\
-Read it below. Decide what in it matters to YOUR job: your seat, your workflows, the operations you perform, the parties you deal with, the words this company uses. Then call the `context` tool with action \"write\" and the WHOLE section you will work by from now on: the facts and rules that matter to you, in your own words, in markdown, as short as it can be and no shorter. Keep what still holds from your current section, drop what this change retires, and say what changed.\n\n\
-Two things are not yours to decide and must not appear as rules in your section: which operations you may perform (laws and your ceiling set that), and the exact values of answered questions (those are in your configured inputs). Do not do any other work in this run. Do not ask questions; if something is unclear, say so inside the section.\n\n\
-## Your current section\n\n{current}\n\n\
-## The layer\n\n{text}\n",
+A package your company works by has changed: {layer} ({stamp}).\n\n\
+Read it below. Decide what in it matters to YOUR job: your seat, your workflows, the operations you perform, the parties you deal with, the words this company uses. Where the company package and the industry package both speak to something that applies to you, the company's version wins — apply that yourself, item by item. Then call the `context` tool with action \"write\" and the WHOLE package part of your Rules you will work by from now on: the facts and rules that matter to you, in your own words, in markdown, as short as it can be and no shorter. Keep what still holds from your current part, drop what this change retires, and say what changed.\n\n\
+Your Rules as a whole are below. What the owner wrote outside the package markers is theirs: it stays as written, you do not restate it, and your part must not contradict it. Two things are not yours to decide and must not appear as rules: which operations you may perform (laws and your ceiling set that), and the exact values of answered questions (those are in your configured inputs). Do not do any other work in this run. Do not ask questions; if something is unclear, say so inside your part.\n\n\
+## Your current package part\n\n{current}\n\n\
+## Your Rules today, whole\n\n{owners}\n\n\
+## The package\n\n{text}\n",
         layer = change.layer,
         stamp = change.stamp,
         current = current,
+        owners = owners,
         text = change.text,
     )
 }

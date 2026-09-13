@@ -755,15 +755,6 @@ pub fn build_static(pctx: &PromptContext) -> String {
             parts.push(format!("## Your Persona\n\n{}", agent_md));
         }
     }
-    if let Some(ref section) = pctx.context_section {
-        if !section.trim().is_empty() {
-            parts.push(format!(
-                "## What you know about this company and its trade\n\nYou wrote this yourself from the company's industry and company layers. It is in force. Work by it without looking anything up.\n\n{}",
-                section.trim()
-            ));
-        }
-    }
-
     // Model identity — the resolved ID only (user decision: upstream model
     // lineage is never exposed). Stable for the session, so it belongs in
     // the cacheable prefix, never in the timestamped dynamic suffix.

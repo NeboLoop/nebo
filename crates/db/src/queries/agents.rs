@@ -430,12 +430,13 @@ impl Store {
         Ok(())
     }
 
-    /// The seat wrote its context section: store it and mark the stamp written.
-    pub fn set_agent_context_section(&self, id: &str, section: &str, stamp: &str) -> Result<(), NeboError> {
+    /// The seat reviewed the packages and rewrote the package part of its
+    /// Rules: store the merged Rules and mark the stamp written.
+    pub fn set_agent_rules_from_packages(&self, id: &str, rules: &str, stamp: &str) -> Result<(), NeboError> {
         let conn = self.conn()?;
         conn.execute(
-            "UPDATE agents SET context_section = ?1, context_stamp = ?2, updated_at = unixepoch() WHERE id = ?3",
-            params![section, stamp, id],
+            "UPDATE agents SET rules = ?1, context_stamp = ?2, updated_at = unixepoch() WHERE id = ?3",
+            params![rules, stamp, id],
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;
         Ok(())

@@ -1213,26 +1213,21 @@
         class="w-full py-[7px] px-2.5 rounded-md border border-base-300 text-sm max-md:text-base bg-base-100 outline-none resize-y font-mono leading-relaxed disabled:opacity-60 disabled:cursor-not-allowed"
       ></textarea>
 
-      <!-- The seat's own context section (R15): written by the employee in its
-           update run from the industry, franchise, and company layers. Read-only
-           here; an owner who disagrees corrects the employee's rules above. -->
-      <div class="mt-5">
-        <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('agentSettings.contextTitle')}</div>
-        <div class="text-xs text-base-content/70 mt-1">{$t('agentSettings.contextDesc')}</div>
-        {#if agent?.contextSection}
-          {@const stamp = (() => { try { return JSON.parse(agent?.contextStamp ?? '{}'); } catch { return {}; } })()}
+      <!-- The employee's package review writes into these Rules, between two
+           markers; the stamp says what it was reviewed against. Editable
+           like the rest: what the owner writes outside the markers is kept
+           by the next review. -->
+      {#if agent?.contextStamp}
+        {@const stamp = (() => { try { return JSON.parse(agent?.contextStamp ?? '{}'); } catch { return {}; } })()}
+        {#if stamp.against}
           <div class="mt-2 text-xs text-base-content/60">
-            {$t('agentSettings.contextAgainst', { values: { against: stamp.against ?? '' } })}
+            {$t('agentSettings.contextAgainst', { values: { against: stamp.against } })}
             {#if stamp.status && stamp.status !== 'written'}
               <span class="ml-2 badge badge-warning badge-xs">{$t('agentSettings.contextStale')}</span>
             {/if}
           </div>
-          <pre class="mt-2 whitespace-pre-wrap rounded-md border border-base-300 bg-base-200/40 px-3 py-2.5 text-sm leading-relaxed font-sans">{agent.contextSection}</pre>
-        {:else}
-          <div class="mt-2 text-sm text-base-content/60">{$t('agentSettings.contextNone')}</div>
         {/if}
-      </div>
-
+      {/if}
     {:else if section === 'configure'}
       <div class="flex items-center justify-between gap-3 mb-1">
         <div>
