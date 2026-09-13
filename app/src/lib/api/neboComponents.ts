@@ -71,7 +71,6 @@ export interface Agent {
 	department?: string
 	voice?: string
 	nameLocked?: number
-	contextSection?: string
 	contextStamp?: string
 }
 
@@ -1550,6 +1549,7 @@ export interface InstallOrgResponse {
 	packs: unknown
 	teams: unknown
 	teamsSkipped: unknown
+	constitution: unknown
 }
 
 export interface InstallStoreProductResponse {

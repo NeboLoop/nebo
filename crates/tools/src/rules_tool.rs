@@ -1,4 +1,4 @@
-//! `context` — the ONE way a seat writes the package part of its Rules.
+//! `rules` — the ONE way a seat writes the package part of its Rules.
 //!
 //! A seat meets its industry, franchise, and company packages by reading
 //! them once per change in an update run and writing what matters to its
@@ -54,22 +54,22 @@ pub fn merge_package_block(rules: &str, section: &str) -> String {
     }
 }
 
-pub struct ContextTool {
+pub struct RulesTool {
     store: Arc<db::Store>,
     /// The live registry the runner reads; updated in place so the next turn
     /// carries the new section without a restart.
     agent_registry: Option<AgentRegistry>,
 }
 
-impl ContextTool {
+impl RulesTool {
     pub fn new(store: Arc<db::Store>, agent_registry: Option<AgentRegistry>) -> Self {
         Self { store, agent_registry }
     }
 }
 
-impl DynTool for ContextTool {
+impl DynTool for RulesTool {
     fn name(&self) -> &str {
-        "context"
+        "rules"
     }
 
     fn description(&self) -> String {
@@ -104,7 +104,7 @@ impl DynTool for ContextTool {
         Box::pin(async move {
         let agent_id = types::keyparser::extract_agent_id(&ctx.session_key);
         if agent_id.is_empty() {
-            return ToolResult::error("context: this session is not an employee's");
+            return ToolResult::error("rules: this session is not an employee's");
         }
         let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("show");
         match action {
@@ -116,13 +116,13 @@ impl DynTool for ContextTool {
                     })
                     .to_string(),
                 ),
-                Ok(None) => ToolResult::error("context: employee not found"),
-                Err(e) => ToolResult::error(format!("context: {e}")),
+                Ok(None) => ToolResult::error("rules: employee not found"),
+                Err(e) => ToolResult::error(format!("rules: {e}")),
             },
             "write" => {
                 let section = input.get("section").and_then(|v| v.as_str()).unwrap_or("").trim();
                 if section.is_empty() {
-                    return ToolResult::error("context write: `section` is required and must not be empty");
+                    return ToolResult::error("rules write: `section` is required and must not be empty");
                 }
                 let (rules, stamp) = match self.store.get_agent(&agent_id) {
                     Ok(Some(a)) => (
@@ -131,8 +131,8 @@ impl DynTool for ContextTool {
                             .and_then(|s| serde_json::from_str::<Value>(&s).ok())
                             .unwrap_or_else(|| json!({})),
                     ),
-                    Ok(None) => return ToolResult::error("context: employee not found"),
-                    Err(e) => return ToolResult::error(format!("context: {e}")),
+                    Ok(None) => return ToolResult::error("rules: employee not found"),
+                    Err(e) => return ToolResult::error(format!("rules: {e}")),
                 };
                 let merged = merge_package_block(&rules, section);
                 let mut stamp = stamp;
@@ -140,7 +140,7 @@ impl DynTool for ContextTool {
                 stamp["written_at"] = json!(chrono::Utc::now().timestamp());
                 stamp["written_in"] = json!(ctx.session_key);
                 if let Err(e) = self.store.set_agent_rules_from_packages(&agent_id, &merged, &stamp.to_string()) {
-                    return ToolResult::error(format!("context write: {e}"));
+                    return ToolResult::error(format!("rules write: {e}"));
                 }
                 if let Some(reg) = &self.agent_registry {
                     if let Some(entry) = reg.write().await.get_mut(&agent_id) {
@@ -152,7 +152,7 @@ impl DynTool for ContextTool {
                     section.chars().count()
                 ))
             }
-            other => ToolResult::error(format!("context: unknown action `{other}`")),
+            other => ToolResult::error(format!("rules: unknown action `{other}`")),
         }
         })
     }

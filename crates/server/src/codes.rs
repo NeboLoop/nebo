@@ -1056,7 +1056,6 @@ async fn handle_agent_code(state: &AppState, code: &str) -> Result<CodeHandlerRe
                 degraded: None,
                 soul: agent.soul.clone(),
                 rules: agent.rules.clone(),
-                context_section: agent.context_section.clone(),
             };
             state
                 .agent_registry

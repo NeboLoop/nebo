@@ -1911,7 +1911,6 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
                         degraded: None,
                         soul: agent.soul.clone(),
                         rules: agent.rules.clone(),
-                        context_section: agent.context_section.clone(),
                     },
                 );
             }
@@ -2985,7 +2984,6 @@ async fn handle_agent_fs_events(
                                 degraded: None,
                                 soul: db.soul.clone(),
                                 rules: db.rules.clone(),
-                                context_section: db.context_section.clone(),
                             },
                         );
                         state.agent_workers.start_agent(&final_id, &db.name, None).await;

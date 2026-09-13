@@ -1516,7 +1516,6 @@ async fn create_blank_agent(
         degraded: None,
                     soul: agent.soul.clone(),
                     rules: agent.rules.clone(),
-                    context_section: agent.context_section.clone(),
     };
     state
         .agent_registry
@@ -1996,7 +1995,6 @@ pub async fn apply_agent_update(
                     degraded: None,
                     soul: updated.soul.clone(),
                     rules: updated.rules.clone(),
-                    context_section: updated.context_section.clone(),
                 };
                 state
                     .agent_registry
@@ -2480,7 +2478,6 @@ pub async fn activate_agent(
         degraded: None,
                     soul: agent.soul.clone(),
                     rules: agent.rules.clone(),
-                    context_section: agent.context_section.clone(),
     };
 
     state
@@ -2812,7 +2809,6 @@ pub async fn duplicate_agent(
         degraded: None,
         soul: source.soul.clone(),
         rules: source.rules.clone(),
-        context_section: source.context_section.clone(),
     };
     state
         .agent_registry

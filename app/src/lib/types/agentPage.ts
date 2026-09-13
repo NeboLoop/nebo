@@ -126,8 +126,7 @@ export interface AgentDisplay {
 	loopAgentId?: string
 	/** Realtime voice id (xAI voice id; empty = default). */
 	voice?: string
-	/** The seat's own reading of its layers (R15), read-only on the page. */
-	contextSection?: string
+	/** JSON: what the package part of the Rules was reviewed against (and whether that review finished). */
 	contextStamp?: string
 }
 

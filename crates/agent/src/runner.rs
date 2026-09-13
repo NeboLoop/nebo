@@ -3384,7 +3384,6 @@ async fn run_loop(
             active_agent: active_agent_body,
             agent_soul: active_agent_entry.as_ref().and_then(|r| r.soul.clone()),
             agent_rules: active_agent_entry.as_ref().and_then(|r| r.rules.clone()),
-            context_section: active_agent_entry.as_ref().and_then(|r| r.context_section.clone()),
             agent_plugin_context,
             agent_self_context,
             research_prompt: None,

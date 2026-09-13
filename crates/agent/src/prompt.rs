@@ -41,10 +41,6 @@ pub struct PromptContext {
     pub agent_soul: Option<String>,
     /// Per-agent rules: behavior constraints and guardrails.
     pub agent_rules: Option<String>,
-    /// The seat's own reading of its industry, franchise, and company layers,
-    /// written in its update run. Resident above the cache boundary; nothing
-    /// about the layers is fetched at work time.
-    pub context_section: Option<String>,
     /// Focused context for agent-required plugins (descriptions + skill names).
     pub agent_plugin_context: String,
     /// Agent self-awareness: workflows, skills, and capabilities the agent knows about itself.

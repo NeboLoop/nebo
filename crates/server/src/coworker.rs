@@ -656,7 +656,6 @@ pub(crate) async fn ensure_agent_active(state: &AppState, agent_id: &str) -> Res
                 degraded: None,
                 soul: agent.soul.clone(),
                 rules: agent.rules.clone(),
-                context_section: agent.context_section.clone(),
             };
             state
                 .agent_registry

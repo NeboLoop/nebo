@@ -5,7 +5,7 @@
 //! hire meets the handbook: it reads it once, decides what matters to its
 //! job, and works from what it wrote down. Nothing about the layers is
 //! fetched at work time. This module is the trigger and the run; the seat's
-//! `context` tool is the write; `build_static` is the read.
+//! `rules` tool is the write; `build_static` is the read.
 //!
 //! Outside the seat's judgment, and therefore not here: laws' ceilings enter
 //! the policy stack at load, and resolved values are written into the seat's
@@ -164,7 +164,7 @@ async fn run_for_seat(state: &AppState, seat: &db::models::Agent, change: &Layer
             if status == "written" {
                 info!(agent = %seat.name, against = %change.stamp, "package part of the rules written");
             } else {
-                warn!(agent = %seat.name, against = %change.stamp, "update run ended without a context write; previous package part kept, marked stale");
+                warn!(agent = %seat.name, against = %change.stamp, "update run ended without a rules write; previous package part kept, marked stale");
             }
         }
         _ => {}
@@ -173,14 +173,14 @@ async fn run_for_seat(state: &AppState, seat: &db::models::Agent, change: &Layer
 
 fn update_prompt(seat: &db::models::Agent, change: &LayerChange) -> String {
     let rules = seat.rules.as_deref().map(str::trim).unwrap_or("");
-    let current = tools::context_tool::package_block(rules)
+    let current = tools::rules_tool::package_block(rules)
         .filter(|s| !s.is_empty())
         .unwrap_or("(none yet)");
     let owners = if rules.is_empty() { "(none)" } else { rules };
     format!(
         "[Update run — not an owner message]\n\
 A package your company works by has changed: {layer} ({stamp}).\n\n\
-Read it below. Decide what in it matters to YOUR job: your seat, your workflows, the operations you perform, the parties you deal with, the words this company uses. Where the company package and the industry package both speak to something that applies to you, the company's version wins — apply that yourself, item by item. Then call the `context` tool with action \"write\" and the WHOLE package part of your Rules you will work by from now on: the facts and rules that matter to you, in your own words, in markdown, as short as it can be and no shorter. Keep what still holds from your current part, drop what this change retires, and say what changed.\n\n\
+Read it below. Decide what in it matters to YOUR job: your seat, your workflows, the operations you perform, the parties you deal with, the words this company uses. Where the company package and the industry package both speak to something that applies to you, the company's version wins — apply that yourself, item by item. Then call the `rules` tool with action \"write\" and the WHOLE package part of your Rules you will work by from now on: the facts and rules that matter to you, in your own words, in markdown, as short as it can be and no shorter. Keep what still holds from your current part, drop what this change retires, and say what changed.\n\n\
 Your Rules as a whole are below. What the owner wrote outside the package markers is theirs: it stays as written, you do not restate it, and your part must not contradict it. Two things are not yours to decide and must not appear as rules: which operations you may perform (laws and your ceiling set that), and the exact values of answered questions (those are in your configured inputs). Do not do any other work in this run. Do not ask questions; if something is unclear, say so inside your part.\n\n\
 ## Your current package part\n\n{current}\n\n\
 ## Your Rules today, whole\n\n{owners}\n\n\
