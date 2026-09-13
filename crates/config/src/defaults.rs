@@ -16,21 +16,8 @@ use types::constants::files;
 /// plugin/app/skill process. Keeping both meanings under one name was the
 /// source of artifacts writing their DB to the wrong place.)
 pub fn data_dir() -> Result<PathBuf, NeboError> {
-    if let Ok(dir) = std::env::var("NEBO_HOME") {
-        return Ok(PathBuf::from(dir));
-    }
-    if let Ok(dir) = std::env::var("NEBO_DATA_DIR") {
-        // Once per process: this is called on every config read, and on cloud
-        // pods (which set the env) the per-call warn flooded the logs badly
-        // enough to bury real errors during incident debugging.
-        static WARNED: std::sync::Once = std::sync::Once::new();
-        WARNED.call_once(|| {
-            tracing::warn!(
-                "NEBO_DATA_DIR is deprecated as the Nebo root override and will be removed; \
-                 use NEBO_HOME instead (NEBO_DATA_DIR now means a per-artifact data directory)"
-            );
-        });
-        return Ok(PathBuf::from(dir));
+    if let Some(dir) = data_dir_override() {
+        return Ok(dir);
     }
 
     let base = dirs::data_dir()
@@ -43,6 +30,38 @@ pub fn data_dir() -> Result<PathBuf, NeboError> {
     };
 
     Ok(base.join(name))
+}
+
+/// The Nebo root when the environment relocates it (`NEBO_HOME`, or the
+/// deprecated `NEBO_DATA_DIR`); `None` when the root is the platform data
+/// directory.
+fn data_dir_override() -> Option<PathBuf> {
+    if let Ok(dir) = std::env::var("NEBO_HOME") {
+        return Some(PathBuf::from(dir));
+    }
+    if let Ok(dir) = std::env::var("NEBO_DATA_DIR") {
+        // Once per process: this is called on every config read, and on cloud
+        // pods (which set the env) the per-call warn flooded the logs badly
+        // enough to bury real errors during incident debugging.
+        static WARNED: std::sync::Once = std::sync::Once::new();
+        WARNED.call_once(|| {
+            tracing::warn!(
+                "NEBO_DATA_DIR is deprecated as the Nebo root override and will be removed; \
+                 use NEBO_HOME instead (NEBO_DATA_DIR now means a per-artifact data directory)"
+            );
+        });
+        return Some(PathBuf::from(dir));
+    }
+    None
+}
+
+/// True when the Nebo root has been relocated away from the platform data
+/// directory (a test, a cloud pod, a side install). A relocated Nebo owns its
+/// own root but not the user's machine: anything registered per user outside
+/// the root — the browser native-messaging manifests — belongs to the Nebo at
+/// the platform root and is left alone.
+pub fn data_dir_overridden() -> bool {
+    data_dir_override().is_some()
 }
 
 /// Industry, franchise, and company packs installed on this Nebo:

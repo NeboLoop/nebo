@@ -678,6 +678,11 @@ export interface ListExtensionsResponse {
 	extensions: ExtensionInfo[]
 }
 
+export interface ListTasksResponse {
+	tasks: CronJob[]
+	total: number
+}
+
 export interface LoginResponse {
 	token: string
 	refreshToken: string
@@ -1804,11 +1809,6 @@ export interface ListStorageResponse {
 
 export interface ListTaskHistoryResponse {
 	history: CronHistory[]
-}
-
-export interface ListTasksResponse {
-	tasks: unknown[]
-	total: number
 }
 
 export interface ListTeamsResponse {

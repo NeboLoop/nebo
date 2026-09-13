@@ -332,8 +332,11 @@ func scanStoreMethodTypes(dir string) map[string]string {
 		return nil
 	}
 	result := make(map[string]string)
-	// (?s) makes . match newlines (multi-line function signatures).
-	reMethod := regexp.MustCompile(`(?s)pub\s+fn\s+(\w+)\s*\(.*?\)\s*->\s*Result<(.+?)(?:\s*\{)`)
+	// (?s) makes . match newlines (multi-line function signatures). The
+	// parameter list excludes braces so a method that does not return Result
+	// (`pub fn cron_ref(..) -> String {`) cannot swallow the next method's
+	// signature and take its return type.
+	reMethod := regexp.MustCompile(`(?s)pub\s+fn\s+(\w+)\s*\([^{}]*?\)\s*->\s*Result<(.+?)(?:\s*\{)`)
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".rs") {
 			continue

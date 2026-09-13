@@ -1,6 +1,6 @@
 use axum::extract::{Path, Query, State};
 use axum::response::Json;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use super::{HandlerResult, to_error_response};
 use crate::state::AppState;
@@ -17,20 +17,24 @@ fn default_limit() -> i64 {
     50
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListTasksResponse {
+    pub tasks: Vec<db::models::CronJob>,
+    pub total: i64,
+}
+
 /// GET /api/v1/tasks
 pub async fn list_tasks(
     State(state): State<AppState>,
     Query(q): Query<ListQuery>,
-) -> HandlerResult<serde_json::Value> {
+) -> HandlerResult<ListTasksResponse> {
     let tasks = state
         .store
         .list_cron_jobs(q.limit, q.offset)
         .map_err(to_error_response)?;
     let total = state.store.count_cron_jobs().unwrap_or(0);
-    Ok(Json(serde_json::json!({
-        "tasks": tasks,
-        "total": total,
-    })))
+    Ok(Json(ListTasksResponse { tasks, total }))
 }
 
 /// POST /api/v1/tasks

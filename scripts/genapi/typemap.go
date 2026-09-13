@@ -59,6 +59,13 @@ func rustTypeToTS(rustType string, structs map[string]*RustStruct) string {
 		return "unknown"
 	}
 
+	// A path-qualified struct (`db::models::CronJob`) is the same interface as
+	// the bare name: every struct dir is scanned into one flat map, and the
+	// interface is emitted once under the bare name.
+	if i := strings.LastIndex(rustType, "::"); i >= 0 {
+		rustType = rustType[i+2:]
+	}
+
 	// If we know this struct, use its name.
 	if _, ok := structs[rustType]; ok {
 		return rustType
