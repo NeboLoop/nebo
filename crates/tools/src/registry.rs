@@ -980,6 +980,9 @@ impl Registry {
             self.register(Box::new(web_tool)).await;
         }
 
+        // The packs this company works by (R8): create, add, list, show, remove.
+        self.register(Box::new(crate::pack_tool::PackTool)).await;
+
         // The seat's own context section (R15): the write half of the layers.
         self.register(Box::new(crate::context_tool::ContextTool::new(store.clone(), active_agent.clone()))).await;
 
