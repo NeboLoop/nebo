@@ -227,6 +227,7 @@ pub fn diff_and_raise(
         }
         next.insert(key, pack);
     }
+    apply_pack_floors(state, &next);
     for (key, gone) in previous.iter() {
         if !next.contains_key(key) {
             spawn_layers_changed(
@@ -247,6 +248,94 @@ pub fn diff_and_raise(
     *previous = next;
 }
 
+/// The two things a seat never decides for itself (PRD 6.8): a pack's laws
+/// become locked Blocked entries in every seat's operation policy, and a
+/// pack's standards and question defaults become the seat's input values
+/// where it declares the same semantic id and has no value yet. Company
+/// packs win over franchise over industry.
+pub fn apply_pack_floors(state: &AppState, packs: &HashMap<String, napp::Pack>) {
+    let mut ordered: Vec<&napp::Pack> = packs.values().collect();
+    ordered.sort_by_key(|p| p.layer.rank());
+    let mut laws: Vec<(String, String)> = Vec::new();
+    let mut values: HashMap<String, serde_json::Value> = HashMap::new();
+    for pack in &ordered {
+        laws.extend(pack.ceilings());
+        for (id, v) in pack.defaults() {
+            values.insert(id, v); // higher layers come later and overwrite
+        }
+    }
+    let seats = state.store.list_agents(10_000, 0).unwrap_or_default();
+    for seat in seats.iter().filter(|a| a.is_app.unwrap_or(0) == 0) {
+        // Laws → locked Blocked in the one policy.
+        if !laws.is_empty() {
+            let current = crate::entity_config::resolve_for_chat(&state.store, "agent", &seat.id)
+                .and_then(|c| c.operation_policy);
+            let mut policy = tools::policy::OperationPolicy::from_json(current.as_deref());
+            let mut changed = false;
+            for (op, law) in &laws {
+                let suffix = tools::plugin_tool::port_suffix(op);
+                let already = policy.operations.get(&suffix).is_some_and(|r| r.is_law());
+                if already {
+                    continue;
+                }
+                policy.operations.insert(
+                    suffix,
+                    tools::policy::OperationRule {
+                        access: tools::policy::OperationAccess::Blocked,
+                        bounds: None,
+                        source: Some(format!("law:{law}")),
+                        evidence: None,
+                        granted_at: Some(chrono::Utc::now().timestamp()),
+                        locked: true,
+                    },
+                );
+                changed = true;
+            }
+            if changed {
+                let patch = serde_json::json!({ "operationPolicy": policy.to_json() });
+                if let Err(e) = state.store.upsert_entity_config("agent", &seat.id, &patch) {
+                    warn!(agent = %seat.id, error = %e, "pack laws: policy write failed");
+                }
+            }
+        }
+        // Standards and defaults → the seat's inputs, by semantic id, only
+        // where the seat asks the question and has no value.
+        if !values.is_empty() {
+            let fm: serde_json::Value = serde_json::from_str(&seat.frontmatter).unwrap_or_default();
+            let mut vals: serde_json::Value =
+                serde_json::from_str(&seat.input_values).unwrap_or_else(|_| serde_json::json!({}));
+            let mut changed = false;
+            if let Some(inputs) = fm.get("inputs").and_then(|v| v.as_array()) {
+                for input in inputs {
+                    let Some(id) = input.get("id").and_then(|v| v.as_str()) else { continue };
+                    let key = input
+                        .get("key")
+                        .and_then(|v| v.as_str())
+                        .or_else(|| input.get("name").and_then(|v| v.as_str()))
+                        .unwrap_or(id);
+                    let money = input.get("money").and_then(|v| v.as_bool()).unwrap_or(false);
+                    if money {
+                        continue; // never defaulted
+                    }
+                    let has = vals.get(key).is_some_and(|v| !v.is_null() && v != "");
+                    if has {
+                        continue;
+                    }
+                    if let Some(v) = values.get(id) {
+                        vals[key] = v.clone();
+                        changed = true;
+                    }
+                }
+            }
+            if changed {
+                if let Err(e) = state.store.update_agent_input_values(&seat.id, &vals.to_string()) {
+                    warn!(agent = %seat.id, error = %e, "pack defaults: input write failed");
+                }
+            }
+        }
+    }
+}
+
 /// At boot: seats that have never written a section while packs exist read
 /// every pack now. Seats with a section are left alone; the watcher handles
 /// later changes.
@@ -254,6 +343,7 @@ pub fn first_read_for_unstamped_seats(state: &AppState, packs: &HashMap<String, 
     if packs.is_empty() {
         return;
     }
+    apply_pack_floors(state, packs);
     let unstamped: Vec<db::models::Agent> = state
         .store
         .list_agents(10_000, 0)
