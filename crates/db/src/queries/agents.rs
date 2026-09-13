@@ -47,7 +47,7 @@ impl Store {
             .prepare(
                 "SELECT id, kind, name, description, agent_md, frontmatter,
                         pricing_model, pricing_cost, is_enabled, installed_at, updated_at,
-                        napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config, soul, rules, handle, color, loop_exposed, loop_agent_id, department, voice, name_locked, context_stamp
+                        napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config, soul, rules, handle, color, loop_exposed, loop_agent_id, department, voice, name_locked, context_stamp, reports_to, department_locked
                  FROM agents ORDER BY installed_at DESC LIMIT ?1 OFFSET ?2",
             )
             .db_err("list_agents prepare")?;
@@ -69,7 +69,7 @@ impl Store {
         conn.query_row(
             "SELECT id, kind, name, description, agent_md, frontmatter,
                     pricing_model, pricing_cost, is_enabled, installed_at, updated_at,
-                    napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config, soul, rules, handle, color, loop_exposed, loop_agent_id, department, voice, name_locked, context_stamp
+                    napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config, soul, rules, handle, color, loop_exposed, loop_agent_id, department, voice, name_locked, context_stamp, reports_to, department_locked
              FROM agents WHERE id = ?1",
             params![id],
             row_to_agent,
@@ -105,7 +105,7 @@ impl Store {
             .prepare(
                 "SELECT id, kind, name, description, agent_md, frontmatter,
                         pricing_model, pricing_cost, is_enabled, installed_at, updated_at,
-                        napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config, soul, rules, handle, color, loop_exposed, loop_agent_id, department, voice, name_locked, context_stamp
+                        napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config, soul, rules, handle, color, loop_exposed, loop_agent_id, department, voice, name_locked, context_stamp, reports_to, department_locked
                  FROM agents",
             )
             .db_err("get_agent_by_slug")?;
@@ -170,7 +170,7 @@ impl Store {
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
              RETURNING id, kind, name, description, agent_md, frontmatter,
                        pricing_model, pricing_cost, is_enabled, installed_at, updated_at,
-                       napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config, soul, rules, handle, color, loop_exposed, loop_agent_id, department, voice, name_locked, context_stamp",
+                       napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config, soul, rules, handle, color, loop_exposed, loop_agent_id, department, voice, name_locked, context_stamp, reports_to, department_locked",
             params![id, kind, name, description, agent_md, frontmatter, pricing_model, pricing_cost],
             row_to_agent,
         )
@@ -192,11 +192,23 @@ impl Store {
         color: Option<&str>,
         loop_exposed: Option<bool>,
         voice: Option<&str>,
+        // The part of the company this seat sits in. `Some("")` clears it.
+        // Setting it locks it: the owner's department outlives every later
+        // package sync (`set_agent_department` respects the lock).
+        department: Option<&str>,
+        // The seat this one answers to, by local agent id. `Some("")` clears
+        // the line (answers to the owner). Refused when it would close a loop.
+        reports_to: Option<&str>,
     ) -> Result<(), NeboError> {
         if !name.trim().is_empty() {
             if let Some(other) = self.agent_name_taken(name, Some(id))? {
                 return Err(NeboError::Validation(format!("An employee named \"{other}\" already exists. Pick a different name.")));
             }
+        }
+        // The reporting line is refused HERE, not in a client: every door that
+        // writes an employee's fields comes through this one call.
+        if let Some(manager) = reports_to.map(str::trim).filter(|m| !m.is_empty()) {
+            self.check_reporting_line(id, manager)?;
         }
         let conn = self.conn()?;
         // A blank name is never written and never locks: locking one would leave
@@ -214,8 +226,20 @@ impl Store {
                     color = COALESCE(?10, color),
                     loop_exposed = COALESCE(?11, loop_exposed),
                     voice = COALESCE(?12, voice),
+                    -- Owner-wins, the name_locked contract applied to the
+                    -- department: an explicit value (blank = none) is the
+                    -- owner's and locks the column against package syncs.
+                    department_locked = CASE WHEN ?13 IS NOT NULL THEN 1 ELSE department_locked END,
+                    department = CASE
+                        WHEN ?13 IS NULL THEN department
+                        WHEN TRIM(?13) = '' THEN NULL
+                        ELSE TRIM(?13) END,
+                    reports_to = CASE
+                        WHEN ?14 IS NULL THEN reports_to
+                        WHEN TRIM(?14) = '' THEN NULL
+                        ELSE TRIM(?14) END,
                     updated_at = unixepoch()
-             WHERE id = ?13",
+             WHERE id = ?15",
             params![
                 name,
                 description,
@@ -229,6 +253,8 @@ impl Store {
                 color,
                 loop_exposed.map(|b| b as i32),
                 voice,
+                department,
+                reports_to,
                 id
             ],
         )
@@ -272,23 +298,14 @@ impl Store {
             )
             .optional()
             .db_err("sync_agent_content read")?;
-        let mut merged = frontmatter.to_string();
-        if let Some(iso) = existing
-            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-            .and_then(|fm| fm.pointer("/memory/context_isolated").and_then(|v| v.as_bool()))
-        {
-            if let Ok(mut incoming) = serde_json::from_str::<serde_json::Value>(frontmatter) {
-                if let Some(obj) = incoming.as_object_mut() {
-                    let mem = obj
-                        .entry("memory")
-                        .or_insert_with(|| serde_json::json!({}));
-                    if let Some(mem_obj) = mem.as_object_mut() {
-                        mem_obj.insert("context_isolated".into(), serde_json::json!(iso));
-                        merged = incoming.to_string();
-                    }
-                }
-            }
-        }
+        // ONE merge for both package-delivery paths (this sync and the
+        // marketplace install/update in `persist_agent_from_api`): the owner's
+        // own declaration entries and the isolation toggle are held, everything
+        // else is the package's to change. See `crate::declaration`.
+        let merged = match existing {
+            Some(ours) => crate::declaration::merge_package_declaration(&ours, frontmatter),
+            None => frontmatter.to_string(),
+        };
         conn.execute(
             "UPDATE agents SET agent_md = ?1, frontmatter = ?2, updated_at = unixepoch()
              WHERE id = ?3",
@@ -357,7 +374,7 @@ impl Store {
         conn.query_row(
             "SELECT id, kind, name, description, agent_md, frontmatter,
                     pricing_model, pricing_cost, is_enabled, installed_at, updated_at,
-                    napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config, soul, rules, handle, color, loop_exposed, loop_agent_id, department, voice, name_locked, context_stamp
+                    napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config, soul, rules, handle, color, loop_exposed, loop_agent_id, department, voice, name_locked, context_stamp, reports_to, department_locked
              FROM agents WHERE LOWER(name) = LOWER(?1)",
             params![name],
             row_to_agent,
@@ -420,13 +437,93 @@ impl Store {
         Ok(())
     }
 
+    /// The PACKAGE's department, written on install and re-install. Never
+    /// overwrites an owner-set (department_locked) department — the marketplace
+    /// employee arrives in "sales", the owner moves it to "Revenue", and the
+    /// next sync must leave it there. Exactly the guard `sync_agent_identity`
+    /// uses for a locked name; the owner's door is `update_agent`.
     pub fn set_agent_department(&self, id: &str, department: Option<&str>) -> Result<(), NeboError> {
         let conn = self.conn()?;
         conn.execute(
-            "UPDATE agents SET department = ?1, updated_at = unixepoch() WHERE id = ?2",
+            "UPDATE agents SET department = ?1, updated_at = unixepoch()
+             WHERE id = ?2 AND department_locked = 0",
             params![department, id],
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    /// The seats an employee answers to, nearest manager first, as
+    /// `(id, name)`. Ends at the owner (no manager), at a manager id that no
+    /// longer resolves (a deleted employee reads as "answers to the owner"),
+    /// or — if the stored data is already cyclic — at the first seat that
+    /// repeats, so a caller walking the line can never loop forever.
+    ///
+    /// The ONE reading of the reporting line: the cycle refusal below and
+    /// every escalation that takes work upwards use this, not their own walk.
+    pub fn manager_chain(&self, agent_id: &str) -> Result<Vec<(String, String)>, NeboError> {
+        let conn = self.conn()?;
+        let mut chain: Vec<(String, String)> = Vec::new();
+        let mut seen: Vec<String> = vec![agent_id.to_string()];
+        let mut current = agent_id.to_string();
+        loop {
+            let next: Option<(String, String)> = conn
+                .query_row(
+                    "SELECT m.id, m.name FROM agents a
+                     JOIN agents m ON m.id = a.reports_to
+                     WHERE a.id = ?1",
+                    params![current],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()
+                .map_err(|e| NeboError::Database(e.to_string()))?;
+            let Some((id, name)) = next else { return Ok(chain) };
+            let closes = seen.contains(&id);
+            chain.push((id.clone(), name));
+            if closes {
+                return Ok(chain);
+            }
+            seen.push(id.clone());
+            current = id;
+        }
+    }
+
+    /// Refuse a reporting line that would close a loop, naming the loop.
+    /// Called by `update_agent` — the owner's one door — so no surface can
+    /// write a cycle even if its UI would have allowed it.
+    fn check_reporting_line(&self, id: &str, manager_id: &str) -> Result<(), NeboError> {
+        let name_of = |who: &str| -> String {
+            self.get_agent(who)
+                .ok()
+                .flatten()
+                .map(|a| a.name)
+                .unwrap_or_else(|| who.to_string())
+        };
+        let me = name_of(id);
+        if manager_id == id {
+            return Err(NeboError::Validation(format!(
+                "{me} cannot report to itself. Pick another employee, or leave the reporting line empty to answer to you."
+            )));
+        }
+        if self.get_agent(manager_id)?.is_none() {
+            return Err(NeboError::Validation(format!(
+                "No employee with id {manager_id} to report to."
+            )));
+        }
+        // Walking UP from the proposed manager must never reach this seat: if
+        // it does, this seat is already somewhere above it and the new line
+        // would close the loop.
+        let chain = self.manager_chain(manager_id)?;
+        if let Some(pos) = chain.iter().position(|(cid, _)| cid == id) {
+            let mut hops: Vec<String> = vec![name_of(manager_id)];
+            hops.extend(chain[..=pos].iter().map(|(_, n)| n.clone()));
+            return Err(NeboError::Validation(format!(
+                "{me} cannot report to {}: that closes a loop — {}. Move one of those employees first, \
+                 or leave {me}'s reporting line empty to answer to you.",
+                name_of(manager_id),
+                hops.join(" answers to ")
+            )));
+        }
         Ok(())
     }
 
@@ -520,7 +617,7 @@ impl Store {
         conn.query_row(
             "SELECT id, kind, name, description, agent_md, frontmatter,
                     pricing_model, pricing_cost, is_enabled, installed_at, updated_at,
-                    napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config, soul, rules, handle, color, loop_exposed, loop_agent_id, department, voice, name_locked, context_stamp
+                    napp_path, input_values, is_app, app_ui_path, app_binary_path, app_window_config, soul, rules, handle, color, loop_exposed, loop_agent_id, department, voice, name_locked, context_stamp, reports_to, department_locked
              FROM agents WHERE loop_agent_id = ?1",
             params![loop_agent_id],
             row_to_agent,
@@ -933,6 +1030,8 @@ fn row_to_agent(row: &rusqlite::Row) -> rusqlite::Result<Agent> {
         voice: row.get(24)?,
         name_locked: row.get(25)?,
         context_stamp: row.get(26)?,
+        reports_to: row.get(27)?,
+        department_locked: row.get(28)?,
     })
 }
 
@@ -991,5 +1090,282 @@ mod owner_modified_tests {
         let rows = s.list_agent_workflows("a1").unwrap();
         assert_eq!(rows[0].trigger_config, "0 0 9 * * * *");
         assert!(activities(&s).contains("pkg2"));
+    }
+}
+
+/// Structure on an employee: the department the owner claims from the package,
+/// and a reporting line that can never close a loop.
+#[cfg(test)]
+mod structure_tests {
+    use crate::Store;
+
+    fn store() -> Store {
+        let path =
+            std::env::temp_dir().join(format!("nebo-structure-test-{}.db", uuid::Uuid::new_v4()));
+        Store::new(&path.to_string_lossy()).expect("store")
+    }
+
+    fn seat(s: &Store, id: &str, name: &str) {
+        s.create_agent(id, None, name, "", "", "{}", None, None)
+            .expect("agent row");
+    }
+
+    /// Set only the structure, leaving every other field as it is — what the
+    /// settings page's save amounts to.
+    fn set_structure(
+        s: &Store,
+        id: &str,
+        department: Option<&str>,
+        reports_to: Option<&str>,
+    ) -> Result<(), types::NeboError> {
+        let a = s.get_agent(id).unwrap().unwrap();
+        s.update_agent(
+            id,
+            &a.name,
+            &a.description,
+            &a.agent_md,
+            &a.frontmatter,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            department,
+            reports_to,
+        )
+    }
+
+    /// A line is refused whether it closes the loop in one hop or in four, and
+    /// the refusal names the loop rather than saying "invalid".
+    #[test]
+    fn a_reporting_line_can_never_close_a_loop() {
+        let s = store();
+        for (id, name) in [
+            ("a", "Anna"),
+            ("b", "Ben"),
+            ("c", "Cara"),
+            ("d", "Dev"),
+            ("e", "Eve"),
+        ] {
+            seat(&s, id, name);
+        }
+
+        // Anna ← Ben ← Cara ← Dev ← Eve: a chain four deep.
+        set_structure(&s, "b", None, Some("a")).unwrap();
+        set_structure(&s, "c", None, Some("b")).unwrap();
+        set_structure(&s, "d", None, Some("c")).unwrap();
+        set_structure(&s, "e", None, Some("d")).unwrap();
+        assert_eq!(
+            s.manager_chain("e").unwrap(),
+            vec![
+                ("d".to_string(), "Dev".to_string()),
+                ("c".to_string(), "Cara".to_string()),
+                ("b".to_string(), "Ben".to_string()),
+                ("a".to_string(), "Anna".to_string()),
+            ]
+        );
+
+        // Depth 0: answering to yourself.
+        let err = set_structure(&s, "a", None, Some("a")).unwrap_err().to_string();
+        assert!(err.contains("cannot report to itself"), "{err}");
+
+        // Depth 1: Ben already answers to Anna.
+        let err = set_structure(&s, "a", None, Some("b")).unwrap_err().to_string();
+        assert!(err.contains("Ben answers to Anna"), "{err}");
+
+        // Depth 4: the far end of the chain, which is where a check that only
+        // looks one hop up would let the loop through.
+        let err = set_structure(&s, "a", None, Some("e")).unwrap_err().to_string();
+        assert!(
+            err.contains("Eve answers to Dev answers to Cara answers to Ben answers to Anna"),
+            "the refusal must name the whole loop: {err}"
+        );
+
+        // And a loop that closes in the middle of the chain, not at the top.
+        let err = set_structure(&s, "c", None, Some("e")).unwrap_err().to_string();
+        assert!(err.contains("Eve answers to Dev answers to Cara"), "{err}");
+
+        // Nothing was written by any refusal.
+        assert_eq!(s.get_agent("a").unwrap().unwrap().reports_to, None);
+        assert_eq!(
+            s.get_agent("c").unwrap().unwrap().reports_to,
+            Some("b".to_string())
+        );
+
+        // A line that does not close a loop is fine: Eve moves from the bottom
+        // of the chain to answering to Anna directly.
+        set_structure(&s, "e", None, Some("a")).unwrap();
+        assert_eq!(
+            s.get_agent("e").unwrap().unwrap().reports_to,
+            Some("a".to_string())
+        );
+
+        // And the check is about the line, not the names: once Ben answers to
+        // nobody, Anna may answer to Cara, which was refused a moment ago.
+        set_structure(&s, "a", None, Some("c")).unwrap_err();
+        set_structure(&s, "b", None, Some("")).unwrap();
+        set_structure(&s, "a", None, Some("c")).unwrap();
+        assert_eq!(
+            s.get_agent("a").unwrap().unwrap().reports_to,
+            Some("c".to_string())
+        );
+        set_structure(&s, "a", None, Some("")).unwrap();
+
+        // Clearing a line puts the seat back under the owner.
+        set_structure(&s, "e", None, Some("")).unwrap();
+        assert_eq!(s.get_agent("e").unwrap().unwrap().reports_to, None);
+        assert!(s.manager_chain("e").unwrap().is_empty());
+    }
+
+    /// A manager id that stopped resolving (the employee was deleted) reads as
+    /// "answers to the owner" — never a walk that fails or hangs.
+    #[test]
+    fn a_deleted_manager_reads_as_answering_to_the_owner() {
+        let s = store();
+        seat(&s, "boss", "Boss");
+        seat(&s, "report", "Report");
+        set_structure(&s, "report", None, Some("boss")).unwrap();
+        s.delete_agent("boss").unwrap();
+        assert!(s.manager_chain("report").unwrap().is_empty());
+        // The stale id is still on the row; nothing pretends it was cleaned up.
+        assert_eq!(
+            s.get_agent("report").unwrap().unwrap().reports_to,
+            Some("boss".to_string())
+        );
+    }
+
+    /// The same contract, applied to the seat's declaration, through the real
+    /// sync path. The owner gives a packaged employee a capability and writes a
+    /// question their trade needs; a package update lands; both survive, and
+    /// something the owner never touched does get the update.
+    #[test]
+    fn the_owners_declaration_survives_a_package_sync() {
+        let s = store();
+        seat(&s, "bk", "Bookkeeper");
+
+        // Install: what the package ships.
+        let shipped = r#"{"requires": {"interfaces": ["ledger"]},
+                          "inputs": [{"id": "finance.ap.mailbox", "key": "mailbox", "label": "Which mailbox?"}],
+                          "ceiling": {"ledger.payment.apply": "approval"}}"#;
+        s.sync_agent_content("bk", "# Bookkeeper", shipped).unwrap();
+
+        // The owner authors on top of it. This is what the settings page's save
+        // writes: the declaration, plus the baseline noting the package's word.
+        let on_row: serde_json::Value =
+            serde_json::from_str(&s.get_agent("bk").unwrap().unwrap().frontmatter).unwrap();
+        let mut owned = on_row.clone();
+        owned["requires"]["interfaces"] = serde_json::json!(["ledger", "mail"]);
+        owned["inputs"] = serde_json::json!([
+            {"id": "finance.ap.mailbox", "key": "mailbox", "label": "Which mailbox?"},
+            {"id": "trade.permit_number", "key": "permit", "label": "What is your permit number?"}
+        ]);
+        crate::declaration::note_owner_edit(
+            &mut owned,
+            &on_row,
+            crate::declaration::OWNER_AUTHORED_FIELDS,
+        );
+        let a = s.get_agent("bk").unwrap().unwrap();
+        s.update_agent(
+            "bk", &a.name, &a.description, &a.agent_md, &owned.to_string(),
+            None, None, None, None, None, None, None, None, None, None,
+        )
+        .unwrap();
+
+        // The package updates: it corrects a label, adds a question and a
+        // ceiling operation, and has never heard of the owner's additions.
+        let update = r#"{"requires": {"interfaces": ["ledger"]},
+                         "inputs": [{"id": "finance.ap.mailbox", "key": "mailbox", "label": "Which mailbox do bills arrive in?"},
+                                    {"id": "finance.ap.terms", "key": "terms", "label": "What terms do you offer?"}],
+                         "ceiling": {"ledger.payment.apply": "approval", "ledger.invoice.send": "approval"}}"#;
+        s.sync_agent_content("bk", "# Bookkeeper", update).unwrap();
+
+        let fm: serde_json::Value =
+            serde_json::from_str(&s.get_agent("bk").unwrap().unwrap().frontmatter).unwrap();
+
+        // The owner's edits survived.
+        assert!(
+            fm["requires"]["interfaces"].as_array().unwrap().iter().any(|v| v == "mail"),
+            "the capability the owner gave it survived: {}",
+            fm["requires"]["interfaces"]
+        );
+        let ids: Vec<&str> = fm["inputs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|q| q["id"].as_str().unwrap())
+            .collect();
+        assert!(ids.contains(&"trade.permit_number"), "the owner's question survived: {ids:?}");
+
+        // And the update was not a no-op.
+        assert!(ids.contains(&"finance.ap.terms"), "the package's new question arrived: {ids:?}");
+        assert_eq!(
+            fm["inputs"].as_array().unwrap().iter()
+                .find(|q| q["id"] == "finance.ap.mailbox").unwrap()["label"],
+            "Which mailbox do bills arrive in?",
+            "a question the owner never edited took the correction"
+        );
+        assert_eq!(fm["ceiling"]["ledger.invoice.send"], "approval", "the new ceiling operation arrived");
+
+        // Superseded, not deleted.
+        assert_eq!(
+            fm[crate::declaration::PACKAGE_BASELINE]["requires"]["interfaces"],
+            serde_json::json!(["ledger"]),
+            "the record still shows what the package said"
+        );
+    }
+
+    /// The package declares a department, the owner moves the seat, and the
+    /// next package sync leaves the owner's answer alone — the `name_locked`
+    /// contract, applied to the department.
+    #[test]
+    fn the_owners_department_survives_a_package_sync() {
+        let s = store();
+        seat(&s, "bk", "Bookkeeper");
+
+        // Install: the package's declared department, nothing owner-set yet.
+        s.set_agent_department("bk", Some("finance")).unwrap();
+        let a = s.get_agent("bk").unwrap().unwrap();
+        assert_eq!(a.department.as_deref(), Some("finance"));
+        assert_eq!(a.department_locked, 0);
+
+        // A re-install before the owner touches it still tracks the package.
+        s.set_agent_department("bk", Some("accounting")).unwrap();
+        assert_eq!(
+            s.get_agent("bk").unwrap().unwrap().department.as_deref(),
+            Some("accounting")
+        );
+
+        // The owner moves the seat.
+        set_structure(&s, "bk", Some("Back Office"), None).unwrap();
+        let a = s.get_agent("bk").unwrap().unwrap();
+        assert_eq!(a.department.as_deref(), Some("Back Office"));
+        assert_eq!(a.department_locked, 1);
+
+        // Every later sync — boot, an update, a re-install — leaves it.
+        s.set_agent_department("bk", Some("accounting")).unwrap();
+        s.set_agent_department("bk", Some("finance")).unwrap();
+        s.set_agent_department("bk", None).unwrap();
+        assert_eq!(
+            s.get_agent("bk").unwrap().unwrap().department.as_deref(),
+            Some("Back Office")
+        );
+
+        // A save that does not mention the department leaves it too.
+        set_structure(&s, "bk", None, None).unwrap();
+        assert_eq!(
+            s.get_agent("bk").unwrap().unwrap().department.as_deref(),
+            Some("Back Office")
+        );
+
+        // "No department" is an answer the owner can give, and it stays theirs.
+        set_structure(&s, "bk", Some(""), None).unwrap();
+        let a = s.get_agent("bk").unwrap().unwrap();
+        assert_eq!(a.department, None);
+        assert_eq!(a.department_locked, 1);
+        s.set_agent_department("bk", Some("finance")).unwrap();
+        assert_eq!(s.get_agent("bk").unwrap().unwrap().department, None);
     }
 }

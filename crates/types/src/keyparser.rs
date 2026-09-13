@@ -369,6 +369,13 @@ mod tests {
     fn test_extract_agent_id() {
         assert_eq!(extract_agent_id("agent:mybot:rest"), "mybot");
         assert_eq!(extract_agent_id("subagent:x"), "");
+        // A sub-agent nests the parent's FULL key and has no persona of its
+        // own, so the seat it belongs to is the parent — what scopes its
+        // per-employee state (its seat's own skills, plugin accounts).
+        assert_eq!(
+            extract_agent_id("subagent:agent:copywriter:web:task-7"),
+            "copywriter"
+        );
     }
 
     #[test]

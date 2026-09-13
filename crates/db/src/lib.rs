@@ -1,3 +1,4 @@
+pub mod declaration;
 pub mod migrate;
 pub mod models;
 mod pool;

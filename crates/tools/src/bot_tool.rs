@@ -267,6 +267,11 @@ pub struct AgentTool {
     /// Shared broadcast cell (from the `Registry`) — lets profile renames emit
     /// the same `agent_updated` event the updateAgent handler broadcasts.
     notify_fn: Arc<std::sync::RwLock<Option<crate::message_tool::NotifyFn>>>,
+    /// The same late-wired coworker rail the `message` tool holds. Used for one
+    /// thing here: an unanswerable question in an unattended run goes up the
+    /// reporting line instead of being guessed at. Not a second rail — the same
+    /// cell, injected by the `Registry`.
+    coworker_rail: crate::coworker::CoworkerRailCell,
 }
 
 /// Appended to a sub-agent's result so the model knows the child is still
@@ -309,7 +314,15 @@ impl AgentTool {
             persona: None,
             keychain: Arc::new(OsKeychain),
             notify_fn: Arc::new(std::sync::RwLock::new(None)),
+            coworker_rail: crate::coworker::new_rail_cell(),
         }
+    }
+
+    /// Inject the shared coworker rail cell (from the `Registry`) — the same
+    /// cell the `message` tool gets, never a second one.
+    pub fn with_coworker_rail(mut self, cell: crate::coworker::CoworkerRailCell) -> Self {
+        self.coworker_rail = cell;
+        self
     }
 
     /// Inject the shared broadcast cell (from the `Registry`).
@@ -1848,10 +1861,71 @@ impl AgentTool {
         }
     }
 
+    /// Take a question this seat cannot answer to the seat it answers to.
+    ///
+    /// The reporting line (`agents.reports_to`) read through the store's ONE
+    /// walk, delivered on the ONE coworker rail — the manager receives it in
+    /// their own session, under their own persona and memory, exactly as if a
+    /// coworker had messaged them, and their reply is this call's result.
+    ///
+    /// `None` when there is no reporting line, no rail wired, or the delivery
+    /// failed: the caller then falls back to deciding for itself, which is the
+    /// behaviour every seat had before the line existed.
+    async fn ask_up_the_line(&self, ctx: &ToolContext, text: &str) -> Option<ToolResult> {
+        let me = types::keyparser::extract_agent_id(&ctx.session_key);
+        if me.is_empty() {
+            return None;
+        }
+        let (manager_id, _) = self.store.manager_chain(&me).ok()?.into_iter().next()?;
+        let rail = self.coworker_rail.read().ok()?.clone()?;
+        let my_name = self
+            .store
+            .get_agent(&me)
+            .ok()
+            .flatten()
+            .map(|a| a.name)
+            .unwrap_or_else(|| me.clone());
+        let asked = format!(
+            "[{my_name} cannot finish this without a decision, and there is nobody at the \
+             keyboard. You are the employee they answer to.]\n\n{text}"
+        );
+        match crate::coworker::deliver(&rail, ctx, &manager_id, &asked, true).await {
+            Ok(delivery) => Some(match delivery.reply {
+                Some(reply) => ToolResult::ok(format!(
+                    "Nobody is at the keyboard, so this went to {}, who you answer to. Their \
+                     answer:\n\n{}",
+                    delivery.to_name, reply
+                )),
+                None => ToolResult::ok(format!(
+                    "Nobody is at the keyboard, so this went to {}, who you answer to. They are \
+                     deciding in their own session and you will be woken when they answer — \
+                     report this as \"asked {} — waiting\", never as done.",
+                    delivery.to_name, delivery.to_name
+                )),
+            }),
+            Err(e) => {
+                tracing::warn!(
+                    agent = %me, manager = %manager_id, error = %e,
+                    "escalation up the reporting line failed; the seat decides for itself"
+                );
+                None
+            }
+        }
+    }
+
     async fn handle_ask(&self, input: &serde_json::Value, ctx: &ToolContext) -> ToolResult {
         let action = input["action"].as_str().unwrap_or("prompt");
         match action {
             "prompt" | "confirm" | "select" => {
+                let text = input["text"].as_str().unwrap_or("");
+                if text.is_empty() {
+                    return ToolResult::error(errors::missing_param(
+                        action,
+                        "text",
+                        "agent(resource: \"ask\", action: \"prompt\", text: \"What would you like to do?\")",
+                    ));
+                }
+
                 // HITL gate: asking is only valid in direct, interactive chat (desktop/mobile).
                 // Automated/workflow/channel/sub-agent runs have nobody at the keyboard and
                 // ask_user() would block an ephemeral oneshot forever — so it must be
@@ -1861,20 +1935,21 @@ impl AgentTool {
                     != crate::origin::ExecutionMode::Interactive
                     || ctx.ask_channels.is_none()
                 {
+                    // Nobody is at the keyboard — but a seat that answers to
+                    // another seat is not on its own. The question goes UP the
+                    // reporting line, delivered by the ONE coworker rail, and
+                    // the manager's answer comes back as this call's result.
+                    // A seat that answers to the owner still decides for
+                    // itself: this is not a new way to interrupt the owner.
+                    if let Some(answered) = self.ask_up_the_line(ctx, text).await {
+                        return answered;
+                    }
                     return ToolResult::error(
                         "Asking the user is only available in direct chat (HITL). This is an \
-                         automated, workflow, or channel run — make a reasonable decision and \
-                         proceed, and tell the user what you assumed.",
+                         automated, workflow, or channel run, and you answer to the owner \
+                         directly rather than to another employee — make a reasonable decision \
+                         and proceed, and tell the user what you assumed.",
                     );
-                }
-
-                let text = input["text"].as_str().unwrap_or("");
-                if text.is_empty() {
-                    return ToolResult::error(errors::missing_param(
-                        action,
-                        "text",
-                        "agent(resource: \"ask\", action: \"prompt\", text: \"What would you like to do?\")",
-                    ));
                 }
 
                 // Options may be plain strings (["red","blue"]) or rich objects
@@ -2083,6 +2158,8 @@ impl AgentTool {
                             &existing.frontmatter,
                             existing.pricing_model.as_deref(),
                             existing.pricing_cost,
+                            None,
+                            None,
                             None,
                             None,
                             None,

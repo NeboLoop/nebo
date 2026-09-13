@@ -55,13 +55,19 @@ pub async fn install_org(
                 }
             }
         }
-        copy_dir(&src, &user_dir.join(&slug)).map_err(io_err)?;
+        napp::copy_tree(&src, &user_dir.join(&slug)).map_err(pack_err)?;
         employees_copied.push(slug);
     }
 
     // 2. Packs → packs/. One directory per layer; the marker names the layer.
+    //    Each lands through `napp::commit_change`, the ONE gate a pack change
+    //    passes on any path (CODE_AUDITOR 8.1): the folder is staged, the real
+    //    loader reads it, and only a pack that loads replaces what is there. A
+    //    pack that does not load is named in the response rather than half-landed.
     let packs_dir = config::packs_dir().map_err(to_error_response)?;
+    std::fs::create_dir_all(&packs_dir).map_err(io_err)?;
     let mut packs_copied = Vec::new();
+    let mut packs_skipped = Vec::new();
     for layer_dir in ["industry", "franchise", "company"] {
         let src = root.join(layer_dir);
         // A layer folder is a pack only when it carries its marker.
@@ -72,8 +78,13 @@ pub async fn install_org(
             continue;
         }
         let slug = pack_slug(&src).unwrap_or_else(|| layer_dir.to_string());
-        copy_dir(&src, &packs_dir.join(&slug)).map_err(io_err)?;
-        packs_copied.push(slug);
+        match napp::commit_change(&packs_dir.join(&slug), |staged| napp::copy_tree(&src, staged)) {
+            Ok(_) => packs_copied.push(slug),
+            Err(e) => {
+                info!(pack = %slug, error = %e, "org install: pack not loaded, not installed");
+                packs_skipped.push(serde_json::json!({ "pack": slug, "reason": e.to_string() }));
+            }
+        }
     }
 
     // 3. Wait for the watcher to have created the employees' rows (coalesced
@@ -175,28 +186,38 @@ pub async fn install_org(
         }
     }
 
-    // 5. Every seat reads the packs. The watcher on packs/ raises the change
-    //    for later edits; the install raises it now so nobody waits on a
-    //    debounce. `diff_and_raise` also reads the company layer's own policy
-    //    — its purpose, its unattended bounds, the operations it reserves to
-    //    the owner — because there is no artifact above the company layer to
-    //    read it from.
+    // 5. Every seat reads the packs, now. Installing an org is already an
+    //    explicit act of the owner's — they asked for this org by name — so the
+    //    install is the apply and it does not park the way an edit to a layer
+    //    file does. Only the packs this install wrote are applied; an edit the
+    //    owner had parked on some other pack stays parked. Applying also reads
+    //    the company layer's own policy — its purpose, its unattended bounds,
+    //    the operations it reserves to the owner — because there is no artifact
+    //    above the company layer to read it from.
     let current = napp::scan_packs(&packs_dir);
-    {
-        let mut previous = state.packs.write().await;
-        crate::layers_update::diff_and_raise(&state, &mut previous, current);
-    }
+    let (_applied, seats) = crate::layers_update::detect_and_apply(
+        &state,
+        current,
+        Some(packs_copied.clone()),
+    )
+    .await;
 
-    info!(employees = employees_copied.len(), packs = packs_copied.len(), teams = teams_written.len(), "org installed");
+    info!(employees = employees_copied.len(), packs = packs_copied.len(), teams = teams_written.len(), seats, "org installed");
     Ok(Json(serde_json::json!({
         "employees": employees_copied,
         "packs": packs_copied,
         "teams": teams_written,
+        "packsSkipped": packs_skipped,
         "teamsSkipped": teams_skipped,
+        "seats": seats,
     })))
 }
 
 fn io_err(e: std::io::Error) -> (reqwest::StatusCode, Json<types::api::ErrorResponse>) {
+    to_error_response(types::NeboError::Internal(e.to_string()))
+}
+
+fn pack_err(e: napp::PackError) -> (reqwest::StatusCode, Json<types::api::ErrorResponse>) {
     to_error_response(types::NeboError::Internal(e.to_string()))
 }
 
@@ -243,23 +264,4 @@ fn frontmatter(text: &str) -> (std::collections::HashMap<String, String>, String
     (map, body)
 }
 
-fn copy_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
-    std::fs::create_dir_all(dst)?;
-    for entry in std::fs::read_dir(src)? {
-        let entry = entry?;
-        let from = entry.path();
-        let to = dst.join(entry.file_name());
-        if from.is_dir() {
-            copy_dir(&from, &to)?;
-        } else {
-            let same = std::fs::read(&from)
-                .ok()
-                .zip(std::fs::read(&to).ok())
-                .is_some_and(|(a, b)| a == b);
-            if !same {
-                std::fs::copy(&from, &to)?;
-            }
-        }
-    }
-    Ok(())
-}
+

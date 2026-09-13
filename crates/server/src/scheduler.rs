@@ -483,10 +483,10 @@ pub(crate) async fn execute_agent_workflow_task(
 
     let def_json = binding.to_workflow_json(binding_name);
     let inputs: serde_json::Value = serde_json::to_value(&binding.inputs).unwrap_or_default();
-    let emit_source = binding.emit.as_ref().map(|emit_name| {
-        let slug = agent_rec.name.to_lowercase().replace(' ', "-");
-        format!("{}.{}", slug, emit_name)
-    });
+    let emit_source = binding
+        .emit
+        .as_ref()
+        .map(|emit_name| workflow::events::emit_source_for(&agent_rec.name, emit_name));
 
     match manager
         .run_inline(

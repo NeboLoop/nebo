@@ -126,22 +126,8 @@ impl MessageTool {
             );
         };
 
-        let msg = crate::coworker::CoworkerMessage {
-            from_agent_id: types::keyparser::extract_agent_id(&ctx.session_key),
-            sender_session_key: ctx.session_key.clone(),
-            to: to.to_string(),
-            text: text.to_string(),
-            // Verbatim resolved scope — the rail derives the matter from it;
-            // the tool never re-derives scopes (the canonical derivation lives
-            // in agent::memory::resolve_memory_scope and the runner).
-            requester_scope: ctx.user_id.clone(),
-            handoff_depth: ctx.handoff_depth,
-            provenance: ctx.run_taint.clone(),
-            wait: input["wait"].as_bool().unwrap_or(true),
-            team: None,
-        };
-
-        match rail.send(msg).await {
+        let wait = input["wait"].as_bool().unwrap_or(true);
+        match crate::coworker::deliver(&rail, ctx, to, text, wait).await {
             Ok(delivery) => {
                 // Structured payload → the chat renders a first-class
                 // "Messaged {name}" event (clickable through to the coworker

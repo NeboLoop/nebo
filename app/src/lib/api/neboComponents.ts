@@ -72,6 +72,8 @@ export interface Agent {
 	voice?: string
 	nameLocked?: number
 	contextStamp?: string
+	reportsTo?: string
+	departmentLocked?: number
 }
 
 export interface AgentProfile {
@@ -584,6 +586,84 @@ export interface InvoiceInfo {
 	pdfUrl?: string
 }
 
+export interface LayerApplyResponse {
+	applied: string[]
+	seats: number
+}
+
+export interface LayerFile {
+	path: string
+	bytes: number
+}
+
+export interface LayerFileContent {
+	path: string
+	content: string
+}
+
+export interface LayerFilesResponse {
+	files: LayerFile[]
+}
+
+export interface LayerFolderCounts {
+	vocabulary: number
+	parties: number
+	rules: number
+	laws: number
+	standards: number
+	workflows: number
+	reference: number
+}
+
+export interface LayerPack {
+	layer: string
+	slug: string
+	name: string
+	version: string
+	stamp: string
+	fileCount: number
+	updatedAt: number
+}
+
+export interface LayerSeat {
+	id: string
+	name: string
+	status: string
+	against: string
+	at?: number
+}
+
+export interface LayerSeatTally {
+	total: number
+	written: number
+	pending: number
+	stale: number
+}
+
+export interface LayerSeatsResponse {
+	seats: LayerSeat[]
+}
+
+export interface LayerUploadResponse {
+	layer: string
+	slug: string
+	name: string
+	version: string
+	counts: LayerFolderCounts
+	pending?: PendingLayerEntry
+}
+
+export interface LayerWriteResponse {
+	ok: boolean
+	pending?: PendingLayerEntry
+}
+
+export interface LayersResponse {
+	packs: LayerPack[]
+	pending: PendingLayerEntry[]
+	seats: LayerSeatTally
+}
+
 export interface Lead {
 	id: string
 	email: string
@@ -724,6 +804,17 @@ export interface PendingAsk {
 	prompt: string
 	widgets?: unknown
 	createdAt: number
+}
+
+export interface PendingLayerEntry {
+	layer: string
+	slug: string
+	name: string
+	kind: string
+	stamp: string
+	previousStamp?: string
+	diff: string
+	detectedAt: number
 }
 
 export interface PendingTask {
@@ -1372,7 +1463,8 @@ export interface EnableAgentChannelResponse {
 export interface GetAgentOperationsResponse {
 	default: unknown
 	configured: unknown
-	interfaces: string[]
+	interfaces: unknown
+	available: unknown[]
 	operations: unknown[]
 	total: number
 }
@@ -1387,6 +1479,9 @@ export interface GetAgentResponse {
 	persona: unknown
 	model: unknown
 	skills: string[]
+	interfaces: unknown
+	subscribes: unknown
+	ceiling: unknown
 	pluginsNeedingAuth: unknown
 	needsSetup: unknown
 }
@@ -1548,8 +1643,9 @@ export interface InstallOrgResponse {
 	employees: unknown
 	packs: unknown
 	teams: unknown
+	packsSkipped: unknown
 	teamsSkipped: unknown
-	constitution: unknown
+	seats: unknown
 }
 
 export interface InstallStoreProductResponse {
@@ -2217,6 +2313,10 @@ export interface AgentListEntry {
 	loopExposed: boolean
 	loopAgentId?: string
 	voice: string
+	/** The part of the company this employee sits in; unset = unassigned. */
+	department?: string
+	/** The employee this one answers to (local agent id); unset = answers to the owner. */
+	reportsTo?: string
 	isolated: boolean
 	needsSetup: boolean
 	nappPath?: string

@@ -448,10 +448,10 @@ impl WorkflowManagerImpl {
             &types::keyparser::agent_workflow_id(agent_id),
         );
 
-        let emit_source = binding.emit.as_ref().map(|emit_name| {
-            let slug = agent_rec.name.to_lowercase().replace(' ', "-");
-            format!("{}.{}", slug, emit_name)
-        });
+        let emit_source = binding
+            .emit
+            .as_ref()
+            .map(|emit_name| workflow::events::emit_source_for(&agent_rec.name, emit_name));
 
         self.run_inline(
             def_json,
@@ -1167,6 +1167,8 @@ impl WorkflowManager for WorkflowManagerImpl {
                     &fm.to_string(),
                     agent.pricing_model.as_deref(),
                     agent.pricing_cost,
+                    None,
+                    None,
                     None,
                     None,
                     None,
@@ -2581,6 +2583,8 @@ async fn save_binding(
                     None,
                     None,
                     None,
+                    None,
+                    None,
                 )
                 .map_err(|e| format!("update_agent: {}", e))?;
 
@@ -2680,6 +2684,8 @@ pub(crate) fn apply_workflow_binding(
             &fm.to_string(),
             agent.pricing_model.as_deref(),
             agent.pricing_cost,
+            None,
+            None,
             None,
             None,
             None,

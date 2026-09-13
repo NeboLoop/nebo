@@ -1,5 +1,6 @@
 pub mod a2ui;
 pub mod a2ui_actions;
+pub mod agents_export;
 pub mod app_lifecycle;
 mod artifact_updates;
 mod channel_dispatch;
@@ -1078,7 +1079,8 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     }
 
     // Initialize skill loader (embedded bundled + marketplace nebo/skills/ +
-    // user/skills/ + per-employee learned/skills/<agent_id>/)
+    // user/skills/ + the skills each employee package ships with +
+    // per-employee learned/skills/<agent_id>/)
     let installed_skills_dir = data_dir.join("nebo").join("skills");
     let user_skills_dir = data_dir.join("user").join("skills");
     let learned_skills_dir = data_dir.join("learned").join("skills");
@@ -1088,6 +1090,12 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     let skill_loader = Arc::new(
         tools::skills::Loader::new(installed_skills_dir, user_skills_dir)
             .with_learned_dir(learned_skills_dir)
+            // The procedures an employee package ships with live inside the
+            // package (<agents root>/<slug>/skills/), not on the shared roster.
+            .with_agent_dirs(vec![
+                data_dir.join("nebo").join("agents"),
+                data_dir.join("user").join("agents"),
+            ])
             .with_plugin_store(plugin_store.clone())
             .with_db_store(store.clone()),
     );
@@ -1618,9 +1626,14 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         workflow::cases::CaseAssignmentOpener { store: store.clone() },
     ));
 
-    // Register EmitTool so it appears in tools list and is available to all origins
+    // Register EmitTool so it appears in tools list and is available to all
+    // origins. One shared instance serves every employee, so it reads the
+    // producing seat from the run's session key — an event raised from chat is
+    // addressed by the same function the executors use.
     tool_registry
-        .register(Box::new(tools::EmitTool::new(event_bus.clone())))
+        .register(Box::new(
+            tools::EmitTool::new(event_bus.clone()).with_session_producer(store.clone()),
+        ))
         .await;
 
     // The ONE agentic loop for workflow activities: the chat Runner, adapted
@@ -2017,6 +2030,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         plugin_store,
         agent_loader,
         packs: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+        pending_layers: Arc::new(tokio::sync::RwLock::new(Vec::new())),
         presence: Arc::new(agent::PresenceTracker::new()),
         tunnel_online: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         proactive_inbox: Arc::new(agent::ProactiveInbox::new()),
@@ -2031,27 +2045,40 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         store_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
     };
 
-    // Packs on disk (R8, R15): load the previous set without raising, give
-    // seats that have never read them their first read, then watch for
-    // changes and raise `layers_changed` per pack that differs.
+    // Packs on disk (R8, R15): restore what the seats have actually read, give
+    // seats that have never read them their first read, then watch for changes
+    // and PARK them. An edit to a layer file raises nothing on its own — the
+    // owner applies from the layers screen and the whole edit lands at once.
     match config::packs_dir() {
         Ok(dir) => {
             let _ = std::fs::create_dir_all(&dir);
             let current = napp::scan_packs(&dir);
             {
                 let mut packs = state.packs.write().await;
-                for p in current {
-                    packs.insert(format!("{}:{}", p.layer.as_str(), p.slug), p);
+                match layers_update::load_applied() {
+                    // What the seats last read. The scan is compared against it
+                    // below, so an edit made while Nebo was down is parked —
+                    // neither lost nor silently applied.
+                    Some(applied) => *packs = applied,
+                    // Never applied anything: this install predates parking, or
+                    // is new. Seed the snapshot from disk, which raises nothing.
+                    None => {
+                        for p in current.iter() {
+                            packs.insert(format!("{}:{}", p.layer.as_str(), p.slug), p.clone());
+                        }
+                        layers_update::save_applied(&packs);
+                    }
                 }
+                *state.pending_layers.write().await = layers_update::load_pending();
                 layers_update::first_read_for_unstamped_seats(&state, &packs);
             }
+            layers_update::detect_changes(&state, current).await;
             let watch_state = state.clone();
             let handle = tokio::runtime::Handle::current();
             let _detached = napp::watch_packs(dir, move |packs| {
                 let st = watch_state.clone();
                 handle.spawn(async move {
-                    let mut previous = st.packs.write().await;
-                    layers_update::diff_and_raise(&st, &mut previous, packs);
+                    layers_update::detect_changes(&st, packs).await;
                 });
             });
         }
@@ -3440,7 +3467,9 @@ async fn run_webhook_workflow(
         payload,
         "webhook",
     );
-    let emit_source = emit.as_ref().map(|emit_name| format!("{}.{}", agent_slug, emit_name));
+    let emit_source = emit
+        .as_ref()
+        .map(|emit_name| workflow::events::emit_source_for(agent_slug, emit_name));
 
     match state
         .workflow_manager

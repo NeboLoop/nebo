@@ -1074,6 +1074,19 @@ impl DynTool for PluginTool {
         false
     }
 
+    /// A typed port call performs the `operation` it names; everything else
+    /// (list, discover, help, exec-by-slug) performs none. This is what the
+    /// runner's per-operation gate reads — the behaviour it had when the gate
+    /// matched on the tool's name.
+    fn operation_performed(&self, input: &serde_json::Value) -> Option<String> {
+        input
+            .get("operation")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    }
+
     fn requires_approval_for(&self, input: &serde_json::Value) -> bool {
         // help, services, and events are read-only; exec needs approval
         let action = input

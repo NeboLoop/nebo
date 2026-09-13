@@ -5649,6 +5649,7 @@ dependencies = [
  "url",
  "urlencoding",
  "uuid",
+ "zip 8.6.0",
 ]
 
 [[package]]

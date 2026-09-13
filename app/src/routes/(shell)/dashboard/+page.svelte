@@ -16,6 +16,8 @@
   import Bell from 'lucide-svelte/icons/bell';
   import LayoutGrid from 'lucide-svelte/icons/layout-grid';
   import List from 'lucide-svelte/icons/list';
+  import Network from 'lucide-svelte/icons/network';
+  import Check from 'lucide-svelte/icons/check';
   import { goto } from '$lib/nav';
   import * as api from '$lib/api/nebo';
   import type * as components from '$lib/api/neboComponents';
@@ -46,7 +48,9 @@
   // Grid or list is a per-device habit, so it lives in base-scoped storage
   // rather than the account's preferences.
   const VIEW_KEY = 'dashboard:view';
-  let view = $state<'grid' | 'list'>(storage.get(VIEW_KEY) === 'list' ? 'list' : 'grid');
+  type View = 'grid' | 'list' | 'org';
+  const savedView = storage.get(VIEW_KEY);
+  let view = $state<View>(savedView === 'list' || savedView === 'org' ? savedView : 'grid');
   $effect(() => storage.set(VIEW_KEY, view));
   let statusFilter = $state<Status>('all');
   let showAllRuns = $state(false);
@@ -196,6 +200,131 @@
     return `${Number(m)}/${Number(d)}`;
   }
   const statusOptions: Status[] = ['all', 'working', 'waiting', 'idle', 'paused'];
+
+  // ── The shape of the workforce ─────────────────────────────────────────
+  // Drawn from the roster the shell already holds: `department` and `reportsTo`
+  // ride the same list call every other roster field does, so the shape needs
+  // no fetch of its own and no second endpoint that could disagree with the
+  // sidebar. Redraws arrive on the roster's own `agent_updated` refresh.
+
+  /** One employee in the tree, with the employees that answer to it. */
+  interface OrgNode {
+    id: string;
+    name: string;
+    color: string;
+    department: string;
+    reportsTo: string;
+    depth: number;
+    reports: number;
+  }
+
+  /** Reporting lines the owner has just changed, until the roster confirms. */
+  let pendingLine = $state<Record<string, string>>({});
+  let lineSaved = $state('');
+  let lineError = $state('');
+  let lineTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const orgRoster = $derived(shell.roster.filter((a) => !a.isApp));
+  const managerOf = $derived.by(() => {
+    const m: Record<string, string> = {};
+    for (const a of orgRoster) m[a.id] = pendingLine[a.id] ?? a.reportsTo ?? '';
+    // A line that names an employee no longer on the roster reads as "answers
+    // to you" — the same way the backend reads a manager id that stopped
+    // resolving, so the picture never hides an employee behind a ghost.
+    for (const [id, mgr] of Object.entries(m)) {
+      if (mgr && !orgRoster.some((a) => a.id === mgr)) m[id] = '';
+    }
+    return m;
+  });
+
+  /** The tree, flattened depth-first: the order it is drawn in. */
+  const orgRows = $derived.by(() => {
+    const byManager = new Map<string, typeof orgRoster>();
+    for (const a of orgRoster) {
+      const key = managerOf[a.id] ?? '';
+      const list = byManager.get(key) ?? [];
+      list.push(a);
+      byManager.set(key, list);
+    }
+    for (const list of byManager.values()) list.sort((x, y) => x.name.localeCompare(y.name));
+    const rows: OrgNode[] = [];
+    const walk = (managerId: string, depth: number) => {
+      for (const a of byManager.get(managerId) ?? []) {
+        // Guard against a cycle the server should already have refused: an
+        // employee is drawn once, never twice, and never forever.
+        if (rows.some((r) => r.id === a.id)) continue;
+        rows.push({
+          id: a.id,
+          name: a.name,
+          color: a.color,
+          department: (a.department ?? '').trim(),
+          reportsTo: managerId,
+          depth,
+          reports: (byManager.get(a.id) ?? []).length,
+        });
+        walk(a.id, depth + 1);
+      }
+    };
+    walk('', 0);
+    // Anyone a refused cycle left unreachable still belongs on the page.
+    for (const a of orgRoster) {
+      if (!rows.some((r) => r.id === a.id)) {
+        rows.push({
+          id: a.id,
+          name: a.name,
+          color: a.color,
+          department: (a.department ?? '').trim(),
+          reportsTo: managerOf[a.id] ?? '',
+          depth: 0,
+          reports: 0,
+        });
+      }
+    }
+    return rows;
+  });
+
+  /** Everyone flat under you is no hierarchy at all — say so instead of drawing one. */
+  const orgIsFlat = $derived(orgRoster.length > 0 && orgRows.every((r) => r.depth === 0));
+
+  /** Who an employee may answer to: not itself, and nobody already below it. */
+  function lineOptions(id: string) {
+    const below = new Set<string>([id]);
+    for (;;) {
+      const before = below.size;
+      for (const a of orgRoster) {
+        const mgr = managerOf[a.id] ?? '';
+        if (mgr && below.has(mgr)) below.add(a.id);
+      }
+      if (below.size === before) break;
+    }
+    return orgRoster.filter((a) => !below.has(a.id)).sort((x, y) => x.name.localeCompare(y.name));
+  }
+
+  /**
+   * Set an employee's reporting line. One short debounce and a pill, the same
+   * as every other form here — and the same PUT /agents/{id} the employee's own
+   * settings uses, so there is one writer for an employee's fields.
+   */
+  function setReportsTo(id: string, managerId: string) {
+    pendingLine = { ...pendingLine, [id]: managerId };
+    if (lineTimer) clearTimeout(lineTimer);
+    lineTimer = setTimeout(() => saveLine(id, managerId), 700);
+  }
+
+  async function saveLine(id: string, managerId: string) {
+    try {
+      await api.updateAgent(id, { reportsTo: managerId });
+      lineError = '';
+      lineSaved = id;
+      setTimeout(() => { if (lineSaved === id) lineSaved = ''; }, 2000);
+    } catch (e) {
+      // A refused line names the loop it would have closed. Dropping the
+      // pending value puts the picture back to what the server actually holds.
+      lineError = (e as Error)?.message || $t('agentSettings.saveFailed');
+      const { [id]: _dropped, ...rest } = pendingLine;
+      pendingLine = rest;
+    }
+  }
 </script>
 
 <div class="flex-1 flex flex-col min-w-0 min-h-0 w-full max-w-full overflow-x-hidden bg-base-100">
@@ -288,16 +417,83 @@
               <div class="h-8 rounded-full border border-base-300 p-0.5 flex" role="group" aria-label={$t('dashboard.employees')}>
                 <button class="w-8 h-full rounded-full flex items-center justify-center {view === 'grid' ? 'bg-primary/10 text-primary' : 'text-base-content/50'}" aria-pressed={view === 'grid'} aria-label={$t('dashboard.viewGrid')} title={$t('dashboard.viewGrid')} onclick={() => (view = 'grid')}><LayoutGrid class="w-4 h-4" /></button>
                 <button class="w-8 h-full rounded-full flex items-center justify-center {view === 'list' ? 'bg-primary/10 text-primary' : 'text-base-content/50'}" aria-pressed={view === 'list'} aria-label={$t('dashboard.viewList')} title={$t('dashboard.viewList')} onclick={() => (view = 'list')}><List class="w-4 h-4" /></button>
+                <button class="w-8 h-full rounded-full flex items-center justify-center {view === 'org' ? 'bg-primary/10 text-primary' : 'text-base-content/50'}" aria-pressed={view === 'org'} aria-label={$t('org.title')} title={$t('org.title')} onclick={() => (view = 'org')}><Network class="w-4 h-4" /></button>
               </div>
-              <select class="select select-sm select-bordered rounded-full h-8 min-h-0 text-xs" bind:value={statusFilter} aria-label={$t('dashboard.allStatus')}>
-                {#each statusOptions as s}
-                  <option value={s}>{s === 'all' ? $t('dashboard.allStatus') : $t(`dashboard.status.${s}`)}</option>
-                {/each}
-              </select>
+              {#if view !== 'org'}
+                <select class="select select-sm select-bordered rounded-full h-8 min-h-0 text-xs" bind:value={statusFilter} aria-label={$t('dashboard.allStatus')}>
+                  {#each statusOptions as s}
+                    <option value={s}>{s === 'all' ? $t('dashboard.allStatus') : $t(`dashboard.status.${s}`)}</option>
+                  {/each}
+                </select>
+              {/if}
             </div>
           </div>
 
-          {#if view === 'grid'}
+          {#if view === 'org'}
+            <!-- The shape of the workforce: who answers to whom, which part of
+                 the company each sits in, and who is filed nowhere. Indentation
+                 IS the reporting line, so the picture cannot disagree with the
+                 data — every row's manager is the row it is indented under. -->
+            <div class="rounded-2xl border border-base-content/15 bg-base-100 shadow-sm p-4 min-w-0">
+              <div class="text-xs text-base-content/70 mb-3">{$t('org.blurb')}</div>
+              {#if lineError}
+                <div class="rounded-lg border border-error/40 bg-error/10 px-3.5 py-2.5 text-xs text-error mb-3">{lineError}</div>
+              {/if}
+              {#if orgRoster.length === 0}
+                <div class="text-xs text-base-content/50 py-4">{$t('org.empty')}</div>
+              {:else}
+                <div class="flex items-center gap-2.5 pb-2 mb-1 border-b border-base-300">
+                  <span class="w-7 h-7 rounded-lg grid place-items-center bg-base-content/10 text-base-content/60 shrink-0" aria-hidden="true"><Users class="w-3.5 h-3.5" /></span>
+                  <span class="text-sm font-semibold">{$t('org.you')}</span>
+                  <span class="text-xs text-base-content/50">{$t('org.reportsCount', { values: { count: orgRows.filter((r) => r.depth === 0).length } })}</span>
+                </div>
+                {#if orgIsFlat}
+                  <div class="text-xs text-base-content/60 pt-2 pb-1">{$t('org.flat')}</div>
+                {/if}
+                <div class="divide-y divide-base-300/70">
+                  {#each orgRows as r (r.id)}
+                    <div class="py-2 flex items-stretch gap-3 min-w-0">
+                      <!-- One rail per level: the indent IS the reporting line,
+                           drawn with borders rather than a picture of a tree. -->
+                      {#each Array(r.depth) as _, i (i)}
+                        <i class="w-[1.15rem] shrink-0 border-l border-base-300" aria-hidden="true"></i>
+                      {/each}
+                      <div class="flex items-center gap-2.5 min-w-0 flex-1">
+                        <AgentAvatar name={r.name} color={r.color} size="sm" />
+                        <button class="text-sm font-semibold truncate link link-hover no-underline text-left" onclick={() => goto(`/${r.id}/threads`)}>{r.name}</button>
+                        {#if r.department}
+                          <span class="text-[10px] font-semibold uppercase tracking-wider px-2 py-px rounded-full bg-base-content/5 text-base-content/60 shrink-0">{r.department}</span>
+                        {:else}
+                          <span class="text-[10px] uppercase tracking-wider px-2 py-px rounded-full border border-dashed border-base-300 text-base-content/40 shrink-0">{$t('org.unassigned')}</span>
+                        {/if}
+                        {#if r.reports > 0}
+                          <span class="text-xs text-base-content/45 shrink-0">{$t('org.reportsCount', { values: { count: r.reports } })}</span>
+                        {/if}
+                      </div>
+                      <div class="flex items-center gap-2 shrink-0">
+                        {#if lineSaved === r.id}
+                          <span class="text-xs text-success flex items-center gap-1"><Check class="w-3 h-3" /> {$t('common.saved')}</span>
+                        {/if}
+                        <label class="flex items-center gap-1.5">
+                          <span class="text-[10px] uppercase tracking-wider text-base-content/45">{$t('agentSettings.reportsTo')}</span>
+                          <select
+                            class="select select-bordered select-xs rounded-full min-h-0 h-7 text-xs max-w-[11rem]"
+                            value={managerOf[r.id] ?? ''}
+                            onchange={(e) => setReportsTo(r.id, e.currentTarget.value)}
+                          >
+                            <option value="">{$t('org.reportsToYou')}</option>
+                            {#each lineOptions(r.id) as o (o.id)}
+                              <option value={o.id}>{o.name}</option>
+                            {/each}
+                          </select>
+                        </label>
+                      </div>
+                    </div>
+                  {/each}
+                </div>
+              {/if}
+            </div>
+          {:else if view === 'grid'}
             <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3 md:gap-4 min-w-0">
               {#each shown as e (e.id)}
                 {@const working = e.status === 'working'}

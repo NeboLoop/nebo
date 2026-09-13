@@ -21,7 +21,7 @@ pub use hooks::{HookCaller, HookDispatcher, HookType, register_plugin_hooks};
 pub use manifest::{Manifest, ManifestSignature, QualifiedName};
 pub use pack::{
     Pack, PackEntry, PackError, PackLaw, PackLayer, PackQuestion, PackRule, PackStandard,
-    load_pack, scan_packs, watch_packs,
+    commit_change, copy_tree, load_pack, scan_packs, unified_diff, watch_packs,
 };
 pub use registry::{Registry, RegistryConfig};
 pub use runtime::{Process, Runtime};

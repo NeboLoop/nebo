@@ -650,6 +650,22 @@ impl OperationRule {
         self.access == OperationAccess::Always && self.bounds.is_some()
     }
 
+    /// Whether this rule may loosen an operation to `Always`.
+    ///
+    /// The owner's own setting (a bare rule from the Approvals screen) and the
+    /// General Manager's standing grant may. A rule that arrived with a package
+    /// or a pack may not: an author DECLARES what its employee does and what it
+    /// must not do unattended, and a declaration can only restrict — never hand
+    /// itself permission. (`napp` refuses any ceiling value but "approval" when
+    /// it parses a manifest; this is the runtime half of the same rule, and it
+    /// also holds for a policy JSON edited by hand.)
+    pub fn may_grant(&self) -> bool {
+        !self.locked
+            && !self.source.as_deref().is_some_and(|s| {
+                s == "seat" || s.starts_with("pack:") || s.starts_with("law:")
+            })
+    }
+
     fn is_bare(&self) -> bool {
         self.bounds.is_none()
             && self.source.is_none()
@@ -1018,12 +1034,25 @@ impl OperationPolicy {
         counters: Option<&DayCounters>,
         fresh: bool,
     ) -> Decision {
-        if !crate::interface_catalog::is_gated(operation) {
-            return Decision::new(OperationAccess::Always, PolicyLayer::Default, None, "not gated");
-        }
         let suffix = crate::plugin_tool::port_suffix(operation);
         let rule = self.operations.get(&suffix);
         let company_rule = company.and_then(|c| c.operations.get(&suffix));
+
+        // The gate applies to an operation the compiled catalog says is gated,
+        // OR to any operation this employee has been TOLD about: a rule exists
+        // for it (its package's declared ceiling, a pack's law, the owner's own
+        // setting, the General Manager's grant) or the company names it. So an
+        // owner who builds their own employee around their own capability can
+        // require approval for it without that operation ever being shipped to
+        // us. The catalog stays the floor — what is gated by default and what
+        // is critical — and a declaration only ever adds to it.
+        let cataloged = crate::interface_catalog::is_gated(operation);
+        let declared = rule.is_some()
+            || company_rule.is_some()
+            || company.is_some_and(|c| c.is_reserved(&suffix));
+        if !cataloged && !declared {
+            return Decision::new(OperationAccess::Always, PolicyLayer::Default, None, "not gated");
+        }
 
         // A law ends it, wherever it is written.
         if let Some(r) = rule.filter(|r| r.is_law()) {
@@ -1050,7 +1079,7 @@ impl OperationPolicy {
                 Some(&suffix),
                 "blocked for this employee",
             ),
-            Some(r) if r.is_standing_grant() => {
+            Some(r) if r.is_standing_grant() && r.may_grant() => {
                 match grant_admits(r, params, counters, company, fresh) {
                     Ok(()) => Decision::new(
                         OperationAccess::Always,
@@ -1073,7 +1102,7 @@ impl OperationPolicy {
                     ),
                 }
             }
-            Some(r) if r.access == OperationAccess::Always => Decision::new(
+            Some(r) if r.access == OperationAccess::Always && r.may_grant() => Decision::new(
                 OperationAccess::Always,
                 PolicyLayer::Default,
                 Some(&suffix),
@@ -1083,17 +1112,35 @@ impl OperationPolicy {
                 OperationAccess::Approval,
                 if r.locked { PolicyLayer::Ceiling } else { PolicyLayer::Default },
                 Some(&suffix),
-                if r.locked { "authority required: this seat's ceiling" } else { "asks, by this employee's setting" },
+                if r.locked {
+                    "authority required: this seat's ceiling"
+                } else if !r.may_grant() {
+                    "declared by this employee's package: authority required until the owner grants it"
+                } else {
+                    "asks, by this employee's setting"
+                },
             ),
             None => {
-                if self.default == OperationAccess::Always
-                    && crate::interface_catalog::is_critical(operation)
-                {
+                // The employee-wide default is the owner saying "you may do the
+                // things I understand". It is not consent for money movement or
+                // contract formation (critical), and it is not consent for an
+                // operation Nebo has only been TOLD about — we do not know what
+                // that one does, so the honest answer is to ask, which in an
+                // unattended run means it is not performed.
+                if self.default == OperationAccess::Always && crate::interface_catalog::is_critical(operation) {
                     Decision::new(
                         OperationAccess::Approval,
                         PolicyLayer::Default,
                         None,
                         "critical operation: the employee-wide default never loosens it",
+                    )
+                } else if self.default == OperationAccess::Always && !cataloged {
+                    Decision::new(
+                        OperationAccess::Approval,
+                        PolicyLayer::Default,
+                        None,
+                        "this operation is declared for this employee but is not one Nebo knows: \
+                         the owner rules on it, one operation at a time",
                     )
                 } else {
                     Decision::new(self.default, PolicyLayer::Default, None, "employee default")
@@ -1141,6 +1188,13 @@ impl OperationPolicy {
     /// falls back to the safe default policy (gated → Approval) instead of
     /// skipping the gate — the no-policy skip was the widest path from
     /// untrusted input to an ungated outbound operation.
+    ///
+    /// "Installation is the grant" never covers a CRITICAL operation: money
+    /// movement, contract formation, or a rewrite of the company's own files
+    /// is the owner's to grant per operation, so an employee nobody has
+    /// configured asks for it rather than performing it — from a trusted
+    /// origin too. Without this, the critical protection in `decide` could be
+    /// walked around simply by never opening the Approvals screen.
     pub fn decide_optional(
         policy: Option<&OperationPolicy>,
         operation: &str,
@@ -1152,9 +1206,11 @@ impl OperationPolicy {
     ) -> Option<Decision> {
         match policy {
             Some(p) => Some(p.decide(operation, origin, params, company, counters, fresh)),
-            None if !origin.is_trusted() => Some(OperationPolicy::default().decide(
-                operation, origin, params, company, counters, fresh,
-            )),
+            None if !origin.is_trusted() || crate::interface_catalog::is_critical(operation) => {
+                Some(OperationPolicy::default().decide(
+                    operation, origin, params, company, counters, fresh,
+                ))
+            }
             None => None,
         }
     }
@@ -1885,5 +1941,211 @@ mod tests {
         assert_eq!(opt(None, "ledger.vendor.find", Origin::Comm), Some(Always), "untrusted + no policy: reads still flow");
         let auto = OperationPolicy { default: Always, operations: HashMap::new() };
         assert_eq!(opt(Some(&auto), "mail.message.send", Origin::Comm), Some(Approval), "with a policy, decide_optional defers to decide (floored)");
+        // A CRITICAL op is never covered by "installation is the grant": an
+        // employee nobody configured asks, from a trusted origin too.
+        assert_eq!(opt(None, "ledger.billpayment.create", Origin::User), Some(Approval));
+        assert_eq!(opt(None, "layers.company.write", Origin::Workflow), Some(Approval));
+    }
+
+    /// Writing the company's own files is an authority the owner gives to an
+    /// EMPLOYEE, never something a channel confers. The dangerous inversion is
+    /// an employee acquiring it without the owner saying so, because the
+    /// company file is the company's law: everything below is that one check,
+    /// from every direction.
+    #[test]
+    fn only_an_explicit_grant_writes_the_company_file() {
+        use OperationAccess::*;
+        const COMPANY: &str = "layers.company.write";
+        const INDUSTRY: &str = "layers.industry.write";
+        let none = OperationParams::default();
+        let dec = |p: &OperationPolicy, op: &str, o: Origin| {
+            p.decide(op, o, &none, None, None, true).access
+        };
+
+        // 1. No policy at all — the employee as it comes out of the box.
+        let fresh = OperationPolicy::default();
+        for o in [Origin::User, Origin::Workflow, Origin::System, Origin::Comm] {
+            assert_eq!(dec(&fresh, COMPANY, o), Approval, "unconfigured: {o:?}");
+        }
+        // And the unconfigured case does not slip past the gate entirely.
+        assert_eq!(
+            OperationPolicy::decide_optional(None, COMPANY, Origin::User, &none, None, None, true)
+                .map(|d| d.access),
+            Some(Approval),
+            "an employee with no policy at all must not write the company file unasked",
+        );
+
+        // 2. Employee-wide "do everything" — the setting an owner flips for
+        // convenience. It must NOT reach the company file, because that
+        // operation is critical; the trade files it may cover.
+        let auto = OperationPolicy { default: Always, operations: HashMap::new() };
+        for o in [Origin::User, Origin::Workflow, Origin::System] {
+            assert_eq!(dec(&auto, COMPANY, o), Approval, "the default never grants it: {o:?}");
+            assert_eq!(dec(&auto, INDUSTRY, o), Always, "the trade file is only gated: {o:?}");
+        }
+
+        // 3. The owner's explicit grant on this one operation. Authority is the
+        // employee's, so it holds from a workflow exactly as from a chat.
+        let mut granted = OperationPolicy::default();
+        granted
+            .apply_edit(COMPANY, OperationRule::access(Always))
+            .expect("the owner may grant it");
+        for o in [Origin::User, Origin::Workflow, Origin::System] {
+            assert_eq!(dec(&granted, COMPANY, o), Always, "granted to the employee: {o:?}");
+        }
+        // An untrusted origin still floors it: someone else's words in the run
+        // never spend the grant.
+        for o in [Origin::Comm, Origin::Mcp, Origin::Caller, Origin::Visitor] {
+            assert_eq!(dec(&granted, COMPANY, o), Approval, "untrusted floors the grant: {o:?}");
+        }
+
+        // 4. The company's own law ends it, whatever the grant says — and the
+        // General Manager cannot grant past it either.
+        let mut law = CompanyPolicy::default();
+        law.operations.insert(
+            COMPANY.to_string(),
+            OperationRule {
+                access: Blocked,
+                source: Some("law:only-the-owner-edits-the-company-file".to_string()),
+                locked: true,
+                ..Default::default()
+            },
+        );
+        let blocked = granted.decide(COMPANY, Origin::User, &none, Some(&law), None, true);
+        assert_eq!(blocked.access, Blocked);
+        assert_eq!(blocked.layer, PolicyLayer::Law);
+        assert!(law.permits(COMPANY, &OperationRule::access(Always)).is_err());
+
+        // 5. Reserved to the owner (a law with `reserved_to: owner`): the seat
+        // may hold the grant, but every call still reaches the owner.
+        let reserved = CompanyPolicy { reserved: vec![COMPANY.to_string()], ..Default::default() };
+        let d = granted.decide(COMPANY, Origin::User, &none, Some(&reserved), None, true);
+        assert_eq!(d.access, Approval);
+        assert_eq!(d.layer, PolicyLayer::Company);
+        assert!(matches!(
+            reserved.permits(COMPANY, &OperationRule::access(Always)),
+            Err(PolicyError::Reserved(_))
+        ));
+    }
+
+    /// Anyone installing Nebo can build their own employee around their own
+    /// capability, and must be able to require approval for it. An operation
+    /// Nebo has been TOLD about is gateable even though it is in no compiled
+    /// list, and until the owner rules on it the honest answer is "ask" — which
+    /// in an unattended run means it is not performed.
+    #[test]
+    fn an_operation_nebo_was_only_told_about_is_gateable_and_fails_closed() {
+        use OperationAccess::*;
+        // An owner's own operation, in no catalog of ours.
+        const MINE: &str = "roofing.permit.file";
+        let none = OperationParams::default();
+        let auto = OperationPolicy { default: Always, operations: HashMap::new() };
+
+        // 1. Nobody has said this operation exists: Nebo does not invent a gate
+        //    for it. (This is what keeps every ordinary tool call ungated.)
+        let d = auto.decide(MINE, Origin::User, &none, None, None, true);
+        assert_eq!((d.access, d.reason.as_str()), (Always, "not gated"));
+
+        // 2. The employee's package declares it (`ceiling: {"roofing.permit.file":
+        //    "approval"}` lands as an unlocked Approval rule sourced `seat`).
+        //    Now it is gated — and the employee-wide "do everything" default
+        //    does NOT cover it.
+        let declared = OperationPolicy {
+            default: Always,
+            operations: HashMap::from([(
+                MINE.to_string(),
+                OperationRule {
+                    access: Approval,
+                    source: Some("seat".to_string()),
+                    ..Default::default()
+                },
+            )]),
+        };
+        let d = declared.decide(MINE, Origin::User, &none, None, None, true);
+        assert_eq!(d.access, Approval);
+        assert!(d.reason.contains("declared by this employee's package"), "{}", d.reason);
+
+        // 3. Declared elsewhere with no rule of its own — a pack law or the
+        //    constitution names it — and the employee's default is Always. It
+        //    still asks, because we do not know what the operation does.
+        let company = CompanyPolicy {
+            operations: HashMap::from([(MINE.to_string(), OperationRule::access(Approval))]),
+            ..Default::default()
+        };
+        let d = auto.decide(MINE, Origin::User, &none, Some(&company), None, true);
+        assert_eq!(d.access, Approval);
+        assert!(d.reason.contains("not one Nebo knows"), "{}", d.reason);
+
+        // 4. The owner rules on it: one row, one click. Their word runs it, and
+        //    it holds from a workflow as well as from their chat.
+        let mut granted = declared.clone();
+        granted
+            .apply_edit(MINE, OperationRule::access(Always))
+            .expect("the owner may overrule what the package declared");
+        for o in [Origin::User, Origin::Workflow] {
+            assert_eq!(granted.decide(MINE, o, &none, None, None, true).access, Always);
+        }
+        // Untrusted words in the run never spend it.
+        assert_eq!(granted.decide(MINE, Origin::Comm, &none, None, None, true).access, Approval);
+
+        // 5. The owner may also forbid it outright, and that holds everywhere.
+        let mut blocked = declared.clone();
+        blocked.apply_edit(MINE, OperationRule::access(Blocked)).unwrap();
+        assert_eq!(blocked.decide(MINE, Origin::User, &none, None, None, true).access, Blocked);
+    }
+
+    /// A declaration can only restrict. An author says what their employee does
+    /// and what it must not do unattended; they never hand themselves the
+    /// owner's permission, and they never declare a money operation ungated.
+    #[test]
+    fn a_package_or_pack_declaration_never_grants_itself_authority() {
+        use OperationAccess::*;
+        const MONEY: &str = "ledger.billpayment.create";
+        let none = OperationParams::default();
+        let claim = |source: &str, locked: bool| OperationPolicy {
+            default: OperationAccess::Approval,
+            operations: HashMap::from([(
+                MONEY.to_string(),
+                OperationRule {
+                    access: Always,
+                    source: Some(source.to_string()),
+                    locked,
+                    ..Default::default()
+                },
+            )]),
+        };
+
+        // A package, a pack, and a locked ceiling all claiming "always" on
+        // money movement: every one of them still asks the owner.
+        for (source, locked) in [("seat", false), ("pack:acme", false), ("seat", true)] {
+            let p = claim(source, locked);
+            let d = p.decide(MONEY, Origin::User, &none, None, None, true);
+            assert_eq!(d.access, Approval, "{source} (locked={locked}) must not grant itself");
+        }
+        // A standing grant WITH bounds from the same source is no different.
+        let mut smuggled = OperationPolicy::default();
+        smuggled.operations.insert(
+            MONEY.to_string(),
+            OperationRule {
+                access: Always,
+                bounds: Some(Bounds { max_amount_cents: Some(1_000_000), ..Default::default() }),
+                source: Some("pack:acme".to_string()),
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            smuggled.decide(MONEY, Origin::User, &none, None, None, true).access,
+            Approval,
+        );
+
+        // The owner's setting is the one that counts, in both directions, and a
+        // declaration never locks the owner out of its own row.
+        let mut p = claim("seat", false);
+        p.apply_edit(MONEY, OperationRule::access(Blocked))
+            .expect("the owner's stricter setting always applies");
+        assert_eq!(p.decide(MONEY, Origin::User, &none, None, None, true).access, Blocked);
+        let mut p = claim("seat", false);
+        p.apply_edit(MONEY, OperationRule::access(Always)).unwrap();
+        assert_eq!(p.decide(MONEY, Origin::User, &none, None, None, true).access, Always);
     }
 }

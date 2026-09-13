@@ -35,7 +35,7 @@ Higher wins: company over franchise over industry. A layer that says nothing fal
 
 Getting this wrong is the most common mistake and the most expensive one. A fact that belongs to the trade but gets written into the company layer has to be written again by every company that hires the same employees, and none of them can fix it for the others. When you are unsure, say which way you are leaning and why, and let the owner settle it. "Insurance carriers pay on an approved estimate" is the trade. "We do not take cash jobs" is the company.
 
-The company layer is the owner's own hand. `pack create` with `layer: "company"` succeeds only when the owner is the one asking, in their own chat. Inside a workflow, a schedule, or another employee's run it is refused, correctly. If you are not in the owner's chat, draft what you would write and put the draft in front of the owner instead.
+The company layer is the owner's own hand, and writing it is an authority the owner gives to an employee: `layers.company.write` is a gated operation, so the owner grants it to you on your Approvals screen (Settings → this employee → Approvals). Without that grant the call reaches the owner as an approval, and in an unattended run it is refused instead. Either way the authority is yours or it is not — it does not depend on which chat you happen to be standing in. When you cannot perform it, draft what you would write and put the draft in front of the owner.
 
 ## 2. Interview, do not interrogate
 
@@ -192,14 +192,18 @@ Then read it back with `pack show` and check it says what the owner said.
 
 ## 5. Tell the owner what happens next
 
-The write is not the end of it, and the owner should not be surprised by what follows. Say it plainly, in a line or two:
+The write is not the end of it, and the owner should not be surprised by what follows.
+
+**Say first that nothing has reached anyone yet.** A write to a layer is parked, not applied. The owner decides when the workforce learns it, in Settings under Layers, where they can read the change as a diff and then apply it. Until they do, every employee is working from what it knew before, and that is deliberate: an owner mid-edit should not send the whole company reading three times over.
+
+Then say what happens when they apply it, in a line or two:
 
 - Every employee reads the change once, decides what matters to its own job, and rewrites its own rules from it. It does not consult the pack again while working; it works from what it wrote down.
 - Laws become locked entries in every employee's policy: blocked ones nobody performs, owner-reserved ones nobody grants.
 - Standards fill in the questions employees were holding open, wherever the ids match.
 - Questions with no value stay open, and what the `missing` line says is what the company does until the owner answers.
 
-Then tell them what changed and which employees it reached. Name them.
+Then tell them what you wrote and which employees will read it. Name them.
 
 ## 6. Maintaining, not just creating
 
@@ -209,7 +213,7 @@ Then tell them what changed and which employees it reached. Name them.
 
 **When something in the company layer turns out to be true for the whole trade, move it up.** Take it out of the company pack and put it in the industry pack, keeping the same id for a standard so nothing that reads it breaks. An industry pack that other companies will work by is published, which means review; a company pack is only ever this company's. Tell the owner that is what moving it up means before you do it.
 
-Removing the company layer is the owner's too, the same way writing it is.
+Removing the company layer is the owner's too, the same way writing it is: `layers.company.remove` is its own grant, and an employee that may write the layer does not automatically get to delete it.
 
 ## Before you call it done
 

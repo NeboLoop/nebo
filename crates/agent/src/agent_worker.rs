@@ -174,12 +174,10 @@ impl AgentWorker {
                         .and_then(|s| serde_json::from_str(s).ok())
                         .unwrap_or_else(|| serde_json::json!({}));
 
-                    // Build emit_source from binding: "{agent-slug}.{emit-name}"
-                    let event_emit_source =
-                        wf_binding.and_then(|wb| wb.emit.as_ref()).map(|emit_name| {
-                            let slug = name.to_lowercase().replace(' ', "-");
-                            workflow::events::emit_source_for(&slug, emit_name)
-                        });
+                    // The event's address, built by the ONE addressing function.
+                    let event_emit_source = wf_binding
+                        .and_then(|wb| wb.emit.as_ref())
+                        .map(|emit_name| workflow::events::emit_source_for(&name, emit_name));
 
                     for source in binding.trigger_config.split(',') {
                         let pattern = source.trim().to_string();
@@ -345,10 +343,9 @@ impl AgentWorker {
                         continue;
                     }
 
-                    let emit_source = wf_binding.and_then(|wb| wb.emit.as_ref()).map(|emit_name| {
-                        let slug = name.to_lowercase().replace(' ', "-");
-                        workflow::events::emit_source_for(&slug, emit_name)
-                    });
+                    let emit_source = wf_binding
+                        .and_then(|wb| wb.emit.as_ref())
+                        .map(|emit_name| workflow::events::emit_source_for(&name, emit_name));
 
                     // Per-account isolation: a plugin that declares a
                     // profile_dir_env (the "resource" credential model, e.g. gws)
@@ -476,13 +473,9 @@ impl AgentWorker {
                         continue;
                     }
 
-                    let emit_source =
-                        wf_binding
-                            .and_then(|wb| wb.emit.as_ref())
-                            .map(|emit_name| {
-                                let slug = name.to_lowercase().replace(' ', "-");
-                                workflow::events::emit_source_for(&slug, emit_name)
-                            });
+                    let emit_source = wf_binding
+                        .and_then(|wb| wb.emit.as_ref())
+                        .map(|emit_name| workflow::events::emit_source_for(&name, emit_name));
 
                     let token = cancel.clone();
                     let mgr = workflow_manager.clone();

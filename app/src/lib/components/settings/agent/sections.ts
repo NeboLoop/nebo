@@ -14,6 +14,9 @@ export const agentSettingsSections = [
 	{ id: 'rules', label: 'settings.navItems.rules' },
 	{ id: 'configure', label: 'agent.configure' },
 	{ id: 'skills', label: 'settings.navItems.skills' },
+	// What this employee is allowed to reach — the same `requires.interfaces` a
+	// packaged employee declares, chosen from what the company has connected.
+	{ id: 'capabilities', label: 'agentSettings.capabilities' },
 	{ id: 'channels', label: 'agentSettings.channels' },
 	{ id: 'accounts', label: 'agentSettings.connectedAccounts' },
 	{ id: 'phone', label: 'agentSettings.phone' },

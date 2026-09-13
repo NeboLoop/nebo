@@ -555,34 +555,11 @@ mod tests {
 
 // ── company events (R6, local half) ──────────────────────────────────────
 
-/// Registered company event names. A seat that emits one of these emits it
-/// UN-namespaced, so a subscriber to `assignment.done` hears it from any
-/// producer; the payload's `producer` field says who. Every other emit name
-/// is namespaced `{slug}.{name}` as before.
-pub const COMPANY_EVENTS: &[&str] = &[
-    "assignment.done",
-    "assignment.blocked",
-    "assignment.failed",
-    "layers_changed",
-    "facts_changed",
-    "pack_installed",
-    "pack_updated",
-    "pack_removed",
-];
-
-pub fn is_company_event(name: &str) -> bool {
-    COMPANY_EVENTS.contains(&name)
-}
-
-/// The ONE place an emit name becomes an event source: a registered company
-/// event keeps its name; anything else is namespaced by the producing seat.
-pub fn emit_source_for(slug: &str, name: &str) -> String {
-    if is_company_event(name) {
-        name.to_string()
-    } else {
-        format!("{}.{}", slug, name)
-    }
-}
+/// Event addressing lives in ONE place — `tools::events` — because the emit
+/// tool is in the tools crate and must build its source with the same
+/// function every other pathway uses. Re-exported here so the subscription
+/// and dispatch side reads it from the module that owns dispatch.
+pub use tools::events::{emit_source_for, is_company_event, COMPANY_EVENTS};
 
 static COMPANY_BUS: std::sync::OnceLock<tools::EventBus> = std::sync::OnceLock::new();
 
@@ -604,7 +581,9 @@ pub fn emit_company_event(name: &str, mut payload: serde_json::Value, producer: 
         return false;
     };
     bus.emit(Event {
-        source: name.to_string(),
+        // Built by the ONE addressing function like every other source: a
+        // registered company event comes back bare.
+        source: emit_source_for(producer, name),
         payload,
         origin: format!("company:{producer}"),
         timestamp: std::time::SystemTime::now()

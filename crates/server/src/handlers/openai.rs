@@ -407,9 +407,10 @@ async fn run_workflow_model(state: &AppState, agent_id: &str, name: &str, req: &
     if let Some(obj) = inputs.as_object_mut() {
         obj.insert("text".into(), serde_json::Value::String(prompt));
     }
-    let emit_source = binding.emit.as_ref().map(|emit| {
-        format!("{}.{}", agent.name.to_lowercase().replace(' ', "-"), emit)
-    });
+    let emit_source = binding
+        .emit
+        .as_ref()
+        .map(|emit_name| workflow::events::emit_source_for(&agent.name, emit_name));
     // Listen before starting so a finish can't slip between the two; the
     // workflow manager announces every terminal state on the local event
     // bus. The final read of the row is the answer either way — the event

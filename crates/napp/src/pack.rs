@@ -275,7 +275,9 @@ fn read_entry(path: &Path) -> Result<PackEntry, PackError> {
 }
 
 /// Markdown files directly in `dir` and in its subdirectories (`laws/by-state/`),
-/// sorted by relative path so output is stable.
+/// sorted by relative path so output is stable. A `README.md` at any depth is
+/// skipped: it explains the folder to whoever opens it, and a seat that read it
+/// as a law would read "Company-level laws" as policy.
 fn read_folder(dir: &Path) -> Result<Vec<PackEntry>, PackError> {
     let mut files = Vec::new();
     if dir.is_dir() {
@@ -292,8 +294,11 @@ fn read_folder(dir: &Path) -> Result<Vec<PackEntry>, PackError> {
 fn collect_markdown(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), PackError> {
     for entry in std::fs::read_dir(dir)? {
         let path = entry?.path();
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
         if path.is_dir() {
             collect_markdown(&path, out)?;
+        } else if name.eq_ignore_ascii_case("README.md") {
+            continue;
         } else if path.extension().and_then(|e| e.to_str()) == Some("md") {
             out.push(path);
         }
@@ -480,6 +485,89 @@ pub fn load_pack(dir: &Path) -> Result<Pack, PackError> {
     })
 }
 
+/// Copy a tree, leaving a file whose bytes already match alone so an idempotent
+/// install does not churn every mtime. The ONE tree copy every pack path uses.
+pub fn copy_tree(src: &Path, dst: &Path) -> Result<(), PackError> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        if from.is_dir() {
+            copy_tree(&from, &to)?;
+        } else {
+            let same = std::fs::read(&from)
+                .ok()
+                .zip(std::fs::read(&to).ok())
+                .is_some_and(|(a, b)| a == b);
+            if !same {
+                std::fs::copy(&from, &to)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The ONE gate every change to a pack passes through (CODE_AUDITOR 8.1).
+///
+/// `build` is handed an empty staging directory beside `dest` and writes the pack
+/// it wants there — a whole pack from parts, a copy of an uploaded folder, or a
+/// copy of the pack that stands with one file changed. The real loader then reads
+/// the staging copy. Only a pack that loads replaces `dest`; a change that would
+/// stop the pack loading comes back as the loader's own error with the pack the
+/// seats work from untouched.
+///
+/// Every path that changes a pack lands through here — the owner's layers screen,
+/// a seat's `pack` tool, an org install, an uploaded zip — which is why the loader
+/// can be trusted as the gate: there is no way around it, and no path can drift
+/// past it a forgotten step at a time.
+pub fn commit_change<F>(dest: &Path, build: F) -> Result<Pack, PackError>
+where
+    F: FnOnce(&Path) -> Result<(), PackError>,
+{
+    let parent = dest
+        .parent()
+        .ok_or_else(|| PackError::File(dest.display().to_string(), "has no parent".into()))?;
+    let name = dest
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| PackError::File(dest.display().to_string(), "has no name".into()))?;
+    let staging = parent.join(format!(".staging-{name}"));
+    let retired = parent.join(format!(".retiring-{name}"));
+    let _ = std::fs::remove_dir_all(&staging);
+    let _ = std::fs::remove_dir_all(&retired);
+    std::fs::create_dir_all(&staging)?;
+
+    let built = build(&staging).and_then(|()| load_pack(&staging));
+    let pack = match built {
+        Ok(pack) => pack,
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&staging);
+            return Err(e);
+        }
+    };
+
+    // Two renames rather than a delete and a copy: the window in which the pack
+    // is not on disk is a metadata operation wide, not a recursive delete wide.
+    if dest.exists() {
+        std::fs::rename(dest, &retired)?;
+    }
+    let landed = std::fs::rename(&staging, dest);
+    if landed.is_err() && retired.exists() {
+        let _ = std::fs::rename(&retired, dest);
+    }
+    landed?;
+    let _ = std::fs::remove_dir_all(&retired);
+    // The loader read the pack at the staging path, so its slug and its source
+    // are the staging directory's. Both are the destination's now — a caller that
+    // trusted either would look for the pack where it no longer is.
+    Ok(Pack {
+        slug: name.to_string(),
+        source_path: dest.to_path_buf(),
+        ..pack
+    })
+}
+
 /// Every loadable pack under `packs_dir`, sorted by layer rank then slug. A
 /// directory that fails to load is logged and skipped, never fatal.
 pub fn scan_packs(packs_dir: &Path) -> Vec<Pack> {
@@ -489,7 +577,14 @@ pub fn scan_packs(packs_dir: &Path) -> Vec<Pack> {
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        if !path.is_dir() {
+        // A dot-directory is never a pack: `commit_change` stages beside the
+        // pack it is replacing, and a half-written staging copy must not load as
+        // a pack of its own while it is being built.
+        let hidden = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.starts_with('.'));
+        if !path.is_dir() || hidden {
             continue;
         }
         match load_pack(&path) {
@@ -502,6 +597,165 @@ pub fn scan_packs(packs_dir: &Path) -> Vec<Pack> {
     }
     packs.sort_by(|a, b| a.layer.rank().cmp(&b.layer.rank()).then(a.slug.cmp(&b.slug)));
     packs
+}
+
+/// How many unchanged lines a hunk carries either side of a change — the three
+/// every pull request shows.
+const DIFF_CONTEXT: usize = 3;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Op {
+    Keep,
+    Del,
+    Add,
+}
+
+/// A longest-common-subsequence edit script over lines. The common prefix and
+/// suffix are taken off first, so a one-word change in a long file leaves a
+/// table of a line or two; only a genuinely rewritten file pays for the whole
+/// table, and past a few million cells the file is simply reported as replaced.
+/// `Keep` and `Del` index into `a`, `Add` into `b`.
+fn edit_script(a: &[&str], b: &[&str]) -> Vec<(Op, usize)> {
+    let lead = a.iter().zip(b.iter()).take_while(|(x, y)| x == y).count();
+    let max_tail = a.len().min(b.len()) - lead;
+    let tail = (0..max_tail)
+        .take_while(|t| a[a.len() - 1 - t] == b[b.len() - 1 - t])
+        .count();
+    let (am, bm) = (&a[lead..a.len() - tail], &b[lead..b.len() - tail]);
+    let mut out: Vec<(Op, usize)> = (0..lead).map(|i| (Op::Keep, i)).collect();
+    if am.len().saturating_mul(bm.len()) > 4_000_000 {
+        out.extend((0..am.len()).map(|i| (Op::Del, lead + i)));
+        out.extend((0..bm.len()).map(|i| (Op::Add, lead + i)));
+    } else {
+        // lcs[i][j] is the longest common subsequence of am[i..] and bm[j..].
+        let (n, m) = (am.len(), bm.len());
+        let w = m + 1;
+        let mut lcs = vec![0u32; (n + 1) * w];
+        for i in (0..n).rev() {
+            for j in (0..m).rev() {
+                lcs[i * w + j] = if am[i] == bm[j] {
+                    lcs[(i + 1) * w + j + 1] + 1
+                } else {
+                    lcs[(i + 1) * w + j].max(lcs[i * w + j + 1])
+                };
+            }
+        }
+        let (mut i, mut j) = (0usize, 0usize);
+        while i < n && j < m {
+            if am[i] == bm[j] {
+                out.push((Op::Keep, lead + i));
+                i += 1;
+                j += 1;
+            } else if lcs[(i + 1) * w + j] >= lcs[i * w + j + 1] {
+                out.push((Op::Del, lead + i));
+                i += 1;
+            } else {
+                out.push((Op::Add, lead + j));
+                j += 1;
+            }
+        }
+        while i < n {
+            out.push((Op::Del, lead + i));
+            i += 1;
+        }
+        while j < m {
+            out.push((Op::Add, lead + j));
+            j += 1;
+        }
+    }
+    out.extend((0..tail).map(|t| (Op::Keep, a.len() - tail + t)));
+    out
+}
+
+/// One file as a unified diff: a header naming it, `@@` hunks, three lines of
+/// context, `-` and `+` on the lines that moved. An empty `old` reads as an
+/// added file and an empty `new` as a removed one, against `/dev/null`, the way
+/// `diff` writes it. Empty when the two are the same.
+pub fn unified_diff(path: &str, old: &str, new: &str) -> String {
+    if old == new {
+        return String::new();
+    }
+    let a: Vec<&str> = if old.is_empty() { Vec::new() } else { old.lines().collect() };
+    let b: Vec<&str> = if new.is_empty() { Vec::new() } else { new.lines().collect() };
+
+    struct Row<'t> {
+        op: Op,
+        text: &'t str,
+        old_no: usize,
+        new_no: usize,
+    }
+    // Number every row in both files as the walk consumes it; a hunk header is
+    // the first line number on each side and how many lines it covers.
+    let mut rows: Vec<Row> = Vec::new();
+    let (mut co, mut cn) = (0usize, 0usize);
+    for (op, idx) in edit_script(&a, &b) {
+        match op {
+            Op::Keep => {
+                co += 1;
+                cn += 1;
+                rows.push(Row { op, text: a[idx], old_no: co, new_no: cn });
+            }
+            Op::Del => {
+                co += 1;
+                rows.push(Row { op, text: a[idx], old_no: co, new_no: cn });
+            }
+            Op::Add => {
+                cn += 1;
+                rows.push(Row { op, text: b[idx], old_no: co, new_no: cn });
+            }
+        }
+    }
+
+    // Every changed line takes three rows of context either side; windows that
+    // touch become one hunk.
+    let mut groups: Vec<(usize, usize)> = Vec::new();
+    for (k, _) in rows.iter().enumerate().filter(|(_, r)| r.op != Op::Keep) {
+        let start = k.saturating_sub(DIFF_CONTEXT);
+        let end = (k + 1 + DIFF_CONTEXT).min(rows.len());
+        match groups.last_mut() {
+            Some(last) if start <= last.1 => last.1 = last.1.max(end),
+            _ => groups.push((start, end)),
+        }
+    }
+
+    let mut out = String::new();
+    let from = if a.is_empty() { "/dev/null".to_string() } else { format!("a/{path}") };
+    let to = if b.is_empty() { "/dev/null".to_string() } else { format!("b/{path}") };
+    out.push_str(&format!("--- {from}\n+++ {to}\n"));
+    for (s, e) in groups {
+        let g = &rows[s..e];
+        let old_count = g.iter().filter(|r| r.op != Op::Add).count();
+        let new_count = g.iter().filter(|r| r.op != Op::Del).count();
+        let old_start = g.iter().find(|r| r.op != Op::Add).map_or(g[0].old_no, |r| r.old_no);
+        let new_start = g.iter().find(|r| r.op != Op::Del).map_or(g[0].new_no, |r| r.new_no);
+        out.push_str(&format!("@@ -{old_start},{old_count} +{new_start},{new_count} @@\n"));
+        for r in g {
+            out.push(match r.op {
+                Op::Keep => ' ',
+                Op::Del => '-',
+                Op::Add => '+',
+            });
+            out.push_str(r.text);
+            out.push('\n');
+        }
+    }
+    out
+}
+
+/// One pack file the way it reads on disk: the frontmatter between fences, then
+/// the body. Reconstructed rather than re-read, because the pack a diff compares
+/// against is the one that stood before the owner's edit and is no longer there.
+fn file_text(frontmatter: &serde_json::Value, body: &str) -> String {
+    let mut out = String::new();
+    if frontmatter.as_object().is_some_and(|m| !m.is_empty()) {
+        let yaml = serde_yaml::to_string(frontmatter).unwrap_or_default();
+        out.push_str("---\n");
+        out.push_str(yaml.trim_start_matches("---\n").trim_end());
+        out.push_str("\n---\n");
+    }
+    out.push_str(body.trim_start_matches('\n').trim_end());
+    out.push('\n');
+    out
 }
 
 fn render_entries(out: &mut String, heading: &str, entries: &[&PackEntry], inline: bool) {
@@ -552,7 +806,7 @@ impl Pack {
             for l in &self.laws {
                 out.push_str(&format!("\n### {}\n\n{}\n", l.entry.title, l.entry.body.trim()));
                 if !l.ceiling.is_empty() {
-                    let holding = if l.is_owner_reserved() {
+                    let holding = if self.reserves_to_owner(l) {
                         "The owner's own hand, never yours and never granted to you"
                     } else {
                         "Blocked for every seat, not the seat's to decide"
@@ -608,48 +862,79 @@ impl Pack {
         m
     }
 
-    /// What changed from `previous` to `self`, by folder and entry: added and
-    /// changed entries carry their new body; removed entries are named. The
-    /// marker body is included when it changed. Empty when nothing changed.
-    pub fn diff_text(&self, previous: &Pack) -> String {
-        let mut out = String::new();
-        if self.body.trim() != previous.body.trim() {
-            out.push_str(&format!("## {} (changed)\n\n{}\n", self.name, self.body.trim()));
-        }
-        let now = self.entries_by_folder();
-        let then = previous.entries_by_folder();
+    /// The marker file's name for this pack's layer.
+    pub fn marker_file(&self) -> &'static str {
+        MARKERS
+            .iter()
+            .find(|(_, l)| *l == self.layer)
+            .map_or("COMPANY.md", |(m, _)| *m)
+    }
+
+    /// Every file in the pack as text, keyed by its path relative to the pack
+    /// root, in the order a seat reads them: the marker, then each typed
+    /// folder. The frontmatter is rendered back into the file so a changed
+    /// `ceiling` or `value` shows up in a diff as its own line — the structure
+    /// matters more than the prose around it.
+    fn files_text(&self) -> Vec<(String, String)> {
+        let mut out = vec![(
+            self.marker_file().to_string(),
+            file_text(&self.frontmatter, &self.body),
+        )];
+        let by_folder = self.entries_by_folder();
         for folder in FOLDERS {
-            let empty = BTreeMap::new();
-            let a = now.get(folder).unwrap_or(&empty);
-            let b = then.get(folder).unwrap_or(&empty);
-            let mut lines = String::new();
-            for (name, e) in a {
-                match b.get(name) {
-                    None => lines.push_str(&format!("\n### {} (added)\n\n{}\n", e.title, e.body.trim())),
-                    Some(old) if old.body.trim() != e.body.trim() || old.frontmatter != e.frontmatter => {
-                        lines.push_str(&format!("\n### {} (changed)\n\n{}\n", e.title, e.body.trim()))
-                    }
-                    Some(_) => {}
-                }
-            }
-            for (name, old) in b {
-                if !a.contains_key(name) {
-                    lines.push_str(&format!("\n### {} (removed)\n", old.title));
-                }
-            }
-            if !lines.is_empty() {
-                out.push_str(&format!("\n## {}\n{}", folder, lines));
+            let Some(entries) = by_folder.get(folder) else { continue };
+            for (name, e) in entries {
+                out.push((format!("{folder}/{name}.md"), file_text(&e.frontmatter, &e.body)));
             }
         }
         out
     }
 
-    /// Every operation a law blocks, with the law that blocks it. A law
-    /// reserved to the owner is not here: it is not blocked, it is the
-    /// owner's, and `reserved_ops` carries it.
+    /// What changed from `previous` to `self`, as a unified diff per changed
+    /// file: the header naming the file, `@@` hunks, three lines of context,
+    /// `-` and `+` on the lines that moved. A one-word change reads as a hunk
+    /// and not as a reprint of the file, because a seat pays for every line it
+    /// reads. Added and removed files come whole, against `/dev/null`. Empty
+    /// when nothing changed.
+    pub fn diff_text(&self, previous: &Pack) -> String {
+        let then: BTreeMap<String, String> = previous.files_text().into_iter().collect();
+        let now = self.files_text();
+        let mut out = String::new();
+        for (path, text) in &now {
+            match then.get(path) {
+                None => out.push_str(&unified_diff(path, "", text)),
+                Some(old) if old != text => out.push_str(&unified_diff(path, old, text)),
+                Some(_) => {}
+            }
+        }
+        let present: std::collections::HashSet<&str> =
+            now.iter().map(|(p, _)| p.as_str()).collect();
+        for (path, old) in &then {
+            if !present.contains(path.as_str()) {
+                out.push_str(&unified_diff(path, old, ""));
+            }
+        }
+        out
+    }
+
+    /// Whether a law's operations are the owner's own hand rather than blocked.
+    ///
+    /// `reserved_to: owner` holds on the company layer and nowhere else, because
+    /// the runtime reads the reserved list from the company pack alone. On an
+    /// industry or franchise pack the key would produce an operation that is
+    /// neither blocked nor reserved — held in the author's mind and wide open in
+    /// fact. Off the company layer the key is ignored and the law blocks, so a
+    /// mistaken `reserved_to` fails closed and nothing has to be refused.
+    fn reserves_to_owner(&self, law: &PackLaw) -> bool {
+        self.layer == PackLayer::Company && law.is_owner_reserved()
+    }
+
+    /// Every operation a law blocks, with the law that blocks it. A law the
+    /// company layer reserves to the owner is not here: it is not blocked, it is
+    /// the owner's, and `reserved_ops` carries it.
     pub fn ceilings(&self) -> Vec<(String, String)> {
         let mut out = Vec::new();
-        for l in self.laws.iter().filter(|l| !l.is_owner_reserved()) {
+        for l in self.laws.iter().filter(|l| !self.reserves_to_owner(l)) {
             for op in &l.ceiling {
                 out.push((op.clone(), l.entry.title.clone()));
             }
@@ -659,7 +944,9 @@ impl Pack {
 
     /// Every operation a law reserves to the owner's own hand. No standing
     /// grant may cover these and the General Manager may never grant them;
-    /// they reach the owner as a decision.
+    /// they reach the owner as a decision. Only the company pack is ever asked
+    /// for this — `company_policy_from` reads the company layer and nothing
+    /// else — which is why `ceilings` is the side that has to check the layer.
     pub fn reserved_ops(&self) -> Vec<String> {
         self.laws
             .iter()
@@ -818,7 +1105,8 @@ mod tests {
         assert_eq!(p.vocabulary[0].title, "Supplement");
         assert_eq!(p.parties[0].title, "Carrier");
         assert!(p.rules[0].always);
-        assert_eq!(p.laws.len(), 2);
+        // `laws/by-state/README.md` explains the folder; it is not a law.
+        assert_eq!(p.laws.len(), 1);
         let law = p.laws.iter().find(|l| l.entry.name == "payments").unwrap();
         assert_eq!(law.ceiling.len(), 2);
         assert_eq!(law.freshness.as_deref(), Some("required"));
@@ -836,25 +1124,60 @@ mod tests {
         assert_eq!(p.content_hash.len(), 64);
     }
 
+    /// `reserved_to: owner` is the company's to write and no one else's. The
+    /// runtime reads the reserved list from the company pack alone, so the same
+    /// key on an industry or franchise pack would leave the operation neither
+    /// blocked nor reserved — the author would believe they had held it while it
+    /// was wide open. Off the company layer it blocks instead: fail closed.
     #[test]
-    fn a_law_reserved_to_the_owner_is_not_blocked_for_everyone() {
+    fn a_law_reserved_to_the_owner_holds_only_on_the_company_layer() {
         let tmp = tempfile::tempdir().unwrap();
-        let d = sample_pack(tmp.path(), "split");
-        write(
-            &d,
-            "laws/equity.md",
-            "---\nlaw: Equity\nceiling: [\"equity.issue\"]\nreserved_to: owner\n---\n\nThe owner's.\n",
-        );
-        let p = load_pack(&d).unwrap();
-        // The owner's own hand: reserved, never Blocked, or the owner could
-        // not approve it either.
+        let law = "---\nlaw: Equity\nceiling: [\"equity.issue\"]\nreserved_to: owner\n---\n\nThe owner's.\n";
+
+        // The company layer: reserved, never Blocked, or the owner could not
+        // approve it either.
+        let co = tmp.path().join("acme");
+        write(&co, "COMPANY.md", "---\ntype: company\ncompany: Acme\nversion: 1.0.0\n---\n\n# Acme\n");
+        write(&co, "laws/equity.md", law);
+        let p = load_pack(&co).unwrap();
         assert_eq!(p.reserved_ops(), vec!["equity.issue".to_string()]);
-        let ceilings = p.ceilings();
-        let blocked: Vec<&str> = ceilings.iter().map(|(op, _)| op.as_str()).collect();
-        assert!(!blocked.contains(&"equity.issue"), "reserved is not blocked: {blocked:?}");
-        // The sample pack's own law has no `reserved_to`, so it still blocks.
-        assert!(blocked.contains(&"ledger.payment.create"), "{blocked:?}");
+        let blocked: Vec<String> = p.ceilings().into_iter().map(|(op, _)| op).collect();
+        assert!(!blocked.contains(&"equity.issue".to_string()), "reserved is not blocked: {blocked:?}");
         assert!(p.prompt_text().contains("The owner's own hand"));
+
+        // The same law on an industry pack blocks, as it would without the key.
+        let ind = sample_pack(tmp.path(), "split");
+        write(&ind, "laws/equity.md", law);
+        let p = load_pack(&ind).unwrap();
+        let blocked: Vec<String> = p.ceilings().into_iter().map(|(op, _)| op).collect();
+        assert!(
+            blocked.contains(&"equity.issue".to_string()),
+            "an industry pack cannot reserve to the owner; it must block: {blocked:?}"
+        );
+        // The sample pack's own law has no `reserved_to`, so it still blocks.
+        assert!(blocked.contains(&"ledger.payment.create".to_string()), "{blocked:?}");
+        assert!(!p.prompt_text().contains("The owner's own hand"));
+    }
+
+    /// The owner's real company package explains each folder in a `README.md`.
+    /// The loader used to read `laws/README.md` as a law called "Company-level
+    /// laws" with an empty ceiling, and every employee read it as policy.
+    #[test]
+    fn a_folder_readme_is_not_an_entry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let d = tmp.path().join("acme");
+        write(&d, "COMPANY.md", "---\ntype: company\ncompany: Acme\nversion: 1.0.0\n---\n\n# Acme\n");
+        write(&d, "laws/README.md", "# Company-level laws\n\nWhat goes in this folder.\n");
+        write(&d, "laws/by-state/readme.md", "# Per state\n\nNotes.\n");
+        write(&d, "laws/pay.md", "---\nlaw: Payments\nceiling: [\"ledger.payment.send\"]\n---\n\nNo seat pays unattended.\n");
+        write(&d, "rules/README.md", "# Rules\n\nWhat goes here.\n");
+        let p = load_pack(&d).unwrap();
+        assert_eq!(p.laws.len(), 1, "only the law is a law: {:?}", p.laws.iter().map(|l| &l.entry.title).collect::<Vec<_>>());
+        assert_eq!(p.laws[0].entry.title, "Payments");
+        assert!(p.rules.is_empty());
+        let text = p.prompt_text();
+        assert!(!text.contains("Company-level laws"), "a folder note is not policy: {text}");
+        assert!(!text.contains("What goes in this folder"), "{text}");
     }
 
     #[test]
@@ -906,20 +1229,75 @@ mod tests {
     }
 
     #[test]
-    fn diff_names_added_changed_and_removed_entries() {
+    fn the_diff_is_a_unified_diff_per_changed_file() {
         let tmp = tempfile::tempdir().unwrap();
         let before = load_pack(&sample_pack(tmp.path(), "v1")).unwrap();
         let d2 = sample_pack(tmp.path(), "v2");
-        write(&d2, "rules/deductible.md", "---\nrule: Deductible\nalways: True\n---\n\nThe deductible is never waived, ever.\n");
+        write(&d2, "rules/deductible.md", "---\nrule: Deductible\nclass: policy\nalways: True\n---\n\nThe deductible is never waived, ever.\n");
         write(&d2, "rules/photos.md", "---\nrule: Photos\n---\n\nPhotos before estimates.\n");
         std::fs::remove_file(d2.join("vocabulary/supplement.md")).unwrap();
         let after = load_pack(&d2).unwrap();
         let diff = after.diff_text(&before);
-        assert!(diff.contains("Photos (added)"));
-        assert!(diff.contains("Deductible (changed)"));
-        assert!(diff.contains("Supplement (removed)"));
-        assert!(!diff.contains("Carrier"));
+
+        // The shape anyone who has read a pull request already knows.
+        assert!(diff.contains("--- a/rules/deductible.md"), "{diff}");
+        assert!(diff.contains("+++ b/rules/deductible.md"), "{diff}");
+        assert!(diff.contains("@@ -"), "{diff}");
+        assert!(diff.contains("-The deductible is never waived."), "{diff}");
+        assert!(diff.contains("+The deductible is never waived, ever."), "{diff}");
+        // An added file comes whole, against /dev/null; so does a removed one.
+        assert!(diff.contains("--- /dev/null\n+++ b/rules/photos.md"), "{diff}");
+        assert!(diff.contains("+Photos before estimates."), "{diff}");
+        assert!(diff.contains("--- a/vocabulary/supplement.md\n+++ /dev/null"), "{diff}");
+        assert!(diff.contains("-An addition to an approved estimate."), "{diff}");
+        // Files that did not change are not in the diff at all.
+        assert!(!diff.contains("parties/carrier.md"), "{diff}");
         assert!(before.diff_text(&before).is_empty());
+    }
+
+    /// A one-word change used to reprint the whole file, which cost every seat
+    /// a page of tokens to learn that one word moved. It must be a hunk.
+    #[test]
+    fn a_one_word_change_is_a_hunk_not_a_reprint() {
+        let tmp = tempfile::tempdir().unwrap();
+        let long: String = (1..=40).map(|i| format!("Paragraph {i} of the standing guidance.\n")).collect();
+        let d1 = tmp.path().join("v1");
+        write(&d1, "COMPANY.md", "---\ntype: company\ncompany: Acme\nversion: 1.0.0\n---\n\n# Acme\n");
+        write(&d1, "rules/long.md", &format!("---\nrule: Long\n---\n\n{long}"));
+        let before = load_pack(&d1).unwrap();
+
+        let d2 = tmp.path().join("v2");
+        write(&d2, "COMPANY.md", "---\ntype: company\ncompany: Acme\nversion: 1.0.0\n---\n\n# Acme\n");
+        write(&d2, "rules/long.md", &format!("---\nrule: Long\n---\n\n{}", long.replace("Paragraph 20 of", "Paragraph 20 now of")));
+        let after = load_pack(&d2).unwrap();
+
+        let diff = after.diff_text(&before);
+        // One hunk, one line out and one line in, six lines of context.
+        assert_eq!(diff.matches("@@ -").count(), 1, "{diff}");
+        assert_eq!(diff.lines().filter(|l| l.starts_with('-') && !l.starts_with("---")).count(), 1, "{diff}");
+        assert_eq!(diff.lines().filter(|l| l.starts_with('+') && !l.starts_with("+++")).count(), 1, "{diff}");
+        assert!(diff.contains("@@ -20,7 +20,7 @@"), "{diff}");
+        assert!(!diff.contains("Paragraph 1 of"), "untouched prose is not reprinted: {diff}");
+        assert!(diff.lines().count() < 14, "a hunk, not a page: {diff}");
+    }
+
+    /// The frontmatter is in the comparison: a changed ceiling or value matters
+    /// more to a seat than the prose around it, and it must show as its own line.
+    #[test]
+    fn a_changed_ceiling_shows_as_a_frontmatter_line() {
+        let tmp = tempfile::tempdir().unwrap();
+        let before = load_pack(&sample_pack(tmp.path(), "c1")).unwrap();
+        let d2 = sample_pack(tmp.path(), "c2");
+        write(
+            &d2,
+            "laws/payments.md",
+            "---\nlaw: Unattended payments\nclass: policy\nceiling: [\"ledger.payment.create\"]\nfreshness: required\n---\n\nNo seat pays unattended.\n",
+        );
+        let after = load_pack(&d2).unwrap();
+        let diff = after.diff_text(&before);
+        assert!(diff.contains("--- a/laws/payments.md"), "{diff}");
+        assert!(diff.contains("-- ledger.payment.send"), "the dropped ceiling entry: {diff}");
+        assert!(!diff.contains("No seat pays unattended"), "unchanged prose stays out: {diff}");
     }
 
     /// Loads real packs from `NEBO_PACK_FIXTURES=<dir with industry/ and company/>`
@@ -966,5 +1344,72 @@ mod tests {
         assert_eq!(packs[0].layer, PackLayer::Industry);
         assert_eq!(packs[1].layer, PackLayer::Company);
         assert_eq!(packs[1].name, "Sample Co");
+    }
+
+    /// The one gate: a change that would stop the pack loading never lands, and
+    /// the pack that stands is untouched. Every path that writes a pack — the
+    /// owner's layers screen, a seat's `pack` tool, an install, an upload — goes
+    /// through here, so this is the only place the loader has to be the gate.
+    #[test]
+    fn commit_change_is_the_gate_and_a_refused_change_leaves_the_pack_alone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("acme");
+
+        // A first commit creates the pack.
+        let pack = commit_change(&dest, |staged| {
+            std::fs::write(
+                staged.join("COMPANY.md"),
+                "---\ncompany: Acme\nversion: 1.0.0\n---\n\n# Acme\n\nFix roofs.\n",
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(pack.slug, "acme");
+        assert_eq!(pack.source_path, dest, "the pack is where it landed, not in staging");
+        assert!(dest.join("COMPANY.md").is_file());
+
+        // A change that does not load is refused, with the loader's own message,
+        // and nothing about the pack on disk moves.
+        let err = commit_change(&dest, |staged| {
+            copy_tree(&dest, staged)?;
+            std::fs::write(staged.join("INDUSTRY.md"), "---\nindustry: roofing\n---\n\n# Roofing\n")?;
+            Ok(())
+        })
+        .expect_err("two markers is not a pack");
+        assert!(matches!(err, PackError::ManyMarkers(_)), "{err}");
+        assert!(!dest.join("INDUSTRY.md").exists(), "the refused change never landed");
+        assert_eq!(load_pack(&dest).unwrap().name, "Acme");
+
+        // Nothing is left behind for `scan_packs` to trip over.
+        assert!(!tmp.path().join(".staging-acme").exists());
+        assert!(!tmp.path().join(".retiring-acme").exists());
+        assert_eq!(scan_packs(tmp.path()).len(), 1);
+
+        // And a change that loads replaces the pack whole.
+        commit_change(&dest, |staged| {
+            copy_tree(&dest, staged)?;
+            std::fs::write(staged.join("rules/one.md"), "x").ok();
+            std::fs::create_dir_all(staged.join("rules")).ok();
+            std::fs::write(
+                staged.join("rules/one.md"),
+                "---\nrule: Deposits\n---\n\nHalf up front.\n",
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        let after = load_pack(&dest).unwrap();
+        assert_eq!(after.rules.len(), 1);
+        assert_eq!(after.rules[0].entry.title, "Deposits");
+    }
+
+    /// A staging directory must never load as a pack of its own while it is being
+    /// built, or the owner's screen shows a `.staging-acme` layer for a second.
+    #[test]
+    fn a_dot_directory_is_never_a_pack() {
+        let tmp = tempfile::tempdir().unwrap();
+        let staging = tmp.path().join(".staging-acme");
+        std::fs::create_dir_all(&staging).unwrap();
+        std::fs::write(staging.join("COMPANY.md"), "---\ncompany: Acme\n---\n\n# Acme\n").unwrap();
+        assert!(scan_packs(tmp.path()).is_empty());
     }
 }

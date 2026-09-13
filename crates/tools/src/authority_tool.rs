@@ -344,7 +344,8 @@ impl DynTool for AuthorityTool {
                         "freshness_secs": { "type": "integer" }
                     }
                 },
-                "evidence": { "type": "string", "description": "What in the record this is granted, widened, or narrowed on. Required for widen." }
+                "evidence": { "type": "string", "description": "What in the record this is granted, widened, or narrowed on. Required for widen." },
+                "display": { "type": "string", "description": "REQUIRED for grant and widen: ONE plain-language sentence for the owner's approval prompt, in words a non-technical person reads at a glance. Example: 'Let the Bookkeeper pay bills up to $2,500.00, 20 a day, to vendors already in the ledger.'" }
             },
             "required": ["resource", "action"]
         })
@@ -352,6 +353,23 @@ impl DynTool for AuthorityTool {
 
     fn requires_approval(&self) -> bool {
         false
+    }
+
+    /// Granting a seat standing authority — and widening it — is how an
+    /// employee comes to act unattended at all, so both are gated operations
+    /// the owner stands behind: the per-operation gate decides them like any
+    /// other (`authority.grant.*`, critical in the interface catalog).
+    /// Narrowing, suspending, and reading make an employee less powerful or
+    /// nothing at all, and are never gated.
+    fn operation_performed(&self, input: &serde_json::Value) -> Option<String> {
+        match (
+            input["resource"].as_str().unwrap_or("grant"),
+            input["action"].as_str().unwrap_or(""),
+        ) {
+            ("grant", "grant") => Some("authority.grant.grant".to_string()),
+            ("grant", "widen") => Some("authority.grant.widen".to_string()),
+            _ => None,
+        }
     }
 
     fn is_concurrent_safe(&self, input: &serde_json::Value) -> bool {
@@ -382,6 +400,47 @@ impl DynTool for AuthorityTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A seat that can grant authority could otherwise grant itself everything
+    /// the company's bounds allow, unsupervised. Granting and widening are
+    /// gated operations and the employee-wide default never confers them;
+    /// narrowing, suspending and reading are free.
+    #[test]
+    fn granting_asks_the_owner_and_narrowing_does_not() {
+        use crate::policy::{OperationParams, OperationPolicy};
+        let tool = AuthorityTool::new(std::sync::Arc::new(
+            db::Store::new(
+                &std::env::temp_dir()
+                    .join(format!("nebo-authority-{}.db", uuid::Uuid::new_v4()))
+                    .to_string_lossy(),
+            )
+            .expect("store"),
+        ));
+        let op = |resource: &str, action: &str| {
+            tool.operation_performed(&serde_json::json!({"resource": resource, "action": action}))
+        };
+        assert_eq!(op("grant", "grant").as_deref(), Some("authority.grant.grant"));
+        assert_eq!(op("grant", "widen").as_deref(), Some("authority.grant.widen"));
+        for action in ["narrow", "suspend", "list"] {
+            assert_eq!(op("grant", action), None, "{action} is not gated");
+        }
+        assert_eq!(op("constitution", "show"), None);
+
+        // An employee running with the "do everything" default still asks
+        // before it hands anybody authority — and it may narrow freely.
+        let autonomous = OperationPolicy {
+            default: OperationAccess::Always,
+            operations: std::collections::HashMap::new(),
+        };
+        let decide = |o: &str| {
+            autonomous
+                .decide(o, crate::Origin::Workflow, &OperationParams::default(), None, None, true)
+                .access
+        };
+        assert_eq!(decide("authority.grant.grant"), OperationAccess::Approval);
+        assert_eq!(decide("authority.grant.widen"), OperationAccess::Approval);
+        assert_eq!(decide("authority.grant.narrow"), OperationAccess::Always);
+    }
 
     #[test]
     fn wider_means_a_looser_axis_or_a_dropped_class() {

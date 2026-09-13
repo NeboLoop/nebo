@@ -63,6 +63,21 @@ const GATED: &[&str] = &[
     "ledger.deposit.record",
     "ledger.expense.record",
     "ledger.document.attach",
+    // authority — standing authority for a seat. Granting it, or widening it,
+    // is how an employee becomes able to act unattended at all, so the owner
+    // must stand behind it. `narrow` and `suspend` make an employee LESS
+    // powerful and are deliberately absent: taking power away is never gated.
+    "authority.grant.grant",
+    "authority.grant.widen",
+    // layers — the company's own files: the industry, franchise and company
+    // packs every employee reads. Not plugin-bound (the `pack` tool performs
+    // them), so they are listed for every seat — see `is_builtin_capability`.
+    "layers.industry.write",
+    "layers.industry.remove",
+    "layers.franchise.write",
+    "layers.franchise.remove",
+    "layers.company.write",
+    "layers.company.remove",
 ];
 
 /// Money-movement / contract-formation operations. A global full-autonomy
@@ -75,6 +90,15 @@ const CRITICAL: &[&str] = &[
     "ledger.invoice.send",
     "esign.document.send",
     "store.po.create",
+    // Handing an employee the right to act unattended is of the same weight as
+    // money movement: no employee-wide default may confer it.
+    "authority.grant.grant",
+    "authority.grant.widen",
+    // Writing or removing the company file is changing the company's own law:
+    // an employee never acquires it through a general default — the owner
+    // grants it deliberately, one operation at a time.
+    "layers.company.write",
+    "layers.company.remove",
 ];
 
 /// Whether the operation (bare op or fully-qualified port) is gated.
@@ -90,6 +114,18 @@ pub fn is_critical(operation: &str) -> bool {
 /// All gated operation suffixes (for building the per-employee policy UI list).
 pub fn gated_operations() -> &'static [&'static str] {
     GATED
+}
+
+/// Capabilities the runtime performs itself: no plugin binding, no seat
+/// interface in `agent.json`. Every seat can reach them, so the per-employee
+/// Approvals list shows them for every employee instead of filtering on the
+/// interfaces the seat binds.
+const BUILTIN: &[&str] = &["layers"];
+
+/// Whether this capability is performed by the runtime rather than by a bound
+/// plugin interface.
+pub fn is_builtin_capability(capability: &str) -> bool {
+    BUILTIN.contains(&capability)
 }
 
 #[cfg(test)]
@@ -129,6 +165,48 @@ mod tests {
         // A KB write is not money movement, so it must not be `critical` — the
         // owner can grant it standing approval; a payment op never can.
         assert!(!is_critical("ballast.kb.article.create"));
+    }
+
+    /// The company's own files are a capability like any other, with one
+    /// difference that the whole setting rests on: writing or removing the
+    /// COMPANY file is critical, so no employee-wide default can hand it to a
+    /// seat — the owner grants it per operation. The industry and franchise
+    /// files are gated but not critical: a general default may cover them.
+    #[test]
+    fn the_company_file_is_critical_and_the_trade_files_are_only_gated() {
+        for op in ["layers.company.write", "layers.company.remove"] {
+            assert!(is_gated(op), "{op} must be gated");
+            assert!(is_critical(op), "{op} must be critical");
+        }
+        for op in [
+            "layers.industry.write",
+            "layers.industry.remove",
+            "layers.franchise.write",
+            "layers.franchise.remove",
+        ] {
+            assert!(is_gated(op), "{op} must be gated");
+            assert!(!is_critical(op), "{op} is not money or company law");
+        }
+        // Reading a layer is never gated.
+        assert!(!is_gated("layers.company.read"));
+        // The capability is the runtime's own, so the Approvals list shows it
+        // for every employee rather than only for seats binding an interface.
+        assert!(is_builtin_capability("layers"));
+        assert!(!is_builtin_capability("ledger"));
+    }
+
+    /// Granting standing authority is the operation that makes every other
+    /// unattended operation possible, so it is gated and critical. Taking
+    /// authority away is free: an employee may always be made less powerful.
+    #[test]
+    fn granting_authority_is_critical_and_taking_it_away_is_free() {
+        for op in ["authority.grant.grant", "authority.grant.widen"] {
+            assert!(is_gated(op), "{op} must be gated");
+            assert!(is_critical(op), "{op} must be critical");
+        }
+        for op in ["authority.grant.narrow", "authority.grant.suspend", "authority.grant.list"] {
+            assert!(!is_gated(op), "{op} takes power away or reads: never gated");
+        }
     }
 
     #[test]

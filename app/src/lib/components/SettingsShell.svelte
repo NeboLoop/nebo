@@ -23,6 +23,7 @@
   import Info from 'lucide-svelte/icons/info';
   import RefreshCw from 'lucide-svelte/icons/refresh-cw';
   import Radio from 'lucide-svelte/icons/radio';
+  import Layers from 'lucide-svelte/icons/layers';
   import X from 'lucide-svelte/icons/x';
   import type { SvelteComponent } from 'svelte';
 
@@ -47,6 +48,7 @@
     { id: 'usage', path: '/settings/usage', label: 'settings.navItems.usage', icon: BarChart3 },
     null,
     { id: 'agents', path: '/settings/agents', label: 'settings.navItems.agents', icon: Bot },
+    { id: 'layers', path: '/settings/layers', label: 'settings.navItems.layers', icon: Layers },
     { id: 'skills', path: '/settings/skills', label: 'settings.navItems.skills', icon: Zap },
     { id: 'plugins', path: '/settings/plugins', label: 'settings.navItems.plugins', icon: Puzzle },
     { id: 'mcp', path: '/settings/mcp', label: 'settings.navItems.mcp', icon: Cable },

@@ -1,6 +1,7 @@
 import { backendBase } from './base';
 import { storage } from '$lib/storage';
 import type { UploadedAttachment } from '$lib/types/attachment';
+import type { LayerUploadResponse } from './neboComponents';
 
 /** Longest edge the backend image gate normalizes to — converting here too
  *  keeps HEIC uploads small instead of shipping 12MP originals. */
@@ -99,4 +100,41 @@ export async function uploadFiles(
 		files.map((file, i) => uploadFile(file, (pct) => onProgress?.(i, pct)))
 	);
 	return results;
+}
+
+/**
+ * A layer pack (industry / franchise / company) as a .zip.
+ *
+ * Lives here rather than in the generated client because `POST /layers/upload`
+ * takes multipart with the zip in the `file` field, and the generated client
+ * speaks JSON only — the same reason `uploadFile` above is hand-rolled. A pack
+ * given as a directory path IS JSON, so that one goes through the generated
+ * `uploadLayerPack`. The response type is the generated one, so the shape still
+ * comes from the Rust handler and never from here.
+ */
+export async function uploadLayerZip(file: File): Promise<LayerUploadResponse> {
+	const form = new FormData();
+	form.append('file', file);
+	const headers: Record<string, string> = {};
+	const token = storage.get('nebo_token');
+	if (token) headers['Authorization'] = `Bearer ${token}`;
+	// No Content-Type: the browser must set the multipart boundary itself.
+	const response = await fetch(`${backendBase()}/api/v1/layers/upload`, {
+		method: 'POST',
+		credentials: 'include',
+		headers,
+		body: form
+	});
+	const text = await response.text();
+	let parsed: unknown = {};
+	try {
+		parsed = text ? JSON.parse(text) : {};
+	} catch {
+		parsed = { error: text };
+	}
+	if (!response.ok) {
+		const body = parsed as { error?: string; message?: string };
+		throw new Error(body.error || body.message || `HTTP ${response.status}`);
+	}
+	return parsed as LayerUploadResponse;
 }

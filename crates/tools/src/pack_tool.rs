@@ -2,10 +2,14 @@
 //! industry, franchise, and company packs this Nebo works by.
 //!
 //! A pack is a directory under `packs/<slug>/` with exactly one marker
-//! (`INDUSTRY.md`, `FRANCHISE.md`, or `COMPANY.md`) and typed folders. The
-//! pack watcher sees the write and raises `layers_changed`, so every seat
-//! reads the new pack and writes its own context section. This tool never
-//! touches a seat; it only puts the pack where the loader looks.
+//! (`INDUSTRY.md`, `FRANCHISE.md`, or `COMPANY.md`) and typed folders. Every
+//! write here lands through `napp::commit_change`, the ONE gate a pack change
+//! passes on any path (CODE_AUDITOR 8.1) — the owner's layers screen, an org
+//! install and this tool all stage the change and let the real loader refuse it,
+//! so there is one place the loader has to be the gate and no path can drift past
+//! it. This tool never touches a seat; it only puts the pack where the loader
+//! looks. The pack watcher then PARKS the change for the owner: a layer edit
+//! reaches a seat when the owner applies it, never on a write.
 
 use std::path::{Path, PathBuf};
 
@@ -39,40 +43,59 @@ fn name_ok(name: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
-/// Write one pack from its parts into a staging dir, validate it with the
-/// loader, then move it into place. A bad pack never reaches `packs/`.
-fn create(input: &Value, owner_present: bool) -> Result<String, String> {
+/// Write one pack from its parts. `napp::commit_change` stages it and lets the
+/// loader refuse it, so a bad pack never reaches `packs/`.
+fn create(input: &Value) -> Result<String, String> {
     let slug = input.get("slug").and_then(|v| v.as_str()).unwrap_or("").trim();
     if !slug_ok(slug) {
         return Err("`slug` is required: lowercase letters, digits, hyphens (e.g. `insurance-restoration-roofing`)".into());
     }
-    let staging = PackTool::dir()?.join(format!(".staging-{slug}"));
-    let out = create_in(input, slug, &staging, owner_present);
-    if out.is_err() {
-        let _ = std::fs::remove_dir_all(&staging);
-    }
-    out
+    let dest = PackTool::dir()?.join(slug);
+    let replaced = dest.exists();
+    let mut written = 0usize;
+    let pack = napp::commit_change(&dest, |staging| {
+        written = build_pack(input, slug, staging)?;
+        Ok(())
+    })
+    .map_err(|e| format!("the pack did not validate: {e}"))?;
+    Ok(format!(
+        "{} pack `{}` {} at {} ({} entries: {} rules, {} laws, {} standards, {} questions). It is parked for the owner: every employee reads it when the owner applies the layer change.",
+        pack.layer.as_str(),
+        pack.slug,
+        if replaced { "updated" } else { "created" },
+        dest.display(),
+        written,
+        pack.rules.len(),
+        pack.laws.len(),
+        pack.standards.len(),
+        pack.questions.len(),
+    ))
 }
 
-fn create_in(input: &Value, slug: &str, staging: &Path, owner_present: bool) -> Result<String, String> {
+/// Write the pack's files into `staging`, returning how many typed entries it
+/// wrote. The loader reads what this leaves behind.
+fn build_pack(input: &Value, slug: &str, staging: &Path) -> Result<usize, napp::PackError> {
+    let refuse = |m: String| napp::PackError::File(slug.to_string(), m);
     let layer = input.get("layer").and_then(|v| v.as_str()).unwrap_or("industry");
     let marker = match layer {
         "industry" => "INDUSTRY.md",
         "franchise" => "FRANCHISE.md",
-        // The company layer is the owner's hand, and this is how the owner
-        // uses it: they ask, in their own chat, and Nebo writes the layer for
-        // them. A seat acting on its own reaches this and is refused, because
-        // the company law reserves the change to the owner — not to whoever
-        // happens to be holding the keyboard inside a workflow.
-        "company" if owner_present => "COMPANY.md",
-        "company" => {
-            return Err("the company layer is the owner's own: it is written when the owner asks for it themselves, not from a workflow, a schedule, or another employee's run. Draft what you would put in it and put that in front of the owner instead.".into())
+        // Writing the company layer is a gated operation
+        // (`layers.company.write`, critical): the owner grants a seat that
+        // authority on the employee's Approvals screen, and the runner's
+        // per-operation gate has already decided by the time the call arrives
+        // here. Authority is the employee's, not the channel's — so this
+        // function only has to write a valid pack.
+        "company" => "COMPANY.md",
+        other => {
+            return Err(refuse(format!(
+                "`layer` must be industry, franchise, or company, not `{other}`"
+            )))
         }
-        other => return Err(format!("`layer` must be industry, franchise, or company, not `{other}`")),
     };
     let body = input.get("body").and_then(|v| v.as_str()).unwrap_or("").trim();
     if body.is_empty() {
-        return Err("`body` is required: the marker's markdown, what a new hire must know about how this trade (or this company) runs".into());
+        return Err(refuse("`body` is required: the marker's markdown, what a new hire must know about how this trade (or this company) runs".into()));
     }
     let version = input.get("version").and_then(|v| v.as_str()).unwrap_or("0.1.0");
     let name = input.get("name").and_then(|v| v.as_str()).unwrap_or(slug);
@@ -82,13 +105,6 @@ fn create_in(input: &Value, slug: &str, staging: &Path, owner_present: bool) -> 
         .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
         .unwrap_or_default();
     let extra_fm = input.get("frontmatter").and_then(|v| v.as_object()).cloned().unwrap_or_default();
-
-    let root = PackTool::dir()?;
-    let dest = root.join(slug);
-    if staging.exists() {
-        std::fs::remove_dir_all(staging).map_err(|e| e.to_string())?;
-    }
-    std::fs::create_dir_all(staging).map_err(|e| e.to_string())?;
 
     let mut fm = serde_json::Map::new();
     fm.insert("type".into(), json!("pack"));
@@ -105,26 +121,25 @@ fn create_in(input: &Value, slug: &str, staging: &Path, owner_present: bool) -> 
         .map(|(k, v)| format!("{k}: {}", serde_json::to_string(v).unwrap_or_default()))
         .collect::<Vec<_>>()
         .join("\n");
-    std::fs::write(staging.join(marker), format!("---\n{fm_yaml}\n---\n\n{body}\n"))
-        .map_err(|e| e.to_string())?;
+    std::fs::write(staging.join(marker), format!("---\n{fm_yaml}\n---\n\n{body}\n"))?;
 
     // Folders: {"rules": [{"name": "deductibles", "frontmatter": {...}, "body": "..."}], ...}
     let mut written = 0usize;
     if let Some(folders) = input.get("folders").and_then(|v| v.as_object()) {
         for (folder, entries) in folders {
             if !napp::pack::FOLDERS.contains(&folder.as_str()) {
-                return Err(format!(
+                return Err(refuse(format!(
                     "unknown folder `{folder}`; a pack has only {}",
                     napp::pack::FOLDERS.join(", ")
-                ));
+                )));
             }
             let Some(entries) = entries.as_array() else { continue };
             let fdir = staging.join(folder);
-            std::fs::create_dir_all(&fdir).map_err(|e| e.to_string())?;
+            std::fs::create_dir_all(&fdir)?;
             for e in entries {
                 let ename = e.get("name").and_then(|v| v.as_str()).unwrap_or("").trim();
                 if !name_ok(ename) {
-                    return Err(format!("entry in `{folder}` needs a `name` (letters, digits, hyphens, underscores)"));
+                    return Err(refuse(format!("entry in `{folder}` needs a `name` (letters, digits, hyphens, underscores)")));
                 }
                 let ebody = e.get("body").and_then(|v| v.as_str()).unwrap_or("").trim();
                 let efm = e.get("frontmatter").and_then(|v| v.as_object()).cloned().unwrap_or_default();
@@ -138,31 +153,12 @@ fn create_in(input: &Value, slug: &str, staging: &Path, owner_present: bool) -> 
                 } else {
                     format!("---\n{efm_yaml}\n---\n\n{ebody}\n")
                 };
-                std::fs::write(fdir.join(format!("{ename}.md")), text).map_err(|e| e.to_string())?;
+                std::fs::write(fdir.join(format!("{ename}.md")), text)?;
                 written += 1;
             }
         }
     }
-
-    // The loader is the validator. Nothing bad reaches packs/.
-    let pack = napp::pack::load_pack(staging).map_err(|e| format!("the pack did not validate: {e}"))?;
-    let replaced = dest.exists();
-    if replaced {
-        std::fs::remove_dir_all(&dest).map_err(|e| e.to_string())?;
-    }
-    std::fs::rename(staging, &dest).map_err(|e| e.to_string())?;
-    Ok(format!(
-        "{} pack `{}` {} at {} ({} entries: {} rules, {} laws, {} standards, {} questions). Every employee will read it now and write what matters to its job into its own context.",
-        pack.layer.as_str(),
-        pack.slug,
-        if replaced { "updated" } else { "created" },
-        dest.display(),
-        written,
-        pack.rules.len(),
-        pack.laws.len(),
-        pack.standards.len(),
-        pack.questions.len(),
-    ))
+    Ok(written)
 }
 
 fn add_from_path(input: &Value) -> Result<String, String> {
@@ -171,28 +167,36 @@ fn add_from_path(input: &Value) -> Result<String, String> {
         return Err("`path` is required: a folder holding one marker file and its typed folders".into());
     }
     let src = PathBuf::from(path);
-    let pack = napp::pack::load_pack(&src).map_err(|e| format!("not a valid pack: {e}"))?;
-    let dest = PackTool::dir()?.join(&pack.slug);
-    if dest.exists() {
-        std::fs::remove_dir_all(&dest).map_err(|e| e.to_string())?;
-    }
-    copy_dir(&src, &dest).map_err(|e| e.to_string())?;
-    Ok(format!("{} pack `{}` added from {}. Every employee reads it now.", pack.layer.as_str(), pack.slug, src.display()))
+    let slug = napp::pack::load_pack(&src)
+        .map_err(|e| format!("not a valid pack: {e}"))?
+        .slug;
+    let dest = PackTool::dir()?.join(&slug);
+    // The same gate: the folder is copied into staging, read by the loader, and
+    // only then replaces what is there — so a copy that fails halfway cannot
+    // leave a broken pack where a whole one stood.
+    let pack = napp::commit_change(&dest, |staging| napp::copy_tree(&src, staging))
+        .map_err(|e| format!("not a valid pack: {e}"))?;
+    Ok(format!(
+        "{} pack `{}` added from {}. It is parked for the owner: every employee reads it when the owner applies the layer change.",
+        pack.layer.as_str(),
+        pack.slug,
+        src.display()
+    ))
 }
 
-fn copy_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
-    std::fs::create_dir_all(dst)?;
-    for entry in std::fs::read_dir(src)? {
-        let entry = entry?;
-        let from = entry.path();
-        let to = dst.join(entry.file_name());
-        if from.is_dir() {
-            copy_dir(&from, &to)?;
-        } else {
-            std::fs::copy(&from, &to)?;
-        }
-    }
-    Ok(())
+/// The layer a pack directory declares, read off its marker file. This is
+/// how a call that names a pack by path (`add`) or by slug (`remove`) says
+/// which layer it touches, so putting a company pack in from a folder is the
+/// same operation as writing one.
+fn marker_layer(dir: &Path) -> Option<&'static str> {
+    [
+        ("COMPANY.md", "company"),
+        ("FRANCHISE.md", "franchise"),
+        ("INDUSTRY.md", "industry"),
+    ]
+    .into_iter()
+    .find(|(marker, _)| dir.join(marker).is_file())
+    .map(|(_, layer)| layer)
 }
 
 fn list() -> Result<String, String> {
@@ -232,7 +236,7 @@ fn show(input: &Value) -> Result<String, String> {
     Ok(pack.prompt_text())
 }
 
-fn remove(input: &Value, owner_present: bool) -> Result<String, String> {
+fn remove(input: &Value) -> Result<String, String> {
     let slug = input.get("slug").and_then(|v| v.as_str()).unwrap_or("").trim();
     if !slug_ok(slug) {
         return Err("`slug` is required".into());
@@ -241,11 +245,8 @@ fn remove(input: &Value, owner_present: bool) -> Result<String, String> {
     if !dest.is_dir() {
         return Err(format!("no pack `{slug}`"));
     }
-    if dest.join("COMPANY.md").is_file() && !owner_present {
-        return Err("that is the company layer, and it is the owner's own: only the owner removes it, and only when they ask themselves.".into());
-    }
     std::fs::remove_dir_all(&dest).map_err(|e| e.to_string())?;
-    Ok(format!("pack `{slug}` removed. Every employee will drop what came only from it."))
+    Ok(format!("pack `{slug}` removed. It is parked for the owner: every employee drops what came only from it when the owner applies the layer change."))
 }
 
 impl DynTool for PackTool {
@@ -257,9 +258,12 @@ impl DynTool for PackTool {
         "The industry, franchise, and company packs this company works by. \
          `create` writes a pack from parts (marker body + typed folders: vocabulary, parties, rules, laws, standards, workflows, reference); \
          `add` installs a pack folder from a path; `list`, `show`, `remove`. \
-         A pack is knowledge, never a skill. Every employee reads a new or changed pack once and writes what matters to its own job into its context. \
+         A pack is knowledge, never a skill. A write is parked for the owner; when the owner applies it, every employee reads the change once and writes what matters to its own job into its context. \
          Laws carry `ceiling: [\"<capability.resource.action>\"]` in their frontmatter and are the only Blocked operations. \
-         Rules may carry `always: true`. Standards carry `id` (semantic, dotted) and `value`; questions are standards with `question: true`, `scope: company|seat`, and `money: true` when a value is money (never a default)."
+         Rules may carry `always: true`. \
+         A `standards/` entry is a settled value ONLY when it has a dotted `id` and a `value` and neither a `question:` nor a `kind:` key; an entry with no `id` is skipped entirely. \
+         Any `question:` or `kind:` key makes the entry a question instead: write `question: <local_key>` — a string, the key the answer is stored under (`question: true` still loads as a question, but it is then named after the file) — with `scope: company|seat`, a `label:` written as the question, and `missing:` saying what the company does until it is answered. \
+         A question that also carries a `value` (or a `default:`) uses it as its default; a money question is written with neither, so nothing is ever guessed."
             .to_string()
     }
 
@@ -269,7 +273,7 @@ impl DynTool for PackTool {
             "properties": {
                 "action": { "type": "string", "enum": ["create", "add", "list", "show", "remove"] },
                 "slug": { "type": "string", "description": "Pack id: lowercase, digits, hyphens. Required for create, show, remove." },
-                "layer": { "type": "string", "enum": ["industry", "franchise", "company"], "description": "create: which layer this pack is (default industry). `company` only when the owner is asking for it themselves." },
+                "layer": { "type": "string", "enum": ["industry", "franchise", "company"], "description": "create: which layer this pack is (default industry). Writing or removing the company layer needs the owner's authority for this employee (Settings → the employee → Approvals); without it the owner is asked when the call runs." },
                 "name": { "type": "string", "description": "create: display name." },
                 "version": { "type": "string", "description": "create: semver, default 0.1.0." },
                 "capabilities": { "type": "array", "items": { "type": "string" }, "description": "create: the capabilities the trade uses (mail, calendar, crm, ledger, billing, support, ...)." },
@@ -280,7 +284,8 @@ impl DynTool for PackTool {
                     "description": "create: {folder: [{name, frontmatter?, body}]} for vocabulary, parties, rules, laws, standards, workflows, reference.",
                     "additionalProperties": { "type": "array", "items": { "type": "object", "properties": { "name": {"type":"string"}, "frontmatter": {"type":"object"}, "body": {"type":"string"} }, "required": ["name", "body"] } }
                 },
-                "path": { "type": "string", "description": "add: absolute path of a pack folder." }
+                "path": { "type": "string", "description": "add: absolute path of a pack folder." },
+                "display": { "type": "string", "description": "REQUIRED when the call writes or removes a layer: ONE plain-language sentence for the owner's approval prompt, in words a non-technical person reads at a glance. Example: 'Write the company file for Acme Roofing: how the business runs, three rules and two numbers.'" }
             },
             "required": ["action"]
         })
@@ -290,24 +295,61 @@ impl DynTool for PackTool {
         false
     }
 
+    /// Which gated operation this call performs, for the runner's
+    /// per-operation gate. Writing a layer is `layers.<layer>.write` and
+    /// removing one `layers.<layer>.remove`; `list` and `show` read, so they
+    /// perform none. The tool decides nothing here — `OperationPolicy` does.
+    fn operation_performed(&self, input: &Value) -> Option<String> {
+        let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("list");
+        let arg = |key: &str| {
+            input
+                .get(key)
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string()
+        };
+        let (layer, verb) = match action {
+            "create" => (
+                match input.get("layer").and_then(|v| v.as_str()).unwrap_or("industry") {
+                    l @ ("industry" | "franchise" | "company") => l,
+                    // `create` refuses any other layer, so nothing is performed.
+                    _ => return None,
+                },
+                "write",
+            ),
+            "add" => {
+                let path = arg("path");
+                if path.is_empty() {
+                    return None;
+                }
+                (marker_layer(Path::new(&path))?, "write")
+            }
+            "remove" => {
+                let slug = arg("slug");
+                if !slug_ok(&slug) {
+                    return None;
+                }
+                (marker_layer(&Self::dir().ok()?.join(slug))?, "remove")
+            }
+            _ => return None,
+        };
+        Some(format!("layers.{layer}.{verb}"))
+    }
+
     fn execute_dyn<'a>(
         &'a self,
-        ctx: &'a ToolContext,
+        _ctx: &'a ToolContext,
         input: Value,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send + 'a>> {
         Box::pin(async move {
             let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("list");
-            // The owner's own hand: the owner is at the keyboard, in their own
-            // chat or the CLI. A workflow, a schedule, a caller, another
-            // employee's handoff — none of these are the owner, whatever the
-            // run was told.
-            let owner_present = matches!(ctx.origin, crate::origin::Origin::User);
             let out = match action {
-                "create" => create(&input, owner_present),
+                "create" => create(&input),
                 "add" => add_from_path(&input),
                 "list" => list(),
                 "show" => show(&input),
-                "remove" => remove(&input, owner_present),
+                "remove" => remove(&input),
                 other => Err(format!("unknown action `{other}`")),
             };
             match out {
@@ -322,11 +364,6 @@ impl DynTool for PackTool {
 mod tests {
     use super::*;
 
-    /// The owner at the keyboard. Every existing test is the owner asking.
-    fn create_owner(input: &Value) -> Result<String, String> {
-        create(input, true)
-    }
-
     #[test]
     fn a_pack_created_from_parts_loads_and_a_bad_one_never_lands() {
         let _g = crate::TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -334,7 +371,7 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         // SAFETY: test-only override of the data dir for this process.
         unsafe { std::env::set_var("NEBO_HOME", &root) };
-        let ok = create_owner(&json!({
+        let ok = create(&json!({
             "action": "create", "slug": "sample-trade", "layer": "industry", "name": "Sample trade",
             "capabilities": ["mail"], "body": "# Sample trade\n\nHow it runs.",
             "folders": {
@@ -350,27 +387,95 @@ mod tests {
         assert_eq!(packs[0].laws.len(), 1);
         assert_eq!(packs[0].standards.len(), 1);
 
-        let bad = create_owner(&json!({"action": "create", "slug": "bad", "body": "x", "folders": {"skills": [{"name": "s", "body": "x"}]}}));
+        let bad = create(&json!({"action": "create", "slug": "bad", "body": "x", "folders": {"skills": [{"name": "s", "body": "x"}]}}));
         assert!(bad.is_err());
         assert!(!config::packs_dir().unwrap().join("bad").exists());
         assert!(!config::packs_dir().unwrap().join(".staging-bad").exists());
 
-        // The company layer is the owner's hand: written when the owner asks
-        // themselves, never from a workflow or another employee's run. If this
-        // inverts, a seat rewrites the company's own rules unattended.
+        // The company layer is written by an employee the owner gave that
+        // authority to, so this tool writes a valid pack and says which
+        // operation the call performs; the per-operation gate decides whether
+        // it may run (see the policy tests — if THAT inverts, any employee
+        // rewrites the company's own rules). What is checked here is that the
+        // call is reported as the critical company write, in both directions.
         let company = json!({
             "action": "create", "slug": "acme", "layer": "company", "name": "Acme",
             "body": "Fix roofs and get paid.",
         });
-        assert!(create(&company, false).is_err(), "a seat may not write the company layer");
-        assert!(!config::packs_dir().unwrap().join("acme").exists());
-        assert!(create(&company, true).is_ok(), "the owner may");
+        assert_eq!(
+            PackTool.operation_performed(&company).as_deref(),
+            Some("layers.company.write"),
+        );
+        assert!(create(&company).is_ok());
         assert!(config::packs_dir().unwrap().join("acme").join("COMPANY.md").is_file());
-        assert!(remove(&json!({"slug": "acme"}), false).is_err(), "nor remove it");
-        assert!(remove(&json!({"slug": "acme"}), true).is_ok());
+        // The removal's layer is read off the marker on disk, so removing the
+        // company pack by slug is the company's own removal operation.
+        let drop_company = json!({"action": "remove", "slug": "acme"});
+        assert_eq!(
+            PackTool.operation_performed(&drop_company).as_deref(),
+            Some("layers.company.remove"),
+        );
+        assert!(remove(&drop_company).is_ok());
+        // Gone from disk, so there is no operation left to perform on it.
+        assert_eq!(PackTool.operation_performed(&drop_company), None);
 
-        assert!(remove(&json!({"slug": "sample-trade"}), true).is_ok());
+        assert!(remove(&json!({"slug": "sample-trade"})).is_ok());
         assert!(napp::pack::scan_packs(&config::packs_dir().unwrap()).is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// What the runner's per-operation gate asks this tool. A create names the
+    /// layer it writes; an `add` and a `remove` read the layer off the marker;
+    /// reading a layer performs nothing, so the gate never fires on `list` or
+    /// `show`. A wrong answer here is either an ungated company write or an
+    /// approval prompt on a read.
+    #[test]
+    fn a_call_reports_the_layer_operation_it_performs() {
+        let _g = crate::TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let root = std::env::temp_dir().join(format!("nebo-packop-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        // SAFETY: test-only override of the data dir for this process.
+        unsafe { std::env::set_var("NEBO_HOME", &root) };
+        let op = |v: Value| PackTool.operation_performed(&v);
+
+        for layer in ["industry", "franchise", "company"] {
+            assert_eq!(
+                op(json!({"action": "create", "slug": "x", "layer": layer, "body": "b"})).as_deref(),
+                Some(format!("layers.{layer}.write").as_str()),
+            );
+        }
+        // `layer` defaults to industry, exactly as `create` defaults it.
+        assert_eq!(
+            op(json!({"action": "create", "slug": "x", "body": "b"})).as_deref(),
+            Some("layers.industry.write"),
+        );
+        // A layer this tool refuses performs nothing at all.
+        assert_eq!(op(json!({"action": "create", "slug": "x", "layer": "team"})), None);
+
+        // Reads.
+        assert_eq!(op(json!({"action": "list"})), None);
+        assert_eq!(op(json!({"action": "show", "slug": "x"})), None);
+        assert_eq!(op(json!({})), None, "no action reads the list");
+
+        // `add` installs a folder that already carries its marker: putting a
+        // company pack in by path is the same operation as writing one.
+        let src = root.join("incoming");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("COMPANY.md"), "---\ntype: pack\nscope: company\ncompany: acme\n---\n\nHow we run.\n").unwrap();
+        assert_eq!(
+            op(json!({"action": "add", "path": src.to_string_lossy()})).as_deref(),
+            Some("layers.company.write"),
+        );
+        assert_eq!(op(json!({"action": "add"})), None, "no path, nothing performed");
+
+        // A removal names a pack on disk; a slug that is not one performs nothing.
+        create(&json!({"action": "create", "slug": "trade", "layer": "industry", "body": "How it runs."})).unwrap();
+        assert_eq!(
+            op(json!({"action": "remove", "slug": "trade"})).as_deref(),
+            Some("layers.industry.remove"),
+        );
+        assert_eq!(op(json!({"action": "remove", "slug": "nothing-here"})), None);
+        assert_eq!(op(json!({"action": "remove", "slug": "../escape"})), None);
         let _ = std::fs::remove_dir_all(&root);
     }
 }
@@ -418,7 +523,14 @@ mod skill_example_tests {
         // SAFETY: test-only override of the data dir for this process.
         unsafe { std::env::set_var("NEBO_HOME", &root) };
         let call = example_call();
-        let out = create(&call, true).expect("the owner's own call");
+        // The example writes the company layer, so it must report the critical
+        // company write to the gate — an employee copying it is decided by the
+        // owner's grant, not by which chat it is standing in.
+        assert_eq!(
+            PackTool.operation_performed(&call).as_deref(),
+            Some("layers.company.write"),
+        );
+        let out = create(&call).expect("a valid company pack");
         assert!(out.contains("created"), "{out}");
 
         let packs = napp::pack::scan_packs(&config::packs_dir().unwrap());
@@ -438,9 +550,11 @@ mod skill_example_tests {
         // spelled exactly.
         assert!(pack.defaults().contains_key("company.unattended.spend_per_day_cents"));
 
-        // And a seat cannot write it: the same example from a workflow fails.
-        let _ = remove(&json!({"slug": "bright-carpet"}), true);
-        assert!(create(&call, false).is_err(), "the company layer is the owner's own");
+        // And it lands the same way twice: the example is a procedure, not a
+        // one-shot, so re-running it over the existing pack replaces it.
+        let out = create(&call).expect("the example is re-runnable");
+        assert!(out.contains("updated"), "{out}");
+        assert!(remove(&json!({"slug": "bright-carpet"})).is_ok());
         let _ = std::fs::remove_dir_all(&root);
     }
 }

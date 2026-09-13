@@ -22,19 +22,42 @@ pub const PACKAGES_END: &str = "<!-- end of the package part -->";
 
 /// The seat's package part of its Rules, if it has written one.
 pub fn package_block(rules: &str) -> Option<&str> {
-    let start = rules.find(PACKAGES_START)? + PACKAGES_START.len();
-    let end = start + rules[start..].find(PACKAGES_END)?;
-    Some(rules[start..end].trim())
+    marked_block(rules, PACKAGES_START, PACKAGES_END)
 }
 
 /// Rules with the package part replaced by `section`, everything the owner
 /// wrote outside the markers kept where it was. A first write appends.
 pub fn merge_package_block(rules: &str, section: &str) -> String {
-    let block = format!("{PACKAGES_START}\n{}\n{PACKAGES_END}", section.trim());
-    match (rules.find(PACKAGES_START), rules.find(PACKAGES_END)) {
+    merge_marked_block(rules, PACKAGES_START, PACKAGES_END, section)
+}
+
+/// What sits between two markers in `text`, if both are there.
+pub fn marked_block<'a>(text: &'a str, start_marker: &str, end_marker: &str) -> Option<&'a str> {
+    let start = text.find(start_marker)? + start_marker.len();
+    let end = start + text[start..].find(end_marker)?;
+    Some(text[start..end].trim())
+}
+
+/// `text` with whatever sits between the two markers replaced by `section`,
+/// every byte outside them kept where it was. Absent the markers, the section
+/// is appended with its markers around it.
+///
+/// Two things need exactly this and must not drift apart: the package part of a
+/// seat's Rules, where everything outside the markers is the owner's, and the
+/// company rules rendered into a project's own `AGENTS.md`, where everything
+/// outside the markers is the project's. Same job, different markers.
+pub fn merge_marked_block(
+    text: &str,
+    start_marker: &str,
+    end_marker: &str,
+    section: &str,
+) -> String {
+    let rules = text;
+    let block = format!("{start_marker}\n{}\n{end_marker}", section.trim());
+    match (rules.find(start_marker), rules.find(end_marker)) {
         (Some(s), Some(e)) if e > s => {
             let before = rules[..s].trim_end();
-            let after = rules[e + PACKAGES_END.len()..].trim_start();
+            let after = rules[e + end_marker.len()..].trim_start();
             let mut out = String::new();
             if !before.is_empty() {
                 out.push_str(before);
