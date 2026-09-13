@@ -119,6 +119,10 @@ export interface RunDisplay {
 	loopExposed: boolean
 	loopAgentId?: string
 	voice: string
+	/** The part of the company this employee sits in; unset = unassigned. */
+	department?: string
+	/** The employee this one answers to (local agent id); unset = answers to the owner. */
+	reportsTo?: string
 	isolated: boolean
 	needsSetup: boolean
 	nappPath?: string
