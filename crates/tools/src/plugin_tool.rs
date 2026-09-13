@@ -1130,9 +1130,19 @@ impl DynTool for PluginTool {
                     Ok(x) => x,
                     Err(e) => return ToolResult::error(e),
                 };
+                // The binding says how the call is shaped: a template's
+                // placeholders take their fields here, and only the fields it
+                // does not mention go on as `--key value` flags below.
+                let (command, consumed) = match render_binding(&pi.operation, &command, &pi.input) {
+                    Ok(x) => x,
+                    Err(e) => return ToolResult::error(e),
+                };
                 let mut args = pi.args.clone();
                 if let serde_json::Value::Object(map) = &pi.input {
                     for (k, v) in map {
+                        if consumed.contains(k) {
+                            continue;
+                        }
                         let sval = match v {
                             serde_json::Value::String(s) => s.clone(),
                             other => other.to_string(),
@@ -2610,11 +2620,121 @@ fn build_op_json(
 /// command exactly, or with additional arguments/flags after it. A binding may
 /// be multi-word ("documents list"), so plain prefix matching would false-match
 /// "documents listing"; the boundary must be end-of-string or whitespace.
+/// A template binding ("bill create --vendor-ref {vendorId}") is matched on its
+/// leading plain words ("bill create"): the flags are the call's shape, not
+/// part of what names the operation.
 fn command_matches_binding(command: &str, bound_cmd: &str) -> bool {
-    match command.strip_prefix(bound_cmd) {
+    let bound_cmd = if bound_cmd.contains('{') {
+        let words: Vec<&str> = bound_cmd
+            .split_whitespace()
+            .take_while(|w| !w.starts_with("--") && !w.contains('{'))
+            .collect();
+        words.join(" ")
+    } else {
+        bound_cmd.to_string()
+    };
+    match command.strip_prefix(bound_cmd.as_str()) {
         Some(rest) => rest.is_empty() || rest.starts_with(char::is_whitespace),
         None => false,
     }
+}
+
+/// Shape a port call from its binding: the plugin command to run and the input
+/// fields the binding consumed (so they are not also appended as flags).
+///
+/// A plain binding (no placeholders) comes back byte-for-byte as written and
+/// consumes nothing — every input field is appended as `--key value` exactly
+/// as before. A template binding is split into shell words first, and each
+/// placeholder is filled in its own word, so a value with a space or a quote
+/// stays one argument; the argv is then re-encoded with shell quoting for the
+/// exec path, which splits it back losslessly. See `napp::plugin::BindingPart`
+/// for the grammar. A placeholder whose field the call did not supply (an
+/// optional one excepted: absent emits nothing), a list where one value is
+/// expected (or the reverse), or a cents field that is not an integer is an
+/// error naming the field and the operation.
+fn render_binding(
+    operation: &str,
+    bound_cmd: &str,
+    input: &serde_json::Value,
+) -> Result<(String, std::collections::HashSet<String>), String> {
+    use napp::plugin::BindingPart;
+    let words = napp::plugin::parse_binding_template(bound_cmd)
+        .map_err(|e| format!("operation '{operation}': {e}"))?;
+    let mut consumed = std::collections::HashSet::new();
+    if words.iter().all(|w| matches!(w.as_slice(), [BindingPart::Literal(_)])) {
+        return Ok((bound_cmd.to_string(), consumed));
+    }
+    let field = |name: &str| -> Result<&serde_json::Value, String> {
+        input
+            .get(name)
+            .filter(|v| !v.is_null())
+            .ok_or_else(|| format!("operation '{operation}' needs input field '{name}', which the call did not supply"))
+    };
+    let scalar = |name: &str, v: &serde_json::Value| -> Result<String, String> {
+        match v {
+            serde_json::Value::String(s) => Ok(s.clone()),
+            serde_json::Value::Array(_) | serde_json::Value::Object(_) => Err(format!(
+                "operation '{operation}': input field '{name}' is a list, but the binding expects one value"
+            )),
+            other => Ok(other.to_string()),
+        }
+    };
+    let mut argv: Vec<String> = Vec::new();
+    for parts in &words {
+        if let [BindingPart::List { field: name, flag }] = parts.as_slice() {
+            let items = field(name)?.as_array().ok_or_else(|| {
+                format!("operation '{operation}': input field '{name}' is one value, but the binding expects a list")
+            })?;
+            consumed.insert(name.clone());
+            for item in items {
+                argv.push(flag.clone());
+                argv.push(match item {
+                    serde_json::Value::String(s) => s.clone(),
+                    other => other.to_string(),
+                });
+            }
+            continue;
+        }
+        if let [BindingPart::Optional { field: name, flag }] = parts.as_slice() {
+            if let Some(v) = input.get(name).filter(|v| !v.is_null()) {
+                argv.push(flag.clone());
+                argv.push(scalar(name, v)?);
+                consumed.insert(name.clone());
+            }
+            continue;
+        }
+        let mut word = String::new();
+        for part in parts {
+            match part {
+                BindingPart::Literal(s) => word.push_str(s),
+                BindingPart::Field(name) => {
+                    word.push_str(&scalar(name, field(name)?)?);
+                    consumed.insert(name.clone());
+                }
+                BindingPart::Cents(name) => {
+                    let v = field(name)?;
+                    let cents = match v {
+                        serde_json::Value::Number(n) => n.as_i64(),
+                        serde_json::Value::String(s) => s.trim().parse::<i64>().ok(),
+                        _ => None,
+                    }
+                    .ok_or_else(|| {
+                        format!("operation '{operation}': input field '{name}' must be an integer number of cents, got {v}")
+                    })?;
+                    let sign = if cents < 0 { "-" } else { "" };
+                    word.push_str(&format!("{sign}{}.{:02}", cents.abs() / 100, cents.abs() % 100));
+                    consumed.insert(name.clone());
+                }
+                BindingPart::List { .. } | BindingPart::Optional { .. } => {
+                    unreachable!("parse_binding_template keeps list and optional placeholders alone in their word")
+                }
+            }
+        }
+        argv.push(word);
+    }
+    let command = shlex::try_join(argv.iter().map(String::as_str))
+        .map_err(|e| format!("operation '{operation}': an input value cannot be passed as an argument ({e})"))?;
+    Ok((command, consumed))
 }
 
 #[cfg(test)]
@@ -2653,6 +2773,150 @@ mod tests {
         assert!(!command_matches_binding("ingestion-report", "ingest"));
         assert!(!command_matches_binding("documents listing", "documents list"));
         assert!(!command_matches_binding("search foo", "ingest"));
+    }
+
+    /// A gated template binding is still recognised through raw exec by its
+    /// leading plain words; the shape flags never widen the side door.
+    #[test]
+    fn exec_binding_match_uses_a_templates_plain_prefix() {
+        let t = "bill create --vendor-ref {vendorId} {lines[]:--line}";
+        assert!(command_matches_binding("bill create", t));
+        assert!(command_matches_binding("bill create --vendor-ref 7", t));
+        assert!(!command_matches_binding("bill created", t));
+        assert!(!command_matches_binding("bill", t));
+        assert!(command_matches_binding("invoice send 9", "invoice send {invoiceId}"));
+    }
+
+    fn argv(cmd: &str) -> Vec<String> {
+        shlex::split(cmd).unwrap()
+    }
+
+    fn consumed(names: &[&str]) -> std::collections::HashSet<String> {
+        names.iter().map(|n| n.to_string()).collect()
+    }
+
+    /// The three QuickBooks bindings written against the ledger contract:
+    /// renamed flags, a repeated flag from a list, cents as dollars, and a
+    /// positional — each producing exactly the argv the plugin accepts.
+    #[test]
+    fn template_binding_shapes_the_quickbooks_calls() {
+        let (cmd, used) = render_binding(
+            "ledger.bill.create",
+            "bill create --vendor-ref {vendorId} {lines[]:--line} --txn-date {txnDate} --due-date {dueDate}",
+            &serde_json::json!({
+                "vendorId": "56", "lines": ["Consulting:150.00", "Travel:42.10"],
+                "txnDate": "2026-09-13", "dueDate": "2026-10-13"
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            argv(&cmd),
+            ["bill", "create", "--vendor-ref", "56", "--line", "Consulting:150.00", "--line", "Travel:42.10",
+             "--txn-date", "2026-09-13", "--due-date", "2026-10-13"]
+        );
+        assert_eq!(used, consumed(&["vendorId", "lines", "txnDate", "dueDate"]));
+
+        let (cmd, used) = render_binding(
+            "ledger.payment.apply",
+            "payment apply --customer-ref {customerId} {invoiceIds[]:--line} --total-amt {amountCents:cents->dollars}",
+            &serde_json::json!({"customerId": "21", "invoiceIds": ["1041", "1042"], "amountCents": 125005}),
+        )
+        .unwrap();
+        assert_eq!(
+            argv(&cmd),
+            ["payment", "apply", "--customer-ref", "21", "--line", "1041", "--line", "1042", "--total-amt", "1250.05"]
+        );
+        assert_eq!(used, consumed(&["customerId", "invoiceIds", "amountCents"]));
+
+        let (cmd, used) = render_binding(
+            "ledger.invoice.send",
+            "invoice send {invoiceId}",
+            &serde_json::json!({"invoiceId": "1041", "sendTo": "ap@example.com"}),
+        )
+        .unwrap();
+        assert_eq!(argv(&cmd), ["invoice", "send", "1041"]);
+        // The field the template does not mention is left for the flag path.
+        assert_eq!(used, consumed(&["invoiceId"]));
+    }
+
+    /// `{name?:--flag}`: present emits the pair, one argument per value;
+    /// absent emits nothing and consumes nothing, so nothing is appended either.
+    #[test]
+    fn optional_placeholder_emits_only_when_present() {
+        let t = "invoice send {invoiceId} {sendTo?:--send-to}";
+        let (cmd, used) = render_binding("ledger.invoice.send", t, &serde_json::json!({"invoiceId": "1041", "sendTo": "ap@example.com"})).unwrap();
+        assert_eq!(argv(&cmd), ["invoice", "send", "1041", "--send-to", "ap@example.com"]);
+        assert_eq!(used, consumed(&["invoiceId", "sendTo"]));
+
+        let (cmd, used) = render_binding("ledger.invoice.send", t, &serde_json::json!({"invoiceId": "1041"})).unwrap();
+        assert_eq!(argv(&cmd), ["invoice", "send", "1041"]);
+        assert_eq!(used, consumed(&["invoiceId"]));
+        let (cmd, _) = render_binding("ledger.invoice.send", t, &serde_json::json!({"invoiceId": "1041", "sendTo": null})).unwrap();
+        assert_eq!(argv(&cmd), ["invoice", "send", "1041"]);
+
+        let (cmd, _) = render_binding("ledger.invoice.send", t, &serde_json::json!({"invoiceId": "1041", "sendTo": "Accounts Payable <ap@example.com>"})).unwrap();
+        assert_eq!(argv(&cmd), ["invoice", "send", "1041", "--send-to", "Accounts Payable <ap@example.com>"]);
+
+        let err = render_binding("ledger.invoice.send", t, &serde_json::json!({"invoiceId": "1041", "sendTo": ["a", "b"]})).unwrap_err();
+        assert!(err.contains("'sendTo'") && err.contains("is a list"), "{err}");
+    }
+
+    /// No placeholders: the bound command is passed through untouched and
+    /// nothing is consumed, so every input field becomes `--key value` as before.
+    #[test]
+    fn plain_binding_is_unchanged_and_consumes_nothing() {
+        let input = serde_json::json!({"to": "ap@example.com", "subject": "Hi there"});
+        let (cmd, used) = render_binding("mail.message.send", "send", &input).unwrap();
+        assert_eq!(cmd, "send");
+        assert!(used.is_empty());
+        let (cmd, used) = render_binding("kb.article.list", "documents list  --limit 5", &input).unwrap();
+        assert_eq!(cmd, "documents list  --limit 5");
+        assert!(used.is_empty());
+    }
+
+    #[test]
+    fn template_values_stay_one_argument_each() {
+        let (cmd, _) = render_binding(
+            "ledger.bill.create",
+            "bill create --memo {memo} {lines[]:--line}",
+            &serde_json::json!({"memo": "Q3 \"catch up\" invoice", "lines": ["Consulting hours:150.00"]}),
+        )
+        .unwrap();
+        assert_eq!(
+            argv(&cmd),
+            ["bill", "create", "--memo", "Q3 \"catch up\" invoice", "--line", "Consulting hours:150.00"]
+        );
+        // Numbers and booleans fill a word too; text may sit beside a placeholder.
+        let (cmd, _) = render_binding("x.y.z", "run --page={page} --dry={dry}", &serde_json::json!({"page": 3, "dry": true})).unwrap();
+        assert_eq!(argv(&cmd), ["run", "--page=3", "--dry=true"]);
+        // A negative cents amount keeps its sign.
+        let (cmd, _) = render_binding("x.y.z", "adjust {amountCents:cents->dollars}", &serde_json::json!({"amountCents": -7})).unwrap();
+        assert_eq!(argv(&cmd), ["adjust", "-0.07"]);
+    }
+
+    #[test]
+    fn template_errors_name_the_field_and_operation() {
+        let missing = render_binding("ledger.invoice.send", "invoice send {invoiceId}", &serde_json::json!({"sendTo": "x"}))
+            .unwrap_err();
+        assert!(missing.contains("'invoiceId'") && missing.contains("ledger.invoice.send"), "{missing}");
+        let null = render_binding("ledger.invoice.send", "invoice send {invoiceId}", &serde_json::json!({"invoiceId": null}))
+            .unwrap_err();
+        assert!(null.contains("'invoiceId'"), "{null}");
+
+        let list_in_scalar = render_binding("ledger.bill.create", "bill create --vendor-ref {vendorId}", &serde_json::json!({"vendorId": ["1", "2"]}))
+            .unwrap_err();
+        assert!(list_in_scalar.contains("'vendorId'") && list_in_scalar.contains("is a list"), "{list_in_scalar}");
+
+        let scalar_in_list = render_binding("ledger.bill.create", "bill create {lines[]:--line}", &serde_json::json!({"lines": "one"}))
+            .unwrap_err();
+        assert!(scalar_in_list.contains("'lines'") && scalar_in_list.contains("expects a list"), "{scalar_in_list}");
+
+        let bad_cents = render_binding("ledger.payment.apply", "payment apply --total-amt {amountCents:cents->dollars}", &serde_json::json!({"amountCents": "12.50"}))
+            .unwrap_err();
+        assert!(bad_cents.contains("'amountCents'") && bad_cents.contains("cents"), "{bad_cents}");
+
+        let malformed = render_binding("ledger.bill.create", "bill create {vendorId", &serde_json::json!({"vendorId": "1"})).unwrap_err();
+        assert!(malformed.contains("ledger.bill.create") && malformed.contains("no matching"), "{malformed}");
     }
 
     #[test]
@@ -2908,6 +3172,46 @@ mod budget_and_install_tests {
         )
         .unwrap();
         std::fs::write(version_dir.join(slug), b"#!/bin/sh\necho ok\n").unwrap();
+    }
+
+    /// Through the port path itself: a template binding shapes the call, and
+    /// the one input field the template does not mention still reaches the
+    /// plugin as `--key value`, appended after the shaped words.
+    #[tokio::test]
+    async fn port_call_takes_its_shape_from_the_binding() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (plugin_store, db_store) = stores(tmp.path());
+        let version_dir = tmp.path().join("plugins").join("quickbooks").join("0.1.0");
+        std::fs::create_dir_all(&version_dir).unwrap();
+        std::fs::write(
+            version_dir.join("plugin.json"),
+            serde_json::json!({
+                "id": "quickbooks", "slug": "quickbooks", "name": "quickbooks", "version": "0.1.0", "platforms": {},
+                "interfaceBindings": {"ledger.invoice.send": "invoice send {invoiceId}"},
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let bin = version_dir.join("quickbooks");
+        std::fs::write(&bin, b"#!/bin/sh\nprintf '%s\\n' \"$@\"\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let tool = PluginTool::new(plugin_store, db_store);
+        let ctx = ToolContext { session_key: "agent:ic:main".into(), ..Default::default() };
+        let r = tool
+            .execute_dyn(
+                &ctx,
+                serde_json::json!({
+                    "operation": "accounting.ar-specialist.ledger.invoice.send",
+                    "input": {"invoiceId": "Invoice 1041", "sendTo": "ap@example.com"},
+                }),
+            )
+            .await;
+        assert!(!r.is_error, "{}", r.content);
+        assert!(r.content.contains("invoice\nsend\nInvoice 1041\n--sendTo\nap@example.com"), "{}", r.content);
     }
 
     /// Seen live: an employee with gmail connected called google-workspace

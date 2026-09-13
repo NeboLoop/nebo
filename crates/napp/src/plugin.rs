@@ -620,6 +620,113 @@ fn is_valid_slug_char(c: char) -> bool {
     c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'
 }
 
+/// One piece of a shell word in an `interfaceBindings` template.
+///
+/// A binding value is the plugin's CLI command, and it may be a template: a
+/// `{name}` placeholder is replaced with the call's input field of that name
+/// (and that field is then not appended as a `--name` flag). Two shapes cover
+/// what plain renaming cannot: `{name[]:--flag}` expands a list field into one
+/// `--flag <item>` per item, `{name?:--flag}` emits `--flag <value>` only when
+/// the field is present, and `{name:cents->dollars}` writes an integer cents
+/// field as a decimal dollars string. Nothing else is a placeholder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BindingPart {
+    /// Literal text, passed through as written.
+    Literal(String),
+    /// `{name}`: the field's value, one value in one word.
+    Field(String),
+    /// `{name:cents->dollars}`: an integer cents field, written as dollars.
+    Cents(String),
+    /// `{name[]:--flag}`: a list field, one `--flag <item>` pair per item.
+    List { field: String, flag: String },
+    /// `{name?:--flag}`: `--flag <value>` when the field is present, nothing when absent.
+    Optional { field: String, flag: String },
+}
+
+/// Parse a binding template into its shell words, each split into literal and
+/// placeholder parts. `Err` names what is malformed: unbalanced quotes or
+/// braces, an empty or non-identifier field name, an unknown modifier, or a
+/// list or optional placeholder that shares its word with anything else (both
+/// expand into whole words, so each must be one on its own). A plain command
+/// with no braces parses to words of a single `Literal` each.
+pub fn parse_binding_template(template: &str) -> Result<Vec<Vec<BindingPart>>, String> {
+    let words = shlex::split(template)
+        .ok_or_else(|| format!("binding '{template}' has unbalanced quotes"))?;
+    let mut out = Vec::with_capacity(words.len());
+    for word in words {
+        let mut parts: Vec<BindingPart> = Vec::new();
+        let mut literal = String::new();
+        let mut rest = word.as_str();
+        while let Some(open) = rest.find(['{', '}']) {
+            if &rest[open..open + 1] == "}" {
+                return Err(format!("binding '{template}' has a '}}' with no matching '{{'"));
+            }
+            literal.push_str(&rest[..open]);
+            let after = &rest[open + 1..];
+            let close = after
+                .find(['{', '}'])
+                .filter(|&i| &after[i..i + 1] == "}")
+                .ok_or_else(|| format!("binding '{template}' has a '{{' with no matching '}}'"))?;
+            if !literal.is_empty() {
+                parts.push(BindingPart::Literal(std::mem::take(&mut literal)));
+            }
+            parts.push(parse_placeholder(&after[..close], template)?);
+            rest = &after[close + 1..];
+        }
+        literal.push_str(rest);
+        if !literal.is_empty() {
+            parts.push(BindingPart::Literal(literal));
+        }
+        if parts.len() > 1
+            && parts
+                .iter()
+                .any(|p| matches!(p, BindingPart::List { .. } | BindingPart::Optional { .. }))
+        {
+            return Err(format!(
+                "binding '{template}': a list or optional placeholder must be a whole word of its own, not part of '{word}'"
+            ));
+        }
+        out.push(parts);
+    }
+    Ok(out)
+}
+
+/// The inside of one `{...}`: `name`, `name[]:--flag`, `name?:--flag`, or
+/// `name:cents->dollars`.
+fn parse_placeholder(inner: &str, template: &str) -> Result<BindingPart, String> {
+    let (name, modifier) = match inner.split_once(':') {
+        Some((n, m)) => (n, Some(m)),
+        None => (inner, None),
+    };
+    let (name, suffix) = match (name.strip_suffix("[]"), name.strip_suffix('?')) {
+        (Some(n), _) => (n, "[]"),
+        (None, Some(n)) => (n, "?"),
+        (None, None) => (name, ""),
+    };
+    if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return Err(format!("binding '{template}' has placeholder '{{{inner}}}' with an invalid field name"));
+    }
+    let is_flag = |m: &str| m.starts_with("--") && m.len() > 2;
+    match (suffix, modifier) {
+        ("", None) => Ok(BindingPart::Field(name.to_string())),
+        ("", Some("cents->dollars")) => Ok(BindingPart::Cents(name.to_string())),
+        ("[]", Some(flag)) if is_flag(flag) => Ok(BindingPart::List {
+            field: name.to_string(),
+            flag: flag.to_string(),
+        }),
+        ("?", Some(flag)) if is_flag(flag) => Ok(BindingPart::Optional {
+            field: name.to_string(),
+            flag: flag.to_string(),
+        }),
+        (_, None) => Err(format!(
+            "binding '{template}' has placeholder '{{{inner}}}' without a flag; write '{{{name}{suffix}:--flag}}'"
+        )),
+        (_, Some(m)) => Err(format!(
+            "binding '{template}' has placeholder '{{{inner}}}' with unknown modifier '{m}'; known: 'cents->dollars', '[]:--flag', '?:--flag'"
+        )),
+    }
+}
+
 impl PluginManifest {
     /// Returns true if this plugin declares tool capabilities (connector pattern).
     pub fn is_connector(&self) -> bool {
@@ -733,6 +840,16 @@ impl PluginManifest {
                         event.name
                     )));
                 }
+            }
+        }
+
+        // Interface bindings: a template must parse, so a typo in a placeholder
+        // fails here at install and not at the first port call.
+        for (op, template) in &self.interface_bindings {
+            if let Err(e) = parse_binding_template(template) {
+                return Err(NappError::PluginValidation(format!(
+                    "interfaceBindings['{op}']: {e}"
+                )));
             }
         }
 
@@ -3414,6 +3531,73 @@ mod tests {
             multiplexed: false,
         }]);
         assert!(m.validate().is_err());
+    }
+
+    // ── Interface binding template tests ────────────────────────────
+
+    #[test]
+    fn binding_template_parses_plain_and_placeholders() {
+        use BindingPart::*;
+        assert_eq!(
+            parse_binding_template("bill create").unwrap(),
+            vec![vec![Literal("bill".into())], vec![Literal("create".into())]]
+        );
+        assert_eq!(
+            parse_binding_template("payment apply --customer-ref {customerId} {invoiceIds[]:--line} --total-amt {amountCents:cents->dollars}").unwrap(),
+            vec![
+                vec![Literal("payment".into())],
+                vec![Literal("apply".into())],
+                vec![Literal("--customer-ref".into())],
+                vec![Field("customerId".into())],
+                vec![List { field: "invoiceIds".into(), flag: "--line".into() }],
+                vec![Literal("--total-amt".into())],
+                vec![Cents("amountCents".into())],
+            ]
+        );
+        assert_eq!(
+            parse_binding_template("invoice send {invoiceId} {sendTo?:--send-to}").unwrap()[3],
+            vec![Optional { field: "sendTo".into(), flag: "--send-to".into() }]
+        );
+        // A scalar placeholder may share its word with literal text.
+        assert_eq!(
+            parse_binding_template("send --to={email}").unwrap()[1],
+            vec![Literal("--to=".into()), Field("email".into())]
+        );
+    }
+
+    #[test]
+    fn binding_template_rejects_malformed_placeholders() {
+        for bad in [
+            "bill create {vendorId",
+            "bill create vendorId}",
+            "bill create {}",
+            "bill create {vendor-id}",
+            "bill create {lines[]}",
+            "bill create {lines[]:line}",
+            "bill create {amount:dollars}",
+            "bill create --line={lines[]:--line}",
+            "invoice send {sendTo?}",
+            "invoice send {sendTo?:send-to}",
+            "invoice send --to={sendTo?:--send-to}",
+            "invoice send {sendTo[]?:--send-to}",
+            "bill create \"{vendorId}",
+        ] {
+            assert!(parse_binding_template(bad).is_err(), "{bad} must not parse");
+        }
+    }
+
+    #[test]
+    fn test_validate_rejects_malformed_binding_template() {
+        let mut m = make_valid_manifest();
+        m.interface_bindings.insert("ledger.bill.create".into(), "bill create --vendor-ref {vendorId}".into());
+        assert!(m.validate().is_ok());
+        m.interface_bindings.insert("ledger.bill.create".into(), "bill create --vendor-ref {vendorId".into());
+        let err = m.validate().unwrap_err().to_string();
+        assert!(err.contains("ledger.bill.create"), "{err}");
+        m.interface_bindings.clear();
+        m.interface_bindings.insert("ledger.invoice.send".into(), "invoice send {invoiceId} {sendTo?}".into());
+        let err = m.validate().unwrap_err().to_string();
+        assert!(err.contains("ledger.invoice.send") && err.contains("without a flag"), "{err}");
     }
 
     // ── Dependency Tests ────────────────────────────────────────────
