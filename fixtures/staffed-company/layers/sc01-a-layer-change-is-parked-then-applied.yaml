@@ -1,0 +1,12 @@
+id: sc01-a-layer-change-is-parked-then-applied
+name: "SC01 — A layer change is parked, then applied"
+description: |
+  A company pack is written into packs/. Nothing reaches any seat and the
+  company policy is unchanged. The owner applies: every enabled seat gets its
+  hidden update run (stamped against the pack), laws become locked Blocked rules
+  on every seat, standards fill the seats' inputs by semantic id, the money
+  question is never filled, and the company policy carries the six company.*
+  bounds and the owner-reserved operations.
+target_component: staffed-company
+proof: staffed_proof::layers::a_layer_change_is_parked_then_applied
+conversation: []

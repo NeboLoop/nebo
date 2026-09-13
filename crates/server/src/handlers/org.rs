@@ -223,7 +223,7 @@ fn pack_err(e: napp::PackError) -> (reqwest::StatusCode, Json<types::api::ErrorR
 
 /// The pack's slug: the marker's frontmatter `industry:`/`franchise:`/`company:`
 /// value or the marker's own `slug:`, else the directory name.
-fn pack_slug(dir: &Path) -> Option<String> {
+pub(crate) fn pack_slug(dir: &Path) -> Option<String> {
     for marker in ["INDUSTRY.md", "FRANCHISE.md", "COMPANY.md"] {
         if let Ok(text) = std::fs::read_to_string(dir.join(marker)) {
             let (fm, _) = frontmatter(&text);

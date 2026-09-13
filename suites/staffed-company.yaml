@@ -1,0 +1,28 @@
+name: staffed-company
+# The staffed company's deterministic proof: every mechanism that landed with
+# it, one fixture each, driven through the REAL server booted in-process on a
+# temporary NEBO_HOME with no network and no model. Each fixture names the
+# Rust test that proves it; the runner executes that test.
+#
+#   make test-staffed-proof
+#   nebo-cli test run --suite suites/staffed-company.yaml --no-judge
+#
+# `cargo test -p nebo-server --lib -- staffed_proof` runs the same tests
+# directly, which is how CI's workspace test run includes them.
+fixtures:
+  - ../fixtures/staffed-company/layers/sc01-a-layer-change-is-parked-then-applied.yaml
+  - ../fixtures/staffed-company/layers/sc02-the-diff-is-a-diff.yaml
+  - ../fixtures/staffed-company/policy/sc03-a-law-blocks-a-reserved-operation-is-the-owners.yaml
+  - ../fixtures/staffed-company/policy/sc04-a-seats-published-ceiling-lands-and-gates.yaml
+  - ../fixtures/staffed-company/policy/sc05-an-unknown-declared-operation-fails-closed-a-critical-one-asks.yaml
+  - ../fixtures/staffed-company/seats/sc06-out-of-bounds-work-becomes-an-assignment.yaml
+  - ../fixtures/staffed-company/seats/sc07-a-packages-own-skills-load-scoped.yaml
+  - ../fixtures/staffed-company/connections/sc08-a-hand-off-connects.yaml
+  - ../fixtures/staffed-company/connections/sc09-a-template-binding-shapes-the-call.yaml
+  - ../fixtures/staffed-company/seats/sc10-the-owners-declaration-survives-a-package-update.yaml
+  - ../fixtures/staffed-company/seats/sc11-department-locks-reporting-line-refuses-cycles.yaml
+  - ../fixtures/staffed-company/policy/sc12-writing-the-company-layer-is-granted-not-channelled.yaml
+  - ../fixtures/staffed-company/layers/sc13-agents-md-renders-and-never-clobbers.yaml
+  - ../fixtures/staffed-company/policy/sc14-the-catalogue-is-the-gate.yaml
+  - ../fixtures/staffed-company/migrations/sc15-migrations-run-forward-on-a-real-database.yaml
+  - ../fixtures/staffed-company/layers/sc16-an-uploaded-pack-keeps-its-own-slug.yaml

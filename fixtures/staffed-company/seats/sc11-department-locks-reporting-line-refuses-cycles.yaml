@@ -1,0 +1,8 @@
+id: sc11-department-locks-reporting-line-refuses-cycles
+name: "SC11 — Department locks, reporting line refuses cycles"
+description: |
+  The owner sets a department; the package's write does not move it; a chain
+  A→B→C then C→A is refused with the loop named.
+target_component: staffed-company
+proof: staffed_proof::seats::department_locks_and_reporting_line_refuses_cycles
+conversation: []

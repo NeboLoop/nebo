@@ -479,6 +479,11 @@ pub async fn upload_layer_pack(
 
     let staging = tempfile::tempdir().map_err(io)?;
     let staged = staging.path().join("upload");
+    // The pack's own name: the source folder for a path upload, the wrapping
+    // folder for a zip, else the marker's frontmatter. The staging folder is
+    // never the name, or every uploaded pack would be called `upload` and each
+    // would replace the last.
+    let mut named: Option<String> = None;
     std::fs::create_dir_all(&staged).map_err(io)?;
 
     if content_type.starts_with("multipart/") {
@@ -507,6 +512,7 @@ pub async fn upload_layer_pack(
             return Err(bad(format!("{} is not a directory", src.display())));
         }
         napp::copy_tree(&src, &staged).map_err(|e| bad(e.to_string()))?;
+        named = src.file_name().and_then(|n| n.to_str()).map(str::to_string);
     }
 
     // A symlink in an uploaded pack is a door out of it; a pack is markdown.
@@ -522,12 +528,17 @@ pub async fn upload_layer_pack(
     let root = pack_root(&staged).ok_or_else(|| {
         bad("no marker file: a pack holds exactly one of INDUSTRY.md, FRANCHISE.md, COMPANY.md")
     })?;
-    let slug = root
-        .file_name()
-        .and_then(|n| n.to_str())
-        .filter(|n| !n.starts_with('.'))
-        .ok_or_else(|| bad("the pack folder has no usable name"))?
-        .to_string();
+    let slug = named
+        .or_else(|| {
+            (root != staged)
+                .then(|| root.file_name().and_then(|n| n.to_str()).map(str::to_string))
+                .flatten()
+        })
+        .or_else(|| super::org::pack_slug(&root))
+        .filter(|n| !n.starts_with('.') && !n.is_empty())
+        .ok_or_else(|| {
+            bad("the pack has no name: zip it inside a folder named for it, or set `slug:` in its marker")
+        })?;
 
     let packs_dir = config::packs_dir().map_err(to_error_response)?;
     std::fs::create_dir_all(&packs_dir).map_err(io)?;

@@ -1,0 +1,10 @@
+id: sc13-agents-md-renders-and-never-clobbers
+name: "SC13 — AGENTS.md renders and never clobbers"
+description: |
+  After apply, the known-location render carries the one-way operations and the
+  five constraints, no credential, no outside address and no money figure
+  planted in the layers; placing into a repository with its own AGENTS.md leaves
+  that file byte-identical and writes beside it; placing twice is idempotent.
+target_component: staffed-company
+proof: staffed_proof::layers::agents_md_renders_and_never_clobbers
+conversation: []

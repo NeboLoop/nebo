@@ -1,0 +1,9 @@
+id: sc09-a-template-binding-shapes-the-call
+name: "SC09 — A template binding shapes the call"
+description: |
+  A fake ledger plugin bound to a template receives exactly `invoice send 1041
+  --send-to x@example.com`; without sendTo exactly `invoice send 1041`; a
+  missing invoiceId is an error naming the field and the operation.
+target_component: staffed-company
+proof: staffed_proof::connections::a_template_binding_shapes_the_call
+conversation: []

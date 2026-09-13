@@ -1,0 +1,10 @@
+id: sc04-a-seats-published-ceiling-lands-and-gates
+name: "SC04 — A seat's published ceiling lands and gates"
+description: |
+  A package declaring a ceiling is installed; the operation decides Approval
+  unattended and shows on the Approvals view; the employee-wide default set to
+  Always cannot loosen it; the owner's authored ceiling lands through the same
+  routine.
+target_component: staffed-company
+proof: staffed_proof::policy::a_seats_published_ceiling_lands_and_gates
+conversation: []

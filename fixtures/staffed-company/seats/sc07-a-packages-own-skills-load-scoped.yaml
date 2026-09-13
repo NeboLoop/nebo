@@ -1,0 +1,9 @@
+id: sc07-a-packages-own-skills-load-scoped
+name: "SC07 — A package's own skills load, scoped"
+description: |
+  Two packages ship a skill of the same name; each seat sees its own through the
+  server's loader, a third sees neither, the shared roster knows no such skill,
+  and the packaged employees read as healthy, not degraded.
+target_component: staffed-company
+proof: staffed_proof::seats::a_packages_own_skills_load_scoped
+conversation: []

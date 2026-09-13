@@ -1,0 +1,9 @@
+id: sc10-the-owners-declaration-survives-a-package-update
+name: "SC10 — The owner's declaration survives a package update"
+description: |
+  The owner adds a capability and a question to a packaged employee; the package
+  updates with a new question and a corrected label; both owner edits survive
+  and both package changes arrive.
+target_component: staffed-company
+proof: staffed_proof::seats::the_owners_declaration_survives_a_package_update
+conversation: []

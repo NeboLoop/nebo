@@ -27,6 +27,8 @@ pub mod run_registry;
 mod scheduler;
 pub mod wake;
 pub mod layers_update;
+#[cfg(test)]
+mod staffed_proof;
 mod spa;
 mod state;
 pub mod workflow_manager;
@@ -979,7 +981,13 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // The manifest must point to the `nebo` CLI binary (which has the relay code),
     // NOT `nebo-desktop` (the Tauri GUI). When running as `nebo-desktop`, we find
     // the sibling `nebo` binary in the same directory.
-    {
+    // The manifests live in the user's browser profiles, outside the Nebo root,
+    // and bind those browsers to ONE binary: the Nebo at the platform data
+    // directory. A relocated root (tests, cloud pods, side installs) never
+    // rewrites them — a test run once pointed every browser at a debug binary.
+    if config::data_dir_overridden() {
+        info!("data dir overridden — leaving the browser native messaging manifests alone");
+    } else {
         let nebo_binary = std::env::current_exe()
             .map(|p| {
                 if p.file_name().and_then(|n| n.to_str()) == Some("nebo-desktop") {
@@ -997,11 +1005,11 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
                 warn!("failed to install native messaging manifest: {}", e);
             }
         }
-        // Generate the per-install relay secret so it exists before any relay
-        // (launched by the browser) connects to /ws/extension.
-        if let Err(e) = config::ensure_extension_secret() {
-            warn!("failed to prepare extension relay secret: {}", e);
-        }
+    }
+    // Generate the per-install relay secret so it exists before any relay
+    // (launched by the browser) connects to /ws/extension.
+    if let Err(e) = config::ensure_extension_secret() {
+        warn!("failed to prepare extension relay secret: {}", e);
     }
 
     // Ensure artifact directory structure exists (nebo/ and user/ namespaces)
@@ -2044,6 +2052,12 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         channel_engagement: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         store_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
     };
+
+    // The proof suite (`staffed_proof`) boots this real server in-process and
+    // reaches the same registry, loader and bus the handlers use. Test-only:
+    // compiled out of every shipped binary.
+    #[cfg(test)]
+    staffed_proof::booted(&state);
 
     // Packs on disk (R8, R15): restore what the seats have actually read, give
     // seats that have never read them their first read, then watch for changes
