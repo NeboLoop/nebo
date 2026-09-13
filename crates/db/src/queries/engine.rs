@@ -1415,7 +1415,11 @@ impl Store {
     // ── effects ────────────────────────────────────────────────────────
 
     /// Pending BEFORE it acts. A repeat of the same idem_key returns the
-    /// existing row's id so a retried turn finds its own effect.
+    /// existing row's id so a retried turn finds its own effect. A row that
+    /// FAILED (the provider refused, or nothing left this machine) is opened
+    /// again as a fresh pending row: that effect may be tried again, and its
+    /// next outcome must be recordable — a retry that succeeded but could
+    /// not be marked completed would let the call after it act again.
     pub fn engine_effect_pending(
         &self,
         run_id: &str,
@@ -1429,7 +1433,9 @@ impl Store {
         conn.execute(
             "INSERT INTO engine_effects (run_id, class, idem_key, provider, provider_key, counterparty)
              VALUES (?1, ?2, ?3, ?4, ?5, NULLIF(?6, ''))
-             ON CONFLICT(idem_key) DO NOTHING",
+             ON CONFLICT(idem_key) DO UPDATE
+                 SET state = 'pending', attempts = 0, result = NULL, completed_at = NULL
+                 WHERE engine_effects.state = 'failed'",
             params![run_id, class, idem_key, provider, provider_key, counterparty],
         )
         .db_err("engine_effect_pending")?;
@@ -1695,6 +1701,26 @@ mod tests {
         // Completing twice is a no-op, never a second action.
         s.engine_effect_completed(id, Some("msg-10"), None, 400).unwrap();
         assert_eq!(s.engine_get_effect(id).unwrap().unwrap().provider_ref.as_deref(), Some("msg-9"));
+    }
+
+    /// A failed effect may be tried again under the same key: the repeat
+    /// finds the row open again, and its outcome is recorded. A completed
+    /// row is never reopened.
+    #[test]
+    fn a_failed_effect_is_reopened_by_the_retry_and_a_completed_one_never_is() {
+        let s = store();
+        s.engine_create_run(&case("c1")).unwrap();
+        let id = s.engine_effect_pending("c1", "financial", "write:a1:ledger.bill.create:bill-77", "quickbooks", "", "").unwrap();
+        s.engine_effect_attempted(id).unwrap();
+        s.engine_effect_failed(id, "vendor not found", 100).unwrap();
+        assert_eq!(s.engine_effect_pending("c1", "financial", "write:a1:ledger.bill.create:bill-77", "quickbooks", "", "").unwrap(), id);
+        let e = s.engine_get_effect(id).unwrap().unwrap();
+        assert_eq!((e.state.as_str(), e.attempts, e.result.as_deref(), e.completed_at), ("pending", 0, None, None));
+        s.engine_effect_attempted(id).unwrap();
+        s.engine_effect_completed(id, None, Some("{\"billId\":\"B1\"}"), 200).unwrap();
+        assert_eq!(s.engine_effect_pending("c1", "financial", "write:a1:ledger.bill.create:bill-77", "quickbooks", "", "").unwrap(), id);
+        let e = s.engine_get_effect(id).unwrap().unwrap();
+        assert_eq!((e.state.as_str(), e.attempts, e.result.as_deref()), ("completed", 1, Some("{\"billId\":\"B1\"}")));
     }
 
     #[test]

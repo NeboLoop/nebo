@@ -297,6 +297,76 @@ where
     }
 }
 
+/// The key one seat's write has under the idempotency key it supplied: the
+/// seat, the operation suffix (one binding serves every seat that calls
+/// it), and the clientKey.
+pub fn write_key(seat: &str, operation: &str, client_key: &str) -> String {
+    format!("write:{seat}:{}:{client_key}", crate::plugin_tool::port_suffix(operation))
+}
+
+/// Perform one port write under the seat's `clientKey` through the ledger.
+///
+/// The ledger contract puts a `clientKey` on every write so a retried call
+/// does not post twice. The key is the runtime's concern, never the
+/// plugin's: the row is written BEFORE the plugin runs, under the seat, the
+/// operation and the key; the same call again is answered from the row and
+/// the plugin is not run; a write the plugin refused may be tried again
+/// under the same key; a write whose earlier attempt never reported (the
+/// process died mid-call) is not run again, because it may already be
+/// posted. The result is a financial effect, so recovery sees it beside
+/// the sends.
+pub async fn guarded_write<F, Fut>(
+    store: &Store,
+    ctx: &ToolContext,
+    provider: &str,
+    operation: &str,
+    client_key: &str,
+    run: F,
+) -> ToolResult
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = ToolResult>,
+{
+    let seat = match types::keyparser::extract_agent_id(&ctx.session_key) {
+        id if id.is_empty() => ctx.session_key.clone(),
+        id => id,
+    };
+    let key = write_key(&seat, operation, client_key);
+    let id = match store.engine_effect_pending(&run_ref(ctx), "financial", &key, provider, "", "") {
+        Ok(id) => id,
+        Err(e) => return ToolResult::error(format!("could not record the write before performing it; not performed: {e}")),
+    };
+    let effect = match store.engine_get_effect(id) {
+        Ok(Some(e)) => e,
+        _ => return ToolResult::error("could not read the write record; not performed"),
+    };
+    match effect.state.as_str() {
+        "completed" => {
+            return ToolResult::ok(format!(
+                "Already performed under clientKey {client_key} ({operation}, ledger #{id}); returning the recorded result, not performed again.\n\n{}",
+                effect.result.unwrap_or_default()
+            ));
+        }
+        "pending" if effect.attempts > 0 => {
+            return ToolResult::error(format!(
+                "A {operation} under clientKey {client_key} was attempted before (ledger #{id}) and its outcome was never recorded, so it was NOT performed again — it may already be posted. Find it in the books before doing anything else; do not retry it under this key or a new one."
+            ));
+        }
+        _ => {}
+    }
+    if let Err(e) = store.engine_effect_attempted(id) {
+        return ToolResult::error(format!("could not record the attempt; not performed: {e}"));
+    }
+    let r = run().await;
+    let now = chrono::Utc::now().timestamp();
+    if r.is_error {
+        let _ = store.engine_effect_failed(id, &r.content, now);
+    } else {
+        let _ = store.engine_effect_completed(id, None, Some(&r.content), now);
+    }
+    r
+}
+
 fn tell_owner(store: &Store, ctx: &ToolContext, effect_id: i64, provider: &str, operation: &str, why: &str) {
     let user = store.ensure_local_user_id().unwrap_or_default();
     let body = format!(
@@ -421,6 +491,52 @@ mod tests {
         let stranger = serde_json::json!({"to": "nobody@x.com", "text": "hi"});
         let r = guarded_send(&s, &receptionist, "messaging", "mail-app", "mail.message.send", &stranger, || async { SendOutcome::Sent("ok".into(), None) }).await;
         assert!(!r.is_error, "a person in nobody's case may be written to by anyone");
+    }
+
+    /// The ledger contract's `clientKey`: a write under a key runs once and
+    /// the same key again is answered from the ledger; a refused write may
+    /// be tried again under the same key and its success is then the
+    /// recorded result; the key is the seat's, and one binding serves every
+    /// role that calls it; an attempt that never reported is not run again.
+    #[tokio::test]
+    async fn a_write_under_a_client_key_runs_once() {
+        use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+        let s = store();
+        let c = ctx();
+        let calls = std::sync::Arc::new(AtomicUsize::new(0));
+        let run = |out: ToolResult| {
+            let calls = calls.clone();
+            move || async move {
+                calls.fetch_add(1, SeqCst);
+                out
+            }
+        };
+        let op = "accounting.ap.ledger.bill.create";
+        let r = guarded_write(&s, &c, "quickbooks", op, "bill-77", run(ToolResult::error("vendor not found"))).await;
+        assert!(r.is_error);
+        let r = guarded_write(&s, &c, "quickbooks", op, "bill-77", run(ToolResult::ok("{\"billId\":\"B1\"}"))).await;
+        assert!(!r.is_error && r.content == "{\"billId\":\"B1\"}", "a refused write may be tried again: {}", r.content);
+        let r = guarded_write(&s, &c, "quickbooks", op, "bill-77", run(ToolResult::ok("must not run"))).await;
+        assert!(!r.is_error, "{}", r.content);
+        assert!(r.content.contains("Already performed under clientKey bill-77") && r.content.contains("B1"), "{}", r.content);
+        assert_eq!(calls.load(SeqCst), 2);
+
+        let other_seat = ToolContext { session_key: "agent:a2:main".into(), ..Default::default() };
+        let r = guarded_write(&s, &other_seat, "quickbooks", op, "bill-77", run(ToolResult::ok("ok"))).await;
+        assert_eq!(r.content, "ok", "the key is the seat's");
+        let r = guarded_write(&s, &c, "quickbooks", "accounting.ar.ledger.bill.create", "bill-77", run(ToolResult::ok("must not run"))).await;
+        assert!(r.content.contains("Already performed"), "one binding serves every role: {}", r.content);
+        let r = guarded_write(&s, &c, "quickbooks", op, "bill-78", run(ToolResult::ok("second bill"))).await;
+        assert_eq!(r.content, "second bill", "another key is another write");
+        assert_eq!(calls.load(SeqCst), 4);
+
+        let key = write_key("a1", "ledger.journalentry.create", "je-1");
+        let id = s.engine_effect_pending("run-9", "financial", &key, "quickbooks", "", "").unwrap();
+        s.engine_effect_attempted(id).unwrap();
+        let r = guarded_write(&s, &c, "quickbooks", "accounting.ap.ledger.journalentry.create", "je-1", run(ToolResult::ok("must not run"))).await;
+        assert!(r.is_error && r.content.contains("never recorded"), "{}", r.content);
+        assert_eq!(calls.load(SeqCst), 4);
+        assert_eq!(s.engine_get_effect(id).unwrap().unwrap().class, "financial");
     }
 
     /// A plugin vouches for its send with a typed outcome; one that says

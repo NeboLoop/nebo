@@ -1052,7 +1052,7 @@ impl DynTool for PluginTool {
             "input".into(),
             serde_json::json!({
                 "type": "object",
-                "description": "Typed input for a port `operation`. Each field is passed to the bound plugin as a --key value flag."
+                "description": "Typed input for a port `operation`. Each field is passed to the bound plugin as a --key value flag, except `clientKey`: the idempotency key a write carries stays with the runtime — the same operation under the same key is performed once, and a later call returns the recorded result."
             }),
         );
         props.insert(
@@ -1130,6 +1130,12 @@ impl DynTool for PluginTool {
                     Ok(x) => x,
                     Err(e) => return ToolResult::error(e),
                 };
+                // The seat's idempotency key is the runtime's concern, not
+                // the plugin's: it comes out of the input before the binding
+                // renders, so it never reaches a command as `--clientKey`,
+                // and the same write asked for again under one key runs
+                // once (`effects::guarded_write`).
+                let client_key = take_client_key(&mut pi.input);
                 // The binding says how the call is shaped: a template's
                 // placeholders take their fields here, and only the fields it
                 // does not mention go on as `--key value` flags below.
@@ -1161,22 +1167,13 @@ impl DynTool for PluginTool {
                     input: serde_json::Value::Null,
                     display: String::new(),
                 };
-                // A customer-facing send goes through the effect ledger:
-                // recorded before it goes, never sent twice for the same
-                // input in one run, held when the outcome is unknown. The
-                // plugin vouches for the outcome with a typed report on
-                // stdout (see `SendOutcome::from_plugin_output`); a plugin
-                // that reports nothing typed leaves the send unknown, which
-                // holds it — the words in an error are never the verdict.
-                if crate::effects::is_customer_send(&pi.operation) {
-                    let store = self.db_store.clone();
-                    return crate::effects::guarded_send(&store, ctx, "messaging", &slug, &pi.operation, &pi.input, || async {
-                        let r = self.handle_exec(&port_pi, ctx).await;
-                        crate::effects::SendOutcome::from_plugin_output(&r.content)
+                if let Some(key) = client_key {
+                    return crate::effects::guarded_write(&self.db_store, ctx, &slug, &pi.operation, &key, || {
+                        self.run_port(&slug, &pi, &port_pi, ctx)
                     })
                     .await;
                 }
-                return self.handle_exec(&port_pi, ctx).await;
+                return self.run_port(&slug, &pi, &port_pi, ctx).await;
             }
 
             // `list` and `discover` don't need a plugin slug; `exec`/`events` do.
@@ -1275,6 +1272,25 @@ impl DynTool for PluginTool {
 }
 
 impl PluginTool {
+    /// Run a resolved port call on the plugin that binds it.
+    ///
+    /// A customer-facing send goes through the effect ledger: recorded
+    /// before it goes, never sent twice for the same input in one run, held
+    /// when the outcome is unknown. The plugin vouches for the outcome with
+    /// a typed report on stdout (see `SendOutcome::from_plugin_output`); a
+    /// plugin that reports nothing typed leaves the send unknown, which
+    /// holds it — the words in an error are never the verdict.
+    async fn run_port(&self, slug: &str, pi: &PluginInput, port_pi: &PluginInput, ctx: &ToolContext) -> ToolResult {
+        if crate::effects::is_customer_send(&pi.operation) {
+            return crate::effects::guarded_send(&self.db_store, ctx, "messaging", slug, &pi.operation, &pi.input, || async {
+                let r = self.handle_exec(port_pi, ctx).await;
+                crate::effects::SendOutcome::from_plugin_output(&r.content)
+            })
+            .await;
+        }
+        self.handle_exec(port_pi, ctx).await
+    }
+
     /// The `resource` property: the installed slugs as an enum when there are
     /// any. With none installed the enum is left out, because `enum: []`
     /// makes every value schema-invalid and a validating provider then
@@ -2616,6 +2632,18 @@ fn build_op_json(
     Ok(serde_json::Value::Object(obj))
 }
 
+/// The seat's `clientKey`, taken out of a port call's input. The ledger
+/// contract puts one on every write; it is the runtime's idempotency key
+/// and never a plugin flag. A key that is empty or not a string (a number
+/// is read as one) is no key, and the call runs as a call without one.
+fn take_client_key(input: &mut serde_json::Value) -> Option<String> {
+    match input.as_object_mut()?.remove("clientKey")? {
+        serde_json::Value::String(s) if !s.trim().is_empty() => Some(s.trim().to_string()),
+        serde_json::Value::Number(n) => Some(n.to_string()),
+        _ => None,
+    }
+}
+
 /// Whether a raw exec command invokes a bound operation's command — the bound
 /// command exactly, or with additional arguments/flags after it. A binding may
 /// be multi-word ("documents list"), so plain prefix matching would false-match
@@ -2919,6 +2947,20 @@ mod tests {
         assert!(malformed.contains("ledger.bill.create") && malformed.contains("no matching"), "{malformed}");
     }
 
+    /// The key leaves the input and nothing else does; no key, an empty
+    /// key, or a null is the same call without one.
+    #[test]
+    fn client_key_comes_out_of_the_input_and_nothing_else_does() {
+        let mut input = serde_json::json!({"clientKey": " bill-77 ", "vendorId": "V7"});
+        assert_eq!(take_client_key(&mut input).as_deref(), Some("bill-77"));
+        assert_eq!(input, serde_json::json!({"vendorId": "V7"}));
+        assert_eq!(take_client_key(&mut input), None);
+        assert_eq!(take_client_key(&mut serde_json::json!({"clientKey": 4102})).as_deref(), Some("4102"));
+        assert_eq!(take_client_key(&mut serde_json::json!({"clientKey": ""})), None);
+        assert_eq!(take_client_key(&mut serde_json::json!({"clientKey": null})), None);
+        assert_eq!(take_client_key(&mut serde_json::Value::Null), None);
+    }
+
     #[test]
     fn skill_labels_never_invent_a_subcommand() {
         // GWS prefixes its skill dirs with its slug, and each really is a
@@ -3212,6 +3254,78 @@ mod budget_and_install_tests {
             .await;
         assert!(!r.is_error, "{}", r.content);
         assert!(r.content.contains("invoice\nsend\nInvoice 1041\n--sendTo\nap@example.com"), "{}", r.content);
+    }
+
+    /// A plugin that binds the given operations and, as its binary, runs the
+    /// given shell script.
+    fn install_port_plugin(root: &std::path::Path, slug: &str, bindings: serde_json::Value, script: &str) {
+        let version_dir = root.join("plugins").join(slug).join("0.1.0");
+        std::fs::create_dir_all(&version_dir).unwrap();
+        std::fs::write(
+            version_dir.join("plugin.json"),
+            serde_json::json!({
+                "id": slug, "slug": slug, "name": slug, "version": "0.1.0", "platforms": {},
+                "interfaceBindings": bindings,
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let bin = version_dir.join(slug);
+        std::fs::write(&bin, script).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
+
+    /// The ledger contract's `clientKey` is the runtime's: it never reaches
+    /// the plugin as a flag; the same write under one key runs the plugin
+    /// once and is answered from the ledger after that; another key runs
+    /// again; a call with no key behaves as it always did.
+    #[tokio::test]
+    async fn client_key_stays_with_the_runtime_and_a_write_under_it_runs_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (plugin_store, db_store) = stores(tmp.path());
+        let calls = tmp.path().join("calls.log");
+        install_port_plugin(
+            tmp.path(),
+            "quickbooks",
+            serde_json::json!({"ledger.bill.create": "bill create --vendor-ref {vendorId}"}),
+            &format!("#!/bin/sh\necho \"$@\" >> '{}'\nprintf '%s\\n' \"$@\"\n", calls.display()),
+        );
+        let tool = PluginTool::new(plugin_store, db_store);
+        let ctx = ToolContext { session_key: "agent:ap:main".into(), ..Default::default() };
+        let call = |key: &str| {
+            serde_json::json!({
+                "operation": "accounting.ap.ledger.bill.create",
+                "input": {"clientKey": key, "vendorId": "V7", "txnDate": "2026-09-13"},
+            })
+        };
+        let invocations = || std::fs::read_to_string(&calls).unwrap_or_default().lines().count();
+
+        let first = tool.execute_dyn(&ctx, call("bill-77")).await;
+        assert!(!first.is_error, "{}", first.content);
+        assert!(first.content.contains("bill\ncreate\n--vendor-ref\nV7\n--txnDate\n2026-09-13"), "{}", first.content);
+        assert!(!first.content.contains("clientKey"), "the key is not a flag: {}", first.content);
+        assert_eq!(invocations(), 1);
+
+        let again = tool.execute_dyn(&ctx, call("bill-77")).await;
+        assert!(!again.is_error, "{}", again.content);
+        assert!(again.content.contains("Already performed under clientKey bill-77"), "{}", again.content);
+        assert!(again.content.contains("--vendor-ref\nV7"), "the recorded result comes back: {}", again.content);
+        assert_eq!(invocations(), 1, "the plugin ran once");
+
+        let other = tool.execute_dyn(&ctx, call("bill-78")).await;
+        assert!(!other.is_error && !other.content.contains("Already performed"), "{}", other.content);
+        assert_eq!(invocations(), 2, "another key is another write");
+
+        let bare = serde_json::json!({"operation": "accounting.ap.ledger.bill.create", "input": {"vendorId": "V7"}});
+        let r = tool.execute_dyn(&ctx, bare.clone()).await;
+        assert!(!r.is_error && r.content.contains("bill\ncreate\n--vendor-ref\nV7"), "{}", r.content);
+        let r = tool.execute_dyn(&ctx, bare).await;
+        assert!(!r.is_error && !r.content.contains("Already performed"), "{}", r.content);
+        assert_eq!(invocations(), 4, "no key: every call runs, as before");
     }
 
     /// Seen live: an employee with gmail connected called google-workspace
