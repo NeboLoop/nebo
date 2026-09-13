@@ -8,17 +8,23 @@ use nebo_napp::plugin::{
 };
 use nebo_napp::PluginRuntime;
 
+/// The fake plugin lives beside this test binary, wherever cargo put it: a
+/// test binary runs from `<target>/<profile>/deps/`, and `cargo test` builds
+/// the crate's examples into `<target>/<profile>/examples/`. Deriving the
+/// path from the test's own location honours CARGO_TARGET_DIR; a path
+/// hardcoded under the tree's `target/` failed every test the moment a build
+/// used any other target directory.
 fn fake_plugin_binary() -> PathBuf {
-    let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    path.pop(); // crates/
-    path.pop(); // repo root
-    path.push("target");
-    path.push("debug");
-    path.push("examples");
-    path.push("fake_plugin");
+    let exe = std::env::current_exe().expect("test binary path");
+    let profile_dir = exe
+        .parent() // deps/
+        .and_then(|d| d.parent()) // <profile>/
+        .expect("test binary is under <target>/<profile>/deps");
+    let path = profile_dir.join("examples").join("fake_plugin");
     assert!(
         path.exists(),
-        "fake_plugin binary not found at {}. Run `cargo build --example fake_plugin -p nebo-napp` first.",
+        "fake_plugin binary not found at {}. `cargo test -p nebo-napp` builds it; \
+         or run `cargo build --example fake_plugin -p nebo-napp` with the same CARGO_TARGET_DIR.",
         path.display()
     );
     path
