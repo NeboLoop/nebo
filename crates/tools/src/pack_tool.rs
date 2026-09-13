@@ -41,31 +41,34 @@ fn name_ok(name: &str) -> bool {
 
 /// Write one pack from its parts into a staging dir, validate it with the
 /// loader, then move it into place. A bad pack never reaches `packs/`.
-fn create(input: &Value) -> Result<String, String> {
+fn create(input: &Value, owner_present: bool) -> Result<String, String> {
     let slug = input.get("slug").and_then(|v| v.as_str()).unwrap_or("").trim();
     if !slug_ok(slug) {
         return Err("`slug` is required: lowercase letters, digits, hyphens (e.g. `insurance-restoration-roofing`)".into());
     }
     let staging = PackTool::dir()?.join(format!(".staging-{slug}"));
-    let out = create_in(input, slug, &staging);
+    let out = create_in(input, slug, &staging, owner_present);
     if out.is_err() {
         let _ = std::fs::remove_dir_all(&staging);
     }
     out
 }
 
-fn create_in(input: &Value, slug: &str, staging: &Path) -> Result<String, String> {
+fn create_in(input: &Value, slug: &str, staging: &Path, owner_present: bool) -> Result<String, String> {
     let layer = input.get("layer").and_then(|v| v.as_str()).unwrap_or("industry");
     let marker = match layer {
         "industry" => "INDUSTRY.md",
         "franchise" => "FRANCHISE.md",
-        // The company layer is the owner's hand. The owner writes COMPANY.md
-        // and the folders beside it directly, and the save is the assertion;
-        // no seat writes there, whatever it was asked to do.
+        // The company layer is the owner's hand, and this is how the owner
+        // uses it: they ask, in their own chat, and Nebo writes the layer for
+        // them. A seat acting on its own reaches this and is refused, because
+        // the company law reserves the change to the owner — not to whoever
+        // happens to be holding the keyboard inside a workflow.
+        "company" if owner_present => "COMPANY.md",
         "company" => {
-            return Err("the company layer is the owner's: COMPANY.md and the folders beside it are edited by the owner directly. Build an industry or franchise pack, or propose the change into the record for the owner to confirm.".into())
+            return Err("the company layer is the owner's own: it is written when the owner asks for it themselves, not from a workflow, a schedule, or another employee's run. Draft what you would put in it and put that in front of the owner instead.".into())
         }
-        other => return Err(format!("`layer` must be industry or franchise, not `{other}`")),
+        other => return Err(format!("`layer` must be industry, franchise, or company, not `{other}`")),
     };
     let body = input.get("body").and_then(|v| v.as_str()).unwrap_or("").trim();
     if body.is_empty() {
@@ -229,7 +232,7 @@ fn show(input: &Value) -> Result<String, String> {
     Ok(pack.prompt_text())
 }
 
-fn remove(input: &Value) -> Result<String, String> {
+fn remove(input: &Value, owner_present: bool) -> Result<String, String> {
     let slug = input.get("slug").and_then(|v| v.as_str()).unwrap_or("").trim();
     if !slug_ok(slug) {
         return Err("`slug` is required".into());
@@ -238,8 +241,8 @@ fn remove(input: &Value) -> Result<String, String> {
     if !dest.is_dir() {
         return Err(format!("no pack `{slug}`"));
     }
-    if dest.join("COMPANY.md").is_file() {
-        return Err("that is the company layer, and it is the owner's. It is not removed from here.".into());
+    if dest.join("COMPANY.md").is_file() && !owner_present {
+        return Err("that is the company layer, and it is the owner's own: only the owner removes it, and only when they ask themselves.".into());
     }
     std::fs::remove_dir_all(&dest).map_err(|e| e.to_string())?;
     Ok(format!("pack `{slug}` removed. Every employee will drop what came only from it."))
@@ -266,7 +269,7 @@ impl DynTool for PackTool {
             "properties": {
                 "action": { "type": "string", "enum": ["create", "add", "list", "show", "remove"] },
                 "slug": { "type": "string", "description": "Pack id: lowercase, digits, hyphens. Required for create, show, remove." },
-                "layer": { "type": "string", "enum": ["industry", "franchise"], "description": "create: which layer this pack is (default industry). The company layer is the owner's own and is not written from here." },
+                "layer": { "type": "string", "enum": ["industry", "franchise", "company"], "description": "create: which layer this pack is (default industry). `company` only when the owner is asking for it themselves." },
                 "name": { "type": "string", "description": "create: display name." },
                 "version": { "type": "string", "description": "create: semver, default 0.1.0." },
                 "capabilities": { "type": "array", "items": { "type": "string" }, "description": "create: the capabilities the trade uses (mail, calendar, crm, ledger, billing, support, ...)." },
@@ -289,17 +292,22 @@ impl DynTool for PackTool {
 
     fn execute_dyn<'a>(
         &'a self,
-        _ctx: &'a ToolContext,
+        ctx: &'a ToolContext,
         input: Value,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send + 'a>> {
         Box::pin(async move {
             let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("list");
+            // The owner's own hand: the owner is at the keyboard, in their own
+            // chat or the CLI. A workflow, a schedule, a caller, another
+            // employee's handoff — none of these are the owner, whatever the
+            // run was told.
+            let owner_present = matches!(ctx.origin, crate::origin::Origin::User);
             let out = match action {
-                "create" => create(&input),
+                "create" => create(&input, owner_present),
                 "add" => add_from_path(&input),
                 "list" => list(),
                 "show" => show(&input),
-                "remove" => remove(&input),
+                "remove" => remove(&input, owner_present),
                 other => Err(format!("unknown action `{other}`")),
             };
             match out {
@@ -314,13 +322,18 @@ impl DynTool for PackTool {
 mod tests {
     use super::*;
 
+    /// The owner at the keyboard. Every existing test is the owner asking.
+    fn create_owner(input: &Value) -> Result<String, String> {
+        create(input, true)
+    }
+
     #[test]
     fn a_pack_created_from_parts_loads_and_a_bad_one_never_lands() {
         let root = std::env::temp_dir().join(format!("nebo-packtool-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
         // SAFETY: test-only override of the data dir for this process.
         unsafe { std::env::set_var("NEBO_HOME", &root) };
-        let ok = create(&json!({
+        let ok = create_owner(&json!({
             "action": "create", "slug": "sample-trade", "layer": "industry", "name": "Sample trade",
             "capabilities": ["mail"], "body": "# Sample trade\n\nHow it runs.",
             "folders": {
@@ -336,12 +349,26 @@ mod tests {
         assert_eq!(packs[0].laws.len(), 1);
         assert_eq!(packs[0].standards.len(), 1);
 
-        let bad = create(&json!({"action": "create", "slug": "bad", "body": "x", "folders": {"skills": [{"name": "s", "body": "x"}]}}));
+        let bad = create_owner(&json!({"action": "create", "slug": "bad", "body": "x", "folders": {"skills": [{"name": "s", "body": "x"}]}}));
         assert!(bad.is_err());
         assert!(!config::packs_dir().unwrap().join("bad").exists());
         assert!(!config::packs_dir().unwrap().join(".staging-bad").exists());
 
-        assert!(remove(&json!({"slug": "sample-trade"})).is_ok());
+        // The company layer is the owner's hand: written when the owner asks
+        // themselves, never from a workflow or another employee's run. If this
+        // inverts, a seat rewrites the company's own rules unattended.
+        let company = json!({
+            "action": "create", "slug": "acme", "layer": "company", "name": "Acme",
+            "body": "Fix roofs and get paid.",
+        });
+        assert!(create(&company, false).is_err(), "a seat may not write the company layer");
+        assert!(!config::packs_dir().unwrap().join("acme").exists());
+        assert!(create(&company, true).is_ok(), "the owner may");
+        assert!(config::packs_dir().unwrap().join("acme").join("COMPANY.md").is_file());
+        assert!(remove(&json!({"slug": "acme"}), false).is_err(), "nor remove it");
+        assert!(remove(&json!({"slug": "acme"}), true).is_ok());
+
+        assert!(remove(&json!({"slug": "sample-trade"}), true).is_ok());
         assert!(napp::pack::scan_packs(&config::packs_dir().unwrap()).is_empty());
         let _ = std::fs::remove_dir_all(&root);
     }
