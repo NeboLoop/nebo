@@ -22,6 +22,10 @@ pub const BUNDLED_SKILLS: &[(&str, &str)] = &[
     ("evaluation", include_str!("evaluation.md")),
     ("brainstorming", include_str!("brainstorming.md")),
     ("nebo-onboarding", include_str!("nebo-onboarding.md")),
+    // How a company's industry, franchise, and company layers get written.
+    // Bundled because a fresh Nebo must know the procedure before it has a
+    // company: without it the owner would hand-write the markdown folders.
+    ("company-layers", include_str!("company-layers.md")),
 ];
 
 // ── Bundled Agents ──────────────────────────────────────────────────
@@ -39,6 +43,57 @@ pub const BUNDLED_AGENTS: &[(&str, &str, &str, &str)] = &[(
     include_str!("agents/assistant/agent.json"),
     include_str!("agents/assistant/manifest.json"),
 )];
+
+#[cfg(test)]
+mod bundled_skill_tests {
+    use super::*;
+
+    /// Every bundled skill parses the way the loader parses it, and its
+    /// frontmatter name is the key it is registered under: the loader keys
+    /// both its catalog and its lazy template index by the frontmatter name,
+    /// so a mismatch loads a skill nobody can name.
+    #[test]
+    fn every_bundled_skill_parses_and_is_keyed_by_its_own_name() {
+        let mut names = Vec::new();
+        for (key, content) in BUNDLED_SKILLS {
+            let skill = super::super::parse_skill_frontmatter(content.as_bytes())
+                .unwrap_or_else(|e| panic!("{key}: {e}"));
+            assert_eq!(&skill.name, key, "bundled key is the skill's own name");
+            assert!(!skill.description.trim().is_empty(), "{key} has no description");
+            names.push(skill.name);
+        }
+        assert!(
+            names.contains(&"company-layers".to_string()),
+            "the company-layers procedure ships with the binary: {names:?}"
+        );
+    }
+
+    /// The company layers skill names the six standards the runtime itself
+    /// reads. They are spelled the same in every company or Nebo cannot read
+    /// a stranger's company at all, so a typo here is a silently unbounded
+    /// workforce, not a documentation error. Kept in step with
+    /// `nebo-server`'s `layers_update::company_ids`.
+    #[test]
+    fn the_company_layers_skill_spells_the_runtime_ids_exactly() {
+        let (_, skill) = BUNDLED_SKILLS
+            .iter()
+            .find(|(k, _)| *k == "company-layers")
+            .expect("company-layers is registered");
+        for id in [
+            "company.unattended.spend_per_day_cents",
+            "company.unattended.spend_per_counterparty_day_cents",
+            "company.unattended.spend_per_operation_cents",
+            "company.unattended.irreversible_per_day",
+            "company.unattended.grant_freshness_secs",
+            "company.owner.pages",
+        ] {
+            assert!(skill.contains(id), "the skill must name `{id}`");
+        }
+        // A pack is knowledge: the loader refuses one that carries a skill,
+        // and the procedure has to say so before an employee tries it.
+        assert!(skill.contains("SKILL.md"), "the skill must say a pack never holds a SKILL.md");
+    }
+}
 
 #[cfg(test)]
 mod bundled_agent_tests {

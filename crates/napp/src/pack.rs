@@ -110,6 +110,8 @@ pub struct PackQuestion {
     pub key: String,
     /// `company` or `seat`.
     pub scope: String,
+    /// The question as the owner reads it: the entry's `label:` (or `title:`),
+    /// else its first heading, else the key.
     pub label: String,
     pub missing: Option<String>,
     pub money: bool,
@@ -264,7 +266,7 @@ fn read_entry(path: &Path) -> Result<PackEntry, PackError> {
         .to_string();
     let title = str_field(
         &frontmatter,
-        &["rule", "law", "term", "party", "title", "name", "question", "id"],
+        &["rule", "law", "term", "party", "title", "label", "name", "question", "id"],
     )
     .map(str::to_string)
     .or_else(|| first_heading(&body))
@@ -797,7 +799,7 @@ mod tests {
         write(
             &d,
             "standards/deposit_pct.md",
-            "---\nquestion: deposit_pct\nid: trade.deposit_pct\nkind: value\nmoney: true\nmissing: Deposits are not quoted until set.\n---\n\nDeposit\n",
+            "---\nquestion: deposit_pct\nid: trade.deposit_pct\nkind: value\nmoney: true\nlabel: \"What deposit is collected?\"\nmissing: Deposits are not quoted until set.\n---\n\nDeposit\n",
         );
         write(&d, "reference/long-guide.md", "# The long guide\n\nPages of it.\n");
         d
@@ -825,6 +827,10 @@ mod tests {
         assert_eq!(p.questions.len(), 2);
         let money = p.questions.iter().find(|q| q.key == "deposit_pct").unwrap();
         assert!(money.money && money.default.is_none() && money.missing.is_some());
+        // The question the owner answers is the one the file writes. Without
+        // this the label falls through to the key or the id, and the owner is
+        // asked `trade.deposit_pct`.
+        assert_eq!(money.label, "What deposit is collected?");
         assert_eq!(p.reference[0].title, "The long guide");
         assert_eq!(p.stamp(), "industry:sample-trade@0.1.0");
         assert_eq!(p.content_hash.len(), 64);

@@ -329,6 +329,7 @@ mod tests {
 
     #[test]
     fn a_pack_created_from_parts_loads_and_a_bad_one_never_lands() {
+        let _g = crate::TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let root = std::env::temp_dir().join(format!("nebo-packtool-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
         // SAFETY: test-only override of the data dir for this process.
@@ -370,6 +371,76 @@ mod tests {
 
         assert!(remove(&json!({"slug": "sample-trade"}), true).is_ok());
         assert!(napp::pack::scan_packs(&config::packs_dir().unwrap()).is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod skill_example_tests {
+    use super::*;
+
+    /// The `company-layers` skill teaches this tool by showing one call. That
+    /// example is the first thing an employee copies, so it is held to the
+    /// same bar as the tool: it is lifted out of the shipped skill and run.
+    /// An example that no longer loads is a broken procedure, not a typo.
+    fn example_call() -> Value {
+        let skill = crate::skills::bundled::BUNDLED_SKILLS
+            .iter()
+            .find(|(k, _)| *k == "company-layers")
+            .expect("company-layers is bundled")
+            .1;
+        let at = skill.find("\"action\": \"create\"").expect("the example calls create");
+        let start = skill[..at].rfind('{').expect("the call opens with a brace");
+        let mut depth = 0usize;
+        let bytes = skill.as_bytes();
+        let mut end = start;
+        for (i, b) in bytes.iter().enumerate().skip(start) {
+            match b {
+                b'{' => depth += 1,
+                b'}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = i + 1;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        serde_json::from_str(&skill[start..end]).expect("the example is JSON")
+    }
+
+    #[test]
+    fn the_worked_example_in_the_skill_loads_as_a_company_pack() {
+        let _g = crate::TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let root = std::env::temp_dir().join(format!("nebo-packskill-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        // SAFETY: test-only override of the data dir for this process.
+        unsafe { std::env::set_var("NEBO_HOME", &root) };
+        let call = example_call();
+        let out = create(&call, true).expect("the owner's own call");
+        assert!(out.contains("created"), "{out}");
+
+        let packs = napp::pack::scan_packs(&config::packs_dir().unwrap());
+        let pack = packs.iter().find(|p| p.slug == "bright-carpet").expect("the example pack");
+        assert_eq!(pack.layer, napp::pack::PackLayer::Company);
+        // The company's purpose is read from the marker's frontmatter, so the
+        // example has to put it there and not only in the body.
+        assert!(pack.frontmatter.get("purpose").and_then(|v| v.as_str()).is_some_and(|s| !s.is_empty()));
+        // One law reserved to the owner, so it is the owner's hand and not a
+        // blanket block; one money question with no default.
+        assert_eq!(pack.reserved_ops(), vec!["spend.above_company_bounds".to_string()]);
+        assert!(pack.ceilings().is_empty(), "{:?}", pack.ceilings());
+        let q = pack.questions.iter().find(|q| q.money).expect("the unset money value");
+        assert!(q.default.is_none() && q.missing.is_some());
+        assert_eq!(q.label, "What may an employee refund without asking?");
+        // The six reserved ids are read by id, so the example must supply one
+        // spelled exactly.
+        assert!(pack.defaults().contains_key("company.unattended.spend_per_day_cents"));
+
+        // And a seat cannot write it: the same example from a workflow fails.
+        let _ = remove(&json!({"slug": "bright-carpet"}), true);
+        assert!(create(&call, false).is_err(), "the company layer is the owner's own");
         let _ = std::fs::remove_dir_all(&root);
     }
 }
