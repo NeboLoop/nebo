@@ -131,6 +131,8 @@ export interface AgentDisplay {
 /** The agentPage context shape provided by [agentId]/+layout.svelte. */
 export interface AgentPageContext {
 	readonly agentId: string
+	/** The agent whose runs the runs sheet shows — the route agent, or `?agent` over the dashboard. */
+	readonly runsAgentId: string
 	readonly agent: AgentDisplay | undefined
 	readonly agentColor: Record<string, string> | null
 	readonly threads: EnrichedChat[]

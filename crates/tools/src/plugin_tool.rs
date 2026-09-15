@@ -1394,6 +1394,14 @@ impl PluginTool {
                             _ => None,
                         };
 
+                    // Does an account exist for this employee? Only a
+                    // profile-dir plugin keeps a row per employee; for a
+                    // single-account plugin we cannot tell "expired" from
+                    // "never connected" from here, and `None` is the honest
+                    // answer — the wording below says so rather than guessing.
+                    let had_account: Option<bool> =
+                        auth.profile_dir_env.as_ref().map(|_| profile.is_some());
+
                     // Confirm with a fresh auth-status check (the one canonical
                     // decision, via PluginStore) if the command is available.
                     if auth.commands.status.is_some() {
@@ -1463,12 +1471,36 @@ impl PluginTool {
                                 }),
                             );
                         }
-                        return ToolResult::terminal(format!(
-                            "I couldn't reach **{}** — its authentication expired and automatic \
-                             renewal didn't work. Please reconnect this account in the agent's \
-                             Settings, Plugins, then ask me again.",
-                            pi.resource
-                        ));
+                        // Say what actually happened. "Expired and renewal
+                        // failed" sent the owner hunting a broken refresh for a
+                        // plugin that was never connected and declares no
+                        // refresh command at all (meta-marketing, 2026-09-15).
+                        return ToolResult::terminal(match (had_account, auth.commands.refresh.is_some()) {
+                            (Some(false), _) => format!(
+                                "I couldn't reach **{}** — no account is connected for this \
+                                 employee. Connect one in the employee's Settings, Plugins, \
+                                 then ask me again.",
+                                pi.resource
+                            ),
+                            (Some(true), true) => format!(
+                                "I couldn't reach **{}** — its authentication expired and \
+                                 automatic renewal didn't work. Please reconnect this account in \
+                                 the employee's Settings, Plugins, then ask me again.",
+                                pi.resource
+                            ),
+                            (Some(true), false) => format!(
+                                "I couldn't reach **{}** — its authentication expired, and this \
+                                 plugin cannot renew itself. Please reconnect this account in the \
+                                 employee's Settings, Plugins, then ask me again.",
+                                pi.resource
+                            ),
+                            (None, _) => format!(
+                                "I couldn't reach **{}** — it has no working sign-in: either it \
+                                 was never connected, or its credentials stopped working. Connect \
+                                 it in Settings, Plugins, then ask me again.",
+                                pi.resource
+                            ),
+                        });
                     }
 
                     // Interactive chat: fall through to today's browser OAuth path.
@@ -1520,12 +1552,25 @@ impl PluginTool {
                     // Terminal: auth genuinely expired and reauth failed. End the
                     // turn and surface to the user — do not let the agent keep
                     // retrying/improvising (FRAMES.md Phase 1).
-                    return ToolResult::terminal(format!(
-                        "I couldn't reach **{}** — it isn't authenticated and automatic \
-                         re-authentication didn't work. Please reconnect this account in the \
-                         agent's Settings, Plugins, then ask me again.",
-                        pi.resource
-                    ));
+                    return ToolResult::terminal(match had_account {
+                        Some(true) => format!(
+                            "I couldn't reach **{}** — its account is no longer authenticated and \
+                             signing in again didn't work. Please reconnect it in the employee's \
+                             Settings, Plugins, then ask me again.",
+                            pi.resource
+                        ),
+                        Some(false) => format!(
+                            "I couldn't reach **{}** — no account is connected for this employee, \
+                             and signing in didn't complete. Connect one in the employee's \
+                             Settings, Plugins, then ask me again.",
+                            pi.resource
+                        ),
+                        None => format!(
+                            "I couldn't reach **{}** — it has no working sign-in, and signing in \
+                             didn't complete. Connect it in Settings, Plugins, then ask me again.",
+                            pi.resource
+                        ),
+                    });
                 }
             }
         }

@@ -1015,6 +1015,10 @@
   // Provide agent data to all children
   setContext('agentPage', {
     get agentId() { return agentId; },
+    // The agent the runs sheet is showing: the route's agent on an employee
+    // page, `?agent` over the dashboard. Retry read `agentId` and sent '' from
+    // the dashboard, so the click did nothing (2026-09-15).
+    get runsAgentId() { return runsAgentId; },
     get agent() { return agent; },
     get agentColor() { return agentColor; },
     get threads() { return threads; },

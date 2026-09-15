@@ -18,9 +18,13 @@ import { resolve } from 'path';
 function webkitNodeDedupe() {
 	return {
 		name: 'nebo-webkit-node-dedupe',
-		apply: 'serve',
+		// Dev AND build: the production bundle has the same double import of
+		// every route node, and iPhone-over-tunnel first loads hit it
+		// (2026-09-15: "pu is not a function" inside ChatPane's chunk, WebKit
+		// only, probabilistic — the owner's phone sat on the boot spinner).
 		transform(/** @type {string} */ code, /** @type {string} */ id) {
-			if (!id.replace(/\\/g, '/').endsWith('.svelte-kit/generated/client/app.js')) return null;
+			// dev reads generated/client, build reads generated/client-optimized
+			if (!/\.svelte-kit\/generated\/client(-optimized)?\/app\.js$/.test(id.replace(/\\/g, '/'))) return null;
 			const wrapped = code.replace(
 				/\(\)\s*=>\s*import\('(\.\/nodes\/\d+)'\)/g,
 				(/** @type {string} */ _, /** @type {string} */ spec) => `__nebo_once(() => import('${spec}'))`

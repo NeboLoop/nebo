@@ -8,7 +8,7 @@
   import type { WorkflowRun, WorkflowActivityResult, PendingTask, RunDisplay, RunDisplayEntry } from '$lib/api/neboComponents';
 
   const ctx = getContext<AgentPageContext>('agentPage');
-  const agentId = $derived(ctx.agentId);
+  const agentId = $derived(ctx.runsAgentId);
   const runs = $derived(ctx.runs);
   const config = $derived(ctx.config);
 
