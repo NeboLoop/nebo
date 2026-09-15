@@ -1013,9 +1013,6 @@
     if (tool.status === 'error') return $t('chat.stepFailed', { values: { name: tool.name } });
     return tool.outcome ?? tool.label ?? $t('chat.usedTool', { values: { name: tool.name } });
   }
-  function anyFailed(tools: ToolMsg[]): boolean {
-    return tools.some((t) => t.status === 'error');
-  }
   // Correct tool signature: MCP → "slug · tool", STRAP → "name · resource.action".
   function strapSig(t: ToolMsg): string {
     if (t.name.startsWith('mcp__')) {
@@ -1284,7 +1281,7 @@
           {:else}
             {@const wd = workLineDuration(tools)}
             <svg width="13" height="13" viewBox="0 0 18 18" fill="none" class="text-base-content/50 shrink-0"><path d="M10.5 3.5C10.5 2.67 11.17 2 12 2C12.5 2 13.09 2.24 13.45 2.59L15.41 4.55C15.76 4.91 16 5.5 16 6C16 6.83 15.33 7.5 14.5 7.5C14.16 7.5 13.85 7.38 13.6 7.18L12.18 8.6C12.38 8.85 12.5 9.16 12.5 9.5C12.5 10.33 11.83 11 11 11C10.67 11 10.36 10.88 10.11 10.69L5.69 15.11C5.5 15.3 5.25 15.41 5 15.41C4.75 15.41 4.5 15.3 4.31 15.11L2.89 13.69C2.7 13.5 2.59 13.25 2.59 13C2.59 12.75 2.7 12.5 2.89 12.31L7.31 7.89C7.12 7.64 7 7.33 7 7C7 6.17 7.67 5.5 8.5 5.5C8.84 5.5 9.15 5.62 9.4 5.82L10.82 4.4C10.62 4.15 10.5 3.84 10.5 3.5Z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>
-            <span class="text-xs truncate max-w-[60vw] md:max-w-md {anyFailed(tools) ? 'text-error' : ''}">{workLineLabel(tools)}</span>
+            <span class="text-xs truncate max-w-[60vw] md:max-w-md">{workLineLabel(tools)}</span>
             {#if wd}<span class="text-xs text-base-content/40">· {wd}</span>{/if}
             <span class="text-xs transition-transform {isOpen ? 'rotate-180' : ''}">&darr;</span>
           {/if}
@@ -1411,7 +1408,7 @@
                   {/if}
                   {#if tool.status !== 'running'}
                     {#if isExpanded}
-                      <div class="mt-2 rounded-lg border border-base-300 bg-base-100 overflow-hidden">
+                      <div class="mt-2 rounded-lg border border-base-300 bg-base-100 overflow-y-auto max-h-80">
                         <div class="px-3.5 pt-3 pb-2">
                           <div class="text-xs font-semibold mb-1.5">{$t('chat.request')}</div>
                           <pre class="text-xs font-mono leading-relaxed whitespace-pre-wrap">{JSON.stringify(tool.request, null, 2)}</pre>
@@ -1428,7 +1425,7 @@
                     {:else}
                       <div class="mt-1">
                         <button
-                          class="py-0.5 px-2 rounded text-xs font-medium cursor-pointer border-none transition-colors {tool.status === 'success' ? 'bg-base-200 hover:bg-base-300' : 'bg-error/10 text-error hover:bg-error/20'}"
+                          class="py-0.5 px-2 rounded text-xs font-medium cursor-pointer border-none transition-colors bg-base-200 hover:bg-base-300"
                           onclick={() => toggleResult(resultKey)}
                         >{$t('chat.result')}</button>
                       </div>

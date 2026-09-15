@@ -995,10 +995,12 @@ impl DynTool for PluginTool {
         if !overflow_slugs.is_empty() {
             out.push_str("Also installed: ");
             out.push_str(&overflow_slugs.join(", "));
-            out.push_str("\nUse skill(action: \"discover\", query: \"<plugin-name>\") to see available commands.\n");
+            out.push_str("\nTheir commands are not listed here. Before the FIRST exec on any of them, read \
+                          plugin(resource: \"<slug>\", action: \"help\") and use the syntax it shows — \
+                          a guessed command is a wasted turn and a failed step.\n");
         }
 
-        out.push_str("\nFor commands listed above, use the exact syntax shown. For other plugins, discover commands first via the skill tool.");
+        out.push_str("\nFor commands listed above, use the exact syntax shown. For a command or flag not listed, read plugin(resource: \"<slug>\", action: \"help\", command: \"<service>\") first.");
 
         // Typed capability ports currently bound (provider-agnostic).
         let ops = self.bound_operations();

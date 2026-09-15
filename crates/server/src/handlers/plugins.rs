@@ -659,8 +659,21 @@ fn spawn_plugin_login(
         let all_stderr = stderr_output.unwrap_or_default();
         let all_stdout = stdout_output.unwrap_or_default();
 
+        // A plugin that exits 0 while printing `{"authenticated": false}` is
+        // telling us in words that the sign-in did not happen. Believing the
+        // status alone told an owner they were connected to a store that had
+        // never been reached (live 2026-09-15, shopify 0.3.1). The exit code
+        // is still the contract; this only stops us contradicting a plugin
+        // that says plainly it failed.
+        let said_not_authenticated = all_stdout.lines().rev().take(8).any(|line| {
+            serde_json::from_str::<serde_json::Value>(line.trim())
+                .ok()
+                .and_then(|v| v.get("authenticated").and_then(|a| a.as_bool()))
+                == Some(false)
+        });
+
         match child.wait().await {
-            Ok(status) if status.success() => {
+            Ok(status) if status.success() && !said_not_authenticated => {
                 info!(plugin = %slug_owned, "plugin auth login succeeded");
 
                 // Per-account: record the (agent, plugin, account) → config_dir
