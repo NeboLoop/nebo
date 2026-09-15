@@ -150,6 +150,21 @@ pub struct PersonaTool {
 /// answer the plugin install card gives, so both resume the same way.
 const HIRE_CARD_INSTALLED: &str = "installed";
 
+/// A listing NeboAI published: its qualified name lives under the @neboai
+/// namespace. Everything else is a third-party publisher.
+fn is_neboai(it: &serde_json::Value) -> bool {
+    it.get("qualifiedName")
+        .and_then(|x| x.as_str())
+        .map(|q| q.starts_with("@neboai/"))
+        .unwrap_or(false)
+}
+
+/// Stable partition: NeboAI's listings first, then the rest, each group in
+/// the order the hub ranked them.
+fn prefer_neboai(items: &mut [serde_json::Value]) {
+    items.sort_by_key(|it| !is_neboai(it));
+}
+
 /// The listing a query most plausibly names. The marketplace ranks by
 /// relevance, but a query that IS a listing's name must beat one that merely
 /// mentions it: exact name or slug first, then a prefix, then the top result.
@@ -558,7 +573,7 @@ impl PersonaTool {
                 }
                 info.push_str(&format!("Source: {}\n", source));
                 if source != SOURCE_MARKETPLACE {
-                    info.push_str("Local employee: no marketplace code; nothing to install.\n");
+                    info.push_str("Created here, not hired from the marketplace: it has no install code. Its persona and automations are below.\n");
                 }
 
                 if let Some(ref config) = loaded.config {
@@ -686,11 +701,15 @@ impl PersonaTool {
         };
         crate::installed::enrich_installed_state(&mut resp, &self.store);
         let total = resp.get("total").and_then(|t| t.as_i64()).unwrap_or(0);
-        let items: Vec<serde_json::Value> = resp
+        let mut items: Vec<serde_json::Value> = resp
             .get("products")
             .and_then(|p| p.as_array())
             .cloned()
             .unwrap_or_default();
+        // NeboAI's own employees first, everything else in the hub's order.
+        // The owner's rule: prefer what we built; the best-match card below
+        // therefore lands on a NeboAI listing whenever one fits.
+        prefer_neboai(&mut items);
 
         if items.is_empty() {
             let scope = match (query, department) {
@@ -715,8 +734,9 @@ impl PersonaTool {
                 .map(|a| a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", "))
                 .unwrap_or_default();
             lines.push(format!(
-                "- {}{} ({}){} — {}",
+                "- {}{}{} ({}){} — {}",
                 str_of(it, "name"),
+                if is_neboai(it) { " [NeboAI]" } else { "" },
                 if hired { " [already hired]" } else { "" },
                 str_of(it, "slug"),
                 if depts.is_empty() { String::new() } else { format!(" [{depts}]") },
@@ -2946,9 +2966,18 @@ impl DynTool for PersonaTool {
     }
 
     fn description(&self) -> String {
-        "Manage installed agents — who they are, what workflows they follow, what skills they need.\n\n\
+        "Manage installed agents — who they are, what workflows they follow, what skills they need — and find new ones on the marketplace.\n\n\
+         STAFFING A BUSINESS: when the user wants to set up a business, add people, or asks who could do a job, \
+         look for EMPLOYEES first — agent(resource: \"registry\", action: \"discover\", department, query) — \
+         not tools. Tools (plugin discover) are what employees use; an employee is the hire. Search by \
+         department (accounting, sales, customer-support, marketing, operations, people-hr, legal, it, \
+         analytics, direct-response, product-engineering, executive, corporate). Results list NeboAI's own \
+         employees first; prefer those. To hire one, call discover again with its exact name and the hire \
+         card appears — never paste install codes into chat. For a whole business, the staff-a-business \
+         skill runs the short interview and proposes a roster.\n\n\
          Actions:\n\
          - list: list available agents (installed + user-created)\n\
+         - discover: search the MARKETPLACE for employees to hire (query, department, limit, offset); offers a hire card for the best match\n\
          - activate: activate an agent (injects persona, registers triggers)\n\
          - deactivate: deactivate an agent by name (or all agents if no name given)\n\
          - info: show agent details (workflows, skills, triggers, persona)\n\
@@ -3220,6 +3249,23 @@ impl DynTool for PersonaTool {
 #[cfg(test)]
 mod tests {
 
+    // The owner's rule: NeboAI's employees first. The hub's own order is
+    // kept inside each group, so a third-party listing never jumps ahead and
+    // NeboAI's top result stays NeboAI's top result.
+    #[test]
+    fn neboai_listings_come_first_in_hub_order() {
+        let mut items = vec![
+            serde_json::json!({"slug": "a", "qualifiedName": "@acme/agents/a"}),
+            serde_json::json!({"slug": "b", "qualifiedName": "@neboai/agents/b"}),
+            serde_json::json!({"slug": "c", "qualifiedName": "@other/agents/c"}),
+            serde_json::json!({"slug": "d", "qualifiedName": "@neboai/agents/d"}),
+            serde_json::json!({"slug": "e"}),
+        ];
+        prefer_neboai(&mut items);
+        let order: Vec<&str> = items.iter().map(|i| i["slug"].as_str().unwrap()).collect();
+        assert_eq!(order, vec!["b", "d", "a", "c", "e"]);
+    }
+
     // "receptionist" must card the Receptionist, not a bundle whose blurb
     // mentions receptionists and happens to rank first.
     #[test]
@@ -3353,7 +3399,7 @@ mod tests {
             let text = PersonaTool::info_text(&loaded("front-desk", md, *path), user_dir, installed_dir);
             assert!(text.contains(line), "{path:?}: {text}");
             assert_eq!(
-                text.contains("Local employee: no marketplace code; nothing to install."),
+                text.contains("Created here, not hired from the marketplace: it has no install code."),
                 *local,
                 "{path:?}: {text}"
             );

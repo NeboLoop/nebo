@@ -22,6 +22,7 @@ pub const BUNDLED_SKILLS: &[(&str, &str)] = &[
     ("evaluation", include_str!("evaluation.md")),
     ("brainstorming", include_str!("brainstorming.md")),
     ("nebo-onboarding", include_str!("nebo-onboarding.md")),
+    ("staff-a-business", include_str!("staff-a-business.md")),
 ];
 
 // ── Bundled Agents ──────────────────────────────────────────────────
