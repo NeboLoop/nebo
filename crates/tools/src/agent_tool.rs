@@ -637,6 +637,43 @@ impl PersonaTool {
                 info
     }
 
+    /// The name a person reads in the Employees list.
+    ///
+    /// A model asked to hire someone passes an identifier — "receptionist",
+    /// "office-manager" — because that is also the folder name. The roster
+    /// shows manifest.json's name (the loader prefers it over the AGENT.md
+    /// frontmatter slug), so writing the identifier into both is what put a
+    /// lowercase "receptionist" next to "Ecommerce Store Manager". Title-case
+    /// it for display and leave the slug alone.
+    ///
+    /// A name that already carries capitals or spaces is the caller's own
+    /// wording and comes back untouched.
+    fn display_name(name: &str) -> String {
+        // Business titles are mostly initialisms, and "Cfo" is no better than
+        // "cfo". Anything not listed gets ordinary title case.
+        const INITIALISMS: &[&str] = &[
+            "ceo", "cfo", "coo", "cto", "cmo", "cio", "cro", "hr", "it", "qa", "ea", "pr",
+            "sdr", "ar", "ap", "seo", "ppc", "crm", "kpi", "ai", "bd", "csm",
+        ];
+        if name.contains(char::is_whitespace) || name.chars().any(char::is_uppercase) {
+            return name.to_string();
+        }
+        name.split(['-', '_'])
+            .filter(|w| !w.is_empty())
+            .map(|w| {
+                if INITIALISMS.contains(&w) {
+                    return w.to_uppercase();
+                }
+                let mut chars = w.chars();
+                match chars.next() {
+                    Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                    None => String::new(),
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
     async fn handle_create(&self, input: &serde_json::Value) -> ToolResult {
         let name = input["name"].as_str().unwrap_or("");
         if name.is_empty() {
@@ -648,6 +685,9 @@ impl PersonaTool {
         }
 
         let description = input["description"].as_str().unwrap_or("");
+        // `name` stays the identifier: it is the folder and the AGENT.md slug.
+        // `display` is what the Employees list shows.
+        let display = Self::display_name(name);
 
         // Build agent_json from structured automations, or use raw agent_json
         let mut agent_json: Option<serde_json::Value> = if let Some(autos) = input["automations"].as_array() {
@@ -699,7 +739,7 @@ impl PersonaTool {
                 "description": description,
             }))
             .unwrap_or_default();
-            format!("---\n{}---\nYou are {}. {}", fm, name, description)
+            format!("---\n{}---\nYou are {}. {}", fm, display, description)
         } else {
             // LLMs often send literal \n instead of real newlines in tool call strings.
             // Unescape so AGENT.md frontmatter parses correctly.
@@ -736,7 +776,7 @@ impl PersonaTool {
 
         // manifest.json carries the version info the loader reports.
         let manifest = serde_json::to_string_pretty(&serde_json::json!({
-            "name": name,
+            "name": display,
             "version": "1.0.0",
             "type": "agent",
             "description": description,
@@ -752,7 +792,7 @@ impl PersonaTool {
         match self.store.create_agent(
             &id,
             None,
-            name,
+            &display,
             description,
             &agent_md,
             frontmatter,
@@ -3007,6 +3047,32 @@ impl DynTool for PersonaTool {
 
 #[cfg(test)]
 mod tests {
+
+    // An employee hired by asking Nebo used to land in the roster under the
+    // identifier the model passed, so "receptionist" sat next to
+    // "Ecommerce Store Manager".
+    #[test]
+    fn slug_names_become_display_names() {
+        assert_eq!(PersonaTool::display_name("receptionist"), "Receptionist");
+        assert_eq!(PersonaTool::display_name("office-manager"), "Office Manager");
+        assert_eq!(PersonaTool::display_name("accounts_payable_clerk"), "Accounts Payable Clerk");
+    }
+
+    // "Cfo" would be no better than "cfo".
+    #[test]
+    fn initialisms_stay_upper() {
+        assert_eq!(PersonaTool::display_name("cfo"), "CFO");
+        assert_eq!(PersonaTool::display_name("hr-coordinator"), "HR Coordinator");
+        assert_eq!(PersonaTool::display_name("sdr"), "SDR");
+    }
+
+    // A caller who wrote the name themselves gets exactly what they wrote.
+    #[test]
+    fn deliberate_names_are_left_alone() {
+        assert_eq!(PersonaTool::display_name("Ecommerce Store Manager"), "Ecommerce Store Manager");
+        assert_eq!(PersonaTool::display_name("McKinsey Analyst"), "McKinsey Analyst");
+        assert_eq!(PersonaTool::display_name("eBay Lister"), "eBay Lister");
+    }
     use super::*;
 
     /// An install failure string from the installer must surface as an error
