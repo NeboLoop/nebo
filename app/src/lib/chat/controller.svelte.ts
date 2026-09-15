@@ -92,6 +92,10 @@ export interface ChatControllerConfig {
   channel?: string;
   /** Called when a response completes — use for embed postMessage, etc. */
   onResponseComplete?: (content: string) => void;
+  /** A turn on this session finished that this controller never streamed —
+   *  a voice call, a coworker's reply, a workflow on the thread. Its rows are
+   *  on the server, not in `messages`; the owner reloads the transcript. */
+  onTurnLandedElsewhere?: () => void;
 }
 
 export interface SendOptions {
@@ -415,6 +419,13 @@ export function createChatController(config: ChatControllerConfig) {
     // content; re-carrying the whole turn made earlier segments render twice).
     let idx = replyIndex(aid);
     if (idx === -1 && (attachments.length || workItems.length)) idx = startReply(aid);
+    // No reply bubble here means the run's text never streamed to this
+    // pane — voice runs stream to the voice socket, coworker and workflow
+    // turns to nobody — yet its rows are persisted. Without this, a voice
+    // conversation only appeared after a hard refresh (2026-09-15).
+    if (idx === -1 && activeSessionKey && data.session_id === activeSessionKey) {
+      config.onTurnLandedElsewhere?.();
+    }
     if (idx !== -1) {
       const m = messages[idx];
       if (m.type === 'assistant') {

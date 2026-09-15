@@ -15,7 +15,7 @@ import { get } from 'svelte/store';
 import { t } from 'svelte-i18n';
 import { getWebSocketClient } from './client';
 import { notifications, pushNotification, loadNotifications, settleUpdateNotices } from '$lib/stores/notifications';
-import { addToast } from '$lib/stores/toast';
+import { addToast, removeToast } from '$lib/stores/toast';
 import { onUpdateAvailable, onUpdateProgress, onUpdateReady, onUpdateError } from '$lib/stores/update';
 import { logger } from '$lib/monitoring';
 
@@ -165,13 +165,39 @@ export function attachWebSocketListeners(): void {
   );
 
   // --- Connection status toast ---
+  // A dropped socket is routine on a phone (backgrounding, wifi↔cell) and
+  // heals in a second or two. Say nothing for the first few seconds; then a
+  // quiet "Reconnecting…" that goes away on its own the moment we are back;
+  // only after half a minute does it become worth the owner's attention.
+  let reconnectToast: number | null = null;
+  let reconnectSoon: ReturnType<typeof setTimeout> | null = null;
+  let reconnectLong: ReturnType<typeof setTimeout> | null = null;
+  const clearReconnect = () => {
+    if (reconnectSoon) { clearTimeout(reconnectSoon); reconnectSoon = null; }
+    if (reconnectLong) { clearTimeout(reconnectLong); reconnectLong = null; }
+    if (reconnectToast !== null) { removeToast(reconnectToast); reconnectToast = null; }
+  };
   unsubs.push(
     ws.onStatus((status) => {
-      if (status === 'error') {
-        addToast('Connection lost — reconnecting…', 'warning');
+      if (status === 'connected') {
+        clearReconnect();
+        return;
+      }
+      if ((status === 'error' || status === 'disconnected') && !reconnectSoon && reconnectToast === null) {
+        reconnectSoon = setTimeout(() => {
+          reconnectSoon = null;
+          if (ws.getStatus() === 'connected') return;
+          reconnectToast = addToast('Reconnecting…', 'info', 0);
+          reconnectLong = setTimeout(() => {
+            if (ws.getStatus() === 'connected') return;
+            if (reconnectToast !== null) removeToast(reconnectToast);
+            reconnectToast = addToast('Still trying to reach your Nebo…', 'warning', 0);
+          }, 30_000);
+        }, 4_000);
       }
     })
   );
+  unsubs.push(clearReconnect);
 
   // --- Artifact update toasts ---
   unsubs.push(

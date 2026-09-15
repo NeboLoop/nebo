@@ -37,7 +37,12 @@
 
   const initialAgentId = $page.params.agentId ?? '';
   const initialThreadId = $page.params.threadId ?? '';
-  const chat = createChatController({ agentId: initialAgentId, sessionKey: threadKey(initialAgentId, initialThreadId) });
+  const chat = createChatController({
+    agentId: initialAgentId,
+    sessionKey: threadKey(initialAgentId, initialThreadId),
+    // A voice, coworker, or workflow turn on this thread: reload the rows.
+    onTurnLandedElsewhere: () => { void loadMessages(); },
+  });
 
   // When navigated from a fresh send, the run is started on THIS page (after
   // subscribe). Settle listeners clear the pending-send stash and strip ?active=1

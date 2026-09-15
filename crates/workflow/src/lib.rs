@@ -23,6 +23,15 @@ pub enum WorkflowError {
     UnresolvedInterface(String),
     #[error("activity {0} exceeded max iterations")]
     MaxIterations(String),
+    /// The owner's per-run spending limit was reached. The activity was given
+    /// one last turn to report; `partial` is what it said.
+    #[error("Stopped at your limit: this run reached ${spent_cents_display} of the ${cap_cents_display} you set for {activity_id}", spent_cents_display = format_args!("{:.2}", *.spent_cents as f64 / 100.0), cap_cents_display = format_args!("{:.2}", *.cap_cents as f64 / 100.0))]
+    SpendCapReached {
+        activity_id: String,
+        spent_cents: i64,
+        cap_cents: i64,
+        partial: String,
+    },
     #[error("activity {activity_id} exceeded token budget ({used}/{limit})")]
     BudgetExceeded {
         activity_id: String,

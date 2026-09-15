@@ -129,6 +129,19 @@ impl Store {
     /// report and for the reporter that ships these upstream.
     /// The receipt for one run, by the run id shared with workflow_runs —
     /// the join the reporter uses to ship cost and outcome with the run.
+    /// What a run has cost so far, in microcents (the unit `cost_microcents`
+    /// returns), summed over every turn recorded against its run id. This
+    /// is the number an owner's per-run spending limit is compared against.
+    pub fn run_spend_microcents(&self, run_id: &str) -> Result<i64, NeboError> {
+        let conn = self.conn()?;
+        conn.query_row(
+            "SELECT COALESCE(SUM(cost_microcents), 0) FROM run_usage WHERE run_id = ?1",
+            params![run_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
     pub fn usage_for_run(&self, run_id: &str) -> Result<Option<RunUsage>, NeboError> {
         let conn = self.conn()?;
         let mut stmt = conn

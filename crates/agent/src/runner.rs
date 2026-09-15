@@ -726,10 +726,11 @@ pub struct WorkflowMode {
     /// The run's inputs carry untrusted content — a gated `Always` floors to
     /// Approval (WS2-R7), the same rule the engine checkpoint applied.
     pub tainted: bool,
-    /// Activity output-token ceiling (0 = none) and what earlier turns of the
-    /// same activity already spent against it.
-    pub output_budget_max: u32,
-    pub spent_output_before: u32,
+    /// The owner's per-run spending limit in microcents (0 = none). A
+    /// package's token_budget is an estimate, never enforced; this is the
+    /// one ceiling. Reaching it earns one wrap-up turn (no tools: "report
+    /// what you have"), then the turn ends `SpendCapReached`.
+    pub spend_cap_microcents: i64,
     /// Park an Approval-gated operation instead of refusing it unattended:
     /// the closure persists the suspension (sync — rusqlite is sync) and the
     /// loop exits with reason "awaiting_approval". None = refuse (chat-style).
@@ -745,7 +746,7 @@ impl std::fmt::Debug for WorkflowMode {
             .field("trace_run", &self.trace.run_id)
             .field("advertised", &self.advertised_tools.len())
             .field("tainted", &self.tainted)
-            .field("output_budget_max", &self.output_budget_max)
+            .field("spend_cap_microcents", &self.spend_cap_microcents)
             .field("park", &self.park.is_some())
             .finish()
     }
@@ -1132,6 +1133,10 @@ struct RunState {
     /// kept — and cache reads are most of a long conversation's bill.
     total_cache_read_tokens: i32,
     total_cache_creation_tokens: i32,
+    /// Provider-reported cost this run, microdollars (Janus prices the model it
+    /// routed to). 0 when no provider said — then the price table is the only
+    /// estimate, and for a routed alias it knows nothing.
+    cost_microdollars: i64,
     thresholds: Option<ContextThresholds>,
     /// Janus quota warning string, populated when session or weekly usage exceeds 80%.
     quota_warning: Option<String>,
@@ -1151,6 +1156,7 @@ impl RunState {
             total_output_tokens: 0,
             total_cache_read_tokens: 0,
             total_cache_creation_tokens: 0,
+            cost_microdollars: 0,
             thresholds: None,
             quota_warning: None,
             quota_warning_sent: false,
@@ -2500,6 +2506,8 @@ async fn run_loop(
     // session — a reminder that lands in stored history pollutes every
     // later context window AND leaks into channel mirrors/backfills.
     let mut pending_stream_reminders: Vec<String> = Vec::new();
+    // The owner's spending limit escalates once: wrap-up turn, then stop.
+    let mut spend_cap_wrap_up_issued = false;
     // Temporal grounding (the harness pattern): every turn's first call
     // carries WHEN the message arrived, then the marker vanishes. The model
     // resolves "today/tomorrow/in an hour" against the message, not against
@@ -4338,15 +4346,36 @@ async fn run_loop(
             None
         };
 
-        // Workflow activity output budget — enforced between turns, so a
-        // runaway activity stops at its own ceiling (old-engine parity).
+        // The owner's per-run spending limit, checked between turns. Rule 12:
+        // a guard escalates — the first trip is a wrap-up turn with no tools
+        // ("report what you have"); if the cap is still reached after it,
+        // the turn ends and the engine records the run as stopped with what
+        // the model reported. Never a silent kill.
+        let mut wrap_up_turn = false;
         if let Some(m) = workflow_mode {
-            if m.output_budget_max > 0
-                && m.spent_output_before + state.total_output_tokens.max(0) as u32
-                    > m.output_budget_max
-            {
-                turn_exit_reason = crate::guardrails::Exit::OutputBudgetExceeded;
-                break;
+            if m.spend_cap_microcents > 0 {
+                let spent = run_spend_so_far(store, selector, &session_key, &last_model_name, &state);
+                match spend_cap_verdict(spent, m.spend_cap_microcents, spend_cap_wrap_up_issued) {
+                    SpendCapVerdict::Under => {}
+                    SpendCapVerdict::WrapUp => {
+                        spend_cap_wrap_up_issued = true;
+                        wrap_up_turn = true;
+                        warn!(session_id, spent_microcents = spent, cap_microcents = m.spend_cap_microcents, "spend cap reached: wrap-up turn");
+                        ai_messages.push(Message {
+                            role: "user".to_string(),
+                            content: steering::wrap_system_reminder(
+                                "This run has reached the owner's spending limit. This is your last turn and \
+                                 tools are unavailable: report what you have completed, what you found, and \
+                                 what remains undone, in plain words. Do not start anything new.",
+                            ),
+                            ..Default::default()
+                        });
+                    }
+                    SpendCapVerdict::Stop => {
+                        turn_exit_reason = crate::guardrails::Exit::SpendCapReached;
+                        break;
+                    }
+                }
             }
         }
 
@@ -4354,7 +4383,7 @@ async fn run_loop(
         let chat_req = ChatRequest {
             tool_choice: forced_choice.unwrap_or_default(),
             messages: ai_messages,
-            tools: tool_defs,
+            tools: if wrap_up_turn { Vec::new() } else { tool_defs },
             max_tokens: if output_escalated {
                 ESCALATED_MAX_OUTPUT_TOKENS
             } else {
@@ -4732,6 +4761,7 @@ async fn run_loop(
                         state.total_output_tokens += usage.output_tokens;
                         state.total_cache_read_tokens += usage.cache_read_input_tokens;
                         state.total_cache_creation_tokens += usage.cache_creation_input_tokens;
+                        state.cost_microdollars += usage.cost_microdollars.unwrap_or(0);
                         usage.overhead_tokens = state.system_overhead_tokens as i32;
 
                         // Calibrate the local token estimate against ground truth.
@@ -7428,11 +7458,14 @@ async fn run_loop(
     // (Runs that end in an error return earlier and are not yet recorded —
     // their cost is real, and wiring the error exits is deliberate follow-up
     // rather than a silent partial number today.)
+    // By the session KEY, not its UUID: the key names the run
+    // (`agent:<id>:workflow:<run>:…`); the UUID classified every workflow
+    // turn as a chat with no run id, so no run ever had a cost to sum.
     record_run_usage(
         store,
         selector,
         agent_id,
-        session_id,
+        &session_key,
         &last_model_name,
         &state,
         &turn_exit_reason.label(),
@@ -7478,19 +7511,7 @@ fn record_run_usage(
     }
 
     let (run_type, run_id) = classify_run(session_id);
-
-    let mut cost: i64 = 0;
-    if let Some(info) = selector.get_model_info(model_name) {
-        cost = db::cost_microcents(
-            state.total_input_tokens as i64,
-            state.total_output_tokens as i64,
-            state.total_cache_read_tokens as i64,
-            state.total_cache_creation_tokens as i64,
-            info.input_price,
-            info.output_price,
-            info.cached_input_price,
-        );
-    }
+    let cost = turn_cost_microcents(selector, model_name, state);
 
     let entry = db::models::RunUsageEntry {
         agent_id: agent_id.to_string(),
@@ -7516,12 +7537,78 @@ fn record_run_usage(
 /// classify_run derives what kind of run a session key names, and for the
 /// canonical workflow form, which workflow run it was — the join that lets
 /// "what did this workflow cost" be answered at all.
+/// What the owner's limit says about a run at this point in its loop.
+#[derive(Debug, PartialEq)]
+enum SpendCapVerdict {
+    Under,
+    /// Reached, and no wrap-up turn yet: give the model one to report.
+    WrapUp,
+    /// Reached after the wrap-up turn: stop.
+    Stop,
+}
+
+fn spend_cap_verdict(spent_microcents: i64, cap_microcents: i64, wrap_up_issued: bool) -> SpendCapVerdict {
+    if cap_microcents <= 0 || spent_microcents < cap_microcents {
+        SpendCapVerdict::Under
+    } else if wrap_up_issued {
+        SpendCapVerdict::Stop
+    } else {
+        SpendCapVerdict::WrapUp
+    }
+}
+
+/// What one loop's turns cost, in microcents — the ONE pricing rule for the
+/// ledger and the owner's limit. The provider's own figure when it reported
+/// one (Janus prices the model it actually routed to); otherwise the local
+/// price table, which for a routed alias such as nebo-1 knows nothing and
+/// yields 0.
+fn turn_cost_microcents(selector: &ModelSelector, model_name: &str, state: &RunState) -> i64 {
+    if state.cost_microdollars > 0 {
+        // microdollars → microcents
+        return state.cost_microdollars * 100;
+    }
+    selector
+        .get_model_info(model_name)
+        .map(|info| {
+            db::cost_microcents(
+                state.total_input_tokens as i64,
+                state.total_output_tokens as i64,
+                state.total_cache_read_tokens as i64,
+                state.total_cache_creation_tokens as i64,
+                info.input_price,
+                info.output_price,
+                info.cached_input_price,
+            )
+        })
+        .unwrap_or(0)
+}
+
+/// What this run has cost so far: every turn already recorded against its
+/// run id, plus the current turn priced the same way record_run_usage will.
+fn run_spend_so_far(
+    store: &Arc<Store>,
+    selector: &ModelSelector,
+    session_key: &str,
+    model_name: &str,
+    state: &RunState,
+) -> i64 {
+    let (_, run_id) = classify_run(session_key);
+    let recorded = run_id
+        .as_deref()
+        .and_then(|id| store.run_spend_microcents(id).ok())
+        .unwrap_or(0);
+    recorded + turn_cost_microcents(selector, model_name, state)
+}
+
 fn classify_run(session_id: &str) -> (&'static str, Option<String>) {
     if session_id.starts_with("heartbeat-") {
         return ("heartbeat", None);
     }
     if let Some(idx) = session_id.find(":workflow:") {
-        let run_id = &session_id[idx + ":workflow:".len()..];
+        // `agent:<id>:workflow:<run>:<activity>::<n>` — the run id is the
+        // segment, not the rest of the key; the cost join is on the run.
+        let rest = &session_id[idx + ":workflow:".len()..];
+        let run_id = rest.split(':').next().unwrap_or("");
         if !run_id.is_empty() {
             return ("workflow", Some(run_id.to_string()));
         }
@@ -8898,10 +8985,26 @@ mod tests {
     // classify_run feeds a money table: a wrong run_id joins someone's cost
     // to the wrong workflow, so the parse gets a check rather than a comment.
     #[test]
+    fn spend_cap_escalates_once_then_stops() {
+        // Off, or under: nothing.
+        assert_eq!(spend_cap_verdict(5_000_000, 0, false), SpendCapVerdict::Under);
+        assert_eq!(spend_cap_verdict(99, 100, false), SpendCapVerdict::Under);
+        // Reached: one wrap-up turn first, never a silent kill.
+        assert_eq!(spend_cap_verdict(100, 100, false), SpendCapVerdict::WrapUp);
+        // Still reached after the wrap-up: stop.
+        assert_eq!(spend_cap_verdict(100, 100, true), SpendCapVerdict::Stop);
+    }
+
+    #[test]
     fn classify_run_reads_every_session_key_shape() {
         // Canonical workflow key carries the run id for the cost join.
         assert_eq!(
             classify_run("agent:abc:workflow:run-123-xyz"),
+            ("workflow", Some("run-123-xyz".to_string()))
+        );
+        // The real key carries the activity and loop index after the run id.
+        assert_eq!(
+            classify_run("agent:abc:workflow:run-123-xyz:store-snapshot::2"),
             ("workflow", Some("run-123-xyz".to_string()))
         );
         // The legacy engine key is ambiguous (both segments may contain

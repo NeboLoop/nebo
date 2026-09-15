@@ -30,6 +30,8 @@ export function addToast(
   if (duration > 0) {
     setTimeout(() => removeToast(id), duration);
   }
+  // The id lets a caller retire a sticky toast (duration 0) itself.
+  return id;
 }
 
 export function removeToast(id: number) {

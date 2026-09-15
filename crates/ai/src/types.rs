@@ -70,6 +70,12 @@ pub struct UsageInfo {
     /// UI can subtract fixed overhead and show conversation-only input tokens.
     #[serde(default)]
     pub overhead_tokens: i32,
+    /// What this request cost, in microdollars, as reported by the provider
+    /// (Janus prices the model it actually routed to). `None` when the
+    /// provider does not say — then the local price table is the only
+    /// estimate, and for a routed alias it has nothing to say.
+    #[serde(default)]
+    pub cost_microdollars: Option<i64>,
 }
 
 /// A tool invocation from the AI.

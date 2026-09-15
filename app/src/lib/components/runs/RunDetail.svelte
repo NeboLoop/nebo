@@ -195,6 +195,7 @@
   function statusNorm(status: string): string {
     if (status === 'completed' || status === 'success') return 'success';
     if (status === 'failed') return 'failed';
+    if (status === 'stopped') return 'stopped';
     if (status === 'running') return 'running';
     if (status === 'pending') return 'pending';
     return status;
@@ -274,8 +275,8 @@
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
       </button>
       <span class="text-sm font-semibold truncate">{selectedRun.workflowName}</span>
-      <span class="py-0 px-1.5 rounded text-xs font-medium shrink-0 {selectedRun.status === 'success' ? 'bg-success/10 text-success' : selectedRun.status === 'failed' ? 'bg-error/10 text-error' : selectedRun.status === 'running' ? 'bg-warning/10 text-warning' : selectedRun.status === 'exited' ? 'bg-info/10 text-info' : selectedRun.status === 'cancelled' || selectedRun.status === 'interrupted' ? 'bg-warning/10 text-warning' : 'bg-base-200 text-base-content/50'}">
-        {selectedRun.status === 'success' ? $t('common.completed') : selectedRun.status === 'failed' ? $t('common.failed') : selectedRun.status === 'running' ? $t('agent.running') : selectedRun.status === 'exited' ? $t('agentActivity.exited') : selectedRun.status === 'cancelled' ? $t('common.cancelled') : selectedRun.status === 'interrupted' ? $t('agentActivity.interrupted') : $t('common.skipped')}
+      <span class="py-0 px-1.5 rounded text-xs font-medium shrink-0 {selectedRun.status === 'success' ? 'bg-success/10 text-success' : selectedRun.status === 'failed' ? 'bg-error/10 text-error' : selectedRun.status === 'running' ? 'bg-warning/10 text-warning' : selectedRun.status === 'exited' ? 'bg-info/10 text-info' : selectedRun.status === 'cancelled' || selectedRun.status === 'interrupted' || selectedRun.status === 'stopped' ? 'bg-warning/10 text-warning' : 'bg-base-200 text-base-content/50'}">
+        {selectedRun.status === 'success' ? $t('common.completed') : selectedRun.status === 'failed' ? $t('common.failed') : selectedRun.status === 'running' ? $t('agent.running') : selectedRun.status === 'exited' ? $t('agentActivity.exited') : selectedRun.status === 'cancelled' ? $t('common.cancelled') : selectedRun.status === 'interrupted' ? $t('agentActivity.interrupted') : selectedRun.status === 'stopped' ? $t('common.stopped') : $t('common.skipped')}
       </span>
       {#if selectedRun.status === 'running'}
         <button

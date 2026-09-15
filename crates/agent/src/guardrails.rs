@@ -83,7 +83,8 @@ pub enum Exit {
     Unknown,
     AdaptiveLimitNoProgress,
     UserRequestedStop,
-    OutputBudgetExceeded,
+    /// The owner's per-run spending limit: the model had its wrap-up turn.
+    SpendCapReached,
     /// The same exact call repeated past `IDENTICAL_CALL_ABORT`.
     RunawayToolLoop,
     /// The spiral backstop fired twice for one action (or hard-stop is on).
@@ -167,7 +168,7 @@ impl Exit {
             Exit::Unknown => "unknown".into(),
             Exit::AdaptiveLimitNoProgress => "adaptive_limit_no_progress".into(),
             Exit::UserRequestedStop => "user_requested_stop".into(),
-            Exit::OutputBudgetExceeded => "output_budget_exceeded".into(),
+            Exit::SpendCapReached => "spend_cap_reached".into(),
             Exit::RunawayToolLoop => "runaway_tool_loop".into(),
             Exit::RepeatedToolCalls => "repeated_tool_calls".into(),
             Exit::SameErrorLoop => "same_error_loop".into(),
@@ -316,7 +317,7 @@ mod escalation_tests {
         for (exit, expected) in [
             (Exit::TerminalToolError, "terminal_tool_error"),
             (Exit::RunawayToolLoop, "runaway_tool_loop"),
-            (Exit::OutputBudgetExceeded, "output_budget_exceeded"),
+            (Exit::SpendCapReached, "spend_cap_reached"),
             (Exit::UserRequestedStop, "user_requested_stop"),
         ] {
             assert_eq!(exit.label(), expected);

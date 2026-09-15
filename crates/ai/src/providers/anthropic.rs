@@ -247,6 +247,7 @@ impl AnthropicProvider {
                                         .send(StreamEvent::usage(UsageInfo {
                                             input_tokens: usage.input_tokens,
                                             output_tokens: usage.output_tokens,
+                                            cost_microdollars: None,
                                             cache_creation_input_tokens: usage
                                                 .cache_creation_input_tokens
                                                 .unwrap_or(0),
@@ -269,6 +270,7 @@ impl AnthropicProvider {
                                         .send(StreamEvent::usage(UsageInfo {
                                             input_tokens: usage.input_tokens.unwrap_or(0),
                                             output_tokens: usage.output_tokens.unwrap_or(0),
+                                            cost_microdollars: None,
                                             cache_creation_input_tokens: usage
                                                 .cache_creation_input_tokens
                                                 .unwrap_or(0),

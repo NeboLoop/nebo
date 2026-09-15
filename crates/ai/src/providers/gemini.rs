@@ -405,6 +405,7 @@ async fn handle_gemini_stream(response: reqwest::Response, tx: mpsc::Sender<Stre
                             .send(StreamEvent::usage(UsageInfo {
                                 input_tokens: usage.prompt_token_count.unwrap_or(0),
                                 output_tokens: usage.candidates_token_count.unwrap_or(0),
+                                cost_microdollars: None,
                                 cache_creation_input_tokens: 0,
                                 cache_read_input_tokens: 0,
                                 overhead_tokens: 0,

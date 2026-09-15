@@ -336,8 +336,7 @@ impl ActivityLoop for RunnerActivityLoop {
                 trace: turn.trace.clone(),
                 advertised_tools: turn.advertised_tools.iter().cloned().collect(),
                 tainted: turn.checkpoint.map(|c| c.tainted).unwrap_or(false),
-                output_budget_max: turn.output_budget_max,
-                spent_output_before: turn.spent_output_before,
+                spend_cap_microcents: turn.spend_cap_microcents,
                 park,
             }),
             ..Default::default()
@@ -429,11 +428,13 @@ impl ActivityLoop for RunnerActivityLoop {
                 "failed to persist approval suspension: {rest}"
             )));
         }
-        if exit_reason == "output_budget_exceeded" {
-            return Err(WorkflowError::BudgetExceeded {
+        if exit_reason == "spend_cap_reached" {
+            // Money in cents for the owner's words; the loop compares microcents.
+            return Err(WorkflowError::SpendCapReached {
                 activity_id: turn.activity.id.clone(),
-                used: turn.spent_output_before + total_out,
-                limit: turn.output_budget_max,
+                spent_cents: turn.spend_cap_microcents / 1_000_000,
+                cap_cents: turn.spend_cap_microcents / 1_000_000,
+                partial: text.clone(),
             });
         }
         if exit_reason.starts_with("max_iterations") {

@@ -1850,6 +1850,11 @@ impl WorkflowManager for WorkflowManagerImpl {
                             workflow::WorkflowError::Cancelled => {}
                             // Exits returned above, before any failure handling.
                             workflow::WorkflowError::Exited(_) => {}
+                            // The owner's limit stopped it — the owner's own
+                            // rule, not a failure to learn from.
+                            workflow::WorkflowError::SpendCapReached { .. } => {
+                                record_run_outcome(&store, &agent_id_owned, &binding_name, "stopped", &err_msg);
+                            }
                             _ => {
                                 record_run_outcome(&store, &agent_id_owned, &binding_name, "failed", &err_msg);
                                 // Workflow review fork (fork-lite): genuine

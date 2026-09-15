@@ -18,6 +18,7 @@
   import ApprovalControls from '$lib/components/settings/ApprovalControls.svelte';
   import LearningControls from '$lib/components/settings/LearningControls.svelte';
   import IsolationControls from '$lib/components/settings/IsolationControls.svelte';
+  import RunLimitControls from '$lib/components/settings/RunLimitControls.svelte';
   import type { AgentInputField } from '$lib/types/agentPage';
   import { installFlow } from '$lib/stores/installFlow';
 
@@ -961,6 +962,8 @@
       <LearningControls {agentId} />
 
       <IsolationControls {agentId} />
+
+      <RunLimitControls {agentId} />
 
       {#if devMode}
         <div>

@@ -144,7 +144,7 @@ pub(crate) async fn send_coworker_message(
     // is not asked to act. The post is delivered — nothing runs.
     if let (Some(t), false) = (team.as_ref(), act) {
         let record = format!("[Team \"{}\" — {}]\n[Post from {}]\n\n{}", t.name, t.mission, from_name, msg.text);
-        let meta = serde_json::json!({ "isMeta": true, "teamPost": true, "teamId": t.id }).to_string();
+        let meta = team_post_metadata(&t.id).to_string();
         if let Err(e) = state
             .runner
             .sessions()
@@ -512,6 +512,15 @@ impl OwnerForward<'_> {
 /// target scopes the exchange per-matter instead of pooling. Sender side
 /// (`None` for main-bot sends): `agent:{from}:coworker:{to}[:{matter}]` — a
 /// runnerless record thread.
+/// What a team post carries in a member's thread. It is the team's message
+/// to that member — a real party's words, not the house steering itself —
+/// so it is NEVER `isMeta`: the owner opening the member's team thread must
+/// see what the team said (2026-09-15: every member thread read as blank,
+/// because the only message in it was hidden as meta).
+fn team_post_metadata(team_id: &str) -> serde_json::Value {
+    serde_json::json!({ "teamPost": true, "teamId": team_id })
+}
+
 fn coworker_thread_keys(
     from_agent_id: &str,
     to_id: &str,
@@ -710,8 +719,18 @@ pub(crate) fn origin_matter_context(
 
 #[cfg(test)]
 mod tests {
-    use super::{coworker_thread_keys, label_tainted_reply};
+    use super::{coworker_thread_keys, label_tainted_reply, team_post_metadata};
     use types::provenance::ProvenanceClass;
+
+    // A team post is the team talking to a member; it must reach the owner's
+    // transcript. `isMeta` on it hid every member's team thread.
+    #[test]
+    fn a_team_post_is_never_meta() {
+        let meta = team_post_metadata("team-1");
+        assert_eq!(meta["teamPost"], serde_json::Value::Bool(true));
+        assert_eq!(meta["teamId"], "team-1");
+        assert!(meta.get("isMeta").is_none());
+    }
 
     /// A tainted reply gets the engine-written provenance label; a clean reply
     /// (coworker-only provenance) and an empty reply pass through untouched.

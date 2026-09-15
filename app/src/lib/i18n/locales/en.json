@@ -81,7 +81,8 @@
 		"monthShort": "mo",
 		"closeModal": "Close modal",
 		"all": "All",
-		"more": "More"
+		"more": "More",
+		"stopped": "Stopped"
 	},
 	"time": {
 		"justNow": "just now",
@@ -147,7 +148,12 @@
 		"openChat": "Open chat",
 		"runs": "Runs",
 		"employees": "Employees",
-		"status": { "working": "Working", "waiting": "Needs you", "idle": "Idle", "paused": "Paused" },
+		"status": {
+			"working": "Working",
+			"waiting": "Needs you",
+			"idle": "Idle",
+			"paused": "Paused"
+		},
 		"runsChart": "Runs",
 		"last14Days": "Last 14 days",
 		"last14DaysCount": "Last 14 days, {n} runs",
@@ -316,7 +322,7 @@
 		"stepFailed": "{name} failed",
 		"workingWithTool": "working with {name}",
 		"moreCount": "+{count} more",
-		"largeInputNote": "Large document \u00b7 {chars} characters \u00b7 full text kept for the agent",
+		"largeInputNote": "Large document · {chars} characters · full text kept for the agent",
 		"enterToSubmit": "Enter to submit · Esc to cancel",
 		"saveAndSubmit": "Save & Submit",
 		"editResend": "Edit & resend",
@@ -2146,11 +2152,11 @@
 		"apiKeyLabelPlaceholder": "Sales console",
 		"apiKeyHint": "Memory, messaging you, and notifications are always on. Everything else is off unless you tick it here; a call that reaches for anything else is told it isn't available. Anything needing approval waits for you in Nebo and the caller is told so.",
 		"apiKeysNone": "No keys yet.",
-		"apiSwitchboardOnline": "Through the switchboard \u00b7 this Nebo is online",
-		"apiSwitchboardOffline": "Through the switchboard \u00b7 this Nebo is offline right now",
+		"apiSwitchboardOnline": "Through the switchboard · this Nebo is online",
+		"apiSwitchboardOffline": "Through the switchboard · this Nebo is offline right now",
 		"apiLocalUrl": "On this computer",
 		"apiModels": "Models",
-		"apiModelEmployee": "{name} \u2014 the employee",
+		"apiModelEmployee": "{name} — the employee",
 		"apiModelWorkflow": "Workflow: {name}",
 		"apiMemoryShared": "shared memory: one conversation",
 		"apiMemoryIsolated": "isolated memory: each `user` value is its own conversation",
@@ -2989,5 +2995,11 @@
 		"create": "Hire them",
 		"failed": "Couldn't create the employee. Try again.",
 		"marketplaceHint": "Want a pre-built expert instead? Browse the Marketplace."
+	},
+	"runLimit": {
+		"title": "Spending limit per run",
+		"offPlaceholder": "No limit",
+		"offHint": "Off. A run spends what its work costs. Set a dollar amount to stop any single run that passes it — the employee gets one last turn to report what it has, and the run is marked stopped at your limit, not failed. Counts what the model provider reports for each request.",
+		"onHint": "Any single run that passes this amount stops: the employee gets one last turn to report what it has, and the run is marked stopped at your limit. Counts what the model provider reports for each request."
 	}
 }

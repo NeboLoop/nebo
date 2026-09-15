@@ -52,10 +52,10 @@ pub struct LoopTurn<'a> {
     /// Tools that must land a successful (non-error) call before this turn
     /// may finish — the activity's declared outward effect.
     pub requires_tools: Vec<String>,
-    /// Activity output-token ceiling (0 = none) and what earlier turns of
-    /// the same activity already spent against it.
-    pub output_budget_max: u32,
-    pub spent_output_before: u32,
+    /// The owner's per-run spending limit in microcents (0 = none). A
+    /// package's `token_budget` is an estimate, never a ceiling; this is
+    /// the only one, and reaching it means one wrap-up turn, then stop.
+    pub spend_cap_microcents: i64,
     /// Per-activity model override ("" = session default).
     pub model: String,
     pub cancel: Option<tokio_util::sync::CancellationToken>,
@@ -70,7 +70,7 @@ pub struct LoopOutcome {
     pub text: String,
     /// Input+output tokens this turn-loop consumed (run totals).
     pub total_tokens: u32,
-    /// Output tokens only — the unit activity budgets are enforced in.
+    /// Output tokens only (run reporting).
     pub output_tokens: u32,
 }
 

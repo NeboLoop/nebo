@@ -2360,10 +2360,12 @@ mod walk_tests {
     }
 
     #[tokio::test]
-    async fn test_activity_token_budget_enforced() {
-        // Budgets meter OUTPUT tokens: 100 tokens/turn (50 of them output)
-        // against a 40-output-token activity budget → the engine stops the
-        // activity at its own ceiling and the run records failed.
+    async fn test_activity_token_budget_is_an_estimate_not_a_ceiling() {
+        // A package's token_budget is its author's cost estimate. It is never
+        // a ceiling: 100 tokens/turn (50 output) against a "max" of 40 and the
+        // activity completes, the downstream node runs, the run completes.
+        // (Before 2026-09-15 this stopped the run "failed" at 2213/2000 on a
+        // Bookkeeper sweep the owner had no control over.)
         let provider = MockProvider::new(&[]).with_usage(100);
         let def = r#"{
             "version":"1.0","id":"t","name":"T",
@@ -2375,17 +2377,9 @@ mod walk_tests {
                 {"from":"b","to":"__emit__"}]
         }"#;
         let (result, store, run_id) = run_graph(def, serde_json::json!({}), &provider).await;
-        match result {
-            Err(WorkflowError::BudgetExceeded { activity_id, used, limit }) => {
-                assert_eq!(activity_id, "a");
-                assert_eq!(limit, 40);
-                assert!(used >= 50);
-            }
-            other => panic!("expected BudgetExceeded, got {:?}", other),
-        }
-        assert_eq!(run_status(&store, &run_id), "failed");
-        // Downstream node never ran.
-        assert_eq!(provider.calls().len(), 1);
+        result.expect("an over-estimate run completes");
+        assert_eq!(run_status(&store, &run_id), "completed");
+        assert_eq!(provider.calls().len(), 2, "the downstream node ran");
     }
 
     #[tokio::test]

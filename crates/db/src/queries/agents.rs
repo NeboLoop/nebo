@@ -302,6 +302,21 @@ impl Store {
     /// merged frontmatter so the caller can mirror it to agent.json. Used
     /// when a phone line is attached: a receptionist's callers must never
     /// share memory, so the line forces isolation on.
+    /// The owner's per-run spending limit for this employee, in cents
+    /// (`budget.run_spend_cap_cents` in the frontmatter); 0 = no limit. A
+    /// package's `token_budget` figures are the author's cost estimate and
+    /// are never enforced — this is the only ceiling a run has.
+    pub fn agent_run_spend_cap_cents(&self, id: &str) -> i64 {
+        let Ok(conn) = self.conn() else { return 0 };
+        let fm: Option<String> = conn
+            .query_row("SELECT frontmatter FROM agents WHERE id = ?1", params![id], |r| r.get(0))
+            .ok();
+        fm.and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+            .and_then(|v| v.pointer("/budget/run_spend_cap_cents").and_then(|c| c.as_i64()))
+            .unwrap_or(0)
+            .max(0)
+    }
+
     pub fn set_agent_context_isolated(&self, id: &str, isolated: bool) -> Result<serde_json::Value, NeboError> {
         let conn = self.conn()?;
         let current: String = conn

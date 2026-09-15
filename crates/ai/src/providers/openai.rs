@@ -543,10 +543,17 @@ impl OpenAIProvider {
                                 .as_ref()
                                 .and_then(|d| d.cached_tokens)
                                 .unwrap_or(0) as i32;
+                            // Janus adds `usage.cost_micro` (microdollars for the
+                            // model it routed to). The typed chunk cannot carry
+                            // it, so read it off the raw JSON beside it.
+                            let cost_micro = serde_json::from_str::<serde_json::Value>(&data)
+                                .ok()
+                                .and_then(|v| v.pointer("/usage/cost_micro").and_then(|c| c.as_i64()));
                             latest_usage = Some(usage_from_openai(
                                 usage.prompt_tokens as i32,
                                 usage.completion_tokens as i32,
                                 cached,
+                                cost_micro,
                             ));
                         }
 
@@ -1076,9 +1083,10 @@ struct SessionToolResult {
 /// context calibration that sums input + cache_read + cache_creation) treats
 /// them as DISJOINT. Convert at the boundary, once, or a 74% cache hit reads
 /// as a context 74% larger than it is and compaction fires early.
-fn usage_from_openai(prompt_tokens: i32, completion_tokens: i32, cached_tokens: i32) -> UsageInfo {
+fn usage_from_openai(prompt_tokens: i32, completion_tokens: i32, cached_tokens: i32, cost_micro: Option<i64>) -> UsageInfo {
     let cached = cached_tokens.clamp(0, prompt_tokens.max(0));
     UsageInfo {
+        cost_microdollars: cost_micro.filter(|c| *c > 0),
         input_tokens: prompt_tokens - cached,
         output_tokens: completion_tokens,
         cache_read_input_tokens: cached,
@@ -1094,15 +1102,15 @@ mod usage_semantics_tests {
     /// sent 46,944 uncached tokens, not 319,072.
     #[test]
     fn openai_cached_tokens_are_a_subset_of_prompt_tokens() {
-        let u = usage_from_openai(183_008, 20, 136_064);
+        let u = usage_from_openai(183_008, 20, 136_064, None);
         assert_eq!(u.input_tokens, 46_944);
         assert_eq!(u.cache_read_input_tokens, 136_064);
         assert_eq!(u.input_tokens + u.cache_read_input_tokens, 183_008, "the sum is the prompt");
         // Providers without a breakdown are unchanged.
-        let u = usage_from_openai(100, 5, 0);
+        let u = usage_from_openai(100, 5, 0, None);
         assert_eq!((u.input_tokens, u.cache_read_input_tokens), (100, 0));
         // A malformed breakdown never goes negative.
-        let u = usage_from_openai(10, 1, 50);
+        let u = usage_from_openai(10, 1, 50, None);
         assert_eq!((u.input_tokens, u.cache_read_input_tokens), (0, 10));
     }
 }

@@ -1081,7 +1081,7 @@ pub async fn update_agent(
         memory_cfg["context_isolated"] = serde_json::json!(iso);
     }
 
-    let frontmatter_json = saved_frontmatter(
+    let mut frontmatter_json = saved_frontmatter(
         &existing_fm,
         workflows,
         serde_json::json!(fm.skills),
@@ -1090,6 +1090,13 @@ pub async fn update_agent(
             .map(|p| serde_json::json!({ "model": p.model, "cost": p.cost })),
         memory_cfg,
     );
+    // The owner's per-run spending limit: `runSpendCapCents` in the body sets
+    // it (0 = off). It is the only ceiling a run has — a package's
+    // token_budget is an estimate and is never enforced.
+    if body.get("runSpendCapCents").is_some() {
+        let cents = body["runSpendCapCents"].as_i64().unwrap_or(0).max(0);
+        frontmatter_json["budget"]["run_spend_cap_cents"] = serde_json::json!(cents);
+    }
 
     let pricing_model = fm.pricing.as_ref().map(|p| p.model.as_str());
     let pricing_cost = fm.pricing.as_ref().map(|p| p.cost);

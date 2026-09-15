@@ -394,7 +394,6 @@ pub async fn execute_workflow(
     // dominated by fixed per-turn overhead (tool schemas, context) resent every
     // call, so metering the run budget in input+output made small budgets trip
     // on the first call regardless of how much work the model actually did.
-    let mut total_output_tokens: u32 = 0;
     let mut prior_context = String::new();
     let activity_count = def.activities.len();
 
@@ -497,7 +496,6 @@ pub async fn execute_workflow(
         {
             Ok((result_text, _tokens_used)) => {
                 total_tokens += activity_spent;
-                total_output_tokens += activity_spent_output;
                 consecutive_failures = 0;
                 last_failure_pattern = None;
 
@@ -547,7 +545,6 @@ pub async fn execute_workflow(
             }
             Err(WorkflowError::Exited(reason)) => {
                 total_tokens += activity_spent;
-                total_output_tokens += activity_spent_output;
                 let completed_at = chrono::Utc::now().timestamp();
                 let _ = store.create_activity_result(
                     &run_id,
@@ -578,9 +575,48 @@ pub async fn execute_workflow(
             Err(e @ WorkflowError::AwaitingApproval { .. }) => {
                 return Err(e);
             }
+            // The owner's spending limit: the activity had its wrap-up turn,
+            // so it ends as STOPPED with what it reported, and the run says
+            // the limit was the owner's. Not a failure, nothing lost.
+            Err(e @ WorkflowError::SpendCapReached { .. }) => {
+                total_tokens += activity_spent;
+                let completed_at = chrono::Utc::now().timestamp();
+                let why = e.to_string();
+                let partial = match &e {
+                    WorkflowError::SpendCapReached { partial, .. } => partial.clone(),
+                    _ => String::new(),
+                };
+                let _ = store.create_activity_result(
+                    &run_id,
+                    &activity.id,
+                    "",
+                    "stopped",
+                    activity_spent as i64,
+                    1,
+                    Some(&why),
+                    started_at,
+                    Some(completed_at),
+                );
+                if !partial.trim().is_empty() {
+                    let _ = store.set_activity_result_content(&run_id, &activity.id, "", &partial);
+                    prior_context.push_str(&format!(
+                        "\n[Activity '{}' stopped at the owner's limit; what it reported]: {}\n",
+                        activity.id, partial
+                    ));
+                }
+                let _ = store.complete_workflow_run(
+                    &run_id,
+                    "stopped",
+                    total_tokens as i64,
+                    Some(&why),
+                    Some(&activity.id),
+                    Some(&prior_context),
+                );
+                info!(workflow = def.id.as_str(), run_id = %run_id, activity = %activity.id, "workflow stopped at the owner's spending limit");
+                return Err(e);
+            }
             Err(e) => {
                 total_tokens += activity_spent;
-                total_output_tokens += activity_spent_output;
                 let completed_at = chrono::Utc::now().timestamp();
                 let err_msg = e.to_string();
                 if let Err(db_err) = store.create_activity_result(
@@ -645,26 +681,9 @@ pub async fn execute_workflow(
             }
         }
 
-        // Check total budget — output tokens only, matching the graph executor
-        // and the per-activity budgets (`total_tokens` keeps full input+output
-        // for run reporting).
-        if def.budget.total_per_run > 0 && total_output_tokens > def.budget.total_per_run {
-            if let Err(e) = store.complete_workflow_run(
-                &run_id,
-                "failed",
-                total_tokens as i64,
-                Some("total budget exceeded"),
-                None,
-                None,
-            ) {
-                warn!(run_id = %run_id, error = %e, "failed to mark workflow run as budget-exceeded");
-            }
-            return Err(WorkflowError::BudgetExceeded {
-                activity_id: "workflow".into(),
-                used: total_output_tokens,
-                limit: def.budget.total_per_run,
-            });
-        }
+        // `budget.total_per_run` is the package author's estimate (it feeds the
+        // listing's cost_estimate). It is never enforced: the only ceiling a
+        // run has is the owner's, checked inside the loop.
     }
 
     if let Err(e) = store.complete_workflow_run(
@@ -815,6 +834,9 @@ pub async fn execute_activity(
     iteration: &str,
     cancel_token: Option<&CancellationToken>,
 ) -> Result<(String, u32), WorkflowError> {
+    // The owner's per-run spending limit for this employee (0 = none). The
+    // package's token_budget figures are estimates and never enforced.
+    let spend_cap_microcents: i64 = store.agent_run_spend_cap_cents(agent_id) * 1_000_000;
     // Detect if browser tool is available for this activity
     let has_browser = tools.iter().any(|t| t.name() == "web");
     let tool_names: Vec<String> = tools.iter().map(|t| t.name().to_string()).collect();
@@ -879,8 +901,7 @@ pub async fn execute_activity(
             max_iterations: activity_max_iterations(activity),
             min_iterations: activity.min_iterations,
             requires_tools: activity.requires_tools.clone(),
-            output_budget_max: activity.token_budget.max,
-            spent_output_before: *spent_output,
+            spend_cap_microcents,
             model: activity.model.clone(),
             cancel: cancel_token.cloned(),
             turn_key: format!("{}:{}", activity.id, iteration),
@@ -888,16 +909,6 @@ pub async fn execute_activity(
         let out = loop_impl.run_turn(turn).await?;
         *spent += out.total_tokens;
         *spent_output += out.output_tokens;
-        // Post-turn budget check (the in-loop check moved into the injected
-        // loop; this end-of-activity check holds for ANY implementation —
-        // same rule as the per-step check below).
-        if activity.token_budget.max > 0 && *spent_output > activity.token_budget.max {
-            return Err(WorkflowError::BudgetExceeded {
-                activity_id: activity.id.clone(),
-                used: *spent_output,
-                limit: activity.token_budget.max,
-            });
-        }
         return Ok((out.text, out.total_tokens));
     }
 
@@ -987,8 +998,7 @@ pub async fn execute_activity(
             max_iterations: activity_max_iterations(activity),
             min_iterations: activity.min_iterations,
             requires_tools: activity.requires_tools.clone(),
-            output_budget_max: activity.token_budget.max,
-            spent_output_before: *spent_output,
+            spend_cap_microcents,
             model: activity.model.clone(),
             cancel: cancel_token.cloned(),
             turn_key: format!("{}:{}:{}", activity.id, iteration, i),
@@ -1115,15 +1125,6 @@ pub async fn execute_activity(
         // Record completion
         total_tokens += step_tokens;
 
-        // Cumulative per-activity budget across steps + evaluator turns —
-        // output tokens, same unit as the in-loop check.
-        if activity.token_budget.max > 0 && *spent_output > activity.token_budget.max {
-            return Err(WorkflowError::BudgetExceeded {
-                activity_id: activity.id.clone(),
-                used: *spent_output,
-                limit: activity.token_budget.max,
-            });
-        }
         let tokens_in = (step_tokens as i64) / 2; // approximate split
         let tokens_out = step_tokens as i64 - tokens_in;
         if let Err(e) = store.update_task_item(
