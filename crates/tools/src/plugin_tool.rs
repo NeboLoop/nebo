@@ -581,9 +581,17 @@ impl PluginTool {
                         // currency (the card button redeems them; the marketplace
                         // shows them to humans). A code in model-visible text is
                         // one hop from a code pasted into chat.
+                        // An empty query is browsing, not asking for a particular tool:
+                        // there is nothing for best_match to match, so a card here offers
+                        // whatever the hub returned first. Live (2026-09-15): `discover ""`
+                        // carded the owner's own retired Google Workspace plugin — whose
+                        // description opens "[DEPRECATED — do not install]" — because a
+                        // publisher sees their own private listings. Browsing lists; naming
+                        // a tool cards it.
                         let interactive = crate::origin::ExecutionMode::from(ctx.origin)
                             == crate::origin::ExecutionMode::Interactive
-                            && ctx.ask_channels.is_some();
+                            && ctx.ask_channels.is_some()
+                            && !query.trim().is_empty();
                         let mut lines = Vec::new();
                         for it in arr {
                             let name = it.get("name").and_then(|x| x.as_str()).unwrap_or("?");
@@ -2610,6 +2618,24 @@ fn command_matches_binding(command: &str, bound_cmd: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+
+    // `discover ""` is browsing. best_match has nothing to match on, so an
+    // install card there offers whatever the hub returned first — live on
+    // 2026-09-15 that was the owner's own retired Google Workspace plugin,
+    // visible because a publisher sees their own private listings, and
+    // described "[DEPRECATED — do not install]". Browsing lists; naming a
+    // tool cards it.
+    #[test]
+    fn an_empty_query_has_no_best_match_to_offer() {
+        let items = vec![
+            serde_json::json!({"name": "Gws", "slug": "gws", "description": "[DEPRECATED — do not install"}),
+            serde_json::json!({"name": "Gmail", "slug": "gmail"}),
+        ];
+        // With no query every listing is equally unmatched, so best_match can
+        // only fall back to first-returned — which is why offer() must not card.
+        assert_eq!(best_match(&items, "")["slug"], "gws");
+        assert_eq!(best_match(&items, "gmail")["slug"], "gmail");
+    }
 
     // "receptionist" must card the Receptionist, not a bundle whose blurb
     // mentions receptionists and happens to rank first.
