@@ -1050,6 +1050,16 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         }
     }
 
+    // Warm the readiness cache. Nothing else fills it until a plugin's first
+    // successful exec, so on a cold process every typed port (mail.message.send
+    // via gmail, …) read as unbound and fell back to the local app until then.
+    // Off the boot path: each probe is one `auth status` per plugin, bounded by
+    // AUTH_PROBE_TIMEOUT, and a slow one must not hold the server up.
+    tokio::spawn({
+        let ps = plugin_store.clone();
+        async move { ps.refresh_auth_cache().await }
+    });
+
     // Append plugin-provided AI providers (e.g., openrouter, local model servers)
     {
         let installed = plugin_store.list_installed();

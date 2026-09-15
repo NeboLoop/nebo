@@ -81,10 +81,17 @@ impl MessageTool {
             // is where the model read the name (smoke 2026-09-06: "Ask the
             // chief-of-staff agent ..." became text: "Draft my weekly report.").
             unique_name_in(text).or_else(|| {
-                let chat_id = types::keyparser::chat_id_from_thread_key(&ctx.session_key)?;
+                // The session's current chat, by the ONE derivation the store
+                // owns. `chat_id_from_thread_key` only understands `:thread:`
+                // keys, so on every ordinary `agent:<id>:<channel>` key (and
+                // the harness's `eval:` keys) this fallback silently never ran
+                // — smoke 2026-09-15: "Ask the chief-of-staff agent…" died on
+                // "Missing required parameter 'to'".
+                let session = self.store.get_session_by_name(&ctx.session_key).ok().flatten()?;
+                let chat_id = self.store.session_chat_id(&session.id)?;
                 let last_user = self
                     .store
-                    .get_recent_chat_messages(chat_id, 8)
+                    .get_recent_chat_messages(&chat_id, 8)
                     .ok()?
                     .into_iter()
                     .rev()
@@ -218,7 +225,7 @@ impl DynTool for MessageTool {
                     "enum": ["notify", "send", "alert", "dnd_status", "conversations", "read", "search"]
                 },
                 "text": { "type": "string", "description": "Message text" },
-                "to": { "type": "string", "description": "Coworker to message — an installed employee's name (e.g. \"receptionist\") or id" },
+                "to": { "type": "string", "description": "REQUIRED for a coworker send: the employee to message, by installed name (e.g. \"receptionist\") or id. Never leave it out and name them in the text instead." },
                 "wait": { "type": "boolean", "description": "Coworker send: wait for their reply (default true). false = fire-and-forget; their reply wakes you automatically.", "default": true },
                 "title": { "type": "string", "description": "Notification or alert title" },
                 "phone": { "type": "string", "description": "Phone number or contact for SMS" },
