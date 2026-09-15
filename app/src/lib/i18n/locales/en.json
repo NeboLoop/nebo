@@ -381,7 +381,8 @@
 		"researchVerifying": "verifying claims",
 		"researchWriting": "writing the report",
 		"researchOtherDomains": "+ {n} other sites",
-		"researchVerified": "{n} claims verified against sources"
+		"researchVerified": "{n} claims verified against sources",
+		"historyLoadFailed": "Couldn't load this conversation. Check your connection and try again."
 	},
 	"chatInput": {
 		"placeholder": "Reply...",

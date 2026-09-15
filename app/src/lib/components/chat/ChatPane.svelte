@@ -81,7 +81,7 @@
 
   type AgentInfo = { id: string; name: string; color: string; initial: string; role: string; status: string; isApp?: boolean };
 
-  let { messages = [], agentName = 'Agent', agentId = '', threadId = '', sessionId = '', headerTitle = '', headerRight = '', placeholder = '', emptyIcon = '', emptyTitle = '', emptyDesc = '', allAgents = [], onteachsent, activityStatus = '', tokenUsage = null, contextStats = null, quotaWarning = '', chatError = '', onsend, onstop, onedit, onredo, onasksubmit, onrestoreversion, ondismisswarning, ondismisserror, onloadmore, isLoading = false, isLoadingMore = false, hasMore = false, allowAttachments = true, flowsPane, onopenruns, onsettings, isolated = false, isApp = false, onopenapp, onback, composerPrefill = '', onprefilled }: {
+  let { messages = [], agentName = 'Agent', agentId = '', threadId = '', sessionId = '', headerTitle = '', headerRight = '', placeholder = '', emptyIcon = '', emptyTitle = '', emptyDesc = '', allAgents = [], onteachsent, activityStatus = '', tokenUsage = null, contextStats = null, quotaWarning = '', chatError = '', onsend, onstop, onedit, onredo, onasksubmit, onrestoreversion, ondismisswarning, ondismisserror, onloadmore, isLoading = false, isLoadingMore = false, historyLoading = false, hasMore = false, allowAttachments = true, flowsPane, onopenruns, onsettings, isolated = false, isApp = false, onopenapp, onback, composerPrefill = '', onprefilled }: {
     messages?: Message[];
     /** Employee-scoped views for the work pane. Omitted on chats with no
      *  employee behind them (channel setup help, the embed), and the matching
@@ -128,6 +128,8 @@
     ondismisserror?: () => void;
     onloadmore?: () => void;
     isLoading?: boolean;
+    /** The thread's transcript is still being fetched — show that, not "empty". */
+    historyLoading?: boolean;
     isLoadingMore?: boolean;
     hasMore?: boolean;
     /** Hide the attach affordance when the chat's send pathway ignores files. */
@@ -1230,7 +1232,11 @@
   {/if}
 
   <!-- Messages / Empty state -->
-  {#if !hasMessages && emptyTitle}
+  {#if !hasMessages && historyLoading}
+    <div class="flex-1 flex items-center justify-center p-6">
+      <span class="loading loading-spinner loading-md text-base-content/40"></span>
+    </div>
+  {:else if !hasMessages && emptyTitle}
     <div class="flex-1 flex flex-col items-center justify-center gap-4 p-6">
       {#if emptyIcon}
         <div class="w-12 h-12 rounded-box flex items-center justify-center font-mono text-xl font-semibold bg-primary text-primary-content">{emptyIcon}</div>

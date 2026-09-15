@@ -245,14 +245,37 @@
 
   /** Loads the transcript. Resolves true when no turn is running on the thread
    *  (nothing more will arrive by event), false while one is, or on failure. */
+  /** The first fetch of a thread is in flight: the pane shows a spinner, not
+   *  the "start a new chat" copy, so a slow tunnel never reads as an empty thread. */
+  let historyLoading = $state(false);
+
   async function loadMessages(): Promise<boolean> {
     if (!threadId) return false;
     oldestMessageId = null;
     loadedRawCount = 0;
     totalMessages = 0;
+    const loadingFor = threadId;
+    if (chat.messages.length === 0) historyLoading = true;
     try {
-      const api = await import('$lib/api/nebo');
-      const resp = await api.getChatMessages(threadId);
+      // Over a tunnel on a phone, one fetch failing is ordinary — and so is
+      // the chunk import itself ("Importing a module script failed", iPhone,
+      // 2026-09-15). One silent failure left the thread blank until a
+      // refresh; retry both, then say so.
+      let resp: Awaited<ReturnType<typeof import('$lib/api/nebo').getChatMessages>> | null = null;
+      let lastErr: unknown = null;
+      for (const wait of [0, 400, 1200, 3000]) {
+        if (wait) await new Promise((r) => setTimeout(r, wait));
+        if (threadId !== loadingFor) return false;
+        try {
+          const api = await import('$lib/api/nebo');
+          resp = await api.getChatMessages(threadId);
+          lastErr = null;
+          break;
+        } catch (e) {
+          lastErr = e;
+        }
+      }
+      if (!resp) throw lastErr ?? new Error('no response');
       if (resp?.messages?.length) {
         totalMessages = resp.totalMessages ?? resp.messages.length;
         loadedRawCount = resp.messages.length;
@@ -274,7 +297,10 @@
       return !run && !resp.pendingAsk;
     } catch (e) {
       console.warn('[nebo] Failed to load messages for thread', threadId, e);
+      if (chat.messages.length === 0) chat.setError($t('chat.historyLoadFailed'));
       return false;
+    } finally {
+      if (threadId === loadingFor) historyLoading = false;
     }
   }
 
@@ -313,6 +339,7 @@
 
 <ChatPane
   messages={chat.messages}
+  {historyLoading}
   agentName={agent?.name ?? $t('common.agent')}
   agentId={agentId}
   {threadId}

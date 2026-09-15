@@ -80,6 +80,13 @@
     // Booted successfully — reset the deploy-window boot-retry counter and
     // disarm the blank-page watchdog (both in app.html).
     (window as any).__NEBO_BOOTED = true;
+    // The boot watchdog in app.html reloads on a failed chunk import, up to
+    // three times per sessionStorage lifetime, then swallows the failure (the
+    // recovery screen is a no-op once booted). sessionStorage survives a soft
+    // reload, so after three hiccups every later blank thread was silent
+    // until a hard refresh cleared it (2026-09-15). A successful boot is
+    // where that budget resets.
+    try { sessionStorage.removeItem('nebo:boot-retries'); } catch { /* storage may be blocked */ }
     sessionStorage.removeItem('nebo:boot-retries');
     // Errors the shell recorded before this layout could listen (app.html).
     (window as any).__NEBO_SHIP_ERRORS?.('early');
