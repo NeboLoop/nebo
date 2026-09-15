@@ -21,7 +21,30 @@ const EXEC_TIMEOUT_DEFAULT_SECS: u64 = 120;
 const RECOVERY_MIN_REMAINING: Duration = Duration::from_secs(10);
 
 /// The install card's answer once the plugin is on disk.
-const INSTALL_CARD_INSTALLED: &str = "installed";
+/// What an install/hire card submits once POST /codes has succeeded. Shared
+/// with the employee hire card so both resume the same way.
+pub(crate) const INSTALL_CARD_INSTALLED: &str = "installed";
+
+/// The listing a query most plausibly names. The marketplace ranks by
+/// relevance, but a query that IS a listing's name must beat one that merely
+/// mentions it — "gmail" kept carding the deprecated Google Workspace bundle
+/// and the user could never install the thing they named. Exact name or slug
+/// first, then a prefix, then the top result.
+pub(crate) fn best_match<'a>(items: &'a [serde_json::Value], query: &str) -> &'a serde_json::Value {
+    let q = query.trim().to_lowercase();
+    let field = |it: &serde_json::Value, k: &str| {
+        it.get(k).and_then(|x| x.as_str()).unwrap_or("").to_lowercase()
+    };
+    items
+        .iter()
+        .find(|it| !q.is_empty() && (field(it, "name") == q || field(it, "slug") == q))
+        .or_else(|| {
+            items.iter().find(|it| {
+                !q.is_empty() && (field(it, "name").starts_with(&q) || field(it, "slug").starts_with(&q))
+            })
+        })
+        .unwrap_or(&items[0])
+}
 
 /// The Google Workspace plugin's slug, named in the description only while
 /// it is installed.
@@ -580,26 +603,7 @@ impl PluginTool {
                         // redeems the code via POST /codes (the one install
                         // pathway); "installed" resumes this call.
                         //
-                        // Best match, not arr[0]: the marketplace ranks by
-                        // relevance, but a query that IS a product's name must
-                        // beat a bundle that merely mentions it — "gmail" kept
-                        // carding the deprecated Google Workspace bundle and the
-                        // user could never install the thing they named.
-                        let q = query.trim().to_lowercase();
-                        let field = |it: &serde_json::Value, k: &str| {
-                            it.get(k).and_then(|x| x.as_str()).unwrap_or("").to_lowercase()
-                        };
-                        let top = arr
-                            .iter()
-                            .find(|it| !q.is_empty() && (field(it, "name") == q || field(it, "slug") == q))
-                            .or_else(|| {
-                                arr.iter().find(|it| {
-                                    !q.is_empty()
-                                        && (field(it, "name").starts_with(&q)
-                                            || field(it, "slug").starts_with(&q))
-                                })
-                            })
-                            .unwrap_or(&arr[0]);
+                        let top = best_match(arr, query);
                         let top_code = top.get("code").and_then(|x| x.as_str()).unwrap_or("");
                         let top_slug = top.get("slug").and_then(|x| x.as_str()).unwrap_or("");
                         let already_installed =
@@ -2606,6 +2610,20 @@ fn command_matches_binding(command: &str, bound_cmd: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+
+    // "receptionist" must card the Receptionist, not a bundle whose blurb
+    // mentions receptionists and happens to rank first.
+    #[test]
+    fn best_match_prefers_the_listing_the_query_names() {
+        let items = vec![
+            serde_json::json!({"name": "Front Desk Bundle", "slug": "front-desk", "description": "receptionist and more"}),
+            serde_json::json!({"name": "Receptionist", "slug": "receptionist"}),
+            serde_json::json!({"name": "Receptionist Pro", "slug": "receptionist-pro"}),
+        ];
+        assert_eq!(best_match(&items, "receptionist")["slug"], "receptionist");
+        assert_eq!(best_match(&items, "Receptionist P")["slug"], "receptionist-pro", "prefix wins over rank");
+        assert_eq!(best_match(&items, "office manager")["slug"], "front-desk", "no match falls back to the top result");
+    }
     use super::*;
 
     #[test]

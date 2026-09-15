@@ -21,7 +21,7 @@ const INFO_PERSONA_PREVIEW_BYTES: usize = 500;
 
 /// The registry's actions, the ONE list behind the unknown-action text.
 const REGISTRY_ACTIONS: &str =
-    "list, discover, activate, deactivate, info, create, update, delete, install, reload, repair, setup, stats";
+    "list, activate, deactivate, info, create, update, delete, install, reload, repair, setup, stats";
 
 /// A single active agent — its own bot with isolated persona and scoped capabilities.
 #[derive(Debug, Clone)]
@@ -146,10 +146,6 @@ pub struct PersonaTool {
     code_installer: Arc<std::sync::RwLock<Option<Arc<dyn crate::bot_tool::CodeInstaller>>>>,
 }
 
-/// What the hire card submits once POST /codes has succeeded — the same
-/// answer the plugin install card gives, so both resume the same way.
-const HIRE_CARD_INSTALLED: &str = "installed";
-
 /// A listing NeboAI published: its qualified name lives under the @neboai
 /// namespace. Everything else is a third-party publisher.
 fn is_neboai(it: &serde_json::Value) -> bool {
@@ -163,25 +159,6 @@ fn is_neboai(it: &serde_json::Value) -> bool {
 /// the order the hub ranked them.
 fn prefer_neboai(items: &mut [serde_json::Value]) {
     items.sort_by_key(|it| !is_neboai(it));
-}
-
-/// The listing a query most plausibly names. The marketplace ranks by
-/// relevance, but a query that IS a listing's name must beat one that merely
-/// mentions it: exact name or slug first, then a prefix, then the top result.
-fn best_match<'a>(items: &'a [serde_json::Value], query: &str) -> &'a serde_json::Value {
-    let q = query.trim().to_lowercase();
-    let field = |it: &serde_json::Value, k: &str| {
-        it.get(k).and_then(|x| x.as_str()).unwrap_or("").to_lowercase()
-    };
-    items
-        .iter()
-        .find(|it| !q.is_empty() && (field(it, "name") == q || field(it, "slug") == q))
-        .or_else(|| {
-            items.iter().find(|it| {
-                !q.is_empty() && (field(it, "name").starts_with(&q) || field(it, "slug").starts_with(&q))
-            })
-        })
-        .unwrap_or(&items[0])
 }
 
 impl PersonaTool {
@@ -764,7 +741,7 @@ impl PersonaTool {
             ));
         }
 
-        let top = best_match(&items, query.unwrap_or(""));
+        let top = crate::plugin_tool::best_match(&items, query.unwrap_or(""));
         let name = str_of(top, "name");
         let slug = str_of(top, "slug");
         let desc = str_of(top, "description");
@@ -793,7 +770,7 @@ impl PersonaTool {
                 }]),
             )
             .await;
-        if answer.as_deref() == Some(HIRE_CARD_INSTALLED) {
+        if answer.as_deref() == Some(crate::plugin_tool::INSTALL_CARD_INSTALLED) {
             return ToolResult::ok(format!(
                 "{name} is hired and on the roster. Reach it as an employee (it appears in \
                  agent(resource: \"registry\", action: \"list\")); no setup narration needed."
@@ -2966,10 +2943,9 @@ impl DynTool for PersonaTool {
     }
 
     fn description(&self) -> String {
-        "Manage installed agents — who they are, what workflows they follow, what skills they need — and find new ones on the marketplace.\n\n\
+        "Manage installed agents — who they are, what workflows they follow, what skills they need.\n\n\
          Actions:\n\
          - list: list available agents (installed + user-created)\n\
-         - discover: search the MARKETPLACE for employees to hire (query, department, limit, offset); offers a hire card for the best match\n\
          - activate: activate an agent (injects persona, registers triggers)\n\
          - deactivate: deactivate an agent by name (or all agents if no name given)\n\
          - info: show agent details (workflows, skills, triggers, persona)\n\
@@ -3052,23 +3028,7 @@ impl DynTool for PersonaTool {
                 "action": {
                     "type": "string",
                     "description": "Action to perform",
-                    "enum": ["list", "discover", "activate", "deactivate", "info", "create", "update", "delete", "install", "reload", "repair", "setup", "stats"]
-                },
-                "query": {
-                    "type": "string",
-                    "description": "discover: words to match against marketplace employees (name, description). Omit to page through the whole catalog."
-                },
-                "department": {
-                    "type": "string",
-                    "description": "discover: narrow to one marketplace department slug (e.g. accounting, people-hr, sales). The catalog is organised by department, not industry."
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": "discover: page size (default 20, max 100)"
-                },
-                "offset": {
-                    "type": "integer",
-                    "description": "discover: page offset for browsing the whole catalog"
+                    "enum": ["list", "activate", "deactivate", "info", "create", "update", "delete", "install", "reload", "repair", "setup", "stats"]
                 },
                 "name": {
                     "type": "string",
@@ -3218,23 +3178,17 @@ impl DynTool for PersonaTool {
 
     fn is_concurrent_safe(&self, input: &serde_json::Value) -> bool {
         let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
-        matches!(action, "list" | "info" | "stats" | "discover")
+        matches!(action, "list" | "info" | "stats")
     }
 
     fn execute_dyn<'a>(
         &'a self,
-        ctx: &'a ToolContext,
+        _ctx: &'a ToolContext,
         input: serde_json::Value,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send + 'a>> {
         // One dispatch: the agent tool's registry resource and a direct call
-        // land in the same match with the same texts. `discover` is the one
-        // action that can park on a card, so it needs the context.
-        Box::pin(async move {
-            if input.get("action").and_then(|v| v.as_str()) == Some("discover") {
-                return self.handle_discover(&input, ctx).await;
-            }
-            self.handle_action(&input).await
-        })
+        // land in the same match with the same texts.
+        Box::pin(async move { self.handle_action(&input).await })
     }
 }
 
@@ -3256,20 +3210,6 @@ mod tests {
         prefer_neboai(&mut items);
         let order: Vec<&str> = items.iter().map(|i| i["slug"].as_str().unwrap()).collect();
         assert_eq!(order, vec!["b", "d", "a", "c", "e"]);
-    }
-
-    // "receptionist" must card the Receptionist, not a bundle whose blurb
-    // mentions receptionists and happens to rank first.
-    #[test]
-    fn best_match_prefers_the_listing_the_query_names() {
-        let items = vec![
-            serde_json::json!({"name": "Front Desk Bundle", "slug": "front-desk", "description": "receptionist and more"}),
-            serde_json::json!({"name": "Receptionist", "slug": "receptionist"}),
-            serde_json::json!({"name": "Receptionist Pro", "slug": "receptionist-pro"}),
-        ];
-        assert_eq!(best_match(&items, "receptionist")["slug"], "receptionist");
-        assert_eq!(best_match(&items, "Receptionist P")["slug"], "receptionist-pro", "prefix wins over rank");
-        assert_eq!(best_match(&items, "office manager")["slug"], "front-desk", "no match falls back to the top result");
     }
 
     // An employee hired by asking Nebo used to land in the roster under the
