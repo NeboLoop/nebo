@@ -192,6 +192,7 @@ fn seed_models_from_catalog(store: &db::Store, models_cfg: &config::ModelsConfig
                 provider_name,
                 &model.id,
                 &model.display_name,
+                None,
                 context_window,
                 input_price,
                 output_price,
@@ -220,6 +221,70 @@ fn seed_models_from_catalog(store: &db::Store, models_cfg: &config::ModelsConfig
             );
         }
     }
+}
+
+/// Pull the sellable Janus list into the catalog: nebo-1 (Default) and the
+/// named speeds a picker shows. Janus is the ONE source (GET /v1/models,
+/// entries owned_by "neboai"); a speed Janus stops listing is removed here
+/// too, so a merge upstream disappears everywhere at once. Rows seeded from
+/// models.yaml (the boot floor) are never removed. No account = nothing to do.
+pub async fn sync_janus_models(store: &db::Store, cfg: &Config) -> Result<usize, String> {
+    let Some(token) = crate::codes::neboai_token_from(store) else {
+        return Ok(0);
+    };
+    #[derive(serde::Deserialize)]
+    struct Entry {
+        id: String,
+        owned_by: String,
+        #[serde(default)]
+        name: String,
+        #[serde(default)]
+        description: String,
+    }
+    #[derive(serde::Deserialize)]
+    struct Listing {
+        data: Vec<Entry>,
+    }
+    let url = format!("{}/v1/models", cfg.neboai.janus_url);
+    let resp = reqwest::Client::new()
+        .get(&url)
+        .bearer_auth(&token)
+        .header("X-Bot-ID", config::read_bot_id().unwrap_or_default())
+        .timeout(std::time::Duration::from_secs(5))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("{} from {}", resp.status(), url));
+    }
+    let listing: Listing = resp.json().await.map_err(|e| e.to_string())?;
+    let mut listed: Vec<String> = Vec::new();
+    for m in listing.data.into_iter().filter(|m| m.owned_by == "neboai") {
+        let name = if m.name.is_empty() { m.id.clone() } else { m.name.clone() };
+        store
+            .upsert_provider_model(
+                &format!("janus/{}", m.id),
+                "janus",
+                &m.id,
+                &name,
+                (!m.description.is_empty()).then_some(m.description.as_str()),
+                Some(200_000),
+                None,
+                None,
+                Some(r#"["vision","tools","streaming","code","reasoning"]"#),
+                None,
+                None,
+                true,
+            )
+            .map_err(|e| e.to_string())?;
+        listed.push(m.id);
+    }
+    for row in store.list_provider_models("janus").map_err(|e| e.to_string())? {
+        if row.seeded_version.is_none() && !listed.contains(&row.model_id) {
+            let _ = store.delete_provider_model(&row.id);
+        }
+    }
+    Ok(listed.len())
 }
 
 /// Inject Ollama models from DB into the selector's runtime models.
@@ -913,6 +978,13 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         let boot_models_cfg = config::ModelsConfig::load();
         seed_models_from_catalog(&store, &boot_models_cfg);
         info!("seeded provider_models from embedded catalog (pre-provider-build)");
+    }
+    // The pickable speeds come from Janus. Bounded so an offline boot
+    // still boots; the catalog keeps its last copy until the next sync.
+    match tokio::time::timeout(std::time::Duration::from_secs(4), sync_janus_models(&store, &cfg)).await {
+        Ok(Ok(n)) => info!(models = n, "synced the Janus model list"),
+        Ok(Err(e)) => warn!(error = %e, "Janus model list sync failed; catalog keeps its last copy"),
+        Err(_) => warn!("Janus model list sync timed out; catalog keeps its last copy"),
     }
 
     // Build AI providers from database auth profiles + active CLI providers

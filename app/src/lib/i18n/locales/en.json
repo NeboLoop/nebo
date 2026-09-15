@@ -3002,5 +3002,9 @@
 		"offPlaceholder": "No limit",
 		"offHint": "Off. A run spends what its work costs. Set a dollar amount to stop any single run that passes it — the employee gets one last turn to report what it has, and the run is marked stopped at your limit, not failed. Counts what the model provider reports for each request.",
 		"onHint": "Any single run that passes this amount stops: the employee gets one last turn to report what it has, and the run is marked stopped at your limit. Counts what the model provider reports for each request."
+	},
+	"modelPick": {
+		"title": "Model",
+		"hint": "Which Nebo 1 speed this employee works at. Default lets each task pick the right one; a named speed pins every task to it."
 	}
 }

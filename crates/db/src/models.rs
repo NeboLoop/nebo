@@ -542,6 +542,7 @@ pub struct ProviderModel {
     pub provider: String,
     pub model_id: String,
     pub display_name: String,
+    pub description: Option<String>,
     #[serde(serialize_with = "opt_i64_as_bool")]
     pub is_active: Option<i64>,
     #[serde(serialize_with = "opt_i64_as_bool")]

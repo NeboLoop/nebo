@@ -159,9 +159,12 @@ providers:
       capabilities: [reasoning, code]
       active: false
 
+  # nebo-1 is the boot floor: build_providers needs one active Janus chat
+  # model before the first sync. The pickable speeds (nebo-1-flash, ...)
+  # come from Janus GET /v1/models — sync_janus_models — never from here.
   janus:
     - id: nebo-1
-      displayName: Nebo 1
+      displayName: Default
       contextWindow: 200000
       capabilities: [vision, tools, streaming, code, reasoning]
       active: true

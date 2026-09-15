@@ -127,6 +127,7 @@ impl Store {
         provider: &str,
         model_id: &str,
         display_name: &str,
+        description: Option<&str>,
         context_window: Option<i64>,
         input_price: Option<f64>,
         output_price: Option<f64>,
@@ -138,10 +139,11 @@ impl Store {
         let conn = self.conn()?;
         let active_val: i64 = if default_active { 1 } else { 0 };
         conn.execute(
-            "INSERT INTO provider_models (id, provider, model_id, display_name, is_active, is_default, context_window, input_price, output_price, capabilities, kind, preferred, seeded_version, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?11, 0, ?5, ?6, ?7, ?8, ?9, 0, ?10, unixepoch(), unixepoch())
+            "INSERT INTO provider_models (id, provider, model_id, display_name, description, is_active, is_default, context_window, input_price, output_price, capabilities, kind, preferred, seeded_version, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?12, ?11, 0, ?5, ?6, ?7, ?8, ?9, 0, ?10, unixepoch(), unixepoch())
              ON CONFLICT(provider, model_id) DO UPDATE SET
                  display_name = excluded.display_name,
+                 description = excluded.description,
                  context_window = excluded.context_window,
                  input_price = excluded.input_price,
                  output_price = excluded.output_price,
@@ -149,7 +151,7 @@ impl Store {
                  kind = excluded.kind,
                  seeded_version = excluded.seeded_version,
                  updated_at = unixepoch()",
-            params![id, provider, model_id, display_name, context_window, input_price, output_price, capabilities, kind, seeded_version, active_val],
+            params![id, provider, model_id, display_name, context_window, input_price, output_price, capabilities, kind, seeded_version, active_val, description],
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;
         Ok(())
@@ -245,6 +247,7 @@ fn row_to_provider_model(row: &rusqlite::Row) -> rusqlite::Result<ProviderModel>
         provider: row.get("provider")?,
         model_id: row.get("model_id")?,
         display_name: row.get("display_name")?,
+        description: row.get("description")?,
         is_active: row.get("is_active")?,
         is_default: row.get("is_default")?,
         context_window: row.get("context_window")?,

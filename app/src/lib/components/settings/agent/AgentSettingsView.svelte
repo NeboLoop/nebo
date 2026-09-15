@@ -19,6 +19,7 @@
   import LearningControls from '$lib/components/settings/LearningControls.svelte';
   import IsolationControls from '$lib/components/settings/IsolationControls.svelte';
   import RunLimitControls from '$lib/components/settings/RunLimitControls.svelte';
+  import ModelControls from '$lib/components/settings/ModelControls.svelte';
   import type { AgentInputField } from '$lib/types/agentPage';
   import { installFlow } from '$lib/stores/installFlow';
 
@@ -30,7 +31,6 @@
   const config = $derived(ctx.config);
   const workflowEntries = $derived(ctx.workflowEntries);
   const workflowStats = $derived(ctx.workflowStats);
-  const devMode = $derived(ctx.devMode);
 
   // Which section to show is passed in — this view is mounted by the settings
   // modal, not by a route, so it must not read the URL itself.
@@ -965,12 +965,7 @@
 
       <RunLimitControls {agentId} />
 
-      {#if devMode}
-        <div>
-          <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1.5">{$t('agentSettings.model')}</div>
-          <div class="text-sm font-mono">{config.model}</div>
-        </div>
-      {/if}
+      <ModelControls {agentId} />
 
       <div>
         <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-1.5">{$t('settingsSkills.title')}</div>

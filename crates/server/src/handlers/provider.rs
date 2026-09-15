@@ -498,6 +498,10 @@ async fn test_provider_connection(provider: &dyn ai::Provider) -> Result<String,
 
 /// GET /api/v1/models — returns model catalog from DB + routing config from YAML.
 pub async fn list_models(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
+    // Opening the list is the moment it has to be current: pull from Janus first.
+    if let Err(e) = crate::sync_janus_models(&state.store, &state.config).await {
+        warn!(error = %e, "Janus model list sync failed; showing the last copy");
+    }
     // Read models from the database (source of truth for model availability)
     let all_models = state
         .store
@@ -523,6 +527,7 @@ pub async fn list_models(State(state): State<AppState>) -> HandlerResult<serde_j
         let mut info = serde_json::json!({
             "id": m.model_id,
             "displayName": m.display_name,
+            "description": m.description,
             "contextWindow": m.context_window.unwrap_or(0),
             "capabilities": capabilities,
             "kind": kind,
@@ -937,6 +942,7 @@ pub async fn local_models_status(
                 "ollama",
                 name,
                 &display,
+                None,
                 Some(128_000), // sensible default
                 None,
                 None,
