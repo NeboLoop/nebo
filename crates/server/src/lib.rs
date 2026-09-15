@@ -287,13 +287,15 @@ pub async fn sync_janus_models(store: &db::Store, cfg: &Config) -> Result<usize,
     Ok(listed.len())
 }
 
-/// Inject Ollama models from DB into the selector's runtime models.
-/// Ollama models are auto-discovered and stored in the DB, not in models.yaml,
-/// so the selector needs them injected separately.
-pub fn inject_ollama_models(store: &db::Store, selector: &agent::ModelSelector) {
-    if let Ok(ollama_models) = store.list_active_provider_models("ollama") {
-        if !ollama_models.is_empty() {
-            let infos: Vec<agent::selector::ModelInfo> = ollama_models
+/// Inject a provider's DB-held models into the selector's runtime models.
+/// Ollama's are auto-discovered and the Janus speeds are synced — neither is
+/// in models.yaml, so the selector (and its fuzzy matcher, which would
+/// otherwise map an unknown "janus/nebo-1-pro" to the nearest known name)
+/// needs them injected separately.
+pub fn inject_db_models(store: &db::Store, selector: &agent::ModelSelector, provider: &str) {
+    if let Ok(db_models) = store.list_active_provider_models(provider) {
+        if !db_models.is_empty() {
+            let infos: Vec<agent::selector::ModelInfo> = db_models
                 .iter()
                 .map(|m| agent::selector::ModelInfo {
                     id: m.model_id.clone(),
@@ -316,7 +318,7 @@ pub fn inject_ollama_models(store: &db::Store, selector: &agent::ModelSelector) 
                     active: true,
                 })
                 .collect();
-            selector.inject_provider_models("ollama", infos);
+            selector.inject_provider_models(provider, infos);
         }
     }
 }
@@ -1627,8 +1629,9 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     );
     let selector = agent::ModelSelector::new(routing_config);
 
-    // Inject Ollama models from DB (they're auto-discovered, not in the yaml)
-    inject_ollama_models(&store, &selector);
+    // Inject the DB-held models (Ollama auto-discovery, the Janus speed sync)
+    inject_db_models(&store, &selector, "ollama");
+    inject_db_models(&store, &selector, "janus");
 
     // Set loaded providers and rebuild fuzzy with user aliases
     selector.set_loaded_providers(active_provider_ids);

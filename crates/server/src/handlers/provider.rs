@@ -210,8 +210,9 @@ pub(crate) async fn reload_providers(state: &AppState) {
     info!(count = providers.len(), "reloading providers");
     state.runner.reload_providers(providers).await;
 
-    // Refresh Ollama models in the selector (they're DB-discovered, not in yaml)
-    crate::inject_ollama_models(&state.store, state.runner.selector());
+    // Refresh the DB-held models in the selector (they're not in yaml)
+    crate::inject_db_models(&state.store, state.runner.selector(), "ollama");
+    crate::inject_db_models(&state.store, state.runner.selector(), "janus");
 }
 
 /// GET /api/v1/providers
@@ -549,6 +550,12 @@ pub async fn list_models(State(state): State<AppState>) -> HandlerResult<serde_j
     // Routing config comes from the YAML catalog (not per-model data).
     // Load fresh from disk so toggling CLI providers / models is reflected immediately.
     let cfg = config::ModelsConfig::load();
+    // The synced speeds must be known to the selector, or a pin like
+    // "janus/nebo-1-pro" fuzzy-matches to the nearest name it does know.
+    crate::inject_db_models(&state.store, state.runner.selector(), "janus");
+    let user_aliases: std::collections::HashMap<String, String> =
+        cfg.aliases.iter().map(|a| (a.alias.clone(), a.model_id.clone())).collect();
+    state.runner.selector().rebuild_fuzzy(&user_aliases);
 
     // Task routing
     let task_routing = cfg.task_routing.as_ref().map(|tr| {
