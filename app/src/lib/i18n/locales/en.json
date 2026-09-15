@@ -280,6 +280,8 @@
 		"install": "Install",
 		"installing": "Installing…",
 		"installFailed": "Install failed — try again.",
+		"hire": "Hire",
+		"hiring": "Hiring…",
 		"botComputer": "Computer",
 		"closeComputer": "Close the computer",
 		"fullView": "Full view",

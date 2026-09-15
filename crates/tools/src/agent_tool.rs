@@ -21,7 +21,7 @@ const INFO_PERSONA_PREVIEW_BYTES: usize = 500;
 
 /// The registry's actions, the ONE list behind the unknown-action text.
 const REGISTRY_ACTIONS: &str =
-    "list, activate, deactivate, info, create, update, delete, install, reload, repair, setup, stats";
+    "list, discover, activate, deactivate, info, create, update, delete, install, reload, repair, setup, stats";
 
 /// A single active agent — its own bot with isolated persona and scoped capabilities.
 #[derive(Debug, Clone)]
@@ -144,6 +144,29 @@ pub struct PersonaTool {
     agent_loader: Arc<napp::AgentLoader>,
     /// Shared cell holding the canonical code installer (filled late by the server).
     code_installer: Arc<std::sync::RwLock<Option<Arc<dyn crate::bot_tool::CodeInstaller>>>>,
+}
+
+/// What the hire card submits once POST /codes has succeeded — the same
+/// answer the plugin install card gives, so both resume the same way.
+const HIRE_CARD_INSTALLED: &str = "installed";
+
+/// The listing a query most plausibly names. The marketplace ranks by
+/// relevance, but a query that IS a listing's name must beat one that merely
+/// mentions it: exact name or slug first, then a prefix, then the top result.
+fn best_match<'a>(items: &'a [serde_json::Value], query: &str) -> &'a serde_json::Value {
+    let q = query.trim().to_lowercase();
+    let field = |it: &serde_json::Value, k: &str| {
+        it.get(k).and_then(|x| x.as_str()).unwrap_or("").to_lowercase()
+    };
+    items
+        .iter()
+        .find(|it| !q.is_empty() && (field(it, "name") == q || field(it, "slug") == q))
+        .or_else(|| {
+            items.iter().find(|it| {
+                !q.is_empty() && (field(it, "name").starts_with(&q) || field(it, "slug").starts_with(&q))
+            })
+        })
+        .unwrap_or(&items[0])
 }
 
 impl PersonaTool {
@@ -635,6 +658,132 @@ impl PersonaTool {
                 }
 
                 info
+    }
+
+    /// Browse the marketplace's employees — the same hub view the marketplace
+    /// page shows, with the same "already hired" answer — and, in an
+    /// interactive chat, park on a hire card for the best match. The card's
+    /// button redeems the listing's code through POST /codes, the one install
+    /// pathway, and "installed" resumes this call. Nothing here installs.
+    async fn handle_discover(&self, input: &serde_json::Value, ctx: &ToolContext) -> ToolResult {
+        // An unreachable marketplace is an error the model can say out loud,
+        // never an empty list that reads as "there are none".
+        let api = match crate::build_neboai_api(&self.store) {
+            Ok(a) => a,
+            Err(e) => return ToolResult::error(format!("marketplace unavailable: {}", e)),
+        };
+        let query = input["query"].as_str().map(str::trim).filter(|q| !q.is_empty());
+        let department = input["department"].as_str().map(str::trim).filter(|d| !d.is_empty());
+        let limit = input["limit"].as_i64().unwrap_or(20).clamp(1, 100);
+        let offset = input["offset"].as_i64().unwrap_or(0).max(0);
+
+        let mut resp = match api
+            .browse_marketplace(Some("employees"), department, None, query, Some(limit), Some(offset))
+            .await
+        {
+            Ok(v) => v,
+            Err(e) => return ToolResult::error(format!("marketplace search failed: {}", e)),
+        };
+        crate::installed::enrich_installed_state(&mut resp, &self.store);
+        let total = resp.get("total").and_then(|t| t.as_i64()).unwrap_or(0);
+        let items: Vec<serde_json::Value> = resp
+            .get("products")
+            .and_then(|p| p.as_array())
+            .cloned()
+            .unwrap_or_default();
+
+        if items.is_empty() {
+            let scope = match (query, department) {
+                (Some(q), Some(d)) => format!(" for \"{q}\" in {d}"),
+                (Some(q), None) => format!(" for \"{q}\""),
+                (None, Some(d)) => format!(" in {d}"),
+                (None, None) => String::new(),
+            };
+            return ToolResult::ok(format!(
+                "No marketplace employees{scope}. The catalog is organised by department; try \
+                 another department or broader words. Do not invent a listing."
+            ));
+        }
+
+        let str_of = |it: &serde_json::Value, k: &str| it.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
+        let mut lines = Vec::with_capacity(items.len());
+        for it in &items {
+            let hired = it.get("installed").and_then(|x| x.as_bool()).unwrap_or(false);
+            let depts = it
+                .get("departments")
+                .and_then(|d| d.as_array())
+                .map(|a| a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", "))
+                .unwrap_or_default();
+            lines.push(format!(
+                "- {}{} ({}){} — {}",
+                str_of(it, "name"),
+                if hired { " [already hired]" } else { "" },
+                str_of(it, "slug"),
+                if depts.is_empty() { String::new() } else { format!(" [{depts}]") },
+                str_of(it, "description"),
+            ));
+        }
+        let shown = items.len();
+        let listing = format!(
+            "{} marketplace employee(s){}:\n{}",
+            total,
+            if total > shown as i64 { format!(" (showing {shown}; page with offset)") } else { String::new() },
+            lines.join("\n")
+        );
+
+        let interactive = crate::origin::ExecutionMode::from(ctx.origin)
+            == crate::origin::ExecutionMode::Interactive
+            && ctx.ask_channels.is_some();
+        if !interactive || query.is_none() {
+            // Browsing, or no chat to park in: the list is the answer. Codes
+            // are machine currency and never appear in model-visible text —
+            // to hire one, call discover again with its exact name.
+            return ToolResult::ok(format!(
+                "{listing}\n\nTo hire one, call discover again with its exact name and the hire \
+                 card will appear. Never paste install codes into chat."
+            ));
+        }
+
+        let top = best_match(&items, query.unwrap_or(""));
+        let name = str_of(top, "name");
+        let slug = str_of(top, "slug");
+        let desc = str_of(top, "description");
+        let code = str_of(top, "code");
+        if top.get("installed").and_then(|x| x.as_bool()).unwrap_or(false) {
+            return ToolResult::ok(format!(
+                "{listing}\n\n{name} is already hired — it is in the registry. Use \
+                 agent(resource: \"registry\", action: \"info\", name: \"{slug}\") to see it."
+            ));
+        }
+        if code.is_empty() {
+            return ToolResult::ok(format!(
+                "{listing}\n\nAsk the user which one they want, then call discover again with \
+                 its exact name to offer the hire card."
+            ));
+        }
+        let answer = ctx
+            .ask_user(
+                &format!("**{name}** can do this. Hire them on the card and I'll pick up right where I left off."),
+                serde_json::json!([{
+                    "type": "hire_employee",
+                    "code": code,
+                    "name": name,
+                    "plugin": slug,
+                    "description": desc,
+                }]),
+            )
+            .await;
+        if answer.as_deref() == Some(HIRE_CARD_INSTALLED) {
+            return ToolResult::ok(format!(
+                "{name} is hired and on the roster. Reach it as an employee (it appears in \
+                 agent(resource: \"registry\", action: \"list\")); no setup narration needed."
+            ));
+        }
+        ToolResult::ok(format!(
+            "{listing}\n\nThe user declined the hire card for {name}. Discuss alternatives or \
+             answer questions — do NOT paste install codes into chat; if they change their mind, \
+             call discover again to re-offer the card."
+        ))
     }
 
     /// The name a person reads in the Employees list.
@@ -2773,8 +2922,9 @@ fn install_code_shape_error(code: &str) -> Option<String> {
     Some(format!(
         "'{code}' is not an install code. Codes are issued by the marketplace and look like \
          PREFIX-XXXX-XXXX (four letters, then two groups of four); they are never built from a \
-         name. To install something, find it with plugin(action: \"discover\") or the \
-         marketplace and use the code it returns. An employee that is already in the registry \
+         name. To hire an employee, find it with agent(resource: \"registry\", action: \
+         \"discover\"); for a tool, plugin(action: \"discover\") — each offers the card that \
+         installs it. An employee that is already in the registry \
          (agent(resource: \"registry\", action: \"list\")) needs no install: use info, \
          update or reload on it."
     ))
@@ -2881,7 +3031,23 @@ impl DynTool for PersonaTool {
                 "action": {
                     "type": "string",
                     "description": "Action to perform",
-                    "enum": ["list", "activate", "deactivate", "info", "create", "update", "delete", "install", "reload", "repair", "setup", "stats"]
+                    "enum": ["list", "discover", "activate", "deactivate", "info", "create", "update", "delete", "install", "reload", "repair", "setup", "stats"]
+                },
+                "query": {
+                    "type": "string",
+                    "description": "discover: words to match against marketplace employees (name, description). Omit to page through the whole catalog."
+                },
+                "department": {
+                    "type": "string",
+                    "description": "discover: narrow to one marketplace department slug (e.g. accounting, people-hr, sales). The catalog is organised by department, not industry."
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "discover: page size (default 20, max 100)"
+                },
+                "offset": {
+                    "type": "integer",
+                    "description": "discover: page offset for browsing the whole catalog"
                 },
                 "name": {
                     "type": "string",
@@ -3031,22 +3197,42 @@ impl DynTool for PersonaTool {
 
     fn is_concurrent_safe(&self, input: &serde_json::Value) -> bool {
         let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
-        matches!(action, "list" | "info" | "stats")
+        matches!(action, "list" | "info" | "stats" | "discover")
     }
 
     fn execute_dyn<'a>(
         &'a self,
-        _ctx: &'a ToolContext,
+        ctx: &'a ToolContext,
         input: serde_json::Value,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send + 'a>> {
         // One dispatch: the agent tool's registry resource and a direct call
-        // land in the same match with the same texts.
-        Box::pin(async move { self.handle_action(&input).await })
+        // land in the same match with the same texts. `discover` is the one
+        // action that can park on a card, so it needs the context.
+        Box::pin(async move {
+            if input.get("action").and_then(|v| v.as_str()) == Some("discover") {
+                return self.handle_discover(&input, ctx).await;
+            }
+            self.handle_action(&input).await
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
+
+    // "receptionist" must card the Receptionist, not a bundle whose blurb
+    // mentions receptionists and happens to rank first.
+    #[test]
+    fn best_match_prefers_the_listing_the_query_names() {
+        let items = vec![
+            serde_json::json!({"name": "Front Desk Bundle", "slug": "front-desk", "description": "receptionist and more"}),
+            serde_json::json!({"name": "Receptionist", "slug": "receptionist"}),
+            serde_json::json!({"name": "Receptionist Pro", "slug": "receptionist-pro"}),
+        ];
+        assert_eq!(best_match(&items, "receptionist")["slug"], "receptionist");
+        assert_eq!(best_match(&items, "Receptionist P")["slug"], "receptionist-pro", "prefix wins over rank");
+        assert_eq!(best_match(&items, "office manager")["slug"], "front-desk", "no match falls back to the top result");
+    }
 
     // An employee hired by asking Nebo used to land in the roster under the
     // identifier the model passed, so "receptionist" sat next to

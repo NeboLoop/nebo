@@ -7,7 +7,7 @@
 
 	export interface AskWidgetDef {
 		/** 'options' is canonical; legacy single-choice shapes still render. */
-		type: 'options' | 'buttons' | 'confirm' | 'select' | 'radio' | 'checkbox' | 'connect_account' | 'install_plugin';
+		type: 'options' | 'buttons' | 'confirm' | 'select' | 'radio' | 'checkbox' | 'connect_account' | 'install_plugin' | 'hire_employee';
 		label?: string;
 		options?: AskOption[];
 		multiSelect?: boolean;
@@ -16,7 +16,8 @@
 		 *  install_plugin: same `plugin` slug, plus the marketplace install code. */
 		plugin?: string;
 		agentId?: string;
-		/** install_plugin: PLUG-XXXX-XXXX code redeemed via the canonical POST /codes path. */
+		/** install_plugin / hire_employee: the marketplace code (PLUG-… or AGNT-…) redeemed via
+		 *  the canonical POST /codes path — the same button, the same resume, a different verb. */
 		code?: string;
 		name?: string;
 		description?: string;
@@ -53,6 +54,7 @@
 
 	import Plug from 'lucide-svelte/icons/plug';
 	import Check from 'lucide-svelte/icons/check';
+	import UserPlus from 'lucide-svelte/icons/user-plus';
 	import Download from 'lucide-svelte/icons/download';
 	import { getWebSocketClient } from '$lib/websocket/client';
 	import { authLoginAccount, submitCode } from '$lib/api/nebo';
@@ -185,10 +187,11 @@
 		<div class="badge badge-ghost badge-sm">{$t('common.cancelled')}</div>
 	{:else if disabled}
 		<div class="badge badge-ghost badge-sm">{$t('common.skipped')}</div>
-	{:else if widget?.type === 'install_plugin'}
+	{:else if widget?.type === 'install_plugin' || widget?.type === 'hire_employee'}
+		{@const hiring = widget.type === 'hire_employee'}
 		<div class="flex items-center gap-3 rounded-lg border border-base-300 bg-base-100 px-3 py-2.5">
 			<div class="rounded-md bg-base-200 p-2">
-				{#if installDone}<Check class="w-5 h-5 text-success" />{:else}<Download class="w-5 h-5" />{/if}
+				{#if installDone}<Check class="w-5 h-5 text-success" />{:else if hiring}<UserPlus class="w-5 h-5" />{:else}<Download class="w-5 h-5" />{/if}
 			</div>
 			<div class="flex-1 min-w-0">
 				<div class="text-sm font-medium truncate">{widget.name ?? widget.plugin}</div>
@@ -205,7 +208,7 @@
 				onclick={() => widget && startInstall(widget)}
 			>
 				{#if installing}<span class="loading loading-spinner loading-xs"></span>{/if}
-				{installing ? $t('chat.installing') : $t('chat.install')}
+				{#if hiring}{installing ? $t('chat.hiring') : $t('chat.hire')}{:else}{installing ? $t('chat.installing') : $t('chat.install')}{/if}
 			</button>
 		</div>
 		<div class="mt-2 flex">

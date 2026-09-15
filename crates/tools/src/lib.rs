@@ -8,6 +8,7 @@ pub mod capabilities;
 pub mod checkpoint;
 pub mod diagnostics_feed;
 pub mod humanize;
+pub mod installed;
 pub mod channel_bridge;
 pub mod code_tool;
 pub mod coworker;
