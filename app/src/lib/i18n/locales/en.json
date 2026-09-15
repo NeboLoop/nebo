@@ -1957,6 +1957,7 @@
 		"browseMarketplace": "Browse the marketplace",
 		"skillCount": "{count} skills",
 		"openApp": "Open App",
+		"frontDeskUndeletable": "Nebo is your front desk — it receives anything not addressed to a specific employee, so it can't be deleted. Rename it in Settings, or hire someone to run the desk.",
 		"activate": "Activate",
 		"newChat": "New chat",
 		"copyAgentId": "Copy Agent ID",

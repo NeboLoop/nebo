@@ -1209,6 +1209,21 @@ pub async fn delete_agent(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> HandlerResult<serde_json::Value> {
+    // The primary is this install's identity on the hub: the gateway's
+    // `bot_<id8>` presence maps to the local "assistant", and anything not
+    // addressed to a specific employee is delivered to it. It is also compiled
+    // into the binary and reloaded at boot. Deleting it used to run the whole
+    // sequence below — chats, sessions and memories gone — and then the reload
+    // put a blank one back. Refuse before touching anything.
+    if id == "assistant" {
+        return Err(to_error_response(types::NeboError::Validation(
+            "Nebo is this computer's front desk on the switchboard: it receives anything not \
+             addressed to a specific employee, so it can't be deleted. Rename it in Settings, \
+             or hire someone to run the desk."
+                .to_string(),
+        )));
+    }
+
     let db_agent = state.store.get_agent(&id).map_err(to_error_response)?;
 
     // Fall back to the filesystem loader for agents that exist on disk but were
