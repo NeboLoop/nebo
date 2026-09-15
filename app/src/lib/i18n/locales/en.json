@@ -878,6 +878,7 @@
 		"authRequired": "Auth required",
 		"authFailed": "Auth failed",
 		"noAuthNeeded": "No auth needed",
+		"perEmployeeAccounts": "Connected per employee",
 		"removeTitle": "Remove Plugin",
 		"removeConfirm": "Remove {name}? Skills that depend on this plugin will stop working.",
 		"pageDescription": "Manage installed plugins and their connections.",

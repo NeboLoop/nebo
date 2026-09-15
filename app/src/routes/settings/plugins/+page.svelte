@@ -362,6 +362,11 @@
                 <span class="px-2 py-0.5 rounded text-xs font-medium bg-success/10 text-success">{$t('settingsPlugins.keySet')}</span>
               {/if}
               <button class="px-3 py-1 rounded-md border border-primary/30 text-xs text-primary font-medium cursor-pointer bg-transparent hover:bg-primary/5 transition-colors" onclick={() => openPluginDetail(plugin)}>{plugin.authKeysSet ? $t('settingsPlugins.updateKeys') : $t('settingsPlugins.setApiKeys')}</button>
+            {:else if plugin.hasAuth && plugin.multiAccount}
+              <!-- A multi-account plugin holds one account per employee, so there is
+                   no workspace-wide key to set here. Saying "no auth needed" was
+                   read as "this works already" (live 2026-09-15, Shopify 0.3.0). -->
+              <span class="text-xs text-base-content/40">{$t('settingsPlugins.perEmployeeAccounts')}</span>
             {:else}
               <span class="text-xs text-base-content/40">{$t('settingsPlugins.noAuthNeeded')}</span>
             {/if}
