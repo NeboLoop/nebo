@@ -680,7 +680,7 @@ impl PersonaTool {
     /// interactive chat, park on a hire card for the best match. The card's
     /// button redeems the listing's code through POST /codes, the one install
     /// pathway, and "installed" resumes this call. Nothing here installs.
-    async fn handle_discover(&self, input: &serde_json::Value, ctx: &ToolContext) -> ToolResult {
+    pub(crate) async fn handle_discover(&self, input: &serde_json::Value, ctx: &ToolContext) -> ToolResult {
         // An unreachable marketplace is an error the model can say out loud,
         // never an empty list that reads as "there are none".
         let api = match crate::build_neboai_api(&self.store) {
@@ -2967,14 +2967,6 @@ impl DynTool for PersonaTool {
 
     fn description(&self) -> String {
         "Manage installed agents — who they are, what workflows they follow, what skills they need — and find new ones on the marketplace.\n\n\
-         STAFFING A BUSINESS: when the user wants to set up a business, add people, or asks who could do a job, \
-         look for EMPLOYEES first — agent(resource: \"registry\", action: \"discover\", department, query) — \
-         not tools. Tools (plugin discover) are what employees use; an employee is the hire. Search by \
-         department (accounting, sales, customer-support, marketing, operations, people-hr, legal, it, \
-         analytics, direct-response, product-engineering, executive, corporate). Results list NeboAI's own \
-         employees first; prefer those. To hire one, call discover again with its exact name and the hire \
-         card appears — never paste install codes into chat. For a whole business, the staff-a-business \
-         skill runs the short interview and proposes a roster.\n\n\
          Actions:\n\
          - list: list available agents (installed + user-created)\n\
          - discover: search the MARKETPLACE for employees to hire (query, department, limit, offset); offers a hire card for the best match\n\

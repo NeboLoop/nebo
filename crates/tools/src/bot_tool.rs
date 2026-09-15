@@ -395,6 +395,8 @@ impl AgentTool {
             "history" | "query" => "session",
             "reset" | "compact" | "summary" => "context",
             "deliberate" => "advisors",
+            // Hiring is registry work: the marketplace search for employees.
+            "discover" => "registry",
             "prompt" | "confirm" | "select" => "ask",
             "activate" | "deactivate" | "info" | "install" | "setup" | "reload" | "repair"
             | "stats" => "registry",
@@ -2409,7 +2411,15 @@ impl DynTool for AgentTool {
          GUARDRAILS: When storing memory, use the exact phrasing the user used. Do not paraphrase.\n\n\
          Coworkers: work for a NAMED employee is a MESSAGE, never a task spawn — message(resource: \"coworker\", action: \"send\", to: \"receptionist\", text: \"...\"). \
          Task spawns are anonymous extra hands for YOUR OWN work (type + skills); never pass an employee's name to one.\n\n\
-         Registry (installed agent management):\n\
+         Registry (employees — the ones installed here, and the ones you can hire):\n\
+         - agent(resource: \"registry\", action: \"discover\", query: \"bookkeeper\") — SEARCH THE MARKETPLACE for employees to hire. \
+         Also takes department, limit, offset. Omit query to page the whole catalog.\n\
+         STAFFING: when the user wants to set up a business, add people, or asks who could do a job, search EMPLOYEES with \
+         discover before reaching for tools — a tool is what an employee uses, the employee is the hire. Departments: \
+         accounting, sales, customer-support, marketing, direct-response, operations, people-hr, legal, it, analytics, \
+         product-engineering, executive, corporate. Results put NeboAI's own employees first (tagged [NeboAI]) — prefer them. \
+         Calling discover with an employee's exact name offers the hire card; never paste install codes into chat. \
+         NEVER say the marketplace has nothing until discover itself says so.\n\
          - agent(resource: \"registry\", action: \"list\") — List installed agents\n\
          - agent(resource: \"registry\", action: \"activate\", name: \"...\") — Activate an agent\n\
          - agent(resource: \"registry\", action: \"info\", name: \"...\") — Show agent details\n\
@@ -2437,6 +2447,8 @@ impl DynTool for AgentTool {
                 "namespace": { "type": "string", "description": "Memory namespace (e.g. tacit/general, entity/people)" },
                 "query": { "type": "string", "description": "Search query (memory search; session query, where a query with no text is that session's history)" },
                 "limit": { "type": "integer", "description": "Max results" },
+                "department": { "type": "string", "description": "registry discover: narrow the marketplace search to one department (accounting, sales, customer-support, marketing, direct-response, operations, people-hr, legal, it, analytics, product-engineering, executive, corporate)" },
+                "offset": { "type": "integer", "description": "registry discover: page offset when browsing the whole catalog" },
                 "subject": { "type": "string", "description": "Task subject" },
                 "status": { "type": "string", "enum": TASK_UPDATE_STATUSES, "description": "Task status for update. There is no failed: finished work with a bad outcome is completed with the failure in output; unfinished work stays in_progress with a follow-up task." },
                 "output": { "type": "string", "description": "Task update: what the task produced, or what failed and why (kept with the task; shown by get)" },
@@ -2518,7 +2530,7 @@ impl DynTool for AgentTool {
             "session" => matches!(action, "list" | "status" | "history" | "query"),
             "context" => matches!(action, "summary"),
             "profile" => matches!(action, "get"),
-            "registry" => matches!(action, "list" | "info" | "stats"),
+            "registry" => matches!(action, "list" | "info" | "stats" | "discover"),
             _ => false,
         }
     }
@@ -2574,7 +2586,13 @@ impl DynTool for AgentTool {
                 "profile" => self.handle_profile(&input, ctx).await,
                 "registry" => {
                     if let Some(ref persona) = self.persona {
-                        persona.handle_action(&input).await
+                        // discover is the one registry action that can park on a
+                        // hire card, so it needs the context; the rest do not.
+                        if input.get("action").and_then(|v| v.as_str()) == Some("discover") {
+                            persona.handle_discover(&input, ctx).await
+                        } else {
+                            persona.handle_action(&input).await
+                        }
                     } else {
                         ToolResult::error("Agent registry not configured")
                     }
@@ -2661,6 +2679,25 @@ fn employee_named_in_prompt(prompt: &str, names: &[String]) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+
+    // The tool the model calls is `agent` (this one). PersonaTool registers as
+    // `agents` and is not in the model's list, so hiring guidance written there
+    // is never read — that is exactly what happened on 2026-09-14: discover
+    // existed, compiled, passed its tests, and the model kept saying the
+    // marketplace was empty. The description the model sees must carry it.
+    #[test]
+    fn the_agent_tool_the_model_sees_advertises_hiring() {
+        let path = std::env::temp_dir().join(format!("nebo-hire-desc-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let store = Arc::new(db::Store::new(&path.to_string_lossy()).unwrap());
+        let tool = AgentTool::new(store, crate::orchestrator::new_handle());
+        let d = tool.description();
+        assert!(d.contains("action: \"discover\""), "discover is not advertised on the agent tool");
+        assert!(d.contains("STAFFING"), "no staffing guidance on the agent tool");
+        assert!(d.contains("[NeboAI]"), "does not say NeboAI's own employees come first");
+        assert!(d.contains("before reaching for tools"), "does not say employees before tools");
+        let _ = std::fs::remove_file(&path);
+    }
     use super::*;
 
     #[test]
@@ -2734,6 +2771,11 @@ mod tests {
             ("delegate", json!({"name": "chief-of-staff", "prompt": "x"}), ""),
             ("search", json!({"query": "q"}), "memory"),
             ("info", json!({"name": "x"}), "registry"),
+            // Hiring is registry work. This tool — `agent` — is the one the
+            // model actually calls; PersonaTool registers as `agents` and is
+            // not in its list, so a discover routed only there is unreachable.
+            ("discover", json!({"query": "bookkeeper"}), "registry"),
+            ("discover", json!({"department": "accounting"}), "registry"),
             ("cancel", json!({"task_id": "abc123"}), "task"),
         ];
         for (action, input, want) in cases {
