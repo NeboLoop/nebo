@@ -2,7 +2,7 @@ id: skill-plugin-choreography
 name: "Skill to Plugin — capability discovery"
 description: |
   The user asks for a capability that has no native tool. The model must
-  use skill discovery (catalog/discover) or tool_search to find relevant
+  use skill discovery (skill discover/list) or tool_search to find relevant
   capabilities — NOT hallucinate a tool that doesn't exist.
 target_component: plugin
 

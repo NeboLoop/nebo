@@ -23,7 +23,7 @@ tool_config:
 prompt_assertions:
   first_call:
     - id: uses-discovery-first
-      text: "Model's first call is tool_search, skill(action: 'discover'), or skill(action: 'catalog') — a capability lookup, not a browser action"
+      text: "Model's first call is tool_search, skill(action: 'discover'), or skill(action: 'list') — a capability lookup, not a browser action"
       severity: critical
   recovery:
     - id: recognizes-no-capability

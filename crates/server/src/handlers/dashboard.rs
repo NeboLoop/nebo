@@ -298,7 +298,8 @@ fn run_detail(outcome: &str, r: &db::models::WorkflowRun) -> String {
 fn owner_wording(raw: &str) -> String {
     let line = first_line(raw);
     let line = line.trim();
-    if line.starts_with("activity run exceeded token budget") {
+    // "activity run exceeded…" (older) and "activity <id> exceeded…" (engine)
+    if line.starts_with("activity ") && line.contains("exceeded token budget") {
         return "Ran out of room and stopped".to_string();
     }
     // "Step 2/8 evaluator: No meetings ..." -> "No meetings ..."
@@ -409,6 +410,7 @@ mod tests {
     fn exit_reasons_read_as_the_owner_would_say_them() {
         assert_eq!(owner_wording("Step 1/8 evaluator: No meetings with external guests in the next 24 hours"), "No meetings with external guests in the next 24 hours");
         assert_eq!(owner_wording("activity run exceeded token budget (4772/4096)"), "Ran out of room and stopped");
+        assert_eq!(owner_wording("activity store-snapshot exceeded token budget (4042/4000)"), "Ran out of room and stopped");
         assert_eq!(owner_wording("connection refused\nsecond line"), "connection refused");
         assert_eq!(owner_wording(""), "");
         let skipped = db::models::WorkflowRun { error: Some("Step 2/8 evaluator: No meetings found.".into()), ..sample_run("exited") };

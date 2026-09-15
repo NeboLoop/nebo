@@ -38,7 +38,7 @@ appears on first use — do not front-load tool installs.
 
 ## The interview — three questions, at most
 
-Ask with `bot(action: "ask")`, one at a time, and stop as soon as you know
+Ask with `agent(action: "ask")`, one at a time, and stop as soon as you know
 enough. Typical:
 
 1. **What does the business do, in a sentence?** (If they already said it, do
@@ -77,7 +77,7 @@ already have it.
 ## Propose, then hire
 
 Present the roster as a short table — employee, what it takes off their plate —
-three to six rows, no more. Then `bot(action: "ask")` with a `confirm`: "Hire
+three to six rows, no more. Then `agent(action: "ask")` with a `confirm`: "Hire
 these?" (Let them drop rows.)
 
 On yes: for each employee in turn, call

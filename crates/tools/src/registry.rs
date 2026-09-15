@@ -1541,7 +1541,7 @@ fn tool_correction(name: &str) -> String {
             "INSTEAD USE: plugin(resource: \"gws\", command: \"gmail +triage --max 5\") — use the plugin tool with the plugin slug as resource".to_string()
         }
         "napp" | "install" | "package" => {
-            "INSTEAD USE: skill(action: \"catalog\") to see available skills, skill(action: \"install\", code: \"SKIL-XXXX-XXXX\") to install".to_string()
+            "INSTEAD USE: skill(action: \"list\") to see available skills, skill(action: \"install\", code: \"SKIL-XXXX-XXXX\") to install".to_string()
         }
         "workflow" | "automation" | "work_flow" => {
             "INSTEAD USE: work(action: \"list\") to see workflows, work(resource: \"name\", action: \"run\") to run".to_string()

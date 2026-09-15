@@ -120,8 +120,14 @@
         const r = await resolveLearning(ref.id, { approved });
         status = (r as { status?: string }).status ?? status;
       } else if (approved) {
-        // Same apply pathway Settings → Updates uses.
-        await applyUpdate(ref.id);
+        // Same apply pathway Settings → Updates uses. "not found" means the
+        // update is no longer pending — applied from Settings, or superseded
+        // by a newer version — which is the same settled state.
+        try {
+          await applyUpdate(ref.id);
+        } catch (e) {
+          if (!/not found/i.test(e instanceof Error ? e.message : String(e))) throw e;
+        }
         status = 'applied';
       } else {
         // "Later" — drop out of the band; the update stays in Settings → Updates.

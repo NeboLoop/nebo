@@ -107,7 +107,7 @@ fi
 
 if case_ os-plan-02 "plan_check ticks only the passing step"; then
   call "{\"resource\":\"file\",\"action\":\"plan_check\",\"path\":\"$PLAN\"}"
-  expect_ok "1/2 verified"
+  expect_ok "1 of 2 steps pass"
   grep -q '^- \[x\] 1\.' "$PLAN" || die "step 1 ticked"
   grep -q '^- \[ \] 2\.' "$PLAN" || die "step 2 not ticked"
   grep -q '2\. ✗ fails, exit 3' "$PLAN" || die "failing step carries its exit code"
@@ -136,7 +136,7 @@ fi
 if case_ os-plan-06 "a destructive verify command is refused and stays unticked"; then
   call "{\"resource\":\"file\",\"action\":\"plan\",\"path\":\"$WORK/P4.md\",\"title\":\"t\",\"steps\":[{\"title\":\"bad\",\"verify\":\"git stash\"},{\"title\":\"good\",\"verify\":\"true\"}]}"; expect_ok
   call "{\"resource\":\"file\",\"action\":\"plan_check\",\"path\":\"$WORK/P4.md\"}"
-  expect_ok "1/2 verified"; grep -q '1\. ✗ bad, did not run' "$WORK/P4.md" || die "refused step reads 'did not run'"
+  expect_ok "1 of 2 steps pass"; grep -q '1\. ✗ bad, did not run' "$WORK/P4.md" || die "refused step reads 'did not run'"
   ok
 fi
 
@@ -153,6 +153,46 @@ fi
 if case_ agent-send-02 "send to an unknown task says to spawn afresh"; then
   call '{"resource":"task","action":"send","task_id":"sa-nope","message":"more"}' agent
   expect_error "No sub-agent sa-nope to continue"; echo "$LAST" | grep -q "Spawn a new one" || die "recovery named"
+  ok
+fi
+
+# ---- one door to a skill (Rule 8) -----------------------------------------
+# A plugin's usage lives in its skills, and there is exactly ONE way to find
+# and read one: the skill tool. 2026-09-15: the plugin tool had its own
+# `help` action printing a trimmed label (`products`), the skill tool had its
+# own `help` preview and a `catalog` alias of `list`, and an employee bounced
+# between all four, concluded the docs were stale, and guessed GraphQL for 51
+# calls. These cases keep the second doors shut.
+if case_ skill-onedoor-01 "a plugin's skill loads through the skill tool"; then
+  call '{"action":"list"}' skill
+  expect_ok
+  SKILL=$(echo "$LAST" | grep -o '\b[a-z0-9]\{2,\}-[a-z0-9-]\{2,\}\b' | head -1)
+  if [ -z "$SKILL" ]; then
+    echo "  (no skills installed — nothing to load)"; ok
+  else
+    call "$(jq -cn --arg n "$SKILL" '{action:"load",name:$n}')" skill
+    expect_ok
+    ok
+  fi
+fi
+
+if case_ skill-onedoor-02 "skill help is gone; the answer names load"; then
+  call '{"action":"help","name":"anything"}' skill
+  expect_error "Unknown action"
+  echo "$LAST" | grep -q "use load" || die "the recovery must name load"
+  ok
+fi
+
+if case_ skill-onedoor-03 "skill catalog is gone; list is the one word"; then
+  call '{"action":"catalog"}' skill
+  expect_error "Unknown action"
+  echo "$LAST" | grep -q "list" || die "the recovery must name list"
+  ok
+fi
+
+if case_ plugin-onedoor-01 "plugin help is gone; skills are read through the skill tool"; then
+  call '{"action":"help","resource":"anything"}' plugin
+  expect_error 'skill(action'
   ok
 fi
 

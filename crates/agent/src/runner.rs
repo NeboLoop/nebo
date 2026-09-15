@@ -3287,7 +3287,7 @@ async fn run_loop(
                 }
                 sk_lines.push(String::new());
                 sk_lines.push(
-                    "These skills are part of your configuration. Use skill(action: \"discover\", query: \"...\") or plugin(resource: \"<slug>\", action: \"help\") to explore their capabilities."
+                    "These skills are part of your configuration. Use skill(action: \"discover\", query: \"...\") to find one and skill(action: \"load\", name: \"...\") to read it."
                         .to_string(),
                 );
                 parts.push(sk_lines.join("\n"));
@@ -8338,7 +8338,7 @@ mod named_invocation_tests {
         for p in [
             r#"use os(resource: "app", action: "list")"#,
             r#"os(resource: "shell", action: "exec", command: "ls")"#,
-            r#"call skill(action: "catalog")"#,
+            r#"call skill(action: "list")"#,
             r#"Use os(resource: "mail", action: "unread")"#,
         ] {
             match named_tool_invocation(p, &tools) {

@@ -215,7 +215,6 @@ impl DynTool for SkillTool {
          2. If multiple skills could apply → choose the most specific one\n\
          3. If no skill applies → proceed with your built-in tools\n\n\
          - skill(action: \"list\") — Browse all available skills and apps\n\
-         - skill(action: \"help\", name: \"calendar\") — Metadata preview of a skill (description, triggers, resources); load gives the full instructions\n\
          - skill(action: \"browse\", name: \"xlsx-processor\") — List resource files in a skill's directory\n\
          - skill(action: \"read_resource\", name: \"xlsx-processor\", path: \"scripts/recalc.py\") — Read a resource file\n\
          - skill(action: \"load\", name: \"coding-assistant\") — Activate for current session (skill(name: \"...\") with no action is the same load)\n\
@@ -237,7 +236,7 @@ impl DynTool for SkillTool {
                 "action": {
                     "type": "string",
                     "description": "Action to perform",
-                    "enum": ["list", "catalog", "discover", "help", "browse", "read_resource", "load", "unload", "create", "update", "delete", "install", "configure", "secrets", "reviews", "rate"]
+                    "enum": ["list", "discover", "browse", "read_resource", "load", "unload", "create", "update", "delete", "install", "configure", "secrets", "reviews", "rate"]
                 },
                 "name": {
                     "type": "string",
@@ -288,7 +287,7 @@ impl DynTool for SkillTool {
 
     fn is_concurrent_safe(&self, input: &serde_json::Value) -> bool {
         let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
-        matches!(action, "list" | "discover" | "help" | "browse" | "read_resource" | "reviews" | "secrets")
+        matches!(action, "list" | "discover" | "browse" | "read_resource" | "reviews" | "secrets")
         // `rate` is intentionally excluded — it mutates marketplace state.
     }
 
@@ -329,9 +328,7 @@ impl DynTool for SkillTool {
             let agent = learned_owner.as_deref().or(agent_scope.as_deref());
 
             match domain_input.action.as_str() {
-                // "catalog" is the word this tool's own description uses —
-                // models reach for it as an action; it IS the list.
-                "list" | "catalog" => {
+                "list" => {
                     // Budget-constrained catalog: show count +
                     // capped entries with truncated descriptions. Never dump the full
                     // catalog — use discover(query) for targeted search.
@@ -438,119 +435,6 @@ impl DynTool for SkillTool {
                             query,
                             lines.join("\n")
                         ))
-                    }
-                }
-                "help" => {
-                    let name = input["name"].as_str().unwrap_or("");
-                    if name.is_empty() {
-                        return ToolResult::error(errors::missing_param(
-                            "help",
-                            "name",
-                            "skill(action: \"help\", name: \"calendar\")",
-                        ));
-                    }
-
-                    match self.loader.get(name, agent).await {
-                        Some(skill) => {
-                            let mut output = format!("# Skill: {}\n\n", skill.name);
-                            output.push_str(&format!("**Description:** {}\n", skill.description));
-                            output.push_str(&format!("**Version:** {}\n", skill.version));
-                            if !skill.triggers.is_empty() {
-                                output.push_str(&format!(
-                                    "**Triggers:** {}\n",
-                                    skill.triggers.join(", ")
-                                ));
-                            }
-                            if !skill.capabilities.is_empty() {
-                                output.push_str(&format!(
-                                    "**Capabilities:** {}\n",
-                                    skill.capabilities.join(", ")
-                                ));
-                            }
-                            if !skill.plugins.is_empty() {
-                                let slug = &skill.plugins[0].name;
-                                output.push_str(&format!(
-                                    "\n**Execute via:** `plugin(resource: \"{}\", action: \"exec\", command: \"...\")`\n\
-                                     Do NOT use os/shell. The plugin tool handles auth and binary resolution.\n",
-                                    slug
-                                ));
-                            }
-                            // `help` is a lightweight inspect — it does NOT dump the full
-                            // skill body into the conversation. To actually load and follow
-                            // the skill's instructions, use skill(action: "load").
-                            if !skill.template.is_empty() {
-                                output.push_str(
-                                    "\nTo load and follow this skill's full instructions, use skill(action: \"load\", name: \"...\").\n",
-                                );
-                            }
-                            // Append resource info
-                            if let Ok(resources) = skill.list_resources() {
-                                if !resources.is_empty() {
-                                    output.push_str(&format!(
-                                        "\n\n---\n\n**Resources:** {} files\n",
-                                        resources.len()
-                                    ));
-                                    // Show available subdirectories
-                                    let mut dirs: Vec<String> = resources
-                                        .iter()
-                                        .filter_map(|r| r.split('/').next().map(String::from))
-                                        .collect::<std::collections::HashSet<_>>()
-                                        .into_iter()
-                                        .filter(|d| {
-                                            resources
-                                                .iter()
-                                                .any(|r| r.starts_with(&format!("{}/", d)))
-                                        })
-                                        .collect();
-                                    dirs.sort();
-                                    if !dirs.is_empty() {
-                                        output.push_str(&format!(
-                                            "**Directories:** {}\n",
-                                            dirs.join(", ")
-                                        ));
-                                    }
-                                    output.push_str("\nUse skill(action: \"browse\", name: \"");
-                                    output.push_str(name);
-                                    output.push_str("\") to explore resources.");
-                                }
-                            }
-                            ToolResult::ok(output)
-                        }
-                        None => {
-                            // Fall back to reading raw file from skills dir
-                            let skill_dir = match Self::user_skill_dir(name) {
-                                Ok(d) => d,
-                                Err(e) => return ToolResult::error(e),
-                            };
-                            let skill_md_path = skill_dir.join("SKILL.md");
-                            let skill_md_disabled = skill_dir.join("SKILL.md.disabled");
-                            let path = if skill_md_path.exists() {
-                                skill_md_path
-                            } else if skill_md_disabled.exists() {
-                                skill_md_disabled
-                            } else {
-                                // The LLM may have confused a plugin slug
-                                // (slack, discord, gws, ...) for a skill
-                                // name. Redirect to the plugin tool rather
-                                // than returning a dead "not found."
-                                if let Some(slug) = self.match_plugin_slug(name) {
-                                    return ToolResult::ok(format!(
-                                        "`{}` is a plugin, not a skill. \
-                                         USE: plugin(resource: \"{}\", action: \"exec\", command: \"help\") to see its commands, \
-                                         then plugin(resource: \"{}\", command: \"<subcommand> ...\") to invoke them. \
-                                         For channel messaging (upload/post/dm/reply), the bridge fills channel and thread from context.",
-                                        slug, slug, slug
-                                    ));
-                                }
-                                return ToolResult::error(Self::not_found(name));
-                            };
-                            match std::fs::read_to_string(&path) {
-                                Ok(content) => {
-                                    ToolResult::ok(format!("# Skill: {}\n\n{}", name, content))
-                                }
-                                Err(e) => ToolResult::error(format!("Failed to read skill: {}. Do not retry — this is a filesystem error.", e)),
-                            }
-                        }
                     }
                 }
                 "browse" => {
@@ -1328,7 +1212,7 @@ impl DynTool for SkillTool {
                     }
                 }
                 other => ToolResult::error(format!(
-                    "Unknown action: {}. Available: list, catalog, discover, help, browse, read_resource, load, unload, create, update, delete, install, configure, secrets, reviews, rate",
+                    "Unknown action: {}. Available: list, discover, browse, read_resource, load, unload, create, update, delete, install, configure, secrets, reviews, rate. To read a skill, use load; to find one, use discover.",
                     other
                 )),
             }

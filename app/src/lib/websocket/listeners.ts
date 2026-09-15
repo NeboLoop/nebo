@@ -14,7 +14,7 @@
 import { get } from 'svelte/store';
 import { t } from 'svelte-i18n';
 import { getWebSocketClient } from './client';
-import { notifications, pushNotification, loadNotifications } from '$lib/stores/notifications';
+import { notifications, pushNotification, loadNotifications, settleUpdateNotices } from '$lib/stores/notifications';
 import { addToast } from '$lib/stores/toast';
 import { onUpdateAvailable, onUpdateProgress, onUpdateReady, onUpdateError } from '$lib/stores/update';
 import { logger } from '$lib/monitoring';
@@ -179,11 +179,15 @@ export function attachWebSocketListeners(): void {
       if (data.count > 0) {
         addToast(`${data.count} update${data.count > 1 ? 's' : ''} available`, 'info');
       }
+      for (const u of (data.updates ?? []) as Array<{ type: string; id: string; remoteVersion: string }>) {
+        settleUpdateNotices(u.type, u.id, u.remoteVersion);
+      }
     })
   );
   unsubs.push(
     ws.on('artifact_update_applied', (data: any) => {
       addToast(`Updated ${data.type}: ${data.version}`, 'success');
+      settleUpdateNotices(data.type, data.id);
     })
   );
   unsubs.push(

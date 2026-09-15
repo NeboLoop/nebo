@@ -96,7 +96,15 @@ impl Loader {
     }
 
     /// Check if a plugin is active (not disabled by user + ready to execute).
-    fn is_plugin_active(&self, ps: &napp::plugin::PluginStore, slug: &str) -> bool {
+    /// A plugin's skills are its documentation, so they load for every
+    /// installed plugin the owner has not disabled. Readiness (credentials,
+    /// required config) is NOT a gate here: it belongs to exec, where the
+    /// plugin tool refuses and says what to connect. Gating on it hid a
+    /// plugin's skills from the skill tool the moment it was reinstalled
+    /// (caches empty until the first auth probe) and for every plugin whose
+    /// accounts are per-employee rather than workspace-wide — the model then
+    /// could not even read that an account was needed (2026-09-15).
+    fn is_plugin_active(&self, _ps: &napp::plugin::PluginStore, slug: &str) -> bool {
         if let Some(ref db) = self.db_store {
             if let Ok(Some(row)) = db.get_plugin_by_slug(slug) {
                 if row.is_enabled == 0 {
@@ -104,7 +112,7 @@ impl Loader {
                 }
             }
         }
-        ps.is_ready(slug)
+        true
     }
 
     /// Set license keys for sealed .napp decryption (keyed by artifact_id).
@@ -248,7 +256,7 @@ impl Loader {
 
         // 2.5. Load skills embedded in plugins (override installed by name).
         // Auto-inject the parent plugin slug as a PluginDependency so GWS_BIN etc. get set.
-        // Only load skills for active plugins (not disabled + ready).
+        // Only load skills for plugins the owner has not disabled.
         if let Some(ref ps) = self.plugin_store {
             let plugins_dir = ps.plugins_dir();
             if plugins_dir.exists() {
@@ -825,7 +833,7 @@ impl Loader {
              To use a plugin:\n\
              1. plugin(action: \"list\") - installed plugins and their commands\n\
              2. plugin(action: \"discover\", query: \"what you need\") - search the marketplace when nothing installed fits\n\
-             3. plugin(resource: \"<slug>\", action: \"help\") - read the docs BEFORE the first exec; add command: \"<service>\" for one service\n\
+             3. skill(action: \"load\", name: \"<skill name>\") - the plugin's skills are listed by name under it in the plugin tool; read the one for the job BEFORE the first exec\n\
              4. plugin(resource: \"<slug>\", action: \"exec\", command: \"<subcommand> +<flags>\")\n\n\
              IMPORTANT: Always read docs (step 3) before your first exec of any plugin.\n\
              The command field is CLI args, NOT colon syntax. Never use \"service:method\".\n\n\
@@ -924,7 +932,7 @@ impl Loader {
 
         format!(
             "## Agent Required Plugins\n\
-             This agent depends on these plugins. Use plugin(resource: \"<slug>\", action: \"help\") for a plugin's commands, or skill(action: \"discover\", query: \"<slug> <task>\") to find a recipe.\n\n\
+             This agent depends on these plugins. Their skills are listed by name in the plugin tool; skill(action: \"load\", name: \"<skill name>\") is a plugin's usage, and skill(action: \"discover\", query: \"<slug> <task>\") finds the one for a job.\n\n\
              {}\n",
             lines.join("\n")
         )

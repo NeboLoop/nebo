@@ -136,7 +136,9 @@ fn out_of_time(text: String, original: &ToolResult) -> ToolResult {
 ///
 /// Plugins ship with their own skills (`skills/` directory inside the plugin).
 /// These skills are the plugin's documentation — they describe the CLI syntax,
-/// flags, and examples. The plugin tool routes to them via `action: "help"`.
+/// flags, and examples. The skill loader indexes them like any other skill, so
+/// the ONE way to read one is skill(action: "load", name: "<skill name>"); this
+/// tool only names them.
 ///
 /// When a plugin command fails due to stale OAuth credentials, the tool
 /// automatically detects the auth failure and self-heals: first a SILENT
@@ -251,9 +253,36 @@ fn port_capability(operation: &str) -> String {
         .to_string()
 }
 
-/// The plugins that count: installed, not disabled, and ready. ONE answer,
-/// shared by the plugin tool and by every tool that must know whether a
-/// typed port has a provider.
+/// Every plugin the owner has installed and not disabled — what EXISTS.
+/// This is the model-facing set: the tool description, the `resource` enum,
+/// and the "not installed" error all read from it, so a plugin that is
+/// installed but not yet connected is still nameable and still readable
+/// through its skills. (2026-09-15: readiness gated this, the auth cache is
+/// only warmed by a successful exec, and a freshly started Nebo therefore
+/// told the model "No plugins are installed yet" with seven installed.)
+pub fn installed_plugin_slugs(
+    plugin_store: &napp::plugin::PluginStore,
+    db_store: &db::Store,
+) -> Vec<String> {
+    let mut slugs = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for (slug, _, _, _) in &plugin_store.list_installed() {
+        if !seen.insert(slug.clone()) {
+            continue;
+        }
+        if let Ok(Some(row)) = db_store.get_plugin_by_slug(slug) {
+            if row.is_enabled == 0 {
+                continue;
+            }
+        }
+        slugs.push(slug.clone());
+    }
+    slugs
+}
+
+/// The plugins that can RUN right now: installed, not disabled, and ready
+/// (credentials and required config present). Typed ports read this — an
+/// unconnected provider must not claim a port a local fallback can serve.
 pub fn active_plugin_slugs(plugin_store: &napp::plugin::PluginStore, db_store: &db::Store) -> Vec<String> {
     let installed = plugin_store.list_installed();
     let mut seen = std::collections::HashSet::new();
@@ -307,6 +336,11 @@ impl PluginTool {
     /// Build a deduplicated list of active plugin slugs (installed + not disabled + ready).
     fn active_slugs(&self) -> Vec<String> {
         active_plugin_slugs(&self.plugin_store, &self.db_store)
+    }
+
+    /// What exists — see `installed_plugin_slugs`.
+    fn installed_slugs(&self) -> Vec<String> {
+        installed_plugin_slugs(&self.plugin_store, &self.db_store)
     }
 
     /// Resolve a typed capability operation to (plugin slug, command) by scanning
@@ -525,8 +559,9 @@ impl PluginTool {
         {
             return ToolResult::ok(format!(
                 "{slug} v{version} was already installed; nothing to discover or install. \
-                 Use plugin(resource: \"{slug}\", action: \"help\") for its commands and \
-                 plugin(resource: \"{slug}\", action: \"exec\", command: \"...\") to run one. \
+                 Its skills are listed under Installed plugins in this tool's description — \
+                 skill(action: \"load\", name: \"<skill name>\") reads one, and \
+                 plugin(resource: \"{slug}\", action: \"exec\", command: \"...\") runs a command. \
                  If a result says no account is connected, the user connects one in \
                  Settings, Plugins; there is no command for that."
             ));
@@ -837,52 +872,13 @@ impl PluginTool {
 
 }
 
-/// Render a skill name as a command label, but ONLY when the plugin actually
-/// follows the convention that makes the label true.
-///
-/// GWS names its skill dirs `<slug>-<service>-<verb>` (`gws-gmail-triage`), and
-/// each one really is a subcommand, so `gmail +triage` is a fact the model can
-/// act on. A plugin that does NOT prefix its skills with its slug is not making
-/// that promise: nebo-office ships `pptx-design`, which documents a JSON spec and
-/// is not a subcommand at all.
-///
-/// This used to split on the first dash regardless, so `pptx-design` was
-/// advertised as `pptx +design`. An agent believed it, ran `pptx design --help`,
-/// got "unrecognized subcommand", and concluded from the invented label that the
-/// plugin's 21 skills documented features that did not exist — filing a report
-/// recommending they be deleted. An invented command name is worse than a raw
-/// directory name, so a skill that isn't slug-prefixed is shown as-is.
-fn display_command_for_skill(
-    slug: &str,
-    skill_name: &str,
-    siblings: &std::collections::HashSet<String>,
-) -> String {
-    match skill_name.strip_prefix(&format!("{}-", slug)) {
-        // Slug-prefixed: the remainder may be service + verb, per the GWS
-        // convention (`gws-gmail-send` → `gmail +send`). It is only a helper
-        // when the service it claims to extend is itself a skill here — GWS
-        // ships `gws-gmail` alongside `gws-gmail-send`. Without that check a
-        // multi-word service name reads as a helper on a service that does not
-        // exist: `google-calendar-free-busy` printed `free +busy`, sending
-        // agents after a `free` subcommand when the command is `free-busy`.
-        Some(trimmed) => match trimmed.split_once('-') {
-            Some((service, verb)) if siblings.contains(&format!("{}-{}", slug, service)) => {
-                format!("{} +{}", service, verb)
-            }
-            _ => trimmed.to_string(),
-        },
-        // Not slug-prefixed: we have no idea whether this names a subcommand.
-        None => skill_name.to_string(),
-    }
-}
-
 impl DynTool for PluginTool {
     fn name(&self) -> &str {
         "plugin"
     }
 
     fn description(&self) -> String {
-        let slugs = self.active_slugs();
+        let slugs = self.installed_slugs();
         if slugs.is_empty() {
             return "Run installed plugin binaries. No plugins are installed yet — use \
                     plugin(action: \"list\") to confirm, and plugin(action: \"discover\", \
@@ -904,7 +900,6 @@ impl DynTool for PluginTool {
                       not skills, and the skill catalog does not contain them.\n\n");
         out.push_str("Usage: plugin(resource: \"<plugin-slug>\", action: \"exec\", command: \"<subcommand and flags>\")\n");
         out.push_str("       plugin(resource: \"<plugin-slug>\", action: \"events\") — list declared NDJSON watch events\n");
-        out.push_str("       plugin(resource: \"<plugin-slug>\", action: \"help\" [, command: \"<service>\"]) — read the plugin's command grammar / a service's usage\n");
         out.push_str("`command` is passed straight to the plugin binary — the FIRST token is a service (e.g. calendar, gmail, drive), NOT the plugin name. \
                       Grammar: `<service> <resource> <method> [flags]` (e.g. `calendar events list`).\n");
         // Said only when that plugin is installed: a made-up example slug was
@@ -936,6 +931,11 @@ impl DynTool for PluginTool {
                 overflow_slugs.push(slug.clone());
                 continue;
             }
+            // Listed whether or not its credentials are in place: readiness is
+            // workspace-level, and a plugin whose accounts are per-employee
+            // (shopify) never reads ready even with accounts connected — so a
+            // "not connected" marker here would be a lie. The exec path knows
+            // the truth per employee and says it when a command needs it.
             let mut section = format!("### {}\n", slug);
             // Channel plugins expose real-time messaging ops via the running
             // bridge. Lead with the USE CASE (what the user asked for), not
@@ -961,14 +961,11 @@ impl DynTool for PluginTool {
             let total = services.len();
             let mut included = 0usize;
             let mut truncated = false;
-            let sibling_names: std::collections::HashSet<String> =
-                services.iter().map(|(n, _)| n.clone()).collect();
             for (name, desc) in services {
-                let label = display_command_for_skill(slug, name, &sibling_names);
                 let line = if desc.is_empty() {
-                    format!("  - {}\n", label)
+                    format!("  - {}\n", name)
                 } else {
-                    format!("  - {} — {}\n", label, desc)
+                    format!("  - {} — {}\n", name, desc)
                 };
                 if section.len() + line.len() > PER_PLUGIN_BUDGET {
                     truncated = true;
@@ -995,12 +992,13 @@ impl DynTool for PluginTool {
         if !overflow_slugs.is_empty() {
             out.push_str("Also installed: ");
             out.push_str(&overflow_slugs.join(", "));
-            out.push_str("\nTheir commands are not listed here. Before the FIRST exec on any of them, read \
-                          plugin(resource: \"<slug>\", action: \"help\") and use the syntax it shows — \
+            out.push_str("\nTheir skills are not listed here. Before the FIRST exec on any of them, \
+                          skill(action: \"discover\", query: \"<slug>\") names its skills and \
+                          skill(action: \"load\", name: \"<skill name>\") reads one — \
                           a guessed command is a wasted turn and a failed step.\n");
         }
 
-        out.push_str("\nFor commands listed above, use the exact syntax shown. For a command or flag not listed, read plugin(resource: \"<slug>\", action: \"help\", command: \"<service>\") first.");
+        out.push_str("\nEach line above is a skill name: skill(action: \"load\", name: \"<skill name>\") is its full usage — every command and flag. Read it BEFORE the first exec; do not guess a flag that is not in it.");
 
         // Typed capability ports currently bound (provider-agnostic).
         let ops = self.bound_operations();
@@ -1016,13 +1014,13 @@ impl DynTool for PluginTool {
 
     fn schema(&self) -> serde_json::Value {
         let mut props = serde_json::Map::new();
-        props.insert("resource".into(), Self::resource_schema(&self.active_slugs()));
+        props.insert("resource".into(), Self::resource_schema(&self.installed_slugs()));
         props.insert(
             "action".into(),
             serde_json::json!({
                 "type": "string",
-                "description": "Action: 'list' (installed plugins), 'discover' (search the marketplace by query), 'exec' (default — run a plugin command), 'help' (read a plugin's command grammar / a service's usage), or 'events' (the plugin's declared NDJSON watch events)",
-                "enum": ["list", "discover", "exec", "help", "events"],
+                "description": "Action: 'list' (installed plugins), 'discover' (search the marketplace by query), 'exec' (default — run a plugin command), or 'events' (the plugin's declared NDJSON watch events). A plugin's usage is its skills: skill(action: \"load\", name: \"<skill name>\").",
+                "enum": ["list", "discover", "exec", "events"],
                 "default": "exec"
             }),
         );
@@ -1107,7 +1105,7 @@ impl DynTool for PluginTool {
         // stream teardown: the ask_request lands in a dropped channel and the
         // oneshot waits forever (observed live on the first card test,
         // 2026-08-22). Anything that may ask must run sequentially.
-        matches!(action, "list" | "events" | "help")
+        matches!(action, "list" | "events")
     }
 
     fn execute_dyn<'a>(
@@ -1246,18 +1244,20 @@ impl DynTool for PluginTool {
                     }
                     self.handle_events(&pi.resource)
                 }
-                "help" => {
-                    if pi.resource.is_empty() {
-                        return ToolResult::error(self.resource_required("help", "help"));
-                    }
-                    self.handle_help(&pi.resource, &pi.command)
-                }
                 "search" | "skills" | "services" => ToolResult::error(format!(
                     "action '{}' was removed in v0.10.0. Use action: \"list\" to see installed plugins, \"discover\" to search the marketplace, or call commands directly with action: \"exec\".",
                     pi.action
                 )),
+                // A plugin's usage is its skills, and there is ONE reader:
+                // the skill tool. This tool no longer documents anything.
+                "help" | "docs" | "usage" => ToolResult::error(
+                    "A plugin's usage lives in its skills, which this tool lists by name under \
+                     Installed plugins. Read one with skill(action: \"load\", name: \"<skill name>\"), \
+                     or skill(action: \"discover\", query: \"<what you need>\") to find it."
+                        .to_string(),
+                ),
                 other => ToolResult::error(format!(
-                    "Unknown action: '{}'. Valid actions: list, discover, help, exec, events.",
+                    "Unknown action: '{}'. Valid actions: list, discover, exec, events.",
                     other
                 )),
             }
@@ -1303,90 +1303,6 @@ impl PluginTool {
             "resource is required for action \"{action}\": the slug of the installed plugin. {choices} Example: plugin(resource: \"{}\", action: \"{example_tail}\")",
             installed.first().map(String::as_str).unwrap_or("<slug>")
         )
-    }
-
-    /// Read-only usage lookup for a plugin's command grammar.
-    ///
-    /// `plugin(action: "help", resource: "gws")` returns the service list plus
-    /// the shared grammar (gws-shared/SKILL.md). An optional `command` narrows
-    /// to a single service: `plugin(action: "help", resource: "gws", command:
-    /// "calendar")` returns gws-calendar/SKILL.md. Lenient: if no skill matches,
-    /// fall back to the service list + shared grammar.
-    fn handle_help(&self, slug: &str, command: &str) -> ToolResult {
-        let skills_dir = match self.skills_dir(slug) {
-            Some(d) => d,
-            None => {
-                // "Not installed" and "installed without docs" are different
-                // facts with different next calls.
-                if self.plugin_store.resolve(slug, "*").is_none() {
-                    let slugs = self.active_slugs();
-                    let installed = if slugs.is_empty() {
-                        "none".to_string()
-                    } else {
-                        slugs.join(", ")
-                    };
-                    return ToolResult::error(format!(
-                        "Plugin '{}' is not installed (installed: {})",
-                        slug, installed
-                    ));
-                }
-                return ToolResult::error(format!(
-                    "'{}' is installed but ships no skills/ documentation; run plugin(resource: \"{}\", command: \"--help\").",
-                    slug, slug
-                ));
-            }
-        };
-
-        // A specific service was requested — return that service's SKILL.md.
-        let service = command.split_whitespace().next().unwrap_or("").trim();
-        if !service.is_empty() {
-            let candidate = skills_dir.join(format!("{}-{}", slug, service)).join("SKILL.md");
-            if let Ok(body) = std::fs::read_to_string(&candidate) {
-                return ToolResult::ok(format!("# {} {} usage\n\n{}", slug, service, body));
-            }
-            // No exact match — fall through to the overview below.
-        }
-
-        let mut out = format!("# {} usage\n\n", slug);
-
-        // Lead with the shared grammar reference if the plugin ships one.
-        let shared = skills_dir.join(format!("{}-shared", slug)).join("SKILL.md");
-        if let Ok(body) = std::fs::read_to_string(&shared) {
-            out.push_str(&body);
-            out.push_str("\n\n");
-        } else {
-            out.push_str(
-                "Grammar: `<service> <resource> <method> [flags]` (the first token is a service, \
-                 NOT the plugin name).\n\n",
-            );
-        }
-
-        let services = self.list_services(slug);
-        if !services.is_empty() {
-            out.push_str("## Bundled skills\n\n");
-            let sibling_names: std::collections::HashSet<String> =
-                services.iter().map(|(n, _)| n.clone()).collect();
-            for (name, desc) in &services {
-                let label = display_command_for_skill(slug, name, &sibling_names);
-                if desc.is_empty() {
-                    out.push_str(&format!("- {}\n", label));
-                } else {
-                    out.push_str(&format!("- {} — {}\n", label, desc));
-                }
-            }
-            // These are skill directories, and only some plugins name them after
-            // subcommands. Reading one is always right; assuming it is a
-            // subcommand is how an agent ends up running `pptx design --help`.
-            out.push_str(&format!(
-                "\nRead a skill with skill(action: \"load\", name: \"<name above>\") — a skill is documentation, \
-                 and only names a subcommand when it is written as `<service> +<verb>`. \
-                 For a subcommand's real flags, ask the binary: \
-                 plugin(resource: \"{}\", action: \"exec\", command: \"<subcommand> --help\").",
-                slug
-            ));
-        }
-
-        ToolResult::ok(out)
     }
 
     fn handle_events(&self, slug: &str) -> ToolResult {
@@ -1648,7 +1564,7 @@ impl PluginTool {
         let binary_path = match self.plugin_store.resolve(&pi.resource, "*") {
             Some(p) => p,
             None => {
-                let slugs = self.active_slugs();
+                let slugs = self.installed_slugs();
                 let available = if slugs.is_empty() {
                     "none installed".to_string()
                 } else {
@@ -2673,10 +2589,6 @@ mod tests {
         assert_eq!(pi.args.len(), 2);
     }
 
-    fn skill_set(names: &[&str]) -> std::collections::HashSet<String> {
-        names.iter().map(|n| n.to_string()).collect()
-    }
-
     #[test]
     fn exec_binding_match_requires_word_boundary() {
         assert!(command_matches_binding("ingest", "ingest"));
@@ -2686,40 +2598,6 @@ mod tests {
         assert!(!command_matches_binding("ingestion-report", "ingest"));
         assert!(!command_matches_binding("documents listing", "documents list"));
         assert!(!command_matches_binding("search foo", "ingest"));
-    }
-
-    #[test]
-    fn skill_labels_never_invent_a_subcommand() {
-        // GWS prefixes its skill dirs with its slug, and each really is a
-        // subcommand — the `+` label is a fact, vouched for by the service
-        // skill sitting next to the helper.
-        let gws = skill_set(&["gws-gmail", "gws-gmail-triage", "gws-calendar", "gws-calendar-insert", "gws-auth"]);
-        assert_eq!(display_command_for_skill("gws", "gws-gmail-triage", &gws), "gmail +triage");
-        assert_eq!(display_command_for_skill("gws", "gws-calendar-insert", &gws), "calendar +insert");
-        assert_eq!(display_command_for_skill("gws", "gws-auth", &gws), "auth");
-
-        // A multi-word service is not a helper. google-calendar ships
-        // `free-busy` with no `free` service, so the label must stay whole —
-        // `free +busy` advertised a subcommand the binary does not have.
-        let cal = skill_set(&["google-calendar-calendars", "google-calendar-free-busy", "google-calendar-shared"]);
-        assert_eq!(
-            display_command_for_skill("google-calendar", "google-calendar-free-busy", &cal),
-            "free-busy"
-        );
-
-        // nebo-office does not prefix with its slug, and `pptx design` is not a
-        // subcommand. Showing the raw name is the only honest option — the
-        // `pptx +design` label this used to print sent an agent chasing a
-        // command that never existed.
-        let office = skill_set(&["pptx", "pptx-design", "pptx-shapes", "docx-tables", "xlsx-formulas"]);
-        for name in ["pptx-design", "pptx-shapes", "docx-tables", "xlsx-formulas"] {
-            assert_eq!(
-                display_command_for_skill("nebo-office", name, &office),
-                name,
-                "a skill not prefixed with the plugin slug must be shown verbatim"
-            );
-        }
-        assert_eq!(display_command_for_skill("nebo-office", "pptx", &office), "pptx");
     }
 
     #[test]

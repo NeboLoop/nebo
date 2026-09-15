@@ -27,7 +27,7 @@ export const notifications = writable<Notification[]>([]);
 // so five open approvals the owner had looked at showed as a badge of 1
 // (Danny, 2026-09-09). The statuses live here so the badge and the band
 // read the same map, and a decision made in the band updates both.
-export type ApprovalRef = { kind: 'workflow' | 'learning' | 'update'; id: string };
+export type ApprovalRef = { kind: 'workflow' | 'learning' | 'update'; id: string; version?: string };
 
 export const approvalRef = (id: string): ApprovalRef | null =>
   id.startsWith('wf-approval:')
@@ -35,8 +35,23 @@ export const approvalRef = (id: string): ApprovalRef | null =>
     : id.startsWith('learn:')
       ? { kind: 'learning', id: id.slice('learn:'.length) }
       : id.startsWith('artifact-update:')
-        ? { kind: 'update', id: id.split(':')[2] ?? '' }
+        ? { kind: 'update', id: id.split(':')[2] ?? '', version: id.split(':')[3] }
         : null;
+
+/**
+ * An update notice is pending only while ITS version is the one on offer.
+ * Applying 0.3.5 settles the 0.3.5 notice; a 0.3.5 offer settles the older
+ * 0.3.2 and 0.3.3 notices the same artifact left behind — otherwise three
+ * "Update now" buttons stay live and the stale ones 404 (2026-09-15).
+ */
+export function settleUpdateNotices(type: string, artifactId: string, pendingVersion?: string) {
+  const prefix = `artifact-update:${type}:${artifactId}:`;
+  for (const n of get(notifications)) {
+    if (!n.id.startsWith(prefix)) continue;
+    const v = n.id.slice(prefix.length);
+    setApprovalStatus(n.id, pendingVersion !== undefined && v === pendingVersion ? 'pending' : 'applied');
+  }
+}
 
 /** notification id → 'pending' | 'approved' | 'denied' | 'applied' | ... */
 export const approvalStatuses = writable<Record<string, string>>({});
@@ -65,7 +80,7 @@ export async function ensureApprovalStatuses(): Promise<void> {
       } else {
         updates ??= api.listUpdates();
         const u = ((await updates).updates ?? []).find(x => x.artifactId === ref.id);
-        status = u?.updateAvailable ? 'pending' : 'applied';
+        status = u?.updateAvailable && u.remoteVersion === ref.version ? 'pending' : 'applied';
       }
       approvalStatuses.update(m => ({ ...m, [n.id]: status }));
     } catch {
@@ -164,6 +179,9 @@ export function pushNotification(data: {
   // produce duplicate rows — ids like artifact-update:plugin:gws:0.23.1 are
   // deliberately stable across re-emits.
   notifications.update(list => [notif, ...list.filter(x => x.id !== notif.id)]);
+  // A live approval row needs its status to land in the band with its
+  // buttons; without this it sat in the stream until a hard refresh.
+  if (approvalRef(notif.id)) void ensureApprovalStatuses();
 }
 
 export function markAsRead(id: string) {
