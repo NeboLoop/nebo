@@ -1017,8 +1017,8 @@
   function activitySteps(segs: AssistantMsg[], keyId: string): ActivityStep[] {
     const steps: ActivityStep[] = [];
     segs.forEach((seg, si) => {
-      const tools = nonCoworkerTools(seg.tools);
-      const isAnswer = si === segs.length - 1 && tools.length === 0;
+      const tools = shownTools(seg.tools);
+      const isAnswer = si === segs.length - 1 && nonCoworkerTools(seg.tools).length === 0;
       const note = seg.content?.trim();
       if (note && !isAnswer) {
         const prev = steps[steps.length - 1];
@@ -1028,6 +1028,13 @@
       tools.forEach((tool, ti) => steps.push({ kind: 'tool', key: `${keyId}-${si}-${ti}`, tool }));
     });
     return steps;
+  }
+  /** The calls a user should see. A call that failed and was retried is the
+   *  employee's business — nothing the user can act on — so it is left out,
+   *  except in developer mode, where someone is debugging. */
+  function shownTools(tools: ToolMsg[] | undefined): ToolMsg[] {
+    const all = nonCoworkerTools(tools);
+    return $devMode ? all : all.filter((t) => t.status !== 'error');
   }
   function turnAnswer(segs: AssistantMsg[]): string {
     const last = segs[segs.length - 1];
@@ -1077,11 +1084,12 @@
     const total = tools.reduce((s, t) => s + (t.durationMs ?? 0), 0);
     return total > 0 ? fmtDuration(total) : '';
   }
+  /** What a step did, in the past tense — the same words for a step that
+   *  failed, so the summary line groups it with its siblings; the row and
+   *  the summary mark the failure separately. */
   function stepOutcome(tool: ToolMsg): string {
-    // A failed step says so. "Used agent" for a call that was refused hid a
-    // model retrying the same bad call four times in a row.
-    if (tool.status === 'error') return $t('chat.stepFailed', { values: { name: tool.name } });
-    return tool.outcome ?? tool.label ?? $t('chat.usedTool', { values: { name: tool.name } });
+    const resource = (tool.request as { resource?: string } | undefined)?.resource;
+    return tool.outcome ?? tool.label ?? $t('chat.usedTool', { values: { name: resource || tool.name } });
   }
   // Correct tool signature: MCP → "slug · tool", STRAP → "name · resource.action".
   function strapSig(t: ToolMsg): string {
@@ -1399,7 +1407,8 @@
                       aria-expanded={expandable ? isExpanded : undefined}
                       onclick={() => toggleResult(step.key)}
                     >
-                      <span class="shrink-0 {tool.status === 'error' ? 'text-error' : 'text-base-content/50'}">{tool.status === 'running' ? (tool.label ?? tool.name) : stepOutcome(tool)}{#if tool.status === 'running' && tool.statusText}<span class="text-base-content/40 ml-1">{tool.statusText}</span>{/if}</span>
+                      <span class="shrink-0 text-base-content/50">{tool.status === 'running' ? (tool.label ?? tool.name) : stepOutcome(tool)}{#if tool.status === 'running' && tool.statusText}<span class="text-base-content/40 ml-1">{tool.statusText}</span>{/if}</span>
+                      {#if tool.status === 'error'}<span class="shrink-0 text-error">{$t('chat.failed')}</span>{/if}
                       {#if meta && !meta.href}<span class="truncate text-base-content/80" title={meta.text}>{meta.text}</span>{/if}
                       {#if $devMode}<span class="font-mono text-base-content/40 shrink-0">{strapSig(tool)}</span>{/if}
                       {#if tool.durationMs}<span class="text-base-content/40 shrink-0">{fmtDuration(tool.durationMs)}</span>{/if}
@@ -1544,7 +1553,10 @@
       </div>
     {/snippet}
 
-    {#each groupedMessages as msg, idx}
+    <!-- Keyed by id: loading older history prepends rows, and an unkeyed list
+         would re-render every existing row in place (a blank pane until the
+         next scroll on WebKit). Transient rows without an id key by position. -->
+    {#each groupedMessages as msg, idx ('id' in msg && msg.id ? msg.id : idx)}
       {#if msg.type === 'user'}
         {@const origIdx = originalIndices[idx]}
         {#if editingIdx === origIdx}
@@ -1690,7 +1702,7 @@
           {@const nextGroup = groupedMessages[lastIdx + 1]}
           {@const isTurnEnd = nextGroup ? (nextGroup.type === 'user' || nextGroup.type === 'ask') : !isLoading}
           {@const keyId = msg.id ?? `m${origIdx}`}
-          {@const turnTools = segs.flatMap((sg) => nonCoworkerTools(sg.tools))}
+          {@const turnTools = segs.flatMap((sg) => shownTools(sg.tools))}
           {@const steps = activitySteps(segs, keyId)}
           {@const answer = turnAnswer(segs)}
           {@const turnAttachments = segs.flatMap((sg) => sg.attachments ?? [])}

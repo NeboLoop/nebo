@@ -324,6 +324,29 @@ impl Store {
         Ok(msgs)
     }
 
+    /// Whether the chat has a message older than `message_id` that a page
+    /// could still load (the same cursor and compaction floor
+    /// `get_chat_messages_budgeted` pages by). This, not a count, is what
+    /// tells a client to keep paging: the transcript counts conversational
+    /// rows while a page also carries tool rows, so comparing the two said
+    /// "nothing older" with pages still unread. Internal turns (`isMeta`) are
+    /// dropped before a page is served, so they do not count as "older" either.
+    pub fn has_chat_messages_before(&self, chat_id: &str, message_id: &str) -> Result<bool, NeboError> {
+        let conn = self.conn()?;
+        let cursor_ts: i64 = message_created_at(&conn, message_id)?;
+        conn.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM chat_messages
+                 WHERE chat_id = ?1
+                   AND (created_at < ?2 OR (created_at = ?2 AND id < ?3))
+                   AND rowid > COALESCE((SELECT compacted_below_rowid FROM chats WHERE id = ?1), 0)
+                   AND COALESCE(json_extract(metadata, '$.isMeta'), 0) NOT IN (1, 'true'))",
+            params![chat_id, cursor_ts, message_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
     pub fn get_chat_message(&self, id: &str) -> Result<Option<ChatMessage>, NeboError> {
         let conn = self.conn()?;
         conn.query_row(
@@ -1365,6 +1388,29 @@ mod tests {
             .map(|m| m.id)
             .collect();
         assert_eq!(older, vec!["m1", "m2"], "before-cursor page, ascending");
+    }
+
+    /// `has_chat_messages_before` answers what a page can still load: rows
+    /// older than the cursor that are not internal turns (`isMeta` rows are
+    /// dropped before a page is served), and nothing below the compaction floor.
+    #[test]
+    fn has_messages_before_ignores_internal_turns() {
+        let (_dir, store) = store();
+        store.create_chat("c1", "Chat").unwrap();
+        store
+            .create_chat_message("meta", "c1", "user", "preload", Some(r#"{"isMeta":true}"#))
+            .unwrap();
+        set_created_at(&store, "meta", 100);
+        for (id, ts) in [("m1", 200), ("m2", 300)] {
+            store.create_chat_message(id, "c1", "user", id, None).unwrap();
+            set_created_at(&store, id, ts);
+        }
+
+        assert!(store.has_chat_messages_before("c1", "m2").unwrap(), "m1 is older than m2");
+        assert!(
+            !store.has_chat_messages_before("c1", "m1").unwrap(),
+            "only an internal turn is older than m1"
+        );
     }
 
     /// The rotate_chat DB contract (SessionManager::rotate_chat in

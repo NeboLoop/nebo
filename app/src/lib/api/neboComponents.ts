@@ -344,6 +344,7 @@ export interface ChatMessage {
 export interface ChatMessagesResponse {
 	messages: ChatMessage[]
 	totalMessages: number
+	hasMore: boolean
 	activeRun?: ActiveTurnStatus
 	pendingAsk?: PendingAsk
 }
@@ -902,6 +903,7 @@ export interface ProviderModel {
 	provider: string
 	modelId: string
 	displayName: string
+	description?: string
 	isActive?: boolean
 	isDefault?: boolean
 	contextWindow?: number

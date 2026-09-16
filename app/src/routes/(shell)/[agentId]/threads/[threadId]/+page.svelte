@@ -117,10 +117,12 @@
 
   // Pagination state
   let oldestMessageId = $state<string | null>(null);
-  let totalMessages = $state(0);
-  let loadedRawCount = $state(0);
   let isLoadingMore = $state(false);
-  const hasMore = $derived(loadedRawCount < totalMessages);
+  // The server says whether a page older than the oldest loaded message
+  // exists. A count comparison did this before, and the count (user and
+  // assistant rows) never matched a page (which carries tool rows too), so
+  // the first page looked complete and the top of the thread was unreachable.
+  let hasMore = $state(false);
 
   onMount(async () => {
     // Load agents for @mention chips
@@ -252,8 +254,7 @@
   async function loadMessages(): Promise<boolean> {
     if (!threadId) return false;
     oldestMessageId = null;
-    loadedRawCount = 0;
-    totalMessages = 0;
+    hasMore = false;
     const loadingFor = threadId;
     // Read the transcript without depending on it: this function is called
     // from the thread $effect and then writes chat.messages through
@@ -282,8 +283,7 @@
       }
       if (!resp) throw lastErr ?? new Error('no response');
       if (resp?.messages?.length) {
-        totalMessages = resp.totalMessages ?? resp.messages.length;
-        loadedRawCount = resp.messages.length;
+        hasMore = !!resp.hasMore;
         oldestMessageId = resp.messages[0]?.id ?? null;
         chat.setMessages(parseMessages(resp.messages));
       }
@@ -316,17 +316,17 @@
       const api = await import('$lib/api/nebo');
       const resp = await api.getChatMessages(threadId, undefined, oldestMessageId);
       if (resp?.messages?.length) {
-        loadedRawCount += resp.messages.length;
+        hasMore = !!resp.hasMore;
         oldestMessageId = resp.messages[0]?.id ?? oldestMessageId;
         chat.prependMessages(parseMessages(resp.messages));
       } else {
         // No more messages — stop pagination to prevent infinite re-triggers
-        totalMessages = loadedRawCount;
+        hasMore = false;
       }
     } catch (e) {
       console.warn('[nebo] Failed to load older messages', e);
       // On error, stop pagination to prevent infinite retry loop
-      totalMessages = loadedRawCount;
+      hasMore = false;
     } finally {
       isLoadingMore = false;
     }

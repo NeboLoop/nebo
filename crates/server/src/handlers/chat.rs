@@ -379,6 +379,8 @@ pub struct CompanionQuery {
 pub struct ChatMessagesResponse {
     pub messages: Vec<ChatMessage>,
     pub total_messages: i64,
+    /// Older messages exist before the first one here — page with `before`.
+    pub has_more: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub active_run: Option<ActiveTurnStatus>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -681,6 +683,13 @@ pub async fn get_chat_messages(
         .store
         .count_chat_messages(&resolved_id)
         .unwrap_or(messages.len() as i64);
+    let has_more = match messages.first() {
+        Some(oldest) => state
+            .store
+            .has_chat_messages_before(&resolved_id, &oldest.id)
+            .map_err(to_error_response)?,
+        None => false,
+    };
     // The chat's session name is the key the runner admits turns under and
     // the registry tracks runs by.
     let session_key = state
@@ -696,7 +705,7 @@ pub async fn get_chat_messages(
         Some(key) => state.run_registry.pending_ask_for_session(key).await,
         None => None,
     };
-    Ok(Json(ChatMessagesResponse { messages, total_messages: total, active_run, pending_ask }))
+    Ok(Json(ChatMessagesResponse { messages, total_messages: total, has_more, active_run, pending_ask }))
 }
 #[cfg(test)]
 mod pending_ask_tests {
