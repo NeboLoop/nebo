@@ -1717,6 +1717,21 @@ impl PluginTool {
             Vec::new()
         };
 
+        // A plugin is executed directly, never through a shell, so a shell
+        // operator arrives at the binary as a positional argument and its
+        // parser refuses it ("error: unexpected argument '|' found", shopify
+        // 2026-09-16). The model reads that as a bad query and starts guessing
+        // at the command instead of dropping the pipe. Say what happened.
+        if let Some(op) = shell_operator(&args) {
+            return ToolResult::error(format!(
+                "`{op}` is a shell operator and `{}` runs directly, with no shell — so `{op}` \
+                 was handed to it as an argument and it refused. Run the command without it: the \
+                 whole output comes back here for you to read. To get less back, narrow the \
+                 command itself (a filter, a smaller query); there is no pipe to filter through.",
+                pi.resource
+            ));
+        }
+
         // Forgive a leading plugin-name token. Models often prefix the plugin
         // slug (e.g. `gws calendar events list`); the binary expects a service
         // first (`calendar events list`), so a leading `gws` makes it see
@@ -2526,6 +2541,20 @@ fn open_auth_url(slug: &str, url: &str, broadcaster: &Option<crate::web_tool::Br
             }),
         );
     }
+}
+
+/// The first shell operator sitting among parsed args, if any. A plugin runs
+/// without a shell, so one of these is never something the binary can use — it
+/// is a pipeline the model wrote by hand. A token straight after a flag is that
+/// flag's value (`--filter '>'`), not an operator.
+fn shell_operator(args: &[String]) -> Option<&str> {
+    const OPS: [&str; 8] = ["|", "||", "&&", ";", ">", ">>", "<", "&"];
+    args.iter()
+        .enumerate()
+        .find(|(i, a)| {
+            OPS.contains(&a.as_str()) && !(*i > 0 && args[i - 1].starts_with('-'))
+        })
+        .map(|(_, a)| a.as_str())
 }
 
 /// Pull `--key value` flags from a shlex-parsed command. The leading verb is
@@ -3440,5 +3469,20 @@ mod budget_and_install_tests {
         assert!(shown.content.ends_with("The command's own result:\nNot authenticated"), "{}", shown.content);
         let quick = bounded(&budget, "doctor", "x", async { 7 }).await;
         assert_eq!(quick, Ok(7));
+    }
+
+    #[test]
+    fn a_hand_written_pipeline_is_named_as_the_problem() {
+        let split = |c: &str| shlex::split(c).unwrap();
+        // The shopify case: the model piped graphql output into grep.
+        let args = split("graphql --query '{ __type(name: \"Mutation\") { fields { name } } }' | grep -A 20 inventorySetQuantities");
+        assert_eq!(shell_operator(&args), Some("|"));
+        // Every operator a shell would honour and a plugin cannot.
+        for c in ["a && b", "a || b", "a ; b", "a > f", "a >> f", "a < f", "a &"] {
+            assert!(shell_operator(&split(c)).is_some(), "{c}");
+        }
+        // A flag's own value is not an operator, however it looks.
+        assert_eq!(shell_operator(&split("orders list --filter '>'")), None);
+        assert_eq!(shell_operator(&split("products list --limit 20")), None);
     }
 }
