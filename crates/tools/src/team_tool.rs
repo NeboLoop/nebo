@@ -128,7 +128,7 @@ impl TeamTool {
         // organizer and the primary stays outside the roster. Every other
         // employee joins the team it creates, as organizer.
         let caller = Self::caller_agent_id(store, ctx);
-        let organizer = if caller == PRIMARY_AGENT_ID { String::new() } else { caller };
+        let mut organizer = if caller == PRIMARY_AGENT_ID { String::new() } else { caller };
         let mut member_ids: Vec<String> = Vec::new();
         let mut unknown: Vec<String> = Vec::new();
         for label in Self::labels(&input["agents"]) {
@@ -139,6 +139,20 @@ impl TeamTool {
                     }
                 }
                 None => unknown.push(label),
+            }
+        }
+        // A named lead: the employee that answers the owner and hands work to
+        // the others by mention. Named by the primary on the owner's behalf,
+        // or by any employee that would otherwise lead its own team.
+        if let Some(label) = input["lead"].as_str().map(str::trim).filter(|l| !l.is_empty()) {
+            match team::resolve_agent(store, label) {
+                Some(a) => {
+                    if !member_ids.contains(&a.id) {
+                        member_ids.push(a.id.clone());
+                    }
+                    organizer = a.id;
+                }
+                None => unknown.push(label.to_string()),
             }
         }
         if !unknown.is_empty() {
@@ -175,9 +189,16 @@ impl TeamTool {
                 ToolResult::ok(format!(
                     "Team \"{}\" exists (id: {}). Members: {}.{} It works locally on this Nebo. \
                      Start the work by posting the first ask: team(action: \"send\", team: \"{}\", \
-                     text: \"...\") — every member reads it and each may answer once; add \
-                     mention: [\"Member Name\"] to ask specific members to act.",
-                    t.name, t.id, members, mirror, t.name
+                     text: \"...\") — the lead answers and hands steps to teammates by mention; add \
+                     mention: [\"Member Name\"] to ask specific members, or write @everyone in the \
+                     text to ask the whole team.{}",
+                    t.name, t.id, members, mirror, t.name,
+                    if t.organizer_agent_id.is_empty() {
+                        " This team has no lead yet, so every member answers an owner post; set one \
+                         with team(action: \"update\", team: \"...\", lead: \"Employee Name\")."
+                    } else {
+                        ""
+                    }
                 ))
                 .with_payload(serde_json::json!({
                     "kind": "team_created",
@@ -354,6 +375,98 @@ impl TeamTool {
         }
     }
 
+    /// Change a team's name, mission, members or lead — through the ONE rule
+    /// set the app's edit dialog uses (`team::update`). Fields left out keep
+    /// their value; `lead: "owner"` (or "") makes the team owner-led.
+    pub fn update(&self, input: &serde_json::Value) -> ToolResult {
+        let store = match self.store() {
+            Ok(s) => s,
+            Err(r) => return r,
+        };
+        let label = input["team"].as_str().or_else(|| input["team_id"].as_str()).unwrap_or("");
+        if label.is_empty() {
+            return ToolResult::error(errors::missing_param(
+                "team update",
+                "team",
+                "team(action: \"update\", team: \"Operations\", lead: \"Executive Assistant\")",
+            ));
+        }
+        let t = match team::resolve_team(store, label) {
+            Ok(t) => t,
+            Err(e) => return ToolResult::error(e),
+        };
+        let mut unknown: Vec<String> = Vec::new();
+        let members: Option<Vec<String>> = if input["agents"].is_array() {
+            let mut ids: Vec<String> = Vec::new();
+            for l in Self::labels(&input["agents"]) {
+                match team::resolve_agent(store, &l) {
+                    Some(a) => {
+                        if !ids.contains(&a.id) {
+                            ids.push(a.id);
+                        }
+                    }
+                    None => unknown.push(l),
+                }
+            }
+            Some(ids)
+        } else {
+            None
+        };
+        let lead: Option<String> = match input["lead"].as_str().map(str::trim) {
+            None => None,
+            Some("") | Some("owner") | Some("none") => Some(String::new()),
+            Some(l) => match team::resolve_agent(store, l) {
+                Some(a) => Some(a.id),
+                None => {
+                    unknown.push(l.to_string());
+                    None
+                }
+            },
+        };
+        if !unknown.is_empty() {
+            return ToolResult::error(format!(
+                "No employee named {} is installed, so the team was NOT changed.",
+                unknown.iter().map(|u| format!("\"{u}\"")).collect::<Vec<_>>().join(", ")
+            ));
+        }
+        // A lead named without a member list is added to the current members
+        // rather than refused: naming a lead is the ask, not a roster edit.
+        let members = match (&members, &lead) {
+            (None, Some(id)) if !id.is_empty() && !t.member_agent_ids.contains(id) => {
+                let mut m = t.member_agent_ids.clone();
+                m.push(id.clone());
+                Some(m)
+            }
+            _ => members,
+        };
+        match team::update(
+            store,
+            &t.id,
+            input["name"].as_str(),
+            input["mission"].as_str(),
+            members.as_deref(),
+            lead.as_deref(),
+        ) {
+            Ok(updated) => {
+                if let Some(bc) = self.broadcast.as_ref() {
+                    bc(team::TEAM_UPDATED_EVENT, serde_json::json!({ "team": updated }));
+                }
+                ToolResult::ok(format!(
+                    "Team \"{}\" updated. Members: {}. {}",
+                    updated.name,
+                    Self::roster_line(store, &updated),
+                    if updated.organizer_agent_id.is_empty() {
+                        "It is owner-led: every member answers an owner post.".to_string()
+                    } else {
+                        "The lead answers the owner and hands steps to teammates by mention.".to_string()
+                    }
+                ))
+                .with_payload(serde_json::json!({ "kind": "team_updated", "team": updated }))
+            }
+            Err(e) => ToolResult::error(format!("Failed to update team \"{}\": {e}", t.name)),
+        }
+    }
+
     pub fn members(&self, input: &serde_json::Value) -> ToolResult {
         let store = match self.store() {
             Ok(s) => s,
@@ -393,11 +506,13 @@ impl DynTool for TeamTool {
         format!(
             "Teams — groups of AI employees on THIS Nebo that share one mission and one conversation. \
              Teams work locally: no hub, no NeboAI connection needed. Every member reads every post; \
-             members you mention are asked to act, and each member answers once per open post.\n\
+             the LEAD answers the owner and hands steps to teammates by mention; members you mention \
+             are asked to act; @everyone in the text asks the whole team once.\n\
              USE THIS when: the user wants a team, a group of employees working together on a mission, or asks what teams exist.\n\n\
-             - {create} — Create a team. `agents` is REQUIRED: at least one coworker besides you (you are always a member). Returns the team id and members.\n\
-             - team(action: \"list\") — The teams on this Nebo with their missions and members\n\
-             - team(action: \"send\", team: \"Operations\", text: \"...\") — Post to the team; every member reads it and may answer once\n\
+             - {create} — Create a team. `agents` is REQUIRED: at least one coworker besides you (you are always a member). Add lead: \"Employee Name\" to name who runs the room; without one the owner leads and every member answers. Returns the team id and members.\n\
+             - team(action: \"update\", team: \"Operations\", lead: \"Executive Assistant\") — Change the lead (also name, mission, agents); lead: \"owner\" makes it owner-led\n\
+             - team(action: \"list\") — The teams on this Nebo with their missions, leads and members\n\
+             - team(action: \"send\", team: \"Operations\", text: \"...\") — Post to the team; the lead answers, or every member once if the team has no lead\n\
              - team(action: \"send\", team: \"Operations\", text: \"...\", mention: [\"Executive Assistant\"]) — Ask specific members to act\n\
              - team(action: \"messages\", team: \"Operations\", limit: 20) — Read the team's conversation\n\
              - team(action: \"members\", team: \"Operations\") — Who is in the team\n\n\
@@ -413,16 +528,17 @@ impl DynTool for TeamTool {
                 "action": {
                     "type": "string",
                     "description": "REQUIRED. What to do.",
-                    "enum": ["create", "list", "send", "messages", "members"]
+                    "enum": ["create", "update", "list", "send", "messages", "members"]
                 },
-                "name": { "type": "string", "description": "Team name (create)" },
-                "mission": { "type": "string", "description": "What the team exists to accomplish (create)" },
+                "name": { "type": "string", "description": "Team name (create; update to rename)" },
+                "mission": { "type": "string", "description": "What the team exists to accomplish (create, update)" },
                 "agents": {
                     "type": "array",
                     "items": { "type": "string" },
-                    "description": "REQUIRED for create: employee names to bring into the team — at least one besides yourself. A team with nobody to work with is refused."
+                    "description": "REQUIRED for create: employee names to bring into the team — at least one besides yourself. A team with nobody to work with is refused. On update: the full new member list."
                 },
-                "team": { "type": "string", "description": "Team name or id (send, messages, members)" },
+                "lead": { "type": "string", "description": "Employee name that leads the team — answers the owner and delegates by mention (create, update). \"owner\" on update makes the team owner-led." },
+                "team": { "type": "string", "description": "Team name or id (update, send, messages, members)" },
                 "text": { "type": "string", "description": "Post text (send)" },
                 "mention": {
                     "type": "array",
@@ -448,15 +564,16 @@ impl DynTool for TeamTool {
             let action = input["action"].as_str().unwrap_or("").trim();
             match action {
                 "create" => self.create(&input, ctx).await,
+                "update" | "edit" => self.update(&input),
                 "list" => self.list(),
                 "send" | "post" => self.send(&input, ctx).await,
                 "messages" | "history" => self.messages(&input),
                 "members" => self.members(&input),
                 "" => ToolResult::error(
-                    "Action is required. Available: create, list, send, messages, members",
+                    "Action is required. Available: create, update, list, send, messages, members",
                 ),
                 other => ToolResult::error(format!(
-                    "Unknown team action: {}. Available: create, list, send, messages, members",
+                    "Unknown team action: {}. Available: create, update, list, send, messages, members",
                     other
                 )),
             }
@@ -512,6 +629,45 @@ mod tests {
         let listed = tool.execute_dyn(&ctx, serde_json::json!({"action": "list"})).await;
         assert!(listed.content.contains("Operations"), "{}", listed.content);
         assert!(listed.content.contains("Chief of Staff (lead"), "{}", listed.content);
+    }
+
+    /// The primary creates a team on the owner's behalf and names the lead;
+    /// later the lead can be changed through update, by name.
+    #[tokio::test]
+    async fn primary_names_a_lead_and_can_change_it() {
+        let s = store();
+        install(&s, "ea", "Executive Assistant");
+        install(&s, "bk", "Bookkeeper");
+        let tool = TeamTool::new(Some(s.clone()), None, None, crate::coworker::new_rail_cell());
+        let ctx = ToolContext {
+            session_key: format!("agent:{PRIMARY_AGENT_ID}:web"),
+            ..ToolContext::default()
+        };
+        let res = tool
+            .execute_dyn(
+                &ctx,
+                serde_json::json!({
+                    "action": "create", "name": "Back Office", "mission": "Books and calendar",
+                    "agents": ["Executive Assistant", "Bookkeeper"], "lead": "Bookkeeper"
+                }),
+            )
+            .await;
+        assert!(!res.is_error, "{}", res.content);
+        let t = &s.list_teams().unwrap()[0];
+        assert_eq!(t.organizer_agent_id, "bk");
+        assert!(!res.content.contains("no lead yet"), "{}", res.content);
+
+        let res = tool
+            .execute_dyn(&ctx, serde_json::json!({ "action": "update", "team": "Back Office", "lead": "Executive Assistant" }))
+            .await;
+        assert!(!res.is_error, "{}", res.content);
+        assert_eq!(s.list_teams().unwrap()[0].organizer_agent_id, "ea");
+
+        let res = tool
+            .execute_dyn(&ctx, serde_json::json!({ "action": "update", "team": "Back Office", "lead": "Nobody Here" }))
+            .await;
+        assert!(res.is_error && res.content.contains("NOT changed"), "{}", res.content);
+        assert_eq!(s.list_teams().unwrap()[0].organizer_agent_id, "ea");
     }
 
     /// A comm plugin that reports no loops (loopback) is the same as none.
