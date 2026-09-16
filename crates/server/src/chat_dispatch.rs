@@ -952,7 +952,21 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                 .as_ref()
                                 .map(|tc| tc.input["action"].as_str() == Some("read"))
                                 .unwrap_or(false);
-                            if event.error.is_none() && !is_file_read {
+                            // The browser screenshots itself after every navigate,
+                            // click, type and scroll. Those are the model's eyes,
+                            // not media the owner asked for: one session clicking
+                            // through a Shopify admin hung ~60 near-identical and
+                            // blank frames on a single message. Only a screenshot
+                            // the model deliberately took attaches.
+                            let is_incidental_browser_frame = event
+                                .tool_call
+                                .as_ref()
+                                .map(|tc| {
+                                    tc.name == "web"
+                                        && tc.input["action"].as_str() != Some("screenshot")
+                                })
+                                .unwrap_or(false);
+                            if event.error.is_none() && !is_file_read && !is_incidental_browser_frame {
                                 if let Some(url) = &event.image_url {
                                     if let Some(app_url) = to_app_artifact_url(url) {
                                         if !app_file_artifacts.contains(&app_url) {
