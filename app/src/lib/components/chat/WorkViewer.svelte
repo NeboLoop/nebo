@@ -76,6 +76,20 @@
   let error = $state('');
   /** Rendered HTML for markdown / docx / code modes. */
   let renderedHtml = $state('');
+  /** A markdown file's YAML front matter (name, description, …), shown as a
+   *  small metadata block instead of being parsed as a heading. */
+  let frontMatter = $state<[string, string][]>([]);
+
+  function splitFrontMatter(text: string): { meta: [string, string][]; body: string } {
+    const m = text.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
+    if (!m) return { meta: [], body: text };
+    const meta: [string, string][] = [];
+    for (const line of m[1].split(/\r?\n/)) {
+      const kv = line.match(/^([A-Za-z0-9_-]+):\s*(.*)$/);
+      if (kv) meta.push([kv[1], kv[2].replace(/^["']|["']$/g, '')]);
+    }
+    return { meta, body: text.slice(m[0].length) };
+  }
   /** Parsed sheet data: per sheet, name + rows. */
   let sheets = $state<{ name: string; rows: string[][]; total: number }[]>([]);
   let pdfContainer = $state<HTMLDivElement | null>(null);
@@ -160,7 +174,9 @@
       }
       switch (mode) {
         case 'markdown': {
-          renderedHtml = renderHtml(await fetchText());
+          const { meta, body } = splitFrontMatter(await fetchText());
+          frontMatter = meta;
+          renderedHtml = renderHtml(body);
           break;
         }
         case 'html':
@@ -310,10 +326,20 @@
   {:else if sourceView}
     <div data-selectable class="text-xs leading-relaxed rounded-lg overflow-x-auto [&_pre]:p-4 [&_pre]:rounded-lg">{@html renderedHtml}</div>
   {:else if mode === 'markdown'}
-    <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-    <div data-selectable class="prose prose-sm max-w-none" onclick={oncontentclick}>{@html renderedHtml}</div>
+    <!-- Documents read at a page's width, however wide the panel is. -->
+    <div class="max-w-[52rem] mx-auto">
+      {#if frontMatter.length}
+        <div class="mb-5 rounded-lg bg-base-200/50 px-3.5 py-2.5 text-xs flex flex-col gap-1">
+          {#each frontMatter as [key, value]}
+            <div class="flex gap-2 min-w-0"><span class="text-base-content/50 shrink-0 w-24 truncate">{key}</span><span class="text-base-content/80 min-w-0">{value}</span></div>
+          {/each}
+        </div>
+      {/if}
+      <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+      <div data-selectable class="prose prose-sm max-w-none" onclick={oncontentclick}>{@html renderedHtml}</div>
+    </div>
   {:else if mode === 'docx'}
-    <div bind:this={docxContainer}></div>
+    <div class="max-w-[52rem] mx-auto" bind:this={docxContainer}></div>
   {:else if mode === 'code'}
     <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
     <div class="text-xs leading-relaxed rounded-lg overflow-x-auto [&_pre]:p-4 [&_pre]:rounded-lg" onclick={oncontentclick}>{@html renderedHtml}</div>

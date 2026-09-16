@@ -988,9 +988,77 @@
 
   // Tool timeline collapse state, keyed by the owning reply's id (stable across
   // re-renders — index keys would drift as new messages stream in).
-  let collapsedToolGroups = $state<Record<string, boolean>>({});
-  function toggleToolGroup(key: string) {
-    collapsedToolGroups[key] = !collapsedToolGroups[key];
+  // ── The activity panel: one per assistant turn ──────────────────────────
+  // A turn is every assistant segment between two user messages. Everything
+  // the model did before its answer — the one-line note it wrote before each
+  // tool call, and the tool calls themselves — is one panel, folded under a
+  // summary line ("Searched the web, read a page, ran a command"); the answer
+  // is the last segment's text and stands alone below it. Rows open on click.
+  type AssistantMsg = Extract<Message, { type: 'assistant' }>;
+  type ActivityStep =
+    | { kind: 'note'; key: string; lines: string[] }
+    | { kind: 'tool'; key: string; tool: ToolMsg };
+
+  /** Open state per turn; unset means "open while the turn is live". */
+  let activityOpen = $state<Record<string, boolean>>({});
+
+  function turnSegments(idx: number): AssistantMsg[] {
+    const out: AssistantMsg[] = [];
+    for (let i = idx; i < groupedMessages.length; i++) {
+      const m = groupedMessages[i];
+      if (m.type !== 'assistant') break;
+      out.push(m);
+    }
+    return out;
+  }
+  /** The text of a segment that ran tools is a note about the next step; the
+   *  text of the segment that ran none is the answer. Consecutive notes fold
+   *  into one row whose label is the latest. */
+  function activitySteps(segs: AssistantMsg[], keyId: string): ActivityStep[] {
+    const steps: ActivityStep[] = [];
+    segs.forEach((seg, si) => {
+      const tools = nonCoworkerTools(seg.tools);
+      const isAnswer = si === segs.length - 1 && tools.length === 0;
+      const note = seg.content?.trim();
+      if (note && !isAnswer) {
+        const prev = steps[steps.length - 1];
+        if (prev?.kind === 'note') prev.lines.push(note);
+        else steps.push({ kind: 'note', key: `${keyId}-n${si}`, lines: [note] });
+      }
+      tools.forEach((tool, ti) => steps.push({ kind: 'tool', key: `${keyId}-${si}-${ti}`, tool }));
+    });
+    return steps;
+  }
+  function turnAnswer(segs: AssistantMsg[]): string {
+    const last = segs[segs.length - 1];
+    return last && nonCoworkerTools(last.tools).length === 0 ? last.content : '';
+  }
+  /** A note's row shows plain words; markdown marks are for the answer. */
+  function plainNote(line: string): string {
+    return line.replace(/[*_`#>]+/g, '').replace(/\s+/g, ' ').trim();
+  }
+  /** What a tool row says after its label: the search query, the page's
+   *  address (as a link), or the plugin command. */
+  function stepMeta(tool: ToolMsg): { text: string; href?: string } | null {
+    const r = (tool.request ?? {}) as Record<string, unknown>;
+    const str = (k: string) => (typeof r[k] === 'string' ? (r[k] as string) : '');
+    const url = str('url');
+    if (url) return { text: url, href: url };
+    const query = str('query') || str('q');
+    if (query) return { text: query };
+    if (tool.name !== 'os') {
+      const cmd = str('command');
+      if (cmd) return { text: cmd };
+    }
+    return null;
+  }
+  function shellCommand(tool: ToolMsg): string {
+    const r = (tool.request ?? {}) as Record<string, unknown>;
+    return tool.name === 'os' && typeof r.command === 'string' ? r.command : '';
+  }
+  function canExpand(tool: ToolMsg): boolean {
+    if (tool.status === 'running') return false;
+    return !!(researchState(tool) || runReceipt(tool) || searchPayload(tool) || tool.response || Object.keys(tool.request ?? {}).length);
   }
 
   // Individual tool result expand state
@@ -1271,52 +1339,81 @@
       </div>
     {/if}
 
-    <!-- Tool timeline for one reply ("Used N tools"), rendered inside the assistant
-         message that ran the tools so they can never detach. keyId = reply id. -->
-    {#snippet toolTimeline(tools: ToolMsg[], keyId: string)}
-      {@const hasRunning = tools.some((t: ToolMsg) => t.status === 'running')}
-      {@const isOpen = !!collapsedToolGroups[keyId]}
-      <div class="max-w-[640px] my-1">
+    <!-- The activity panel for one turn: notes and tool calls in order,
+         folded under a summary line. Rows open on click; a page's address
+         is a link. keyId = the turn's first segment id. -->
+    {#snippet activityPanel(steps: ActivityStep[], tools: ToolMsg[], keyId: string, live: boolean)}
+      {@const open = activityOpen[keyId] ?? live}
+      <div class="max-w-[640px] my-1.5">
         <button
-          class="flex items-center gap-1.5 text-xs text-base-content/50 cursor-pointer border-none p-0 hover:text-base-content/70 transition-colors {isOpen ? 'tool-timeline-head' : 'bg-transparent'}"
-          onclick={() => toggleToolGroup(keyId)}
+          type="button"
+          class="flex items-center gap-1.5 text-xs text-base-content/50 cursor-pointer bg-transparent border-none p-0 hover:text-base-content/70 transition-colors"
+          aria-expanded={open}
+          onclick={() => (activityOpen[keyId] = !open)}
         >
-          {#if hasRunning}
+          {#if live && tools.some((t: ToolMsg) => t.status === 'running')}
             <svg width="14" height="14" viewBox="0 0 14 14" class="animate-spin text-primary shrink-0"><circle cx="7" cy="7" r="5.5" stroke="currentColor" stroke-width="1.5" fill="none" stroke-dasharray="20 14" stroke-linecap="round"/></svg>
-            <span class="text-xs text-base-content/70 truncate max-w-[60vw] md:max-w-md">{workLineLabel(tools)}</span>
-          {:else}
-            {@const wd = workLineDuration(tools)}
-            <svg width="13" height="13" viewBox="0 0 18 18" fill="none" class="text-base-content/50 shrink-0"><path d="M10.5 3.5C10.5 2.67 11.17 2 12 2C12.5 2 13.09 2.24 13.45 2.59L15.41 4.55C15.76 4.91 16 5.5 16 6C16 6.83 15.33 7.5 14.5 7.5C14.16 7.5 13.85 7.38 13.6 7.18L12.18 8.6C12.38 8.85 12.5 9.16 12.5 9.5C12.5 10.33 11.83 11 11 11C10.67 11 10.36 10.88 10.11 10.69L5.69 15.11C5.5 15.3 5.25 15.41 5 15.41C4.75 15.41 4.5 15.3 4.31 15.11L2.89 13.69C2.7 13.5 2.59 13.25 2.59 13C2.59 12.75 2.7 12.5 2.89 12.31L7.31 7.89C7.12 7.64 7 7.33 7 7C7 6.17 7.67 5.5 8.5 5.5C8.84 5.5 9.15 5.62 9.4 5.82L10.82 4.4C10.62 4.15 10.5 3.84 10.5 3.5Z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>
-            <span class="text-xs truncate max-w-[60vw] md:max-w-md">{workLineLabel(tools)}</span>
-            {#if wd}<span class="text-xs text-base-content/40">· {wd}</span>{/if}
-            <span class="text-xs transition-transform {isOpen ? 'rotate-180' : ''}">&darr;</span>
           {/if}
+          <span class="truncate max-w-[60vw] md:max-w-md">{tools.length ? workLineLabel(tools) : $t('chat.working')}</span>
+          <span class="shrink-0 transition-transform {open ? 'rotate-90' : ''}">&rsaquo;</span>
         </button>
 
-        {#if isOpen}
-          <div class="mt-2 ml-1 flex flex-col">
-            {#each tools as tool, tidx}
-              {@const resultKey = `${keyId}-${tidx}`}
-              {@const isExpanded = expandedResults[resultKey]}
-              <div class="flex items-start gap-2.5">
-                <div class="flex flex-col items-center shrink-0 w-5">
-                  {#if tool.status === 'running'}
-                    <svg width="18" height="18" viewBox="0 0 18 18" class="text-primary shrink-0 animate-spin"><circle cx="9" cy="9" r="6" stroke="currentColor" stroke-width="1.5" fill="none" stroke-dasharray="22 16" stroke-linecap="round"/></svg>
-                  {:else}
-                    <svg width="18" height="18" viewBox="0 0 18 18" fill="none" class="text-base-content shrink-0">
-                      <path d="M10.5 3.5C10.5 2.67 11.17 2 12 2C12.5 2 13.09 2.24 13.45 2.59L15.41 4.55C15.76 4.91 16 5.5 16 6C16 6.83 15.33 7.5 14.5 7.5C14.16 7.5 13.85 7.38 13.6 7.18L12.18 8.6C12.38 8.85 12.5 9.16 12.5 9.5C12.5 10.33 11.83 11 11 11C10.67 11 10.36 10.88 10.11 10.69L5.69 15.11C5.5 15.3 5.25 15.41 5 15.41C4.75 15.41 4.5 15.3 4.31 15.11L2.89 13.69C2.7 13.5 2.59 13.25 2.59 13C2.59 12.75 2.7 12.5 2.89 12.31L7.31 7.89C7.12 7.64 7 7.33 7 7C7 6.17 7.67 5.5 8.5 5.5C8.84 5.5 9.15 5.62 9.4 5.82L10.82 4.4C10.62 4.15 10.5 3.84 10.5 3.5Z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>
-                    </svg>
-                  {/if}
-                  {#if tidx < tools.length - 1 || isExpanded}
-                    <div class="w-px flex-1 min-h-[28px] bg-base-300"></div>
+        {#if open}
+          <div class="mt-1.5 rounded-xl border border-base-300 bg-base-100 divide-y divide-base-300 overflow-hidden">
+            {#each steps as step (step.key)}
+              {#if step.kind === 'note'}
+                {@const expandable = step.lines.length > 1}
+                {@const isExpanded = !!expandedResults[step.key]}
+                <div class="px-3 py-2 text-xs">
+                  <button
+                    type="button"
+                    class="flex w-full items-center gap-1.5 text-left bg-transparent border-none p-0 text-base-content/50 {expandable ? 'cursor-pointer hover:text-base-content/70' : 'cursor-default'}"
+                    disabled={!expandable}
+                    aria-expanded={expandable ? isExpanded : undefined}
+                    onclick={() => toggleResult(step.key)}
+                  >
+                    <span class="truncate flex-1">{plainNote(step.lines[step.lines.length - 1])}</span>
+                    {#if expandable}<span class="shrink-0 transition-transform {isExpanded ? 'rotate-90' : ''}">&rsaquo;</span>{/if}
+                  </button>
+                  {#if expandable && isExpanded}
+                    <div class="mt-1.5 flex flex-col gap-1 text-base-content/70">
+                      {#each step.lines as line}<p class="m-0">{plainNote(line)}</p>{/each}
+                    </div>
                   {/if}
                 </div>
-                <div class="flex-1 min-w-0 pb-3">
-                  <div class="flex items-baseline gap-2 text-xs">
-                    <span class="truncate {tool.status === 'running' ? 'text-base-content/70' : ''}">{tool.status === 'running' ? (tool.label ?? tool.name) : stepOutcome(tool)}{#if tool.status === 'running' && tool.statusText}<span class="text-base-content/50 ml-1">{tool.statusText}</span>{/if}</span>
-                    {#if $devMode}<span class="font-mono text-base-content/40 shrink-0">{strapSig(tool)}</span>{/if}
-                    {#if tool.durationMs}<span class="text-base-content/40 shrink-0">{fmtDuration(tool.durationMs)}</span>{/if}
+              {:else}
+                {@const tool = step.tool}
+                {@const meta = stepMeta(tool)}
+                {@const expandable = canExpand(tool)}
+                {@const isExpanded = !!expandedResults[step.key]}
+                {@const cmd = shellCommand(tool)}
+                <div class="px-3 py-2 text-xs">
+                  <div class="flex items-center gap-2 min-w-0">
+                    {#if tool.status === 'running'}
+                      <svg width="12" height="12" viewBox="0 0 18 18" class="text-primary shrink-0 animate-spin"><circle cx="9" cy="9" r="6" stroke="currentColor" stroke-width="1.5" fill="none" stroke-dasharray="22 16" stroke-linecap="round"/></svg>
+                    {/if}
+                    <button
+                      type="button"
+                      class="flex min-w-0 items-center gap-2 text-left bg-transparent border-none p-0 {expandable ? 'cursor-pointer' : 'cursor-default'} {meta?.href ? 'shrink-0' : 'flex-1'}"
+                      disabled={!expandable}
+                      aria-expanded={expandable ? isExpanded : undefined}
+                      onclick={() => toggleResult(step.key)}
+                    >
+                      <span class="shrink-0 {tool.status === 'error' ? 'text-error' : 'text-base-content/50'}">{tool.status === 'running' ? (tool.label ?? tool.name) : stepOutcome(tool)}{#if tool.status === 'running' && tool.statusText}<span class="text-base-content/40 ml-1">{tool.statusText}</span>{/if}</span>
+                      {#if meta && !meta.href}<span class="truncate text-base-content/80" title={meta.text}>{meta.text}</span>{/if}
+                      {#if $devMode}<span class="font-mono text-base-content/40 shrink-0">{strapSig(tool)}</span>{/if}
+                      {#if tool.durationMs}<span class="text-base-content/40 shrink-0">{fmtDuration(tool.durationMs)}</span>{/if}
+                      {#if expandable && !meta?.href}<span class="shrink-0 text-base-content/40 transition-transform {isExpanded ? 'rotate-90' : ''}">&rsaquo;</span>{/if}
+                    </button>
+                    {#if meta?.href}
+                      <a href={meta.href} target="_blank" rel="noopener noreferrer" class="truncate text-primary underline flex-1" title={meta.href}>{meta.text}</a>
+                      {#if expandable}
+                        <button type="button" class="shrink-0 bg-transparent border-none p-0 cursor-pointer text-base-content/40 transition-transform {isExpanded ? 'rotate-90' : ''}" aria-expanded={isExpanded} aria-label={$t('chat.result')} onclick={() => toggleResult(step.key)}>&rsaquo;</button>
+                      {/if}
+                    {/if}
                   </div>
+                  {#if isExpanded}
+                    <div class="mt-2 flex flex-col gap-2">
                   {#if researchState(tool)}
                     {@const rs = researchState(tool)!}
                     <div class="mt-2 max-w-[560px] rounded-xl border border-base-300 bg-base-100 px-3.5 py-3">
@@ -1412,45 +1509,36 @@
                       </div>
                     {/each}
                   {/if}
-                  {#if tool.status !== 'running'}
-                    {#if isExpanded}
-                      <div class="mt-2 rounded-lg border border-base-300 bg-base-100 overflow-y-auto max-h-80">
-                        <div class="px-3.5 pt-3 pb-2">
-                          <div class="text-xs font-semibold mb-1.5">{$t('chat.request')}</div>
-                          <pre class="text-xs font-mono leading-relaxed whitespace-pre-wrap">{JSON.stringify(tool.request, null, 2)}</pre>
+                      {#if cmd}
+                        <div class="rounded-lg bg-base-200/60 px-3 py-2 max-h-[200px] overflow-y-auto">
+                          <div class="text-[11px] font-mono text-base-content/50 mb-1">bash</div>
+                          <pre class="text-xs font-mono leading-relaxed whitespace-pre-wrap m-0">{cmd}</pre>
                         </div>
-                        <div class="px-3.5 pt-2 pb-3 border-t border-base-300">
-                          <div class="text-xs font-semibold mb-1.5">{$t('chat.response')}</div>
-                          <pre class="text-xs font-mono leading-relaxed whitespace-pre-wrap">{tool.response}</pre>
+                        {#if tool.response}
+                          <div class="rounded-lg bg-base-200/60 px-3 py-2 max-h-[200px] overflow-y-auto">
+                            <div class="text-[11px] font-medium text-base-content/50 mb-1">{$t('chat.output')}</div>
+                            <pre class="text-xs font-mono leading-relaxed whitespace-pre-wrap m-0">{tool.response}</pre>
+                          </div>
+                        {/if}
+                      {:else if !searchPayload(tool) && !researchState(tool) && !runReceipt(tool)}
+                        <div class="rounded-lg border border-base-300 bg-base-100 overflow-y-auto max-h-[200px]">
+                          <div class="px-3 pt-2 pb-1.5">
+                            <div class="text-[11px] font-medium text-base-content/50 mb-1">{$t('chat.request')}</div>
+                            <pre class="text-xs font-mono leading-relaxed whitespace-pre-wrap m-0">{JSON.stringify(tool.request, null, 2)}</pre>
+                          </div>
+                          {#if tool.response}
+                            <div class="px-3 pt-1.5 pb-2 border-t border-base-300">
+                              <div class="text-[11px] font-medium text-base-content/50 mb-1">{$t('chat.output')}</div>
+                              <pre class="text-xs font-mono leading-relaxed whitespace-pre-wrap m-0">{tool.response}</pre>
+                            </div>
+                          {/if}
                         </div>
-                      </div>
-                      <button
-                        class="mt-1.5 py-0.5 px-2 rounded text-xs font-medium bg-base-200 cursor-pointer border-none hover:bg-base-300 transition-colors"
-                        onclick={() => toggleResult(resultKey)}
-                      >{$t('chat.hide')}</button>
-                    {:else}
-                      <div class="mt-1">
-                        <button
-                          class="py-0.5 px-2 rounded text-xs font-medium cursor-pointer border-none transition-colors bg-base-200 hover:bg-base-300"
-                          onclick={() => toggleResult(resultKey)}
-                        >{$t('chat.result')}</button>
-                      </div>
-                    {/if}
+                      {/if}
+                    </div>
                   {/if}
                 </div>
-              </div>
+              {/if}
             {/each}
-            {#if !hasRunning}
-              <div class="flex items-center gap-2.5">
-                <div class="flex items-center justify-center w-5 shrink-0">
-                  <svg width="18" height="18" viewBox="0 0 18 18" fill="none" class="text-base-content">
-                    <circle cx="9" cy="9" r="7" stroke="currentColor" stroke-width="1.2"/>
-                    <path d="M6 9L8.25 11.25L12.25 6.75" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
-                  </svg>
-                </div>
-                <span class="text-xs">{$t('common.done')}</span>
-              </div>
-            {/if}
           </div>
         {/if}
       </div>
@@ -1588,50 +1676,55 @@
         </div>
 
       {:else if msg.type === 'assistant'}
-        {@const origIdx = originalIndices[idx]}
-        {@const nextGroup = groupedMessages[idx + 1]}
-        <!-- One assistant TURN reads as one container: narration segments
-             between tool groups flow as paragraphs; the time/copy/retry row
-             renders once, on the segment that ends the turn. -->
-        {@const isTurnEnd = nextGroup ? (nextGroup.type === 'user' || nextGroup.type === 'ask') : !isLoading}
-        {@const isTurnStart = idx === 0 || groupedMessages[idx - 1]?.type === 'user' || groupedMessages[idx - 1]?.type === 'ask'}
-        <div class="max-w-[640px] {isTurnStart ? 'mt-3' : 'mt-1.5'}">
-          {#if msg.delegateAgentName}
-            {@const da = allAgents.find(a => a.id === msg.delegateAgentId)}
-            <div class="flex items-center gap-1.5 mb-1">
-              <AgentAvatar name={da?.name ?? msg.delegateAgentName} color={da?.color} size="xs" />
-              <span class="text-xs font-medium">{msg.delegateAgentName}</span>
-            </div>
-          {/if}
-          <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-          <div class="text-sm leading-relaxed prose prose-sm max-w-none" onclick={handleWorkMentionClick}>
-            {@html linkWorkMentions(renderMarkdown(msg.content), (msg as any).workItems)}
-          </div>
-          <!-- Tools this reply ran, on the message itself — never a detached sibling.
-               Coworker sends are pulled OUT of the group and shown as events.
-               While the run is LIVE the work line stays up the whole time —
-               working must ALWAYS be visible, with no flicker between calls.
-               Only after the run ends does the telemetry line become developer
-               furniture, shown in dev mode (Settings → Developer). A failed step
-               is never furniture: it stays, so a refused call is visible after
-               the fact. -->
-          {#if nonCoworkerTools(msg.tools).length && ($devMode || nonCoworkerTools(msg.tools).some((t) => t.status === 'running' || t.status === 'error') || (isLoading && origIdx === groupedMessages.length - 1))}
-            {@render toolTimeline(nonCoworkerTools(msg.tools), msg.id ?? `m${origIdx}`)}
-          {/if}
-          {#each coworkerEvents(msg.tools) as ev, evIdx (evIdx)}
-            <a
-              href={ev.threadKey ? cwHref(ev.threadKey) : undefined}
-              class="flex items-center justify-center gap-1.5 my-2.5 text-xs text-base-content/60 no-underline {ev.threadKey ? 'hover:text-base-content transition-colors' : ''}"
-              title={ev.threadKey ? $t('coworkerThread.open') : undefined}
-            >
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="shrink-0"><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4Z"/></svg>
-              <span>{$t('chat.messagedCoworker')}</span>
-              <span class="font-medium text-base-content/80">{ev.to}</span>
-            </a>
-          {/each}
-          {#if msg.attachments?.length}
+        {@const isTurnStart = idx === 0 || groupedMessages[idx - 1]?.type !== 'assistant'}
+        <!-- One assistant TURN is one container, rendered from its first
+             segment: the activity panel (notes + tools, folded), then the
+             answer, then attachments, artifact cards, and the time/copy/retry
+             row. Later segments of the same turn render nothing themselves. -->
+        {#if isTurnStart}
+          {@const origIdx = originalIndices[idx]}
+          {@const segs = turnSegments(idx)}
+          {@const last = segs[segs.length - 1]}
+          {@const lastIdx = idx + segs.length - 1}
+          {@const lastOrigIdx = originalIndices[lastIdx]}
+          {@const nextGroup = groupedMessages[lastIdx + 1]}
+          {@const isTurnEnd = nextGroup ? (nextGroup.type === 'user' || nextGroup.type === 'ask') : !isLoading}
+          {@const keyId = msg.id ?? `m${origIdx}`}
+          {@const turnTools = segs.flatMap((sg) => nonCoworkerTools(sg.tools))}
+          {@const steps = activitySteps(segs, keyId)}
+          {@const answer = turnAnswer(segs)}
+          {@const turnAttachments = segs.flatMap((sg) => sg.attachments ?? [])}
+          <div class="max-w-[640px] mt-3">
+            {#if msg.delegateAgentName}
+              {@const da = allAgents.find(a => a.id === msg.delegateAgentId)}
+              <div class="flex items-center gap-1.5 mb-1">
+                <AgentAvatar name={da?.name ?? msg.delegateAgentName} color={da?.color} size="xs" />
+                <span class="text-xs font-medium">{msg.delegateAgentName}</span>
+              </div>
+            {/if}
+            {#if steps.length}
+              {@render activityPanel(steps, turnTools, keyId, !isTurnEnd)}
+            {/if}
+            {#if answer}
+              <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+              <div class="text-sm leading-relaxed prose prose-sm max-w-none" onclick={handleWorkMentionClick}>
+                {@html linkWorkMentions(renderMarkdown(answer), (last as any).workItems)}
+              </div>
+            {/if}
+            {#each segs.flatMap((sg) => coworkerEvents(sg.tools)) as ev, evIdx (evIdx)}
+              <a
+                href={ev.threadKey ? cwHref(ev.threadKey) : undefined}
+                class="flex items-center justify-center gap-1.5 my-2.5 text-xs text-base-content/60 no-underline {ev.threadKey ? 'hover:text-base-content transition-colors' : ''}"
+                title={ev.threadKey ? $t('coworkerThread.open') : undefined}
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="shrink-0"><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4Z"/></svg>
+                <span>{$t('chat.messagedCoworker')}</span>
+                <span class="font-medium text-base-content/80">{ev.to}</span>
+              </a>
+            {/each}
+          {#if turnAttachments.length}
             <div class="flex flex-wrap gap-2 mt-2">
-              {#each msg.attachments as att}
+              {#each turnAttachments as att}
                 {@const attType = getAttachmentType(att.mimeType)}
                 {#if attType === 'image'}
                   <button type="button" class="block p-0 bg-transparent border-0 cursor-zoom-in" onclick={() => (lightboxUrl = attSrc(att))} aria-label={$t('chat.viewImage')}>
@@ -1668,7 +1761,7 @@
             </div>
           {/if}
           <!-- Inline artifact cards for this message (populated by agent tool results) -->
-          {#each artifacts.filter(a => a.messageId === msg.id) as artifact}
+          {#each artifacts.filter(a => segs.some((sg) => sg.id === a.messageId)) as artifact}
             {@const ArtIcon = artifactIcons[artifact.kind]}
             <button
               class="flex items-center gap-3 mt-3 w-full max-w-xs p-3 rounded-xl border cursor-pointer transition-colors text-left {activeArtifactId === artifact.id && creationsOpen ? 'border-primary/40 bg-primary/5' : 'border-base-content/10 bg-base-200/30 hover:border-base-content/20 hover:bg-base-200/50'}"
@@ -1684,15 +1777,15 @@
 
           {#if isTurnEnd}
             <div class="flex items-center gap-1 mt-2">
-              {#if msg.time}
-                <span class="text-xs text-base-content/50 font-mono mr-1">{msg.time}</span>
+              {#if last.time}
+                <span class="text-xs text-base-content/50 font-mono mr-1">{last.time}</span>
               {/if}
               <button
-                class="w-7 h-7 rounded-md grid place-items-center {copiedIdx === origIdx ? 'text-success' : 'text-base-content/50 hover:text-base-content hover:bg-base-200'} cursor-pointer bg-transparent border-none transition-colors"
-                title={copiedIdx === origIdx ? $t('chat.copied') : $t('common.copy')}
-                onclick={() => copyMessage(msg.content, origIdx)}
+                class="w-7 h-7 rounded-md grid place-items-center {copiedIdx === lastOrigIdx ? 'text-success' : 'text-base-content/50 hover:text-base-content hover:bg-base-200'} cursor-pointer bg-transparent border-none transition-colors"
+                title={copiedIdx === lastOrigIdx ? $t('chat.copied') : $t('common.copy')}
+                onclick={() => copyMessage(answer, lastOrigIdx)}
               >
-                {#if copiedIdx === origIdx}
+                {#if copiedIdx === lastOrigIdx}
                   <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
                 {:else}
                   <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
@@ -1707,7 +1800,8 @@
               </button>
             </div>
           {/if}
-        </div>
+          </div>
+        {/if}
       {/if}
     {/each}
 

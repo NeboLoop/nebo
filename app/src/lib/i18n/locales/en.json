@@ -333,6 +333,7 @@
 		"artifactPresentation": "Presentation",
 		"artifactDocument": "Document",
 		"working": "Working...",
+		"output": "Output",
 		"tokensInOut": "{input} in · {output} out",
 		"tokenTooltip": "{total} total prompt · {overhead} system+tools · {cacheRead} cache read",
 		"outOfBalance": "You're out of usage balance — your plan limits, gift tokens, and credits are used up.",

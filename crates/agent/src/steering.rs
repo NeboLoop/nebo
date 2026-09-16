@@ -538,6 +538,10 @@ const INTERACTIVE_NARRATION_THRESHOLD: usize = 3;
 /// Interactive output-length trigger. A ≤100-word final ≈ 600 chars, so this
 /// only fires on genuine overrun rather than a normal milestone update.
 const INTERACTIVE_OUTPUT_CHAR_LIMIT: usize = 600;
+/// In interactive mode the prompt asks for one short line before a tool call
+/// (the note the chat folds into the activity panel). A note is well under
+/// this many characters; text past it alongside a tool call is narration.
+const INTERACTIVE_NOTE_CHAR_LIMIT: usize = 160;
 
 // 5. Output Discipline — proactive reinforcement for weaker models.
 // Deliberately uses forceful
@@ -613,7 +617,10 @@ impl Reminder for NarrationSuppressor {
             return None;
         }
 
-        // Count recent assistant messages that have BOTH text (>50 chars) AND tool calls
+        // Count recent assistant messages that have BOTH text AND tool calls.
+        // Interactive turns are allowed a one-line note per call; only text
+        // longer than a note counts as narration there.
+        let note_limit = if interactive { INTERACTIVE_NOTE_CHAR_LIMIT } else { 50 };
         let mut narrating_turns = 0usize;
         for msg in ctx.messages.iter().rev().take(6) {
             if msg.role != "assistant" {
@@ -623,7 +630,7 @@ impl Reminder for NarrationSuppressor {
                 .tool_calls
                 .as_ref()
                 .is_some_and(|tc| !tc.is_empty() && tc != "[]" && tc != "null");
-            if has_tool_calls && msg.content.len() > 50 {
+            if has_tool_calls && msg.content.len() > note_limit {
                 narrating_turns += 1;
             }
         }
@@ -639,9 +646,9 @@ impl Reminder for NarrationSuppressor {
             return None;
         }
         Some(if interactive {
-            "You're narrating too much. One line before your first tool call, then no text \
-             between tool calls: write when you have a finding, a result, or a question for \
-             the user."
+            "You're narrating too much. Before a tool call, at most one short line naming the \
+             step; write more only when you have a finding, a result, or a question for the \
+             user."
                 .to_string()
         } else {
             "Output ONLY the tool call: ZERO text before, between, or after. \
@@ -2464,8 +2471,12 @@ mod tests {
 
     #[test]
     fn test_interactive_narration_grace_then_sustained() {
+        // Longer than a one-line note: the prompt allows a short line naming
+        // the step alongside each call, so only prose counts as narration.
         let narration =
-            "Let me check your calendar and find the conflict before I move anything around.";
+            "Let me check your calendar and find the conflict before I move anything around. \
+             I'll look at today's events first, then the rest of the week, and compare each \
+             one against the slot you asked for so nothing else gets bumped.";
         let tc = r#"[{"name":"event","input":{"action":"list"}}]"#;
 
         // Grace window (iteration <= 2): the opening preamble is tolerated.
@@ -2495,7 +2506,20 @@ mod tests {
         let out = NarrationSuppressor
             .check(&rctx_prov(&many, tools::ExecutionMode::Interactive, "openai", 4))
             .expect("sustained narration fires in interactive mode");
-        assert!(out.contains("no text between tool calls"));
+        assert!(out.contains("at most one short line naming the step"));
+
+        // A one-line note alongside each call is what the prompt asks for and
+        // is never narration in interactive mode.
+        let mut notes = vec![make_msg("user", "do it")];
+        for _ in 0..4 {
+            notes.push(make_assistant_with_tools("Checking API limits for radius searches.", tc));
+        }
+        assert!(
+            NarrationSuppressor
+                .check(&rctx_prov(&notes, tools::ExecutionMode::Interactive, "openai", 6))
+                .is_none(),
+            "a short note per call is the asked-for shape, not narration"
+        );
     }
 
     #[test]
