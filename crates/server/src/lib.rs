@@ -2136,6 +2136,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         channel_context: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         channel_engagement: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         store_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+        codes_in_flight: Arc::new(codes::InFlightCodes::default()),
     };
 
     // The proof suite (`staffed_proof`) boots this real server in-process and

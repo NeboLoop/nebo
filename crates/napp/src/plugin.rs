@@ -1653,6 +1653,9 @@ impl PluginStore {
             downloading.insert(slug.to_string());
         }
 
+        // The previous install goes under this lock, so a concurrent caller
+        // waits (above) instead of deleting the files this one is extracting.
+        let _ = self.remove(slug);
         let result = self.install_from_napp_inner(slug, version, napp_data).await;
 
         // Release install lock

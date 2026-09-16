@@ -99,7 +99,40 @@ struct CodeHandlerResult {
 }
 
 /// Handle a detected code: broadcast processing event, dispatch to handler, broadcast result.
+/// The install codes being handled right now, so a code arriving twice — a
+/// second click, or the hub's own `tool_installed` echo of a redeem this
+/// device just made — never starts a second install of the same artifact.
+#[derive(Default)]
+pub struct InFlightCodes(std::sync::Mutex<std::collections::HashSet<String>>);
+
+/// Held for the life of one code's handling; the code leaves the set on drop.
+pub struct InFlightGuard<'a> {
+    set: &'a InFlightCodes,
+    code: String,
+}
+
+impl InFlightCodes {
+    /// Claim a code. `None` means it is already being handled.
+    pub fn begin(&self, code: &str) -> Option<InFlightGuard<'_>> {
+        let mut set = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if !set.insert(code.to_string()) {
+            return None;
+        }
+        Some(InFlightGuard { set: self, code: code.to_string() })
+    }
+}
+
+impl Drop for InFlightGuard<'_> {
+    fn drop(&mut self) {
+        self.set.0.lock().unwrap_or_else(|e| e.into_inner()).remove(&self.code);
+    }
+}
+
 pub async fn handle_code(state: &AppState, code_type: CodeType, code: &str, session_id: &str) {
+    let Some(_in_flight) = state.codes_in_flight.begin(code) else {
+        info!(code, session_id, "code is already being handled; the first run reports the result");
+        return;
+    };
     let (code_type_str, status_message) = match code_type {
         CodeType::Nebo => ("nebo", "Connecting to NeboAI..."),
         CodeType::Skill => ("skill", "Installing skill..."),
@@ -187,6 +220,9 @@ pub async fn handle_code(state: &AppState, code_type: CodeType, code: &str, sess
 /// Same logic as `handle_code` but returns the result as a string instead
 /// of broadcasting WebSocket events. Used by Slack, Telegram, etc.
 pub async fn handle_code_text(state: &AppState, code_type: CodeType, code: &str) -> String {
+    let Some(_in_flight) = state.codes_in_flight.begin(code) else {
+        return format!("{code} is already being installed.");
+    };
     let code_type_str = match code_type {
         CodeType::Nebo => "NeboAI connection",
         CodeType::Skill => "skill",
@@ -1349,8 +1385,10 @@ pub(crate) async fn fetch_and_install_plugin(
         .map_err(|e| NeboError::Internal(format!("download .napp for {name}: {e}")))?;
 
     // Pause the skill watcher during extraction to prevent premature reloads.
+    // The previous install is removed inside `install_from_napp`, under its
+    // per-slug lock, never here where a second caller could delete a first
+    // caller's freshly extracted files.
     state.skill_loader.pause_watcher();
-    let _ = state.plugin_store.remove(slug);
     let install = state
         .plugin_store
         .install_from_napp(slug, &version, &napp_data)
@@ -2966,5 +3004,20 @@ mod tests {
         assert!(detect_code("").is_none());
         // Invalid Crockford chars (I, L, O, U excluded)
         assert!(detect_code("NEBO-IIIL-OOOU").is_none());
+    }
+}
+
+#[cfg(test)]
+mod in_flight_tests {
+    use super::InFlightCodes;
+
+    #[test]
+    fn in_flight_codes_admit_one_run_at_a_time() {
+        let codes = InFlightCodes::default();
+        let first = codes.begin("PLUG-RYX9-G8HT").expect("first claim");
+        assert!(codes.begin("PLUG-RYX9-G8HT").is_none(), "the echo must not start a second run");
+        assert!(codes.begin("PLUG-OTHER-0000").is_some(), "another code is unaffected");
+        drop(first);
+        assert!(codes.begin("PLUG-RYX9-G8HT").is_some(), "free again once the first run ends");
     }
 }

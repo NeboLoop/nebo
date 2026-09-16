@@ -1542,6 +1542,21 @@ impl PluginTool {
                         });
                     }
 
+                    // A plugin whose account is entered in Nebo's own dialog
+                    // (auth type env) has no browser sign-in to fall through
+                    // to: its `auth login` takes the fields from the
+                    // environment, and run without them it serves a local
+                    // form and waits for minutes. Say where the account is
+                    // connected and end the turn.
+                    if auth.auth_type == "env" {
+                        return ToolResult::terminal(format!(
+                            "I couldn't reach **{}** — no working account is connected for this \
+                             employee. Connect one in the employee's Settings, Plugins, then ask \
+                             me again.",
+                            pi.resource
+                        ));
+                    }
+
                     // Interactive chat: fall through to today's browser OAuth path.
                     // Broadcast re-auth request so frontend can show a notification
                     if let Some(ref bc) = self.broadcaster {
