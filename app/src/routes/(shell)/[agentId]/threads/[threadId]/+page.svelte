@@ -2,7 +2,7 @@
   import { launchApp } from '$lib/apps/launcher';
   import FlowsPane from '$lib/components/flows/FlowsPane.svelte';
   import { goto } from '$lib/nav';
-  import { getContext, onMount, onDestroy } from 'svelte';
+  import { getContext, onMount, onDestroy, untrack } from 'svelte';
   import { sendClientEvent } from '$lib/api/gocliRequest';
   import { t } from 'svelte-i18n';
   import { page } from '$app/stores';
@@ -255,7 +255,12 @@
     loadedRawCount = 0;
     totalMessages = 0;
     const loadingFor = threadId;
-    if (chat.messages.length === 0) historyLoading = true;
+    // Read the transcript without depending on it: this function is called
+    // from the thread $effect and then writes chat.messages through
+    // setMessages. Tracking the read is how a loader effect re-fires itself —
+    // it cost ~57 fetches a second of the same thread, all day, until a
+    // machine went to sleep. The effect depends on threadId, and nothing else.
+    if (untrack(() => chat.messages.length) === 0) historyLoading = true;
     try {
       // Over a tunnel on a phone, one fetch failing is ordinary — and so is
       // the chunk import itself ("Importing a module script failed", iPhone,
