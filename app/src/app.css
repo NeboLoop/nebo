@@ -408,6 +408,13 @@
   50% { box-shadow: 0 0 0 10px transparent; }
 }
 
+/* The chat scroller anchors its own scroll position when older history is
+   prepended (ChatPane). The browser must not anchor as well: WebKit does now,
+   and the two adjustments together jumped the view a page past the reader. */
+.chat-scroller {
+	overflow-anchor: none;
+}
+
 /* Chat transcripts: a pasted URL or unbroken token must WRAP, never widen
    the bubble into horizontal scroll ("irregular fitting", 2026-09-01).
    Code blocks keep their own scrollbar; everything else breaks anywhere. */

@@ -827,7 +827,10 @@
     settleRAF = requestAnimationFrame(settle);
   }
 
-  // Preserve scroll position after older messages are prepended
+  // Preserve scroll position after older messages are prepended. The scroller
+  // opts out of the browser's own scroll anchoring (`.chat-scroller` in
+  // app.css): WebKit anchors too now, and the two together moved the view by
+  // the prepended height twice — a page past where the reader was.
   $effect(() => {
     if (isLoadingMore && messagesContainer) {
       prevScrollHeight = messagesContainer.scrollHeight;
@@ -957,8 +960,9 @@
       autoScrollEnabled = true;
     }
 
-    // Load older messages when scrolled near top
-    if (!isProgrammaticScroll() && scrollTop < 100 && hasMore && !isLoadingMore && onloadmore) {
+    // Load older messages a screen before the top, so the page is in place
+    // before the reader reaches it.
+    if (!isProgrammaticScroll() && scrollTop < clientHeight && hasMore && !isLoadingMore && onloadmore) {
       onloadmore();
     }
   }
@@ -1339,7 +1343,7 @@
         </button>
       </div>
     {/if}
-  <div bind:this={messagesContainer} role="log" onscroll={handleScroll} onwheel={handleWheel} ontouchstart={handleTouchStart} ontouchend={handleTouchEnd} class="h-full overflow-y-auto p-[18px_24px]">
+  <div bind:this={messagesContainer} role="log" onscroll={handleScroll} onwheel={handleWheel} ontouchstart={handleTouchStart} ontouchend={handleTouchEnd} class="chat-scroller h-full overflow-y-auto p-[18px_24px]">
   <div bind:this={messagesContent} class="max-w-3xl mx-auto flex flex-col gap-1" data-selectable>
     {#if isLoadingMore}
       <div class="flex justify-center py-3">
