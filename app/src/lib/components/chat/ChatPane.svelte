@@ -1288,7 +1288,7 @@
           </button>
         {/if}
         <div class="dropdown dropdown-end">
-          <div tabindex="0" role="button" aria-label={$t('common.more')} class="w-10 h-10 rounded-md flex items-center justify-center cursor-pointer text-base-content/60 hover:text-base-content hover:bg-base-200">
+          <div tabindex="0" role="button" aria-label={$t('common.more')} class="w-10 h-10 rounded-md flex items-center justify-center cursor-pointer text-base-content/70 hover:text-base-content hover:bg-base-200">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></svg>
           </div>
           <ul class="dropdown-content menu z-[55] mt-1 w-48 rounded-box border border-base-300 bg-base-100 p-1.5 shadow-lg">
@@ -1314,7 +1314,7 @@
   <!-- Messages / Empty state -->
   {#if !hasMessages && historyLoading}
     <div class="flex-1 flex items-center justify-center p-6">
-      <span class="loading loading-spinner loading-md text-base-content/60"></span>
+      <span class="loading loading-spinner loading-md text-base-content/70"></span>
     </div>
   {:else if !hasMessages && emptyTitle}
     <div class="flex-1 flex flex-col items-center justify-center gap-4 p-6">
@@ -1411,17 +1411,17 @@
                       aria-expanded={expandable ? isExpanded : undefined}
                       onclick={() => toggleResult(step.key)}
                     >
-                      <span class="shrink-0 text-base-content/70">{tool.status === 'running' ? (tool.label ?? tool.name) : stepOutcome(tool)}{#if tool.status === 'running' && tool.statusText}<span class="text-base-content/60 ml-1">{tool.statusText}</span>{/if}</span>
+                      <span class="shrink-0 text-base-content/70">{tool.status === 'running' ? (tool.label ?? tool.name) : stepOutcome(tool)}{#if tool.status === 'running' && tool.statusText}<span class="text-base-content/70 ml-1">{tool.statusText}</span>{/if}</span>
                       {#if tool.status === 'error'}<span class="shrink-0 text-error">{$t('chat.failed')}</span>{/if}
                       {#if meta && !meta.href}<span class="truncate text-base-content/80" title={meta.text}>{meta.text}</span>{/if}
-                      {#if $devMode}<span class="font-mono text-base-content/60 shrink-0">{strapSig(tool)}</span>{/if}
-                      {#if tool.durationMs}<span class="text-base-content/60 shrink-0">{fmtDuration(tool.durationMs)}</span>{/if}
-                      {#if expandable && !meta?.href}<span class="shrink-0 text-base-content/60 transition-transform {isExpanded ? 'rotate-90' : ''}">&rsaquo;</span>{/if}
+                      {#if $devMode}<span class="font-mono text-base-content/70 shrink-0">{strapSig(tool)}</span>{/if}
+                      {#if tool.durationMs}<span class="text-base-content/70 shrink-0">{fmtDuration(tool.durationMs)}</span>{/if}
+                      {#if expandable && !meta?.href}<span class="shrink-0 text-base-content/70 transition-transform {isExpanded ? 'rotate-90' : ''}">&rsaquo;</span>{/if}
                     </button>
                     {#if meta?.href}
                       <a href={meta.href} target="_blank" rel="noopener noreferrer" class="truncate text-primary underline flex-1" title={meta.href}>{meta.text}</a>
                       {#if expandable}
-                        <button type="button" class="shrink-0 bg-transparent border-none p-0 cursor-pointer text-base-content/60 transition-transform {isExpanded ? 'rotate-90' : ''}" aria-expanded={isExpanded} aria-label={$t('chat.result')} onclick={() => toggleResult(step.key)}>&rsaquo;</button>
+                        <button type="button" class="shrink-0 bg-transparent border-none p-0 cursor-pointer text-base-content/70 transition-transform {isExpanded ? 'rotate-90' : ''}" aria-expanded={isExpanded} aria-label={$t('chat.result')} onclick={() => toggleResult(step.key)}>&rsaquo;</button>
                       {/if}
                     {/if}
                   </div>
@@ -1831,7 +1831,7 @@
       </div>
     {/if}
     {#if !isLoading && contextStats && (contextStats.redundantReads > 0 || contextStats.compactionPasses > 0)}
-      <div class="max-w-[640px] mt-2 text-xs text-base-content/60">
+      <div class="max-w-[640px] mt-2 text-xs text-base-content/70">
         {$t('chat.contextStats', { values: { files: contextStats.filesReread, times: contextStats.redundantReads, passes: contextStats.compactionPasses } })}
       </div>
     {/if}
