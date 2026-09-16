@@ -1,0 +1,9 @@
+id: sc02-the-diff-is-a-diff
+name: "SC02 — The diff is a diff"
+description: |
+  The owner edits one word in one law. The pending entry's text is a unified
+  hunk of that file — header, @@, one line out, one line in, three lines of
+  context — not the whole file and not the files that did not change.
+target_component: staffed-company
+proof: staffed_proof::layers::the_diff_is_a_diff
+conversation: []

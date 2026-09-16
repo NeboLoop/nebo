@@ -142,6 +142,14 @@ pub struct AppState {
     pub plugin_store: Arc<napp::plugin::PluginStore>,
     /// Agent filesystem loader — scans nebo/agents/ and user/agents/ for content
     pub agent_loader: Arc<napp::AgentLoader>,
+    /// The packs as the seats have read them, keyed `layer:slug`: the applied
+    /// snapshot the pack watcher diffs a scan against. It moves only on apply.
+    pub packs: Arc<tokio::sync::RwLock<std::collections::HashMap<String, napp::Pack>>>,
+    /// The owner's layer edits that no seat has read yet, one entry per pack.
+    /// The pack watcher fills this and raises nothing; only an explicit apply
+    /// empties it, so a dozen saves while the owner is editing cost nothing and
+    /// the whole edit lands as one moment.
+    pub pending_layers: Arc<tokio::sync::RwLock<Vec<crate::layers_update::PendingLayer>>>,
     /// User presence tracker — per-session focused/unfocused/away state
     pub presence: Arc<agent::PresenceTracker>,
     /// True while the management tunnel to the hub is up — the switchboard

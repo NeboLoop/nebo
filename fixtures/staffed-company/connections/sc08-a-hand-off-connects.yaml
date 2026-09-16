@@ -1,0 +1,9 @@
+id: sc08-a-hand-off-connects
+name: "SC08 — A hand-off connects"
+description: |
+  One seat emits the address its package writes through the real emit tool; a
+  second seat subscribed to that exact string starts, with the producer stamped
+  and no doubled slug. A bare company event matches a bare subscription.
+target_component: staffed-company
+proof: staffed_proof::connections::a_hand_off_connects
+conversation: []

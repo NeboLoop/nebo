@@ -186,6 +186,20 @@ pub trait DynTool: Send + Sync {
     fn is_concurrent_safe(&self, _input: &serde_json::Value) -> bool {
         false
     }
+    /// The typed interface operation this call performs
+    /// (`capability.resource.action`), when it performs one.
+    ///
+    /// The runner's per-operation approval gate asks the TOOL this question
+    /// instead of matching on a tool name, so any tool can declare that one of
+    /// its calls is a gated operation and be decided by the employee's
+    /// `OperationPolicy`. The tool never decides anything itself: it says what
+    /// the call is, and `OperationPolicy::decide` is the one place that answers.
+    ///
+    /// Default: `None` — this call performs no typed operation and the gate
+    /// does not apply.
+    fn operation_performed(&self, _input: &serde_json::Value) -> Option<String> {
+        None
+    }
     /// For MCP proxy tools: the `(integration_id, original tool name)` this
     /// proxy forwards to — what the runner's approval gate uses to look up the
     /// server's tri-state tool permissions. `None` for every built-in tool.
@@ -544,6 +558,21 @@ impl Registry {
     pub async fn mcp_proxy_info(&self, name: &str) -> Option<(String, String)> {
         let tools = self.tools.read().await;
         tools.get(name).and_then(|t| t.mcp_proxy_info())
+    }
+
+    /// The typed interface operation a call performs, as the tool declares it
+    /// (see `DynTool::operation_performed`). `None` for a tool that performs no
+    /// typed operation, an unknown tool, or a call that performs none.
+    pub async fn operation_performed(
+        &self,
+        name: &str,
+        input: &serde_json::Value,
+    ) -> Option<String> {
+        let tools = self.tools.read().await;
+        tools
+            .get(name)
+            .and_then(|t| t.operation_performed(input))
+            .filter(|op| !op.is_empty())
     }
 
     /// Per-call execution budget override (see DynTool::execution_timeout).
@@ -980,9 +1009,18 @@ impl Registry {
             self.register(Box::new(web_tool)).await;
         }
 
+        // The packs this company works by (R8): create, add, list, show, remove.
+        self.register(Box::new(crate::pack_tool::PackTool)).await;
+
+        // The seat's own context section (R15): the write half of the layers.
+        self.register(Box::new(crate::rules_tool::RulesTool::new(store.clone(), active_agent.clone()))).await;
+
         // Agent tool (memory, tasks, sessions, context, advisors, ask, runs, registry) — always registered (core)
         let mut agent_tool = crate::bot_tool::AgentTool::new(store.clone(), orchestrator.clone())
-            .with_notify_fn(self.notify_fn.clone());
+            .with_notify_fn(self.notify_fn.clone())
+            // The same cell the `message` tool gets: an unanswerable question
+            // in an unattended run travels up the reporting line on the ONE rail.
+            .with_coworker_rail(self.coworker_rail.clone());
         let runner_for_events = advisor_runner.clone();
         if let Some(runner) = advisor_runner {
             agent_tool = agent_tool.with_advisor_runner(runner);
@@ -1125,6 +1163,12 @@ impl Registry {
             self.coworker_rail.clone(),
         )))
         .await;
+
+        // Authority tool (standing authority inside the constitution). Deferred:
+        // it reaches the model only when a seat's `requires.tools` names
+        // "authority" (the General Manager) or a turn discovers it.
+        self.register_deferred(Box::new(crate::authority_tool::AuthorityTool::new(store.clone())))
+            .await;
 
         // Loop tool (NeboAI comms: dm, channel, loop, topic) — requires "loop" permission.
         // The comm handle exists from startup; the real LoopTool's per-action

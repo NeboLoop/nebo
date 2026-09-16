@@ -174,12 +174,10 @@ impl AgentWorker {
                         .and_then(|s| serde_json::from_str(s).ok())
                         .unwrap_or_else(|| serde_json::json!({}));
 
-                    // Build emit_source from binding: "{agent-slug}.{emit-name}"
-                    let event_emit_source =
-                        wf_binding.and_then(|wb| wb.emit.as_ref()).map(|emit_name| {
-                            let slug = name.to_lowercase().replace(' ', "-");
-                            format!("{}.{}", slug, emit_name)
-                        });
+                    // The event's address, built by the ONE addressing function.
+                    let event_emit_source = wf_binding
+                        .and_then(|wb| wb.emit.as_ref())
+                        .map(|emit_name| workflow::events::emit_source_for(&name, emit_name));
 
                     for source in binding.trigger_config.split(',') {
                         let pattern = source.trim().to_string();
@@ -217,6 +215,49 @@ impl AgentWorker {
                                 continue;
                             }
                         };
+
+                    // R7: the trigger may name a CAPABILITY ("mail") instead of a
+                    // plugin slug. It resolves to the seat's own Connection for
+                    // that capability: an installed plugin declaring the
+                    // interface, preferring one this agent has an account on,
+                    // alphabetical when two qualify. No Connection = the binding
+                    // stays, marked degraded with the reason, never dropped.
+                    if plugin_store.resolve(&watch_cfg.plugin, "*").is_none()
+                        && !watch_cfg.plugin.contains('.')
+                    {
+                        let installed: Vec<(String, Vec<String>)> = plugin_store
+                            .list_installed()
+                            .into_iter()
+                            .map(|(slug, _, _, _)| {
+                                let ifaces = plugin_store
+                                    .get_manifest(&slug)
+                                    .map(|m| interfaces_of(&m.interface_bindings))
+                                    .unwrap_or_default();
+                                (slug, ifaces)
+                            })
+                            .collect();
+                        let accounts: Vec<String> = store
+                            .list_all_plugin_account_profiles_for_agent(&agent_id)
+                            .unwrap_or_default()
+                            .into_iter()
+                            .map(|p| p.plugin_slug)
+                            .collect();
+                        match resolve_capability_plugin(&watch_cfg.plugin, &installed, &accounts) {
+                            Some(slug) => {
+                                info!(agent = %agent_id, binding = %binding.binding_name, capability = %watch_cfg.plugin, plugin = %slug, "capability trigger resolved to the seat's connection");
+                                let _ = store.set_agent_workflow_degraded_reason(&agent_id, &binding.binding_name, "");
+                                watch_cfg.plugin = slug;
+                            }
+                            None => {
+                                let reason = capability_degraded_reason(&watch_cfg.plugin, &installed);
+                                warn!(agent = %agent_id, binding = %binding.binding_name, %reason, "capability trigger has no connection; binding kept, marked degraded");
+                                let _ = store.set_agent_workflow_degraded_reason(&agent_id, &binding.binding_name, &reason);
+                                continue;
+                            }
+                        }
+                    } else {
+                        let _ = store.set_agent_workflow_degraded_reason(&agent_id, &binding.binding_name, "");
+                    }
 
                     // If event is specified, resolve command from plugin manifest
                     let auto_emit: Option<(String, bool)> = if let Some(ref event_name) =
@@ -302,10 +343,9 @@ impl AgentWorker {
                         continue;
                     }
 
-                    let emit_source = wf_binding.and_then(|wb| wb.emit.as_ref()).map(|emit_name| {
-                        let slug = name.to_lowercase().replace(' ', "-");
-                        format!("{}.{}", slug, emit_name)
-                    });
+                    let emit_source = wf_binding
+                        .and_then(|wb| wb.emit.as_ref())
+                        .map(|emit_name| workflow::events::emit_source_for(&name, emit_name));
 
                     // Per-account isolation: a plugin that declares a
                     // profile_dir_env (the "resource" credential model, e.g. gws)
@@ -433,13 +473,9 @@ impl AgentWorker {
                         continue;
                     }
 
-                    let emit_source =
-                        wf_binding
-                            .and_then(|wb| wb.emit.as_ref())
-                            .map(|emit_name| {
-                                let slug = name.to_lowercase().replace(' ', "-");
-                                format!("{}.{}", slug, emit_name)
-                            });
+                    let emit_source = wf_binding
+                        .and_then(|wb| wb.emit.as_ref())
+                        .map(|emit_name| workflow::events::emit_source_for(&name, emit_name));
 
                     let token = cancel.clone();
                     let mgr = workflow_manager.clone();
@@ -3416,5 +3452,101 @@ mod watch_payload_tests {
         let before = folder.clone();
         normalize_watch_payload(&mut folder);
         assert_eq!(folder, before);
+    }
+}
+
+// ── capability triggers (R7) ─────────────────────────────────────────────
+
+/// The interfaces a plugin implements: the capability prefix of every
+/// interface binding it declares (`mail.message.send` → `mail`).
+pub fn interfaces_of(bindings: &std::collections::HashMap<String, String>) -> Vec<String> {
+    let mut out: Vec<String> = bindings
+        .keys()
+        .filter_map(|k| k.split('.').next())
+        .filter(|p| !p.is_empty())
+        .map(str::to_string)
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// The plugin a capability trigger runs on: among installed plugins that
+/// declare the interface, the one this seat has an account on comes first;
+/// ties and the no-account case resolve alphabetically, so the same package
+/// resolves the same way on every start.
+pub fn resolve_capability_plugin(
+    capability: &str,
+    installed: &[(String, Vec<String>)],
+    agent_account_slugs: &[String],
+) -> Option<String> {
+    let mut candidates: Vec<&String> = installed
+        .iter()
+        .filter(|(_, ifaces)| ifaces.iter().any(|i| i == capability))
+        .map(|(slug, _)| slug)
+        .collect();
+    candidates.sort();
+    candidates
+        .iter()
+        .find(|slug| agent_account_slugs.contains(slug))
+        .or_else(|| candidates.first())
+        .map(|s| s.to_string())
+}
+
+/// Why a capability trigger is not running, for the binding's record.
+pub fn capability_degraded_reason(capability: &str, installed: &[(String, Vec<String>)]) -> String {
+    let declared: Vec<&str> = installed
+        .iter()
+        .filter(|(_, ifaces)| ifaces.iter().any(|i| i == capability))
+        .map(|(slug, _)| slug.as_str())
+        .collect();
+    if declared.is_empty() {
+        format!("no installed plugin provides the {capability} capability; connect one to run this binding")
+    } else {
+        format!("no connection for {capability} on this employee (plugins available: {})", declared.join(", "))
+    }
+}
+
+#[cfg(test)]
+mod capability_trigger_tests {
+    use super::*;
+
+    fn plugin(slug: &str, ifaces: &[&str]) -> (String, Vec<String>) {
+        (slug.to_string(), ifaces.iter().map(|s| s.to_string()).collect())
+    }
+
+    #[test]
+    fn the_same_package_fires_on_two_differently_named_plugins_that_declare_mail() {
+        let on_first = [plugin("gmail", &["mail", "calendar"])];
+        let on_second = [plugin("workspace-mail", &["mail"])];
+        assert_eq!(resolve_capability_plugin("mail", &on_first, &[]).as_deref(), Some("gmail"));
+        assert_eq!(resolve_capability_plugin("mail", &on_second, &[]).as_deref(), Some("workspace-mail"));
+    }
+
+    #[test]
+    fn the_seats_own_connection_wins_and_ties_are_alphabetical() {
+        let both = [plugin("zeta-mail", &["mail"]), plugin("alpha-mail", &["mail"])];
+        assert_eq!(resolve_capability_plugin("mail", &both, &[]).as_deref(), Some("alpha-mail"));
+        assert_eq!(
+            resolve_capability_plugin("mail", &both, &["zeta-mail".to_string()]).as_deref(),
+            Some("zeta-mail")
+        );
+    }
+
+    #[test]
+    fn no_qualifying_plugin_yields_a_reason_not_a_dropped_binding() {
+        let installed = [plugin("quickbooks", &["ledger"])];
+        assert_eq!(resolve_capability_plugin("mail", &installed, &[]), None);
+        let reason = capability_degraded_reason("mail", &installed);
+        assert!(reason.contains("no installed plugin provides the mail capability"), "{reason}");
+    }
+
+    #[test]
+    fn interfaces_come_from_binding_prefixes() {
+        let mut b = std::collections::HashMap::new();
+        b.insert("mail.message.send".to_string(), "send".to_string());
+        b.insert("mail.message.list".to_string(), "list".to_string());
+        b.insert("calendar.event.create".to_string(), "create".to_string());
+        assert_eq!(interfaces_of(&b), vec!["calendar".to_string(), "mail".to_string()]);
     }
 }

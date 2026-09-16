@@ -267,6 +267,11 @@ pub struct AgentTool {
     /// Shared broadcast cell (from the `Registry`) — lets profile renames emit
     /// the same `agent_updated` event the updateAgent handler broadcasts.
     notify_fn: Arc<std::sync::RwLock<Option<crate::message_tool::NotifyFn>>>,
+    /// The same late-wired coworker rail the `message` tool holds. Used for one
+    /// thing here: an unanswerable question in an unattended run goes up the
+    /// reporting line instead of being guessed at. Not a second rail — the same
+    /// cell, injected by the `Registry`.
+    coworker_rail: crate::coworker::CoworkerRailCell,
 }
 
 /// Appended to a sub-agent's result so the model knows the child is still
@@ -281,6 +286,22 @@ fn continuation_hint(task_id: &str) -> String {
 }
 
 impl AgentTool {
+    /// An employee by id, exact name, or case-insensitive name.
+    fn find_agent(&self, who: &str) -> Option<db::models::Agent> {
+        if let Ok(Some(a)) = self.store.get_agent(who) {
+            return Some(a);
+        }
+        if let Ok(Some(a)) = self.store.get_agent_by_name(who) {
+            return Some(a);
+        }
+        let want = who.trim().to_lowercase();
+        self.store
+            .list_agents(500, 0)
+            .unwrap_or_default()
+            .into_iter()
+            .find(|a| a.name.trim().to_lowercase() == want)
+    }
+
     pub fn new(store: Arc<Store>, orchestrator: OrchestratorHandle) -> Self {
         Self {
             store,
@@ -293,7 +314,15 @@ impl AgentTool {
             persona: None,
             keychain: Arc::new(OsKeychain),
             notify_fn: Arc::new(std::sync::RwLock::new(None)),
+            coworker_rail: crate::coworker::new_rail_cell(),
         }
+    }
+
+    /// Inject the shared coworker rail cell (from the `Registry`) — the same
+    /// cell the `message` tool gets, never a second one.
+    pub fn with_coworker_rail(mut self, cell: crate::coworker::CoworkerRailCell) -> Self {
+        self.coworker_rail = cell;
+        self
     }
 
     /// Inject the shared broadcast cell (from the `Registry`).
@@ -389,7 +418,8 @@ impl AgentTool {
             "list" | "clear" if has("namespace") => "memory",
             "status" if !has("task_id") => "",
             "spawn" | "spawn_parallel" | "orchestrate" | "status" | "cancel" | "send"
-            | "create" | "update" | "delete" | "get" | "list" | "clear" => "task",
+            | "create" | "update" | "delete" | "get" | "list" | "clear" | "assign"
+            | "assignments" => "task",
             "research" | "deep_research" | "submit_findings" => "research",
             "open_billing" => "profile",
             "history" | "query" => "session",
@@ -1371,6 +1401,101 @@ impl AgentTool {
                     Err(e) => ToolResult::error(format!("Failed to update task: {}", e)),
                 }
             }
+            "assign" => {
+                let to = input["to"].as_str().map(str::trim).unwrap_or("");
+                let subject = input["subject"].as_str().map(str::trim).unwrap_or("");
+                if to.is_empty() || subject.is_empty() {
+                    return ToolResult::error(errors::missing_param(
+                        "assign",
+                        "to, subject",
+                        "agent(resource: \"task\", action: \"assign\", to: \"Bookkeeper\", subject: \"Close the September books\", done_means: \"Reports posted and reconciled\")",
+                    ));
+                }
+                let assignee = match self.find_agent(to) {
+                    Some(a) => a,
+                    None => {
+                        return ToolResult::error(format!(
+                            "No employee named \"{to}\". Use the employee's exact name from the roster."
+                        ))
+                    }
+                };
+                let assigner_id = {
+                    let id = types::keyparser::extract_agent_id(&ctx.session_key);
+                    if id.is_empty() { "main".to_string() } else { id }
+                };
+                if assignee.id == assigner_id {
+                    return ToolResult::error(
+                        "That is you. An assignment is work for another employee; do your own work directly.",
+                    );
+                }
+                let assigner_name = self
+                    .store
+                    .get_agent(&assigner_id)
+                    .ok()
+                    .flatten()
+                    .map(|a| a.name)
+                    .unwrap_or_else(|| "the owner".to_string());
+                let done_means = input["done_means"].as_str().map(str::trim).unwrap_or("");
+                let due = input["due"].as_str().map(str::trim).filter(|d| !d.is_empty());
+                let req = crate::assignments::AssignmentRequest {
+                    assigner_agent_id: assigner_id,
+                    assigner_name,
+                    assigner_session_key: ctx.session_key.clone(),
+                    parent_run_id: ctx.run_id.clone(),
+                    assignee_agent_id: assignee.id.clone(),
+                    subject: subject.to_string(),
+                    done_means: done_means.to_string(),
+                    due: due.map(String::from),
+                };
+                let Some(opener) = crate::assignments::assignment_opener() else {
+                    return ToolResult::error(
+                        "Assignments are not ready: the server has not installed the opener yet. Try again in a moment.",
+                    );
+                };
+                match opener.open(&req) {
+                    Ok(id) => ToolResult::ok(format!(
+                        "Assigned to {} as their own work (assignment {}). You will hear assignment.done, assignment.blocked, or assignment.failed when it closes; until then it is theirs — do not do it yourself.",
+                        assignee.name, id
+                    )),
+                    Err(e) => ToolResult::error(format!("Failed to assign: {e}")),
+                }
+            }
+            "assignments" => {
+                let me = {
+                    let id = types::keyparser::extract_agent_id(&ctx.session_key);
+                    if id.is_empty() { "main".to_string() } else { id }
+                };
+                let all = input["all"].as_bool().unwrap_or(false);
+                match self.store.list_assignments_for_agent(&me, !all) {
+                    Ok(list) if list.is_empty() => ToolResult::ok("No assignments."),
+                    Ok(list) => {
+                        let name_of = |id: &str| -> String {
+                            self.store.get_agent(id).ok().flatten().map(|a| a.name).unwrap_or_else(|| id.to_string())
+                        };
+                        let lines: Vec<String> = list
+                            .iter()
+                            .map(|a| {
+                                let dir = if a.assignee_agent_id == me {
+                                    format!("from {}", name_of(&a.assigner_agent_id))
+                                } else {
+                                    format!("to {}", name_of(&a.assignee_agent_id))
+                                };
+                                format!(
+                                    "{} [{}] {} ({}){}{}",
+                                    a.id,
+                                    a.state,
+                                    a.subject,
+                                    dir,
+                                    a.due.as_deref().map(|d| format!(", due {d}")).unwrap_or_default(),
+                                    a.outcome.as_deref().filter(|_| a.state != "open").map(|o| format!(" → {o}")).unwrap_or_default()
+                                )
+                            })
+                            .collect();
+                        ToolResult::ok(format!("{} assignment(s):\n{}", list.len(), lines.join("\n")))
+                    }
+                    Err(e) => ToolResult::error(format!("Failed to list assignments: {e}")),
+                }
+            }
             "list" => {
                 let list_id = format!("session:{}", ctx.session_id);
                 match self.store.list_task_items(&list_id) {
@@ -1738,10 +1863,71 @@ impl AgentTool {
         }
     }
 
+    /// Take a question this seat cannot answer to the seat it answers to.
+    ///
+    /// The reporting line (`agents.reports_to`) read through the store's ONE
+    /// walk, delivered on the ONE coworker rail — the manager receives it in
+    /// their own session, under their own persona and memory, exactly as if a
+    /// coworker had messaged them, and their reply is this call's result.
+    ///
+    /// `None` when there is no reporting line, no rail wired, or the delivery
+    /// failed: the caller then falls back to deciding for itself, which is the
+    /// behaviour every seat had before the line existed.
+    async fn ask_up_the_line(&self, ctx: &ToolContext, text: &str) -> Option<ToolResult> {
+        let me = types::keyparser::extract_agent_id(&ctx.session_key);
+        if me.is_empty() {
+            return None;
+        }
+        let (manager_id, _) = self.store.manager_chain(&me).ok()?.into_iter().next()?;
+        let rail = self.coworker_rail.read().ok()?.clone()?;
+        let my_name = self
+            .store
+            .get_agent(&me)
+            .ok()
+            .flatten()
+            .map(|a| a.name)
+            .unwrap_or_else(|| me.clone());
+        let asked = format!(
+            "[{my_name} cannot finish this without a decision, and there is nobody at the \
+             keyboard. You are the employee they answer to.]\n\n{text}"
+        );
+        match crate::coworker::deliver(&rail, ctx, &manager_id, &asked, true).await {
+            Ok(delivery) => Some(match delivery.reply {
+                Some(reply) => ToolResult::ok(format!(
+                    "Nobody is at the keyboard, so this went to {}, who you answer to. Their \
+                     answer:\n\n{}",
+                    delivery.to_name, reply
+                )),
+                None => ToolResult::ok(format!(
+                    "Nobody is at the keyboard, so this went to {}, who you answer to. They are \
+                     deciding in their own session and you will be woken when they answer — \
+                     report this as \"asked {} — waiting\", never as done.",
+                    delivery.to_name, delivery.to_name
+                )),
+            }),
+            Err(e) => {
+                tracing::warn!(
+                    agent = %me, manager = %manager_id, error = %e,
+                    "escalation up the reporting line failed; the seat decides for itself"
+                );
+                None
+            }
+        }
+    }
+
     async fn handle_ask(&self, input: &serde_json::Value, ctx: &ToolContext) -> ToolResult {
         let action = input["action"].as_str().unwrap_or("prompt");
         match action {
             "prompt" | "confirm" | "select" => {
+                let text = input["text"].as_str().unwrap_or("");
+                if text.is_empty() {
+                    return ToolResult::error(errors::missing_param(
+                        action,
+                        "text",
+                        "agent(resource: \"ask\", action: \"prompt\", text: \"What would you like to do?\")",
+                    ));
+                }
+
                 // HITL gate: asking is only valid in direct, interactive chat (desktop/mobile).
                 // Automated/workflow/channel/sub-agent runs have nobody at the keyboard and
                 // ask_user() would block an ephemeral oneshot forever — so it must be
@@ -1751,20 +1937,21 @@ impl AgentTool {
                     != crate::origin::ExecutionMode::Interactive
                     || ctx.ask_channels.is_none()
                 {
+                    // Nobody is at the keyboard — but a seat that answers to
+                    // another seat is not on its own. The question goes UP the
+                    // reporting line, delivered by the ONE coworker rail, and
+                    // the manager's answer comes back as this call's result.
+                    // A seat that answers to the owner still decides for
+                    // itself: this is not a new way to interrupt the owner.
+                    if let Some(answered) = self.ask_up_the_line(ctx, text).await {
+                        return answered;
+                    }
                     return ToolResult::error(
                         "Asking the user is only available in direct chat (HITL). This is an \
-                         automated, workflow, or channel run — make a reasonable decision and \
-                         proceed, and tell the user what you assumed.",
+                         automated, workflow, or channel run, and you answer to the owner \
+                         directly rather than to another employee — make a reasonable decision \
+                         and proceed, and tell the user what you assumed.",
                     );
-                }
-
-                let text = input["text"].as_str().unwrap_or("");
-                if text.is_empty() {
-                    return ToolResult::error(errors::missing_param(
-                        action,
-                        "text",
-                        "agent(resource: \"ask\", action: \"prompt\", text: \"What would you like to do?\")",
-                    ));
                 }
 
                 // Options may be plain strings (["red","blue"]) or rich objects
@@ -1973,6 +2160,8 @@ impl AgentTool {
                             &existing.frontmatter,
                             existing.pricing_model.as_deref(),
                             existing.pricing_cost,
+                            None,
+                            None,
                             None,
                             None,
                             None,
@@ -2384,7 +2573,9 @@ impl DynTool for AgentTool {
          Work tracking (only for work spanning MANY tool calls in several distinct stages; never for a small job you can finish in a handful of calls, a single request, or a quick fix — every create/update is a paid call):\n\
          - agent(resource: \"task\", action: \"create\", subject: \"Test shell tool\") — Create a trackable step\n\
          - agent(resource: \"task\", action: \"update\", task_id: \"1\", status: \"completed\") — Mark done\n\
-         - agent(resource: \"task\", action: \"list\") — See all tasks and sub-agents\n\n\
+         - agent(resource: \"task\", action: \"list\") — See all tasks and sub-agents\n\
+         - agent(resource: \"task\", action: \"assign\", to: \"Bookkeeper\", subject: \"Close the September books\", done_means: \"P&L and balance sheet posted, reconciled to the bank\", due: \"2026-10-05\") — Hand work to a coworker as THEIR OWN work (not a sub-agent of yours). They work it as a case; you are told assignment.done / blocked / failed when it closes. Use this to delegate real work to a named employee; spawn is for anonymous helpers\n\
+         - agent(resource: \"task\", action: \"assignments\") — Your open assignments, given and received (all: true includes closed)\n\n\
          Memory (3-tier persistence):\n\
          - agent(resource: \"memory\", action: \"store\", key: \"user/name\", value: \"Alice\", layer: \"tacit\") — Store a fact\n\
          - agent(resource: \"memory\", action: \"recall\", key: \"user/name\") — Recall a specific fact\n\

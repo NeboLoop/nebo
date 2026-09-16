@@ -32,6 +32,8 @@ mod update;
 mod user;
 mod workflows;
 mod teams;
+mod org;
+mod layers;
 
 use axum::Router;
 
@@ -67,6 +69,8 @@ pub fn api_routes(jwt_secret: JwtSecret) -> Router<AppState> {
         .merge(neboai::routes())
         .merge(workflows::routes())
         .merge(teams::routes())
+        .merge(org::routes())
+        .merge(layers::routes())
         .merge(roles::routes())
         .merge(commander::routes())
         .merge(plugins::routes())

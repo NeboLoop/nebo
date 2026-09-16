@@ -66,15 +66,22 @@ pub async fn validate_agent_dependencies(
     agent_registry: &AgentRegistry,
     skill_loader: &crate::skills::Loader,
 ) {
-    let loaded_skills = skill_loader.list_summaries(None).await;
-    let skill_names: HashSet<String> = loaded_skills.iter().map(|s| s.name.clone()).collect();
-
     let mut registry = agent_registry.write().await;
     for (agent_id, active_agent) in registry.iter_mut() {
         let skill_refs = match active_agent.config {
             Some(ref cfg) if !cfg.skills.is_empty() => &cfg.skills,
             _ => continue,
         };
+
+        // Scoped to this employee: the procedures a package ships with belong
+        // to the seat that shipped them, so the shared roster alone would
+        // report every packaged employee as missing its own skills.
+        let skill_names: HashSet<String> = skill_loader
+            .list_summaries(Some(agent_id))
+            .await
+            .into_iter()
+            .map(|s| s.name)
+            .collect();
 
         let mut missing = Vec::new();
         for skill_ref in skill_refs {
@@ -1558,6 +1565,8 @@ impl PersonaTool {
             None,
             None,
             None,
+            None,
+            None,
         ) {
             return ToolResult::error(format!("Failed to update agent in DB: {}", e));
         }
@@ -1896,6 +1905,8 @@ impl PersonaTool {
             None,
             None,
             None,
+            None,
+            None,
         ) {
             return ToolResult::error(format!("Failed to update DB: {}", e));
         }
@@ -2032,6 +2043,8 @@ impl PersonaTool {
                                 &new_fm,
                                 agent.pricing_model.as_deref(),
                                 agent.pricing_cost,
+                                None,
+                                None,
                                 None,
                                 None,
                                 None,
@@ -3527,6 +3540,84 @@ mod tests {
         );
         // No version suffix
         assert_eq!(extract_skill_name_from_ref("@org/skills/name"), "name");
+    }
+
+    #[tokio::test]
+    async fn test_packaged_employee_reads_as_healthy() {
+        use tempfile::TempDir;
+
+        // An employee package declares the procedures it ships and ships them
+        // inside itself. The dependency check used to compare that declaration
+        // against the workforce-wide roster, where a seat's own procedures do
+        // not appear — so EVERY packaged employee read as degraded.
+        let installed = TempDir::new().unwrap();
+        let user = TempDir::new().unwrap();
+        let agents = TempDir::new().unwrap();
+
+        let pkg = agents.path().join("copywriter");
+        std::fs::create_dir_all(pkg.join("skills").join("copy-brief")).unwrap();
+        std::fs::write(pkg.join("AGENT.md"), "---\nname: copywriter\n---\n# Copywriter\n").unwrap();
+        std::fs::write(
+            pkg.join("manifest.json"),
+            r#"{"id":"copywriter","name":"@acme/agents/copywriter","type":"agent","version":"1.0.0"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            pkg.join("skills").join("copy-brief").join("SKILL.md"),
+            "---\nname: copy-brief\ndescription: Test a brief\n---\nTemplate",
+        )
+        .unwrap();
+
+        let loader =
+            crate::skills::Loader::new(installed.path().to_path_buf(), user.path().to_path_buf())
+                .with_agent_dirs(vec![agents.path().to_path_buf()]);
+        loader.load_all().await;
+
+        let registry: AgentRegistry = Arc::new(RwLock::new(HashMap::new()));
+        {
+            let mut reg = registry.write().await;
+            let config = Some(
+                napp::agent::parse_agent_config(r#"{"skills": ["copy-brief"]}"#).unwrap(),
+            );
+            reg.insert("copywriter".to_string(), ActiveAgent {
+                agent_id: "copywriter".to_string(),
+                name: "Copywriter".to_string(),
+                agent_md: String::new(),
+                config: config.clone(),
+                channel_id: None,
+                degraded: Some("missing skills: copy-brief".to_string()),
+                soul: None,
+                rules: None,
+            });
+            // Another seat declaring the same procedure without shipping it is
+            // still degraded — the fix must not make every declaration pass.
+            reg.insert("closer".to_string(), ActiveAgent {
+                agent_id: "closer".to_string(),
+                name: "Closer".to_string(),
+                agent_md: String::new(),
+                config,
+                channel_id: None,
+                degraded: None,
+                soul: None,
+                rules: None,
+            });
+        }
+
+        validate_agent_dependencies(&registry, &loader).await;
+
+        let reg = registry.read().await;
+        assert!(
+            reg.get("copywriter").unwrap().degraded.is_none(),
+            "an employee that ships the procedure it declares must read as healthy"
+        );
+        assert!(
+            reg.get("closer")
+                .unwrap()
+                .degraded
+                .as_deref()
+                .is_some_and(|r| r.contains("copy-brief")),
+            "a seat that declares a procedure nobody gave it is still degraded"
+        );
     }
 
     #[tokio::test]

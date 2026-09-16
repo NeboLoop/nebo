@@ -1,0 +1,9 @@
+id: sc15-migrations-run-forward-on-a-real-database
+name: "SC15 — Migrations run forward on a real database"
+description: |
+  A read-only copy of this machine's nebo.db (and the pre-0152/pre-0155 backups
+  where present; a database built at 0152 in CI) migrates to 0157 with no
+  existing agent gaining a department lock or a reporting line.
+target_component: staffed-company
+proof: staffed_proof::migrations::migrations_run_forward_on_a_real_database
+conversation: []

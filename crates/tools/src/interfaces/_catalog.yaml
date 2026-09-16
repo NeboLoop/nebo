@@ -1,0 +1,1715 @@
+# Interface catalog — every capability a seat may bind, and every operation on it.
+#
+# A capability is a typed INTERFACE, never a product: a seat declares
+# `requires.interfaces: ["ledger"]` and the company binds whichever system it already
+# runs. The port address inside a seat is <department>.<role>.<capability>.<resource>.<action>;
+# plugins match on the operation suffix, so one plugin declaration satisfies every seat
+# that calls it.
+#
+# gated: true  -> money movement, outbound contact, or an irreversible write. The runtime
+#                 asks before the bound tool runs.
+# gated: false -> a read, or a protective act that is reversible and worthless if it waits.
+#                 Pause, halt, suppress, cancel, quarantine, roll back and export are
+#                 deliberately ungated: a delayed suppression is a sent message, and an
+#                 exceeded spend cap cannot be un-spent. Their opposites — resume, publish,
+#                 send, start — are gated.
+# critical: true -> money movement, contract formation, the company's own file, or the
+#                 standing authority to act unattended. Always gated as well. An
+#                 employee-wide full-autonomy default never loosens a critical
+#                 operation; the owner grants each one per employee, per operation.
+#
+# Capabilities with a fully typed contract have their own file beside this one
+# (ledger.yaml is the exemplar); this catalog is the index of all of them.
+
+
+# ── Money and the books ───────────────────────────────────────────────────────
+
+ledger:    # typed contract in ledger.yaml
+  ledger.balance.get:                { gated: false }
+  ledger.bankaccount.list:           { gated: false }   # connectionStatus is the plugin's own word for the link state…
+  ledger.banktransaction.search:     { gated: false }
+  ledger.budget.get:                 { gated: false }
+  ledger.budget.upsert:              { gated: true  }
+  ledger.card.limit.set:             { gated: true  }
+  ledger.card.list:                  { gated: false }
+  ledger.card.statement.get:         { gated: false }
+  ledger.customer.create:            { gated: true  }
+  ledger.customer.credit_limit.set:  { gated: true  }
+  ledger.customer.hold.set:          { gated: true  }   # A hold must state what it stops and what it allows to finish. The…
+  ledger.customer.list:              { gated: false }
+  ledger.customer.payment_history:   { gated: false }
+  ledger.estimate.get:               { gated: false }
+  ledger.estimate.list:              { gated: false }
+  ledger.expense.update:             { gated: true  }
+  ledger.feed.status:                { gated: false }
+  ledger.fixedasset.create:          { gated: true  }
+  ledger.fixedasset.dispose:         { gated: true  }
+  ledger.fixedasset.get:             { gated: false }
+  ledger.fixedasset.list:            { gated: false }
+  ledger.invoice.get:                { gated: false }
+  ledger.invoice.update:             { gated: true  }
+  ledger.invoice.void:               { gated: true  }
+  ledger.journalentry.create:        { gated: true  }   # the Tax Analyst drafts the provision entry and the Transfer…
+  ledger.journalentry.get:           { gated: false }   # The close reads each posted entry back to confirm it landed as…
+  ledger.journalentry.list:          { gated: false }
+  ledger.note.add:                   { gated: false }
+  ledger.payment.search:             { gated: false }
+  ledger.period.lock:                { gated: true  }   # Irreversible in practice: reopening a locked period is a manual…
+  ledger.period.status:              { gated: false }
+  ledger.reconciliation.complete:    { gated: true  }
+  ledger.reconciliation.get:         { gated: false }
+  ledger.refund.create:              { gated: true  }
+  ledger.report.balancesheet:        { gated: false }
+  ledger.report.pl:                  { gated: false }
+  ledger.salestax.summary:           { gated: false }   # SalesTaxRow carries state, jurisdiction?, grossCents,…
+  ledger.spend.bycategory:           { gated: false }
+  ledger.statement.get:              { gated: false }
+  ledger.transaction.categorize:     { gated: false }
+  ledger.transaction.get:            { gated: false }
+  ledger.transaction.list:           { gated: false }
+  ledger.transaction.search:         { gated: false }
+  ledger.transfer.create:            { gated: true  }
+  ledger.transfer.status:            { gated: false }   # An initiated transfer that has not cleared looks identical to one…
+  ledger.trialbalance.get:           { gated: false }
+  ledger.vendor.get:                 { gated: false }
+  ledger.vendor.list:                { gated: false }
+  ledger.account.list:               { gated: false }
+  ledger.aging.payable:              { gated: false }
+  ledger.aging.receivable:           { gated: false }
+  ledger.bill.create:                { gated: true  }
+  ledger.bill.search:                { gated: false }
+  ledger.creditmemo.create:          { gated: true, critical: true }
+  ledger.customer.find:              { gated: false }
+  ledger.deposit.record:             { gated: true  }
+  ledger.document.attach:            { gated: true  }
+  ledger.expense.record:             { gated: true  }
+  ledger.invoice.create:             { gated: true  }
+  ledger.invoice.search:             { gated: false }
+  ledger.invoice.send:               { gated: true, critical: true }
+  ledger.item.list:                  { gated: false }
+  ledger.purchaseorder.get:          { gated: false }
+  ledger.report.get:                 { gated: false }
+  ledger.vendor.find:                { gated: false }
+  ledger.billpayment.create:         { gated: true, critical: true }
+  ledger.payment.apply:              { gated: true, critical: true }
+  ledger.draw.request:               { gated: true  }
+
+payments:    # typed contract in payments.yaml
+  payments.charge.get:          { gated: false }
+  payments.charge.list:         { gated: false }
+  payments.dispute.accept:      { gated: true  }
+  payments.dispute.get:         { gated: false }
+  payments.dispute.list:        { gated: false }
+  payments.dispute.respond:     { gated: true  }
+  payments.disputestats.get:    { gated: false }
+  payments.link.create:         { gated: false }
+  payments.payout.get:          { gated: false }
+  payments.payout.list:         { gated: false }
+  payments.refund.create:       { gated: true  }
+  payments.transaction.get:     { gated: false }
+  payments.transaction.search:  { gated: false }
+  payments.payout.release:      { gated: true  }
+
+billing:    # typed contract in billing.yaml
+  billing.credit.issue:                  { gated: true  }
+  billing.discount.apply:                { gated: true  }
+  billing.invoice.adjust:                { gated: true  }
+  billing.invoice.create:                { gated: true  }
+  billing.paymentmethod.get:             { gated: false }
+  billing.paymentmethod.update-request:  { gated: true  }
+  billing.payout.create:                 { gated: true  }   # Releases money to a partner or creator. The affiliate payout run…
+  billing.plan.list:                     { gated: false }
+  billing.schedule.get:                  { gated: false }
+  billing.schedule.list:                 { gated: false }
+  billing.schedule.upsert:               { gated: false }   # A superseded schedule is retained, never deleted. Its history is…
+  billing.subscription.cancel:           { gated: true  }
+  billing.subscription.get:              { gated: false }
+  billing.subscription.list:             { gated: false }
+  billing.subscription.pause:            { gated: false  }
+  billing.subscription.plan-change:      { gated: true  }
+  billing.subscription.resume:           { gated: true  }
+  billing.subscription.update:           { gated: true  }
+  billing.usage.get:                     { gated: false }   # Usage is billed with the counts behind it, never as one opaque…
+
+expense:    # typed contract in expense.yaml
+  expense.policy.publish:  { gated: true  }   # the Travel & Expense Program Manager maintains the policy text and…
+  expense.report.decide:   { gated: true  }   # Line-level decisions exist deliberately: a whole report is never…
+  expense.report.get:      { gated: false }
+  expense.report.list:     { gated: false }
+
+commission:
+  commission.plan.get:          { gated: false }   # Returns the plan version IN FORCE for that period. A past period…
+  commission.statement.upsert:  { gated: false }
+
+projectbilling:    # typed contract in projectbilling.yaml
+  projectbilling.application.build:   { gated: false }   # Returns the arithmetic: completed to date, less retainage, less…
+  projectbilling.application.status:  { gated: false }
+  projectbilling.application.submit:  { gated: true  }
+  projectbilling.change.apply:        { gated: true  }   # `approvalRef` is required, not optional. A contract value moved…
+  projectbilling.changeorder.issue:   { gated: true  }   # Issuing is the act of asking for the signature; it is not the…
+  projectbilling.retainage.list:      { gated: false }   # Retainage held on closed jobs is the money trade businesses most…
+  projectbilling.sov.get:             { gated: false }
+  projectbilling.sov.upsert:          { gated: false }   # The schedule of values is the contract's own breakdown. A payment…
+
+timebilling:
+  timebilling.time.list:      { gated: false }
+  timebilling.time.writeoff:  { gated: true  }
+
+legalbilling:    # typed contract in legalbilling.yaml
+  legalbilling.agreement.get:    { gated: false }   # Carries arrangement (hourly|flat|contingency|hybrid), rates[],…
+  legalbilling.entry.reject:     { gated: false }   # Rejected back to its author, never rewritten. A rewritten time…
+  legalbilling.guidelines.get:   { gated: false }   # The client's own rules on top of the agreement: task coding,…
+  legalbilling.invoice.list:     { gated: false }
+  legalbilling.invoice.prepare:  { gated: false }
+  legalbilling.invoice.send:     { gated: true  }   # The delivery date is the gate on applying trust and nothing else…
+  legalbilling.time.list:        { gated: false }   # Entry carries narrative, taskCode?, timekeeper, rateCents, hours,…
+
+trust:    # typed contract in trust.yaml
+  trust.application.execute:   { gated: true  }   # Four conditions, all required: the invoice delivered to the…
+  trust.collected.check:       { gated: false }   # A deposited cheque is NOT collected funds. Disbursing before…
+  trust.disbursement.execute:  { gated: true  }   # payee is never cash and never unidentified. authorisedBy is a…
+  trust.interest.get:          { gated: false }   # Interest earned on client funds is never the firm's. Where it goes…
+  trust.ledger.get:            { gated: false }   # The individual client ledger, which is the record that matters.…
+  trust.ledger.list:           { gated: false }
+  trust.receipt.record:        { gated: true  }   # classification is earned|unearned and it decides the account. A…
+  trust.reconciliation.run:    { gated: false }   # Three numbers, equal, to the cent, monthly. A difference is…
+
+# ── Selling and the pipeline ──────────────────────────────────────────────────
+
+crm:    # typed contract in crm.yaml
+  crm.account.get:          { gated: false }
+  crm.account.list:         { gated: false }
+  crm.account.update:       { gated: true  }
+  crm.activity.log:         { gated: false }
+  crm.campaign.get:         { gated: false }
+  crm.campaign.list:        { gated: false }
+  crm.contact.find:         { gated: false }
+  crm.contact.upsert:       { gated: true  }
+  crm.lead.get:             { gated: false }
+  crm.lead.routing-state:   { gated: false }
+  crm.lead.search:          { gated: false }
+  crm.lead.upsert:          { gated: true  }
+  crm.message.send:         { gated: true  }   # outreach
+  crm.opportunity.create:   { gated: true  }
+  crm.opportunity.get:      { gated: false }
+  crm.opportunity.history:  { gated: false }
+  crm.opportunity.list:     { gated: false }
+  crm.opportunity.search:   { gated: false }
+  crm.opportunity.status:   { gated: true  }   # won / lost
+  crm.opportunity.update:   { gated: true  }   # stage advance / edits
+  crm.owner.assign:         { gated: false }
+  crm.owner.availability:   { gated: false }
+  crm.pipeline.get:         { gated: false }
+  crm.quota.list:           { gated: false }
+  crm.record.merge:         { gated: true  }
+  crm.sequence.due:         { gated: false }
+  crm.sequence.enrol:       { gated: true  }
+  crm.sequence.halt:        { gated: false }
+  crm.stage.list:           { gated: false }
+  crm.suppression.add:      { gated: false }
+  crm.suppression.get:      { gated: false }
+  crm.territory.list:       { gated: false }
+
+pricebook:    # typed contract in pricebook.yaml
+  pricebook.book.get:     { gated: false }
+  pricebook.item.find:    { gated: false }
+  pricebook.item.list:    { gated: false }
+  pricebook.item.upsert:  { gated: true  }
+
+esign:
+  esign.document.engagement:  { gated: false }
+  esign.document.get:         { gated: false }
+  esign.document.list:        { gated: false }
+  esign.document.send:        { gated: true, critical: true }
+  esign.document.status:      { gated: false }
+  esign.document.void:        { gated: true  }
+
+enrichment:
+  enrichment.company.enrich:  { gated: false }
+  enrichment.contact.enrich:  { gated: false }
+
+partner:
+  partner.registration.decide:  { gated: true  }
+  partner.registration.expire:  { gated: false }
+  partner.registration.list:    { gated: false }
+
+deals:
+  deals.diligence.open:  { gated: true  }
+  deals.finding.upsert:  { gated: true  }
+  deals.pipeline.get:    { gated: false }
+  deals.request.list:    { gated: false }
+  deals.request.send:    { gated: true  }
+  deals.target.get:      { gated: false }
+  deals.target.upsert:   { gated: true  }
+
+# ── Reaching people ───────────────────────────────────────────────────────────
+
+mail:
+  mail.inbox.read:    { gated: false }
+  mail.inbox.search:  { gated: false }
+  mail.message.send:  { gated: true  }
+
+sms:
+  sms.message.send:  { gated: true  }
+
+telephony:
+  telephony.call.get:         { gated: false }
+  telephony.call.list:        { gated: false }
+  telephony.call.transfer:    { gated: true  }
+  telephony.callforward.set:  { gated: true  }
+  telephony.contact.lookup:   { gated: false }
+  telephony.greeting.update:  { gated: true  }
+  telephony.voicemail.get:    { gated: false }
+  telephony.voicemail.list:   { gated: false }
+
+email-marketing:
+  email-marketing.campaign.abort:      { gated: false }   # Stop a send in progress. NOT gated: the window is minutes and…
+  email-marketing.campaign.create:     { gated: false }   # Build a draft. Drafting is not sending; nothing leaves.
+  email-marketing.campaign.draft:      { gated: false }   # Save a campaign as a draft. Sends nothing, so it is not gated —…
+  email-marketing.campaign.get:        { gated: false }
+  email-marketing.campaign.schedule:   { gated: true  }   # A scheduled send is a send with a delay. Gated exactly as sending…
+  email-marketing.campaign.send:       { gated: true  }
+  email-marketing.campaign.stats:      { gated: false }
+  email-marketing.campaign.status:     { gated: false }   # Live delivery, bounce, and complaint counts during and after a send.
+  email-marketing.campaign.test:       { gated: true  }   # The seed send. Outbound mail, so gated — but it is the cheapest…
+  email-marketing.campaign.test-send:  { gated: false }   # Sends the rendered message to the company's own seed addresses…
+  email-marketing.campaign.update:     { gated: false }   # Edits a draft that has not been scheduled.
+  email-marketing.contact.activity:    { gated: false }   # When this contact was last touched, across journeys and campaigns.…
+  email-marketing.engagement.cohorts:  { gated: false }   # Recipients grouped by how recently they opened, clicked, or…
+  email-marketing.journey.enrol:       { gated: true  }   # Puts a real person into a sending sequence.
+  email-marketing.journey.exit:        { gated: false }   # Takes a person OUT of a sequence. Protective and reversible, and…
+  email-marketing.journey.get:         { gated: false }   # The live automated journeys and who is currently in them.
+  email-marketing.journey.upsert:      { gated: true  }   # Creating or changing a live journey is a standing promise to send,…
+  email-marketing.list.hygiene:        { gated: false }   # Engagement history per contact, for the sunset proposal.
+  email-marketing.list.stats:          { gated: false }
+  email-marketing.segment.get:         { gated: false }
+  email-marketing.suppression.add:     { gated: false }   # Stops future contact. Ungated for the same reason as journey.exit:…
+  email-marketing.suppression.get:     { gated: false }   # Unsubscribes, hard bounces, complaints, and do-not-contact, for…
+  email-marketing.unsubscribe.verify:  { gated: false }   # Resolves the unsubscribe link in a drafted message and confirms it…
+
+maillist:    # typed contract in maillist.yaml
+  maillist.file.get:           { gated: false }
+  maillist.file.put:           { gated: true  }
+  maillist.hygiene.run:        { gated: false }
+  maillist.list.card:          { gated: false }
+  maillist.list.count:         { gated: false }
+  maillist.list.search:        { gated: false }
+  maillist.order.create:       { gated: true  }
+  maillist.suppression.add:    { gated: false }
+  maillist.suppression.check:  { gated: false }
+  maillist.suppression.list:   { gated: false }
+
+postal:    # typed contract in postal.yaml
+  postal.class.rates:       { gated: false }
+  postal.drop.schedule:     { gated: true  }
+  postal.presort.validate:  { gated: false }
+  postal.return.list:       { gated: false }
+  postal.statement.get:     { gated: false }
+  postal.tracking.get:      { gated: false }
+
+print:    # typed contract in print.yaml
+  print.bid.list:       { gated: false }
+  print.bid.request:    { gated: false }
+  print.delivery.get:   { gated: false }
+  print.job.create:     { gated: true  }
+  print.job.get:        { gated: false }
+  print.proof.approve:  { gated: true  }
+  print.proof.get:      { gated: false }
+
+media:    # typed contract in media.yaml
+  media.affidavit.get:     { gated: false }
+  media.avail.search:      { gated: false }
+  media.buy.create:        { gated: true  }
+  media.buy.get:           { gated: false }
+  media.invoice.get:       { gated: false }
+  media.material.traffic:  { gated: true  }
+
+social:
+  social.comment.reply:   { gated: true  }   # A public reply in the business's name.
+  social.engagement.get:  { gated: false }
+  social.inbox.get:       { gated: false }   # Inbound comments, mentions, and direct messages across the…
+  social.message.send:    { gated: true  }   # A direct message reply in the business's name.
+  social.post.cancel:     { gated: false  }   # Unschedule a post that has not published. Outbound-adjacent and…
+  social.post.publish:    { gated: true  }
+  social.post.schedule:   { gated: true  }
+  social.queue.get:       { gated: false }   # The scheduled queue as it stands — what is due, what is pending…
+  social.queue.pause:     { gated: false }   # Hold the whole queue without cancelling anything. Deliberately NOT…
+  social.queue.resume:    { gated: true  }   # Restart a paused queue — that is the judgment call, so it waits…
+
+cms:
+  cms.form.list:     { gated: false }
+  cms.form.map:      { gated: true  }   # Binds a form's fields to where they land: the record type, the…
+  cms.form.test:     { gated: false }   # Submits a clearly-marked test entry to a lead form and confirms it…
+  cms.link.check:    { gated: false }   # Fetch the site's links and report the dead ones.
+  cms.page.get:      { gated: false }   # Read a live page as published, for the copy audit and the event…
+  cms.page.list:     { gated: false }
+  cms.page.preview:  { gated: false }   # Read a page including an unpublished draft, so the pre-launch gate…
+  cms.page.update:   { gated: true  }   # Edits a live page.
+  cms.post.create:   { gated: true  }
+  cms.post.get:      { gated: false }
+  cms.post.list:     { gated: false }   # The library inventory. The Content Strategist cannot judge what to…
+  cms.post.update:   { gated: true  }
+
+seo:
+  seo.crawl.issues:      { gated: false }   # Open crawl faults — 404s, server errors, redirect chains and loops…
+  seo.index.status:      { gated: false }   # Is this URL indexed, is it blocked by robots or a noindex…
+  seo.keyword.research:  { gated: false }
+  seo.query.report:      { gated: false }   # Impressions, clicks, average position and CTR per query and per…
+  seo.ranking.track:     { gated: false }
+  seo.schema.check:      { gated: false }   # Validate a page's structured data. Markup that does not parse is…
+  seo.sitemap.get:       { gated: false }
+  seo.vitals.get:        { gated: false }   # Page experience on field data from real visitors, not a lab score.…
+
+listings:
+  listings.duplicate.report:     { gated: true  }   # Asks a platform to merge or remove a duplicate. Outbound and slow…
+  listings.duplicate.search:     { gated: false }   # Duplicate and ghost profiles for this business across platforms.
+  listings.hours.set:            { gated: true  }   # Special and holiday hours. Its own operation rather than part of…
+  listings.insights.get:         { gated: false }   # Views, calls, direction requests and website clicks from the…
+  listings.listing.get:          { gated: false }
+  listings.listing.list:         { gated: false }   # Every listing the company holds, across platforms, with all fields.
+  listings.listing.update:       { gated: true  }   # Writes to a public profile. Gated. An address change in particular…
+  listings.media.upload:         { gated: true  }   # Photos published on a public profile.
+  listings.post.create:          { gated: true  }   # A post or update published on a listing profile.
+  listings.suggestion.list:      { gated: false }   # Third-party suggested edits pending on the company's own listings.…
+  listings.verification.status:  { gated: false }   # Verified, unverified, suspended, or merged — the first read in a…
+
+reviews:
+  reviews.request.send:    { gated: true  }   # An invitation to a customer to leave a review. Outbound contact.…
+  reviews.review.get:      { gated: false }
+  reviews.review.report:   { gated: true  }   # Report a review to the platform for a policy violation (not a real…
+  reviews.review.respond:  { gated: true  }
+  reviews.review.search:   { gated: false }
+  reviews.summary.get:     { gated: false }   # Rating average, volume, and distribution per platform, for trend…
+
+ads:
+  ads.ad.create:        { gated: true  }   # A new ad is outbound creative published in the business's name.
+  ads.ad.pause:         { gated: false }   # Retiring a fatigued or failing ad. Protective and reversible.
+  ads.adgroup.get:      { gated: false }
+  ads.adgroup.update:   { gated: true  }   # Targeting, exclusions, and bids all affect what is spent and on…
+  ads.audience.list:    { gated: false }
+  ads.audience.update:  { gated: true  }   # Audience and exclusion-list changes alter who is paid to be reached.
+  ads.budget.update:    { gated: true  }   # The core money operation of the seat. A budget, bid, or cap change…
+  ads.campaign.create:  { gated: true  }   # A new campaign. Created paused, but it is still an object that can…
+  ads.campaign.get:     { gated: false }
+  ads.campaign.list:    { gated: false }   # Every campaign with its state, budget, and schedule.
+  ads.campaign.pause:   { gated: false }   # Stop a campaign spending. Deliberately NOT gated, on the same…
+  ads.campaign.resume:  { gated: true  }   # Restart a paused campaign — money starts moving again, so a person…
+  ads.campaign.update:  { gated: true  }   # spend-affecting
+  ads.creative.create:  { gated: true  }   # Puts copy into a live account under the company's name.
+  ads.creative.get:     { gated: false }
+  ads.creative.list:    { gated: false }
+  ads.creative.pause:   { gated: false }   # Stops one creative from serving. Ungated on the same reasoning as…
+  ads.creative.update:  { gated: true  }
+  ads.insights.get:     { gated: false }   # Spend, delivery, and results per campaign, group, and ad, over a…
+  ads.metrics.get:      { gated: false }   # Per-creative delivery, frequency, click-through, and cost per…
+  ads.placements.get:   { gated: false }   # Where ads were actually shown, with spend and results, for…
+  ads.policy.status:    { gated: false }   # The account's review state: current disapprovals with their stated…
+  ads.searchterm.list:  { gated: false }   # The terms that actually triggered ads, including the company's own…
+  ads.searchterms.get:  { gated: false }   # The queries that actually triggered an ad, with spend and results.…
+
+brand:
+  brand.asset.get:         { gated: false }   # Returns one asset with its format, intended use, version, and what…
+  brand.asset.put:         { gated: true  }   # Adds or supersedes an asset in the system. Gated because the…
+  brand.asset.search:      { gated: false }   # Finds assets by name, alias, format and use. This is the first…
+  brand.guideline.get:     { gated: false }   # Guidance organised by task. Read far more often than it is written.
+  brand.guideline.update:  { gated: true  }   # Publishes guidance in the company's name. Gated for that reason,…
+  brand.token.get:         { gated: false }   # Colour, type, spacing and size as named values. Every other seat's…
+  brand.token.set:         { gated: true  }   # Changes a token value. Gated, and never to be bound without the…
+  brand.usage.scan:        { gated: false }   # Where each asset and token is actually used across the company's…
+
+creators:
+  creators.collab.get:    { gated: false }
+  creators.collab.list:   { gated: false }
+  creators.content.list:  { gated: false }   # What a creator actually posted for a live collaboration, including…
+  creators.rights.list:   { gated: false }   # Every asset in use with its licence, channels, and expiry date.
+
+affiliate:
+  affiliate.clawback.create:  { gated: true  }   # Reverses an earned commission. Money, and visible to the partner.
+  affiliate.commission.list:  { gated: false }
+  affiliate.conversion.hold:  { gated: false }   # Holds a commission from the next payout run pending review.…
+  affiliate.conversion.list:  { gated: false }   # Conversions with click time, conversion time, and the partner…
+  affiliate.partner.approve:  { gated: true  }   # Admits a partner to the programme and starts commission liability.
+  affiliate.partner.get:      { gated: false }
+  affiliate.partner.list:     { gated: false }
+  affiliate.partner.suspend:  { gated: false }   # Stops a partner earning, pending review. UNGATED on the same…
+  affiliate.payout.prepare:   { gated: false }   # Assembles the run without releasing it. The release is…
+
+promotions:
+  promotions.campaign.create:  { gated: true  }
+  promotions.campaign.extend:  { gated: true  }
+  promotions.campaign.list:    { gated: false }
+  promotions.redemption.list:  { gated: false }
+
+merchandising:    # typed contract in merchandising.yaml
+  merchandising.change.measure:     { gated: false }   # Returns `readable: false` where a confounder is large enough. An…
+  merchandising.compliance.record:  { gated: false }   # Each deviation carries its cause: stock, plan fault, or execution.…
+  merchandising.planogram.get:      { gated: false }
+  merchandising.planogram.publish:  { gated: true  }   # Publishing carries the time estimate and the stock list on…
+  merchandising.space.performance:  { gated: false }   # Margin per facing, not sales. The two rank differently often…
+
+events:
+  events.attendance.get:     { gated: false }   # Who actually joined and for how long. Distinct from registration…
+  events.event.create:       { gated: true  }   # Creates a public registration page in the company's name.
+  events.event.get:          { gated: false }
+  events.event.update:       { gated: true  }
+  events.recording.get:      { gated: false }
+  events.recording.publish:  { gated: true  }   # Publishing a recording is outbound and carries the attendees'…
+  events.registration.get:   { gated: false }
+  events.registration.list:  { gated: false }   # Registrants with their registration time and time zone — the…
+  events.reminder.send:      { gated: true  }   # Sends one reminder rung to registrants who have not had it.…
+
+survey:    # typed contract in survey.yaml
+  survey.response.get:   { gated: false }
+  survey.response.list:  { gated: false }
+  survey.score.get:      { gated: false }
+  survey.survey.send:    { gated: true  }
+  survey.template.list:  { gated: false }
+
+community:
+  community.flag.list:             { gated: false }
+  community.member.get:            { gated: false }
+  community.member.message:        { gated: true  }
+  community.post.hide:             { gated: true  }
+  community.post.reply:            { gated: true  }
+  community.thread.get:            { gated: false }
+  community.thread.list:           { gated: false }
+  community.thread.mark-answered:  { gated: false }
+
+automation:
+  automation.flow.disable:  { gated: false }   # Stops a flow entering anyone new. Deliberately UNGATED: it only…
+  automation.flow.enable:   { gated: true  }   # Turns a flow on, which starts it acting on real people. Gated, and…
+  automation.flow.get:      { gated: false }   # The whole flow: entry condition, steps, branches, exit, and what…
+  automation.flow.list:     { gated: false }
+  automation.flow.upsert:   { gated: true  }   # Creates or rewrites a flow. Gated: a flow writes to records and…
+  automation.run.list:      { gated: false }   # Entries, completions and failures per flow for a period.…
+
+experiments:
+  experiments.experiment.create:  { gated: false }   # Creates a draft. Nothing is shown to a visitor until it is started.
+  experiments.experiment.get:     { gated: false }
+  experiments.experiment.list:    { gated: false }
+  experiments.experiment.start:   { gated: true  }   # Exposes a variant to real customers. That is the decision that…
+  experiments.experiment.stop:    { gated: false }   # Deliberately NOT gated, on the same reasoning as pausing a social…
+  experiments.result.get:         { gated: false }
+
+# ── Serving customers ─────────────────────────────────────────────────────────
+
+helpdesk:
+  helpdesk.agent.list:     { gated: false }
+  helpdesk.macro.list:     { gated: false }
+  helpdesk.macro.upsert:   { gated: true  }
+  helpdesk.sla.get:        { gated: false }
+  helpdesk.ticket.assign:  { gated: false }
+  helpdesk.ticket.close:   { gated: true  }   # the Shared Services Coordinator routes, ages and escalates freely.…
+  helpdesk.ticket.get:     { gated: false }
+  helpdesk.ticket.merge:   { gated: true  }
+  helpdesk.ticket.note:    { gated: false }
+  helpdesk.ticket.reply:   { gated: true  }
+  helpdesk.ticket.search:  { gated: false }
+  helpdesk.ticket.update:  { gated: true  }
+
+kb:
+  kb.article.archive:       { gated: true  }
+  kb.article.create:        { gated: true  }
+  kb.article.get:           { gated: false }
+  kb.article.list:          { gated: false }
+  kb.article.review-state:  { gated: false }
+  kb.article.search:        { gated: false }
+  kb.article.stats:         { gated: false }
+  kb.article.update:        { gated: true  }
+  kb.article.usage:         { gated: false }
+  kb.search.stats:          { gated: false }
+
+calendar:
+  calendar.availability.get:  { gated: false }
+  calendar.event.cancel:      { gated: true  }
+  calendar.event.create:      { gated: true  }   # writes to the owner's real calendar
+  calendar.event.get:         { gated: false }
+  calendar.event.list:        { gated: false }
+  calendar.event.update:      { gated: true  }
+
+meetings:    # typed contract in meetings.yaml
+  meetings.recording.start:  { gated: true  }
+  meetings.recording.stop:   { gated: false  }
+  meetings.session.get:      { gated: false }
+  meetings.session.list:     { gated: false }
+  meetings.transcript.get:   { gated: false }
+
+research:
+  research.consent.get:         { gated: false }
+  research.consent.record:      { gated: true  }
+  research.panel.get:           { gated: false }
+  research.panel.list:          { gated: false }
+  research.panel.purge:         { gated: true  }
+  research.panel.remove:        { gated: true  }
+  research.participant.get:     { gated: false }
+  research.participant.invite:  { gated: true  }
+  research.participant.screen:  { gated: false }
+  research.session.get:         { gated: false }
+  research.session.list:        { gated: false }
+  research.study.get:           { gated: false }
+  research.study.upsert:        { gated: true  }
+
+design:
+  design.component.get:     { gated: false }
+  design.component.list:    { gated: false }
+  design.component.upsert:  { gated: true  }
+  design.file.get:          { gated: false }
+  design.file.list:         { gated: false }
+  design.spec.publish:      { gated: true  }
+
+# ── Running the work ──────────────────────────────────────────────────────────
+
+store:    # typed contract in store.yaml
+  store.customer.orders:         { gated: false }
+  store.fulfillment.create:      { gated: true  }
+  store.fulfillment.get:         { gated: false }
+  store.inventory.adjust:        { gated: true  }
+  store.inventory.count.create:  { gated: false }
+  store.inventory.count.get:     { gated: false }
+  store.inventory.get:           { gated: false }
+  store.inventory.update:        { gated: true  }
+  store.order.get:               { gated: false }
+  store.order.hold:              { gated: false  }
+  store.order.list:              { gated: false }
+  store.order.payment.get:       { gated: false }
+  store.order.release:           { gated: true  }
+  store.order.search:            { gated: false }
+  store.order.update:            { gated: true  }
+  store.po.create:               { gated: true, critical: true }
+  store.po.get:                  { gated: false }
+  store.po.list:                 { gated: false }
+  store.po.receive:              { gated: true  }
+  store.po.update:               { gated: true  }
+  store.product.get:             { gated: false }
+  store.product.list:            { gated: false }   # The catalogue, for photography coverage: which products exist and…
+  store.product.update:          { gated: true  }
+  store.return.create:           { gated: true  }
+  store.return.get:              { gated: false }
+  store.return.list:             { gated: false }   # Returns with their stated reasons. Appearance-related reasons are…
+  store.return.update:           { gated: true  }
+  store.shipment.track:          { gated: false }
+
+shipping:    # typed contract in shipping.yaml
+  shipping.carrier.list:     { gated: false }
+  shipping.claim.file:       { gated: true  }
+  shipping.claim.status:     { gated: false }
+  shipping.claim.update:     { gated: true  }
+  shipping.invoice.dispute:  { gated: true  }
+  shipping.invoice.get:      { gated: false }
+  shipping.invoice.list:     { gated: false }   # The audit is worthless without the bill. Accessorial charges…
+  shipping.label.create:     { gated: true  }
+  shipping.label.void:       { gated: true  }
+  shipping.pickup.schedule:  { gated: true  }
+  shipping.rate.quote:       { gated: false }   # billableWeightOz is the greater of actual and dimensional weight.…
+  shipping.shipment.track:   { gated: false }
+
+customs:
+  customs.classification.assign:  { gated: true  }
+  customs.classification.get:     { gated: false }
+  customs.classification.list:    { gated: false }
+  customs.classification.search:  { gated: false }
+  customs.entry.get:              { gated: false }
+  customs.entry.list:             { gated: false }
+  customs.entry.submit:           { gated: true  }
+  customs.screening.run:          { gated: false }
+
+fieldservice:    # typed contract in fieldservice.yaml
+  fieldservice.job.assign:         { gated: true  }
+  fieldservice.job.close:          { gated: true  }   # firstVisit and missReason are required for an honest…
+  fieldservice.job.create:         { gated: true  }   # The Dispatcher assigns a job to a person and a time. This creates…
+  fieldservice.job.get:            { gated: false }
+  fieldservice.job.list:           { gated: false }
+  fieldservice.job.update:         { gated: true  }
+  fieldservice.parts.check:        { gated: false }   # Parts are the single largest cause of a job that does not get…
+  fieldservice.parts.order:        { gated: true  }
+  fieldservice.parts.reserve:      { gated: true  }
+  fieldservice.route.plan:         { gated: false }   # Drive time is asked for at the time of day the leg is actually…
+  fieldservice.technician.list:    { gated: false }
+  fieldservice.technician.status:  { gated: false }
+  fieldservice.truckstock.get:     { gated: false }   # Roughly half of failed first visits are a missing part. This is…
+
+facilities:    # typed contract in facilities.yaml
+  facilities.asset.list:      { gated: false }
+  facilities.request.close:   { gated: true  }
+  facilities.request.create:  { gated: false }
+  facilities.task.complete:   { gated: true  }
+  facilities.task.list:       { gated: false }
+  facilities.task.upsert:     { gated: true  }
+
+production:
+  production.downtime.list:       { gated: false }
+  production.order.get:           { gated: false }
+  production.order.list:          { gated: false }
+  production.order.promise:       { gated: true  }
+  production.routing.get:         { gated: false }
+  production.workcenter.list:     { gated: false }
+  production.workorder.expedite:  { gated: true  }
+  production.workorder.list:      { gated: false }
+
+bom:
+  bom.bom.get:            { gated: false }
+  bom.bom.list:           { gated: false }
+  bom.bom.upsert:         { gated: true  }
+  bom.change.apply:       { gated: true  }
+  bom.routing.list:       { gated: false }
+  bom.routing.upsert:     { gated: true  }
+  bom.standardcost.get:   { gated: false }
+  bom.standardcost.roll:  { gated: true  }
+  bom.whereused.get:      { gated: false }
+
+quality:
+  quality.inspection.list:             { gated: false }
+  quality.inspection.record:           { gated: true  }
+  quality.inspection.waive:            { gated: true  }
+  quality.nonconformance.disposition:  { gated: true  }
+  quality.nonconformance.list:         { gated: false }
+  quality.nonconformance.open:         { gated: true  }
+  quality.plan.get:                    { gated: false }
+  quality.spec.get:                    { gated: false }
+  quality.supplier.state:              { gated: false }
+
+maintenance:
+  maintenance.asset.list:          { gated: false }
+  maintenance.asset.outofservice:  { gated: true  }
+  maintenance.downtime.list:       { gated: false }
+  maintenance.pm.defer:            { gated: true  }
+  maintenance.pm.list:             { gated: false }
+  maintenance.window.list:         { gated: false }
+  maintenance.workorder.close:     { gated: true  }
+  maintenance.workorder.create:    { gated: true  }
+
+warehouse:
+  warehouse.backfill.run:      { gated: true  }
+  warehouse.lineage.get:       { gated: false }
+  warehouse.model.deploy:      { gated: true  }
+  warehouse.pipeline.run:      { gated: true  }
+  warehouse.pipeline.status:   { gated: false }
+  warehouse.source.freshness:  { gated: false }
+  warehouse.source.schema:     { gated: false }
+  warehouse.table.drop:        { gated: true  }
+
+projects:
+  projects.assignment.create:  { gated: true  }
+  projects.assignment.list:    { gated: false }
+  projects.deliverable.get:    { gated: false }
+  projects.deliverable.list:   { gated: false }
+  projects.engagement.get:     { gated: false }
+  projects.engagement.list:    { gated: false }
+  projects.engagement.update:  { gated: true  }
+  projects.scope.create:       { gated: true  }
+  projects.scope.get:          { gated: false }
+  projects.scope.list:         { gated: false }
+  projects.scope.update:       { gated: true  }
+  projects.task.list:          { gated: false }
+
+channel:
+  channel.account.settings:  { gated: true  }
+  channel.appeal.submit:     { gated: true  }
+  channel.category.spec:     { gated: false }
+  channel.fee.list:          { gated: false }
+  channel.health.get:        { gated: false }
+  channel.listing.delete:    { gated: true  }
+  channel.listing.list:      { gated: false }
+  channel.listing.price:     { gated: true  }
+  channel.notice.get:        { gated: false }
+  channel.order.list:        { gated: false }
+  channel.placement.get:     { gated: false }
+  channel.settlement.list:   { gated: false }
+
+travel:
+  travel.booking.cancel:    { gated: true  }
+  travel.booking.change:    { gated: true  }
+  travel.booking.create:    { gated: true  }
+  travel.booking.get:       { gated: false }
+  travel.credit.list:       { gated: false }
+  travel.itinerary.search:  { gated: false }   # who is travelling, where, between which dates.…
+  travel.option.search:     { gated: false }
+  travel.policy.get:        { gated: false }
+  travel.segment.status:    { gated: false }
+  travel.booking.list:      { gated: false }
+
+drive:
+  drive.file.delete:    { gated: true  }
+  drive.file.get:       { gated: false }
+  drive.file.list:      { gated: false }
+  drive.file.move:      { gated: true  }
+  drive.file.put:       { gated: true  }
+  drive.file.search:    { gated: false }
+  drive.file.share:     { gated: true  }
+  drive.folder.create:  { gated: true  }
+  drive.folder.list:    { gated: false }
+
+records:
+  records.class.list:             { gated: false }
+  records.class.upsert:           { gated: true  }
+  records.disposition.execute:    { gated: true  }
+  records.disposition.propose:    { gated: false }
+  records.duplicate.find:         { gated: false }   # Candidate duplicate pairs with a per-pair score and the evidence…
+  records.export.create:          { gated: false }   # A full export of named records including linked records and…
+  records.hold.acknowledgements:  { gated: false }
+  records.hold.apply:             { gated: true  }
+  records.hold.list:              { gated: false }
+  records.hold.release:           { gated: true  }
+  records.item.list:              { gated: false }
+  records.record.archive:         { gated: true  }
+  records.record.get:             { gated: false }
+  records.record.merge:           { gated: true  }
+  records.record.search:          { gated: false }   # Find records by field across a record class (contact, company, or…
+  records.record.update:          { gated: true  }
+  records.validation.list:        { gated: false }   # The validation rules in force for a record class, and what each…
+  records.validation.upsert:      { gated: true  }
+
+# ── People ────────────────────────────────────────────────────────────────────
+
+hris:    # typed contract in hris.yaml
+  hris.benefits.enrollment.list:  { gated: false }
+  hris.compband.get:              { gated: false }
+  hris.compband.upsert:           { gated: true  }
+  hris.contractor.engage:         { gated: true  }
+  hris.deduction.list:            { gated: false }
+  hris.deduction.upsert:          { gated: true  }
+  hris.document.request:          { gated: true  }
+  hris.document.status:           { gated: false }
+  hris.employee.change:           { gated: true  }
+  hris.employee.changes:          { gated: false }
+  hris.employee.create:           { gated: true  }
+  hris.employee.get:              { gated: false }
+  hris.employee.history:          { gated: false }
+  hris.employee.list:             { gated: false }
+  hris.employee.pto:              { gated: false }
+  hris.employee.timedata:         { gated: false }
+  hris.employee.update:           { gated: true  }
+  hris.headcount.get:             { gated: false }
+  hris.paychange.get:             { gated: false }
+  hris.paychange.upsert:          { gated: true  }
+  hris.payroll.calendar.get:      { gated: false }
+  hris.payroll.register.get:      { gated: false }
+  hris.payroll.run:               { gated: true  }
+  hris.roster.list:               { gated: false }
+  hris.task.create:               { gated: false }
+  hris.task.list:                 { gated: false }
+  hris.timeentry.list:            { gated: false }
+  hris.timeoff.decide:            { gated: true  }
+  hris.timeoff.list:              { gated: false }
+  hris.timesheet.status:          { gated: false }
+
+ats:    # typed contract in ats.yaml
+  ats.application.get:       { gated: false }
+  ats.application.list:      { gated: false }
+  ats.candidate.create:      { gated: false }
+  ats.candidate.get:         { gated: false }
+  ats.candidate.note:        { gated: false }
+  ats.candidate.search:      { gated: false }
+  ats.candidate.stage.set:   { gated: false }
+  ats.interview.reschedule:  { gated: true  }
+  ats.interview.schedule:    { gated: true  }
+  ats.job.post:              { gated: true  }
+  ats.offer.create:          { gated: true  }
+  ats.panel.get:             { gated: false }
+  ats.posting.get:           { gated: false }
+  ats.requisition.get:       { gated: false }
+  ats.requisition.list:      { gated: false }
+  ats.requisition.open:      { gated: true  }
+  ats.scorecard.get:         { gated: false }
+  ats.scorecard.list:        { gated: false }
+
+benefits:
+  benefits.enrollment.change:  { gated: true  }
+  benefits.enrollment.get:     { gated: false }
+  benefits.enrollment.list:    { gated: false }
+  benefits.event.list:         { gated: false }
+  benefits.invoice.get:        { gated: false }
+  benefits.notice.record:      { gated: false }
+  benefits.plan.get:           { gated: false }
+  benefits.plan.list:          { gated: false }
+
+lms:
+  lms.certification.list:  { gated: false }
+  lms.completion.get:      { gated: false }
+  lms.completion.list:     { gated: false }
+  lms.course.assign:       { gated: true  }
+  lms.course.get:          { gated: false }
+  lms.course.list:         { gated: false }
+  lms.record.export:       { gated: false }
+
+learning:    # typed contract in learning.yaml
+  learning.completion.list:    { gated: false }
+  learning.completion.record:  { gated: true  }
+  learning.course.get:         { gated: false }
+  learning.course.list:        { gated: false }
+  learning.enrollment.cancel:  { gated: false }
+  learning.enrollment.create:  { gated: true  }
+  learning.requirement.list:   { gated: false }
+
+workforce:    # typed contract in workforce.yaml
+  workforce.availability.get:  { gated: false }   # Minor hour and time-of-day limits are legal limits, not…
+  workforce.change.price:      { gated: false }   # Under fair-workweek and predictive-scheduling rules an employer-…
+  workforce.demand.get:        { gated: false }   # Cover follows trade and trade is not flat. A flat headcount is…
+  workforce.hours.get:         { gated: false }
+  workforce.schedule.check:    { gated: false }   # Weekly and any daily overtime threshold, break entitlement by…
+  workforce.schedule.draft:    { gated: false }
+  workforce.schedule.publish:  { gated: true  }
+  workforce.shift.assign:      { gated: true  }
+
+safety:
+  safety.hazard.list:      { gated: false }
+  safety.hazard.upsert:    { gated: true  }
+  safety.incident.create:  { gated: true  }
+  safety.incident.get:     { gated: false }
+  safety.incident.list:    { gated: false }
+  safety.log.add:          { gated: true  }
+  safety.log.list:         { gated: false }
+  safety.log.update:       { gated: true  }
+  safety.summary.certify:  { gated: true  }
+  safety.summary.get:      { gated: false }
+  safety.training.list:    { gated: false }
+
+labor:
+  labor.agreement.get:         { gated: false }
+  labor.briefing.record:       { gated: false }
+  labor.extension.record:      { gated: true  }
+  labor.grievance.list:        { gated: false }
+  labor.grievance.respond:     { gated: true  }
+  labor.grievance.upsert:      { gated: true  }
+  labor.position.communicate:  { gated: true  }
+
+ehs:
+  ehs.case.determine:    { gated: true  }
+  ehs.hazard.list:       { gated: false }
+  ehs.hazard.upsert:     { gated: true  }
+  ehs.incident.list:     { gated: false }
+  ehs.incident.upsert:   { gated: true  }
+  ehs.log.certify:       { gated: true  }
+  ehs.log.list:          { gated: false }
+  ehs.permit.list:       { gated: false }
+  ehs.report.regulator:  { gated: true  }
+  ehs.training.list:     { gated: false }
+
+# ── Building the product ──────────────────────────────────────────────────────
+
+repo:
+  repo.advisory.list:     { gated: false }
+  repo.branch.create:     { gated: false }
+  repo.branch.delete:     { gated: true  }
+  repo.branch.get:        { gated: false }
+  repo.branch.list:       { gated: false }
+  repo.branch.update:     { gated: false }
+  repo.change.approve:    { gated: true  }
+  repo.change.close:      { gated: true  }
+  repo.change.comment:    { gated: true  }
+  repo.change.diff:       { gated: false }
+  repo.change.get:        { gated: false }
+  repo.change.list:       { gated: false }
+  repo.change.merge:      { gated: true  }
+  repo.change.open:       { gated: true  }
+  repo.change.update:     { gated: true  }
+  repo.commit.get:        { gated: false }
+  repo.commit.list:       { gated: false }
+  repo.dependency.list:   { gated: false }
+  repo.file.read:         { gated: false }
+  repo.file.write:        { gated: false }
+  repo.pullrequest.get:   { gated: false }
+  repo.pullrequest.list:  { gated: false }
+  repo.release.list:      { gated: false }
+  repo.release.publish:   { gated: true  }
+  repo.tag.create:        { gated: true  }
+  repo.tag.get:           { gated: false }
+
+ci:
+  ci.artifact.get:      { gated: false }
+  ci.check.disable:     { gated: false  }
+  ci.check.list:        { gated: false }
+  ci.check.status:      { gated: false }
+  ci.deploy.rollback:   { gated: false }
+  ci.deploy.start:      { gated: true  }
+  ci.deploy.status:     { gated: false }
+  ci.environment.list:  { gated: false }
+  ci.run.cancel:        { gated: false }
+  ci.run.get:           { gated: false }
+  ci.run.history:       { gated: false }
+  ci.run.list:          { gated: false }
+  ci.run.logs:          { gated: false }
+  ci.run.start:         { gated: false }
+
+deploy:
+  deploy.flag.set:          { gated: true  }
+  deploy.release.status:    { gated: false }
+  deploy.rollback.execute:  { gated: true  }
+  deploy.rollout.advance:   { gated: true  }
+  deploy.rollout.get:       { gated: false }
+  deploy.rollout.pause:     { gated: false }
+  deploy.rollout.resume:    { gated: true  }
+  deploy.rollout.start:     { gated: true  }
+
+testing:
+  testing.a11y.scan:            { gated: false }
+  testing.performance.measure:  { gated: false }
+  testing.plan.create:          { gated: false }
+  testing.plan.get:             { gated: false }
+  testing.result.record:        { gated: false }
+  testing.suite.run:            { gated: false }
+  testing.suite.status:         { gated: false }
+  testing.testcase.delete:      { gated: true  }
+  testing.testcase.get:         { gated: false }
+  testing.testcase.list:        { gated: false }
+  testing.testcase.quarantine:  { gated: false }
+  testing.testcase.upsert:      { gated: false }
+  testing.testrun.get:          { gated: false }
+  testing.testrun.history:      { gated: false }
+  testing.visual.baseline.set:  { gated: true  }
+  testing.visual.compare:       { gated: false }
+
+appstore:
+  appstore.build.list:         { gated: false }
+  appstore.build.upload:       { gated: true  }
+  appstore.crash.get:          { gated: false }
+  appstore.crash.list:         { gated: false }
+  appstore.metadata.get:       { gated: false }
+  appstore.metadata.update:    { gated: true  }
+  appstore.release.advance:    { gated: true  }
+  appstore.release.halt:       { gated: false }
+  appstore.release.start:      { gated: true  }
+  appstore.release.status:     { gated: false }
+  appstore.review.list:        { gated: false }
+  appstore.submission.create:  { gated: true  }
+  appstore.submission.get:     { gated: false }
+  appstore.submission.list:    { gated: false }
+
+monitoring:
+  monitoring.alert.get:      { gated: false }
+  monitoring.alert.list:     { gated: false }
+  monitoring.alert.silence:  { gated: true  }
+  monitoring.dashboard.get:  { gated: false }
+  monitoring.host.list:      { gated: false }
+  monitoring.metric.get:     { gated: false }
+  monitoring.metric.query:   { gated: false }
+  monitoring.metric.series:  { gated: false }
+  monitoring.patch.list:     { gated: false }
+  monitoring.service.list:   { gated: false }
+  monitoring.slo.get:        { gated: false }
+
+observability:
+  observability.alert.list:      { gated: false }
+  observability.error.get:       { gated: false }
+  observability.error.list:      { gated: false }
+  observability.log.search:      { gated: false }
+  observability.metric.query:    { gated: false }
+  observability.migration.run:   { gated: true  }
+  observability.queue.depth:     { gated: false }
+  observability.slowquery.list:  { gated: false }
+  observability.table.growth:    { gated: false }
+  observability.trace.get:       { gated: false }
+
+incidents:
+  incidents.incident.close:   { gated: true  }
+  incidents.incident.get:     { gated: false }
+  incidents.incident.list:    { gated: false }
+  incidents.incident.open:    { gated: true  }
+  incidents.incident.update:  { gated: true  }
+  incidents.runbook.get:      { gated: false }
+
+statuspage:
+  statuspage.incident.post:    { gated: true  }
+  statuspage.incident.update:  { gated: true  }
+  statuspage.status.get:       { gated: false }
+
+infrastructure:
+  infrastructure.change.apply:     { gated: true  }
+  infrastructure.change.plan:      { gated: false }
+  infrastructure.cost.get:         { gated: false }
+  infrastructure.resource.delete:  { gated: true  }
+  infrastructure.resource.list:    { gated: false }
+  infrastructure.state.get:        { gated: false }
+
+database:
+  database.capacity.get:      { gated: false }
+  database.failover.promote:  { gated: true  }
+  database.index.create:      { gated: true  }
+  database.index.drop:        { gated: true  }
+  database.index.stats:       { gated: false }
+  database.migration.plan:    { gated: false }
+  database.migration.run:     { gated: true  }
+  database.query.kill:        { gated: true  }
+  database.query.plan:        { gated: false }
+  database.query.stats:       { gated: false }
+  database.replica.status:    { gated: false }
+  database.restore.run:       { gated: true  }
+  database.table.stats:       { gated: false }
+
+security:
+  security.advisory.get:    { gated: false }
+  security.alert.get:       { gated: false }
+  security.alert.list:      { gated: false }
+  security.alert.update:    { gated: true  }
+  security.finding.accept:  { gated: true  }
+  security.finding.get:     { gated: false }
+  security.finding.list:    { gated: false }
+  security.scan.start:      { gated: true  }
+
+migration:
+  migration.load.run:        { gated: true  }
+  migration.mapping.get:     { gated: false }
+  migration.mapping.upsert:  { gated: true  }
+  migration.reconcile.run:   { gated: false }
+  migration.rollback.run:    { gated: true  }
+  migration.source.profile:  { gated: false }
+  migration.trial.run:       { gated: true  }
+
+models:
+  models.features.stats:  { gated: false }
+  models.model.get:       { gated: false }
+  models.model.list:      { gated: false }
+  models.model.promote:   { gated: true  }
+  models.model.retire:    { gated: true  }
+  models.serving.stats:   { gated: false }
+  models.training.run:    { gated: true  }
+  models.training.start:  { gated: true  }
+
+analytics:    # typed contract in analytics.yaml
+  analytics.access.grant:         { gated: true  }
+  analytics.access.list:          { gated: false }   # Which group or role can see which rows and fields of which report.
+  analytics.cohort.get:           { gated: false }   # Customers grouped by arrival period and by acquisition source,…
+  analytics.conversion.list:      { gated: false }   # Individual conversions with their touch history, for attribution…
+  analytics.dataset.certify:      { gated: true  }
+  analytics.dataset.list:         { gated: false }
+  analytics.dataset.query:        { gated: false }   # A read-only query against a modelled dataset, for building and…
+  analytics.dataset.schema:       { gated: false }   # The shape of a source: fields, types, row count, null rate, and…
+  analytics.delivery.status:      { gated: false }   # Delivery outcomes per recipient per run — delivered, bounced,…
+  analytics.experiment.get:       { gated: false }   # Result of a running holdout, pause, or split, with exposure counts…
+  analytics.forecast.override:    { gated: true  }
+  analytics.forecast.publish:     { gated: true  }
+  analytics.form.metrics:         { gated: false }   # Field-level form behaviour — reached, abandoned, retyped,…
+  analytics.funnel.get:           { gated: false }   # Step-by-step entrances, completions and drop-off for a defined path.
+  analytics.intake.volume:        { gated: false }
+  analytics.metric.get:           { gated: false }   # One metric for one period, returning the numerator and denominator…
+  analytics.metric.list:          { gated: false }   # The metrics this workspace can produce, with their source and grain.
+  analytics.metric.publish:       { gated: true  }
+  analytics.metric.retire:        { gated: true  }
+  analytics.metric.series:        { gated: false }
+  analytics.page.metrics:         { gated: false }   # Sessions, conversion rate, time to usable, and bounce for one page.
+  analytics.report.create:        { gated: true  }
+  analytics.report.flag:          { gated: false }   # Mark a report suspect, with a reason, where its readers will see…
+  analytics.report.get:           { gated: false }
+  analytics.report.list:          { gated: false }   # Live reports with their sources, owner, audience and last-run state.
+  analytics.report.run:           { gated: false }   # Execute a report now and return its result, without delivering it…
+  analytics.report.update:        { gated: true  }
+  analytics.report.usage:         { gated: false }   # Opens per report per period, and by whom. Distinguishes a report…
+  analytics.revenue.breakdown:    { gated: false }   # Revenue for a period broken out by product, plan, segment and…
+  analytics.segment.compare:      { gated: false }   # The same metric split by device, source, or visitor type. A page…
+  analytics.series.get:           { gated: false }   # The existing analytics.report.get returns a prepared report.…
+  analytics.subscription.create:  { gated: true  }
+  analytics.subscription.list:    { gated: false }   # Who receives which report, on what schedule, and under whose…
+  analytics.subscription.update:  { gated: true  }
+  analytics.tag.verify:           { gated: false }   # Is a conversion event present on this page, does it fire on the…
+  analytics.tracking.verify:      { gated: false }
+  analytics.traffic.sources:      { gated: false }   # Sessions and conversions by source, medium, and campaign,…
+  analytics.usage.get:            { gated: false }
+
+tickets:
+  tickets.baseline.set:      { gated: true  }
+  tickets.dependency.set:    { gated: true  }
+  tickets.issue.comment:     { gated: false }
+  tickets.issue.create:      { gated: true  }
+  tickets.issue.get:         { gated: false }
+  tickets.issue.link:        { gated: false }
+  tickets.issue.list:        { gated: false }
+  tickets.issue.search:      { gated: false }
+  tickets.issue.transition:  { gated: true  }
+  tickets.issue.update:      { gated: true  }
+  tickets.label.set:         { gated: true  }
+  tickets.milestone.get:     { gated: false }
+  tickets.milestone.upsert:  { gated: true  }
+
+# ── Systems the company runs on ───────────────────────────────────────────────
+
+directory:
+  directory.admin.list:           { gated: false }
+  directory.credential.reset:     { gated: true  }
+  directory.group.get:            { gated: false }
+  directory.group.list:           { gated: false }
+  directory.group.member.add:     { gated: true  }
+  directory.group.member.remove:  { gated: true  }
+  directory.mfa.reset:            { gated: true  }
+  directory.mfa.status:           { gated: false }
+  directory.session.revoke:       { gated: true  }
+  directory.signin.list:          { gated: false }
+  directory.user.create:          { gated: true  }
+  directory.user.delete:          { gated: true  }
+  directory.user.get:             { gated: false }
+  directory.user.list:            { gated: false }
+  directory.user.search:          { gated: false }
+  directory.user.suspend:         { gated: true  }
+  directory.user.update:          { gated: true  }
+
+devices:
+  devices.compliance.get:   { gated: false }
+  devices.device.get:       { gated: false }
+  devices.device.list:      { gated: false }
+  devices.device.lock:      { gated: true  }
+  devices.device.register:  { gated: true  }
+  devices.device.search:    { gated: false }
+  devices.device.update:    { gated: true  }
+  devices.device.wipe:      { gated: true  }
+
+network:
+  network.circuit.contract.get:  { gated: false }
+  network.client.list:           { gated: false }
+  network.link.get:              { gated: false }
+  network.link.list:             { gated: false }
+  network.link.update:           { gated: true  }
+  network.path.trace:            { gated: false }
+  network.rule.create:           { gated: true  }
+  network.rule.delete:           { gated: true  }
+  network.rule.get:              { gated: false }
+  network.rule.list:             { gated: false }
+  network.rule.update:           { gated: true  }
+  network.wireless.list:         { gated: false }
+
+saas:
+  saas.app.get:            { gated: false }
+  saas.app.list:           { gated: false }
+  saas.seat.list:          { gated: false }
+  saas.seat.remove:        { gated: true  }
+  saas.seat.usage:         { gated: false }
+  saas.subscription.get:   { gated: false }
+  saas.subscription.list:  { gated: false }
+
+backups:
+  backups.job.get:        { gated: false }
+  backups.job.list:       { gated: false }
+  backups.restore.test:   { gated: true  }
+  backups.run.list:       { gated: false }
+  backups.snapshot.list:  { gated: false }
+  backups.target.list:    { gated: false }
+
+integrations:
+  integrations.connection.get:     { gated: false }
+  integrations.connection.list:    { gated: false }
+  integrations.connection.reauth:  { gated: true  }
+  integrations.queue.get:          { gated: false }
+  integrations.sync.list:          { gated: false }
+  integrations.sync.retry:         { gated: true  }
+
+fleet:
+  fleet.clearinghouse.history:  { gated: false }
+  fleet.clearinghouse.query:    { gated: true  }
+  fleet.driver.get:             { gated: false }
+  fleet.driver.list:            { gated: false }
+  fleet.driverfile.get:         { gated: false }
+  fleet.driverfile.update:      { gated: true  }
+  fleet.dvir.list:              { gated: false }
+  fleet.inspection.list:        { gated: false }
+  fleet.inspection.record:      { gated: true  }
+  fleet.roadside.list:          { gated: false }
+  fleet.vehicle.get:            { gated: false }
+  fleet.vehicle.list:           { gated: false }
+
+# ── The company's own governance ──────────────────────────────────────────────
+#
+# Two capabilities the RUNTIME performs itself. There is no product behind either
+# one and no plugin binding to resolve: the operation names below are the ones the
+# runtime already carries, and every seat can reach them, which is why the owner
+# grants them per employee rather than a company binding them once.
+
+layers:    # The company's own description: the industry, franchise and company layers every employee reads.
+  layers.company.read:      { gated: false }   # What the company layer holds today: its words, parties, rules, laws and settled numbers.
+  layers.company.write:     { gated: true, critical: true }   # Writes the company layer, whole. Granted per employee and never acquired by a general default.
+  layers.company.remove:    { gated: true, critical: true }   # Its own grant: an employee that may write the layer does not thereby get to delete it.
+  layers.franchise.write:   { gated: true  }
+  layers.franchise.remove:  { gated: true  }
+  layers.industry.write:    { gated: true  }   # A trade layer other companies will work by, so publishing it means review.
+  layers.industry.remove:   { gated: true  }
+
+authority:    # Standing authority for seats, inside the bounds the company layer sets.
+  authority.constitution.show:  { gated: false }   # The company's own unattended bounds, which no grant may exceed.
+  authority.grant.list:         { gated: false }   # What one seat may do unattended today, and inside which bounds.
+  authority.grant.grant:        { gated: true, critical: true }   # Lets a seat run a gated operation unattended inside bounds. Refused past the company's bounds, a reserved operation, or a locked rule.
+  authority.grant.widen:        { gated: true, critical: true }   # Loosens a bound, and only on evidence from the record.
+  authority.grant.narrow:       { gated: false }   # Takes scope away. Protective and reversible: scope left in place while a narrowing waits is scope still being used.
+  authority.grant.suspend:      { gated: false }   # The seat asks again until a new grant. Protective, on the same reasoning as narrowing.
+
+# ── Obligations ───────────────────────────────────────────────────────────────
+
+contracts:    # typed contract in contracts.yaml
+  contracts.amendment.link:     { gated: true  }
+  contracts.notice.send:        { gated: true  }   # a lease notice — exercise, renewal, termination, audit right,…
+  contracts.obligation.close:   { gated: false }
+  contracts.obligation.list:    { gated: false }   # Obligation carries id, contractId, side (ours|theirs), what,…
+  contracts.obligation.upsert:  { gated: true  }
+  contracts.record.get:         { gated: false }
+  contracts.record.list:        { gated: false }   # ContractRecord carries id, counterparty, counterpartyEntity, kind,…
+  contracts.record.search:      { gated: false }   # noticeDeadlineBefore is the query the notice-watch workflow runs…
+  contracts.record.upsert:      { gated: true  }   # Gated: the register is the company's record of what it agreed to.…
+  contracts.repository.audit:   { gated: false }
+  contracts.vendor.approve:     { gated: true  }   # the approved-supplier list, not the accounting vendor master…
+  contracts.version.list:       { gated: false }
+  contracts.version.put:        { gated: true  }   # A redline is a version. The executed copy is the version…
+  contracts.screening.check:    { gated: false }
+
+licensing:    # typed contract in licensing.yaml
+  licensing.filing.list:     { gated: false }   # Filing carries id, kind, jurisdiction, entity, dueDate, feeCents?,…
+  licensing.filing.submit:   { gated: true  }   # Gated: a filing is a statement to a government body, made in the…
+  licensing.license.get:     { gated: false }
+  licensing.license.list:    { gated: false }   # License carries id, kind…
+  licensing.license.upsert:  { gated: true  }
+  licensing.standing.check:  { gated: false }   # Where the jurisdiction exposes no check, return inGoodStanding as…
+
+insurance:    # typed contract in insurance.yaml
+  insurance.certificate.get:          { gated: false }
+  insurance.certificate.holder.list:  { gated: false }   # The holder list exists so holders can be told when coverage they…
+  insurance.certificate.issue:        { gated: true  }   # Gated. A certificate is evidence and confers no rights; it cannot…
+  insurance.certificate.list:         { gated: false }   # Certificate carries id, counterparty, namedInsured, producer,…
+  insurance.certificate.record:       { gated: true  }
+  insurance.certificate.request:      { gated: true  }   # Gated: asking the broker to name a third party on the company's…
+  insurance.claim.get:                { gated: false }
+  insurance.claim.list:               { gated: false }
+  insurance.claim.report:             { gated: true  }   # Gated: reporting has premium and renewal consequences, so a person…
+  insurance.endorsement.get:          { gated: false }   # Status is requested|submitted|issued|declined. Only `issued` is…
+  insurance.endorsement.request:      { gated: true  }   # requestedOn and requestedEffective are both carried, and an…
+  insurance.exposure.update:          { gated: true  }
+  insurance.notice.get:               { gated: false }   # Notice carries kind (cancellation|nonrenewal|conditional_renewal|…
+  insurance.policy.get:               { gated: false }   # asOf matters more than anything else here. Claim handling asks…
+  insurance.policy.list:              { gated: false }   # Policy carries id, carrier, type, form ("occurrence" |…
+  insurance.renewal.deliver:          { gated: true  }
+  insurance.requirement.list:         { gated: false }   # Requirement carries counterpartyClass, coverageType,…
+
+governance:
+  governance.action.list:           { gated: false }
+  governance.action.upsert:         { gated: true  }
+  governance.disclosure.publish:    { gated: true  }
+  governance.entity.list:           { gated: false }
+  governance.entity.standing:       { gated: false }
+  governance.filing.calendar:       { gated: false }
+  governance.filing.submit:         { gated: true  }
+  governance.meeting.list:          { gated: false }
+  governance.meeting.upsert:        { gated: true  }
+  governance.minute.draft:          { gated: false }
+  governance.minute.finalize:       { gated: true  }
+  governance.minute.put:            { gated: true  }
+  governance.packet.assemble:       { gated: false }
+  governance.packet.distribute:     { gated: true  }
+  governance.register.get:          { gated: false }
+  governance.register.upsert:       { gated: true  }
+  governance.resolution.circulate:  { gated: true  }
+  governance.resolution.put:        { gated: true  }
+  governance.resolution.track:      { gated: false }
+
+grc:
+  grc.control.list:       { gated: false }
+  grc.control.upsert:     { gated: true  }
+  grc.engagement.get:     { gated: false }
+  grc.engagement.list:    { gated: false }
+  grc.engagement.upsert:  { gated: true  }
+  grc.finding.close:      { gated: true  }
+  grc.finding.list:       { gated: false }
+  grc.finding.upsert:     { gated: true  }
+  grc.risk.get:           { gated: false }
+  grc.risk.list:          { gated: false }
+  grc.risk.upsert:        { gated: true  }
+
+privacy:
+  privacy.datamap.list:    { gated: false }
+  privacy.datamap.upsert:  { gated: true  }
+  privacy.request.get:     { gated: false }
+  privacy.request.list:    { gated: false }
+  privacy.request.upsert:  { gated: true  }
+  privacy.subject.delete:  { gated: true  }
+  privacy.subject.search:  { gated: false }
+
+ip:
+  ip.mark.get:       { gated: false }
+  ip.mark.list:      { gated: false }
+  ip.mark.upsert:    { gated: true  }
+  ip.specimen.list:  { gated: false }
+  ip.specimen.put:   { gated: false }
+  ip.watch.list:     { gated: false }
+
+policy:
+  policy.acknowledgement.list:  { gated: false }
+
+continuity:
+  continuity.activation.log:     { gated: true  }
+  continuity.bia.upsert:         { gated: true  }
+  continuity.exercise.record:    { gated: true  }
+  continuity.exercise.schedule:  { gated: true  }
+  continuity.plan.list:          { gated: false }
+  continuity.plan.publish:       { gated: true  }
+  continuity.process.list:       { gated: false }
+
+esg:
+  esg.disclosure.publish:  { gated: true  }
+  esg.evidence.list:       { gated: false }
+  esg.evidence.put:        { gated: true  }
+  esg.metric.list:         { gated: false }
+  esg.metric.put:          { gated: true  }
+  esg.metric.restate:      { gated: true  }
+
+architecture:
+  architecture.debt.list:        { gated: false }
+  architecture.review.list:      { gated: false }
+  architecture.review.record:    { gated: true  }
+  architecture.standard.list:    { gated: false }
+  architecture.standard.upsert:  { gated: true  }
+  architecture.system.list:      { gated: false }
+  architecture.system.upsert:    { gated: true  }
+  architecture.waiver.list:      { gated: false }
+  architecture.waiver.upsert:    { gated: true  }
+
+# ── Verticals ─────────────────────────────────────────────────────────────────
+
+ehr:
+  ehr.coverage.get:     { gated: false }
+  ehr.coverage.upsert:  { gated: true  }
+  ehr.disclosure.list:  { gated: false }
+  ehr.disclosure.log:   { gated: true  }
+  ehr.document.get:     { gated: false }
+  ehr.document.list:    { gated: false }
+  ehr.document.put:     { gated: true  }
+  ehr.encounter.get:    { gated: false }
+  ehr.encounter.list:   { gated: false }
+  ehr.order.get:        { gated: false }
+  ehr.order.list:       { gated: false }
+  ehr.patient.create:   { gated: true  }
+  ehr.patient.find:     { gated: false }
+  ehr.patient.get:      { gated: false }
+  ehr.patient.update:   { gated: true  }
+  ehr.query.create:     { gated: true  }
+  ehr.referral.create:  { gated: true  }
+  ehr.referral.get:     { gated: false }
+  ehr.referral.update:  { gated: true  }
+  ehr.release.get:      { gated: false }
+  ehr.release.put:      { gated: true  }
+  ehr.appointment.list:   { gated: false }
+  ehr.document.disclose:  { gated: true  }   # A disclosure releases a record to someone outside it, and it is always paired with a log entry. The purpose an…
+  ehr.document.request:   { gated: true  }   # Outbound: it asks an outside provider for a patient's records, which means it names the patient to someone who…
+  ehr.note.get:           { gated: false }
+
+payer:
+  payer.authorization.appeal:  { gated: true  }
+  payer.authorization.get:     { gated: false }
+  payer.authorization.submit:  { gated: true  }
+  payer.benefit.get:           { gated: false }
+  payer.claim.correct:         { gated: true  }
+  payer.claim.status:          { gated: false }
+  payer.claim.submit:          { gated: true  }
+  payer.eligibility.check:     { gated: false }
+  payer.fee_schedule.get:      { gated: false }
+  payer.remittance.get:        { gated: false }
+  payer.remittance.list:       { gated: false }
+  payer.authorization.required:  { gated: false }   # Returns the basis as well as the answer. "No authorization needed" is only defensible if the seat can say whic…
+  payer.network.check:           { gated: false }
+  payer.policy.get:              { gated: false }
+
+credentialing:
+  credentialing.attestation.submit:  { gated: true  }
+  credentialing.credential.list:     { gated: false }
+  credentialing.credential.put:      { gated: true  }
+  credentialing.enrollment.get:      { gated: false }
+  credentialing.enrollment.submit:   { gated: true  }
+  credentialing.enrollment.update:   { gated: true  }
+  credentialing.provider.get:        { gated: false }
+  credentialing.provider.list:       { gated: false }
+  credentialing.roster.get:          { gated: false }
+  credentialing.roster.update:       { gated: true  }
+  credentialing.attestation.status:  { gated: false }
+  credentialing.document.expiry:     { gated: false }
+  credentialing.revalidation.due:    { gated: false }
+
+property:
+  property.application.decide:   { gated: true  }
+  property.application.get:      { gated: false }
+  property.compliance.list:      { gated: false }
+  property.deposit.deduct:       { gated: true  }
+  property.deposit.get:          { gated: false }
+  property.lease.create:         { gated: true  }
+  property.lease.get:            { gated: false }
+  property.lease.list:           { gated: false }
+  property.lease.update:         { gated: true  }
+  property.ledger.apply:         { gated: true  }
+  property.ledger.charge:        { gated: true  }
+  property.ledger.get:           { gated: false }
+  property.notice.list:          { gated: false }
+  property.notice.send:          { gated: true  }
+  property.owner.statement.get:  { gated: false }
+  property.property.get:         { gated: false }
+  property.property.list:        { gated: false }
+  property.resident.get:         { gated: false }
+  property.unit.get:             { gated: false }
+  property.unit.list:            { gated: false }
+  property.vendor.dispatch:      { gated: true  }
+  property.vendor.get:           { gated: false }
+  property.vendor.list:          { gated: false }
+  property.workorder.authorize:  { gated: true  }
+  property.workorder.close:      { gated: true  }
+  property.workorder.create:     { gated: true  }
+  property.workorder.get:        { gated: false }
+  property.workorder.list:       { gated: false }
+
+screening:
+  screening.adverse_action.send:  { gated: true  }
+  screening.criteria.get:         { gated: false }
+  screening.report.get:           { gated: false }
+  screening.report.request:       { gated: true  }
+
+association:
+  association.assessment.list:   { gated: false }
+  association.disclosure.issue:  { gated: true  }
+  association.fine.levy:         { gated: true  }
+  association.ledger.charge:     { gated: true  }
+  association.ledger.get:        { gated: false }
+  association.meeting.list:      { gated: false }
+  association.meeting.notice:    { gated: true  }
+  association.member.get:        { gated: false }
+  association.member.list:       { gated: false }
+  association.minutes.put:       { gated: true  }
+  association.notice.send:       { gated: true  }
+  association.record.get:        { gated: false }
+  association.record.list:       { gated: false }
+  association.rule.get:          { gated: false }
+  association.violation.get:     { gated: false }
+  association.violation.list:    { gated: false }
+  association.violation.open:    { gated: true  }
+
+transaction:
+  transaction.condition.list:    { gated: false }
+  transaction.contingency.get:   { gated: false }
+  transaction.contingency.list:  { gated: false }
+  transaction.contingency.put:   { gated: true  }
+  transaction.contract.get:      { gated: false }
+  transaction.contract.list:     { gated: false }
+  transaction.deadline.list:     { gated: false }
+  transaction.deadline.put:      { gated: true  }
+  transaction.document.deliver:  { gated: true  }
+  transaction.document.get:      { gated: false }
+  transaction.document.list:     { gated: false }
+  transaction.document.put:      { gated: true  }
+
+estimating:    # typed contract in estimating.yaml
+  estimating.baseline.update:  { gated: true  }   # The contract baseline is what every later change is priced against…
+  estimating.bid.build:        { gated: false }   # Markup on cost and margin on price are different numbers and…
+  estimating.bid.outcome:      { gated: false }   # Won and lost are both information. A hit rate with no lost-bid…
+  estimating.bid.submit:       { gated: true  }
+  estimating.rate.list:        { gated: false }   # Loaded rate, not wage. Wage plus payroll taxes, insurance, workers…
+  estimating.takeoff.get:      { gated: false }
+  estimating.takeoff.upsert:   { gated: false }   # Quantities measured off drawings. Separate from pricing on…
+
+permits:    # typed contract in permits.yaml
+  permits.application.build:   { gated: false }
+  permits.application.get:     { gated: false }
+  permits.application.submit:  { gated: true  }
+  permits.fee.pay:             { gated: true  }
+  permits.inspection.request:  { gated: true  }   # Requesting an inspection the work is not ready for fails it, and a…
+  permits.inspection.result:   { gated: false }
+  permits.requirement.list:    { gated: false }   # Requirements are local and they change. A seat that recalls them…
+
+liens:    # typed contract in liens.yaml
+  liens.deadline.compute:  { gated: false }   # Every deadline computed, never estimated. Where the rule cannot be…
+  liens.lien.file:         { gated: true  }   # Never unattended, and never by this seat. A lien filed wrongly or…
+  liens.notice.build:      { gated: false }
+  liens.notice.serve:      { gated: true  }   # Several states prescribe the service method as well as the…
+  liens.rules.get:         { gated: false }   # Deadlines, notice requirements and waiver forms are per state and…
+  liens.waiver.build:      { gated: false }   # Four types, and the difference is the whole protection.…
+  liens.waiver.sign:       { gated: true  }
+
+warranty:    # typed contract in warranty.yaml
+  warranty.claim.classify:  { gated: false }   # Undetermined is a real answer and must stay available. A seat…
+  warranty.claim.file:      { gated: true  }
+  warranty.claim.status:    { gated: false }
+  warranty.claim.submit:    { gated: true  }   # Labour is frequently not claimable even where the part is, so the…
+  warranty.coverage.get:    { gated: false }   # Three clocks that rarely expire together: the company's labour…
+  warranty.defect.pattern:  { gated: false }   # The third identical callback is a standard problem, not a third…
+  warranty.part.scrap:      { gated: true  }   # Most manufacturers require the failed part to be retained, and…
+
+pos:    # typed contract in pos.yaml
+  pos.day.get:         { gated: false }
+  pos.deposit.list:    { gated: false }   # Prepared, bagged and logged is not banked. The gap between the…
+  pos.drawer.list:     { gated: false }
+  pos.drawer.record:   { gated: false }   # A count never adjusted to balance. Unwitnessed where a witness is…
+  pos.exception.list:  { gated: false }   # Refunds with no matching sale, voids after tender, manual…
+  pos.mix.get:         { gated: false }
+  pos.pace.get:        { gated: false }   # Compared against the same hour on comparable days, never against…
+
+recipes:    # typed contract in recipes.yaml
+  recipes.cost.plate:        { gated: false }   # Contribution in money is returned alongside the percentage because…
+  recipes.cost.recost:       { gated: false }   # Returns only dishes that crossed a threshold, not the whole…
+  recipes.cost.theoretical:  { gated: false }   # Every dish sold times its plate cost. The share resting on stale…
+  recipes.menu.place:        { gated: false }   # Popularity is relative WITHIN its category. A dessert never…
+  recipes.recipe.get:        { gated: false }   # `missing` names any line without a quantity, unit or yield. A…
+  recipes.recipe.publish:    { gated: true  }
+  recipes.yield.list:        { gated: false }   # Yield is the whole discipline. Costing at purchase price where…
+
+foodsafety:    # typed contract in foodsafety.yaml
+  foodsafety.check.due:           { gated: false }
+  foodsafety.clock.check:         { gated: false }   # Behind at the first checkpoint is escalated at the first…
+  foodsafety.clock.close:         { gated: false }   # Exactly two outcomes. A missed window is not rescued by a colder…
+  foodsafety.clock.start:         { gated: false }   # Time as a public health control requires a written procedure…
+  foodsafety.discard.post:        { gated: true  }
+  foodsafety.employee.restrict:   { gated: true  }   # A legal requirement, not a staffing judgment. Cover pressure never…
+  foodsafety.reading.record:      { gated: false }   # Recorded when taken, with the real time. A check not done is…
+  foodsafety.report.file:         { gated: true  }   # Never unattended. Ceasing operations and notifying the regulator…
+  foodsafety.rules.get:           { gated: false }   # Which edition is adopted, and its local amendments, decide the…
+  foodsafety.violation.classify:  { gated: false }   # The class sets the deadline and nothing else does. Unclear class…
+  foodsafety.violation.verify:    { gated: false }   # Complete when observed corrected and recorded, never when somebody…
+
+grants:    # typed contract in grants.yaml
+  grants.application.submit:     { gated: true  }   # Gated. A submitted application is a representation to a funder…
+  grants.application.upsert:     { gated: false }
+  grants.award.get:              { gated: false }   # Award carries funderId, amountCents, periodStart, periodEnd (the…
+  grants.award.list:             { gated: false }
+  grants.budget.get:             { gated: false }
+  grants.cost_transfer.request:  { gated: true  }   # Gated, and never unattended. A cost transfer late in a period is…
+  grants.funder.get:             { gated: false }
+  grants.opportunity.get:        { gated: false }
+  grants.opportunity.search:     { gated: false }   # Opportunity carries funderId, programName, deadline, deadlineType…
+  grants.registration.get:       { gated: false }   # The organisation's own eligibility registrations with their expiry…
+  grants.report.submit:          { gated: true  }
+  grants.spend.list:             { gated: false }   # Spend by budget category with the source document reference. The…
+
+donors:    # typed contract in donors.yaml
+  donors.acknowledgment.send:  { gated: true  }   # Gated because this letter is the donor's substantiation document.…
+  donors.consent.get:          { gated: false }   # Contact consent, anonymity, do-not-solicit, and recognition-name…
+  donors.donor.get:            { gated: false }
+  donors.donor.upsert:         { gated: false }
+  donors.gift.get:             { gated: false }
+  donors.gift.list:            { gated: false }   # Gift carries donorId, amountCents, receivedAt, form…
+  donors.pledge.get:           { gated: false }
+  donors.pledge.list:          { gated: false }
+  donors.portfolio.get:        { gated: false }   # Moves management: each entry carries stage, lastContactAt,…
+  donors.statement.send:       { gated: true  }
+
+volunteers:    # typed contract in volunteers.yaml
+  volunteers.credential.list:    { gated: false }
+  volunteers.hours.record:       { gated: false }
+  volunteers.role.list:          { gated: false }   # Role carries requiredScreenings[], requiredTraining[], minimumAge,…
+  volunteers.screening.request:  { gated: true  }
+  volunteers.screening.status:   { gated: false }   # Status is requested|in_progress|complete|adverse|expired.…
+  volunteers.shift.assign:       { gated: true  }   # Gated. The assignment is the point at which an unscreened person…
+  volunteers.shift.list:         { gated: false }
+  volunteers.volunteer.get:      { gated: false }
+  volunteers.volunteer.upsert:   { gated: false }
+  volunteers.volunteer.clear:    { gated: true  }
+
+membership:
+  membership.benefit.fulfil:       { gated: true  }
+  membership.directory.entry.get:  { gated: false }
+  membership.directory.publish:    { gated: true  }   # Gated, and directory consent is a SEPARATE flag from contact…
+  membership.member.get:           { gated: false }
+  membership.member.upsert:        { gated: false }
+  membership.renewal.list:         { gated: false }
+  membership.renewal.notice.send:  { gated: true  }
+  membership.tier.list:            { gated: false }   # Tier carries duesCents, benefits[], deductiblePortionCents?, term.…
+  membership.dues.charge:          { gated: true  }   # Money in, and the period it buys is part of the charge: a renewal that does not say what it covers cannot be p…
+
+sis:    # typed contract in sis.yaml
+  sis.application.checklist.get:  { gated: false }   # Each item carries heldBy: the applicant, a school, a testing body,…
+  sis.application.get:            { gated: false }
+  sis.application.list:           { gated: false }
+  sis.directory_info.policy.get:  { gated: false }   # The categories the institution has designated as directory…
+  sis.enrollment.get:             { gated: false }   # asOf is required in practice rather than optional in spirit. Aid…
+  sis.inquiry.upsert:             { gated: false }
+  sis.record.amendment.request:   { gated: true  }
+  sis.record.disclose:            { gated: true  }   # Gated and basis is mandatory. A disclosure with no recorded basis…
+  sis.record.get:                 { gated: false }   # EducationRecord carries custodian, retentionUntil,…
+  sis.student.get:                { gated: false }
+  sis.term.get:                   { gated: false }
+  sis.transcript.issue:           { gated: true  }
+  sis.verification.issue:         { gated: true  }
+  sis.decision.send:              { gated: true  }
+
+finaid:    # typed contract in finaid.yaml
+  finaid.appeal.record:         { gated: true  }
+  finaid.application.get:       { gated: false }
+  finaid.award.offer:           { gated: true  }   # Gated and carries authorisedBy. Awarding is the institution's act,…
+  finaid.coa.get:               { gated: false }   # Cost of attendance is per student situation, not per institution.…
+  finaid.disbursement.hold:     { gated: false  }
+  finaid.disbursement.list:     { gated: false }
+  finaid.disbursement.release:  { gated: true  }   # Requires the reference to a dated eligibility check. In a…
+  finaid.package.prepare:       { gated: false }   # Prepare, not award. Returns the computed package with an…
+  finaid.progress.evaluate:     { gated: false }   # Three measures evaluated separately — qualitative, pace, maximum…
+  finaid.return.compute:        { gated: false }   # Two dates, deliberately. The withdrawal date sets the earned…
+  finaid.return.record:         { gated: true  }
+  finaid.verification.get:      { gated: false }   # Carries selectionGroup?, requiredDocuments[], conflicts[],…
+  finaid.verification.resolve:  { gated: true  }
+
+loans:    # typed contract in loans.yaml
+  loans.application.get:     { gated: false }
+  loans.application.list:    { gated: false }
+  loans.completeness.test:   { gated: false }   # Completeness is a legal fact, not a readiness judgment: the…
+  loans.condition.clear:     { gated: true  }   # Requires a document reference. A condition is cleared by a…
+  loans.condition.list:      { gated: false }
+  loans.decision.get:        { gated: false }   # Carries classification…
+  loans.document.list:       { gated: false }   # Each document carries issuedOn and type. Expiry is per type from…
+  loans.file.submit:         { gated: true  }
+  loans.notice.send:         { gated: true  }   # Gated. The notice must state the reasons the decision actually…
+  loans.ratelock.get:        { gated: false }
+  loans.verification.order:  { gated: true  }
+  loans.decision.record:     { gated: true  }
+
+claims:    # typed contract in claims.yaml
+  claims.acknowledgment.send:   { gated: true  }   # Logged with date and method because acknowledgment is a…
+  claims.claim.get:             { gated: false }
+  claims.claim.list:            { gated: false }
+  claims.claim.open:            { gated: true  }   # reportedFacts is the reporter's account, recorded as given. The…
+  claims.decision.get:          { gated: false }
+  claims.document.list:         { gated: false }
+  claims.document.request:      { gated: true  }
+  claims.fraud_indicator.flag:  { gated: true  }   # Observations only, never suspicion and never a judgment about a…
+  claims.inspection.schedule:   { gated: true  }
+  claims.notice.send:           { gated: true  }   # Written notice is required; a phone call does not satisfy it. A…
+  claims.payment.issue:         { gated: true  }
+  claims.proof_of_loss.record:  { gated: false }   # The decision clock runs from receipt of proof of loss, not from…
+  claims.status_update.send:    { gated: true  }   # Requires what actually moved. A repeated template proves the…
+  claims.decision.record:       { gated: true  }
+
+financialcrime:    # typed contract in financialcrime.yaml
+  financialcrime.alert.dispose:      { gated: true  }   # narrative is mandatory on every disposition including a closure.…
+  financialcrime.alert.list:         { gated: false }
+  financialcrime.customer.get:       { gated: false }
+  financialcrime.customer.restrict:  { gated: true  }   # Gated and requires authorisedBy. Restricting an account is also a…
+  financialcrime.escalation.file:    { gated: true  }   # Escalation to the institution's designated officer. This is NOT…
+  financialcrime.identity.verify:    { gated: true  }   # method and source are mandatory. Collection is not verification,…
+  financialcrime.match.adjudicate:   { gated: true  }   # A clearance requires distinguishingFact. A clearance with no…
+  financialcrime.match.list:         { gated: false }
+  financialcrime.ownership.get:      { gated: false }   # endsAtNaturalPerson is the question. A layered structure is not…
+  financialcrime.risk.rate:          { gated: false }   # Each factor's contribution is recorded, because an undocumented…
+
+matters:    # typed contract in matters.yaml
+  matters.conflict.index.upsert:  { gated: false }
+  matters.conflict.search:        { gated: false }   # Returns matches and the scope searched. It deliberately cannot…
+  matters.declination.send:       { gated: true  }   # The more important of the two letters. Silence is engagement: a…
+  matters.engagement.send:        { gated: true  }   # clientIdentity is mandatory. Where an entity, a family or several…
+  matters.inquiry.list:           { gated: false }
+  matters.inquiry.upsert:         { gated: false }
+  matters.matter.accept:          { gated: true  }   # Gated and carries acceptedBy. Only a lawyer accepts a matter; the…
+  matters.matter.get:             { gated: false }
+  matters.matter.list:            { gated: false }
+  matters.matter.open:            { gated: true  }
+
+docket:    # typed contract in docket.yaml
+  docket.deadline.confirm:  { gated: true  }
+  docket.deadline.list:     { gated: false }
+  docket.deadline.remove:   { gated: true  }   # Requires instructedBy. Only a lawyer's recorded instruction…
+  docket.deadline.upsert:   { gated: true  }   # owner and ladderDays are required, not optional. A date on a…
+  docket.entry.list:        { gated: false }   # Read for reconciliation against the calendar. A docket entry with…
+  docket.event.record:      { gated: false }   # Date of service, method of service and date of receipt are three…
+  docket.holiday.list:      { gated: false }
+  docket.rule.get:          { gated: false }   # Rule carries days, unit (court|calendar), direction,…
+  docket.deadline.close:    { gated: true  }
+
+ediscovery:    # typed contract in ediscovery.yaml
+  ediscovery.collection.start:          { gated: true  }   # method is recorded because some sources cannot be copied without…
+  ediscovery.collection.verify:         { gated: false }   # Date coverage is checked for abrupt gaps. A source that stops…
+  ediscovery.cull.apply:                { gated: false }   # Reports what the attorney's criteria returned. Terms are never…
+  ediscovery.custodian.list:            { gated: false }
+  ediscovery.custodian.upsert:          { gated: false }
+  ediscovery.custody.record:            { gated: false }
+  ediscovery.deletion.status:           { gated: false }
+  ediscovery.deletion.suspend:          { gated: true  }   # A request, which is not a suspension. Confirmation is a separate…
+  ediscovery.hold.acknowledgment.list:  { gated: false }   # Acknowledgment, never delivery. A hold nobody acknowledged is not…
+  ediscovery.hold.issue:                { gated: true  }   # The obligation begins when litigation is reasonably ANTICIPATED,…
+  ediscovery.hold.release:              { gated: true  }   # Requires instructedBy. Never the passage of time and never a quiet…
+  ediscovery.privilege.flag:            { gated: false }   # Candidates only. Privilege is decided by the attorney and tracked…
+  ediscovery.process.run:               { gated: true  }
+  ediscovery.production.assemble:       { gated: false }
+  ediscovery.production.release:        { gated: true  }   # approvedBy is approval of THIS production, never a general…
+  ediscovery.source.list:               { gated: false }

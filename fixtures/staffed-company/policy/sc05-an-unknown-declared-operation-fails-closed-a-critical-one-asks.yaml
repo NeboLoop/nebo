@@ -1,0 +1,10 @@
+id: sc05-an-unknown-declared-operation-fails-closed-a-critical-one-asks
+name: "SC05 — An unknown declared operation fails closed; a critical one asks with no policy"
+description: |
+  A package around a capability the catalogue never heard of: its declared
+  operation is Approval unattended even under an Always default. A seat with no
+  policy calling ledger.billpayment.create from a workflow or a schedule is
+  Approval, not Always.
+target_component: staffed-company
+proof: staffed_proof::policy::an_unknown_declared_operation_fails_closed_and_a_critical_one_asks
+conversation: []

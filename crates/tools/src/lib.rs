@@ -2,7 +2,11 @@
 
 pub mod a2ui_tool;
 pub mod agent_tool;
+pub mod authority_tool;
+pub mod rules_tool;
+pub mod pack_tool;
 pub mod app_tool;
+pub mod assignments;
 pub mod bot_tool;
 pub mod capabilities;
 pub mod checkpoint;
@@ -702,13 +706,25 @@ pub async fn persist_agent_from_api(
     // filesystem, matching the system's source-of-truth order: the boot fs→DB
     // sync recreates a missing row from disk, but nothing recreates missing disk
     // content from a row.
-    if store.get_agent(artifact_id).ok().flatten().is_some() {
+    if let Some(existing) = store.get_agent(artifact_id).ok().flatten() {
+        // An update must not throw away what the owner built on top of this
+        // package. The ONE merge both delivery paths use (this one and the
+        // boot/watcher `sync_agent_content`): the owner keeps the declaration
+        // entries they authored, the package keeps everything else — including
+        // entries it is adding or correcting for the first time.
+        let frontmatter_str = if existing.frontmatter.is_empty() {
+            frontmatter_str.clone()
+        } else {
+            db::declaration::merge_package_declaration(&existing.frontmatter, &frontmatter_str)
+        };
         let _ = store.update_agent(
             artifact_id,
             name,
             &description,
             &manifest_text,
             &frontmatter_str,
+            None,
+            None,
             None,
             None,
             None,

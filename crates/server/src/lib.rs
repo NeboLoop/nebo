@@ -1,5 +1,6 @@
 pub mod a2ui;
 pub mod a2ui_actions;
+pub mod agents_export;
 pub mod app_lifecycle;
 mod artifact_updates;
 mod channel_dispatch;
@@ -25,6 +26,9 @@ pub mod run_display;
 pub mod run_registry;
 mod scheduler;
 pub mod wake;
+pub mod layers_update;
+#[cfg(test)]
+mod staffed_proof;
 mod spa;
 mod state;
 pub mod workflow_manager;
@@ -1051,7 +1055,13 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // The manifest must point to the `nebo` CLI binary (which has the relay code),
     // NOT `nebo-desktop` (the Tauri GUI). When running as `nebo-desktop`, we find
     // the sibling `nebo` binary in the same directory.
-    {
+    // The manifests live in the user's browser profiles, outside the Nebo root,
+    // and bind those browsers to ONE binary: the Nebo at the platform data
+    // directory. A relocated root (tests, cloud pods, side installs) never
+    // rewrites them — a test run once pointed every browser at a debug binary.
+    if config::data_dir_overridden() {
+        info!("data dir overridden — leaving the browser native messaging manifests alone");
+    } else {
         let nebo_binary = std::env::current_exe()
             .map(|p| {
                 if p.file_name().and_then(|n| n.to_str()) == Some("nebo-desktop") {
@@ -1069,11 +1079,11 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
                 warn!("failed to install native messaging manifest: {}", e);
             }
         }
-        // Generate the per-install relay secret so it exists before any relay
-        // (launched by the browser) connects to /ws/extension.
-        if let Err(e) = config::ensure_extension_secret() {
-            warn!("failed to prepare extension relay secret: {}", e);
-        }
+    }
+    // Generate the per-install relay secret so it exists before any relay
+    // (launched by the browser) connects to /ws/extension.
+    if let Err(e) = config::ensure_extension_secret() {
+        warn!("failed to prepare extension relay secret: {}", e);
     }
 
     // Ensure artifact directory structure exists (nebo/ and user/ namespaces)
@@ -1161,7 +1171,8 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     }
 
     // Initialize skill loader (embedded bundled + marketplace nebo/skills/ +
-    // user/skills/ + per-employee learned/skills/<agent_id>/)
+    // user/skills/ + the skills each employee package ships with +
+    // per-employee learned/skills/<agent_id>/)
     let installed_skills_dir = data_dir.join("nebo").join("skills");
     let user_skills_dir = data_dir.join("user").join("skills");
     let learned_skills_dir = data_dir.join("learned").join("skills");
@@ -1171,6 +1182,12 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     let skill_loader = Arc::new(
         tools::skills::Loader::new(installed_skills_dir, user_skills_dir)
             .with_learned_dir(learned_skills_dir)
+            // The procedures an employee package ships with live inside the
+            // package (<agents root>/<slug>/skills/), not on the shared roster.
+            .with_agent_dirs(vec![
+                data_dir.join("nebo").join("agents"),
+                data_dir.join("user").join("agents"),
+            ])
             .with_plugin_store(plugin_store.clone())
             .with_db_store(store.clone()),
     );
@@ -1695,10 +1712,21 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // Create event bus and dispatcher for workflow-to-workflow events
     let (event_bus, event_rx) = tools::EventBus::new();
     let event_dispatcher = Arc::new(workflow::events::EventDispatcher::new());
+    // Company events (R6) go out on this bus under their bare registered
+    // names; assignments (R5) open cases through the workflow crate.
+    workflow::events::install_company_event_bus(event_bus.clone());
+    tools::assignments::install_assignment_opener(Arc::new(
+        workflow::cases::CaseAssignmentOpener { store: store.clone() },
+    ));
 
-    // Register EmitTool so it appears in tools list and is available to all origins
+    // Register EmitTool so it appears in tools list and is available to all
+    // origins. One shared instance serves every employee, so it reads the
+    // producing seat from the run's session key — an event raised from chat is
+    // addressed by the same function the executors use.
     tool_registry
-        .register(Box::new(tools::EmitTool::new(event_bus.clone())))
+        .register(Box::new(
+            tools::EmitTool::new(event_bus.clone()).with_session_producer(store.clone()),
+        ))
         .await;
 
     // The ONE agentic loop for workflow activities: the chat Runner, adapted
@@ -2094,6 +2122,8 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         janus_usage: Arc::new(tokio::sync::RwLock::new(None)),
         plugin_store,
         agent_loader,
+        packs: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+        pending_layers: Arc::new(tokio::sync::RwLock::new(Vec::new())),
         presence: Arc::new(agent::PresenceTracker::new()),
         tunnel_online: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         proactive_inbox: Arc::new(agent::ProactiveInbox::new()),
@@ -2107,6 +2137,52 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         channel_engagement: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         store_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
     };
+
+    // The proof suite (`staffed_proof`) boots this real server in-process and
+    // reaches the same registry, loader and bus the handlers use. Test-only:
+    // compiled out of every shipped binary.
+    #[cfg(test)]
+    staffed_proof::booted(&state);
+
+    // Packs on disk (R8, R15): restore what the seats have actually read, give
+    // seats that have never read them their first read, then watch for changes
+    // and PARK them. An edit to a layer file raises nothing on its own — the
+    // owner applies from the layers screen and the whole edit lands at once.
+    match config::packs_dir() {
+        Ok(dir) => {
+            let _ = std::fs::create_dir_all(&dir);
+            let current = napp::scan_packs(&dir);
+            {
+                let mut packs = state.packs.write().await;
+                match layers_update::load_applied() {
+                    // What the seats last read. The scan is compared against it
+                    // below, so an edit made while Nebo was down is parked —
+                    // neither lost nor silently applied.
+                    Some(applied) => *packs = applied,
+                    // Never applied anything: this install predates parking, or
+                    // is new. Seed the snapshot from disk, which raises nothing.
+                    None => {
+                        for p in current.iter() {
+                            packs.insert(format!("{}:{}", p.layer.as_str(), p.slug), p.clone());
+                        }
+                        layers_update::save_applied(&packs);
+                    }
+                }
+                *state.pending_layers.write().await = layers_update::load_pending();
+                layers_update::first_read_for_unstamped_seats(&state, &packs);
+            }
+            layers_update::detect_changes(&state, current).await;
+            let watch_state = state.clone();
+            let handle = tokio::runtime::Handle::current();
+            let _detached = napp::watch_packs(dir, move |packs| {
+                let st = watch_state.clone();
+                handle.spawn(async move {
+                    layers_update::detect_changes(&st, packs).await;
+                });
+            });
+        }
+        Err(e) => warn!(error = %e, "packs directory unavailable; layers disabled"),
+    }
 
     // Pump task-completion wake notifications into the ONE delivery rail.
     {
@@ -2946,6 +3022,11 @@ async fn handle_agent_fs_events(
                                 &agent_id,
                                 &loaded.source_path.to_string_lossy(),
                             );
+                            // A seat hired after the packs exist reads them now (R15).
+                            {
+                                let packs = state.packs.read().await.clone();
+                                layers_update::first_read_for_unstamped_seats(&state, &packs);
+                            }
                             // Implicit reconcile cascade for an agent newly discovered
                             // on disk — gated by `auto_install_deps` (default OFF).
                             if !loaded.frontmatter.is_empty()
@@ -3485,7 +3566,9 @@ async fn run_webhook_workflow(
         payload,
         "webhook",
     );
-    let emit_source = emit.as_ref().map(|emit_name| format!("{}.{}", agent_slug, emit_name));
+    let emit_source = emit
+        .as_ref()
+        .map(|emit_name| workflow::events::emit_source_for(agent_slug, emit_name));
 
     match state
         .workflow_manager

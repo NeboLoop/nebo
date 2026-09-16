@@ -12,7 +12,9 @@ use super::skill::{Skill, SkillSource, SkillSummary, parse_skill_frontmatter, sp
 
 
 /// Manages loading, caching, and hot-reloading of skills from embedded
-/// (bundled), sealed .napp archives (nebo/skills/) and loose files (user/skills/).
+/// (bundled), sealed .napp archives (nebo/skills/), loose files (user/skills/),
+/// the skills an employee package ships with (nebo|user/agents/<slug>/skills/)
+/// and the learned tree (learned/skills/<agent_id>/).
 pub struct Loader {
     /// User skills directory (e.g. <data_dir>/user/skills/).
     user_dir: PathBuf,
@@ -22,6 +24,12 @@ pub struct Loader {
     /// <root>/<agent_id>/<skill>/SKILL.md. Written by the self-improvement
     /// loop; skills here are per-employee (see `Skill::visible_to`).
     learned_dir: Option<PathBuf>,
+    /// Employee-package roots (e.g. <data_dir>/nebo/agents/, <data_dir>/user/agents/).
+    /// A package ships its own procedures at
+    /// `<root>/<slug>[/<version>]/skills/<name>/SKILL.md`; they belong to the
+    /// seat that shipped them and are keyed per employee, exactly like a
+    /// learned skill (see `Skill::visible_to`).
+    agent_dirs: Vec<PathBuf>,
     /// Loaded skills keyed by name.
     skills: Arc<RwLock<HashMap<String, Skill>>>,
     /// Optional plugin store for verifying plugin dependencies.
@@ -56,6 +64,7 @@ impl Loader {
             user_dir,
             installed_dir,
             learned_dir: None,
+            agent_dirs: Vec::new(),
             skills: Arc::new(RwLock::new(HashMap::new())),
             plugin_store: None,
             db_store: None,
@@ -95,6 +104,14 @@ impl Loader {
         self
     }
 
+    /// Set the employee-package roots (`<data_dir>/nebo/agents/`,
+    /// `<data_dir>/user/agents/`). Enables the per-employee Package tier: the
+    /// procedures an employee package ships with, visible only to that seat.
+    pub fn with_agent_dirs(mut self, dirs: Vec<PathBuf>) -> Self {
+        self.agent_dirs = dirs;
+        self
+    }
+
     /// Check if a plugin is active (not disabled by user + ready to execute).
     /// A plugin's skills are its documentation, so they load for every
     /// installed plugin the owner has not disabled. Readiness (credentials,
@@ -121,7 +138,8 @@ impl Loader {
     }
 
     /// Load all skills from embedded (bundled), installed (.napp) and user (loose files) directories.
-    /// Loading order: embedded → installed (override by name) → user (override by name).
+    /// Loading order: embedded → installed (override by name) → user (override by name)
+    /// → employee packages → learned (both keyed per employee, never overriding a global).
     /// After loading, verifies dependencies — skills with missing deps are dropped.
     ///
     /// **Warm start:** Reads a skill manifest index (<50ms) instead of walking the filesystem.
@@ -209,7 +227,7 @@ impl Loader {
             }
         }
 
-        let catalog = build_catalog_string(&loaded);
+        let catalog = build_catalog_string(&loaded, SHARED_CATALOG_HEADING);
         *self.skills.write().await = loaded;
         *self.cached_catalog.write().await = catalog;
         info!(count, "loaded skills from manifest (warm start)");
@@ -334,9 +352,17 @@ impl Loader {
             }
         }
 
-        // 4. Load learned skills (per-employee, written by the self-improvement
+        // 4. Load the skills an employee package ships with (per-employee).
+        //    Keyed "<agent_id>::<name>" — a seat's own procedure belongs to
+        //    that seat and is invisible to every other.
+        load_employee_skills(&self.agent_dirs, &mut loaded);
+
+        // 5. Load learned skills (per-employee, written by the self-improvement
         //    loop). Keyed "<agent_id>::<name>" so they never collide with or
         //    override the global roster; read paths filter via visible_to().
+        //    Loaded last so a seat's learned refinement of one of its own
+        //    packaged procedures wins by name, the same override-by-name rule
+        //    the global roots follow.
         if let Some(ref learned_root) = self.learned_dir {
             load_learned_skills(learned_root, &mut loaded);
         }
@@ -346,7 +372,7 @@ impl Loader {
 
         let count = loaded.len();
         // Rebuild cached catalog before storing (names-only, deferred-tool format)
-        let catalog = build_catalog_string(&loaded);
+        let catalog = build_catalog_string(&loaded, SHARED_CATALOG_HEADING);
         *self.skills.write().await = loaded;
         *self.cached_catalog.write().await = catalog;
         info!(count, installed_dir = %self.installed_dir.display(), user_dir = %self.user_dir.display(), "loaded skills (cold start)");
@@ -391,13 +417,14 @@ impl Loader {
             &self.installed_dir,
             &self.user_dir,
             &plugins_dirs,
+            &self.agent_dirs,
         );
 
         if stale.is_empty() && new_paths.is_empty() {
             // Re-run verify_dependencies in case plugins changed between runs
             let mut skills = self.skills.write().await;
             verify_dependencies(&mut skills, self.plugin_store.as_deref());
-            let catalog = build_catalog_string(&skills);
+            let catalog = build_catalog_string(&skills, SHARED_CATALOG_HEADING);
             drop(skills);
             *self.cached_catalog.write().await = catalog;
 
@@ -431,12 +458,13 @@ impl Loader {
                             skill.source_path = Some(path.clone());
                             skill.base_dir = entry.base_dir.clone();
                             skill.napp_path = entry.napp_path.clone();
-                            // Learned entries keep their owner + namespaced
-                            // key — a plain-name insert would leak them into
-                            // the global roster.
+                            // Per-employee entries (a package's own skill, or
+                            // a learned one) keep their owner + namespaced key
+                            // — a plain-name insert would leak them into the
+                            // global roster.
                             skill.owner_agent_id = entry.owner_agent_id.clone();
                             let key = match entry.owner_agent_id.as_deref() {
-                                Some(owner) => learned_key(owner, &skill.name),
+                                Some(owner) => owner_key(owner, &skill.name),
                                 None => skill.name.clone(),
                             };
                             self.skills.write().await.insert(key, skill);
@@ -446,14 +474,28 @@ impl Loader {
             }
         }
 
-        // Parse new skills
-        for md_path in &new_paths {
+        // Parse new skills. A path found under an employee-package root comes
+        // back with the owning seat, and keeps the owner + namespaced key —
+        // a plain-name insert would publish one seat's procedure to the whole
+        // workforce.
+        for (md_path, owner) in &new_paths {
             if let Ok(data) = std::fs::read(md_path) {
                 if let Ok(mut skill) = parse_skill_frontmatter(&data) {
                     skill.enabled = true;
                     skill.source_path = Some(md_path.clone());
                     skill.base_dir = md_path.parent().map(|p| p.to_path_buf());
-                    self.skills.write().await.insert(skill.name.clone(), skill);
+                    skill.owner_agent_id = owner.clone();
+                    if owner.is_some() {
+                        // A package's own procedure is package content — an
+                        // update replaces it, so it is read-only like any
+                        // other installed artifact.
+                        skill.source = SkillSource::Installed;
+                    }
+                    let key = match owner.as_deref() {
+                        Some(owner) => owner_key(owner, &skill.name),
+                        None => skill.name.clone(),
+                    };
+                    self.skills.write().await.insert(key, skill);
                 }
             }
         }
@@ -462,7 +504,7 @@ impl Loader {
         {
             let mut skills = self.skills.write().await;
             verify_dependencies(&mut skills, self.plugin_store.as_deref());
-            let catalog = build_catalog_string(&skills);
+            let catalog = build_catalog_string(&skills, SHARED_CATALOG_HEADING);
             drop(skills);
             *self.cached_catalog.write().await = catalog;
         }
@@ -483,7 +525,7 @@ impl Loader {
         // one lookup rule for every caller, instead of each caller trimming.
         let short = qualified_short_name(name);
         let mut skill = agent
-            .and_then(|a| skills.get(&learned_key(a, name)))
+            .and_then(|a| skills.get(&owner_key(a, name)))
             .or_else(|| skills.get(name))
             .or_else(|| short.and_then(|s| skills.get(s)))
             .cloned()?;
@@ -549,7 +591,7 @@ impl Loader {
         }
         if !names.is_empty() {
             // Rebuild catalog with new skills
-            let catalog = build_catalog_string(&all);
+            let catalog = build_catalog_string(&all, SHARED_CATALOG_HEADING);
             drop(all);
             *self.cached_catalog.write().await = catalog;
             info!(count = names.len(), skills = ?names, "loaded app skills");
@@ -564,7 +606,7 @@ impl Loader {
             all.remove(name);
         }
         if !names.is_empty() {
-            let catalog = build_catalog_string(&all);
+            let catalog = build_catalog_string(&all, SHARED_CATALOG_HEADING);
             drop(all);
             *self.cached_catalog.write().await = catalog;
             debug!(count = names.len(), "unloaded app skills");
@@ -601,16 +643,25 @@ impl Loader {
     }
 
     /// Return the compact skill catalog for the system prompt: the cached
-    /// global catalog (rebuilt on load_all / watcher reload) plus, when the
-    /// run is agent-scoped, that agent's own learned skills rendered with the
-    /// same budget rules.
+    /// shared catalog (rebuilt on load_all / watcher reload) plus, when the run
+    /// is agent-scoped, a separately headed block of that seat's OWN skills —
+    /// the procedures its package ships and anything it has learned — rendered
+    /// with the same budget rules.
+    ///
+    /// Two blocks, two headings, one count each. They used to share the
+    /// heading "Available Skills" with different totals, which told the model
+    /// two different numbers for the same thing. The seat's own block is kept
+    /// separate rather than merged into the shared list for two reasons: the
+    /// shared catalog stays cached instead of being rebuilt per run, and the
+    /// shared list's character budget can never evict a seat's own procedures —
+    /// the ones it is actually employed to run.
     pub async fn compact_catalog(&self, agent: Option<&str>) -> String {
-        let global = self.cached_catalog.read().await.clone();
+        let shared = self.cached_catalog.read().await.clone();
         let Some(agent_id) = agent else {
-            return global;
+            return shared;
         };
         let skills = self.skills.read().await;
-        let learned: HashMap<String, Skill> = skills
+        let own: HashMap<String, Skill> = skills
             .iter()
             .filter(|(_, s)| s.owner_agent_id.as_deref() == Some(agent_id))
             .map(|(k, s)| {
@@ -622,19 +673,17 @@ impl Loader {
             })
             .collect();
         drop(skills);
-        if learned.is_empty() {
-            return global;
+        if own.is_empty() {
+            return shared;
         }
-        let learned_catalog = build_catalog_string(&learned);
-        if learned_catalog.is_empty() {
-            return global;
+        let own_catalog = build_catalog_string(&own, OWN_CATALOG_HEADING);
+        if own_catalog.is_empty() {
+            return shared;
         }
-        // build_catalog_string skips owner-scoped skills by design; render the
-        // learned subset through the same formatter with ownership masked.
-        if global.is_empty() {
-            learned_catalog
+        if shared.is_empty() {
+            own_catalog
         } else {
-            format!("{}\n{}", global, learned_catalog)
+            format!("{}\n{}", shared, own_catalog)
         }
     }
 
@@ -944,6 +993,7 @@ impl Loader {
         let user_dir = self.user_dir.clone();
         let installed_dir = self.installed_dir.clone();
         let learned_dir = self.learned_dir.clone();
+        let agent_dirs = self.agent_dirs.clone();
         let skills = self.skills.clone();
         let cached_catalog = self.cached_catalog.clone();
         let plugin_store = self.plugin_store.clone();
@@ -1001,6 +1051,16 @@ impl Loader {
                 }
             }
 
+            // Watch employee-package roots for changes to the skills a package
+            // ships with (nebo/agents/<slug>/skills/, user/agents/<slug>/skills/).
+            for adir in &agent_dirs {
+                if adir.exists() {
+                    if let Err(e) = watcher.watch(adir, RecursiveMode::Recursive) {
+                        warn!(error = %e, dir = %adir.display(), "failed to watch agents dir for skills");
+                    }
+                }
+            }
+
             // Watch plugin directory for embedded skill changes
             if let Some(ref pdir) = plugins_dir {
                 if pdir.exists() {
@@ -1048,25 +1108,40 @@ impl Loader {
 
                         let relevant = event.paths.iter().any(|p| {
                             let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                            name.eq_ignore_ascii_case("skill.md")
-                                || name.ends_with(".napp")
-                                // Trigger reload when resource files change
-                                || p.ancestors().any(|a| {
-                                    a.file_name()
-                                        .and_then(|n| n.to_str())
-                                        .map(|n| {
-                                            matches!(
-                                                n,
-                                                "scripts"
-                                                    | "references"
-                                                    | "assets"
-                                                    | "examples"
-                                                    | "agents"
-                                                    | "core"
-                                            )
-                                        })
-                                        .unwrap_or(false)
+                            if name.eq_ignore_ascii_case("skill.md") || name.ends_with(".napp") {
+                                return true;
+                            }
+                            // Inside an employee package only what lives under
+                            // skills/ counts. The rest of a package (AGENT.md,
+                            // agent.json, the seat's context) is written by
+                            // other subsystems — and one of the resource-dir
+                            // names below is "agents", which every path in the
+                            // agents tree matches. Without this gate a settings
+                            // save would reload every skill in the install.
+                            if agent_dirs.iter().any(|root| p.starts_with(root))
+                                && !p.ancestors().any(|a| {
+                                    a.file_name().and_then(|n| n.to_str()) == Some("skills")
                                 })
+                            {
+                                return false;
+                            }
+                            // Trigger reload when resource files change
+                            p.ancestors().any(|a| {
+                                a.file_name()
+                                    .and_then(|n| n.to_str())
+                                    .map(|n| {
+                                        matches!(
+                                            n,
+                                            "scripts"
+                                                | "references"
+                                                | "assets"
+                                                | "examples"
+                                                | "agents"
+                                                | "core"
+                                        )
+                                    })
+                                    .unwrap_or(false)
+                            })
                         });
                         if !relevant {
                             continue;
@@ -1077,8 +1152,16 @@ impl Loader {
                             continue;
                         }
 
-                        if last_reload.elapsed() < debounce {
-                            continue;
+                        // Coalesce a burst into one reload — but never DROP the
+                        // event. An edit that lands inside the debounce window
+                        // waits the window out; discarding it left the change on
+                        // disk and the old procedure in memory until some
+                        // unrelated write happened to trigger the next reload.
+                        if let Some(remaining) = debounce.checked_sub(last_reload.elapsed()) {
+                            tokio::time::sleep(remaining).await;
+                            // Whatever piled up while waiting is covered by the
+                            // reload below.
+                            while rx.try_recv().is_ok() {}
                         }
 
                         // Storm breaker: inside a cooldown, drop events outright.
@@ -1219,6 +1302,8 @@ impl Loader {
                             }
                         }
 
+                        load_employee_skills(&agent_dirs, &mut loaded);
+
                         if let Some(ref ldir) = learned_dir {
                             load_learned_skills(ldir, &mut loaded);
                         }
@@ -1226,7 +1311,7 @@ impl Loader {
                         verify_dependencies(&mut loaded, plugin_store.as_deref());
 
                         let count = loaded.len();
-                        let catalog = build_catalog_string(&loaded);
+                        let catalog = build_catalog_string(&loaded, SHARED_CATALOG_HEADING);
 
                         // Update manifest for next warm start
                         let hashes = manifest::compute_hashes(&loaded);
@@ -1310,11 +1395,108 @@ fn qualified_short_name(name: &str) -> Option<&str> {
     Some(short.split('@').next().unwrap_or(short))
 }
 
-/// Map key for a learned skill: namespaced by owner so per-employee skills
-/// can never collide with or shadow the global roster (skill names cannot
-/// contain ':', so "::" is unambiguous).
-fn learned_key(agent_id: &str, name: &str) -> String {
+/// Map key for a per-employee skill (a package's own procedure, or a learned
+/// one): namespaced by owner so per-employee skills can never collide with or
+/// shadow the global roster (skill names cannot contain ':', so "::" is
+/// unambiguous).
+pub(super) fn owner_key(agent_id: &str, name: &str) -> String {
     format!("{}::{}", agent_id, name)
+}
+
+/// The agent id the DB row for this package directory carries — the same
+/// string a run is scoped by (`agent:<id>:<channel>`), so a packaged skill's
+/// owner key matches the scope the runner and the skill tool pass in.
+///
+/// Reads only manifest.json (and AGENT.md when the manifest has no id), the
+/// same precedence the agent loader and the startup DB sync use: manifest
+/// `id`, else the display name, else the AGENT.md frontmatter name, else the
+/// directory name. Returns None for app packages — an app's skills load
+/// through the app lifecycle while the app runs, and must not be registered
+/// twice.
+fn employee_owner_id(agent_dir: &Path) -> Option<String> {
+    let manifest = std::fs::read_to_string(agent_dir.join("manifest.json"))
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
+    if let Some(ref m) = manifest {
+        let kind = m["artifact_type"]
+            .as_str()
+            .or_else(|| m["type"].as_str())
+            .unwrap_or("");
+        if kind == "app" {
+            return None;
+        }
+        if let Some(id) = m["id"].as_str().filter(|s| !s.is_empty()) {
+            return Some(id.to_string());
+        }
+    }
+    // No id in the manifest: the DB row falls back to the agent's name, so the
+    // owner key must fall back the same way.
+    let manifest_name = manifest
+        .as_ref()
+        .and_then(|m| m["name"].as_str().map(String::from))
+        .filter(|n| !n.is_empty() && !n.contains('@') && !n.contains('/'));
+    if let Some(name) = manifest_name {
+        return Some(name);
+    }
+    let frontmatter_name = std::fs::read_to_string(agent_dir.join("AGENT.md"))
+        .ok()
+        .and_then(|raw| napp::agent::parse_agent(&raw).ok())
+        .map(|def| def.name)
+        .filter(|n| !n.is_empty());
+    frontmatter_name.or_else(|| {
+        agent_dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(String::from)
+    })
+}
+
+/// Load the procedures employee packages ship with:
+/// `<root>/<slug>[/<version>]/skills/<name>/SKILL.md`. Each skill is keyed to
+/// the owning seat, so it is available to that employee and invisible to every
+/// other — the same rule a learned skill follows.
+///
+/// `base_dir` stays the skill's real directory inside the package, so a
+/// procedure that calls `${NEBO_SKILL_DIR}/scripts/...` still finds its scripts.
+///
+/// Shared by cold load, the watcher reload and manifest verification — the ONE
+/// package-skill pathway.
+pub(super) fn load_employee_skills(agent_dirs: &[PathBuf], loaded: &mut HashMap<String, Skill>) {
+    for (package, owner) in employee_packages(agent_dirs) {
+        let skills_dir = package.join("skills");
+        if !skills_dir.is_dir() {
+            continue;
+        }
+        for mut skill in load_skills_from_dir(&skills_dir, SkillSource::Installed) {
+            skill.owner_agent_id = Some(owner.clone());
+            loaded.insert(owner_key(&owner, &skill.name), skill);
+        }
+    }
+}
+
+/// Every employee package under `agent_dirs`, paired with the agent id that
+/// owns it. The ONE place a package directory is turned into a seat identity —
+/// the cold load, the watcher and manifest verification all read it from here.
+pub(super) fn employee_packages(agent_dirs: &[PathBuf]) -> Vec<(PathBuf, String)> {
+    let mut out = Vec::new();
+    for root in agent_dirs {
+        if !root.exists() {
+            continue;
+        }
+        // walk_for_marker stops at the AGENT.md directory, so it finds both
+        // install layouts (<slug>/AGENT.md and <slug>/<version>/AGENT.md) and
+        // never descends into skills/ itself.
+        let mut packages = Vec::new();
+        napp::reader::walk_for_marker(root, "AGENT.md", &mut |dir| {
+            packages.push(dir.to_path_buf());
+        });
+        for package in packages {
+            if let Some(owner) = employee_owner_id(&package) {
+                out.push((package, owner));
+            }
+        }
+    }
+    out
 }
 
 /// Load the learned tree (<root>/<agent_id>/<skill>/SKILL.md) into `loaded`.
@@ -1336,12 +1518,22 @@ fn load_learned_skills(learned_root: &Path, loaded: &mut HashMap<String, Skill>)
         };
         for mut skill in load_skills_from_dir(&agent_dir, SkillSource::Learned) {
             skill.owner_agent_id = Some(agent_id.clone());
-            loaded.insert(learned_key(&agent_id, &skill.name), skill);
+            loaded.insert(owner_key(&agent_id, &skill.name), skill);
         }
     }
 }
 
-fn build_catalog_string(skills: &HashMap<String, Skill>) -> String {
+/// Heading for the shared roster — bundled, installed, plugin and user skills,
+/// the ones every run can load.
+const SHARED_CATALOG_HEADING: &str = "Available Skills";
+
+/// Heading for the block carrying one seat's own skills: what its package
+/// ships plus what it has learned. Its own heading and its own count, because
+/// two blocks headed "Available Skills" with different totals stated two
+/// different numbers for one thing.
+const OWN_CATALOG_HEADING: &str = "Your Own Skills";
+
+fn build_catalog_string(skills: &HashMap<String, Skill>, heading: &str) -> String {
     const MAX_DESC_CHARS: usize = 250;
     const CHAR_BUDGET: usize = 8_000;
 
@@ -1438,25 +1630,17 @@ fn build_catalog_string(skills: &HashMap<String, Skill>) -> String {
     // The header reconciles: total = listed + not shown (budget) + inside packs.
     let in_packs: usize = pack_counts.values().sum();
     let not_shown = tier_entries.len() - listed;
-    let breakdown = if not_shown > 0 {
-        format!(
-            "{} total: {} listed below, {} more not shown, {} inside packs",
-            enabled.len(),
-            listed,
-            not_shown,
-            in_packs
-        )
-    } else {
-        format!(
-            "{} total: {} listed below, {} inside packs",
-            enabled.len(),
-            listed,
-            in_packs
-        )
-    };
+    let mut breakdown = format!("{} total: {} listed below", enabled.len(), listed);
+    if not_shown > 0 {
+        breakdown.push_str(&format!(", {} more not shown", not_shown));
+    }
+    if in_packs > 0 {
+        breakdown.push_str(&format!(", {} inside packs", in_packs));
+    }
     format!(
-        "## Available Skills ({})\n\n{}\n\
+        "## {} ({})\n\n{}\n\
          When a skill matches the task, load it BEFORE acting: skill(action: \"load\", name: \"...\"), then follow its instructions.",
+        heading,
         breakdown,
         body
     )
@@ -2157,6 +2341,327 @@ Triage instructions.
         assert_eq!(
             skill.description, "User version",
             "user plugin skills should override marketplace plugin skills"
+        );
+    }
+
+    /// Build an employee package on disk: AGENT.md + manifest.json + one
+    /// skill at <pkg>/skills/<skill>/SKILL.md, with a script beside it.
+    fn create_employee_package(
+        agents_root: &Path,
+        slug: &str,
+        agent_id: &str,
+        skill_name: &str,
+        skill_md: &str,
+    ) -> PathBuf {
+        let pkg = agents_root.join(slug);
+        std::fs::create_dir_all(&pkg).unwrap();
+        std::fs::write(
+            pkg.join("AGENT.md"),
+            format!("---\nname: {}\n---\n# {}\n", slug, slug),
+        )
+        .unwrap();
+        std::fs::write(
+            pkg.join("manifest.json"),
+            format!(
+                r#"{{"id":"{}","name":"@acme/agents/{}","type":"agent","version":"1.0.0"}}"#,
+                agent_id, slug
+            ),
+        )
+        .unwrap();
+        let skill_dir = pkg.join("skills").join(skill_name);
+        std::fs::create_dir_all(skill_dir.join("scripts")).unwrap();
+        std::fs::write(skill_dir.join("SKILL.md"), skill_md).unwrap();
+        std::fs::write(skill_dir.join("scripts").join("run.py"), "print('ok')\n").unwrap();
+        pkg
+    }
+
+    fn package_skill_md(name: &str, description: &str) -> String {
+        format!(
+            "---\nname: {}\ndescription: {}\n---\n\nRun python3 ${{NEBO_SKILL_DIR}}/scripts/run.py\n",
+            name, description
+        )
+    }
+
+    #[tokio::test]
+    async fn test_employee_package_skill_belongs_to_its_seat() {
+        let installed = TempDir::new().unwrap();
+        let user = TempDir::new().unwrap();
+        let agents = TempDir::new().unwrap();
+
+        // Two seats ship a procedure under the SAME name — 14 of the shipped
+        // packages do exactly this (project-conventions). Each seat must get
+        // its own, and nobody else's.
+        create_employee_package(
+            agents.path(),
+            "copywriter",
+            "copywriter",
+            "project-conventions",
+            &package_skill_md("project-conventions", "How the copywriter works"),
+        );
+        create_employee_package(
+            agents.path(),
+            "closer",
+            "closer",
+            "project-conventions",
+            &package_skill_md("project-conventions", "How the closer works"),
+        );
+
+        let loader = Loader::new(installed.path().to_path_buf(), user.path().to_path_buf())
+            .with_agent_dirs(vec![agents.path().to_path_buf()]);
+        loader.load_all().await;
+
+        // Each seat sees its own.
+        let mine = loader
+            .get("project-conventions", Some("copywriter"))
+            .await
+            .expect("the seat must see the procedure its own package ships");
+        assert_eq!(mine.description, "How the copywriter works");
+        assert_eq!(mine.owner_agent_id.as_deref(), Some("copywriter"));
+        assert_eq!(mine.source, SkillSource::Installed);
+
+        let theirs = loader
+            .get("project-conventions", Some("closer"))
+            .await
+            .unwrap();
+        assert_eq!(
+            theirs.description, "How the closer works",
+            "a same-named procedure must not leak across seats"
+        );
+
+        // Invisible to the main bot and to a third seat.
+        assert!(
+            loader.get("project-conventions", None).await.is_none(),
+            "a seat's own procedure must not be on the shared roster"
+        );
+        assert!(
+            loader
+                .get("project-conventions", Some("stranger"))
+                .await
+                .is_none(),
+            "another employee must not see it"
+        );
+        assert!(
+            !loader
+                .list(None)
+                .await
+                .iter()
+                .any(|s| s.name == "project-conventions"),
+            "list() with no scope must not surface a seat's own procedure"
+        );
+        assert!(
+            loader
+                .list(Some("copywriter"))
+                .await
+                .iter()
+                .any(|s| s.name == "project-conventions"),
+            "the owning seat's list must include it"
+        );
+
+        // The template loads, and the scripts beside it still resolve from the
+        // skill's own directory inside the package.
+        assert!(mine.template.contains("scripts/run.py"));
+        let base = mine.base_dir.clone().expect("base_dir");
+        assert!(
+            base.join("scripts").join("run.py").exists(),
+            "relative scripts must still be found under base_dir"
+        );
+        assert!(base.starts_with(agents.path()), "base_dir stays in the package");
+        let expanded = loader.expand_template(&mine, None);
+        assert!(
+            expanded.contains(base.join("scripts").join("run.py").to_str().unwrap()),
+            "${{NEBO_SKILL_DIR}} must expand to the package's skill directory"
+        );
+
+        // The prompt catalog carries it for its own seat only.
+        let own_catalog = loader.compact_catalog(Some("copywriter")).await;
+        assert!(own_catalog.contains("project-conventions"));
+        let shared_catalog = loader.compact_catalog(None).await;
+        assert!(!shared_catalog.contains("project-conventions"));
+    }
+
+    #[tokio::test]
+    async fn test_employee_package_skill_survives_warm_start() {
+        let installed = TempDir::new().unwrap();
+        let user = TempDir::new().unwrap();
+        let agents = TempDir::new().unwrap();
+        create_employee_package(
+            agents.path(),
+            "copywriter",
+            "copywriter",
+            "copy-brief",
+            &package_skill_md("copy-brief", "Test a brief"),
+        );
+
+        // Cold load writes the manifest...
+        let cold = Loader::new(installed.path().to_path_buf(), user.path().to_path_buf())
+            .with_agent_dirs(vec![agents.path().to_path_buf()]);
+        cold.load_all().await;
+        assert!(installed.path().join(".skill-manifest.json").exists());
+
+        // ...and a second loader warm-starts from it with scoping intact.
+        let warm = Loader::new(installed.path().to_path_buf(), user.path().to_path_buf())
+            .with_agent_dirs(vec![agents.path().to_path_buf()]);
+        warm.load_all().await;
+        let mine = warm
+            .get("copy-brief", Some("copywriter"))
+            .await
+            .expect("warm start must keep the seat's own procedure");
+        assert_eq!(mine.owner_agent_id.as_deref(), Some("copywriter"));
+        assert!(
+            mine.template.contains("scripts/run.py"),
+            "the body must still load from disk after a warm start"
+        );
+        assert!(warm.get("copy-brief", None).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_employee_package_skill_watcher_picks_up_a_change() {
+        let installed = TempDir::new().unwrap();
+        let user = TempDir::new().unwrap();
+        let agents = TempDir::new().unwrap();
+        let pkg = create_employee_package(
+            agents.path(),
+            "copywriter",
+            "copywriter",
+            "copy-brief",
+            &package_skill_md("copy-brief", "First wording"),
+        );
+
+        let loader = Arc::new(
+            Loader::new(installed.path().to_path_buf(), user.path().to_path_buf())
+                .with_agent_dirs(vec![agents.path().to_path_buf()]),
+        );
+        loader.load_all().await;
+        let handle = loader.watch();
+
+        // No fixed sleep anywhere: watch() hands back no "armed" signal (the
+        // agent loader's hands back an event receiver, this one does not), so
+        // the test re-touches the file and waits on the observable result
+        // instead of guessing how long arming takes. The first touch the armed
+        // watcher sees is enough — the debounce coalesces it into a reload
+        // rather than dropping it — and the loop exits the moment the loader
+        // reports the new wording.
+        let skill_md = pkg.join("skills").join("copy-brief").join("SKILL.md");
+        let mut seen = String::new();
+        for _ in 0..80 {
+            std::fs::write(&skill_md, package_skill_md("copy-brief", "Second wording")).unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(125)).await;
+            if let Some(skill) = loader.get("copy-brief", Some("copywriter")).await {
+                seen = skill.description.clone();
+                if seen == "Second wording" {
+                    break;
+                }
+            }
+        }
+        handle.abort();
+        assert_eq!(
+            seen, "Second wording",
+            "the watcher must reload a package's own procedure when it changes"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_prompt_catalog_states_one_count_per_heading() {
+        // A seat's prompt used to carry two "## Available Skills" headings with
+        // different totals — two numbers for one thing, and a claim about the
+        // seat's own capabilities that was false either way. One heading per
+        // count now: the shared roster, and the seat's own.
+        let installed = TempDir::new().unwrap();
+        let user = TempDir::new().unwrap();
+        let agents = TempDir::new().unwrap();
+        create_employee_package(
+            agents.path(),
+            "copywriter",
+            "copywriter",
+            "copy-brief",
+            &package_skill_md("copy-brief", "Test a brief"),
+        );
+        create_employee_package(
+            agents.path(),
+            "copywriter",
+            "copywriter",
+            "claim-register",
+            &package_skill_md("claim-register", "Register a claim"),
+        );
+
+        let loader = Loader::new(installed.path().to_path_buf(), user.path().to_path_buf())
+            .with_agent_dirs(vec![agents.path().to_path_buf()]);
+        loader.load_all().await;
+
+        let seat = loader.compact_catalog(Some("copywriter")).await;
+        assert_eq!(
+            seat.matches("## Available Skills").count(),
+            1,
+            "the shared roster is named once, with one count:\n{seat}"
+        );
+        assert_eq!(
+            seat.matches("## Your Own Skills").count(),
+            1,
+            "the seat's own skills are named once, with their own count"
+        );
+        assert!(
+            seat.contains("## Your Own Skills (2 total: 2 listed below)"),
+            "the seat's count must be the two procedures it can actually load:\n{seat}"
+        );
+        assert!(seat.contains("copy-brief"));
+        assert!(seat.contains("claim-register"));
+
+        // The shared catalog carries neither the seat's block nor its skills.
+        let shared = loader.compact_catalog(None).await;
+        assert!(!shared.contains("## Your Own Skills"));
+        assert!(!shared.contains("copy-brief"));
+    }
+
+    #[tokio::test]
+    async fn test_prompt_catalog_stays_small_with_a_whole_company() {
+        // 48 employees, 4 procedures each, every seat using the same four
+        // names. The shared catalog that goes into every prompt must not grow
+        // with the workforce; a seat only ever pays for its own four.
+        let installed = TempDir::new().unwrap();
+        let user = TempDir::new().unwrap();
+        let agents = TempDir::new().unwrap();
+        // Names no bundled skill's own text can contain, so the assertions
+        // below test presence in the catalog and not a chance substring.
+        let names = [
+            "seatproc-intake",
+            "seatproc-review",
+            "seatproc-handoff",
+            "seatproc-report",
+        ];
+        let description = "x".repeat(300);
+        for seat in 0..48 {
+            let slug = format!("seat-{}", seat);
+            for name in names {
+                create_employee_package(
+                    agents.path(),
+                    &slug,
+                    &slug,
+                    name,
+                    &package_skill_md(name, &description),
+                );
+            }
+        }
+
+        let loader = Loader::new(installed.path().to_path_buf(), user.path().to_path_buf())
+            .with_agent_dirs(vec![agents.path().to_path_buf()]);
+        loader.load_all().await;
+
+        let shared = loader.compact_catalog(None).await;
+        for name in names {
+            assert!(
+                !shared.contains(name),
+                "{name} must not reach the shared catalog"
+            );
+        }
+
+        let seat = loader.compact_catalog(Some("seat-7")).await;
+        for name in names {
+            assert!(seat.contains(name), "the seat must see its own {name}");
+        }
+        let own_cost = seat.len() - shared.len();
+        assert!(
+            own_cost < 2_000,
+            "a seat's own procedures added {own_cost} chars to the prompt; four skills must stay small"
         );
     }
 

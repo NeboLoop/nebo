@@ -1,0 +1,12 @@
+id: sc06-out-of-bounds-work-becomes-an-assignment
+name: "SC06 — Out-of-bounds work becomes an assignment"
+description: |
+  The one hand-over pathway the runner uses is installed at boot and works end
+  to end through the real server: an assignment opens the assignee's own case
+  carrying operation, asking seat, bound and stopped work; the authority holder
+  and the reporting line are on the data as the owner wrote them. The runner's
+  gate-to-assignment join itself needs a model turn and is held by the runner's
+  own test.
+target_component: staffed-company
+proof: staffed_proof::seats::out_of_bounds_work_becomes_an_assignment
+conversation: []

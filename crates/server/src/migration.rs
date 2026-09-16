@@ -522,6 +522,8 @@ pub fn migrate_orphaned_agent_crons(store: &db::Store) {
                 None,
                 None,
                 None,
+                None,
+                None,
             );
             // Persist agent.json to the agent's directory too — the filesystem
             // is authoritative: the agent FS watcher re-syncs DB rows from disk

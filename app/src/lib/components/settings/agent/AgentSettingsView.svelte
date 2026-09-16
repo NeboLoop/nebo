@@ -2,7 +2,7 @@
   import { page } from '$app/stores';
   import { goto } from '$lib/nav';
   import { t } from 'svelte-i18n';
-  import { getContext, onDestroy } from 'svelte';
+  import { getContext, onDestroy, untrack } from 'svelte';
   import { AGENT_COLORS_MAP } from '$lib/tokens.js';
   import AgentAvatar from '$lib/components/AgentAvatar.svelte';
   import { getActivityType } from '$lib/utils/workflowTypes';
@@ -22,6 +22,7 @@
   import ModelControls from '$lib/components/settings/ModelControls.svelte';
   import type { AgentInputField } from '$lib/types/agentPage';
   import { installFlow } from '$lib/stores/installFlow';
+  import { capabilityLabel } from '$lib/utils/operationLabels';
 
   const ctx = getContext<AgentPageContext>('agentPage');
   const agentId = $derived(ctx.agentId);
@@ -212,6 +213,41 @@
   let editColor = $state('');
   let editVoice = $state('');
   let editLoopExposed = $state(false);
+  let editDepartment = $state('');
+  let editReportsTo = $state('');
+
+  // Departments already in use, so the owner picks up their own words instead
+  // of inventing a second spelling. Never a fixed taxonomy: Nebo is
+  // industry-agnostic and the department is whatever this company calls it.
+  const knownDepartments = $derived(
+    [...new Set(ctx.roster.map((a) => (a.department ?? '').trim()).filter(Boolean))].sort((a, b) =>
+      a.localeCompare(b)
+    )
+  );
+
+  // Who this employee may answer to: anyone but itself and anyone already
+  // below it, however long the chain. The backend refuses a cycle too — this
+  // only keeps the picker from offering one.
+  const reportsToOptions = $derived.by(() => {
+    const below = new Set<string>([agentId]);
+    // Walk down until nothing new is found: the roster is small and this is
+    // honest about chains of any depth.
+    for (;;) {
+      const before = below.size;
+      for (const a of ctx.roster) {
+        if (a.reportsTo && below.has(a.reportsTo)) below.add(a.id);
+      }
+      if (below.size === before) break;
+    }
+    return ctx.roster
+      .filter((a) => !below.has(a.id) && !a.isApp)
+      .sort((a, b) => a.name.localeCompare(b.name));
+  });
+
+  function selectReportsTo(id: string) {
+    editReportsTo = id;
+    debounceIdentitySave();
+  }
 
   // Nebo voice roster: our names over the underlying xAI voice ids. The id is
   // what's stored and sent upstream; the label is the brand name shown in UI.
@@ -235,6 +271,8 @@
       editColor = agent.color;
       editVoice = agent.voice ?? '';
       editLoopExposed = agent.loopExposed ?? false;
+      editDepartment = agent.department ?? '';
+      editReportsTo = agent.reportsTo ?? '';
     }
   });
 
@@ -279,6 +317,8 @@
     sampleAudio.play().catch(() => { if (samplePlaying === voiceId) samplePlaying = ''; });
   }
 
+  let identityError = $state('');
+
   async function saveIdentity() {
     if (!agentId) return;
     try {
@@ -288,10 +328,21 @@
         description: editRole,
         color: editColor,
         voice: editVoice,
+        // Structure rides the one employee-field save: setting a department
+        // here makes it the owner's, and a later package sync leaves it alone.
+        department: editDepartment.trim(),
+        reportsTo: editReportsTo,
       });
+      identityError = '';
       identitySaved = true;
       setTimeout(() => identitySaved = false, 2000);
-    } catch { /* silent */ }
+    } catch (e) {
+      // A refused reporting line names the loop it would have closed, and a
+      // taken name names the employee that has it. Swallowing that left the
+      // owner looking at a field that said one thing and a server that held
+      // another.
+      identityError = (e as Error)?.message || $t('agentSettings.saveFailed');
+    }
   }
 
   // --- Persona auto-save (AGENT.md body) ---
@@ -377,8 +428,15 @@
       const raw = (res as { inputValues?: unknown })?.inputValues;
       const parsed = typeof raw === 'string' ? JSON.parse(raw || '{}') : (raw ?? {});
       configValues = parsed && typeof parsed === 'object' ? parsed : {};
+      // The questions themselves, from the same response — a packaged
+      // employee's and an owner-built one's arrive on the one `inputFields` key.
+      const fields = (res as { inputFields?: unknown })?.inputFields;
+      questions = Array.isArray(fields)
+        ? fields.map((f) => toDraft(f as Record<string, unknown>))
+        : [];
     } catch {
       configValues = {};
+      questions = [];
     }
   }
   $effect(() => {
@@ -395,6 +453,178 @@
       agentName: agent?.name ?? '',
       oncomplete: () => void loadConfigValues(id),
     });
+  }
+
+  // --- Questions (agent.json `inputs`) ---
+  // An owner-built employee asks for what it needs to know, under the same
+  // rules a package's questions follow. This writes `inputs` on the SAME
+  // agent.json a package ships — one representation, read back by the one
+  // parser. The money rule is enforced in the backend; the form only mirrors
+  // it so a default is never even offered for a money question.
+  type QuestionDraft = {
+    key: string;
+    id: string;
+    label: string;
+    type: string;
+    scope: string;
+    missing: string;
+    money: boolean;
+    required: boolean;
+    default: string;
+  };
+  const QUESTION_TYPES = ['text', 'textarea', 'number', 'select', 'checkbox', 'radio'];
+  let questions = $state<QuestionDraft[]>([]);
+  let questionsSaved = $state(false);
+  let questionsError = $state('');
+  let questionsSaveTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function toDraft(f: Record<string, unknown>): QuestionDraft {
+    const def = f.default;
+    return {
+      key: typeof f.key === 'string' ? f.key : '',
+      id: typeof f.id === 'string' ? f.id : '',
+      label: typeof f.label === 'string' ? f.label : '',
+      type: typeof f.type === 'string' ? f.type : 'text',
+      scope: f.scope === 'seat' ? 'seat' : 'company',
+      missing: typeof f.missing === 'string' ? f.missing : '',
+      money: f.money === true,
+      required: f.required === true,
+      default: def === undefined || def === null ? '' : String(def),
+    };
+  }
+
+  function questionsPayload() {
+    return questions
+      .filter((q) => q.key.trim() !== '')
+      .map((q) => {
+        const out: Record<string, unknown> = {
+          key: q.key.trim(),
+          label: q.label.trim(),
+          type: q.type,
+          required: q.required,
+          scope: q.scope,
+        };
+        if (q.id.trim()) out.id = q.id.trim();
+        if (q.missing.trim()) out.missing = q.missing.trim();
+        if (q.money) out.money = true;
+        // Never a default on a money question — the rule, not a preference.
+        if (!q.money && q.default.trim()) out.default = q.default.trim();
+        return out;
+      });
+  }
+
+  function debounceQuestionsSave() {
+    if (questionsSaveTimer) clearTimeout(questionsSaveTimer);
+    questionsSaveTimer = setTimeout(() => saveQuestions(), 700);
+  }
+
+  async function saveQuestions() {
+    const id = agentId;
+    if (!id) return;
+    questionsError = '';
+    try {
+      const api = await import('$lib/api/nebo');
+      await api.updateAgent(id, { inputs: questionsPayload() });
+      questionsSaved = true;
+      setTimeout(() => (questionsSaved = false), 2000);
+    } catch (e) {
+      questionsError = e instanceof Error ? e.message : String(e);
+    }
+  }
+
+  function addQuestion() {
+    questions = [
+      ...questions,
+      { key: '', id: '', label: '', type: 'text', scope: 'company', missing: '', money: false, required: false, default: '' },
+    ];
+  }
+
+  function removeQuestion(index: number) {
+    questions = questions.filter((_, i) => i !== index);
+    debounceQuestionsSave();
+  }
+
+  // Turning a question into a money question drops the default it used to
+  // carry, so the save can never be refused for a value the owner cannot see.
+  function setQuestionMoney(index: number, money: boolean) {
+    questions = questions.map((q, i) => (i === index ? { ...q, money, default: money ? '' : q.default } : q));
+    debounceQuestionsSave();
+  }
+
+  // --- Capabilities (agent.json `requires.interfaces`) ---
+  // What this employee is allowed to reach. The catalogue is what the company
+  // has actually connected; the selection lands in `requires.interfaces` on the
+  // same agent.json a package declares it in.
+  type CapabilityRow = {
+    capability: string;
+    providers: string[];
+    builtin: boolean;
+    gatedOperations: number;
+    bound: boolean;
+  };
+  let capabilityRows = $state<CapabilityRow[]>([]);
+  let boundCapabilities = $state<string[]>([]);
+  let capabilitiesLoading = $state(true);
+  let capabilitiesSaved = $state(false);
+  let capabilitiesError = $state('');
+  let loadedCapabilitiesFor = $state('');
+  let capabilitiesSaveTimer: ReturnType<typeof setTimeout> | null = null;
+
+  async function loadCapabilities(id: string) {
+    capabilitiesLoading = true;
+    capabilitiesError = '';
+    try {
+      const api = await import('$lib/api/nebo');
+      const resp = (await api.getAgentOperations(id)) as unknown as {
+        available?: CapabilityRow[];
+        interfaces?: string[];
+      };
+      capabilityRows = resp.available ?? [];
+      boundCapabilities = resp.interfaces ?? [];
+    } catch (e) {
+      capabilitiesError = e instanceof Error ? e.message : String(e);
+    } finally {
+      capabilitiesLoading = false;
+    }
+  }
+
+  // Depends on `section` and `agentId` only. The once-per-employee guard is
+  // read inside untrack, because the effect also writes it — reading it as a
+  // dependency is how a loader effect re-fires itself.
+  $effect(() => {
+    if (section !== 'capabilities') return;
+    const id = agentId;
+    if (!id) return;
+    untrack(() => {
+      if (id === loadedCapabilitiesFor) return;
+      loadedCapabilitiesFor = id;
+      void loadCapabilities(id);
+    });
+  });
+
+  function toggleCapability(capability: string, on: boolean) {
+    boundCapabilities = on
+      ? [...boundCapabilities, capability].sort()
+      : boundCapabilities.filter((c) => c !== capability);
+    capabilityRows = capabilityRows.map((r) =>
+      r.capability === capability ? { ...r, bound: on } : r,
+    );
+    if (capabilitiesSaveTimer) clearTimeout(capabilitiesSaveTimer);
+    capabilitiesSaveTimer = setTimeout(() => saveCapabilities(), 700);
+  }
+
+  async function saveCapabilities() {
+    const id = agentId;
+    if (!id) return;
+    capabilitiesError = '';
+    try {
+      const api = await import('$lib/api/nebo');
+      await api.updateAgent(id, { interfaces: boundCapabilities });
+      capabilitiesSaved = true;
+      setTimeout(() => (capabilitiesSaved = false), 2000);
+    } catch (e) {
+      capabilitiesError = e instanceof Error ? e.message : String(e);
+    }
   }
 
   // --- Channels ---
@@ -1059,6 +1289,9 @@
           <span class="absolute right-0 top-0 text-xs text-success flex items-center gap-1"><Check class="w-3 h-3" /> {$t('common.saved')}</span>
         {/if}
       </div>
+      {#if identityError}
+        <div class="rounded-lg border border-error/40 bg-error/10 px-3.5 py-2.5 text-xs text-error">{identityError}</div>
+      {/if}
       {#if managed}
         <div class="rounded-lg border border-base-300 bg-base-200/50 px-3.5 py-2.5 text-xs text-base-content/70 flex items-start gap-3">
           <span class="flex-1">{$t('agentSettings.identityManagedNote')}</span>
@@ -1120,6 +1353,42 @@
             <span class="text-xs text-base-content/40 ml-1">{$t('agentSettings.colorDefault')}</span>
           {/if}
         </div>
+      </div>
+      <div class="pt-5 border-t border-base-300 flex flex-col gap-4">
+        <div>
+          <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('agentSettings.structure')}</div>
+          <div class="text-xs text-base-content/70 mt-1">{$t('agentSettings.structureBlurb')}</div>
+        </div>
+        <label class="block">
+          <span class="block text-xs font-semibold uppercase tracking-wider mb-1.5">{$t('agentSettings.department')}</span>
+          <input
+            type="text"
+            list="nebo-departments"
+            bind:value={editDepartment}
+            oninput={debounceIdentitySave}
+            placeholder={$t('agentSettings.departmentPlaceholder')}
+            class="w-full py-[7px] px-2.5 rounded-md border border-base-300 text-sm bg-base-100 outline-none font-body"
+          />
+          <datalist id="nebo-departments">
+            {#each knownDepartments as d (d)}
+              <option value={d}></option>
+            {/each}
+          </datalist>
+        </label>
+        <label class="block">
+          <span class="block text-xs font-semibold uppercase tracking-wider mb-1.5">{$t('agentSettings.reportsTo')}</span>
+          <select
+            class="select select-bordered select-sm w-full font-body"
+            value={editReportsTo}
+            onchange={(e) => selectReportsTo(e.currentTarget.value)}
+          >
+            <option value="">{$t('agentSettings.reportsToOwner')}</option>
+            {#each reportsToOptions as a (a.id)}
+              <option value={a.id}>{a.name}</option>
+            {/each}
+          </select>
+          <span class="block text-xs text-base-content/70 mt-1.5">{$t('agentSettings.reportsToHint')}</span>
+        </label>
       </div>
       <div>
         <div class="text-xs font-semibold uppercase tracking-wider mb-1.5">{$t('automations.status')}</div>
@@ -1211,6 +1480,21 @@
         class="w-full py-[7px] px-2.5 rounded-md border border-base-300 text-sm max-md:text-base bg-base-100 outline-none resize-y font-mono leading-relaxed disabled:opacity-60 disabled:cursor-not-allowed"
       ></textarea>
 
+      <!-- The employee's package review writes into these Rules, between two
+           markers; the stamp says what it was reviewed against. Editable
+           like the rest: what the owner writes outside the markers is kept
+           by the next review. -->
+      {#if agent?.contextStamp}
+        {@const stamp = (() => { try { return JSON.parse(agent?.contextStamp ?? '{}'); } catch { return {}; } })()}
+        {#if stamp.against}
+          <div class="mt-2 text-xs text-base-content/60">
+            {$t('agentSettings.contextAgainst', { values: { against: stamp.against } })}
+            {#if stamp.status && stamp.status !== 'written'}
+              <span class="ml-2 badge badge-warning badge-xs">{$t('agentSettings.contextStale')}</span>
+            {/if}
+          </div>
+        {/if}
+      {/if}
     {:else if section === 'configure'}
       <div class="flex items-center justify-between gap-3 mb-1">
         <div>
@@ -1237,6 +1521,201 @@
             </div>
           {/each}
         </dl>
+      {/if}
+
+      <!-- Authoring the questions themselves. An owner builds an employee that
+           asks for what it needs to know, with the same rules a package's
+           questions follow: a semantic id, a label written as the question,
+           what it does until the question is answered, and no default when the
+           value is money. -->
+      <div class="mt-6 pt-5 border-t border-base-content/10">
+        <div class="flex items-center justify-between gap-3 mb-1">
+          <div>
+            <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('agentQuestions.title')}</div>
+            <div class="text-xs text-base-content/70 mt-1">{$t('agentQuestions.desc')}</div>
+          </div>
+          {#if questionsSaved}
+            <span class="text-xs text-success flex items-center gap-1 shrink-0"><Check class="w-3 h-3" /> {$t('common.saved')}</span>
+          {/if}
+        </div>
+
+        {#if questionsError}
+          <div class="alert alert-error mt-3 py-2 text-xs">
+            <AlertTriangle class="w-4 h-4 shrink-0" />
+            <span>{questionsError}</span>
+          </div>
+        {/if}
+
+        <div class="flex flex-col gap-3 mt-3">
+          {#each questions as q, i (i)}
+            <div class="rounded-lg border border-base-300 bg-base-200/40 p-3 flex flex-col gap-2">
+              <div class="flex items-start gap-2">
+                <input
+                  type="text"
+                  bind:value={q.label}
+                  oninput={debounceQuestionsSave}
+                  placeholder={$t('agentQuestions.labelPlaceholder')}
+                  class="input input-sm input-bordered flex-1 font-medium"
+                />
+                <button
+                  type="button"
+                  class="btn btn-sm btn-ghost text-error shrink-0"
+                  onclick={() => removeQuestion(i)}
+                >{$t('common.remove')}</button>
+              </div>
+
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <label class="flex flex-col gap-1">
+                  <span class="text-xs text-base-content/60">{$t('agentQuestions.semanticId')}</span>
+                  <input
+                    type="text"
+                    bind:value={q.id}
+                    oninput={debounceQuestionsSave}
+                    placeholder="finance.ap.invoice_mailbox"
+                    class="input input-sm input-bordered font-mono"
+                  />
+                </label>
+                <label class="flex flex-col gap-1">
+                  <span class="text-xs text-base-content/60">{$t('agentQuestions.key')}</span>
+                  <input
+                    type="text"
+                    bind:value={q.key}
+                    oninput={debounceQuestionsSave}
+                    placeholder="invoice_mailbox"
+                    class="input input-sm input-bordered font-mono"
+                  />
+                </label>
+                <label class="flex flex-col gap-1">
+                  <span class="text-xs text-base-content/60">{$t('agentQuestions.type')}</span>
+                  <select bind:value={q.type} onchange={debounceQuestionsSave} class="select select-sm select-bordered">
+                    {#each QUESTION_TYPES as ty (ty)}
+                      <option value={ty}>{ty}</option>
+                    {/each}
+                  </select>
+                </label>
+                <label class="flex flex-col gap-1">
+                  <span class="text-xs text-base-content/60">{$t('agentQuestions.scope')}</span>
+                  <select bind:value={q.scope} onchange={debounceQuestionsSave} class="select select-sm select-bordered">
+                    <option value="company">{$t('agentQuestions.scopeCompany')}</option>
+                    <option value="seat">{$t('agentQuestions.scopeSeat')}</option>
+                  </select>
+                </label>
+              </div>
+
+              <label class="flex flex-col gap-1">
+                <span class="text-xs text-base-content/60">{$t('agentQuestions.missing')}</span>
+                <input
+                  type="text"
+                  bind:value={q.missing}
+                  oninput={debounceQuestionsSave}
+                  placeholder={$t('agentQuestions.missingPlaceholder')}
+                  class="input input-sm input-bordered"
+                />
+              </label>
+
+              <div class="flex flex-wrap items-center gap-4">
+                <label class="flex items-center gap-2 text-xs cursor-pointer">
+                  <input type="checkbox" bind:checked={q.required} onchange={debounceQuestionsSave} class="checkbox checkbox-xs" />
+                  <span>{$t('agentQuestions.required')}</span>
+                </label>
+                <label class="flex items-center gap-2 text-xs cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={q.money}
+                    onchange={(e) => setQuestionMoney(i, e.currentTarget.checked)}
+                    class="checkbox checkbox-xs"
+                  />
+                  <span>{$t('agentQuestions.money')}</span>
+                </label>
+                <label class="flex items-center gap-2 text-xs flex-1 min-w-[12rem]">
+                  <span class="text-base-content/60 shrink-0">{$t('agentQuestions.default')}</span>
+                  <input
+                    type="text"
+                    bind:value={q.default}
+                    oninput={debounceQuestionsSave}
+                    disabled={q.money}
+                    placeholder={q.money ? $t('agentQuestions.noMoneyDefault') : ''}
+                    class="input input-xs input-bordered flex-1 disabled:opacity-60 disabled:cursor-not-allowed"
+                  />
+                </label>
+              </div>
+
+              {#if q.money}
+                <div class="text-xs text-warning flex items-start gap-1.5">
+                  <AlertTriangle class="w-3.5 h-3.5 shrink-0 mt-px" />
+                  <span>{$t('agentQuestions.moneyNote')}</span>
+                </div>
+              {/if}
+            </div>
+          {/each}
+        </div>
+
+        <button type="button" class="btn btn-sm btn-outline mt-3" onclick={addQuestion}>
+          {$t('agentQuestions.add')}
+        </button>
+      </div>
+
+    {:else if section === 'capabilities'}
+      <div class="flex items-center justify-between gap-3 mb-1">
+        <div>
+          <div class="text-xs font-semibold uppercase tracking-wider text-base-content/50">{$t('agentSettings.capabilities')}</div>
+          <div class="text-xs text-base-content/70 mt-1">{$t('agentCapabilities.desc', { values: { name: agent?.name ?? '' } })}</div>
+        </div>
+        {#if capabilitiesSaved}
+          <span class="text-xs text-success flex items-center gap-1 shrink-0"><Check class="w-3 h-3" /> {$t('common.saved')}</span>
+        {/if}
+      </div>
+
+      {#if capabilitiesError}
+        <div class="alert alert-error mt-3 py-2 text-xs">
+          <AlertTriangle class="w-4 h-4 shrink-0" />
+          <span>{capabilitiesError}</span>
+        </div>
+      {/if}
+
+      {#if capabilitiesLoading}
+        <div class="py-6 flex justify-center"><span class="loading loading-spinner loading-sm"></span></div>
+      {:else if capabilityRows.length === 0}
+        <!-- The honest empty state: nothing is connected, so there is nothing
+             this employee could be given to reach. -->
+        <div class="mt-4 rounded-lg border border-base-300 bg-base-200/40 px-4 py-6 text-center">
+          <div class="text-sm font-medium">{$t('agentCapabilities.emptyTitle')}</div>
+          <div class="text-xs text-base-content/60 mt-1.5 max-w-md mx-auto">{$t('agentCapabilities.emptyBody')}</div>
+        </div>
+      {:else}
+        <div class="flex flex-col gap-2 mt-3">
+          {#each capabilityRows as row (row.capability)}
+            <label class="flex items-start gap-3 rounded-lg border border-base-300 bg-base-100 px-3 py-2.5 cursor-pointer hover:bg-base-200/50">
+              <input
+                type="checkbox"
+                checked={row.bound}
+                onchange={(e) => toggleCapability(row.capability, e.currentTarget.checked)}
+                class="checkbox checkbox-sm mt-0.5 shrink-0"
+              />
+              <span class="flex-1 min-w-0">
+                <span class="flex flex-wrap items-center gap-2">
+                  <span class="text-sm font-medium">{capabilityLabel(row.capability)}</span>
+                  {#if row.builtin}
+                    <span class="badge badge-ghost badge-xs">{$t('agentCapabilities.builtin')}</span>
+                  {/if}
+                  {#if row.gatedOperations > 0}
+                    <span class="badge badge-warning badge-xs">{$t('agentCapabilities.needsApproval', { values: { count: row.gatedOperations } })}</span>
+                  {/if}
+                </span>
+                <span class="block text-xs text-base-content/60 mt-0.5">
+                  {#if row.builtin}
+                    {$t('agentCapabilities.builtinDesc')}
+                  {:else if row.providers.length > 0}
+                    {$t('agentCapabilities.providedBy', { values: { providers: row.providers.join(', ') } })}
+                  {:else}
+                    {$t('agentCapabilities.noProvider')}
+                  {/if}
+                </span>
+              </span>
+            </label>
+          {/each}
+        </div>
+        <div class="text-xs text-base-content/50 mt-3">{$t('agentCapabilities.approvalsNote')}</div>
       {/if}
 
     {:else if section === 'workflows'}

@@ -599,6 +599,15 @@ test-engine: test-engine-proof test-engine-live
 # each fixture names the Rust proof that holds it; no model, no server.
 test-engine-proof: $(NEBO_CLI)
 	$(NEBO_CLI) test run --suite suites/engine.yaml --no-judge
+# The staffed-company proof, the engine proof's sibling: every mechanism of
+# the staffed company as a fixture (suites/staffed-company.yaml,
+# fixtures/staffed-company/), each running its Rust proof through the real
+# server booted in-process on a temporary NEBO_HOME. No model, no network,
+# never the platform data root. CI runs the same tests through
+# `cargo test --workspace` (they are nebo-server lib tests).
+.PHONY: test-staffed-proof
+test-staffed-proof: $(NEBO_CLI)
+	$(NEBO_CLI) test run --suite suites/staffed-company.yaml --no-judge
 # The real-model half (suites/engine-live.yaml): a running Nebo and an
 # address you own.
 test-engine-live:

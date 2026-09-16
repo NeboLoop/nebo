@@ -140,3 +140,36 @@ pub type CoworkerRailCell = Arc<std::sync::RwLock<Option<Arc<dyn CoworkerRail>>>
 pub fn new_rail_cell() -> CoworkerRailCell {
     Arc::new(std::sync::RwLock::new(None))
 }
+
+/// Turn a tool's context plus "who and what" into one delivery — the ONE place
+/// the envelope is built from a [`crate::origin::ToolContext`].
+///
+/// Two callers, deliberately sharing this rather than each assembling the
+/// envelope: `message(resource: "coworker")`, and the escalation that takes
+/// work a seat cannot finish up its reporting line. Every field a run's
+/// identity, isolation, taint and hop budget depend on is derived here, once —
+/// a second copy is exactly how a caller forgets `requester_scope` and pools an
+/// isolated employee's matters into one context.
+pub async fn deliver(
+    rail: &Arc<dyn CoworkerRail>,
+    ctx: &crate::origin::ToolContext,
+    to: &str,
+    text: &str,
+    wait: bool,
+) -> Result<CoworkerDelivery, String> {
+    rail.send(CoworkerMessage {
+        from_agent_id: types::keyparser::extract_agent_id(&ctx.session_key),
+        sender_session_key: ctx.session_key.clone(),
+        to: to.to_string(),
+        text: text.to_string(),
+        // Verbatim resolved scope — the rail derives the matter from it; a tool
+        // never re-derives scopes (the canonical derivation lives in
+        // agent::memory::resolve_memory_scope and the runner).
+        requester_scope: ctx.user_id.clone(),
+        handoff_depth: ctx.handoff_depth,
+        provenance: ctx.run_taint.clone(),
+        wait,
+        team: None,
+    })
+    .await
+}

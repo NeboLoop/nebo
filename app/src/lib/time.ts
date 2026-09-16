@@ -25,7 +25,10 @@ export function formatTime(ts: string | number): string {
  */
 export function formatRelative(date: string | number | Date, style: 'long' | 'short' = 'long'): string {
 	const $t = get(t);
-	const ms = new Date(date).getTime();
+	// A bare number is a unix timestamp, and the backend writes them in seconds
+	// (`chrono::Utc::now().timestamp()`). Same rule as formatTime above, which
+	// this function was missing — without it a seconds stamp reads as 1970.
+	const ms = typeof date === 'number' && date < 1e12 ? date * 1000 : new Date(date).getTime();
 	if (isNaN(ms)) return '';
 	const mins = Math.floor((Date.now() - ms) / 60_000);
 	if (mins < 1) return $t(style === 'short' ? 'time.now' : 'time.justNow');

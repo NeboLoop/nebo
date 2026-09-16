@@ -384,6 +384,10 @@
           // The list endpoint reports isolation directly (the roster lock
           // needs it for every row).
           isolated: a.isolated,
+          // Structure. The roster is the org chart's data — /org draws the
+          // reporting tree from these, so there is no second fetch for shape.
+          department: a.department ?? '',
+          reportsTo: a.reportsTo ?? '',
         }));
         agentStatuses = Object.fromEntries(allAgents.map(a => [a.id, a.status]));
       }

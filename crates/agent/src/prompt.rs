@@ -751,7 +751,6 @@ pub fn build_static(pctx: &PromptContext) -> String {
             parts.push(format!("## Your Persona\n\n{}", agent_md));
         }
     }
-
     // Model identity — the resolved ID only (user decision: upstream model
     // lineage is never exposed). Stable for the session, so it belongs in
     // the cacheable prefix, never in the timestamped dynamic suffix.

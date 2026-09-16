@@ -126,6 +126,12 @@ export interface AgentDisplay {
 	loopAgentId?: string
 	/** Realtime voice id (xAI voice id; empty = default). */
 	voice?: string
+	/** JSON: what the package part of the Rules was reviewed against (and whether that review finished). */
+	contextStamp?: string
+	/** The part of the company this employee sits in; empty = unassigned. */
+	department?: string
+	/** The employee this one answers to; empty = answers to the owner. */
+	reportsTo?: string
 }
 
 /** The agentPage context shape provided by [agentId]/+layout.svelte. */

@@ -23,6 +23,13 @@ fn get_file(name: &str) -> Option<EmbeddedFile> {
     <Migrations as Embed>::get(name)
 }
 
+/// The highest migration version this binary carries. Derived from the
+/// embedded files, so it is whatever actually ships — never a number a
+/// caller has to keep in step by hand.
+pub fn head_version() -> i64 {
+    iter_files().iter().filter_map(|f| extract_version(f)).max().unwrap_or(0)
+}
+
 /// Run all pending migrations on the database connection.
 /// Compatible with goose's migration tracking (goose_db_version table).
 pub fn run_migrations(conn: &Connection) -> Result<(), NeboError> {

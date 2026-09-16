@@ -348,11 +348,20 @@ pub(crate) fn entity_run_params(
 /// means unrestricted (`safeguard::check_path_scope`), and adding the cwd to
 /// it would turn "anywhere" into "only here", so an empty list stays empty.
 /// Shared by both run entrypoints (CODE_AUDITOR Rule 8).
+///
+/// This is also the one moment Nebo learns which repository an employee is
+/// working in — the owner points it at one when the work happens, never
+/// before — so the company's standing rules are put there for whatever else
+/// reads that repository (`agents_export::place_known`). The render itself
+/// happened when the layers were applied; this only places it, and it never
+/// writes over the project's own `AGENTS.md`.
 pub(crate) fn run_cwd(
     cwd: Option<&std::path::Path>,
     allowed_paths: &mut Vec<String>,
 ) -> Option<String> {
-    let cwd = cwd?.to_string_lossy().into_owned();
+    let path = cwd?;
+    crate::agents_export::place_known(path);
+    let cwd = path.to_string_lossy().into_owned();
     if !allowed_paths.is_empty() && !allowed_paths.iter().any(|p| p == &cwd) {
         allowed_paths.push(cwd.clone());
     }

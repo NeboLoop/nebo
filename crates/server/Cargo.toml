@@ -58,6 +58,11 @@ a2ui-core = { workspace = true }
 pulldown-cmark = { workspace = true }
 voice = { workspace = true }
 regex = { workspace = true }
+# A pack may arrive as a zip; reading one is the whole use.
+zip = { version = "8", default-features = false, features = ["deflate-flate2"] }
+# Staging a layer write in a copy of the pack so the real loader can refuse it
+# before it lands.
+tempfile = "3"
 
 [dev-dependencies]
 tempfile = "3"

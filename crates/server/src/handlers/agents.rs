@@ -38,6 +38,40 @@ pub(crate) fn app_tool_dir(agent: &db::models::Agent) -> Option<std::path::PathB
 }
 
 /// Extract agentJson from request body — handles both string and object values.
+/// The declaration keys an owner authors from the settings page — the same
+/// keys, in the same `agent.json`, that a package ships: the capabilities the
+/// seat binds, the questions it asks, the fact domains it re-reads, and the
+/// operations it never performs unattended. `None` means the request did not
+/// carry that key, so what is on file survives untouched; `Some` replaces it.
+///
+/// There is deliberately no separate store for an owner-built employee. A
+/// package's declaration and an owner's edits land in the same
+/// `agents.frontmatter` blob and are read back by the same
+/// `napp::agent::parse_agent_config`.
+#[derive(Default)]
+struct AuthoredDeclaration {
+    interfaces: Option<serde_json::Value>,
+    inputs: Option<serde_json::Value>,
+    subscribes: Option<serde_json::Value>,
+    ceiling: Option<serde_json::Value>,
+}
+
+impl AuthoredDeclaration {
+    /// Read whatever the request body authored. A body that mentions none of
+    /// these keys yields an all-`None` declaration, which is a no-op.
+    fn from_body(body: &serde_json::Value) -> Self {
+        // `interfaces` sits under `requires` in agent.json, but the wire key is
+        // flat: the owner is choosing capabilities, not editing a dependency
+        // block, and `requires.plugins` is resolved by install, not by hand.
+        Self {
+            interfaces: body.get("interfaces").filter(|v| !v.is_null()).cloned(),
+            inputs: body.get("inputs").filter(|v| !v.is_null()).cloned(),
+            subscribes: body.get("subscribes").filter(|v| !v.is_null()).cloned(),
+            ceiling: body.get("ceiling").filter(|v| !v.is_null()).cloned(),
+        }
+    }
+}
+
 /// The frontmatter a save writes back. It starts from what is on file and
 /// replaces only the keys this handler owns, so `requires`, `tools`, `scopes`,
 /// `defaults`, `inputs`, and whatever a package adds next survive a visit to
@@ -49,6 +83,7 @@ fn saved_frontmatter(
     skills: serde_json::Value,
     pricing: Option<serde_json::Value>,
     memory: serde_json::Value,
+    authored: &AuthoredDeclaration,
 ) -> serde_json::Value {
     let mut out = match existing {
         serde_json::Value::Object(_) => existing.clone(),
@@ -61,6 +96,44 @@ fn saved_frontmatter(
         out["memory"] = memory;
     } else if let Some(o) = out.as_object_mut() {
         o.remove("memory");
+    }
+
+    // The owner's declaration, into the keys a package uses. Only the
+    // capabilities move inside `requires` — the rest are top-level in
+    // agent.json, so the owner's edit and a package's declaration are
+    // literally the same field.
+    if let Some(interfaces) = &authored.interfaces {
+        if !out["requires"].is_object() {
+            out["requires"] = serde_json::json!({});
+        }
+        out["requires"]["interfaces"] = interfaces.clone();
+    }
+    if let Some(inputs) = &authored.inputs {
+        out["inputs"] = inputs.clone();
+    }
+    if let Some(subscribes) = &authored.subscribes {
+        out["subscribes"] = subscribes.clone();
+    }
+    if let Some(ceiling) = &authored.ceiling {
+        out["ceiling"] = ceiling.clone();
+    }
+
+    // Record what the package said, for the fields the owner just authored, so
+    // a later package update can tell the owner's entries from its own and hold
+    // them instead of overwriting them. `existing` is still the package's word
+    // at this instant, which is why the baseline is taken here and never moved
+    // again. See `db::declaration`.
+    let authored_fields: Vec<&str> = [
+        authored.interfaces.is_some().then_some("/requires/interfaces"),
+        authored.inputs.is_some().then_some("/inputs"),
+        authored.subscribes.is_some().then_some("/subscribes"),
+        authored.ceiling.is_some().then_some("/ceiling"),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    if !authored_fields.is_empty() {
+        db::declaration::note_owner_edit(&mut out, existing, &authored_fields);
     }
     out
 }
@@ -353,6 +426,11 @@ pub async fn list_agents(
             // the client's ONE mention renderer resolves it back to the name.
             "loopAgentId": db_row.and_then(|r| r.loop_agent_id.clone()),
             "voice": db_row.map(|r| r.voice.as_str()).unwrap_or(""),
+            // Structure. The roster IS the org chart's data — the view draws
+            // the reporting tree from these two fields, so there is no second
+            // endpoint that answers "what shape is the workforce".
+            "department": db_row.and_then(|r| r.department.clone()),
+            "reportsTo": db_row.and_then(|r| r.reports_to.clone()),
             // The roster's "editable" affordance keys off nappPath — omitting
             // it made every agent look hand-editable.
             "nappPath": db_row.and_then(|r| r.napp_path.clone()),
@@ -435,6 +513,8 @@ pub async fn list_agents(
             "installedAt": r.installed_at,
             "loopExposed": r.loop_exposed != 0,
             "voice": r.voice,
+            "department": r.department,
+            "reportsTo": r.reports_to,
             "nappPath": r.napp_path,
             // Same DB-owned truth as the loaded branch. Hardcoding false here
             // hid every sealed employee whose files failed to load (a name
@@ -811,6 +891,22 @@ pub async fn get_agent(
                 if let Some(opts) = options {
                     field["options"] = serde_json::json!(opts);
                 }
+                // The rest of what a question declares: the durable semantic id
+                // a company fact is stored under, whose answer it is, what the
+                // employee does until it is answered, and whether it is money.
+                // These were dropped here, so the page could render a package's
+                // questions but never show or round-trip what they actually say.
+                if let Some(id) = f.get("id").and_then(|v| v.as_str()) {
+                    field["id"] = serde_json::json!(id);
+                }
+                field["scope"] = serde_json::json!(
+                    f.get("scope").and_then(|v| v.as_str()).unwrap_or("company")
+                );
+                if let Some(missing) = f.get("missing").and_then(|v| v.as_str()) {
+                    field["missing"] = serde_json::json!(missing);
+                }
+                field["money"] =
+                    serde_json::json!(f.get("money").and_then(|v| v.as_bool()).unwrap_or(false));
                 field
             })
             .collect()
@@ -928,6 +1024,22 @@ pub async fn get_agent(
             "persona": persona_body,
             "model": model,
             "skills": skills,
+            // The rest of the seat's declaration, straight off the same
+            // frontmatter blob `inputFields` comes from. A packaged employee
+            // and an owner-built one read back through this one path.
+            "interfaces": frontmatter_val
+                .get("requires")
+                .and_then(|r| r.get("interfaces"))
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!([])),
+            "subscribes": frontmatter_val
+                .get("subscribes")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!([])),
+            "ceiling": frontmatter_val
+                .get("ceiling")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!({})),
             "pluginsNeedingAuth": plugins_needing_auth,
             "needsSetup": needs_setup,
         })))
@@ -1081,6 +1193,7 @@ pub async fn update_agent(
         memory_cfg["context_isolated"] = serde_json::json!(iso);
     }
 
+    let authored = AuthoredDeclaration::from_body(&body);
     let mut frontmatter_json = saved_frontmatter(
         &existing_fm,
         workflows,
@@ -1089,6 +1202,7 @@ pub async fn update_agent(
             .as_ref()
             .map(|p| serde_json::json!({ "model": p.model, "cost": p.cost })),
         memory_cfg,
+        &authored,
     );
     // The owner's per-run spending limit: `runSpendCapCents` in the body sets
     // it (0 = off). It is the only ceiling a run has — a package's
@@ -1096,6 +1210,20 @@ pub async fn update_agent(
     if body.get("runSpendCapCents").is_some() {
         let cents = body["runSpendCapCents"].as_i64().unwrap_or(0).max(0);
         frontmatter_json["budget"]["run_spend_cap_cents"] = serde_json::json!(cents);
+    }
+
+    // The declaration the owner authored passes the SAME gate a package's does,
+    // and — below, once the row is written — lands on the policy through the
+    // SAME routine an install uses.
+    // `parse_agent_config` is the one validator: a money question with a
+    // default, an input scope that is neither `company` nor `seat`, and a
+    // ceiling entry that is anything but "approval" are refused here, not only
+    // in the form. These are safety rules — a form is a convenience, the
+    // backend is the gate.
+    if let Err(e) = napp::agent::parse_agent_config(&frontmatter_json.to_string()) {
+        return Err(to_error_response(types::NeboError::Validation(
+            e.to_string(),
+        )));
     }
 
     let pricing_model = fm.pricing.as_ref().map(|p| p.model.as_str());
@@ -1106,6 +1234,13 @@ pub async fn update_agent(
     let color = body["color"].as_str();
     let loop_exposed = body["loopExposed"].as_bool();
     let voice = body["voice"].as_str();
+    // Structure — the owner's to set, both optional. Present (even as null) is
+    // the owner setting it, and blank clears (no department / answers to the
+    // owner); absent leaves the field alone. Writing them here, through the one
+    // employee-field pathway, is what makes the owner's department win over the
+    // package's: the store locks the column on this write.
+    let department = body.get("department").map(|v| v.as_str().unwrap_or(""));
+    let reports_to = body.get("reportsTo").map(|v| v.as_str().unwrap_or(""));
     let exposure_changed =
         loop_exposed.is_some_and(|exposed| exposed != (existing.loop_exposed != 0));
 
@@ -1125,6 +1260,8 @@ pub async fn update_agent(
             color,
             loop_exposed,
             voice,
+            department,
+            reports_to,
         )
         .map_err(to_error_response)?;
 
@@ -1142,6 +1279,12 @@ pub async fn update_agent(
             active.agent_md = updated.agent_md.clone();
             active.soul = updated.soul.clone();
             active.rules = updated.rules.clone();
+            // The registry's `config` is a cache of this row's frontmatter. A
+            // stale cache is why a capability the owner just bound would not be
+            // reachable until the next restart — the runtime reads it here.
+            if !updated.frontmatter.is_empty() {
+                active.config = napp::agent::parse_agent_config(&updated.frontmatter).ok();
+            }
         }
     }
 
@@ -1149,6 +1292,15 @@ pub async fn update_agent(
     // authoritative on the next watcher scan, and a DB-only frontmatter write
     // would be clobbered by a dir that only carries AGENT.md.
     write_agent_json_to_fs(&updated.napp_path, &frontmatter_json);
+
+    // Give the declaration effect through the ONE routine install uses. Without
+    // this, a ceiling an owner set here would sit in agent.json doing nothing
+    // until the next reinstall — a control that silently does not work. It is
+    // seed-if-absent per operation, so it never overwrites a law, a standing
+    // grant, or a row the owner set on the Approvals page.
+    if let Ok(config) = napp::agent::parse_agent_config(&frontmatter_json.to_string()) {
+        crate::codes::apply_seat_declaration(&state.store, &id, &config);
+    }
 
     state.hub.broadcast(
         "agent_updated",
@@ -2287,10 +2439,10 @@ pub async fn run_agent_workflow(
         }
     }
 
-    let emit_source = binding.emit.as_ref().map(|emit_name| {
-        let slug = agent_rec.name.to_lowercase().replace(' ', "-");
-        format!("{}.{}", slug, emit_name)
-    });
+    let emit_source = binding
+        .emit
+        .as_ref()
+        .map(|emit_name| workflow::events::emit_source_for(&agent_rec.name, emit_name));
 
     let run_id = state
         .workflow_manager
@@ -2767,6 +2919,8 @@ pub async fn duplicate_agent(
         color.or(source.color.as_deref()),
         None,
         None,
+        None,
+        None,
     );
 
     // Persist to user/agents/<name>/ (+ napp_path) so it loads and survives restart.
@@ -3215,6 +3369,8 @@ pub async fn create_agent_workflow(
             None,
             None,
             None,
+            None,
+            None,
         )
         .map_err(to_error_response)?;
 
@@ -3349,6 +3505,8 @@ pub async fn update_agent_workflow(
             &fm.to_string(),
             agent.pricing_model.as_deref(),
             agent.pricing_cost,
+            None,
+            None,
             None,
             None,
             None,
@@ -3491,6 +3649,8 @@ pub async fn delete_agent_workflow(
             &fm.to_string(),
             agent.pricing_model.as_deref(),
             agent.pricing_cost,
+            None,
+            None,
             None,
             None,
             None,
@@ -4225,26 +4385,91 @@ pub async fn handle_available(
 
 /// GET /api/v1/agents/{id}/operations — the per-employee Approvals view.
 ///
-/// Lists every gated interface operation this employee can reach (from its
-/// bound `requires.interfaces` crossed with the interface catalog) with its
-/// three-state setting: the stored per-operation override, and the effective
-/// state after `OperationPolicy::decide` (which enforces critical-op
-/// protection). Writes go through the ONE canonical pathway — the
-/// entity-config PUT (`operationPolicy` patch key) — this endpoint is the
-/// read-side aggregation only (CODE_AUDITOR Rule 8).
+/// Lists every gated operation this employee can reach, with its three-state
+/// setting: the stored per-operation override, and the effective state after
+/// `OperationPolicy::decide` (which enforces critical-op protection). Two
+/// sources, one list:
+///   * the interface catalog, for the interfaces this seat binds
+///     (`requires.interfaces`) plus the capabilities the runtime performs
+///     itself (`interface_catalog::is_builtin_capability`);
+///   * everything this employee has been TOLD about — the `ceiling` its package
+///     declares, and every operation already carrying a rule (a pack's law, the
+///     owner's own setting, the General Manager's grant). So an owner who builds
+///     their own employee around their own capability gets a row for it, and
+///     `decide` gates it, without that operation being in any list of ours.
+/// Writes go through the ONE canonical pathway — the entity-config PUT
+/// (`operationPolicy` patch key) — this endpoint is the read-side aggregation
+/// only (CODE_AUDITOR Rule 8).
 pub async fn get_agent_operations(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> HandlerResult<serde_json::Value> {
-    // Interfaces the seat binds, from the loaded agent's parsed agent.json.
-    let interfaces: Vec<String> = {
-        let registry = state.agent_registry.read().await;
-        registry
-            .get(&id)
-            .and_then(|a| a.config.as_ref())
-            .map(|c| c.requires.interfaces.clone())
-            .unwrap_or_default()
-    };
+    // Interfaces the seat binds, from this row's frontmatter — the ONE source
+    // of truth (the agent_registry's `config` is a cache of it, and an employee
+    // that is paused or not yet started is not in the registry at all, which
+    // read as "binds nothing" and hid the whole list).
+    // The seat's declared `ceiling` comes off the same parse: the operations it
+    // says it performs and must not perform unattended.
+    let (interfaces, ceiling): (Vec<String>, Vec<String>) = state
+        .store
+        .get_agent(&id)
+        .ok()
+        .flatten()
+        .filter(|a| !a.frontmatter.is_empty())
+        .and_then(|a| napp::agent::parse_agent_config(&a.frontmatter).ok())
+        .map(|c| (c.requires.interfaces, c.ceiling.keys().cloned().collect()))
+        .unwrap_or_default();
+
+    // The catalogue the owner picks from: the capabilities the company has
+    // actually connected (what its active plugins bind), plus the ones the
+    // runtime performs itself and every seat can reach. An empty list is the
+    // honest answer — nothing is connected yet — not a menu of things that
+    // would fail on the first call.
+    let mut providers_by_capability: std::collections::BTreeMap<String, Vec<String>> =
+        std::collections::BTreeMap::new();
+    for slug in tools::plugin_tool::active_plugin_slugs(&state.plugin_store, &state.store) {
+        if let Some(manifest) = state.plugin_store.get_manifest(&slug) {
+            for capability in agent::agent_worker::interfaces_of(&manifest.interface_bindings) {
+                providers_by_capability
+                    .entry(capability)
+                    .or_default()
+                    .push(slug.clone());
+            }
+        }
+    }
+    for op in tools::interface_catalog::gated_operations() {
+        let capability = op.split('.').next().unwrap_or("");
+        if tools::interface_catalog::is_builtin_capability(capability) {
+            providers_by_capability
+                .entry(capability.to_string())
+                .or_default();
+        }
+    }
+    // A capability the seat already binds stays listed even if its provider was
+    // uninstalled — otherwise the owner cannot see, or unbind, what is there.
+    for capability in &interfaces {
+        providers_by_capability
+            .entry(capability.clone())
+            .or_default();
+    }
+    let available: Vec<serde_json::Value> = providers_by_capability
+        .into_iter()
+        .map(|(capability, mut providers)| {
+            providers.sort();
+            providers.dedup();
+            let gated = tools::interface_catalog::gated_operations()
+                .iter()
+                .filter(|op| op.split('.').next() == Some(capability.as_str()))
+                .count();
+            serde_json::json!({
+                "capability": capability,
+                "providers": providers,
+                "builtin": tools::interface_catalog::is_builtin_capability(&capability),
+                "gatedOperations": gated,
+                "bound": interfaces.contains(&capability),
+            })
+        })
+        .collect();
 
     // Stored per-employee policy (None = not configured yet).
     let stored = state
@@ -4256,24 +4481,51 @@ pub async fn get_agent_operations(
     let configured = stored.is_some();
     let policy = tools::policy::OperationPolicy::from_json(stored.as_deref());
 
-    let operations: Vec<serde_json::Value> = tools::interface_catalog::gated_operations()
+    // Catalog rows this seat can reach, then the declared ones, in a stable
+    // order and never the same operation twice.
+    let mut addresses: Vec<String> = tools::interface_catalog::gated_operations()
         .iter()
         .filter(|op| {
             let capability = op.split('.').next().unwrap_or("");
             interfaces.iter().any(|i| i == capability)
+                || tools::interface_catalog::is_builtin_capability(capability)
         })
+        .map(|op| op.to_string())
+        .collect();
+    let mut declared: Vec<String> = ceiling
+        .iter()
+        .map(|op| tools::plugin_tool::port_suffix(op))
+        .chain(policy.operations.keys().cloned())
+        .filter(|op| {
+            !op.is_empty()
+                && !addresses
+                    .iter()
+                    .any(|a| tools::plugin_tool::port_suffix(a) == *op)
+        })
+        .collect();
+    declared.sort();
+    declared.dedup();
+    addresses.extend(declared);
+
+    let operations: Vec<serde_json::Value> = addresses
+        .iter()
         .map(|op| {
             let suffix = tools::plugin_tool::port_suffix(op);
             serde_json::json!({
                 "operation": op,
                 "capability": op.split('.').next().unwrap_or(""),
                 "critical": tools::interface_catalog::is_critical(op),
-                "override": policy.operations.get(&suffix).map(|a| a.as_str()),
+                "override": policy.operations.get(&suffix).map(|r| r.access.as_str()),
+                "locked": policy.operations.get(&suffix).map(|r| r.locked).unwrap_or(false),
+                "bounds": policy.operations.get(&suffix).and_then(|r| r.bounds.clone()),
                 // The Controls view shows the policy as configured — the
                 // trusted-origin resolution. Untrusted origins (inbound
                 // email/DM, apps, skills, MCP, callers) additionally floor
                 // gated Always to Approval at run time (WS2).
-                "effective": policy.decide(op, tools::Origin::User).as_str(),
+                "effective": policy
+                    .decide(op, tools::Origin::User, &tools::policy::OperationParams::default(), None, None, true)
+                    .access
+                    .as_str(),
             })
         })
         .collect();
@@ -4282,6 +4534,7 @@ pub async fn get_agent_operations(
         "default": policy.default.as_str(),
         "configured": configured,
         "interfaces": interfaces,
+        "available": available,
         "operations": operations,
         "total": operations.len(),
     })))
@@ -4634,7 +4887,185 @@ mod thread_preview_tests {
 
 #[cfg(test)]
 mod frontmatter_save_tests {
-    use super::saved_frontmatter;
+    use super::{saved_frontmatter, AuthoredDeclaration};
+
+    /// The one gate both kinds of employee pass: what `update_agent` runs on the
+    /// frontmatter it is about to write.
+    fn validate(fm: &serde_json::Value) -> Result<napp::agent::AgentConfig, String> {
+        napp::agent::parse_agent_config(&fm.to_string()).map_err(|e| e.to_string())
+    }
+
+    #[test]
+    fn a_money_question_cannot_be_saved_with_a_default() {
+        let authored = AuthoredDeclaration {
+            inputs: Some(serde_json::json!([
+                {"key": "deposit_pct", "label": "What deposit do you take?", "money": true, "default": 5}
+            ])),
+            ..Default::default()
+        };
+        let fm = saved_frontmatter(
+            &serde_json::json!({}),
+            serde_json::json!({}),
+            serde_json::json!([]),
+            None,
+            serde_json::json!({}),
+            &authored,
+        );
+        // The owner's form is a convenience; this is the gate.
+        let err = validate(&fm).expect_err("a money question with a default must be refused");
+        assert!(
+            err.contains("money question") && err.contains("deposit_pct"),
+            "the refusal must name the question and say why: {err}"
+        );
+
+        // The same question without a default is accepted — the rule is "no
+        // default", not "no money question".
+        let authored = AuthoredDeclaration {
+            inputs: Some(serde_json::json!([
+                {"key": "deposit_pct", "label": "What deposit do you take?", "money": true}
+            ])),
+            ..Default::default()
+        };
+        let fm = saved_frontmatter(
+            &serde_json::json!({}),
+            serde_json::json!({}),
+            serde_json::json!([]),
+            None,
+            serde_json::json!({}),
+            &authored,
+        );
+        let cfg = validate(&fm).expect("a money question with no default is fine");
+        assert!(cfg.inputs[0].money);
+        assert!(cfg.inputs[0].default.is_none());
+    }
+
+    #[test]
+    fn an_owner_authored_seat_and_a_packaged_one_read_back_through_the_same_code() {
+        // What a package ships in agent.json.
+        let packaged = serde_json::json!({
+            "requires": {"interfaces": ["ledger", "mail"]},
+            "inputs": [{
+                "key": "invoice_mailbox",
+                "id": "finance.ap.invoice_mailbox",
+                "label": "Which mailbox do bills arrive in?",
+                "scope": "company",
+                "missing": "Invoices are not read until the mailbox is set."
+            }],
+            "subscribes": ["finance.ar.*"],
+            "ceiling": {"ledger.payment.apply": "approval"}
+        });
+
+        // The same declaration, authored by an owner through the settings page:
+        // an empty employee plus what the body carried.
+        let authored = AuthoredDeclaration {
+            interfaces: Some(serde_json::json!(["ledger", "mail"])),
+            inputs: Some(serde_json::json!([{
+                "key": "invoice_mailbox",
+                "id": "finance.ap.invoice_mailbox",
+                "label": "Which mailbox do bills arrive in?",
+                "scope": "company",
+                "missing": "Invoices are not read until the mailbox is set."
+            }])),
+            subscribes: Some(serde_json::json!(["finance.ar.*"])),
+            ceiling: Some(serde_json::json!({"ledger.payment.apply": "approval"})),
+        };
+        let owner_built = saved_frontmatter(
+            &serde_json::json!({}),
+            serde_json::json!({}),
+            serde_json::json!([]),
+            None,
+            serde_json::json!({}),
+            &authored,
+        );
+
+        // ONE reader. Not "equivalent shapes" — the same parse, same struct.
+        let from_package = validate(&packaged).expect("the package parses");
+        let from_owner = validate(&owner_built).expect("the owner's edit parses");
+
+        assert_eq!(from_owner.requires.interfaces, from_package.requires.interfaces);
+        assert_eq!(from_owner.subscribes, from_package.subscribes);
+        assert_eq!(from_owner.ceiling, from_package.ceiling);
+        assert_eq!(from_owner.inputs.len(), from_package.inputs.len());
+        let (o, p) = (&from_owner.inputs[0], &from_package.inputs[0]);
+        assert_eq!(o.id, p.id);
+        assert_eq!(o.key, p.key);
+        assert_eq!(o.label, p.label);
+        assert_eq!(o.scope, p.scope);
+        assert_eq!(o.missing, p.missing);
+        assert_eq!(o.money, p.money);
+    }
+
+    #[test]
+    fn a_ceiling_the_owner_sets_is_held_to_the_rule_a_package_is() {
+        // "blocked" belongs to a pack's laws, never to a seat's ceiling —
+        // whether the seat came from a package or from the settings page.
+        for bad in ["blocked", "always"] {
+            let authored = AuthoredDeclaration {
+                ceiling: Some(serde_json::json!({"ledger.payment.apply": bad})),
+                ..Default::default()
+            };
+            let fm = saved_frontmatter(
+                &serde_json::json!({}),
+                serde_json::json!({}),
+                serde_json::json!([]),
+                None,
+                serde_json::json!({}),
+                &authored,
+            );
+            assert!(
+                validate(&fm).is_err(),
+                "a ceiling of '{bad}' must be refused"
+            );
+        }
+    }
+
+    #[test]
+    fn a_body_that_authors_nothing_leaves_the_declaration_alone() {
+        // The settings page saves one section at a time. A save from Rules must
+        // not blank the capabilities, questions or ceiling a package shipped.
+        let on_file = serde_json::json!({
+            "requires": {"interfaces": ["mail"], "plugins": ["gmail"]},
+            "inputs": [{"key": "mailbox"}],
+            "subscribes": ["finance.ap"],
+            "ceiling": {"mail.message.send": "approval"}
+        });
+        let authored = AuthoredDeclaration::from_body(&serde_json::json!({"rules": "Be brief."}));
+        let saved = saved_frontmatter(
+            &on_file,
+            serde_json::json!({}),
+            serde_json::json!([]),
+            None,
+            serde_json::json!({}),
+            &authored,
+        );
+        assert_eq!(saved["requires"], on_file["requires"]);
+        assert_eq!(saved["inputs"], on_file["inputs"]);
+        assert_eq!(saved["subscribes"], on_file["subscribes"]);
+        assert_eq!(saved["ceiling"], on_file["ceiling"]);
+    }
+
+    #[test]
+    fn authoring_capabilities_keeps_the_plugins_install_resolved() {
+        // `interfaces` is the owner's to choose; `requires.plugins` is install's.
+        // Writing one must not erase the other.
+        let on_file = serde_json::json!({"requires": {"plugins": ["quickbooks"], "interfaces": []}});
+        let authored = AuthoredDeclaration::from_body(&serde_json::json!({
+            "interfaces": ["ledger"]
+        }));
+        let saved = saved_frontmatter(
+            &on_file,
+            serde_json::json!({}),
+            serde_json::json!([]),
+            None,
+            serde_json::json!({}),
+            &authored,
+        );
+        assert_eq!(saved["requires"]["interfaces"], serde_json::json!(["ledger"]));
+        assert_eq!(
+            saved["requires"]["plugins"],
+            serde_json::json!(["quickbooks"])
+        );
+    }
 
     #[test]
     fn a_save_keeps_the_keys_the_page_does_not_own() {
@@ -4654,6 +5085,7 @@ mod frontmatter_save_tests {
             serde_json::json!(["b"]),
             None,
             serde_json::json!({"context_isolated": false}),
+            &AuthoredDeclaration::default(),
         );
         assert_eq!(saved["workflows"], serde_json::json!({"new": {}}));
         assert_eq!(saved["skills"], serde_json::json!(["b"]));
@@ -4673,6 +5105,7 @@ mod frontmatter_save_tests {
             serde_json::json!([]),
             None,
             serde_json::json!({}),
+            &AuthoredDeclaration::default(),
         );
         assert!(saved.get("memory").is_none());
         assert_eq!(saved["requires"], serde_json::json!({}));

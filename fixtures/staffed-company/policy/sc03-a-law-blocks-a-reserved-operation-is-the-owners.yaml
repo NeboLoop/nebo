@@ -1,0 +1,10 @@
+id: sc03-a-law-blocks-a-reserved-operation-is-the-owners
+name: "SC03 — A law blocks, a reserved operation is the owner's"
+description: |
+  With the pack applied, a seat's gated call on a law-blocked operation decides
+  Blocked from every origin; on an owner-reserved one the General Manager's
+  grant is refused by permits, and a grant on the law is refused as locked. A
+  grant inside the company's bounds lands as standing authority.
+target_component: staffed-company
+proof: staffed_proof::policy::a_law_blocks_and_a_reserved_operation_is_the_owners
+conversation: []

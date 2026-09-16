@@ -1,0 +1,10 @@
+id: sc12-writing-the-company-layer-is-granted-not-channelled
+name: "SC12 — Writing the company layer is granted, not channelled"
+description: |
+  The pack tool declares its operation; the company write is Approval for an
+  ungranted seat from any origin, Always with the owner's explicit grant from a
+  workflow, floored over an untrusted origin, and Blocked under a company law
+  regardless.
+target_component: staffed-company
+proof: staffed_proof::policy::writing_the_company_layer_is_granted_not_channelled
+conversation: []

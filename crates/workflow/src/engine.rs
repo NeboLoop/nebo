@@ -115,6 +115,21 @@ fn exit_reason_is_really_proceed(reason: &str) -> bool {
     PROCEED_SIGNALS.iter().any(|s| r.contains(s))
 }
 
+/// The slug of the seat a run belongs to — the producer stamped on every event
+/// it raises and the seat an event address names. Falls back to the agent id
+/// when the row is gone, and is "" for a standalone run with no owning seat.
+pub(crate) fn producer_slug(store: &Store, agent_id: &str) -> String {
+    if agent_id.is_empty() {
+        return String::new();
+    }
+    store
+        .get_agent(agent_id)
+        .ok()
+        .flatten()
+        .map(|a| db::agent_slug(&a.name))
+        .unwrap_or_else(|| agent_id.to_string())
+}
+
 /// Scope an activity's toolset to what it declares and references.
 ///
 /// The full registry (~38 tools, ~21k tokens of schemas) went out with EVERY
@@ -450,8 +465,10 @@ pub async fn execute_workflow(
             scoped_activity_tools(activity, resolved_tools, skill_content, deferred_tools);
 
         // Inject emit tool if event bus is available (always available, no declaration needed)
-        let emit_tool_box: Option<Box<dyn DynTool>> =
-            event_bus.map(|bus| Box::new(tools::EmitTool::new(bus.clone())) as Box<dyn DynTool>);
+        let emit_tool_box: Option<Box<dyn DynTool>> = event_bus.map(|bus| {
+            Box::new(tools::EmitTool::new(bus.clone()).with_producer(producer_slug(store, agent_id)))
+                as Box<dyn DynTool>
+        });
         if let Some(ref emit) = emit_tool_box {
             activity_tools.push(emit);
         }

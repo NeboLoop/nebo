@@ -1040,11 +1040,14 @@ async fn run_test_command(cfg: &config::Config, command: TestCommands) -> anyhow
             }
 
             // The CI contract: reports and artifacts are written above, but a
-            // failed critical program check can never exit 0 (WS1-R2).
-            if !critical_check_failures.is_empty() {
+            // failed critical program check, or a failed proof fixture, can
+            // never exit 0 (WS1-R2). A proof that fails and exits 0 is a proof
+            // nobody sees.
+            if !critical_check_failures.is_empty() || !failed_fixtures.is_empty() {
                 anyhow::bail!(
-                    "{} critical program check(s) failed",
-                    critical_check_failures.len()
+                    "{} critical program check(s) failed, {} fixture(s) failed",
+                    critical_check_failures.len(),
+                    failed_fixtures.len()
                 );
             }
         }

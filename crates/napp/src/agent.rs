@@ -190,6 +190,17 @@ pub struct AgentConfig {
     /// Memory scoping configuration (inheritance + context isolation).
     #[serde(default)]
     pub memory: MemoryConfig,
+    /// Fact domains this seat re-reads when they change (`finance.ar.*`,
+    /// `parties.carriers`). A fact in force in a subscribed domain raises the
+    /// seat's update run (Playbook PRD 6.8, R16).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub subscribes: Vec<String>,
+    /// The seat's shipped ceiling: operation suffix → "approval". A ceiling
+    /// entry means authority required; it is what the General Manager grants
+    /// as standing authority. "blocked" is reserved to laws and is rejected
+    /// here at parse (Playbook PRD invariant 12).
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub ceiling: HashMap<String, String>,
     /// Workflows dropped by the lenient parse: (binding name, parse error).
     /// Load-only diagnostic — the filesystem is a sanctioned write interface
     /// (edit agent.json → watcher syncs the DB), so a skipped workflow must be
@@ -233,7 +244,29 @@ pub struct AgentInputField {
     /// Options for select/radio fields.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub options: Vec<AgentInputOption>,
+    /// Durable semantic id (`finance.ap.invoice_mailbox`). The predicate a
+    /// company fact is stored under; never the artifact-local `key`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    /// `company` (the answer is a fact about the company, shared by every
+    /// seat) or `seat` (this hire's own, never written to Company Memory).
+    #[serde(default = "default_input_scope")]
+    pub scope: String,
+    /// What the seat does while the question is unanswered — surfaced as a
+    /// described behavior, never a blocker.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub missing: Option<String>,
+    /// A money question is never defaulted: a value must be set explicitly.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub money: bool,
 }
+
+fn default_input_scope() -> String {
+    "company".to_string()
+}
+
+/// The values `AgentInputField::scope` may take.
+pub const INPUT_SCOPES: &[&str] = &["company", "seat"];
 
 /// An option in a select or radio field.
 /// Accepts both `{ "value": "x", "label": "X" }` and plain `"x"` strings.
@@ -688,6 +721,9 @@ pub fn parse_agent_config(json_str: &str) -> Result<AgentConfig, NappError> {
 
     // Normalize input fields: NeboAI uses `name` instead of `key`/`label`
     for field in &mut config.inputs {
+        if field.scope.is_empty() {
+            field.scope = default_input_scope();
+        }
         if field.key.is_empty() {
             if let Some(ref name) = field.name {
                 field.key = name.clone();
@@ -746,6 +782,31 @@ fn is_qualified_skill_ref(s: &str) -> bool {
 
 /// Validate agent.json bindings.
 fn validate_agent_config(config: &AgentConfig) -> Result<(), NappError> {
+    for field in &config.inputs {
+        if !INPUT_SCOPES.contains(&field.scope.as_str()) {
+            return Err(NappError::Manifest(format!(
+                "input '{}' scope must be one of {:?} (got '{}')",
+                field.key, INPUT_SCOPES, field.scope
+            )));
+        }
+        if field.money && field.default.is_some() {
+            return Err(NappError::Manifest(format!(
+                "input '{}' is a money question and must not carry a default",
+                field.key
+            )));
+        }
+    }
+    for (op, access) in &config.ceiling {
+        if op.trim().is_empty() {
+            return Err(NappError::Manifest("ceiling has an empty operation".into()));
+        }
+        if access != "approval" {
+            return Err(NappError::Manifest(format!(
+                "ceiling '{}' must be \"approval\" (got '{}'); \"blocked\" is reserved to laws",
+                op, access
+            )));
+        }
+    }
     for (name, binding) in &config.workflows {
         // Validate event triggers have at least one source
         if let AgentTrigger::Event { sources } = &binding.trigger {
@@ -949,6 +1010,50 @@ pub fn split_frontmatter(content: &str) -> Result<(String, String), NappError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn question_fields_parse_and_default_to_company_scope() {
+        let json = r#"{
+            "inputs": [
+                {"key": "invoice_mailbox", "id": "finance.ap.invoice_mailbox", "type": "text",
+                 "missing": "Invoices are not read until the mailbox is set."},
+                {"key": "my_login", "scope": "seat"},
+                {"key": "deposit_pct", "id": "finance.deposit_pct", "money": true}
+            ],
+            "subscribes": ["finance.ar.*", "parties.carriers"],
+            "ceiling": {"ledger.payment.create": "approval"}
+        }"#;
+        let cfg = parse_agent_config(json).unwrap();
+        assert_eq!(cfg.inputs[0].id.as_deref(), Some("finance.ap.invoice_mailbox"));
+        assert_eq!(cfg.inputs[0].scope, "company");
+        assert!(cfg.inputs[0].missing.is_some());
+        assert_eq!(cfg.inputs[1].scope, "seat");
+        assert!(cfg.inputs[2].money);
+        assert_eq!(cfg.subscribes.len(), 2);
+        assert_eq!(cfg.ceiling["ledger.payment.create"], "approval");
+    }
+
+    #[test]
+    fn a_money_question_with_a_default_is_rejected() {
+        let json = r#"{"inputs": [{"key": "deposit_pct", "money": true, "default": 5}]}"#;
+        let err = parse_agent_config(json).unwrap_err().to_string();
+        assert!(err.contains("money"), "{err}");
+    }
+
+    #[test]
+    fn an_unknown_scope_is_rejected() {
+        let json = r#"{"inputs": [{"key": "x", "scope": "global"}]}"#;
+        assert!(parse_agent_config(json).is_err());
+    }
+
+    #[test]
+    fn a_blocked_ceiling_is_rejected_because_blocked_belongs_to_laws() {
+        let json = r#"{"ceiling": {"ledger.payment.create": "blocked"}}"#;
+        let err = parse_agent_config(json).unwrap_err().to_string();
+        assert!(err.contains("reserved to laws"), "{err}");
+        let json = r#"{"ceiling": {"ledger.payment.create": "always"}}"#;
+        assert!(parse_agent_config(json).is_err());
+    }
 
     #[test]
     fn test_lenient_parse_records_skipped_workflows() {

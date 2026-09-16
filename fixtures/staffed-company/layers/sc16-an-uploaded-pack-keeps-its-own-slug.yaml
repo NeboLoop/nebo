@@ -1,0 +1,9 @@
+id: sc16-an-uploaded-pack-keeps-its-own-slug
+name: "SC16 — An uploaded pack keeps its own slug"
+description: |
+  A pack uploaded by path through the layers screen lands under its own slug,
+  not under the staging folder's name. RED on this branch: POST /layers/upload
+  names every path upload `upload`.
+target_component: staffed-company
+proof: staffed_proof::layers::an_uploaded_pack_keeps_its_own_slug
+conversation: []

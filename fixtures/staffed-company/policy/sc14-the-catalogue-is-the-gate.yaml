@@ -1,0 +1,9 @@
+id: sc14-the-catalogue-is-the-gate
+name: "SC14 — The catalogue is the gate"
+description: |
+  Three formerly paper-only operations decide as gated for a seat that binds
+  their capabilities; an operation absent from the catalogue with no declaration
+  is not gated.
+target_component: staffed-company
+proof: staffed_proof::policy::the_catalogue_is_the_gate
+conversation: []

@@ -1021,6 +1021,62 @@ export function updateToolPermissions(id: string, req: Record<string, unknown> =
 }
 
 /**
+ * @description "List layers"
+ */
+export function listLayers() {
+	return webapi.get<components.LayersResponse>(`/api/v1/layers`)
+}
+
+/**
+ * @description "Apply layers"
+ */
+export function applyLayers(req: Record<string, unknown> = {}) {
+	return webapi.post<components.LayerApplyResponse>(`/api/v1/layers/apply`, req)
+}
+
+/**
+ * @description "List layer seats"
+ */
+export function listLayerSeats() {
+	return webapi.get<components.LayerSeatsResponse>(`/api/v1/layers/seats`)
+}
+
+/**
+ * @description "Upload layer pack"
+ */
+export function uploadLayerPack(req: Record<string, unknown> = {}) {
+	return webapi.post<components.LayerUploadResponse>(`/api/v1/layers/upload`, req)
+}
+
+/**
+ * @description "Read layer file"
+ */
+export function readLayerFile(slug: string, path: string) {
+	return webapi.get<components.LayerFileContent>(`/api/v1/layers/${slug}/file`, { path })
+}
+
+/**
+ * @description "Write layer file"
+ */
+export function writeLayerFile(slug: string, req: Record<string, unknown> = {}) {
+	return webapi.put<components.LayerWriteResponse>(`/api/v1/layers/${slug}/file`, req)
+}
+
+/**
+ * @description "Delete layer file"
+ */
+export function deleteLayerFile(slug: string, path: string) {
+	return webapi.delete<components.LayerWriteResponse>(`/api/v1/layers/${slug}/file`, { path })
+}
+
+/**
+ * @description "List layer files"
+ */
+export function listLayerFiles(slug: string) {
+	return webapi.get<components.LayerFilesResponse>(`/api/v1/layers/${slug}/files`)
+}
+
+/**
  * @description "Local models status"
  */
 export function localModelsStatus() {
@@ -1319,6 +1375,13 @@ export function deleteNotification(id: string) {
  */
 export function markRead(id: string, req: Record<string, unknown> = {}) {
 	return webapi.put<components.MarkReadResponse>(`/api/v1/notifications/${id}/read`, req)
+}
+
+/**
+ * @description "Install org"
+ */
+export function installOrg(req: Record<string, unknown> = {}) {
+	return webapi.post<components.InstallOrgResponse>(`/api/v1/org/install`, req)
 }
 
 /**

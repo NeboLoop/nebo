@@ -730,6 +730,18 @@ pub struct Agent {
     /// a locked name (owner wins, same contract as memory.context_isolated).
     #[serde(default)]
     pub name_locked: i64,
+    /// JSON: what the package part of `rules` was written against and
+    /// whether the review that should have written it finished.
+    pub context_stamp: Option<String>,
+    /// The ONE seat this employee answers to (a local agent id), or None when
+    /// it answers to the owner — which is every seat until the owner draws a
+    /// line. Work this seat cannot finish goes here; a manager's reports are
+    /// the rows that name it.
+    pub reports_to: Option<String>,
+    /// 1 once the owner has set this employee's department; package syncs never
+    /// overwrite a locked department (owner wins, same contract as `name_locked`).
+    #[serde(default)]
+    pub department_locked: i64,
 }
 
 fn default_input_values() -> String {

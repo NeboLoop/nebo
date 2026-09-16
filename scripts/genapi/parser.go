@@ -332,8 +332,11 @@ func scanStoreMethodTypes(dir string) map[string]string {
 		return nil
 	}
 	result := make(map[string]string)
-	// (?s) makes . match newlines (multi-line function signatures).
-	reMethod := regexp.MustCompile(`(?s)pub\s+fn\s+(\w+)\s*\(.*?\)\s*->\s*Result<(.+?)(?:\s*\{)`)
+	// (?s) makes . match newlines (multi-line function signatures). The
+	// parameter list excludes braces so a method that does not return Result
+	// (`pub fn cron_ref(..) -> String {`) cannot swallow the next method's
+	// signature and take its return type.
+	reMethod := regexp.MustCompile(`(?s)pub\s+fn\s+(\w+)\s*\([^{}]*?\)\s*->\s*Result<(.+?)(?:\s*\{)`)
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".rs") {
 			continue
@@ -890,18 +893,47 @@ func splitFunctions(src string) map[string]string {
 // extractJsonResponse finds the last serde_json::json!({...}) in a function body
 // and extracts the top-level key-value pairs.
 func extractJsonResponse(body string) []ResponseKey {
-	// Find Ok(Json(serde_json::json!({...}))) — get the last one (the return).
-	// We look for json!({ and then balance braces.
-	idx := strings.LastIndex(body, "json!({")
-	if idx < 0 {
-		// Also try json!([...]) for array responses.
-		return nil
+	// The response is the LAST TOP-LEVEL serde_json::json!({...}) in the body —
+	// the last return, whichever branch wrote it.
+	//
+	// "Top-level" is the part that matters and the part a plain LastIndex got
+	// wrong: a handler that builds one of its own fields with a fallback
+	// (`.unwrap_or_else(|| serde_json::json!({}))`) ends on that empty NESTED
+	// literal, so the response read as "no keys" and the handler's whole
+	// interface vanished from the generated client — every caller of it typed
+	// `{}`. So collect every json!({ span and keep the last one that no other
+	// span encloses.
+	type jsonSpan struct{ start, end, content int }
+	var spans []jsonSpan
+	for i := 0; ; {
+		j := strings.Index(body[i:], "json!({")
+		if j < 0 {
+			break
+		}
+		pos := i + j
+		contentAt := pos + len("json!(")
+		i = pos + len("json!({")
+		inner := extractBraced(body[contentAt:])
+		if inner == "" {
+			continue
+		}
+		spans = append(spans, jsonSpan{pos, contentAt + len(inner) + 2, contentAt})
 	}
-
-	// Extract the json object content by balancing braces.
-	start := idx + len("json!(")
-	content := extractBraced(body[start:])
+	content := ""
+	for k := range spans {
+		enclosed := false
+		for m := range spans {
+			if m != k && spans[m].start < spans[k].start && spans[k].end <= spans[m].end {
+				enclosed = true
+				break
+			}
+		}
+		if !enclosed {
+			content = extractBraced(body[spans[k].content:])
+		}
+	}
 	if content == "" {
+		// Also try json!([...]) for array responses.
 		return nil
 	}
 

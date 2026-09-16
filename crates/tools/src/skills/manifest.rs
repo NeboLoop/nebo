@@ -201,13 +201,16 @@ pub fn compute_hashes(skills: &HashMap<String, Skill>) -> HashMap<String, u64> {
 /// Verify a manifest against the current filesystem state.
 /// Returns (stale_names, new_paths) where:
 /// - stale_names: skills whose source file hash has changed or been removed
-/// - new_paths: SKILL.md paths found on disk but not in the manifest
+/// - new_paths: SKILL.md paths found on disk but not in the manifest, each with
+///   the employee that owns it (Some for a skill inside an employee package,
+///   None for a skill on the shared roster)
 pub fn verify_manifest(
     manifest: &SkillManifest,
     installed_dir: &Path,
     user_dir: &Path,
     plugins_dirs: &[PathBuf],
-) -> (Vec<String>, Vec<PathBuf>) {
+    agent_dirs: &[PathBuf],
+) -> (Vec<String>, Vec<(PathBuf, Option<String>)>) {
     let mut stale = Vec::new();
 
     // Check existing entries for hash changes / removals
@@ -238,7 +241,10 @@ pub fn verify_manifest(
         .collect();
     let mut new_paths = Vec::new();
 
-    let mut check_dir = |dir: &Path| {
+    // `owner` is Some for a root inside an employee package: those skills are
+    // keyed "<agent_id>::<name>" in the manifest, so the name check compares
+    // against that key rather than the bare directory name.
+    let mut check_dir = |dir: &Path, owner: Option<&str>| {
         napp::reader::walk_for_marker(dir, "SKILL.md", &mut |skill_dir| {
             let md_path = skill_dir.join("SKILL.md");
             if known_paths.contains(&md_path) {
@@ -249,22 +255,34 @@ pub fn verify_manifest(
                 .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or("");
-            if known_names.contains(dir_name) {
+            let key = match owner {
+                Some(owner) => super::loader::owner_key(owner, dir_name),
+                None => dir_name.to_string(),
+            };
+            if known_names.contains(key.as_str()) {
                 return; // different path but same skill name — overridden copy
             }
-            new_paths.push(md_path);
+            new_paths.push((md_path, owner.map(String::from)));
         });
     };
 
     if installed_dir.exists() {
-        check_dir(installed_dir);
+        check_dir(installed_dir, None);
     }
     if user_dir.exists() {
-        check_dir(user_dir);
+        check_dir(user_dir, None);
     }
     for pdir in plugins_dirs {
         if pdir.exists() {
-            check_dir(pdir);
+            check_dir(pdir, None);
+        }
+    }
+    // Employee packages: <root>/<slug>[/<version>]/skills/<name>/SKILL.md,
+    // scanned per package so every path carries the seat that owns it.
+    for (package, owner) in super::loader::employee_packages(agent_dirs) {
+        let skills_dir = package.join("skills");
+        if skills_dir.is_dir() {
+            check_dir(&skills_dir, Some(&owner));
         }
     }
 

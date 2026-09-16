@@ -1485,10 +1485,20 @@ impl Runner {
         // Each skill becomes a user message with isMeta metadata so the UI doesn't
         // render it as real user input. Injected BEFORE the task prompt so the
         // sub-agent has instructions in its context from turn 1.
+        //
+        // Scoped to the seat this run belongs to: a sub-agent carries no persona
+        // of its own (build_subagent_request never sets agent_id), and the
+        // skills it preloads were named by the seat that spawned it. The ONE
+        // extractor strips the `subagent:` wrappers and yields that seat, the
+        // same scope the sub-agent's own later skill(action: "load") calls use
+        // — without it a seat hands work to a helper and its own procedures go
+        // along in name only.
         if !req.preload_skills.is_empty() {
             if let Some(ref loader) = self.skill_loader {
+                let seat = keyparser::extract_agent_id(&session_key);
+                let skill_scope = (!seat.is_empty()).then_some(seat.as_str());
                 for skill_name in &req.preload_skills {
-                    if let Some(skill) = loader.get(skill_name, None).await {
+                    if let Some(skill) = loader.get(skill_name, skill_scope).await {
                         if skill.enabled {
                             let content = loader.expand_template(&skill, Some(&self.store));
                             if !content.is_empty() {
@@ -2445,6 +2455,137 @@ async fn apply_post_tool_hooks(
     attached
 }
 
+/// The seat that decides what this one may not: the line the owner drew
+/// (`reports_to`), and failing that a seat the company has actually given the
+/// authority to grant (`authority.grant.grant` — by a rule the owner or the
+/// General Manager wrote, or by its own package declaring it).
+///
+/// Never a name compiled in here. A company may put a Chief Operating Officer
+/// over its seats, a General Manager, a person, or nobody; who holds authority
+/// is the owner's to say, and it is already in the data.
+fn authority_seat(store: &Arc<Store>, asking_agent_id: &str) -> Option<db::models::Agent> {
+    if asking_agent_id.is_empty() {
+        return None;
+    }
+    // 1. The reporting line, as the owner set it.
+    if let Ok(Some(me)) = store.get_agent(asking_agent_id) {
+        if let Some(above) = me
+            .reports_to
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty() && *s != asking_agent_id)
+        {
+            if let Ok(Some(seat)) = store.get_agent(above) {
+                return Some(seat);
+            }
+        }
+    }
+    // 2. A seat that holds the authority to grant authority.
+    let mut holders: Vec<db::models::Agent> = store
+        .list_agents(10_000, 0)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|a| {
+            a.id != asking_agent_id
+                && a.is_app.unwrap_or(0) == 0
+                && a.is_enabled != 0
+                && holds_granting_authority(store, a)
+        })
+        .collect();
+    holders.sort_by(|a, b| a.name.cmp(&b.name));
+    holders.into_iter().next()
+}
+
+/// Whether this seat may grant standing authority: the owner's own rule on
+/// `authority.grant.grant`, or its package declaring that operation.
+fn holds_granting_authority(store: &Arc<Store>, seat: &db::models::Agent) -> bool {
+    const GRANT: &str = "authority.grant.grant";
+    let stored = store
+        .get_entity_config("agent", &seat.id)
+        .ok()
+        .flatten()
+        .and_then(|c| c.operation_policy);
+    if let Some(rule) = tools::policy::OperationPolicy::from_json(stored.as_deref())
+        .operations
+        .get(GRANT)
+    {
+        if rule.access != tools::policy::OperationAccess::Blocked {
+            return true;
+        }
+    }
+    !seat.frontmatter.is_empty()
+        && napp::agent::parse_agent_config(&seat.frontmatter)
+            .map(|c| {
+                c.ceiling
+                    .keys()
+                    .any(|op| tools::plugin_tool::port_suffix(op).starts_with("authority."))
+                    || c.requires.interfaces.iter().any(|i| i == "authority")
+            })
+            .unwrap_or(false)
+}
+
+/// Out-of-bounds work is somebody's job, not an impossibility.
+///
+/// When a gated operation decides Approval in a run with nobody to ask, the
+/// work is handed to the seat that holds authority as that seat's OWN
+/// assignment — the one hand-over pathway (`open_assignment`, through the
+/// opener the server installs at boot, the same one the `agent` tool uses) —
+/// carrying the operation, the seat that wanted it, the bound it fell outside,
+/// and what is now stopped. Returns the sentence the stopped run tells the
+/// model, or `None` when nobody here holds that authority, in which case the
+/// caller's own fallback stands: park for the owner, or refuse.
+fn hand_off_out_of_bounds(
+    store: &Arc<Store>,
+    agent_id: &str,
+    session_key: &str,
+    operation: &str,
+    display: &str,
+    reason: &str,
+) -> Option<String> {
+    let opener = tools::assignments::assignment_opener()?;
+    let seat = authority_seat(store, agent_id)?;
+    let my_name = store
+        .get_agent(agent_id)
+        .ok()
+        .flatten()
+        .map(|a| a.name)
+        .unwrap_or_else(|| agent_id.to_string());
+    let req = tools::assignments::AssignmentRequest {
+        assigner_agent_id: agent_id.to_string(),
+        assigner_name: my_name.clone(),
+        assigner_session_key: session_key.to_string(),
+        parent_run_id: None,
+        assignee_agent_id: seat.id.clone(),
+        subject: format!("{my_name} is stopped on {operation}: {display}"),
+        done_means: format!(
+            "Decide {operation} for {my_name}. It fell outside what {my_name} may do unattended: \
+             {reason}. The work that is stopped: {display}. Either grant {my_name} standing \
+             authority for {operation} within bounds you can stand behind, do it yourself if it is \
+             yours to do, or close this saying it will not happen and why."
+        ),
+        due: None,
+    };
+    match opener.open(&req) {
+        Ok(id) => {
+            tracing::info!(
+                agent = %agent_id, op = %operation, assignee = %seat.id, assignment = %id,
+                "out of bounds: handed to the seat that holds authority"
+            );
+            Some(format!(
+                "'{operation}' is outside what you may do unattended ({reason}), so it was handed to \
+                 {} as an assignment: the operation, the bound it fell outside, and the work that is \
+                 stopped. Do not retry it and do not work around it — say plainly that it is now {}'s \
+                 to decide, and carry on with anything else you can finish.",
+                seat.name, seat.name
+            ))
+        }
+        Err(e) => {
+            warn!(agent = %agent_id, op = %operation, error = %e, "handing out-of-bounds work on failed");
+            None
+        }
+    }
+}
+
 async fn run_loop(
     sessions: &SessionManager,
     tools: &Arc<Registry>,
@@ -3018,7 +3159,13 @@ async fn run_loop(
     // (part of the job definition — always present for that agent).
     let active_skill_template = if let Some(loader) = skill_loader {
         if !force_skill.is_empty() {
-            match loader.get(force_skill, None).await {
+            // Scoped to the seat this run belongs to (the ONE extractor, so a
+            // sub-agent resolves through its parent seat): a forced skill may
+            // be one the employee's own package ships, which no unscoped
+            // lookup can see.
+            let seat = keyparser::extract_agent_id(&session_key);
+            let skill_scope = (!seat.is_empty()).then_some(seat.as_str());
+            match loader.get(force_skill, skill_scope).await {
                 Some(skill) if skill.enabled => {
                     info!(skill = %skill.name, "force-activated skill");
                     Some(loader.expand_template(&skill, Some(store)))
@@ -5752,47 +5899,116 @@ async fn run_loop(
                     continue;
                 }
                 // ── Per-operation approval gate (per-employee three-state policy) ──
-                // A gated interface operation (the `plugin` tool with a typed
-                // `operation`) is decided by the employee's OperationPolicy: Always
-                // runs, Approval asks the owner (interactive) / refuses when
-                // unattended, Blocked is refused (the toolset also omits it — this
-                // is the hard backstop). Origin-aware (WS2): an untrusted origin
-                // floors gated Always to Approval, and with NO policy set a
-                // trusted origin keeps "installation is the grant" while an
-                // untrusted one falls back to the safe default — the decision
-                // lives in decide/decide_optional, shared with the workflow
-                // checkpoint (Rule 8.1).
-                if tool_calls[idx].name == "plugin" {
-                    let op = tool_calls[idx]
-                        .input
-                        .get("operation")
-                        .and_then(|v| v.as_str())
-                        .filter(|s| !s.is_empty())
-                        .map(str::to_string);
-                    let access = op.as_deref().and_then(|op| {
-                        tools::policy::OperationPolicy::decide_optional(
-                            operation_policy,
-                            op,
-                            // Tainted workflow inputs decide as Comm: a gated
-                            // Always floors to Approval (WS2-R7), the same
-                            // rule the engine checkpoint applied.
-                            if workflow_mode.map_or(false, |m| m.tainted) {
-                                tools::Origin::Comm
-                            } else {
-                                origin
-                            },
-                        )
-                    });
-                    if let (Some(access), Some(op)) = (access, op.as_deref()) {
-                        match access {
-                            tools::policy::OperationAccess::Always => {}
+                // A gated interface operation is decided by the employee's
+                // OperationPolicy: Always runs, Approval asks the owner
+                // (interactive) / refuses when unattended, Blocked is refused (the
+                // toolset also omits it — this is the hard backstop). Origin-aware
+                // (WS2): an untrusted origin floors gated Always to Approval, and
+                // with NO policy set a trusted origin keeps "installation is the
+                // grant" (except a critical operation, which always asks) while an
+                // untrusted one falls back to the safe default — the decision lives
+                // in decide/decide_optional, shared with the workflow checkpoint
+                // (Rule 8.1).
+                //
+                // WHICH operation a call performs is the TOOL's to declare
+                // (`DynTool::operation_performed`), never this gate's to infer from
+                // a tool name: the `plugin` tool answers with its typed
+                // `operation`, the `pack` tool with the layer write or removal it
+                // performs, and any tool that grows a gated operation is decided
+                // here without touching this code. A call that performs no typed
+                // operation (plugin list/discover/exec-by-slug, pack list/show)
+                // falls through ungated.
+                if let Some(op) = tools
+                    .operation_performed(&tool_calls[idx].name, &tool_calls[idx].input)
+                    .await
+                {
+                    // The operation's parameters, as far as the call states
+                    // them: a standing grant is checked against amount,
+                    // counterparty, and today's counters (R16). A call that
+                    // states no amount is checked against count and freshness
+                    // only.
+                    let params = tools::policy::OperationParams {
+                        amount_cents: tool_calls[idx]
+                            .input
+                            .get("amount_cents")
+                            .and_then(|v| v.as_i64()),
+                        counterparty: tool_calls[idx]
+                            .input
+                            .get("counterparty")
+                            .and_then(|v| v.as_str())
+                            .map(str::to_string),
+                        counterparty_has_source_id: tool_calls[idx]
+                            .input
+                            .get("counterparty_id")
+                            .and_then(|v| v.as_str())
+                            .is_some_and(|s| !s.is_empty()),
+                        irreversible: tools::interface_catalog::is_critical(&op),
+                    };
+                    let company_policy = store
+                        .get_company_policy()
+                        .ok()
+                        .flatten()
+                        .map(|j| tools::policy::CompanyPolicy::from_json(Some(&j)));
+                    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+                    let rule_key =
+                        format!("{}:{}", agent_id, tools::plugin_tool::port_suffix(&op));
+                    let counters = {
+                        let cp = params.counterparty.clone().unwrap_or_default();
+                        let mine = store.day_counters(&rule_key, &today, &cp).ok();
+                        let company = store.day_counters(db::COMPANY_COUNTER_KEY, &today, "").ok();
+                        mine.map(|m| tools::policy::DayCounters {
+                            count: m.count,
+                            cents: m.cents,
+                            counterparty_cents: m.counterparty_cents,
+                            company_count: company.as_ref().map(|c| c.count).unwrap_or(0),
+                            company_cents: company.as_ref().map(|c| c.cents).unwrap_or(0),
+                        })
+                    };
+                    let decision = tools::policy::OperationPolicy::decide_optional(
+                        operation_policy,
+                        &op,
+                        // Tainted workflow inputs decide as Comm: a gated
+                        // Always floors to Approval (WS2-R7), the same
+                        // rule the engine checkpoint applied.
+                        if workflow_mode.map_or(false, |m| m.tainted) {
+                            tools::Origin::Comm
+                        } else {
+                            origin
+                        },
+                        &params,
+                        company_policy.as_ref(),
+                        counters.as_ref(),
+                        // The projection is proven current once the cache
+                        // exists (Playbook PRD 6.4); until then local policy
+                        // is the only copy and is current by definition.
+                        true,
+                    );
+                    if let Some(decision) = decision {
+                        match decision.access {
+                            tools::policy::OperationAccess::Always => {
+                                // A standing grant spent: count it against the
+                                // day before the call runs, so a crash between
+                                // decision and execution can never under-count.
+                                if decision.layer == tools::policy::PolicyLayer::StandingAuthority {
+                                    let cp = params.counterparty.clone().unwrap_or_default();
+                                    let cents = params.amount_cents.unwrap_or(0);
+                                    let _ = store.bump_counters(&rule_key, &today, &cp, cents);
+                                    let _ = store.bump_counters(db::COMPANY_COUNTER_KEY, &today, "", cents);
+                                    tracing::info!(
+                                        agent = %agent_id, op = %op, rule = %rule_key, reason = %decision.reason,
+                                        "operation approved by standing authority"
+                                    );
+                                }
+                            }
                             tools::policy::OperationAccess::Blocked => {
                                 blocked_results[idx] = Some((
                                     tool_calls[idx].clone(),
                                     ToolResult::error(format!(
-                                        "The operation '{op}' is turned OFF (Blocked) for this AI \
-                                         employee in its Controls. Tell the user it's blocked and \
-                                         stop — do not retry or work around it."
+                                        "The operation '{op}' is Blocked for this AI employee \
+                                         ({layer}: {reason}). Tell the user it's blocked and \
+                                         stop — do not retry or work around it.",
+                                        layer = decision.layer.as_str(),
+                                        reason = decision.reason,
                                     )),
                                 ));
                             }
@@ -5850,10 +6066,17 @@ async fn run_loop(
                                                         let mut policy = operation_policy
                                                             .cloned()
                                                             .unwrap_or_default();
-                                                        policy.operations.insert(
-                                                            tools::plugin_tool::port_suffix(op),
-                                                            tools::policy::OperationAccess::Always,
-                                                        );
+                                                        // A locked entry (the seat's
+                                                        // ceiling or a law) refuses the
+                                                        // edit: the button cannot loosen it.
+                                                        if let Err(e) = policy.apply_edit(
+                                                            &tools::plugin_tool::port_suffix(&op),
+                                                            tools::policy::OperationRule::access(
+                                                                tools::policy::OperationAccess::Always,
+                                                            ),
+                                                        ) {
+                                                            tracing::warn!(op = %op, error = %e, "Approve Always refused by the policy");
+                                                        }
                                                         let patch = serde_json::json!({
                                                             "operationPolicy": policy.to_json()
                                                         });
@@ -5882,13 +6105,27 @@ async fn run_loop(
                                             }
                                         }
                                         None => {
+                                            // Nobody to ask on this surface: the
+                                            // work goes to whoever holds the
+                                            // authority for it, or waits for the
+                                            // owner if nobody does.
                                             blocked_results[idx] = Some((
                                                 tool_calls[idx].clone(),
-                                                ToolResult::error(format!(
-                                                    "The operation '{op}' needs approval and no \
-                                                     one is available to approve it in this run. \
-                                                     Report this and stop."
-                                                )),
+                                                match hand_off_out_of_bounds(
+                                                    store,
+                                                    agent_id,
+                                                    session_id,
+                                                    op.as_str(),
+                                                    &display,
+                                                    &decision.reason,
+                                                ) {
+                                                    Some(handed) => ToolResult::ok(handed),
+                                                    None => ToolResult::error(format!(
+                                                        "The operation '{op}' needs approval and no \
+                                                         one is available to approve it in this run. \
+                                                         Report this and stop."
+                                                    )),
+                                                },
                                             ));
                                         }
                                     }
@@ -5904,7 +6141,7 @@ async fn run_loop(
                                     match park(WorkflowPark {
                                         messages: snapshot,
                                         call: &tool_calls[idx],
-                                        operation: tools::plugin_tool::port_suffix(op),
+                                        operation: tools::plugin_tool::port_suffix(&op),
                                         display: display.clone(),
                                     }) {
                                         Ok(()) => {
@@ -5921,22 +6158,37 @@ async fn run_loop(
                                     break;
                                 } else {
                                     // Unattended chat origin (cron/comm/subagent): the chat
-                                    // gate can't pause. The workflow path handles suspend/
-                                    // resume at its checkpoint; other unattended origins refuse.
+                                    // gate can't pause, and the workflow path already parks
+                                    // at its checkpoint. Work that fell outside this seat's
+                                    // bounds is not impossible work — it is somebody's to
+                                    // decide, so it is handed to the seat that holds that
+                                    // authority and this run stops cleanly. With nobody
+                                    // holding it, it waits for the owner as before.
                                     blocked_results[idx] = Some((
                                         tool_calls[idx].clone(),
-                                        ToolResult::error(format!(
-                                            "The operation '{op}' needs your approval and this is \
-                                             an unattended run. It was not performed."
-                                        )),
+                                        match hand_off_out_of_bounds(
+                                            store,
+                                            agent_id,
+                                            session_id,
+                                            op.as_str(),
+                                            &display,
+                                            &decision.reason,
+                                        ) {
+                                            Some(handed) => ToolResult::ok(handed),
+                                            None => ToolResult::error(format!(
+                                                "The operation '{op}' needs your approval and this is \
+                                                 an unattended run. It was not performed."
+                                            )),
+                                        },
                                     ));
                                 }
                             }
                         }
                     }
-                    // `plugin` calls without a typed operation (list/discover/exec-by-
-                    // slug) fall through ungated — the capability gate returns None
-                    // for `plugin`.
+                    // The operation gate is the decision for a declared operation:
+                    // `plugin` and `pack` are both ungated by the capability gate
+                    // (gating_capability returns None for them), so there is nothing
+                    // further to ask here.
                     continue;
                 }
                 let category = match tools::capabilities::gating_capability(
@@ -9221,5 +9473,117 @@ mod cross_turn_spiral_tests {
         // Next turn ends calm — the carry-over clears.
         cross_turn_save(&sid, &std::collections::HashMap::new(), 8);
         assert!(cross_turn_seed(&sid).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod out_of_bounds_tests {
+    use super::*;
+
+    /// Stands in for the case opener the server installs at boot, so the join
+    /// can be proven without the engine: what matters here is that ONE
+    /// hand-over pathway is used and what is put on the assignment.
+    struct Capture {
+        seen: std::sync::Mutex<Vec<tools::assignments::AssignmentRequest>>,
+    }
+
+    impl tools::assignments::AssignmentOpener for Capture {
+        fn open(
+            &self,
+            req: &tools::assignments::AssignmentRequest,
+        ) -> Result<String, String> {
+            self.seen.lock().unwrap().push(req.clone());
+            Ok("assignment-1".to_string())
+        }
+    }
+
+    fn store() -> Arc<Store> {
+        let path = std::env::temp_dir().join(format!("nebo-oob-{}.db", uuid::Uuid::new_v4()));
+        Arc::new(Store::new(&path.to_string_lossy()).expect("store"))
+    }
+
+    fn seat(store: &Arc<Store>, id: &str, name: &str, frontmatter: &str) {
+        store
+            .create_agent(id, None, name, "", "", frontmatter, None, None)
+            .expect("seat");
+    }
+
+    /// Out-of-bounds work in an unattended run is somebody's assignment, not a
+    /// refusal — and who that somebody is comes out of the data, never out of a
+    /// name compiled into Rust.
+    #[test]
+    fn out_of_bounds_work_becomes_the_authority_seats_assignment() {
+        let store = store();
+        let captured = Arc::new(Capture { seen: std::sync::Mutex::new(Vec::new()) });
+        tools::assignments::install_assignment_opener(captured.clone());
+
+        // A seat the owner has given the authority to grant, and a worker.
+        seat(&store, "coo", "Operations Lead", "");
+        let mut policy = tools::policy::OperationPolicy::default();
+        policy
+            .apply_edit(
+                "authority.grant.grant",
+                tools::policy::OperationRule::access(tools::policy::OperationAccess::Approval),
+            )
+            .unwrap();
+        store
+            .upsert_entity_config(
+                "agent",
+                "coo",
+                &serde_json::json!({ "operationPolicy": policy.to_json() }),
+            )
+            .expect("policy");
+        seat(&store, "bk", "Bookkeeper", "");
+
+        // Found from the data: the seat that holds the authority to grant.
+        assert_eq!(
+            authority_seat(&store, "bk").map(|a| a.id).as_deref(),
+            Some("coo")
+        );
+
+        const OP: &str = "ledger.billpayment.create";
+        const DISPLAY: &str = "Pay Acme Supplies $3,000.00 for bill #1042";
+        const REASON: &str = "amount 300000 exceeds the grant's 250000 per operation";
+        let handed = hand_off_out_of_bounds(&store, "bk", "agent:bk:cron", OP, DISPLAY, REASON)
+            .expect("the work is handed on, not refused");
+        assert!(handed.contains("Operations Lead"), "{handed}");
+        assert!(handed.contains("Do not retry"), "{handed}");
+
+        let reqs = captured.seen.lock().unwrap();
+        assert_eq!(reqs.len(), 1, "ONE hand-over, through open_assignment");
+        let req = &reqs[0];
+        assert_eq!(req.assignee_agent_id, "coo");
+        assert_eq!(req.assigner_agent_id, "bk");
+        assert_eq!(req.assigner_session_key, "agent:bk:cron");
+        // The assignment carries the operation, who wanted it, the bound it fell
+        // outside, and what is now stopped.
+        assert!(req.subject.contains("Bookkeeper") && req.subject.contains(OP), "{}", req.subject);
+        assert!(req.subject.contains(DISPLAY), "{}", req.subject);
+        assert!(req.done_means.contains(REASON), "{}", req.done_means);
+        assert!(req.done_means.contains(DISPLAY), "{}", req.done_means);
+        assert!(req.done_means.contains(OP), "{}", req.done_means);
+        drop(reqs);
+
+        // The line the owner drew wins over the search: an Office Manager who
+        // holds no authority of its own still gets the decision when the owner
+        // put it above this seat.
+        seat(&store, "om", "Office Manager", "");
+        store
+            .update_agent(
+                "bk", "", "", "", "", None, None, None, None, None, None, None, None, None,
+                Some("om"),
+            )
+            .expect("reporting line");
+        assert_eq!(
+            authority_seat(&store, "bk").map(|a| a.id).as_deref(),
+            Some("om"),
+        );
+
+        // Nobody above it and nobody holding that authority: the work waits for
+        // the owner, which is what the caller's own fallback does.
+        assert!(
+            hand_off_out_of_bounds(&store, "coo", "agent:coo:cron", OP, DISPLAY, REASON).is_none(),
+            "with no authority seat the owner decides",
+        );
     }
 }

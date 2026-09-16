@@ -1204,9 +1204,14 @@ async fn run_llm_activity<'a>(
             ctx.skill_content,
             ctx.deferred_tools,
         );
-    let emit_tool_box: Option<Box<dyn DynTool>> = ctx
-        .event_bus
-        .map(|bus| Box::new(tools::EmitTool::new(bus.clone())) as Box<dyn DynTool>);
+    // The producing seat rides every emitted payload and every address it
+    // raises (R6) — the graph path stamps it exactly as the sequential path does.
+    let emit_tool_box: Option<Box<dyn DynTool>> = ctx.event_bus.map(|bus| {
+        Box::new(
+            tools::EmitTool::new(bus.clone())
+                .with_producer(crate::engine::producer_slug(ctx.store, &ctx.agent_id)),
+        ) as Box<dyn DynTool>
+    });
     if let Some(ref emit) = emit_tool_box {
         activity_tools.push(emit);
     }
