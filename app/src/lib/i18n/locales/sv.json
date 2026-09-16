@@ -2525,10 +2525,10 @@
 	},
 	"voice": {
 		"startConversation": "Röstsamtal",
-		"consentTitle": "Röst använder xAI",
-		"consentBody": "Röstsamtal strömmar din mikrofonljud till xAI (Grok) för bearbetning medan ett samtal pågår. Ljudet lämnar den här datorn. Att skriva i chatten förblir lokalt som alltid.",
+		"consentTitle": "Röst använder en molntjänst",
+		"consentBody": "Röstsamtal strömmar din mikrofonljud till en molnbaserad rösttjänst för bearbetning medan ett samtal pågår. Ljudet lämnar den här datorn. Att skriva i chatten förblir lokalt som alltid.",
 		"consentAccept": "Aktivera röst",
 		"consentDecline": "Inte nu",
-		"cloudIndicator": "Ljud strömmas till xAI"
+		"cloudIndicator": "Ljud strömmas till molnet"
 	}
 }

@@ -2525,10 +2525,10 @@
 	},
 	"voice": {
 		"startConversation": "Conversa por voz",
-		"consentTitle": "A voz usa a xAI",
-		"consentBody": "A conversa por voz transmite o áudio do seu microfone para a xAI (Grok) para processamento enquanto a chamada está ativa. O áudio sai deste computador. Digitar no chat continua local como sempre.",
+		"consentTitle": "A voz usa um serviço na nuvem",
+		"consentBody": "A conversa por voz transmite o áudio do seu microfone para um serviço de voz na nuvem para processamento enquanto a chamada está ativa. O áudio sai deste computador. Digitar no chat continua local como sempre.",
 		"consentAccept": "Ativar voz",
 		"consentDecline": "Agora não",
-		"cloudIndicator": "Áudio sendo transmitido para a xAI"
+		"cloudIndicator": "O áudio está sendo transmitido para a nuvem"
 	}
 }

@@ -32,7 +32,8 @@ const log = logger.child({ component: 'VoiceSession' });
  * Cloud-mic consent. Conversation mode streams raw microphone audio to xAI
  * (directly or via Janus) — the single largest data egress in the product, so
  * it never starts silently: the first start() requires an explicit, recorded
- * consent naming xAI. Base-scoped storage, one grant per install.
+ * consent that audio leaves the machine. The UI names no provider (product
+ * decision 2026-09-15). Base-scoped storage, one grant per install.
  */
 const CONSENT_KEY = 'nebo_voice_cloud_consent';
 export function hasVoiceCloudConsent(): boolean {
@@ -414,7 +415,7 @@ function createVoiceSessionStore() {
 			// (xAI, directly or via Janus). No consent, no socket.
 			if (!hasVoiceCloudConsent()) {
 				transitionToError(
-					'Voice conversation sends your microphone audio to xAI for processing. Enable it in the voice panel to consent.'
+					'Voice conversation sends your microphone audio to a cloud voice service for processing. Enable it in the voice panel to consent.'
 				);
 				return;
 			}

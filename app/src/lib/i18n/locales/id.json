@@ -2525,10 +2525,10 @@
 	},
 	"voice": {
 		"startConversation": "Percakapan suara",
-		"consentTitle": "Suara menggunakan xAI",
-		"consentBody": "Percakapan suara mengalirkan audio mikrofon Anda ke xAI (Grok) untuk diproses selama panggilan aktif. Audio meninggalkan komputer ini. Mengetik di chat tetap lokal seperti biasa.",
+		"consentTitle": "Suara menggunakan layanan cloud",
+		"consentBody": "Percakapan suara mengalirkan audio mikrofon Anda ke layanan suara cloud untuk diproses selama panggilan aktif. Audio meninggalkan komputer ini. Mengetik di chat tetap lokal seperti biasa.",
 		"consentAccept": "Aktifkan suara",
 		"consentDecline": "Nanti saja",
-		"cloudIndicator": "Audio dialirkan ke xAI"
+		"cloudIndicator": "Audio sedang dialirkan ke cloud"
 	}
 }

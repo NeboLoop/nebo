@@ -1208,7 +1208,13 @@ impl PluginStore {
         };
 
         if let Some(ref auth) = manifest.auth {
-            if auth.commands.status.is_some() {
+            // Accounts that live per employee (profile_dir_env) are checked at
+            // the call, against that employee's account; the global status
+            // probe runs with no account and says "not connected" for every
+            // such plugin. Seen live: gmail, connected for the Intake
+            // Coordinator, counted as not ready — its mail port went unbound
+            // and the roster never offered it.
+            if auth.commands.status.is_some() && auth.profile_dir_env.is_none() {
                 let authed = self
                     .auth_cache
                     .read()

@@ -219,6 +219,37 @@ impl Store {
         Ok(())
     }
 
+    /// Remove every account profile for a plugin, across all agents, and return
+    /// the config dirs those accounts used so the caller can delete them from
+    /// disk. Uninstalling a plugin used to leave both behind: the rows kept
+    /// pointing at directories that still held the accounts' credentials, so
+    /// "remove this plugin" was not a removal of what it had been given.
+    pub fn delete_plugin_account_profiles_for_plugin(
+        &self,
+        plugin_slug: &str,
+    ) -> Result<Vec<String>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT config_dir FROM plugin_account_profiles WHERE plugin_slug = ?1",
+            )
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map(params![plugin_slug], |row| row.get::<_, String>(0))
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        let mut dirs = Vec::new();
+        for r in rows {
+            dirs.push(r.map_err(|e| NeboError::Database(e.to_string()))?);
+        }
+        drop(stmt);
+        conn.execute(
+            "DELETE FROM plugin_account_profiles WHERE plugin_slug = ?1",
+            params![plugin_slug],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(dirs)
+    }
+
     /// Remove an account profile.
     pub fn delete_plugin_account_profile(
         &self,
@@ -334,5 +365,34 @@ mod tests {
             .resolve_plugin_account_profile("agent-a", "gws", None)
             .unwrap();
         assert!(primary.unwrap().is_primary);
+    }
+
+    #[test]
+    fn uninstalling_a_plugin_takes_every_agents_accounts_with_it() {
+        let s = temp_store();
+        s.upsert_plugin_account_profile("p1", "agent-a", "ezlynx", "agency-main", "/d/a")
+            .unwrap();
+        s.upsert_plugin_account_profile("p2", "agent-b", "ezlynx", "agency-main", "/d/b")
+            .unwrap();
+        s.upsert_plugin_account_profile("p3", "agent-a", "gws", "work", "/d/c")
+            .unwrap();
+
+        let mut dirs = s
+            .delete_plugin_account_profiles_for_plugin("ezlynx")
+            .unwrap();
+        dirs.sort();
+        assert_eq!(dirs, vec!["/d/a".to_string(), "/d/b".to_string()]);
+
+        // Both agents' ezlynx accounts are gone...
+        assert!(s.list_plugin_account_profiles("agent-a", "ezlynx").unwrap().is_empty());
+        assert!(s.list_plugin_account_profiles("agent-b", "ezlynx").unwrap().is_empty());
+        // ...and another plugin's account is untouched.
+        assert_eq!(s.list_plugin_account_profiles("agent-a", "gws").unwrap().len(), 1);
+
+        // Idempotent: uninstalling again finds nothing to remove.
+        assert!(s
+            .delete_plugin_account_profiles_for_plugin("ezlynx")
+            .unwrap()
+            .is_empty());
     }
 }

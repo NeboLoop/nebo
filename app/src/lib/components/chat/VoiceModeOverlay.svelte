@@ -33,7 +33,7 @@
 	let transcriptEl: HTMLDivElement | null = $state(null);
 
 	// Cloud-mic consent: conversation streams raw microphone audio to xAI.
-	// First use shows an explicit consent panel naming xAI; the session only
+	// First use shows an explicit consent panel (no provider named); the session only
 	// auto-starts once consent is recorded (the store hard-gates as backstop).
 	let consented = $state(hasVoiceCloudConsent());
 
@@ -141,7 +141,7 @@
 	</div>
 
 	{#if !consented}
-		<!-- First-use consent: name the provider, say what leaves the machine -->
+		<!-- First-use consent: say what leaves the machine; the provider is not named -->
 		<div class="flex-1 flex flex-col items-center justify-center gap-4 px-6 min-h-0">
 			<div class="max-w-md w-full p-5 rounded-xl border border-base-300 bg-base-200/30 flex flex-col gap-3">
 				<div class="flex items-center gap-2">

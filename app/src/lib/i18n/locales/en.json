@@ -2981,11 +2981,11 @@
 	},
 	"voice": {
 		"startConversation": "Voice conversation",
-		"consentTitle": "Voice uses xAI",
-		"consentBody": "Voice conversation streams your microphone audio to xAI (Grok) for processing while a call is active. Audio leaves this computer. Typing in chat stays local as always.",
+		"consentTitle": "Voice uses a cloud service",
+		"consentBody": "Voice conversation streams your microphone audio to a cloud voice service for processing while a call is active. Audio leaves this computer. Typing in chat stays local as always.",
 		"consentAccept": "Enable voice",
 		"consentDecline": "Not now",
-		"cloudIndicator": "Audio is streaming to xAI"
+		"cloudIndicator": "Audio is streaming to the cloud"
 	},
 	"flows": {
 		"none": "No flows yet",

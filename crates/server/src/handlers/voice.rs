@@ -224,6 +224,12 @@ fn wav_from_pcm16_mono_24k(pcm: &[u8]) -> Vec<u8> {
 /// Runner stays the ONE brain: full harness, full tool loop, same policy
 /// engine — and the voice model just narrates the result. Never re-expose the
 /// raw registry here; that recreates a second, untuned tool pathway.
+///
+/// Beside it sit the session-control tools (`status`, `cancel`, and on phone
+/// lines `end_call` / `transfer_call`). They act on the voice session itself,
+/// so the bridge loop runs them inline and never delegates: a stop routed
+/// through `nebo` would queue behind the very run it is meant to end
+/// (`Runner::run` on a busy session appends the words into the running turn).
 fn voice_tools(transfer: bool, telephony: bool, intents: &[String]) -> Vec<serde_json::Value> {
     let mut nebo_params = serde_json::json!({
         "type": "object",
@@ -254,7 +260,8 @@ fn voice_tools(transfer: bool, telephony: bool, intents: &[String]) -> Vec<serde
                         action (files, printers, email, calendar, web, apps, documents, system \
                         info). Only for a request addressed to you. Never for the user thinking \
                         aloud, describing what they see, asking how it is going (use `status`), \
-                        or your own words read back to you. Pass the request restated with the \
+                        asking to stop work (use `cancel`), or your own words read back to you. \
+                        Pass the request restated with the \
                         spoken context needed to complete it. It runs the full toolchain and \
                         returns the result for you to relay aloud. If the result says the last \
                         task is still running and this message is waiting, say exactly that.",
@@ -269,6 +276,17 @@ fn voice_tools(transfer: bool, telephony: bool, intents: &[String]) -> Vec<serde
             "description": "How the current work is going: time elapsed, tool calls, what is \
                             running now. Use for 'how is it going', 'are you done', 'what are \
                             you doing'. Never starts work.",
+            "parameters": {"type": "object", "properties": {}}
+        }));
+        // "Stop" is a control, not a job: through `nebo` it would queue
+        // behind the run it is meant to end. Owner sessions only, like
+        // `status` — a phone caller never ends the owner's work.
+        tools.push(serde_json::json!({
+            "type": "function",
+            "name": "cancel",
+            "description": "Stop the work currently running for this conversation, sub-agents \
+                            included. Use for 'stop', 'cancel that', 'never mind', 'kill it'. \
+                            Never starts work.",
             "parameters": {"type": "object", "properties": {}}
         }));
     }
@@ -826,6 +844,16 @@ fn voice_status_line(st: Option<&agent::runner::ActiveTurnStatus>) -> String {
     }
 }
 
+/// What the owner hears after `cancel`: what was stopped, from the counters
+/// read before the token fired, or that nothing was running.
+fn voice_cancel_line(cancelled: bool, before: Option<&agent::runner::ActiveTurnStatus>) -> String {
+    match (cancelled, before) {
+        (true, Some(st)) => format!("Stopped the running task; it was {}.", agent::runner::progress_phrase(st)),
+        (true, None) => "Stopped the running task.".to_string(),
+        (false, _) => "Nothing was running.".to_string(),
+    }
+}
+
 /// What a voice turn writes to the thread, decided in one place. The owner's
 /// speech is one user row, written when the employee acts on it (the `nebo`
 /// call) or, with no call, when the model starts replying. The realtime
@@ -1318,7 +1346,10 @@ async fn handle_conversation_ws(mut socket: WebSocket, state: AppState, mut q: C
              `nebo` tool with the task and relay its result aloud; never guess and never \
              claim you can't act. Only a request addressed to you is a task: the user \
              thinking aloud, describing what they see, or asking how it is going is not. \
-             For progress questions call `status` and read it back. While a task runs, \
+             For progress questions call `status` and read it back. When the user asks \
+             you to stop or cancel the work, call `cancel` and read back what it says; if \
+             it is not clear they mean the running work, ask in one short sentence first. \
+             While a task runs, \
              say you are on it once. If a result says the last task is still running and \
              the message is waiting, say that instead of on it. If the result says \
              something needs approval or a permission, say so plainly and point them to \
@@ -1833,6 +1864,26 @@ async fn handle_conversation_session(
                             }
                             continue;
                         }
+                        if name == "cancel" && caller_ctx.is_none() {
+                            pending_tools += 1;
+                            // Counters first: once the token fires the turn is
+                            // gone and there is nothing left to describe.
+                            let before = state.runner.active_turn_status(&ctx.session_key);
+                            let cancelled = state.run_registry.cancel_by_session(&ctx.session_key).await;
+                            info!(session_key = %ctx.session_key, cancelled, "voice cancel");
+                            let line = voice_cancel_line(cancelled, before.as_ref());
+                            if tool_done_tx
+                                .send((
+                                    call_id,
+                                    serde_json::json!({"ok": true, "content": line}).to_string(),
+                                ))
+                                .await
+                                .is_err()
+                            {
+                                break;
+                            }
+                            continue;
+                        }
                         if name == "transfer_call" && caller_ctx.is_some() {
                             let summary = decode_tool_arguments(&arguments)
                                 .get("summary")
@@ -2114,6 +2165,28 @@ mod voice_prompt_tests {
             "Still working: 3 minutes in, 2 tool calls so far, currently running os: exec."
         );
         assert_eq!(voice_status_line(None), "Nothing is running right now.");
+    }
+
+    #[test]
+    fn cancel_line_states_what_was_stopped() {
+        let st = agent::runner::ActiveTurnStatus { elapsed_secs: 200, tool_calls: 2, current_tool: "os: exec".into() };
+        assert_eq!(
+            voice_cancel_line(true, Some(&st)),
+            "Stopped the running task; it was 3 minutes in, 2 tool calls so far, currently running os: exec."
+        );
+        assert_eq!(voice_cancel_line(true, None), "Stopped the running task.");
+        assert_eq!(voice_cancel_line(false, Some(&st)), "Nothing was running.");
+    }
+
+    /// `cancel` is the owner's stop button: declared for the desktop session,
+    /// never on a phone line, where a caller must not end the owner's work.
+    #[test]
+    fn cancel_is_declared_for_owner_sessions_only() {
+        let names = |tools: Vec<serde_json::Value>| -> Vec<String> {
+            tools.iter().map(|t| t["name"].as_str().unwrap_or_default().to_string()).collect()
+        };
+        assert!(names(voice_tools(false, false, &[])).contains(&"cancel".to_string()));
+        assert!(!names(voice_tools(false, true, &[])).contains(&"cancel".to_string()));
     }
 
     #[test]

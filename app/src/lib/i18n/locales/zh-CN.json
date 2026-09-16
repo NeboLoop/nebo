@@ -2525,10 +2525,10 @@
 	},
 	"voice": {
 		"startConversation": "语音对话",
-		"consentTitle": "语音使用 xAI",
-		"consentBody": "语音对话进行时，您的麦克风音频会传输到 xAI（Grok）进行处理。音频会离开这台电脑。聊天输入一如既往保留在本地。",
+		"consentTitle": "语音使用云端服务",
+		"consentBody": "语音对话进行时，您的麦克风音频会传输到云端语音服务进行处理。音频会离开这台电脑。聊天输入一如既往保留在本地。",
 		"consentAccept": "启用语音",
 		"consentDecline": "暂不",
-		"cloudIndicator": "音频正在传输至 xAI"
+		"cloudIndicator": "音频正在传输到云端"
 	}
 }

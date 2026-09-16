@@ -2525,10 +2525,10 @@
 	},
 	"voice": {
 		"startConversation": "語音對話",
-		"consentTitle": "語音使用 xAI",
-		"consentBody": "語音對話進行時，您的麥克風音訊會傳輸至 xAI（Grok）進行處理。音訊會離開這台電腦。聊天輸入一如既往保留在本機。",
+		"consentTitle": "語音使用雲端服務",
+		"consentBody": "語音對話進行時，您的麥克風音訊會傳輸至雲端語音服務進行處理。音訊會離開這台電腦。聊天輸入一如既往保留在本機。",
 		"consentAccept": "啟用語音",
 		"consentDecline": "暫不",
-		"cloudIndicator": "音訊正在傳輸至 xAI"
+		"cloudIndicator": "音訊正在傳輸至雲端"
 	}
 }

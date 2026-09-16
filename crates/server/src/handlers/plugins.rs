@@ -1073,6 +1073,31 @@ pub fn remove_plugin_by_slug(state: &AppState, slug: &str) -> Result<(), NeboErr
         warn!(plugin = %slug, error = %e, "failed to delete plugin from DB registry");
     }
 
+    // Take the connected accounts with it. Each account's credentials live in a
+    // per-account config dir the plugin owns; removing only the binary left
+    // those files on disk and their rows in the registry, so "remove this
+    // plugin" did not remove what the user had given it, and a reinstall
+    // silently inherited the old credentials.
+    //
+    // ponytail: this does not run the plugin's `auth logout` first — the binary
+    // is already gone by now — so a provider-side token is revoked only when
+    // the account is disconnected before the plugin is uninstalled. Make this
+    // path async and reuse disconnect_account if provider-side revocation on
+    // uninstall starts to matter.
+    match state.store.delete_plugin_account_profiles_for_plugin(slug) {
+        Ok(dirs) => {
+            for dir in dirs {
+                if let Err(e) = std::fs::remove_dir_all(&dir) {
+                    if e.kind() != std::io::ErrorKind::NotFound {
+                        warn!(plugin = %slug, dir = %dir, error = %e,
+                            "failed to remove account credential dir");
+                    }
+                }
+            }
+        }
+        Err(e) => warn!(plugin = %slug, error = %e, "failed to clear account profiles"),
+    }
+
     // Drop the artifact-update-tracking row (plugin prefs are keyed by slug) so
     // the update checker doesn't keep polling an uninstalled plugin.
     let _ = state.store.delete_artifact_update_pref(slug, "plugin");

@@ -2525,10 +2525,10 @@
 	},
 	"voice": {
 		"startConversation": "Spraakgesprek",
-		"consentTitle": "Spraak gebruikt xAI",
-		"consentBody": "Spraakgesprekken streamen je microfoonaudio naar xAI (Grok) voor verwerking zolang een gesprek actief is. Audio verlaat deze computer. Typen in de chat blijft zoals altijd lokaal.",
+		"consentTitle": "Spraak gebruikt een clouddienst",
+		"consentBody": "Spraakgesprekken streamen je microfoonaudio naar een cloudspraakdienst voor verwerking zolang een gesprek actief is. Audio verlaat deze computer. Typen in de chat blijft zoals altijd lokaal.",
 		"consentAccept": "Spraak inschakelen",
 		"consentDecline": "Niet nu",
-		"cloudIndicator": "Audio wordt gestreamd naar xAI"
+		"cloudIndicator": "Audio wordt naar de cloud gestreamd"
 	}
 }

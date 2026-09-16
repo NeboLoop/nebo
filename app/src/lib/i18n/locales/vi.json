@@ -2525,10 +2525,10 @@
 	},
 	"voice": {
 		"startConversation": "Trò chuyện bằng giọng nói",
-		"consentTitle": "Giọng nói sử dụng xAI",
-		"consentBody": "Trò chuyện bằng giọng nói truyền âm thanh micrô của bạn đến xAI (Grok) để xử lý khi cuộc gọi đang diễn ra. Âm thanh rời khỏi máy tính này. Nhập văn bản trong trò chuyện vẫn cục bộ như trước.",
+		"consentTitle": "Giọng nói sử dụng dịch vụ đám mây",
+		"consentBody": "Trò chuyện bằng giọng nói truyền âm thanh micrô của bạn đến một dịch vụ giọng nói trên đám mây để xử lý khi cuộc gọi đang diễn ra. Âm thanh rời khỏi máy tính này. Nhập văn bản trong trò chuyện vẫn cục bộ như trước.",
 		"consentAccept": "Bật giọng nói",
 		"consentDecline": "Để sau",
-		"cloudIndicator": "Âm thanh đang truyền đến xAI"
+		"cloudIndicator": "Âm thanh đang được truyền lên đám mây"
 	}
 }

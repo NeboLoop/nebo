@@ -2525,10 +2525,10 @@
 	},
 	"voice": {
 		"startConversation": "Perbualan suara",
-		"consentTitle": "Suara menggunakan xAI",
-		"consentBody": "Perbualan suara menstrim audio mikrofon anda ke xAI (Grok) untuk diproses semasa panggilan aktif. Audio meninggalkan komputer ini. Menaip dalam sembang kekal setempat seperti biasa.",
+		"consentTitle": "Suara menggunakan perkhidmatan awan",
+		"consentBody": "Perbualan suara menstrim audio mikrofon anda ke perkhidmatan suara awan untuk diproses semasa panggilan aktif. Audio meninggalkan komputer ini. Menaip dalam sembang kekal setempat seperti biasa.",
 		"consentAccept": "Aktifkan suara",
 		"consentDecline": "Bukan sekarang",
-		"cloudIndicator": "Audio sedang distrim ke xAI"
+		"cloudIndicator": "Audio sedang distrim ke awan"
 	}
 }

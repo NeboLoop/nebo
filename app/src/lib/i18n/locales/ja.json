@@ -2525,10 +2525,10 @@
 	},
 	"voice": {
 		"startConversation": "音声会話",
-		"consentTitle": "音声はxAIを使用します",
-		"consentBody": "音声会話では、通話中にマイクの音声が処理のためxAI（Grok）へ送信されます。音声はこのコンピュータの外に出ます。チャットの入力はこれまで通りローカルのままです。",
+		"consentTitle": "音声はクラウドサービスを使用します",
+		"consentBody": "音声会話では、通話中にマイクの音声が処理のためクラウド音声サービスへ送信されます。音声はこのコンピュータの外に出ます。チャットの入力はこれまで通りローカルのままです。",
 		"consentAccept": "音声を有効にする",
 		"consentDecline": "今はしない",
-		"cloudIndicator": "音声をxAIへ送信中"
+		"cloudIndicator": "音声をクラウドへ送信中"
 	}
 }

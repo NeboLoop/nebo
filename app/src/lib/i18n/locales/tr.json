@@ -2525,10 +2525,10 @@
 	},
 	"voice": {
 		"startConversation": "Sesli görüşme",
-		"consentTitle": "Ses xAI kullanır",
-		"consentBody": "Sesli görüşme, arama etkinken mikrofon sesinizi işlenmek üzere xAI'ye (Grok) aktarır. Ses bu bilgisayardan çıkar. Sohbette yazmak her zamanki gibi yerel kalır.",
+		"consentTitle": "Ses bir bulut hizmeti kullanır",
+		"consentBody": "Sesli görüşme, arama etkinken mikrofon sesinizi işlenmek üzere bir bulut ses hizmetine aktarır. Ses bu bilgisayardan çıkar. Sohbette yazmak her zamanki gibi yerel kalır.",
 		"consentAccept": "Sesi etkinleştir",
 		"consentDecline": "Şimdi değil",
-		"cloudIndicator": "Ses xAI'ye aktarılıyor"
+		"cloudIndicator": "Ses buluta aktarılıyor"
 	}
 }

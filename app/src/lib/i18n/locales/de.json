@@ -2525,10 +2525,10 @@
 	},
 	"voice": {
 		"startConversation": "Sprachgespräch",
-		"consentTitle": "Sprache nutzt xAI",
-		"consentBody": "Sprachgespräche streamen dein Mikrofon-Audio zur Verarbeitung an xAI (Grok), solange ein Anruf aktiv ist. Audio verlässt diesen Computer. Tippen im Chat bleibt wie immer lokal.",
+		"consentTitle": "Sprache nutzt einen Cloud-Dienst",
+		"consentBody": "Sprachgespräche streamen dein Mikrofon-Audio zur Verarbeitung an einen Cloud-Sprachdienst, solange ein Anruf aktiv ist. Audio verlässt diesen Computer. Tippen im Chat bleibt wie immer lokal.",
 		"consentAccept": "Sprache aktivieren",
 		"consentDecline": "Jetzt nicht",
-		"cloudIndicator": "Audio wird an xAI gestreamt"
+		"cloudIndicator": "Audio wird in die Cloud gestreamt"
 	}
 }

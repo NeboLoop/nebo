@@ -2525,10 +2525,10 @@
 	},
 	"voice": {
 		"startConversation": "음성 대화",
-		"consentTitle": "음성은 xAI를 사용합니다",
-		"consentBody": "음성 대화 중에는 마이크 오디오가 처리를 위해 xAI(Grok)로 전송됩니다. 오디오가 이 컴퓨터를 벗어납니다. 채팅 입력은 언제나처럼 로컬에 유지됩니다.",
+		"consentTitle": "음성은 클라우드 서비스를 사용합니다",
+		"consentBody": "음성 대화 중에는 마이크 오디오가 처리를 위해 클라우드 음성 서비스로 전송됩니다. 오디오가 이 컴퓨터를 벗어납니다. 채팅 입력은 언제나처럼 로컬에 유지됩니다.",
 		"consentAccept": "음성 사용",
 		"consentDecline": "나중에",
-		"cloudIndicator": "오디오가 xAI로 전송 중"
+		"cloudIndicator": "오디오를 클라우드로 전송 중"
 	}
 }
