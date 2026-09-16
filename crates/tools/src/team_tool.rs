@@ -86,7 +86,7 @@ impl TeamTool {
             .into_iter()
             .map(|(id, name)| {
                 if id == team.organizer_agent_id {
-                    format!("{name} (organizer, id: {id})")
+                    format!("{name} (lead, id: {id})")
                 } else {
                     format!("{name} (id: {id})")
                 }
@@ -511,7 +511,7 @@ mod tests {
 
         let listed = tool.execute_dyn(&ctx, serde_json::json!({"action": "list"})).await;
         assert!(listed.content.contains("Operations"), "{}", listed.content);
-        assert!(listed.content.contains("Chief of Staff (organizer"), "{}", listed.content);
+        assert!(listed.content.contains("Chief of Staff (lead"), "{}", listed.content);
     }
 
     /// A comm plugin that reports no loops (loopback) is the same as none.

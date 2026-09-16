@@ -288,6 +288,25 @@ pub fn normalize_mentions(text: &str, roster: &[(String, String)]) -> String {
     t
 }
 
+/// Whether a post summons the whole team: an explicit `@everyone` (or
+/// `@team`, `@all`) as its own word. Only the owner or the lead is honoured
+/// for it — see `act_targets` — so a member reply cannot start a storm.
+pub fn mentions_everyone(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    ["@everyone", "@team", "@all"].iter().any(|tok| {
+        let mut from = 0;
+        while let Some(pos) = lower[from..].find(tok) {
+            let end = from + pos + tok.len();
+            let boundary = lower[end..].chars().next().map_or(true, |c| !c.is_alphanumeric() && c != '-' && c != '_');
+            if boundary {
+                return true;
+            }
+            from = end;
+        }
+        false
+    })
+}
+
 /// The team members addressed by `<@id>` tokens in a (normalized) post, in
 /// order of first appearance, deduplicated.
 pub fn mentioned_members(text: &str, member_ids: &[String]) -> Vec<String> {
@@ -303,6 +322,16 @@ pub fn mentioned_members(text: &str, member_ids: &[String]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn everyone_is_a_whole_word() {
+        assert!(mentions_everyone("@everyone: status by noon"));
+        assert!(mentions_everyone("hey @Team, thoughts?"));
+        assert!(mentions_everyone("@all"));
+        assert!(!mentions_everyone("@allison can you take this"));
+        assert!(!mentions_everyone("@team-lead please"));
+        assert!(!mentions_everyone("everyone, no at sign"));
+    }
 
     fn store() -> Store {
         let path = std::env::temp_dir().join(format!("nebo-team-tool-{}.db", uuid::Uuid::new_v4()));

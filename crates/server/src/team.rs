@@ -9,11 +9,13 @@
 //! 3. forwards it to the team's hub channel when the team is mirrored —
 //!    best effort, never on the critical path.
 //!
-//! Turn-taking (the chatter-storm guard) is `act_targets`: a post carrying
-//! mentions asks only the mentioned members to act; a deliberate post with
-//! no mention from the owner or the organizer opens the floor and every
-//! member may answer once; a reply (any member's, the organizer's included)
-//! asks nobody unless it mentions someone.
+//! Turn-taking (the chatter-storm guard) is `act_targets`: the team lead
+//! manages the room. A post carrying mentions asks only the mentioned
+//! members to act; the owner's unaddressed post goes to the lead alone,
+//! who answers the owner and hands steps to teammates by mention; only an
+//! explicit @everyone (from the owner or the lead) asks the whole team; a
+//! reply asks nobody unless it mentions someone. A team with no lead falls
+//! back to everyone once, so nothing is ever left unanswered.
 //! Every delivery carries the depth of the post that caused it, and the
 //! rail's existing depth limit refuses past it.
 
@@ -28,17 +30,33 @@ use crate::state::AppState;
 ///
 /// - mentions present: the mentioned members (that are in the team), never
 ///   the poster itself;
-/// - no mentions, a deliberate post (`is_reply` false) by the owner
-///   (`from_agent_id` empty) or the organizer: every other member, once;
-/// - no mentions, anything else — a reply, or another member's post:
-///   nobody (a reply never re-opens the floor).
+/// - `everyone` (an explicit @everyone) from the owner (`from_agent_id`
+///   empty) or the lead: every other member, once — even in a reply, since
+///   the lead runs the room;
+/// - no mentions, a deliberate post (`is_reply` false) by the owner: the
+///   lead alone; with no lead on record, every member once;
+/// - anything else — the lead's own unaddressed post, a reply, another
+///   member's post: nobody. The lead delegates by mention, not by posting.
 pub(crate) fn act_targets(
     from_agent_id: &str,
     organizer_agent_id: &str,
     members: &[String],
     mentioned: &[String],
     is_reply: bool,
+    everyone: bool,
 ) -> Vec<String> {
+    let others = || -> Vec<String> {
+        members
+            .iter()
+            .filter(|m| m.as_str() != from_agent_id)
+            .cloned()
+            .collect()
+    };
+    let from_owner = from_agent_id.is_empty();
+    let from_lead = !organizer_agent_id.is_empty() && from_agent_id == organizer_agent_id;
+    if everyone && (from_owner || from_lead) {
+        return others();
+    }
     if !mentioned.is_empty() {
         let mut out: Vec<String> = Vec::new();
         for m in mentioned {
@@ -48,17 +66,13 @@ pub(crate) fn act_targets(
         }
         return out;
     }
-    let opens_floor = !is_reply
-        && (from_agent_id.is_empty()
-            || (!organizer_agent_id.is_empty() && from_agent_id == organizer_agent_id));
-    if !opens_floor {
+    if !from_owner || is_reply {
         return Vec::new();
     }
-    members
-        .iter()
-        .filter(|m| m.as_str() != from_agent_id)
-        .cloned()
-        .collect()
+    if !organizer_agent_id.is_empty() && members.contains(&organizer_agent_id.to_string()) {
+        return vec![organizer_agent_id.to_string()];
+    }
+    others()
 }
 
 /// Post into a team. Boxed because a member's reply is itself a post (the
@@ -140,6 +154,7 @@ pub(crate) fn post(
             &team.member_agent_ids,
             &mentioned,
             post.is_reply,
+            tools::team::mentions_everyone(&text),
         );
         let mut asked: Vec<String> = Vec::new();
         for (member_id, member_name) in &roster {
@@ -256,42 +271,49 @@ mod tests {
         (1..=n).map(|i| format!("m{i}")).collect()
     }
 
-    /// Simulate the fan-out policy end to end: one deliberate post, then
-    /// every member asked to act replies (with no mentions), and each reply
-    /// is itself a post flagged as a reply. Returns the number of runs
-    /// (deliveries that ask a member to act) until nobody is asked any more.
-    fn simulate(first_from: &str, organizer: &str, members: &[String], mentioned: &[String]) -> usize {
+    /// Simulate the fan-out policy end to end: one post, then every member
+    /// asked to act replies (with no mentions), each reply itself a post
+    /// flagged as a reply. Returns the number of runs until nobody is asked.
+    fn simulate(first_from: &str, lead: &str, members: &[String], mentioned: &[String], everyone: bool) -> usize {
         let mut runs = 0usize;
-        let mut queue: Vec<(String, Vec<String>, bool)> =
-            vec![(first_from.to_string(), mentioned.to_vec(), false)];
+        let mut queue: Vec<(String, Vec<String>, bool, bool)> =
+            vec![(first_from.to_string(), mentioned.to_vec(), false, everyone)];
         let mut guard = 0usize;
-        while let Some((from, mentions, is_reply)) = queue.pop() {
+        while let Some((from, mentions, is_reply, all)) = queue.pop() {
             guard += 1;
             assert!(guard < 1_000, "fan-out did not converge");
-            for target in act_targets(&from, organizer, members, &mentions, is_reply) {
+            for target in act_targets(&from, lead, members, &mentions, is_reply, all) {
                 runs += 1;
-                // The member's reply: a post from it with no mentions.
-                queue.push((target, Vec::new(), true));
+                queue.push((target, Vec::new(), true, false));
             }
         }
         runs
     }
 
-    /// The addendum's guarantee: a five-member team does not loop. An owner
-    /// post opens the floor, every member (the organizer included) replies
-    /// exactly once, and no reply causes a further delivery that asks anyone
-    /// to act.
+    /// The owner's unaddressed post reaches the lead alone; the lead's reply
+    /// asks nobody; a five-member team runs exactly once.
     #[test]
-    fn five_member_team_does_not_loop() {
+    fn owner_post_goes_to_the_lead_alone() {
         let team = members(5);
-        assert_eq!(simulate("", "m1", &team, &[]), 5);
-        // The organizer deliberately posting again re-opens the floor:
-        // everyone but itself, once.
-        assert_eq!(simulate("m1", "m1", &team, &[]), 4);
-        // A non-organizer member's unaddressed post asks nobody; neither
-        // does the organizer's REPLY.
-        assert_eq!(simulate("m3", "m1", &team, &[]), 0);
-        assert!(act_targets("m1", "m1", &team, &[], true).is_empty());
+        assert_eq!(act_targets("", "m1", &team, &[], false, false), vec!["m1".to_string()]);
+        assert_eq!(simulate("", "m1", &team, &[], false), 1);
+        // The lead posting without addressing anyone asks nobody: it
+        // delegates by mention, not by posting.
+        assert!(act_targets("m1", "m1", &team, &[], false, false).is_empty());
+        // A non-lead member's unaddressed post asks nobody either.
+        assert!(act_targets("m3", "m1", &team, &[], false, false).is_empty());
+    }
+
+    /// @everyone from the owner or the lead asks the whole team once — and
+    /// still does not loop, because replies never re-open the floor.
+    #[test]
+    fn everyone_asks_the_whole_team_once() {
+        let team = members(5);
+        assert_eq!(act_targets("", "m1", &team, &[], false, true), team);
+        assert_eq!(simulate("", "m1", &team, &[], true), 5);
+        assert_eq!(act_targets("m1", "m1", &team, &[], true, true).len(), 4);
+        // A member who is not the lead cannot summon everyone.
+        assert!(act_targets("m3", "m1", &team, &[], false, true).is_empty());
     }
 
     /// Mentions narrow the ask to the mentioned members only, whoever posts;
@@ -300,22 +322,22 @@ mod tests {
     fn mentions_ask_only_the_mentioned() {
         let team = members(5);
         assert_eq!(
-            act_targets("", "m1", &team, &["m2".into(), "m4".into()], false),
+            act_targets("", "m1", &team, &["m2".into(), "m4".into()], false, false),
             vec!["m2".to_string(), "m4".to_string()]
         );
         assert_eq!(
-            act_targets("m3", "m1", &team, &["m3".into(), "m5".into(), "zed".into()], true),
+            act_targets("m3", "m1", &team, &["m3".into(), "m5".into(), "zed".into()], true, false),
             vec!["m5".to_string()]
         );
-        assert_eq!(simulate("m3", "m1", &team, &["m5".into()]), 1);
+        assert_eq!(simulate("m3", "m1", &team, &["m5".into()], false), 1);
     }
 
-    /// The owner always reaches everyone and resets the floor even when the
-    /// team has no organizer on record.
+    /// With no lead on record the owner still reaches everyone once, so a
+    /// team is never left unanswered.
     #[test]
-    fn owner_opens_the_floor_without_an_organizer() {
+    fn owner_reaches_everyone_without_a_lead() {
         let team = members(3);
-        assert_eq!(act_targets("", "", &team, &[], false), team);
-        assert!(act_targets("m2", "", &team, &[], false).is_empty());
+        assert_eq!(act_targets("", "", &team, &[], false, false), team);
+        assert!(act_targets("m2", "", &team, &[], false, false).is_empty());
     }
 }

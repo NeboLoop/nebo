@@ -195,10 +195,13 @@ pub(crate) async fn send_coworker_message(
                 roster.join(", ")
             };
             let floor = if t.organizer_agent_id == to_id {
-                " You are the ORGANIZER of this team: your posts re-open the floor for everyone, so \
-                 post when you have something for the whole team to act on."
+                " You are the TEAM LEAD: the owner's posts come to you alone. Answer the owner \
+                 yourself, and hand a step to a teammate by writing their token with a specific \
+                 ask — only the teammates you address act. Write @everyone only when the whole \
+                 team must answer."
             } else {
-                ""
+                " You act only when addressed — by the owner, the lead, or a teammate — and the \
+                 lead runs the room; an owner post that does not name you is the lead's to answer."
             };
             (
                 format!(
@@ -211,8 +214,8 @@ pub(crate) async fn send_coworker_message(
                      Your reply is posted to the team automatically — do NOT relay it via other tools. \
                      Report concrete results: artifact, status, blockers, next action. To hand a step to \
                      a teammate, write their token exactly as listed in Teammates with a specific ask; a teammate you address \
-                     acts, and if you address no one your reply ends the exchange (each member answers \
-                     once per open post; only the organizer or the owner re-opens the floor). \
+                     acts, and if you address no one your reply ends the exchange (a reply never asks \
+                     anyone; only the owner or the lead can summon the whole team, with @everyone). \
                      Teammates are persistent experts with their own instructions and access — never \
                      spawn sub-agents to do a teammate's job.{floor}",
                     name = t.name,

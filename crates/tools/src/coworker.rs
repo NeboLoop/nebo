@@ -99,8 +99,8 @@ pub struct TeamPost {
     pub provenance: Vec<types::provenance::ProvenanceClass>,
     /// True when this post is a member's reply to a delivery (set by the
     /// rail's collector), false for a deliberate post (tool or app). A reply
-    /// never re-opens the floor, even the organizer's; its mentions still
-    /// ask.
+    /// asks nobody on its own — even the lead's; its mentions still ask, and
+    /// the lead's @everyone still summons the team.
     pub is_reply: bool,
 }
 
