@@ -12,7 +12,7 @@
 	import * as api from '$lib/api/nebo';
 	import { type AppItem, toAppItem } from '$lib/types/marketplace';
 	import ResumeCard from '$lib/components/marketplace/ResumeCard.svelte';
-	import { loadMarketplaceMap, deptFromSlug, toolCatFromSlug, type MarketplaceMap } from '$lib/data/marketplaceMap';
+	import { loadMarketplaceMap, deptFromSlug, toolCatFromSlug, mapSlugify, type MarketplaceMap } from '$lib/data/marketplaceMap';
 	import { slugify, categoryMeta } from '$lib/data/categories';
 
 	const KIND_TYPE: Record<string, string> = {
@@ -154,7 +154,9 @@
 		// Sidebar map filter (same scheme as the website): agents narrow by
 		// department; tool-type kinds and collections narrow by tool category.
 		if (kind === 'agents' && deptFilter) result = result.filter((it) => mapOf(it)?.dept === deptFilter);
-		else if (tcFilter && ['apps', 'skills', 'plugins', 'connectors', 'collections'].includes(kind))
+		// Connections (MCP servers) narrow by marketplace category, like the website.
+		else if (kind === 'connectors' && filter) result = result.filter((it) => mapSlugify(it.category) === filter);
+		else if (tcFilter && ['apps', 'skills', 'plugins', 'collections'].includes(kind))
 			result = result.filter((it) => mapOf(it)?.tc === tcFilter);
 		if (kind === 'collections' && searchActive) {
 			const q = searchQ.trim().toLowerCase();
