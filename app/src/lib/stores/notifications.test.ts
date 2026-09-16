@@ -24,7 +24,7 @@ describe('unreadCount', () => {
 	it('recognizes the three approval id shapes and nothing else', () => {
 		expect(approvalRef('wf-approval:run-1')).toEqual({ kind: 'workflow', id: 'run-1' });
 		expect(approvalRef('learn:p-1')).toEqual({ kind: 'learning', id: 'p-1' });
-		expect(approvalRef('artifact-update:skill:art-1:1.2.0')).toEqual({ kind: 'update', id: 'art-1' });
+		expect(approvalRef('artifact-update:skill:art-1:1.2.0')).toEqual({ kind: 'update', id: 'art-1', version: '1.2.0' });
 		expect(approvalRef('wf-fail:run-1')).toBeNull();
 	});
 });
