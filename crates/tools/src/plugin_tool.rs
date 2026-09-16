@@ -2033,13 +2033,21 @@ impl PluginTool {
                     text = "(command exited 0 with no stdout or stderr)".to_string();
                 }
 
-                // Truncate very long output (char-boundary safe)
+                // Truncate very long output (char-boundary safe). Say what the
+                // cut means and what to do, because "truncated" alone reads as
+                // a transient failure: a store manager re-ran the same 98 KB
+                // schema dump eight times (2026-09-16), getting the same half a
+                // JSON document each time, until the spiral guard stopped it.
                 if text.len() > crate::MAX_SUBPROCESS_OUTPUT {
                     let total = text.len();
                     types::strutil::safe_truncate(&mut text, crate::MAX_SUBPROCESS_OUTPUT);
                     text.push_str(&format!(
-                        "\n[output truncated: showing first {} of {} bytes]",
-                        crate::MAX_SUBPROCESS_OUTPUT, total
+                        "\n\n[Cut off: this is the first {} bytes of {}. The rest is gone, so any \
+                         JSON here ends mid-structure and cannot be parsed. Running it again returns \
+                         the same first {} bytes — ask a narrower question instead: one record \
+                         rather than a list, one type rather than a whole schema, a smaller page \
+                         size, or a filter.]",
+                        crate::MAX_SUBPROCESS_OUTPUT, total, crate::MAX_SUBPROCESS_OUTPUT
                     ));
                 }
 
