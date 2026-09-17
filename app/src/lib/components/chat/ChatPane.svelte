@@ -1247,7 +1247,7 @@
           </span>
         {/if}
         {#if headerTitle && headerTitle !== agentName}
-          <span class="text-sm text-base-content/50 truncate">{headerTitle}</span>
+          <span class="text-sm text-base-content/70 truncate">{headerTitle}</span>
         {/if}
       </span>
       <div class="ml-auto max-lg:hidden flex items-center gap-0.5 shrink-0">
@@ -1288,7 +1288,7 @@
           </button>
         {/if}
         <div class="dropdown dropdown-end">
-          <div tabindex="0" role="button" aria-label={$t('common.more')} class="w-10 h-10 rounded-md flex items-center justify-center cursor-pointer text-base-content/60 hover:text-base-content hover:bg-base-200">
+          <div tabindex="0" role="button" aria-label={$t('common.more')} class="w-10 h-10 rounded-md flex items-center justify-center cursor-pointer text-base-content/70 hover:text-base-content hover:bg-base-200">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></svg>
           </div>
           <ul class="dropdown-content menu z-[55] mt-1 w-48 rounded-box border border-base-300 bg-base-100 p-1.5 shadow-lg">
@@ -1314,7 +1314,7 @@
   <!-- Messages / Empty state -->
   {#if !hasMessages && historyLoading}
     <div class="flex-1 flex items-center justify-center p-6">
-      <span class="loading loading-spinner loading-md text-base-content/40"></span>
+      <span class="loading loading-spinner loading-md text-base-content/70"></span>
     </div>
   {:else if !hasMessages && emptyTitle}
     <div class="flex-1 flex flex-col items-center justify-center gap-4 p-6">
@@ -1325,7 +1325,7 @@
         <div class="text-2xl font-semibold text-base-content">{emptyTitle}</div>
       {/if}
       {#if emptyDesc}
-        <div class="text-sm text-base-content/50 text-center max-w-[320px] leading-relaxed">{emptyDesc}</div>
+        <div class="text-sm text-base-content/70 text-center max-w-[320px] leading-relaxed">{emptyDesc}</div>
       {/if}
     </div>
   {:else}
@@ -1359,7 +1359,7 @@
       <div class="max-w-[640px] my-1.5">
         <button
           type="button"
-          class="flex items-center gap-1.5 text-xs text-base-content/50 cursor-pointer bg-transparent border-none p-0 hover:text-base-content/70 transition-colors"
+          class="flex items-center gap-1.5 text-xs text-base-content/70 cursor-pointer bg-transparent border-none p-0 hover:text-base-content/90 transition-colors"
           aria-expanded={open}
           onclick={() => (activityOpen[keyId] = !open)}
         >
@@ -1379,7 +1379,7 @@
                 <div class="px-3 py-2 text-xs">
                   <button
                     type="button"
-                    class="flex w-full items-center gap-1.5 text-left bg-transparent border-none p-0 text-base-content/50 {expandable ? 'cursor-pointer hover:text-base-content/70' : 'cursor-default'}"
+                    class="flex w-full items-center gap-1.5 text-left bg-transparent border-none p-0 text-base-content/70 {expandable ? 'cursor-pointer hover:text-base-content/90' : 'cursor-default'}"
                     disabled={!expandable}
                     aria-expanded={expandable ? isExpanded : undefined}
                     onclick={() => toggleResult(step.key)}
@@ -1411,17 +1411,17 @@
                       aria-expanded={expandable ? isExpanded : undefined}
                       onclick={() => toggleResult(step.key)}
                     >
-                      <span class="shrink-0 text-base-content/50">{tool.status === 'running' ? (tool.label ?? tool.name) : stepOutcome(tool)}{#if tool.status === 'running' && tool.statusText}<span class="text-base-content/40 ml-1">{tool.statusText}</span>{/if}</span>
+                      <span class="shrink-0 text-base-content/70">{tool.status === 'running' ? (tool.label ?? tool.name) : stepOutcome(tool)}{#if tool.status === 'running' && tool.statusText}<span class="text-base-content/70 ml-1">{tool.statusText}</span>{/if}</span>
                       {#if tool.status === 'error'}<span class="shrink-0 text-error">{$t('chat.failed')}</span>{/if}
                       {#if meta && !meta.href}<span class="truncate text-base-content/80" title={meta.text}>{meta.text}</span>{/if}
-                      {#if $devMode}<span class="font-mono text-base-content/40 shrink-0">{strapSig(tool)}</span>{/if}
-                      {#if tool.durationMs}<span class="text-base-content/40 shrink-0">{fmtDuration(tool.durationMs)}</span>{/if}
-                      {#if expandable && !meta?.href}<span class="shrink-0 text-base-content/40 transition-transform {isExpanded ? 'rotate-90' : ''}">&rsaquo;</span>{/if}
+                      {#if $devMode}<span class="font-mono text-base-content/70 shrink-0">{strapSig(tool)}</span>{/if}
+                      {#if tool.durationMs}<span class="text-base-content/70 shrink-0">{fmtDuration(tool.durationMs)}</span>{/if}
+                      {#if expandable && !meta?.href}<span class="shrink-0 text-base-content/70 transition-transform {isExpanded ? 'rotate-90' : ''}">&rsaquo;</span>{/if}
                     </button>
                     {#if meta?.href}
                       <a href={meta.href} target="_blank" rel="noopener noreferrer" class="truncate text-primary underline flex-1" title={meta.href}>{meta.text}</a>
                       {#if expandable}
-                        <button type="button" class="shrink-0 bg-transparent border-none p-0 cursor-pointer text-base-content/40 transition-transform {isExpanded ? 'rotate-90' : ''}" aria-expanded={isExpanded} aria-label={$t('chat.result')} onclick={() => toggleResult(step.key)}>&rsaquo;</button>
+                        <button type="button" class="shrink-0 bg-transparent border-none p-0 cursor-pointer text-base-content/70 transition-transform {isExpanded ? 'rotate-90' : ''}" aria-expanded={isExpanded} aria-label={$t('chat.result')} onclick={() => toggleResult(step.key)}>&rsaquo;</button>
                       {/if}
                     {/if}
                   </div>
@@ -1432,18 +1432,18 @@
                     <div class="mt-2 max-w-[560px] rounded-xl border border-base-300 bg-base-100 px-3.5 py-3">
                       <div class="flex items-center gap-2">
                         <span class="text-sm font-medium truncate flex-1">{rs.question ?? $t('chat.researchTitle')}</span>
-                        {#if rs.depth}<span class="text-xs text-base-content/50 font-mono shrink-0">{rs.depth}</span>{/if}
+                        {#if rs.depth}<span class="text-xs text-base-content/70 font-mono shrink-0">{rs.depth}</span>{/if}
                       </div>
                       <div class="flex items-center gap-1.5 mt-1 text-xs text-base-content/70">
                         {#if !rs.complete}
                           <span class="loading loading-spinner loading-xs text-primary"></span>
                           <span>{$t('chat.researchCounting', { values: { n: rs.sources_read ?? 0 } })}</span>
-                          {#if rs.started_ms}<span class="text-base-content/50 font-mono">· {fmtElapsed(clockNow - rs.started_ms)}</span>{/if}
-                          {#if researchPhaseLabel(rs.phase)}<span class="text-base-content/50">· {researchPhaseLabel(rs.phase)}</span>{/if}
+                          {#if rs.started_ms}<span class="text-base-content/70 font-mono">· {fmtElapsed(clockNow - rs.started_ms)}</span>{/if}
+                          {#if researchPhaseLabel(rs.phase)}<span class="text-base-content/70">· {researchPhaseLabel(rs.phase)}</span>{/if}
                         {:else}
                           <span class="w-1.5 h-1.5 rounded-full bg-success"></span>
                           <span>{$t('chat.researchComplete', { values: { n: rs.sources_read ?? 0 } })}</span>
-                          {#if rs.elapsed_ms}<span class="text-base-content/50 font-mono">· {fmtElapsed(rs.elapsed_ms)}</span>{/if}
+                          {#if rs.elapsed_ms}<span class="text-base-content/70 font-mono">· {fmtElapsed(rs.elapsed_ms)}</span>{/if}
                         {/if}
                       </div>
                       {#if rs.angles?.length}
@@ -1461,12 +1461,12 @@
                             <div class="flex items-center gap-2 text-xs">
                               <img src="https://www.google.com/s2/favicons?domain={host}&sz=32" alt="" loading="lazy" class="w-3.5 h-3.5 rounded-sm shrink-0" onerror={(e) => ((e.currentTarget as HTMLImageElement).style.visibility = 'hidden')} />
                               <span class="truncate w-36">{host}</span>
-                              <span class="text-base-content/50 font-mono shrink-0">{count}</span>
+                              <span class="text-base-content/70 font-mono shrink-0">{count}</span>
                               <div class="flex-1 h-1.5 rounded-full bg-base-200 overflow-hidden"><div class="h-full bg-base-content/20" style:width="{Math.round((count / max) * 100)}%"></div></div>
                             </div>
                           {/each}
                           {#if otherDomainCount(rs.domains) > 0}
-                            <span class="text-xs text-base-content/50">{$t('chat.researchOtherDomains', { values: { n: otherDomainCount(rs.domains) } })}</span>
+                            <span class="text-xs text-base-content/70">{$t('chat.researchOtherDomains', { values: { n: otherDomainCount(rs.domains) } })}</span>
                           {/if}
                         </div>
                       {/if}
@@ -1827,11 +1827,11 @@
     {#if isLoading && groupedMessages.length > 0}
       <div class="max-w-[640px] mt-3 py-2 flex items-center gap-2">
         <span class="loading loading-spinner loading-xs text-primary"></span>
-        <span class="text-sm text-base-content/50 animate-pulse">{activityStatus || $t('chat.working')}</span>
+        <span class="text-sm text-base-content/70 animate-pulse">{activityStatus || $t('chat.working')}</span>
       </div>
     {/if}
     {#if !isLoading && contextStats && (contextStats.redundantReads > 0 || contextStats.compactionPasses > 0)}
-      <div class="max-w-[640px] mt-2 text-xs text-base-content/40">
+      <div class="max-w-[640px] mt-2 text-xs text-base-content/70">
         {$t('chat.contextStats', { values: { files: contextStats.filesReread, times: contextStats.redundantReads, passes: contextStats.compactionPasses } })}
       </div>
     {/if}
