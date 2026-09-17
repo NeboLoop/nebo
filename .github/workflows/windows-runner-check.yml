@@ -84,9 +84,15 @@ jobs:
         shell: bash
         run: command -v protoc >/dev/null || choco install protoc -y --no-progress
 
+      # Into a directory the runner's account owns: the copy under C:\rust
+      # belongs to the user who set the box up, and executing it as the
+      # service account fails with "Access is denied".
       - name: Install Tauri CLI
         shell: bash
-        run: cargo install tauri-cli --version "${{ env.TAURI_CLI_VERSION }}" --locked
+        run: |
+          TOOLS="$(cygpath -u "$RUNNER_TEMP")/../../cargo-tools"
+          [ -x "$TOOLS/bin/cargo-tauri.exe" ] || cargo install tauri-cli --version "${{ env.TAURI_CLI_VERSION }}" --locked --root "$(cygpath -w "$TOOLS")"
+          cygpath -w "$TOOLS/bin" >> "$GITHUB_PATH"
 
       - name: Build & stage Obscura sidecars (from fork)
         shell: bash
