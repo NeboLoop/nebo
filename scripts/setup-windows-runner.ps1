@@ -56,6 +56,15 @@ if (-not (Get-Command choco -ErrorAction SilentlyContinue)) {
   $env:Path = [Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [Environment]::GetEnvironmentVariable("Path", "User")
 }
 
+# A workflow's PowerShell steps are temp .ps1 files; a box whose policy is
+# Restricted refuses them ("running scripts is disabled on this system").
+# Hosted runners are Unrestricted; RemoteSigned is enough here. PowerShell 7
+# (pwsh) is what the runner picks as the default shell when present, and the
+# signing action wants it.
+Step "Execution policy + PowerShell 7"
+Set-ExecutionPolicy RemoteSigned -Scope LocalMachine -Force
+choco install -y --no-progress powershell-core
+
 Step "Git, Node, pnpm, protoc, .NET runtime (for the signing action), 7zip"
 choco install -y --no-progress git nodejs-lts protoc dotnet-8.0-runtime 7zip
 $env:Path = [Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [Environment]::GetEnvironmentVariable("Path", "User")
