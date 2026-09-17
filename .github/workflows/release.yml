@@ -453,6 +453,10 @@ jobs:
       - uses: digitalocean/action-doctl@v2
         with:
           token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+      # A just-in-time runner carries ONLY the labels named here — none of
+      # the self-hosted/Linux/X64 defaults a config.sh runner gets — so the
+      # build's runs-on list must be spelled out in full (v0.14.3 queued
+      # until the labels were added by hand).
       - name: Mint a one-job runner registration
         id: jit
         env:
@@ -460,6 +464,7 @@ jobs:
         run: |
           cfg=$(gh api -X POST orgs/${{ github.repository_owner }}/actions/runners/generate-jitconfig \
             -f name="do-amd64-${{ github.run_id }}" -F runner_group_id=1 -f work_folder=_work \
+            -f "labels[]=self-hosted" -f "labels[]=Linux" -f "labels[]=X64" \
             -f "labels[]=nebo-amd64-${{ github.run_id }}" -q .encoded_jit_config)
           echo "::add-mask::$cfg"
           echo "config=$cfg" >> "$GITHUB_OUTPUT"
