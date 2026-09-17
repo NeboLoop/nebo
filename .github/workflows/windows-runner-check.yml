@@ -1,0 +1,98 @@
+name: Windows runner check
+
+# Proves the house Windows runner can produce the Windows desktop build
+# exactly as release.yml's build-windows job does — minus signing, bundled
+# .napps and publishing — without cutting a tag. Run it after setting up or
+# changing the box (scripts/setup-windows-runner.ps1), and read the timings:
+# the second run is the warm one.
+
+on:
+  workflow_dispatch:
+
+env:
+  RUST_VERSION: "1.95"
+  NODE_VERSION: "22"
+  OBSCURA_FORK: "https://github.com/localrivet/obscura"
+  RIPGREP_VERSION: "14.1.1"
+  OBSCURA_REF: "chromiumoxide-cdp-compat"
+  TAURI_CLI_VERSION: "2.11.4"
+
+jobs:
+  build:
+    runs-on: [self-hosted, Windows, X64, stadium-win]
+    timeout-minutes: 90
+    env:
+      RUSTC_WRAPPER: ""
+      # Beside the checkout, as on the other house runners, so the cache
+      # survives checkout's wipe of the workspace.
+      CARGO_TARGET_DIR: ${{ github.workspace }}\..\nebo-target-windows
+      OBSCURA_TARGET_DIR: ${{ github.workspace }}\..\obscura-target-windows
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Who am I, and what is on PATH
+        shell: pwsh
+        run: |
+          whoami
+          "HOME=$env:USERPROFILE"
+          foreach ($t in "git","node","npm","choco","cargo","rustc","cargo-tauri","protoc","dotnet") {
+            $c = Get-Command $t -ErrorAction SilentlyContinue
+            "{0,-12} {1}" -f $t, ($(if ($c) { $c.Source } else { "MISSING" }))
+          }
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Build frontend
+        shell: bash
+        run: |
+          npm install -g pnpm@10.33.2
+          cd app
+          pnpm install --frozen-lockfile
+          pnpm exec svelte-kit sync
+          pnpm run build
+
+      - name: Install protobuf compiler
+        run: choco install protoc -y --no-progress
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "${{ env.TAURI_CLI_VERSION }}" --locked
+
+      - name: Build & stage Obscura sidecars (from fork)
+        shell: bash
+        run: |
+          TRIPLE="$(rustc -vV | sed -n 's/^host: //p')"
+          rm -rf obscura-src
+          git clone --depth 1 --branch "$OBSCURA_REF" "$OBSCURA_FORK" obscura-src
+          ( cd obscura-src && CARGO_TARGET_DIR="$OBSCURA_TARGET_DIR" cargo build --release -p obscura-cli )
+          mkdir -p src-tauri/binaries
+          for bin in obscura obscura-worker; do
+            cp "$OBSCURA_TARGET_DIR/release/${bin}.exe" "src-tauri/binaries/${bin}-${TRIPLE}.exe"
+          done
+          ls -la src-tauri/binaries
+
+      - name: Stage ripgrep sidecar (official release)
+        shell: bash
+        run: |
+          TRIPLE="$(rustc -vV | sed -n 's/^host: //p')"
+          NAME="ripgrep-${RIPGREP_VERSION}-x86_64-pc-windows-msvc"
+          curl -sSfL -o rg.zip "https://github.com/BurntSushi/ripgrep/releases/download/${RIPGREP_VERSION}/${NAME}.zip"
+          7z x -y rg.zip > /dev/null
+          cp "${NAME}/rg.exe" "src-tauri/binaries/rg-${TRIPLE}.exe"
+
+      - name: Build Tauri desktop app
+        shell: bash
+        run: |
+          rm -rf "$CARGO_TARGET_DIR/release/bundle"
+          cargo tauri build --bundles nsis
+
+      - name: What was built
+        shell: bash
+        run: |
+          ls -la "$CARGO_TARGET_DIR/release/nebo.exe" "$CARGO_TARGET_DIR"/release/bundle/nsis/*.exe
