@@ -215,6 +215,25 @@ export interface AuthProfile {
 	authType?: string
 }
 
+export interface Backup {
+	id: string
+	path: string
+	takenAt: number
+	reason: string
+	bytes: number
+	integrity: string
+	shippedAt?: number
+	fileId?: string
+}
+
+export interface BackupResponse {
+	backup: Backup
+}
+
+export interface BackupsResponse {
+	backups: Backup[]
+}
+
 export interface BillingPriceInfo {
 	id?: string
 	stripePriceId?: string

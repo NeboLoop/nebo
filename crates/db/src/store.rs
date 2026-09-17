@@ -6,6 +6,8 @@ use types::NeboError;
 /// Provides typed query methods matching the Go sqlc-generated Store.
 pub struct Store {
     pool: DbPool,
+    /// Where the database lives; the snapshot ring sits beside it.
+    pub(crate) path: String,
 }
 
 impl Store {
@@ -21,7 +23,12 @@ impl Store {
             migrate::run_migrations(&conn)?;
         }
 
-        Ok(Self { pool })
+        let store = Self { pool, path: db_path.to_string() };
+        // The migrator's copies are backups too; one list, not a folder.
+        if let Err(e) = store.adopt_pre_migration_copies() {
+            tracing::warn!(error = %e, "could not adopt pre-migration copies into the backup ring");
+        }
+        Ok(store)
     }
 
     /// Get a connection from the pool.
