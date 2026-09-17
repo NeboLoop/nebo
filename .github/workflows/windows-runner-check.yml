@@ -30,6 +30,25 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The box's machine-wide execution policy is Restricted and its runner
+      # service runs as NETWORK SERVICE, which cannot change that. It CAN set
+      # the policy for itself (CurrentUser outranks LocalMachine), and a
+      # portable PowerShell 7 beside the runner gives the composite actions
+      # the pwsh they ask for. Git Bash is not subject to the policy, so this
+      # step is what gets every later PowerShell step through.
+      - name: Runner prep (no admin needed)
+        shell: bash
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -Command "Set-ExecutionPolicy RemoteSigned -Scope CurrentUser -Force; Get-ExecutionPolicy -List | Out-String"
+          PWSH_DIR="$(cygpath -u "$RUNNER_TEMP")/../../pwsh7"
+          if [ ! -x "$PWSH_DIR/pwsh.exe" ]; then
+            curl -sSfL -o pwsh.zip https://github.com/PowerShell/PowerShell/releases/download/v7.4.6/PowerShell-7.4.6-win-x64.zip
+            powershell -NoProfile -ExecutionPolicy Bypass -Command "Expand-Archive -Force pwsh.zip '$(cygpath -w "$PWSH_DIR")'"
+            rm -f pwsh.zip
+          fi
+          "$PWSH_DIR/pwsh.exe" -NoProfile -ExecutionPolicy Bypass -Command "Set-ExecutionPolicy RemoteSigned -Scope CurrentUser -Force; \$PSVersionTable.PSVersion.ToString()"
+          cygpath -w "$PWSH_DIR" >> "$GITHUB_PATH"
+
       - name: Who am I, and what is on PATH
         shell: powershell
         run: |
@@ -59,9 +78,11 @@ jobs:
           pnpm run build
 
       - name: Install protobuf compiler
-        run: choco install protoc -y --no-progress
+        shell: bash
+        run: command -v protoc >/dev/null || choco install protoc -y --no-progress
 
       - name: Install Tauri CLI
+        shell: bash
         run: cargo install tauri-cli --version "${{ env.TAURI_CLI_VERSION }}" --locked
 
       - name: Build & stage Obscura sidecars (from fork)
