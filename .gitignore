@@ -39,3 +39,4 @@ src-tauri/binaries/
 /target-linux-amd64
 appimage-build.log
 target-check/
+target-wt/
