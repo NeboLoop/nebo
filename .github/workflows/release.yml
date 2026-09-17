@@ -1020,7 +1020,8 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add Casks/nebo.rb
           git rm -f Formula/nebo.rb 2>/dev/null || true
-          git commit -m "Update nebo to ${{ github.ref_name }}"
+          # A re-run of a partial release finds the tap already at this version.
+          git commit -m "Update nebo to ${{ github.ref_name }}" || echo "No changes"
           git push
 
   # ─── Update APT repository (cross-repo) ──────────────────────────────
