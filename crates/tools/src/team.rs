@@ -11,7 +11,7 @@
 use std::sync::Arc;
 
 use comm::CommPlugin;
-use db::{Store, Team};
+use db::{Store, Team, TeamMember};
 
 /// WS event announcing a new team; the sidebar refreshes its list on it.
 pub const TEAM_CREATED_EVENT: &str = "team_created";
@@ -35,9 +35,10 @@ pub fn no_teams_hint() -> String {
     )
 }
 
-/// Create a team. `member_agent_ids` are LOCAL agent ids — resolve names
-/// before calling; `organizer_agent_id` is the creating employee (empty when
-/// the owner created it) and is always a member.
+/// Create a team. `members` are (bot, agent) pairs — resolve names before
+/// calling; `organizer_agent_id` is the creating employee (empty when the
+/// owner created it) and is always a LOCAL member, because the lead arbitrates
+/// and arbitration happens on the machine that holds the team.
 ///
 /// Policies enforced HERE, for every door:
 /// - A team is a collaboration: at least two employees — the organizer plus
@@ -54,7 +55,7 @@ pub async fn create(
     store: &Store,
     name: &str,
     mission: &str,
-    member_agent_ids: &[String],
+    member_list: &[TeamMember],
     organizer_agent_id: &str,
 ) -> Result<Team, String> {
     let name = name.trim();
@@ -63,13 +64,13 @@ pub async fn create(
     }
     let mission = mission.trim();
 
-    let mut members: Vec<String> = Vec::new();
+    let mut members: Vec<TeamMember> = Vec::new();
     if !organizer_agent_id.is_empty() {
-        members.push(organizer_agent_id.to_string());
+        members.push(TeamMember::local(organizer_agent_id));
     }
-    for id in member_agent_ids {
-        if !id.is_empty() && !members.iter().any(|m| m == id) {
-            members.push(id.clone());
+    for m in member_list {
+        if !m.agent_id.is_empty() && !members.iter().any(|x| x.agent_id == m.agent_id) {
+            members.push(m.clone());
         }
     }
     if members.len() < 2 {
@@ -115,7 +116,7 @@ pub fn update(
     team_id: &str,
     name: Option<&str>,
     mission: Option<&str>,
-    member_agent_ids: Option<&[String]>,
+    member_list: Option<&[TeamMember]>,
     organizer_agent_id: Option<&str>,
 ) -> Result<Team, String> {
     let current = store
@@ -136,24 +137,34 @@ pub fn update(
     }
     let mission = mission.map(str::trim).unwrap_or(&current.mission);
 
-    let mut members: Vec<String> = Vec::new();
-    for id in member_agent_ids.unwrap_or(&current.member_agent_ids) {
-        if !id.is_empty() && !members.iter().any(|m| m == id) {
-            members.push(id.clone());
+    let mut members: Vec<TeamMember> = Vec::new();
+    for m in member_list.unwrap_or(&current.members) {
+        if !m.agent_id.is_empty() && !members.iter().any(|x| x.agent_id == m.agent_id) {
+            members.push(m.clone());
         }
     }
     if members.len() < 2 {
         return Err("A team needs at least two employees. Keep two or remove the team.".to_string());
     }
+    // The lead arbitrates every turn, so it has to run on the machine that
+    // holds the team. A remote lead would mean a team whose turn-taking lives
+    // on a computer this one cannot count on.
+    let is_local_member = |id: &str| members.iter().any(|m| m.agent_id == id && m.is_local());
     let organizer = match organizer_agent_id {
         Some("") => String::new(),
-        Some(id) if members.iter().any(|m| m == id) => id.to_string(),
+        Some(id) if is_local_member(id) => id.to_string(),
+        Some(id) if members.iter().any(|m| m.agent_id == id) => {
+            return Err(format!(
+                "The lead has to be on this computer; \"{id}\" runs on another one. \
+                 Pick a lead from this machine, or leave it owner-led."
+            ))
+        }
         Some(id) => {
             return Err(format!(
                 "The lead must be on the team; \"{id}\" is not a member. Add them first or pick a member."
             ))
         }
-        None if members.iter().any(|m| m == &current.organizer_agent_id) => {
+        None if is_local_member(&current.organizer_agent_id) => {
             current.organizer_agent_id.clone()
         }
         None => String::new(),
@@ -254,19 +265,37 @@ pub fn resolve_agent(store: &Store, label: &str) -> Option<db::models::Agent> {
 
 /// The team's members as `(id, name)`, in team order; a departed employee
 /// keeps its id as the name rather than vanishing from the roster.
+///
+/// A local member's name is resolved live, because the owner can rename an
+/// employee at any time and the team must not show a stale label. A remote
+/// member has no local roster to ask, so the name recorded when it joined is
+/// what gets shown.
 pub fn member_roster(store: &Store, team: &Team) -> Vec<(String, String)> {
-    team.member_agent_ids
+    team.members
         .iter()
-        .map(|id| {
-            let name = store
-                .get_agent(id)
-                .ok()
-                .flatten()
-                .map(|a| a.name)
-                .unwrap_or_else(|| id.clone());
-            (id.clone(), name)
+        .map(|m| {
+            let name = if m.is_local() {
+                store
+                    .get_agent(&m.agent_id)
+                    .ok()
+                    .flatten()
+                    .map(|a| a.name)
+                    .unwrap_or_else(|| m.agent_id.clone())
+            } else if m.name.is_empty() {
+                m.agent_id.clone()
+            } else {
+                m.name.clone()
+            };
+            (m.agent_id.clone(), name)
         })
         .collect()
+}
+
+/// Every member's addressable id, in team order. A local member is addressed
+/// by its local agent id and a remote one by its hub agent id — the same id a
+/// mention token carries in each case, which is why one list serves both.
+pub fn member_ids(team: &Team) -> Vec<String> {
+    team.members.iter().map(|m| m.agent_id.clone()).collect()
 }
 
 /// Inside a team, an exact member name after '@' normalizes to that member's
@@ -333,6 +362,11 @@ mod tests {
         assert!(!mentions_everyone("everyone, no at sign"));
     }
 
+    /// The team's members as plain ids, for readable assertions.
+    fn members_of(team: &Team) -> Vec<String> {
+        team.members.iter().map(|m| m.agent_id.clone()).collect()
+    }
+
     fn store() -> Store {
         let path = std::env::temp_dir().join(format!("nebo-team-tool-{}.db", uuid::Uuid::new_v4()));
         Store::new(&path.to_string_lossy()).expect("store")
@@ -343,10 +377,10 @@ mod tests {
     #[tokio::test]
     async fn create_without_a_hub() {
         let s = store();
-        let team = create(None, &s, "Operations", "Run the office", &["ea".to_string()], "chief")
+        let team = create(None, &s, "Operations", "Run the office", &[TeamMember::local("ea")], "chief")
             .await
             .unwrap();
-        assert_eq!(team.member_agent_ids, vec!["chief".to_string(), "ea".to_string()]);
+        assert_eq!(members_of(&team), vec!["chief", "ea"]);
         assert_eq!(team.organizer_agent_id, "chief");
         assert_eq!(team.hub_channel_id, None);
         assert!(s.get_session_by_name(&db::team_thread_key(&team.id)).unwrap().is_some());
@@ -361,7 +395,7 @@ mod tests {
         let comm: Arc<dyn CommPlugin> = Arc::new(comm::LoopbackPlugin::new());
         comm.connect(std::collections::HashMap::new()).await.unwrap();
         assert!(comm.is_connected());
-        let team = create(Some(&comm), &s, "Sales", "", &["ea".to_string()], "chief")
+        let team = create(Some(&comm), &s, "Sales", "", &[TeamMember::local("ea")], "chief")
             .await
             .unwrap();
         assert_eq!(team.hub_channel_id, None);
@@ -374,13 +408,13 @@ mod tests {
         let s = store();
         let err = create(None, &s, "Solo", "", &[], "chief").await.unwrap_err();
         assert!(err.contains("at least two employees"), "{err}");
-        let err = create(None, &s, "Solo", "", &["chief".to_string()], "chief")
+        let err = create(None, &s, "Solo", "", &[TeamMember::local("chief")], "chief")
             .await
             .unwrap_err();
         assert!(err.contains("at least two employees"), "{err}");
 
-        create(None, &s, "Ops", "", &["ea".to_string()], "chief").await.unwrap();
-        let err = create(None, &s, "ops", "", &["ea".to_string()], "chief")
+        create(None, &s, "Ops", "", &[TeamMember::local("ea")], "chief").await.unwrap();
+        let err = create(None, &s, "ops", "", &[TeamMember::local("ea")], "chief")
             .await
             .unwrap_err();
         assert!(err.contains("already exists"), "{err}");
@@ -400,10 +434,79 @@ mod tests {
         assert!(mentioned_members("nobody here", &["chief".to_string()]).is_empty());
     }
 
+    /// The lead arbitrates every turn, so it has to run on this machine. A
+    /// team whose turn-taking lived on another computer would go quiet
+    /// whenever that computer slept, with nothing here able to say why.
+    #[test]
+    fn the_lead_has_to_be_on_this_computer() {
+        let s = store();
+        let remote = TeamMember {
+            bot_id: "other-bot".to_string(),
+            agent_id: "hub-agent-1".to_string(),
+            name: "Bookkeeper".to_string(),
+        };
+        s.create_team(
+            "t-1",
+            "Finance",
+            "",
+            &[TeamMember::local("chief"), remote.clone()],
+            "chief",
+            None,
+        )
+        .unwrap();
+
+        let err = update(&s, "t-1", None, None, None, Some("hub-agent-1")).unwrap_err();
+        assert!(err.contains("has to be on this computer"), "{err}");
+
+        // The local member is still a fine lead.
+        let ok = update(&s, "t-1", None, None, None, Some("chief")).unwrap();
+        assert_eq!(ok.organizer_agent_id, "chief");
+    }
+
+    /// A member on another computer survives an edit that does not mention
+    /// it, and keeps the name it joined with — there is no local roster row
+    /// to re-resolve it from, so losing the name would lose the person.
+    #[test]
+    fn a_remote_member_keeps_its_name_and_its_place() {
+        let s = store();
+        let remote = TeamMember {
+            bot_id: "other-bot".to_string(),
+            agent_id: "hub-agent-1".to_string(),
+            name: "Bookkeeper".to_string(),
+        };
+        let team = s
+            .create_team(
+                "t-1",
+                "Finance",
+                "",
+                &[TeamMember::local("chief"), remote.clone()],
+                "chief",
+                None,
+            )
+            .unwrap();
+        assert_eq!(member_ids(&team), vec!["chief", "hub-agent-1"]);
+
+        let renamed = update(&s, "t-1", Some("Finance & Books"), None, None, None).unwrap();
+        assert_eq!(renamed.members, vec![TeamMember::local("chief"), remote]);
+
+        // The roster shows the stored name, because nothing here can look it up.
+        let roster = member_roster(&s, &renamed);
+        assert_eq!(roster[1], ("hub-agent-1".to_string(), "Bookkeeper".to_string()));
+    }
+
     #[test]
     fn team_resolves_by_id_or_name() {
         let s = store();
-        let team = s.create_team("t-1", "Ops", "", &["a".into(), "b".into()], "a", None).unwrap();
+        let team = s
+            .create_team(
+                "t-1",
+                "Ops",
+                "",
+                &[TeamMember::local("a"), TeamMember::local("b")],
+                "a",
+                None,
+            )
+            .unwrap();
         assert_eq!(resolve_team(&s, "t-1").unwrap().id, team.id);
         assert_eq!(resolve_team(&s, "OPS").unwrap().id, team.id);
         let err = resolve_team(&s, "Nope").unwrap_err();

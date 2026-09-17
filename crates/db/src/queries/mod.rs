@@ -48,4 +48,4 @@ pub use run_usage::cost_microcents;
 pub use license_keys::LicenseKeyRow;
 pub use plugin_account_profiles::PluginAccountProfile;
 pub use work::WorkDocumentListing;
-pub use teams::{team_thread_key, Team, TeamMessage, TEAM_THREAD_PREFIX};
+pub use teams::{team_thread_key, Team, TeamMember, TeamMessage, TEAM_THREAD_PREFIX};

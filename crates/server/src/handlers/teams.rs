@@ -9,15 +9,32 @@ use serde::Deserialize;
 use crate::handlers::{to_error_response, HandlerResult};
 use crate::state::AppState;
 
+/// One member as the app names it.
+///
+/// An empty `botId` means this machine, and then `agentId` may be a local
+/// agent id OR an exact employee name, because that is how the picker has
+/// always addressed people here. A member on another computer carries that
+/// computer's bot id, and then `agentId` is the hub agent id and `name` is the
+/// label to show, since there is no local roster to resolve either from.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemberRef {
+    #[serde(default)]
+    pub bot_id: String,
+    pub agent_id: String,
+    #[serde(default)]
+    pub name: String,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateTeamRequest {
     pub name: String,
     #[serde(default)]
     pub mission: String,
-    /// Local agent ids (or exact employee names) of the members.
+    /// Everyone in the team, local and remote.
     #[serde(default)]
-    pub agent_ids: Vec<String>,
+    pub members: Vec<MemberRef>,
     /// The lead (local agent id or exact name). Empty or absent = the owner leads.
     #[serde(default)]
     pub organizer_agent_id: String,
@@ -28,10 +45,45 @@ pub struct CreateTeamRequest {
 pub struct UpdateTeamRequest {
     pub name: Option<String>,
     pub mission: Option<String>,
-    /// Full member list (local agent ids or exact employee names); absent = unchanged.
-    pub agent_ids: Option<Vec<String>>,
+    /// Full member list, local and remote; absent = unchanged.
+    pub members: Option<Vec<MemberRef>>,
     /// The lead (local agent id or exact name); "" = the owner leads; absent = unchanged.
     pub organizer_agent_id: Option<String>,
+}
+
+/// Turn what the app named into what the store holds.
+///
+/// A local member is resolved against this machine's roster, so an employee
+/// that is not installed is a refusal rather than a member nobody can reach. A
+/// remote member is taken as given: this machine has no way to check another
+/// computer's roster, and refusing what it cannot verify would make a
+/// cross-bot team impossible to create at all.
+fn resolve_members(
+    state: &AppState,
+    refs: &[MemberRef],
+) -> Result<Vec<db::TeamMember>, (reqwest::StatusCode, axum::Json<types::api::ErrorResponse>)> {
+    let mut out: Vec<db::TeamMember> = Vec::new();
+    for r in refs {
+        let member = if r.bot_id.is_empty() {
+            let Some(agent) = tools::team::resolve_agent(&state.store, &r.agent_id) else {
+                return Err(to_error_response(types::NeboError::Validation(format!(
+                    "No employee named \"{}\" is installed",
+                    r.agent_id
+                ))));
+            };
+            db::TeamMember::local(agent.id)
+        } else {
+            db::TeamMember {
+                bot_id: r.bot_id.clone(),
+                agent_id: r.agent_id.clone(),
+                name: r.name.clone(),
+            }
+        };
+        if !out.iter().any(|m| m.agent_id == member.agent_id) {
+            out.push(member);
+        }
+    }
+    Ok(out)
 }
 
 /// PUT /teams/{teamId} — rename, re-mission, or change members (`edit_team`: the
@@ -42,21 +94,10 @@ pub async fn edit_team(
     Path(team_id): Path<String>,
     Json(body): Json<UpdateTeamRequest>,
 ) -> HandlerResult<serde_json::Value> {
-    let mut member_ids: Option<Vec<String>> = None;
-    if let Some(labels) = &body.agent_ids {
-        let mut ids: Vec<String> = Vec::new();
-        for label in labels {
-            let Some(agent) = tools::team::resolve_agent(&state.store, label) else {
-                return Err(to_error_response(types::NeboError::Validation(format!(
-                    "No employee named \"{label}\" is installed"
-                ))));
-            };
-            if !ids.contains(&agent.id) {
-                ids.push(agent.id);
-            }
-        }
-        member_ids = Some(ids);
-    }
+    let members = match &body.members {
+        Some(refs) => Some(resolve_members(&state, refs)?),
+        None => None,
+    };
     let organizer = match body.organizer_agent_id.as_deref() {
         None => None,
         Some("") => Some(String::new()),
@@ -67,7 +108,7 @@ pub async fn edit_team(
         &team_id,
         body.name.as_deref(),
         body.mission.as_deref(),
-        member_ids.as_deref(),
+        members.as_deref(),
         organizer.as_deref(),
     )
     .map_err(|e| to_error_response(types::NeboError::Validation(e)))?;
@@ -100,17 +141,7 @@ pub async fn open_team(
     Json(body): Json<CreateTeamRequest>,
 ) -> HandlerResult<serde_json::Value> {
     let comm = state.comm_manager.active_plugin().await;
-    let mut member_ids: Vec<String> = Vec::new();
-    for label in &body.agent_ids {
-        let Some(agent) = tools::team::resolve_agent(&state.store, label) else {
-            return Err(to_error_response(types::NeboError::Validation(format!(
-                "No employee named \"{label}\" is installed"
-            ))));
-        };
-        if !member_ids.contains(&agent.id) {
-            member_ids.push(agent.id);
-        }
-    }
+    let members = resolve_members(&state, &body.members)?;
     // Created from the app: the owner leads unless a member is named lead.
     let organizer = if body.organizer_agent_id.is_empty() {
         String::new()
@@ -122,7 +153,7 @@ pub async fn open_team(
         &state.store,
         &body.name,
         &body.mission,
-        &member_ids,
+        &members,
         &organizer,
     )
     .await
@@ -201,17 +232,78 @@ pub async fn send_team_message(
     })))
 }
 
+/// GET /teams/other-computers — the employees a team can borrow from the
+/// owner's other machines.
+///
+/// Grouped by computer, because that is how the owner thinks about them: not
+/// one flat list of strangers, but "the people on Dwight". This machine's own
+/// employees are left out — they are already the local roster.
+///
+/// It answers with an empty list rather than an error when the hub is not
+/// reachable, because an unlinked Nebo genuinely has no other computers, and a
+/// picker that errors would suggest something is broken when nothing is.
+pub async fn other_computers(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
+    let Some(plugin) = state.comm_manager.active_plugin().await else {
+        return Ok(Json(serde_json::json!({ "computers": [] })));
+    };
+    let mine = config::read_bot_id().unwrap_or_default();
+    let mut computers: Vec<serde_json::Value> = Vec::new();
+    let loops = plugin.list_loops().await.unwrap_or_default();
+    // One agent can only be in one loop, so a bot seen in an earlier loop is
+    // not listed twice.
+    let mut seen_bots: Vec<String> = Vec::new();
+    for l in loops {
+        let agents = match plugin.list_loop_agents(&l.id).await {
+            Ok(a) => a,
+            Err(e) => {
+                tracing::warn!(error = %e, loop_id = %l.id, "teams: could not read the loop roster");
+                continue;
+            }
+        };
+        let mut by_bot: std::collections::BTreeMap<(String, String), Vec<serde_json::Value>> =
+            std::collections::BTreeMap::new();
+        for a in agents {
+            if a.bot_id == mine || a.bot_id.is_empty() {
+                continue;
+            }
+            by_bot
+                .entry((a.bot_id.clone(), a.bot_name.clone()))
+                .or_default()
+                .push(serde_json::json!({
+                    "agentId": a.id,
+                    "name": a.name,
+                    "slug": a.slug,
+                }));
+        }
+        for ((bot_id, bot_name), employees) in by_bot {
+            if seen_bots.contains(&bot_id) {
+                continue;
+            }
+            seen_bots.push(bot_id.clone());
+            computers.push(serde_json::json!({
+                "botId": bot_id,
+                "botName": bot_name,
+                "employees": employees,
+            }));
+        }
+    }
+    Ok(Json(serde_json::json!({ "computers": computers })))
+}
+
 /// Resolve the request's `mention` labels to member ids; labels that are
 /// not members are dropped (the owner's composer only offers members).
 fn mention_ids(store: &db::Store, team: &db::Team, labels: &[String]) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for label in labels {
-        let id = if team.member_agent_ids.contains(label) {
+        let is_member = |id: &String| team.members.iter().any(|m| m.agent_id == *id);
+        // A remote member is named by its hub id, which no local lookup would
+        // find, so an id that is already a member is taken as it stands.
+        let id = if is_member(label) {
             Some(label.clone())
         } else {
             tools::team::resolve_agent(store, label)
                 .map(|a| a.id)
-                .filter(|id| team.member_agent_ids.contains(id))
+                .filter(is_member)
         };
         if let Some(id) = id {
             if !out.contains(&id) {
@@ -294,7 +386,14 @@ mod tests {
         s.create_agent("ea", None, "Executive Assistant", "d", "# a", "", None, None).unwrap();
         s.create_agent("out", None, "Outsider", "d", "# a", "", None, None).unwrap();
         let team = s
-            .create_team("t-1", "Ops", "", &["chief".into(), "ea".into()], "", None)
+            .create_team(
+                "t-1",
+                "Ops",
+                "",
+                &[db::TeamMember::local("chief"), db::TeamMember::local("ea")],
+                "",
+                None,
+            )
             .unwrap();
         let ids = mention_ids(
             &s,

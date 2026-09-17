@@ -60,7 +60,7 @@
     </button>
     <span class="font-semibold text-[15px] truncate min-w-0">{team?.name ?? ''}</span>
     {#if team}
-      <span class="text-[13px] text-base-content/55 shrink-0 hidden sm:inline">{$t('teams.membersCount', { values: { count: team.memberAgentIds.length } })}</span>
+      <span class="text-[13px] text-base-content/55 shrink-0 hidden sm:inline">{$t('teams.membersCount', { values: { count: team.members.length } })}</span>
     {/if}
     <div class="ml-auto flex items-center gap-1.5 shrink-0">
       <button class="w-8 h-8 rounded-full flex items-center justify-center text-base-content/60 hover:bg-base-200" onclick={() => shell?.openInbox?.()} aria-label={$t('nav.inbox')} title={$t('nav.inbox')}>

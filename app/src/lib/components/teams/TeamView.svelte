@@ -74,7 +74,7 @@
   // AgentInfo shape — members only, since only members can be asked to act.
   const composerAgents = $derived(
     roster
-      .filter((a) => team.memberAgentIds.includes(a.id))
+      .filter((a) => team.members.some((m) => m.agentId === a.id))
       .map((a) => ({
         id: a.id,
         name: a.name,
@@ -96,13 +96,15 @@
   // Who is on the team — resolved against the roster; unknown ids (a departed
   // employee) keep their raw label rather than vanishing.
   const members = $derived(
-    team.memberAgentIds
+    team.members
       .map(
-        (id) =>
-          roster.find((a) => a.id === id) ?? {
-            id,
-            name: id,
-            initial: (id[0] ?? '?').toUpperCase(),
+        (m) =>
+          roster.find((a) => a.id === m.agentId) ?? {
+            // A member on another computer has no local roster row; the name
+            // recorded when they joined is the only label there is.
+            id: m.agentId,
+            name: m.name || m.agentId,
+            initial: ((m.name || m.agentId)[0] ?? '?').toUpperCase(),
           }
       )
       .sort((a, b) => a.name.localeCompare(b.name))

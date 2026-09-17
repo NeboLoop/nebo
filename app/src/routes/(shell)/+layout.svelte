@@ -223,9 +223,9 @@
   }
   // First two members for the row's stacked-avatars glyph, in their roster
   // colors — the team row previews who's on it.
-  const teamFaces = (team: { memberAgentIds: string[] }) =>
-    team.memberAgentIds
-      .map((id) => allAgents.find((a) => a.id === id))
+  const teamFaces = (team: { members: { agentId: string }[] }) =>
+    team.members
+      .map((m) => allAgents.find((a) => a.id === m.agentId))
       .filter((a): a is (typeof allAgents)[number] => !!a)
       .slice(0, 2)
       .map((a) => {
@@ -1273,7 +1273,7 @@
                    not a person. -->
               <div class="relative w-8 h-8 shrink-0">
                 {#if faces.length >= 2}
-                  {@const extra = room.memberAgentIds.length - 2}
+                  {@const extra = room.members.length - 2}
                   <div class="absolute top-0 left-0 w-6 h-6 rounded-field flex items-center justify-center font-mono text-[10px] font-semibold {faces[0].cls}">{faces[0].initial}</div>
                   <div class="absolute bottom-0 right-0 w-6 h-6 rounded-field border border-base-100 flex items-center justify-center font-mono text-[10px] font-semibold {faces[1].cls}">{faces[1].initial}</div>
                   {#if extra > 0}
@@ -1292,7 +1292,7 @@
                   <span class="flex-1"></span>
                   <span class="text-xs text-base-content/45 shrink-0">{dayLabel(teamActivity[room.id] ? teamActivity[room.id] / 1000 : room.createdAt)}</span>
                 </div>
-                <div class="text-xs text-base-content/60 truncate">{room.mission || $t('teams.membersCount', { values: { count: room.memberAgentIds.length } })}</div>
+                <div class="text-xs text-base-content/60 truncate">{room.mission || $t('teams.membersCount', { values: { count: room.members.length } })}</div>
               </div>
             </button>
             </div>

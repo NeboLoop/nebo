@@ -175,7 +175,13 @@ impl TeamTool {
             ));
         }
 
-        match team::create(self.comm.as_ref(), store, name, mission, &member_ids, &organizer).await {
+        // The tool names employees on THIS machine. A member on another
+        // computer is picked from the hub roster, which only the app and the
+        // phone can show, so that door adds them and this one keeps managing
+        // the local side.
+        let member_list: Vec<db::TeamMember> =
+            member_ids.iter().map(db::TeamMember::local).collect();
+        match team::create(self.comm.as_ref(), store, name, mission, &member_list, &organizer).await {
             Ok(t) => {
                 if let Some(bc) = self.broadcast.as_ref() {
                     bc(team::TEAM_CREATED_EVENT, serde_json::json!({ "team": t }));
@@ -264,7 +270,7 @@ impl TeamTool {
         let mut unresolved: Vec<String> = Vec::new();
         for m in Self::labels(&input["mention"]) {
             match team::resolve_agent(store, &m) {
-                Some(a) if t.member_agent_ids.contains(&a.id) => {
+                Some(a) if t.members.iter().any(|m| m.agent_id == a.id) => {
                     if !mention.contains(&a.id) {
                         mention.push(a.id);
                     }
@@ -431,13 +437,26 @@ impl TeamTool {
         }
         // A lead named without a member list is added to the current members
         // rather than refused: naming a lead is the ask, not a roster edit.
-        let members = match (&members, &lead) {
-            (None, Some(id)) if !id.is_empty() && !t.member_agent_ids.contains(id) => {
-                let mut m = t.member_agent_ids.clone();
-                m.push(id.clone());
+        // Members named here are local ids; a remote member already on the
+        // team is carried through untouched rather than resolved again.
+        let members: Option<Vec<db::TeamMember>> = match (&members, &lead) {
+            (None, Some(id)) if !id.is_empty() && !t.members.iter().any(|m| m.agent_id == *id) => {
+                let mut m = t.members.clone();
+                m.push(db::TeamMember::local(id));
                 Some(m)
             }
-            _ => members,
+            (Some(ids), _) => Some(
+                ids.iter()
+                    .map(|id| {
+                        t.members
+                            .iter()
+                            .find(|m| m.agent_id == *id)
+                            .cloned()
+                            .unwrap_or_else(|| db::TeamMember::local(id))
+                    })
+                    .collect(),
+            ),
+            _ => None,
         };
         match team::update(
             store,
@@ -490,7 +509,7 @@ impl TeamTool {
         };
         ToolResult::ok(format!(
             "{} member(s) in team \"{}\": {}",
-            t.member_agent_ids.len(),
+            t.members.len(),
             t.name,
             Self::roster_line(store, &t)
         ))
@@ -623,7 +642,8 @@ mod tests {
         assert!(res.content.contains("Team \"Operations\" exists"), "{}", res.content);
         let teams = s.list_teams().unwrap();
         assert_eq!(teams.len(), 1);
-        assert_eq!(teams[0].member_agent_ids, vec!["chief".to_string(), "ea".to_string()]);
+        let ids: Vec<&str> = teams[0].members.iter().map(|m| m.agent_id.as_str()).collect();
+        assert_eq!(ids, vec!["chief", "ea"]);
         assert_eq!(teams[0].hub_channel_id, None);
 
         let listed = tool.execute_dyn(&ctx, serde_json::json!({"action": "list"})).await;

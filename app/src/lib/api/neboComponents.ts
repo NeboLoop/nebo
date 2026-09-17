@@ -1030,10 +1030,16 @@ export interface Team {
 	id: string
 	name: string
 	mission: string
-	memberAgentIds: string[]
+	members: TeamMember[]
 	organizerAgentId: string
 	hubChannelId?: string
 	createdAt: number
+}
+
+export interface TeamMember {
+	botId?: string
+	agentId: string
+	name?: string
 }
 
 export interface TeamMessage {
@@ -1932,6 +1938,10 @@ export interface OpenTeamResponse {
 export interface OpenaiListModelsResponse {
 	object: string
 	data: unknown[]
+}
+
+export interface OtherComputersResponse {
+	computers: unknown[]
 }
 
 export interface PickFilesResponse {

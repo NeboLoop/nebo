@@ -4626,7 +4626,7 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
         let text = match workroom {
             Some(ref room) => {
                 let mut t = text.clone();
-                for id in &room.member_agent_ids {
+                for id in room.members.iter().filter(|m| m.is_local()).map(|m| &m.agent_id) {
                     if let Ok(Some(agent)) = state.store.get_agent(id) {
                         let needle = format!("@{}", agent.name).to_lowercase();
                         loop {
@@ -4691,7 +4691,7 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
                 Some(String::new()) // primary bot
             } else if workroom
                 .as_ref()
-                .is_some_and(|r| r.member_agent_ids.iter().any(|m| m == id))
+                .is_some_and(|r| r.members.iter().any(|m| m.is_local() && m.agent_id == id))
             {
                 // In a registered workroom the member registry IS the mention
                 // surface: a member's LOCAL agent id is addressable whether or
@@ -5077,8 +5077,10 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
         let room_roster: Vec<(String, String, String)> = workroom
             .as_ref()
             .map(|room| {
-                room.member_agent_ids
+                room.members
                     .iter()
+                    .filter(|m| m.is_local())
+                    .map(|m| &m.agent_id)
                     .filter_map(|id| {
                         let agent = state.store.get_agent(id).ok().flatten()?;
                         // First sentence of the description = the job title line.
@@ -5150,7 +5152,10 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
                 // integrates; everyone else is an expert who does their part
                 // and returns it to the organizer.
                 let organizer = if room.organizer_agent_id.is_empty() {
-                    room.member_agent_ids.first().cloned().unwrap_or_default()
+                    room.members
+                        .first()
+                        .map(|m| m.agent_id.clone())
+                        .unwrap_or_default()
                 } else {
                     room.organizer_agent_id.clone()
                 };
