@@ -224,6 +224,8 @@ impl PluginRuntime {
                 env.push((k, v));
             }
         }
+        // Owner's NeboAI sign-in for first-party plugins (`auth.type: neboai`).
+        env.extend(self.plugin_store.neboai_auth_env(&self.slug));
 
         // HOME preservation for credential lookups
         if self.include_home {

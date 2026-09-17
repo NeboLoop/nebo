@@ -1111,6 +1111,18 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         user_plugins_dir,
         None,
     ));
+    // First-party plugins (`auth.type: neboai`) run as the owner's NeboAI
+    // sign-in — read live on every launch because the token rotates.
+    {
+        let store = store.clone();
+        plugin_store.set_neboai_token_source(Arc::new(move || {
+            store
+                .list_all_active_auth_profiles_by_provider("neboai")
+                .ok()?
+                .first()
+                .map(|p| p.api_key.clone())
+        }));
+    }
 
     // Recover plugin installs interrupted mid-swap by a prior crash/hot-reload
     // SIGKILL (orphaned `<version>.staging` dirs). Must run before the plugin
