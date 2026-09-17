@@ -741,6 +741,14 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // Initialize database
     let store = Arc::new(db::Store::new(&cfg.database.sqlite_path)?);
 
+    // A Nebo never quietly serves a broken database. The check is quick; a
+    // failure is logged and, once the hub exists, told to the owner with the
+    // newest copy that does open whole.
+    let database_damage: Option<String> = store.quick_check().err();
+    if let Some(what) = &database_damage {
+        tracing::error!(what = %what, "database integrity check FAILED at start");
+    }
+
     // Ensure FTS5 index for memories is healthy (auto-rebuild if corrupted)
     if let Err(e) = store.ensure_fts_healthy() {
         warn!(error = %e, "FTS health check failed — memory search may be degraded");
@@ -2723,6 +2731,29 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // captured their originating channel context can route the response back
     // via the bridge when they fire (e.g. "set 1-min timer" from Slack →
     // alert lands in the same Slack thread).
+    if let Some(what) = &database_damage {
+        let newest = state
+            .store
+            .list_backups()
+            .ok()
+            .and_then(|rows| rows.into_iter().find(|b| b.integrity == "ok"))
+            .map(|b| format!(" The newest good backup is {} from {}.", b.path, b.taken_at))
+            .unwrap_or_default();
+        tools::owner_notify::emit(
+            &state.store,
+            Some(&|name: &str, payload: serde_json::Value| state.hub.broadcast(name, payload)),
+            &tools::owner_notify::OwnerNotification {
+                id: "database-damaged",
+                kind: "error",
+                title: "This database needs attention",
+                body: Some(&format!("SQLite reports: {what}.{newest}")),
+                action_url: None,
+                agent_id: None,
+                loud: true,
+            },
+        );
+    }
+
     scheduler::spawn(
         state.store.clone(),
         state.snapshot_store.clone(),

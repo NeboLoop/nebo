@@ -80,9 +80,9 @@ pub fn run_migrations_to(conn: &Connection, max_version: i64) -> Result<(), Nebo
         if let Some(path) = conn.path().filter(|p| !p.is_empty() && *p != ":memory:") {
             let from = applied.iter().max().copied().unwrap_or(0);
             let backup = format!("{path}.pre-v{from:04}.bak");
-            let _ = std::fs::remove_file(&backup);
-            match conn.execute("VACUUM INTO ?1", rusqlite::params![backup]) {
-                Ok(_) => info!(backup = %backup, from_version = from, pending = pending.len(), "pre-migration database copy written"),
+            // The ONE copy primitive: consistent, and verified before it counts.
+            match crate::backup::vacuum_into(conn, std::path::Path::new(&backup)) {
+                Ok(_) => info!(backup = %backup, from_version = from, pending = pending.len(), "pre-migration database copy written and verified"),
                 Err(e) => {
                     return Err(NeboError::Migration(format!(
                         "refusing to migrate without a pre-migration copy ({backup}): {e}"

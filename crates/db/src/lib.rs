@@ -7,6 +7,8 @@ mod store;
 // Query modules
 mod queries;
 
+pub mod backup;
+pub use backup::Backup;
 pub use pool::create_pool;
 pub use queries::agent_slug;
 pub use queries::{Assignment, NewAssignment};

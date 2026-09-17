@@ -47,6 +47,7 @@ pub fn spawn(
             sweep(&store, &workflow_manager);
             // Cleanup expired snapshots
             snapshot_store.cleanup();
+            nightly_backup(&store, &state).await;
         }
     });
 }
@@ -506,4 +507,61 @@ pub(crate) async fn execute_agent_workflow_task(
         ),
         Err(e) => (false, String::new(), Some(e)),
     }
+}
+
+/// One verified copy of the database a day, kept by the retention rule.
+///
+/// "Nightly" means at most once in 24 hours and as soon as a day has passed,
+/// so a Nebo that starts for the first time has a backup within a minute and
+/// one that was off for a week catches up on its first tick. A copy that
+/// fails to verify is not kept, and the owner hears about it in the inbox —
+/// a broken copy of a broken database is the moment they need to know.
+async fn nightly_backup(store: &Arc<Store>, state: &AppState) {
+    let due = match store.list_backups() {
+        Ok(rows) => rows
+            .iter()
+            .filter(|b| b.reason == "nightly")
+            .map(|b| b.taken_at)
+            .max()
+            .map(|t| now_secs() - t >= 24 * 3600)
+            .unwrap_or(true),
+        Err(_) => true,
+    };
+    if !due {
+        return;
+    }
+    let s = store.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let taken = s.snapshot("nightly")?;
+        let _ = s.retain_backups();
+        Ok::<_, types::NeboError>(taken)
+    })
+    .await;
+    let err = match result {
+        Ok(Ok(_)) => return,
+        Ok(Err(e)) => e.to_string(),
+        Err(e) => e.to_string(),
+    };
+    tracing::error!(error = %err, "nightly database backup failed");
+    let day = now_secs() / 86_400;
+    tools::owner_notify::emit(
+        store,
+        Some(&|name: &str, payload: serde_json::Value| state.hub.broadcast(name, payload)),
+        &tools::owner_notify::OwnerNotification {
+            id: &format!("backup-failed:{day}"),
+            kind: "error",
+            title: "Tonight's backup failed",
+            body: Some(&format!("The copy could not be verified: {err}. The last good backup still stands.")),
+            action_url: None,
+            agent_id: None,
+            loud: true,
+        },
+    );
+}
+
+fn now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }

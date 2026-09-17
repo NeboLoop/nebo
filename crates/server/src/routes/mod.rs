@@ -31,6 +31,7 @@ mod tasks;
 mod update;
 mod user;
 mod workflows;
+mod backups;
 mod teams;
 mod org;
 mod layers;
@@ -69,6 +70,7 @@ pub fn api_routes(jwt_secret: JwtSecret) -> Router<AppState> {
         .merge(neboai::routes())
         .merge(workflows::routes())
         .merge(teams::routes())
+        .merge(backups::routes())
         .merge(org::routes())
         .merge(layers::routes())
         .merge(roles::routes())

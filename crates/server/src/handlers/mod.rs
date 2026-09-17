@@ -29,6 +29,7 @@ pub mod user;
 pub mod desktop;
 pub mod voice;
 pub mod workflows;
+pub mod backups;
 pub mod teams;
 pub mod org;
 pub mod layers;

@@ -622,6 +622,20 @@ export function verifyEmail(req: Record<string, unknown> = {}) {
 }
 
 /**
+ * @description "List backups"
+ */
+export function listBackups() {
+	return webapi.get<components.BackupsResponse>(`/api/v1/backups`)
+}
+
+/**
+ * @description "Take backup"
+ */
+export function takeBackup(req: Record<string, unknown> = {}) {
+	return webapi.post<components.BackupResponse>(`/api/v1/backups`, req)
+}
+
+/**
  * @description "Browser status"
  */
 export function browserStatus() {
