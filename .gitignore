@@ -40,3 +40,7 @@ src-tauri/binaries/
 appimage-build.log
 target-check/
 target-wt/
+
+# A fixture app's build output was committed by accident: 1.3 GB, 4,984 files,
+# most of every checkout. Build output is never tracked.
+tests/fixtures/neboai/notepad/app/target/

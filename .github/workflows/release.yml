@@ -18,6 +18,10 @@ env:
   OBSCURA_FORK: "https://github.com/localrivet/obscura"
   RIPGREP_VERSION: "14.1.1"
   OBSCURA_REF: "chromiumoxide-cdp-compat"
+  # Pinned so `cargo install` is a no-op where the binary already exists (the
+  # house runners) instead of rebuilding tauri-cli from source on every run
+  # (2.5 min on the Mac, 10 min on Windows for v0.14.0).
+  TAURI_CLI_VERSION: "2.11.4"
 
 jobs:
   # ─── Build frontend (shared by all platform builds) ───────────────────
@@ -73,6 +77,12 @@ jobs:
       HAS_SIGNING_CERT: ${{ secrets.APPLE_CERTIFICATE_P12 != '' && 'true' || 'false' }}
       HAS_CDN_URL: ${{ secrets.NEBOAI_CDN_URL != '' && 'true' || 'false' }}
       RUSTC_WRAPPER: ""
+      # The build cache lives BESIDE the checkout, not in it: actions/checkout
+      # wipes the workspace every run (v0.14.0 spent 8 min deleting a 3.6 GB
+      # target dir, then rebuilt everything cold), and the hosted cache never
+      # had it ("No cache found"). Beside the checkout it persists between runs.
+      CARGO_TARGET_DIR: ${{ github.workspace }}/../nebo-target-${{ matrix.arch }}
+      OBSCURA_TARGET_DIR: ${{ github.workspace }}/../obscura-target-${{ matrix.arch }}
       # NOTE: CMAKE_OSX_ARCHITECTURES, CFLAGS, CXXFLAGS for cross-build are
       # set ONLY on the "Build Tauri desktop app" step below — not at job
       # scope — so host-arch tools like `cargo install tauri-cli` link
@@ -94,12 +104,6 @@ jobs:
 
       # Cache the Rust dependency build so re-runs (and every release) don't
       # recompile the whole dep tree from scratch — the bulk of the ~hour.
-      - name: Cache Rust build
-        uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ matrix.target }}
-          cache-on-failure: true
-
       - name: Download frontend build
         uses: actions/cache/restore@v4
         with:
@@ -108,7 +112,7 @@ jobs:
           fail-on-cache-miss: true
 
       - name: Install Tauri CLI
-        run: cargo install tauri-cli --version "^2" --locked
+        run: cargo install tauri-cli --version "${{ env.TAURI_CLI_VERSION }}" --locked
 
       - name: Import signing certificate
         if: ${{ env.HAS_SIGNING_CERT == 'true' }}
@@ -124,6 +128,15 @@ jobs:
           security import $RUNNER_TEMP/cert.p12 -k "$KEYCHAIN_PATH" \
             -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
           rm $RUNNER_TEMP/cert.p12
+          # Apple's Developer ID intermediates. A hosted Mac ships them; the
+          # house Mac mini does not, and without them codesign cannot chain the
+          # leaf to Apple's root ("unable to build chain to self-signed root",
+          # errSecInternalComponent — v0.14.0's Intel build).
+          for ca in DeveloperIDG2CA DeveloperIDCA; do
+            curl -sSf -o "$RUNNER_TEMP/$ca.cer" "https://www.apple.com/certificateauthority/$ca.cer"
+            security import "$RUNNER_TEMP/$ca.cer" -k "$KEYCHAIN_PATH"
+            rm "$RUNNER_TEMP/$ca.cer"
+          done
           security set-key-partition-list -S apple-tool:,apple: -s -k "" "$KEYCHAIN_PATH"
           security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain
 
@@ -161,10 +174,10 @@ jobs:
           # Always build with an explicit --target: on the arm64 host the amd64
           # matrix entry must cross-compile, or the Intel app ships arm64
           # sidecars that Intel Macs cannot exec.
-          ( cd obscura-src && cargo build --release -p obscura-cli --target "$TRIPLE" )
+          ( cd obscura-src && CARGO_TARGET_DIR="$OBSCURA_TARGET_DIR" cargo build --release -p obscura-cli --target "$TRIPLE" )
           mkdir -p src-tauri/binaries
           for bin in obscura obscura-worker; do
-            cp "obscura-src/target/${TRIPLE}/release/${bin}" "src-tauri/binaries/${bin}-${TRIPLE}"
+            cp "$OBSCURA_TARGET_DIR/${TRIPLE}/release/${bin}" "src-tauri/binaries/${bin}-${TRIPLE}"
             chmod +x "src-tauri/binaries/${bin}-${TRIPLE}"
           done
           ls -la src-tauri/binaries
@@ -194,7 +207,7 @@ jobs:
         env:
           SIGN_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         run: |
-          APP_PATH="target/${{ matrix.target }}/release/bundle/macos/Nebo.app"
+          APP_PATH="$CARGO_TARGET_DIR/${{ matrix.target }}/release/bundle/macos/Nebo.app"
 
           # Sign embedded frameworks/dylibs first (inside-out signing)
           find "$APP_PATH/Contents/Frameworks" -type f -perm +111 -o -name "*.dylib" 2>/dev/null | while read f; do
@@ -248,7 +261,7 @@ jobs:
 
       - name: Extract signed binary for auto-update
         run: |
-          APP_PATH="target/${{ matrix.target }}/release/bundle/macos/Nebo.app"
+          APP_PATH="$CARGO_TARGET_DIR/${{ matrix.target }}/release/bundle/macos/Nebo.app"
           cp "$APP_PATH/Contents/MacOS/nebo" nebo-darwin-${{ matrix.arch }}
 
       - uses: actions/cache/save@v4
@@ -259,7 +272,7 @@ jobs:
       - name: Create .dmg from signed .app
         id: dmg
         run: |
-          APP_PATH="target/${{ matrix.target }}/release/bundle/macos/Nebo.app"
+          APP_PATH="$CARGO_TARGET_DIR/${{ matrix.target }}/release/bundle/macos/Nebo.app"
           if [ -d "$APP_PATH" ]; then
             mkdir -p dist
             PKG_VERSION="${{ github.ref_name }}"
@@ -270,16 +283,14 @@ jobs:
             cp -R "$APP_PATH" "$STAGE/Nebo.app"
             # Install create-dmg for drag-to-Applications layout
             brew install create-dmg
-            create-dmg \
-              --volname "Nebo" \
-              --window-pos 200 120 \
-              --window-size 600 400 \
-              --icon-size 100 \
-              --icon "Nebo.app" 175 190 \
-              --hide-extension "Nebo.app" \
-              --app-drop-link 425 190 \
-              "$DEST" \
-              "$STAGE"
+            # The Finder layout needs Automation consent for the runner's node
+            # (a TCC prompt nobody is at the mini to click — v0.14.0 timed out
+            # with AppleEvent -1712). When Finder cannot be scripted, ship the
+            # plain layout rather than no DMG.
+            layout=(--window-pos 200 120 --window-size 600 400 --icon-size 100 \
+              --icon "Nebo.app" 175 190 --hide-extension "Nebo.app" --app-drop-link 425 190)
+            create-dmg --volname "Nebo" "${layout[@]}" "$DEST" "$STAGE" \
+              || { rm -f "$DEST"; create-dmg --volname "Nebo" --skip-jenkins "${layout[@]}" "$DEST" "$STAGE"; }
             rm -rf "$STAGE"
             echo "dmg_path=$DEST" >> "$GITHUB_OUTPUT"
           fi
@@ -426,36 +437,92 @@ jobs:
           RELEASE_VERSION="${TAG#v}" TAG="$TAG" bash scripts/publish-macos.sh
 
   # ─── Linux desktop builds (Tauri 2 — WebKitGTK) ──────────────────────
+  # ─── Linux amd64 runner: a droplet that exists only for this run ───────
+  # The amd64 desktop build has no house x86 machine, and running it in an
+  # amd64 container on the arm64 VM meant Rosetta, which killed a process
+  # at random (v0.14.1, v0.14.2). A DigitalOcean droplet is ours, x86, and
+  # costs cents per release: this job boots one from the golden snapshot
+  # (build deps, rustup, tauri-cli preinstalled — see docs/sme/RELEASE.md),
+  # hands it a just-in-time runner registration good for ONE job, and the
+  # teardown job below deletes it whether the build passed or not.
+  linux-amd64-runner:
+    runs-on: ubuntu-latest # orchestration only — no build happens here
+    outputs:
+      droplet_id: ${{ steps.droplet.outputs.id }}
+    steps:
+      - uses: digitalocean/action-doctl@v2
+        with:
+          token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+      # A just-in-time runner carries ONLY the labels named here — none of
+      # the self-hosted/Linux/X64 defaults a config.sh runner gets — so the
+      # build's runs-on list must be spelled out in full (v0.14.3 queued
+      # until the labels were added by hand).
+      - name: Mint a one-job runner registration
+        id: jit
+        env:
+          GH_TOKEN: ${{ secrets.RUNNER_ADMIN_TOKEN }}
+        run: |
+          cfg=$(gh api -X POST orgs/${{ github.repository_owner }}/actions/runners/generate-jitconfig \
+            -f name="do-amd64-${{ github.run_id }}" -F runner_group_id=1 -f work_folder=_work \
+            -f "labels[]=self-hosted" -f "labels[]=Linux" -f "labels[]=X64" \
+            -f "labels[]=nebo-amd64-${{ github.run_id }}" -q .encoded_jit_config)
+          echo "::add-mask::$cfg"
+          echo "config=$cfg" >> "$GITHUB_OUTPUT"
+      - name: Boot the droplet from the golden snapshot
+        id: droplet
+        run: |
+          image=$(doctl compute image list-user --format ID,Name --no-header | awk '$2=="nebo-runner-amd64-base"{print $1}' | tail -n1)
+          test -n "$image" || { echo "snapshot nebo-runner-amd64-base not found"; exit 1; }
+          cat > user-data.sh <<'EOS'
+          #!/bin/bash
+          # A droplet booted from a snapshot comes up with root's password
+          # expired, which blocks even key-based SSH ("Password change
+          # required but no TTY available"); clear that so the box can be
+          # inspected while it lives.
+          chage -d "$(date +%F)" -M -1 root
+          cd /home/runner/actions-runner
+          nohup sudo -u runner ./run.sh --jitconfig '__JIT__' > /home/runner/runner.log 2>&1 &
+          EOS
+          sed -i "s|__JIT__|${{ steps.jit.outputs.config }}|" user-data.sh
+          id=$(doctl compute droplet create "nebo-ci-amd64-${{ github.run_id }}" \
+            --region nyc3 --size s-8vcpu-16gb --image "$image" \
+            --tag-names nebo-ci-runner,run-${{ github.run_id }} \
+            --user-data-file user-data.sh --wait --format ID --no-header)
+          rm -f user-data.sh
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+      - name: Wait for the runner to come online
+        env:
+          GH_TOKEN: ${{ secrets.RUNNER_ADMIN_TOKEN }}
+        run: |
+          for i in $(seq 1 40); do
+            status=$(gh api "orgs/${{ github.repository_owner }}/actions/runners?name=do-amd64-${{ github.run_id }}" -q '.runners[0].status // "absent"')
+            [ "$status" = online ] && { echo "runner online after $((i*10))s"; exit 0; }
+            sleep 10
+          done
+          echo "runner never came online"; exit 1
+
   build-linux:
-    needs: frontend
+    needs: [frontend, linux-amd64-runner]
     strategy:
       fail-fast: false
       matrix:
         include:
-          # Both legs run on the house Mac mini's Lima VM (label neboloop):
-          # arm64 natively, amd64 inside a linux/amd64 container that the
-          # VM's Rosetta binfmt executes near-natively. See CLAUDE.md
-          # "Release builds" — never move these back to GitHub-hosted runners.
+          # arm64 builds natively on the house Mac mini's Lima VM (label
+          # neboloop); amd64 on the droplet the job above just created. See
+          # CLAUDE.md "Release builds" — never a GitHub-hosted runner.
           - runner: [self-hosted, Linux, ARM64, neboloop]
             arch: arm64
-            container: ""
-          # ubuntu:24.04 pinned to its linux/amd64 digest: on the arm64 VM a
-          # bare tag would resolve to the arm64 image and build the wrong arch.
-          - runner: [self-hosted, Linux, ARM64, neboloop]
+          - runner: [self-hosted, Linux, X64, "nebo-amd64-${{ github.run_id }}"]
             arch: amd64
-            container: ubuntu@sha256:1e0a86e57d247923571b75e0aaf48a1449cf8c543d51fb3e07a4a7d7bfa79316
     runs-on: ${{ matrix.runner }}
-    container: ${{ matrix.container }}
     env:
       HAS_CDN_URL: ${{ secrets.NEBOAI_CDN_URL != '' && 'true' || 'false' }}
       RUSTC_WRAPPER: ""
+      # Persistent build cache beside the checkout (see build-macos). On the
+      # VM it survives between runs; on the droplet it is simply the build dir.
+      CARGO_TARGET_DIR: ${{ github.workspace }}/../nebo-target-${{ matrix.arch }}
+      OBSCURA_TARGET_DIR: ${{ github.workspace }}/../obscura-target-${{ matrix.arch }}
     steps:
-      # A fresh container has no sudo, curl or compilers; the VM itself does.
-      - name: Container prep
-        if: ${{ matrix.container != '' }}
-        run: |
-          apt-get update -qq
-          apt-get install -y -qq sudo curl git ca-certificates build-essential pkg-config protobuf-compiler
       - uses: actions/checkout@v4
 
       # The ubuntu-24.04-arm runner OOMs linking the release binary (LTO + one
@@ -479,13 +546,10 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
 
-      - name: Cache Rust build
-        uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ matrix.arch }}
-          cache-on-failure: true
-
+      # The droplet's golden snapshot carries these already (and Ubuntu 24.04
+      # names two of them differently); only the VM installs them.
       - name: Install Tauri Linux dependencies
+        if: ${{ matrix.arch == 'arm64' }}
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -518,7 +582,7 @@ jobs:
           fail-on-cache-miss: true
 
       - name: Install Tauri CLI
-        run: cargo install tauri-cli --version "^2" --locked
+        run: cargo install tauri-cli --version "${{ env.TAURI_CLI_VERSION }}" --locked
 
       - name: Prepare bundled .napp files
         if: ${{ env.HAS_CDN_URL == 'true' }}
@@ -539,10 +603,10 @@ jobs:
         run: |
           TRIPLE="$(rustc -vV | sed -n 's/^host: //p')"
           git clone --depth 1 --branch "$OBSCURA_REF" "$OBSCURA_FORK" obscura-src
-          ( cd obscura-src && cargo build --release -p obscura-cli )
+          ( cd obscura-src && CARGO_TARGET_DIR="$OBSCURA_TARGET_DIR" cargo build --release -p obscura-cli )
           mkdir -p src-tauri/binaries
           for bin in obscura obscura-worker; do
-            cp "obscura-src/target/release/${bin}" "src-tauri/binaries/${bin}-${TRIPLE}"
+            cp "$OBSCURA_TARGET_DIR/release/${bin}" "src-tauri/binaries/${bin}-${TRIPLE}"
             chmod +x "src-tauri/binaries/${bin}-${TRIPLE}"
           done
           ls -la src-tauri/binaries
@@ -569,13 +633,13 @@ jobs:
 
       - name: Extract desktop binary
         run: |
-          cp target/release/nebo nebo-linux-${{ matrix.arch }}
+          cp "$CARGO_TARGET_DIR/release/nebo" nebo-linux-${{ matrix.arch }}
 
       - name: Build headless CLI binary
         run: cargo build --release -p nebo-cli
 
       - name: Extract headless binary
-        run: cp target/release/nebo-cli nebo-linux-${{ matrix.arch }}-headless
+        run: cp "$CARGO_TARGET_DIR/release/nebo-cli" nebo-linux-${{ matrix.arch }}-headless
 
       - name: Stage release artifacts
         run: |
@@ -584,13 +648,13 @@ jobs:
           cp nebo-linux-${{ matrix.arch }}-headless release-artifacts/
           PKG_VERSION="${{ github.ref_name }}"
           PKG_VERSION="${PKG_VERSION#v}"
-          DEB=$(ls target/release/bundle/deb/*.deb 2>/dev/null || true)
+          DEB=$(ls "$CARGO_TARGET_DIR"/release/bundle/deb/*.deb 2>/dev/null || true)
           if [ -n "$DEB" ]; then
             cp $DEB release-artifacts/
           fi
           # AppImage — rename to the arch-qualified name the updater expects
           # (bundle_asset_name → `Nebo-{ver}-{arch}.AppImage`).
-          APPIMAGE=$(ls target/release/bundle/appimage/*.AppImage 2>/dev/null | head -n1 || true)
+          APPIMAGE=$(ls "$CARGO_TARGET_DIR"/release/bundle/appimage/*.AppImage 2>/dev/null | head -n1 || true)
           if [ -n "$APPIMAGE" ]; then
             cp "$APPIMAGE" "release-artifacts/Nebo-${PKG_VERSION}-${{ matrix.arch }}.AppImage"
           else
@@ -601,6 +665,32 @@ jobs:
         with:
           key: release-${{ github.run_id }}-linux-${{ matrix.arch }}
           path: release-artifacts/
+
+  # The droplet is deleted whether the amd64 build passed, failed, or never
+  # started. The one-job runner has already removed itself from the org.
+  linux-amd64-runner-down:
+    needs: [linux-amd64-runner, build-linux]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: digitalocean/action-doctl@v2
+        with:
+          token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+      - name: Delete this run's droplet, and any runner droplet older than three hours
+        run: |
+          doctl compute droplet delete --force --tag-name "run-${{ github.run_id }}" || true
+          cutoff=$(date -u -d '3 hours ago' +%s)
+          doctl compute droplet list --tag-name nebo-ci-runner --format ID,Created --no-header | while read -r id created; do
+            [ "$(date -u -d "$created" +%s)" -lt "$cutoff" ] && doctl compute droplet delete --force "$id" || true
+          done
+      # A one-job runner removes itself after its job; if the job never ran,
+      # its registration would linger as offline. Remove it either way.
+      - name: Remove the runner registration
+        env:
+          GH_TOKEN: ${{ secrets.RUNNER_ADMIN_TOKEN }}
+        run: |
+          id=$(gh api "orgs/${{ github.repository_owner }}/actions/runners?name=do-amd64-${{ github.run_id }}" -q '.runners[0].id // empty')
+          [ -n "$id" ] && gh api -X DELETE "orgs/${{ github.repository_owner }}/actions/runners/$id" || true
 
   # ─── Windows desktop build (Tauri 2 — WebView2) ──────────────────────
   # Gated behind a repo variable while we work through cross-platform
@@ -643,8 +733,18 @@ jobs:
       - name: Install protobuf compiler
         run: choco install protoc -y --no-progress
 
+      # tauri-cli from source was 10 minutes of every Windows run; the binary
+      # is keyed by its version and restored in seconds.
+      - name: Cache Tauri CLI
+        id: tauri-cli-cache
+        uses: actions/cache@v4
+        with:
+          key: tauri-cli-${{ env.TAURI_CLI_VERSION }}-windows
+          path: ~/.cargo/bin/cargo-tauri.exe
+
       - name: Install Tauri CLI
-        run: cargo install tauri-cli --version "^2" --locked
+        if: ${{ steps.tauri-cli-cache.outputs.cache-hit != 'true' }}
+        run: cargo install tauri-cli --version "${{ env.TAURI_CLI_VERSION }}" --locked
 
       - name: Prepare bundled .napp files
         if: ${{ env.HAS_CDN_URL == 'true' }}
@@ -662,7 +762,22 @@ jobs:
             done < "src-tauri/bundled-napps/plugins/.manifest"
           fi
 
+      # The sidecars are keyed by the fork's commit, so a run rebuilds them
+      # (5 minutes) only when OBSCURA_REF moves.
+      - name: Resolve Obscura commit
+        id: obscura
+        shell: bash
+        run: echo "sha=$(git ls-remote "$OBSCURA_FORK" "refs/heads/$OBSCURA_REF" "refs/tags/$OBSCURA_REF" | head -n1 | cut -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Obscura sidecars
+        id: obscura-cache
+        uses: actions/cache@v4
+        with:
+          key: obscura-${{ steps.obscura.outputs.sha }}-x86_64-pc-windows-msvc
+          path: src-tauri/binaries/obscura*
+
       - name: Build & stage Obscura sidecars (from fork)
+        if: ${{ steps.obscura-cache.outputs.cache-hit != 'true' }}
         shell: bash
         run: |
           TRIPLE="$(rustc -vV | sed -n 's/^host: //p')"
@@ -1020,7 +1135,8 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add Casks/nebo.rb
           git rm -f Formula/nebo.rb 2>/dev/null || true
-          git commit -m "Update nebo to ${{ github.ref_name }}"
+          # A re-run of a partial release finds the tap already at this version.
+          git commit -m "Update nebo to ${{ github.ref_name }}" || echo "No changes"
           git push
 
   # ─── Update APT repository (cross-repo) ──────────────────────────────

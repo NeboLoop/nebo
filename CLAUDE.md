@@ -233,9 +233,12 @@ house machines are faster, ours, and already set up.
 
 - `build-macos`, `notarize-macos`, `publish-macos`: `runs-on: [self-hosted, macOS, stadium-mac]`
   (runner `stadium-mac-1` on the mini's host, service `~/runner-mac`, toolchain via Homebrew).
-- `build-linux`: `runs-on: [self-hosted, Linux, ARM64, neboloop]` (runner `stadium-org-1` in the
-  mini's Lima VM `ci`); arm64 builds natively, amd64 builds in a `linux/amd64` container under
-  the VM's Rosetta binfmt.
+- `build-linux` arm64: `runs-on: [self-hosted, Linux, ARM64, neboloop]` (runner `stadium-org-1` in
+  the mini's Lima VM `ci`), built natively.
+- `build-linux` amd64: a DigitalOcean droplet that exists only for the run — `linux-amd64-runner`
+  boots it from the `nebo-runner-amd64-base` snapshot with a one-job registration (label
+  `nebo-amd64-<run id>`), `linux-amd64-runner-down` deletes it. Ours and self-hosted, cents per
+  release. (Rosetta on the arm64 VM killed amd64 processes at random — v0.14.1, v0.14.2.)
 - `build-windows`: `windows-latest` is tolerated only until a house Windows box is registered.
 - `scripts/check-release-runners.py` enforces this in CI (`release-runners` job). Do not weaken
   or delete the check; if a runner is down, fix the runner (`ssh stadium`), don't reroute the build.

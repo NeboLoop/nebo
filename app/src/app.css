@@ -421,12 +421,27 @@
 .prose {
 	min-width: 0;
 }
-.prose :where(p, li, blockquote, td, th, h1, h2, h3, h4, a, strong, em) {
+.prose :where(p, li, blockquote, h1, h2, h3, h4, a, strong, em) {
 	overflow-wrap: anywhere;
 }
 .prose :where(pre) {
 	overflow-x: auto;
 	max-width: 100%;
+}
+/* A table column is not prose. Breaking anywhere inside a cell turns a
+   narrow column's header into a stack of single letters — "Type" became
+   T/y/p/e down the page (2026-09-16). Words wrap at spaces like anywhere
+   else, and a table too wide for the bubble scrolls, the way a code block
+   does, instead of being crushed into one character per line. */
+.prose :where(table) {
+	display: block;
+	overflow-x: auto;
+	max-width: 100%;
+}
+.prose :where(td, th) {
+	overflow-wrap: normal;
+	word-break: normal;
+	hyphens: none;
 }
 [data-user-msg] {
 	min-width: 0;

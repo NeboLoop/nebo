@@ -30,7 +30,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.14.0"
+version = "0.14.3"
 edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/NeboLoop/nebo"
@@ -164,8 +164,13 @@ debug = 0
 split-debuginfo = "unpacked"
 
 [profile.release]
-lto = true
-codegen-units = 1
+# Thin LTO across 16 codegen units: fat LTO with one unit optimized the whole
+# program on ONE thread for ~16 minutes per binary per target (v0.14.0 on the
+# house Mac mini), which capped a release at over an hour. Thin LTO runs the
+# optimization in parallel on every core for a few percent of runtime cost
+# nothing in Nebo is sensitive to. The server profile made the same trade.
+lto = "thin"
+codegen-units = 16
 strip = true
 
 # Server-image profile (Dockerfile only): trades a few % runtime perf for a
