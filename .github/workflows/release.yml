@@ -707,23 +707,41 @@ jobs:
   # Windows artifact via `fail-on-cache-miss: false`.
   build-windows:
     if: vars.WINDOWS_BUILD_ENABLED == 'true'
-    runs-on: windows-latest
+    runs-on: [self-hosted, Windows, X64, stadium-win] # the house Windows box — see CLAUDE.md "Release builds"
     env:
       HAS_CDN_URL: ${{ secrets.NEBOAI_CDN_URL != '' && 'true' || 'false' }}
       RUSTC_WRAPPER: ""
+      # Beside the checkout, as on the other house runners, so the cache
+      # survives checkout's wipe of the workspace. First build ~35 min cold.
+      CARGO_TARGET_DIR: ${{ github.workspace }}\..\nebo-target-windows
+      OBSCURA_TARGET_DIR: ${{ github.workspace }}\..\obscura-target-windows
     steps:
       - uses: actions/checkout@v4
+
+      # The house box's machine execution policy is Restricted and the
+      # runner service runs as NETWORK SERVICE, which cannot change that but
+      # can set its own (CurrentUser outranks LocalMachine); Git's bin is not
+      # on that account's PATH either. This cmd step, which neither affects,
+      # sets the policy, puts Git's bin and a portable PowerShell 7 (for the
+      # composite actions that ask for pwsh) on the job's PATH. Proven by
+      # .github/workflows/windows-runner-check.yml.
+      - name: Runner prep (no admin needed)
+        shell: cmd
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -Command "Set-ExecutionPolicy RemoteSigned -Scope CurrentUser -Force"
+          echo C:\Program Files\Git\bin>> "%GITHUB_PATH%"
+          echo C:\Program Files\Git\usr\bin>> "%GITHUB_PATH%"
+          set PWSH_DIR=%RUNNER_TEMP%\..\..\pwsh7
+          if not exist "%PWSH_DIR%\pwsh.exe" (
+            powershell -NoProfile -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol='Tls12'; Invoke-WebRequest -Uri https://github.com/PowerShell/PowerShell/releases/download/v7.4.6/PowerShell-7.4.6-win-x64.zip -OutFile pwsh.zip; Expand-Archive -Force pwsh.zip '%PWSH_DIR%'; Remove-Item pwsh.zip"
+          )
+          "%PWSH_DIR%\pwsh.exe" -NoProfile -ExecutionPolicy Bypass -Command "Set-ExecutionPolicy RemoteSigned -Scope CurrentUser -Force"
+          echo %PWSH_DIR%>> "%GITHUB_PATH%"
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{ env.RUST_VERSION }}
-
-      - name: Cache Rust build
-        uses: Swatinem/rust-cache@v2
-        with:
-          key: windows
-          cache-on-failure: true
 
       - uses: actions/setup-node@v4
         with:
@@ -739,20 +757,18 @@ jobs:
           pnpm run build
 
       - name: Install protobuf compiler
-        run: choco install protoc -y --no-progress
+        shell: bash
+        run: command -v protoc >/dev/null || choco install protoc -y --no-progress
 
-      # tauri-cli from source was 10 minutes of every Windows run; the binary
-      # is keyed by its version and restored in seconds.
-      - name: Cache Tauri CLI
-        id: tauri-cli-cache
-        uses: actions/cache@v4
-        with:
-          key: tauri-cli-${{ env.TAURI_CLI_VERSION }}-windows
-          path: ~/.cargo/bin/cargo-tauri.exe
-
+      # Into a directory the runner's account owns and keeps between runs:
+      # the copy under C:\rust belongs to the user who set the box up, and
+      # executing it as the service account fails with "Access is denied".
       - name: Install Tauri CLI
-        if: ${{ steps.tauri-cli-cache.outputs.cache-hit != 'true' }}
-        run: cargo install tauri-cli --version "${{ env.TAURI_CLI_VERSION }}" --locked
+        shell: bash
+        run: |
+          TOOLS="$(cygpath -u "$RUNNER_TEMP")/../../cargo-tools"
+          [ -x "$TOOLS/bin/cargo-tauri.exe" ] || cargo install tauri-cli --version "${{ env.TAURI_CLI_VERSION }}" --locked --root "$(cygpath -w "$TOOLS")"
+          cygpath -w "$TOOLS/bin" >> "$GITHUB_PATH"
 
       - name: Prepare bundled .napp files
         if: ${{ env.HAS_CDN_URL == 'true' }}
@@ -770,30 +786,16 @@ jobs:
             done < "src-tauri/bundled-napps/plugins/.manifest"
           fi
 
-      # The sidecars are keyed by the fork's commit, so a run rebuilds them
-      # (5 minutes) only when OBSCURA_REF moves.
-      - name: Resolve Obscura commit
-        id: obscura
-        shell: bash
-        run: echo "sha=$(git ls-remote "$OBSCURA_FORK" "refs/heads/$OBSCURA_REF" "refs/tags/$OBSCURA_REF" | head -n1 | cut -f1)" >> "$GITHUB_OUTPUT"
-
-      - name: Cache Obscura sidecars
-        id: obscura-cache
-        uses: actions/cache@v4
-        with:
-          key: obscura-${{ steps.obscura.outputs.sha }}-x86_64-pc-windows-msvc
-          path: src-tauri/binaries/obscura*
-
       - name: Build & stage Obscura sidecars (from fork)
-        if: ${{ steps.obscura-cache.outputs.cache-hit != 'true' }}
         shell: bash
         run: |
           TRIPLE="$(rustc -vV | sed -n 's/^host: //p')"
+          rm -rf obscura-src
           git clone --depth 1 --branch "$OBSCURA_REF" "$OBSCURA_FORK" obscura-src
-          ( cd obscura-src && cargo build --release -p obscura-cli )
+          ( cd obscura-src && CARGO_TARGET_DIR="$OBSCURA_TARGET_DIR" cargo build --release -p obscura-cli )
           mkdir -p src-tauri/binaries
           for bin in obscura obscura-worker; do
-            cp "obscura-src/target/release/${bin}.exe" "src-tauri/binaries/${bin}-${TRIPLE}.exe"
+            cp "$OBSCURA_TARGET_DIR/release/${bin}.exe" "src-tauri/binaries/${bin}-${TRIPLE}.exe"
           done
           ls -la src-tauri/binaries
 
@@ -829,14 +831,17 @@ jobs:
           timestamp-digest: SHA256
 
       - name: Build Tauri desktop app
-        run: cargo tauri build --bundles nsis
+        shell: bash
+        run: |
+          rm -rf "$CARGO_TARGET_DIR/release/bundle"
+          cargo tauri build --bundles nsis
 
       - name: Extract binary and installer
         shell: bash
         run: |
           PKG_VERSION="${GITHUB_REF_NAME#v}"
-          cp target/release/nebo.exe "nebo-windows-amd64.exe"
-          NSIS=$(ls target/release/bundle/nsis/*.exe 2>/dev/null || true)
+          cp "$CARGO_TARGET_DIR/release/nebo.exe" "nebo-windows-amd64.exe"
+          NSIS=$(ls "$CARGO_TARGET_DIR"/release/bundle/nsis/*"${PKG_VERSION}"*.exe 2>/dev/null || true)
           if [ -n "$NSIS" ]; then
             cp $NSIS "Nebo-${PKG_VERSION}-setup.exe"
           else
@@ -859,9 +864,29 @@ jobs:
   sign-windows:
     needs: build-windows
     if: vars.WINDOWS_BUILD_ENABLED == 'true' && vars.AZURE_SIGNING_ENABLED == 'true'
-    runs-on: windows-latest
+    runs-on: [self-hosted, Windows, X64, stadium-win] # the house Windows box — see CLAUDE.md "Release builds"
     steps:
       - uses: actions/checkout@v4
+
+      # The house box's machine execution policy is Restricted and the
+      # runner service runs as NETWORK SERVICE, which cannot change that but
+      # can set its own (CurrentUser outranks LocalMachine); Git's bin is not
+      # on that account's PATH either. This cmd step, which neither affects,
+      # sets the policy, puts Git's bin and a portable PowerShell 7 (for the
+      # composite actions that ask for pwsh) on the job's PATH. Proven by
+      # .github/workflows/windows-runner-check.yml.
+      - name: Runner prep (no admin needed)
+        shell: cmd
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -Command "Set-ExecutionPolicy RemoteSigned -Scope CurrentUser -Force"
+          echo C:\Program Files\Git\bin>> "%GITHUB_PATH%"
+          echo C:\Program Files\Git\usr\bin>> "%GITHUB_PATH%"
+          set PWSH_DIR=%RUNNER_TEMP%\..\..\pwsh7
+          if not exist "%PWSH_DIR%\pwsh.exe" (
+            powershell -NoProfile -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol='Tls12'; Invoke-WebRequest -Uri https://github.com/PowerShell/PowerShell/releases/download/v7.4.6/PowerShell-7.4.6-win-x64.zip -OutFile pwsh.zip; Expand-Archive -Force pwsh.zip '%PWSH_DIR%'; Remove-Item pwsh.zip"
+          )
+          "%PWSH_DIR%\pwsh.exe" -NoProfile -ExecutionPolicy Bypass -Command "Set-ExecutionPolicy RemoteSigned -Scope CurrentUser -Force"
+          echo %PWSH_DIR%>> "%GITHUB_PATH%"
 
       - name: Download Windows artifacts
         uses: actions/cache/restore@v4
@@ -961,7 +986,7 @@ jobs:
           fail-on-cache-miss: false
       - run: cp release-artifacts/* artifacts/ 2>/dev/null || true; rm -rf release-artifacts
 
-      # Windows is built on a windows-latest runner. actions/cache is OS-scoped
+      # Windows is built on the house Windows runner. actions/cache is OS-scoped
       # (the version hash differs across OS), so an ubuntu job can't read a cache
       # saved on Windows — it silently misses and drops the installer. Artifacts
       # are OS-agnostic and are the correct cross-job/cross-OS handoff.

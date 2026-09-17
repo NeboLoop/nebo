@@ -239,7 +239,10 @@ house machines are faster, ours, and already set up.
   boots it from the `nebo-runner-amd64-base` snapshot with a one-job registration (label
   `nebo-amd64-<run id>`), `linux-amd64-runner-down` deletes it. Ours and self-hosted, cents per
   release. (Rosetta on the arm64 VM killed amd64 processes at random — v0.14.1, v0.14.2.)
-- `build-windows`: `windows-latest` is tolerated only until a house Windows box is registered.
+- `build-windows` + `sign-windows`: `runs-on: [self-hosted, Windows, X64, stadium-win]` (the house Windows
+  box, runner `stadium-win-1`, set up by `scripts/setup-windows-runner.ps1`). Its runner runs as NETWORK
+  SERVICE under a Restricted machine execution policy; the jobs' "Runner prep" cmd step handles that
+  without admin. `.github/workflows/windows-runner-check.yml` proves the box before a tag.
 - `scripts/check-release-runners.py` enforces this in CI (`release-runners` job). Do not weaken
   or delete the check; if a runner is down, fix the runner (`ssh stadium`), don't reroute the build.
 - Signing and notarization credentials come from GitHub secrets and work on any runner.

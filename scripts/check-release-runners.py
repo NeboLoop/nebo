@@ -3,8 +3,8 @@
 hosted runners; Linux amd64 on a DigitalOcean droplet created for the run and
 deleted after it. This check exists because it has been undone before (Aug 15-16
 2026: CI and the Mac release builds were moved to macos-latest/ubuntu-latest
-and releases took 70+ minutes on 4-core rented machines). Windows is the only
-build allowed on a hosted runner, and only until a Windows box is registered.
+and releases took 70+ minutes on 4-core rented machines). Windows builds on the
+house Windows box (label stadium-win) since 2026-09-17.
 
 Run locally: python3 scripts/check-release-runners.py
 """
@@ -44,16 +44,20 @@ def main():
     for name in ("linux-amd64-runner", "linux-amd64-runner-down"):
         if name not in jobs:
             errors.append(f"{name}: the per-run droplet jobs must exist")
+    for name in ("build-windows", "sign-windows"):
+        runs_on = labels(jobs[name].get("runs-on"))
+        if "stadium-win" not in runs_on:
+            errors.append(f"{name}: runs-on {runs_on} — must be the house Windows box ([self-hosted, Windows, X64, stadium-win])")
     for name, job in jobs.items():
         runs_on = " ".join(labels(job.get("runs-on")))
-        if "macos-" in runs_on:
-            errors.append(f"{name}: uses a GitHub-hosted macOS runner ({runs_on})")
+        if "macos-" in runs_on or "windows-" in runs_on:
+            errors.append(f"{name}: uses a GitHub-hosted runner ({runs_on})")
     if errors:
         print("Release builds must run on the house Mac mini (see CLAUDE.md, 'Release builds'):")
         for e in errors:
             print("  -", e)
         return 1
-    print("release runners OK: Mac + Linux arm64 on the house Mac mini, Linux amd64 on a per-run droplet, Windows hosted")
+    print("release runners OK: Mac + Linux arm64 on the house Mac mini, Linux amd64 on a per-run droplet, Windows on the house Windows box")
     return 0
 
 
