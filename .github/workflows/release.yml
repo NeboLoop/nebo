@@ -737,6 +737,9 @@ jobs:
           )
           "%PWSH_DIR%\pwsh.exe" -NoProfile -ExecutionPolicy Bypass -Command "Set-ExecutionPolicy RemoteSigned -Scope CurrentUser -Force"
           echo %PWSH_DIR%>> "%GITHUB_PATH%"
+          rem A laptop on the Balanced plan throttles a long compile; High performance needs no admin to select.
+          powercfg /setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c
+          powercfg /getactivescheme
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -887,6 +890,9 @@ jobs:
           )
           "%PWSH_DIR%\pwsh.exe" -NoProfile -ExecutionPolicy Bypass -Command "Set-ExecutionPolicy RemoteSigned -Scope CurrentUser -Force"
           echo %PWSH_DIR%>> "%GITHUB_PATH%"
+          rem A laptop on the Balanced plan throttles a long compile; High performance needs no admin to select.
+          powercfg /setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c
+          powercfg /getactivescheme
 
       - name: Download Windows artifacts
         uses: actions/cache/restore@v4
