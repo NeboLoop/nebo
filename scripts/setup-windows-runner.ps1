@@ -26,6 +26,13 @@
   Set-ExecutionPolicy Bypass -Scope Process -Force
   iwr https://raw.githubusercontent.com/NeboLoop/nebo/main/scripts/setup-windows-runner.ps1 -OutFile setup-windows-runner.ps1
   .\setup-windows-runner.ps1 -Token <token>
+
+.NOTES
+  The runner service runs as the account you are logged in as, and
+  config.cmd only takes that account's password as a command-line argument
+  (there is no other way to set a service logon through it). The script
+  asks for it interactively and never stores it. A machine-wide Rust under
+  C:\rust is what lets that account's cargo be found by the service.
 #>
 param(
   [Parameter(Mandatory = $true)] [string] $Token,
@@ -77,11 +84,19 @@ $env:Path = "C:\rust\cargo\bin;" + $env:Path
 
 # ── OpenSSH Server, so the box can be serviced without anyone at it ─────────
 Step "OpenSSH Server"
-Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0 | Out-Null
-Set-Service -Name sshd -StartupType Automatic
-Start-Service sshd
+$cap = Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0
+# On a fresh install the capability is only staged ("InstallPending") until
+# the next reboot, and the sshd service does not exist yet; everything else
+# here is set up so that it starts on its own after that reboot.
+if (Get-Service sshd -ErrorAction SilentlyContinue) {
+  Set-Service -Name sshd -StartupType Automatic
+  Start-Service sshd
+} else {
+  Write-Warning "OpenSSH Server is installed but needs a reboot before sshd exists (state: $($cap.RestartNeeded)). After the reboot: Set-Service sshd -StartupType Automatic; Start-Service sshd"
+}
 if (-not (Get-NetFirewallRule -Name "OpenSSH-Server-In-TCP" -ErrorAction SilentlyContinue)) {
-  New-NetFirewallRule -Name "OpenSSH-Server-In-TCP" -DisplayName "OpenSSH Server (sshd)" -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22 | Out-Null
+  # Local network only: the box is serviced from the house LAN, never from the internet.
+  New-NetFirewallRule -Name "OpenSSH-Server-In-TCP" -DisplayName "OpenSSH Server (sshd)" -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22 -RemoteAddress LocalSubnet | Out-Null
 }
 # PowerShell as the SSH shell
 New-ItemProperty -Path "HKLM:\SOFTWARE\OpenSSH" -Name DefaultShell -Value "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe" -PropertyType String -Force | Out-Null
