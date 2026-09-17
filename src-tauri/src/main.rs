@@ -460,7 +460,7 @@ fn main() {
                     .status(204)
                     .header("Access-Control-Allow-Origin", "*")
                     .header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
-                    .header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+                    .header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Nebo-Connection-Id")
                     .header("Access-Control-Max-Age", "86400")
                     .body(Vec::new())
                     .unwrap();
@@ -540,7 +540,7 @@ fn main() {
             };
 
             let agent = ureq::AgentBuilder::new()
-                .timeout(std::time::Duration::from_secs(30))
+                .timeout(std::time::Duration::from_secs(120))
                 .build();
 
             for url in &urls {
@@ -552,6 +552,9 @@ fn main() {
                     "PATCH" => agent.patch(url),
                     _ => agent.get(url),
                 };
+                let req = if let Some(connection) = request.headers().get("x-nebo-connection-id").and_then(|v| v.to_str().ok()) {
+                    req.set("X-Nebo-Connection-Id", connection)
+                } else { req };
                 let result = if matches!(method, "POST" | "PUT" | "PATCH") && !req_body.is_empty() {
                     req.set("Content-Type", &content_type_in)
                         .send_bytes(&req_body)
@@ -562,9 +565,17 @@ fn main() {
                     Ok(resp) => tracing::debug!(status = resp.status(), url, "neboapp proxy response"),
                     Err(e) => tracing::debug!(error = %e, url, "neboapp proxy error"),
                 }
-                if let Ok(resp) = result {
+                // An API error is an API response. Preserve its status/body so
+                // embedded apps can recover a connection or show validation errors;
+                // falling through to index.html falsely reports a successful request.
+                let response = match result {
+                    Ok(resp) => Some(resp),
+                    Err(ureq::Error::Status(_, resp)) if path.starts_with("/api/") => Some(resp),
+                    _ => None,
+                };
+                if let Some(resp) = response {
                     let status = resp.status();
-                    if status != 404 {
+                    if status != 404 || path.starts_with("/api/") {
                         let ct = resp
                             .header("Content-Type")
                             .unwrap_or("application/octet-stream")
@@ -579,6 +590,13 @@ fn main() {
                             .unwrap();
                     }
                 }
+            }
+
+            if path.starts_with("/api/") {
+                return http::Response::builder().status(502)
+                    .header("Content-Type", "application/json")
+                    .header("Access-Control-Allow-Origin", "*")
+                    .body(br#"{"error":"Nebo could not reach the app. Try again."}"#.to_vec()).unwrap();
             }
 
             // SPA fallback: if proxy returned 404 or failed, and path has
