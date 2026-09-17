@@ -52,6 +52,18 @@ jobs:
           "%PWSH_DIR%\pwsh.exe" -NoProfile -ExecutionPolicy Bypass -Command "Set-ExecutionPolicy RemoteSigned -Scope CurrentUser -Force; $PSVersionTable.PSVersion.ToString()"
           echo %PWSH_DIR%>> "%GITHUB_PATH%"
 
+      - name: What kind of box is this
+        shell: cmd
+        run: |
+          wmic cpu get Name,NumberOfCores,NumberOfLogicalProcessors,MaxClockSpeed /format:list | findstr /r "="
+          wmic computersystem get TotalPhysicalMemory,Model /format:list | findstr /r "="
+          wmic path Win32_Battery get BatteryStatus,EstimatedChargeRemaining /format:list 2>nul | findstr /r "="
+          powercfg /getactivescheme
+          powershell -NoProfile -Command "Get-MpPreference | Select-Object -ExpandProperty ExclusionPath" 2>nul
+          powershell -NoProfile -Command "Get-MpComputerStatus | Select-Object RealTimeProtectionEnabled, AntivirusEnabled | Format-List" 2>nul
+          wmic logicaldisk where "DeviceID='C:'" get FreeSpace,Size /format:list | findstr /r "="
+          powershell -NoProfile -Command "Get-PhysicalDisk | Select-Object MediaType, BusType, Size | Format-Table -AutoSize" 2>nul
+
       - name: Who am I, and what is on PATH
         shell: powershell
         run: |
