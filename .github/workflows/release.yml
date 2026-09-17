@@ -498,7 +498,18 @@ jobs:
           if [ -d "$GITHUB_WORKSPACE" ]; then
             sudo -n chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE"
           fi
+      # Rosetta occasionally kills a multi-threaded amd64 process in the
+      # container ("assertion failed [ret.value == ESRCH] ... request_suspend",
+      # v0.14.2's git fetch); checkout's own retry then trips over the
+      # shallow.lock the dead fetch left. One clean retry covers it.
       - uses: actions/checkout@v4
+        id: checkout
+        continue-on-error: true
+      - name: Retry checkout after a crashed fetch
+        if: ${{ steps.checkout.outcome == 'failure' }}
+        run: rm -f "$GITHUB_WORKSPACE/.git/shallow.lock" "$GITHUB_WORKSPACE/.git/index.lock"
+      - uses: actions/checkout@v4
+        if: ${{ steps.checkout.outcome == 'failure' }}
 
       # The ubuntu-24.04-arm runner OOMs linking the release binary (LTO + one
       # codegen unit on the big nebo workspace). Swap lets the linker spill
@@ -575,7 +586,11 @@ jobs:
         run: |
           TRIPLE="$(rustc -vV | sed -n 's/^host: //p')"
           git clone --depth 1 --branch "$OBSCURA_REF" "$OBSCURA_FORK" obscura-src
-          ( cd obscura-src && CARGO_TARGET_DIR="$OBSCURA_TARGET_DIR" cargo build --release -p obscura-cli )
+          for attempt in 1 2 3; do
+            ( cd obscura-src && CARGO_TARGET_DIR="$OBSCURA_TARGET_DIR" cargo build --release -p obscura-cli ) && break
+            [ "$attempt" = 3 ] && exit 1
+            echo "::warning::cargo build died (Rosetta?), attempt $attempt — retrying"
+          done
           mkdir -p src-tauri/binaries
           for bin in obscura obscura-worker; do
             cp "$OBSCURA_TARGET_DIR/release/${bin}" "src-tauri/binaries/${bin}-${TRIPLE}"
@@ -601,14 +616,24 @@ jobs:
         env:
           APPIMAGE_EXTRACT_AND_RUN: 1
           NO_STRIP: true
-        run: cargo tauri build
+        run: |
+          for attempt in 1 2 3; do
+            cargo tauri build && break
+            [ "$attempt" = 3 ] && exit 1
+            echo "::warning::cargo tauri build died (Rosetta?), attempt $attempt — retrying"
+          done
 
       - name: Extract desktop binary
         run: |
           cp "$CARGO_TARGET_DIR/release/nebo" nebo-linux-${{ matrix.arch }}
 
       - name: Build headless CLI binary
-        run: cargo build --release -p nebo-cli
+        run: |
+          for attempt in 1 2 3; do
+            cargo build --release -p nebo-cli && break
+            [ "$attempt" = 3 ] && exit 1
+            echo "::warning::cargo build died (Rosetta?), attempt $attempt — retrying"
+          done
 
       - name: Extract headless binary
         run: cp "$CARGO_TARGET_DIR/release/nebo-cli" nebo-linux-${{ matrix.arch }}-headless
