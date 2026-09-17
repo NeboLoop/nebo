@@ -112,7 +112,7 @@ jobs:
           fail-on-cache-miss: true
 
       - name: Install Tauri CLI
-        run: cargo install tauri-cli --version "$TAURI_CLI_VERSION" --locked
+        run: cargo install tauri-cli --version "${{ env.TAURI_CLI_VERSION }}" --locked
 
       - name: Import signing certificate
         if: ${{ env.HAS_SIGNING_CERT == 'true' }}
@@ -483,6 +483,21 @@ jobs:
         run: |
           apt-get update -qq
           apt-get install -y -qq sudo curl git ca-certificates build-essential pkg-config protobuf-compiler
+          # The runner sets HOME=/github/home while the container runs as
+          # root; rustup-init refuses that mismatch ("you may be using sudo")
+          # and then crashed under Rosetta on its way out (v0.14.1). With HOME
+          # matching the user, the same installer and a cargo build run fine.
+          echo "HOME=/root" >> "$GITHUB_ENV"
+      # The amd64 container job runs as root in this same checkout and left
+      # root-owned files behind (.git objects, generated schemas); the native
+      # arm64 job then failed in tauri-build with "Permission denied"
+      # (v0.14.1). Reclaim the workspace before checkout touches it.
+      - name: Reclaim the workspace
+        if: ${{ matrix.container == '' }}
+        run: |
+          if [ -d "$GITHUB_WORKSPACE" ]; then
+            sudo -n chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE"
+          fi
       - uses: actions/checkout@v4
 
       # The ubuntu-24.04-arm runner OOMs linking the release binary (LTO + one
@@ -539,7 +554,7 @@ jobs:
           fail-on-cache-miss: true
 
       - name: Install Tauri CLI
-        run: cargo install tauri-cli --version "$TAURI_CLI_VERSION" --locked
+        run: cargo install tauri-cli --version "${{ env.TAURI_CLI_VERSION }}" --locked
 
       - name: Prepare bundled .napp files
         if: ${{ env.HAS_CDN_URL == 'true' }}
@@ -623,6 +638,13 @@ jobs:
           key: release-${{ github.run_id }}-linux-${{ matrix.arch }}
           path: release-artifacts/
 
+      # The counterpart of "Reclaim the workspace": whatever this root
+      # container wrote into the shared checkout goes back to the runner
+      # user (the parent directory's owner), even when the job failed.
+      - name: Hand the workspace back
+        if: ${{ always() && matrix.container != '' }}
+        run: chown -R --reference="$GITHUB_WORKSPACE/.." "$GITHUB_WORKSPACE"
+
   # ─── Windows desktop build (Tauri 2 — WebView2) ──────────────────────
   # Gated behind a repo variable while we work through cross-platform
   # signing issues. Set `WINDOWS_BUILD_ENABLED=true` in repo Variables to
@@ -675,7 +697,7 @@ jobs:
 
       - name: Install Tauri CLI
         if: ${{ steps.tauri-cli-cache.outputs.cache-hit != 'true' }}
-        run: cargo install tauri-cli --version "$TAURI_CLI_VERSION" --locked
+        run: cargo install tauri-cli --version "${{ env.TAURI_CLI_VERSION }}" --locked
 
       - name: Prepare bundled .napp files
         if: ${{ env.HAS_CDN_URL == 'true' }}
