@@ -1079,14 +1079,28 @@ jobs:
       - name: Remove intermediate signed artifacts
         run: rm -f artifacts/*-signed*
 
+      # The release is created as a draft, every asset is uploaded ONE AT A
+      # TIME, and only then is it published. The upload action pushed all
+      # fifteen in parallel and died with "Headers Timeout Error" on the
+      # 150–180 MB ones, twice, leaving a draft with a random subset
+      # (v0.14.3). A sequential upload with --clobber is slow and boring and
+      # resumes cleanly on a re-run.
       - name: Create release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: artifacts/*
-          generate_release_notes: true
-          draft: false
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release view "$TAG" >/dev/null 2>&1 \
+            || gh release create "$TAG" --draft --generate-notes --title "$TAG"
+          for f in artifacts/*; do
+            for attempt in 1 2 3; do
+              gh release upload "$TAG" "$f" --clobber && break
+              [ "$attempt" = 3 ] && exit 1
+              echo "::warning::upload of $(basename "$f") failed, attempt $attempt — retrying"
+              sleep 15
+            done
+          done
+          gh release edit "$TAG" --draft=false
 
   # ─── Update Homebrew cask (cross-repo) ────────────────────────────────
   update-homebrew:
