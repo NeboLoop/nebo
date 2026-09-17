@@ -1966,6 +1966,13 @@ export function openTeam(req: Record<string, unknown> = {}) {
 }
 
 /**
+ * @description "Other computers"
+ */
+export function otherComputers() {
+	return webapi.get<components.OtherComputersResponse>(`/api/v1/teams/other-computers`)
+}
+
+/**
  * @description "Edit team"
  */
 export function editTeam(teamId: string, req: Record<string, unknown> = {}) {

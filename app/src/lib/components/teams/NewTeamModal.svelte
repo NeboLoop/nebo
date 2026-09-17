@@ -31,7 +31,16 @@
 
   // The picker mounts fresh per open, so the team it edits is read once.
   const initial = untrack(() => team);
-  let picked = $state<string[]>(initial ? [...initial.memberAgentIds] : []);
+  // Only members on THIS computer are pickable here — the desktop picker
+  // shows this machine's roster. Members on another computer are added from
+  // the phone, and are carried through an edit untouched so that editing a
+  // team here never silently drops the people it cannot show.
+  const remoteMembers = untrack(
+    () => initial?.members?.filter((m) => !!m.botId) ?? []
+  );
+  let picked = $state<string[]>(
+    initial ? initial.members.filter((m) => !m.botId).map((m) => m.agentId) : []
+  );
   let typedName = $state(initial?.name ?? '');
   let mission = $state(initial?.mission ?? '');
   // The lead: a member that gets posts addressed to nobody in particular.
@@ -60,7 +69,12 @@
     busy = true;
     errorMsg = '';
     try {
-      const body = { name, mission: mission.trim(), agentIds: picked, organizerAgentId: lead };
+      const body = {
+        name,
+        mission: mission.trim(),
+        members: [...picked.map((agentId) => ({ agentId })), ...remoteMembers],
+        organizerAgentId: lead
+      };
       const resp = team ? await editTeam(team.id, body) : await openTeam(body);
       oncreated(resp.team);
     } catch (e: unknown) {

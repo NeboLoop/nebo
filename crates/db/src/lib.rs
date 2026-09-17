@@ -20,7 +20,7 @@ pub use queries::cost_microcents;
 pub use queries::LicenseKeyRow;
 pub use queries::PluginAccountProfile;
 pub use queries::WorkDocumentListing;
-pub use queries::{team_thread_key, Team, TeamMessage, TEAM_THREAD_PREFIX};
+pub use queries::{team_thread_key, Team, TeamMember, TeamMessage, TEAM_THREAD_PREFIX};
 pub use store::Store;
 
 /// Extension trait to convert `rusqlite::Error::QueryReturnedNoRows` into `Ok(None)`.

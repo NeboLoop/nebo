@@ -13,6 +13,21 @@ fn query_i64(path: &Path, sql: &str) -> i64 {
     conn.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap()
 }
 
+/// Whether a table has a column yet. The synthetic source starts at 0152,
+/// before the staffing columns exist, and a column that is not there holds
+/// nothing — which is the true count, not a swallowed error.
+fn has_column(path: &Path, table: &str, column: &str) -> bool {
+    let conn = rusqlite::Connection::open(path).unwrap();
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})")).unwrap();
+    let mut rows = stmt.query([]).unwrap();
+    while let Some(row) = rows.next().unwrap() {
+        if row.get::<_, String>(1).unwrap() == column {
+            return true;
+        }
+    }
+    false
+}
+
 /// Copy a SQLite database (and its WAL and shm, when present) read-only into
 /// `dir`, never opening the original.
 fn copy_db(src: &Path, dir: &Path) -> PathBuf {
@@ -80,6 +95,20 @@ fn migrations_run_forward_on_a_real_database() {
         let before = query_i64(path, "SELECT COALESCE(MAX(version), 0) FROM _nebo_migrations");
         let agents_before = query_i64(path, "SELECT COUNT(*) FROM agents");
         let with_department = query_i64(path, "SELECT COUNT(*) FROM agents WHERE department IS NOT NULL AND department != ''");
+        // What the database already had. A real machine's employees can carry
+        // a lock or a reporting line the owner set while using Nebo, and this
+        // proof is about what the MIGRATOR does, not about finding a database
+        // that happens to be empty of both.
+        let locked_before = if has_column(path, "agents", "department_locked") {
+            query_i64(path, "SELECT COUNT(*) FROM agents WHERE department_locked != 0")
+        } else {
+            0
+        };
+        let reporting_before = if has_column(path, "agents", "reports_to") {
+            query_i64(path, "SELECT COUNT(*) FROM agents WHERE reports_to IS NOT NULL")
+        } else {
+            0
+        };
         assert!(agents_before > 0, "{label}: a database with employees on it");
 
         // The migrator: opening the store runs every pending migration.
@@ -92,18 +121,28 @@ fn migrations_run_forward_on_a_real_database() {
         }
         // Nothing about an existing employee was invented.
         assert_eq!(query_i64(path, "SELECT COUNT(*) FROM agents"), agents_before, "{label}");
-        assert_eq!(query_i64(path, "SELECT COUNT(*) FROM agents WHERE department_locked != 0"), 0, "{label}: no agent gained a department lock");
-        assert_eq!(query_i64(path, "SELECT COUNT(*) FROM agents WHERE reports_to IS NOT NULL"), 0, "{label}: no agent gained a reporting line");
+        assert_eq!(query_i64(path, "SELECT COUNT(*) FROM agents WHERE department_locked != 0"), locked_before, "{label}: no agent gained a department lock");
+        assert_eq!(query_i64(path, "SELECT COUNT(*) FROM agents WHERE reports_to IS NOT NULL"), reporting_before, "{label}: no agent gained a reporting line");
         assert_eq!(
             query_i64(path, "SELECT COUNT(*) FROM agents WHERE department IS NOT NULL AND department != ''"),
             with_department,
             "{label}: a department a package wrote stays"
         );
         // The rows read back through the model that grew the columns.
-        for a in store.list_agents(10_000, 0).unwrap() {
-            assert_eq!(a.department_locked, 0);
-            assert!(a.reports_to.is_none());
-        }
+        let locked_rows = store
+            .list_agents(10_000, 0)
+            .unwrap()
+            .iter()
+            .filter(|a| a.department_locked != 0)
+            .count() as i64;
+        let reporting_rows = store
+            .list_agents(10_000, 0)
+            .unwrap()
+            .iter()
+            .filter(|a| a.reports_to.is_some())
+            .count() as i64;
+        assert_eq!(locked_rows, locked_before, "{label}: the model reads back what the table holds");
+        assert_eq!(reporting_rows, reporting_before, "{label}: the model reads back what the table holds");
         // The new tables exist and are empty of anything invented.
         assert_eq!(query_i64(path, "SELECT COUNT(*) FROM company_policy"), 0, "{label}");
         assert_eq!(query_i64(path, "SELECT COUNT(*) FROM operation_counters"), 0, "{label}");

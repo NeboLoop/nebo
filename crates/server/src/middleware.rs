@@ -135,7 +135,10 @@ pub async fn api_security_headers(request: Request, next: Next) -> Response {
     let csp = if is_served_file {
         "frame-ancestors 'self' http://localhost:* http://127.0.0.1:* tauri:"
     } else if is_html {
-        "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'"
+        // 'self' so app UIs served over HTTP (browser popups, cloud bots via the
+        // tunnel) can load their own bundled scripts/styles — a SvelteKit or Vite
+        // build ships chunked files, not inline blocks. neboapp:// never hits this.
+        "default-src 'none'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src *; frame-ancestors 'none'"
     } else {
         "default-src 'none'; frame-ancestors 'none'"
     };

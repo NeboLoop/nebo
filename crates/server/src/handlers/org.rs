@@ -158,13 +158,17 @@ pub async fn install_org(
                 teams_skipped.push(serde_json::json!({ "team": name, "reason": "fewer than two resolvable members", "unresolved": unresolved }));
                 continue;
             }
+            // The org import names employees on this machine; a member on
+            // another computer is picked in the app, not written by an import.
+            let member_list: Vec<db::TeamMember> =
+                member_ids.iter().map(db::TeamMember::local).collect();
             let result = match state.store.get_team_by_name(&name).ok().flatten() {
                 Some(existing) => tools::team::update(
                     &state.store,
                     &existing.id,
                     None,
                     Some(&mission),
-                    Some(&member_ids),
+                    Some(&member_list),
                     Some(&organizer_id),
                 )
                 .map(|t| t.id),
@@ -173,7 +177,7 @@ pub async fn install_org(
                     &state.store,
                     &name,
                     &mission,
-                    &member_ids,
+                    &member_list,
                     &organizer_id,
                 )
                 .await

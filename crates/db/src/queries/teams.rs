@@ -22,6 +22,42 @@ pub fn team_thread_key(team_id: &str) -> String {
     format!("{TEAM_THREAD_PREFIX}{team_id}")
 }
 
+/// One member of a team: which machine runs them, and who they are on it.
+///
+/// A member used to be a bare local agent id, which assumed every member lives
+/// on this machine. The owner's workforce is spread across machines, so the
+/// pair is stored from the first line and a cross-bot team is a feature rather
+/// than a migration.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TeamMember {
+    /// Empty means THIS machine — also what an unlinked Nebo has, so it is the
+    /// only honest default. A remote member names the bot that runs it.
+    #[serde(default)]
+    pub bot_id: String,
+    /// Local agent id for a local member; the HUB agent id for a remote one,
+    /// because that is the id a mention token must carry for the far machine
+    /// to resolve it.
+    pub agent_id: String,
+    /// A label, not an identity. A local member's name is resolved live from
+    /// the roster; a remote member has no local roster to ask, so this is what
+    /// gets shown.
+    #[serde(default)]
+    pub name: String,
+}
+
+impl TeamMember {
+    /// A member on this machine.
+    pub fn local(agent_id: impl Into<String>) -> Self {
+        Self { bot_id: String::new(), agent_id: agent_id.into(), name: String::new() }
+    }
+
+    /// True when this member runs on this machine.
+    pub fn is_local(&self) -> bool {
+        self.bot_id.is_empty()
+    }
+}
+
 /// One team row, frontend-shaped (genapi emits this).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -29,8 +65,8 @@ pub struct Team {
     pub id: String,
     pub name: String,
     pub mission: String,
-    /// Local agent ids in this team.
-    pub member_agent_ids: Vec<String>,
+    /// Everyone in this team, local and remote.
+    pub members: Vec<TeamMember>,
     /// The employee that created the team; empty when the owner did.
     pub organizer_agent_id: String,
     /// The NeboAI hub channel mirroring this team, once mirrored.
@@ -61,7 +97,7 @@ fn row_to_team(row: &rusqlite::Row) -> rusqlite::Result<Team> {
         id: row.get(0)?,
         name: row.get(1)?,
         mission: row.get(2)?,
-        member_agent_ids: serde_json::from_str(&members_json).unwrap_or_default(),
+        members: serde_json::from_str(&members_json).unwrap_or_default(),
         organizer_agent_id: row.get(4)?,
         hub_channel_id: row.get(5)?,
         created_at: row.get(6)?,
@@ -69,7 +105,7 @@ fn row_to_team(row: &rusqlite::Row) -> rusqlite::Result<Team> {
 }
 
 const TEAM_COLUMNS: &str =
-    "id, name, mission, member_agent_ids, organizer_agent_id, hub_channel_id, created_at";
+    "id, name, mission, members, organizer_agent_id, hub_channel_id, created_at";
 
 fn message_from_row(m: ChatMessage) -> TeamMessage {
     let meta: serde_json::Value = m
@@ -94,16 +130,16 @@ impl Store {
         id: &str,
         name: &str,
         mission: &str,
-        member_agent_ids: &[String],
+        members: &[TeamMember],
         organizer_agent_id: &str,
         hub_channel_id: Option<&str>,
     ) -> Result<Team, NeboError> {
         let conn = self.conn()?;
-        let members = serde_json::to_string(member_agent_ids)
+        let members = serde_json::to_string(members)
             .map_err(|e| NeboError::Internal(format!("serialize team members: {e}")))?;
         conn.query_row(
             &format!(
-                "INSERT INTO teams (id, name, mission, member_agent_ids, organizer_agent_id, hub_channel_id)
+                "INSERT INTO teams (id, name, mission, members, organizer_agent_id, hub_channel_id)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)
                  RETURNING {TEAM_COLUMNS}"
             ),
@@ -172,15 +208,15 @@ impl Store {
         id: &str,
         name: &str,
         mission: &str,
-        member_agent_ids: &[String],
+        members: &[TeamMember],
         organizer_agent_id: &str,
     ) -> Result<Option<Team>, NeboError> {
         let conn = self.conn()?;
-        let members = serde_json::to_string(member_agent_ids)
+        let members = serde_json::to_string(members)
             .map_err(|e| NeboError::Internal(format!("serialize team members: {e}")))?;
         conn.query_row(
             &format!(
-                "UPDATE teams SET name = ?2, mission = ?3, member_agent_ids = ?4, organizer_agent_id = ?5
+                "UPDATE teams SET name = ?2, mission = ?3, members = ?4, organizer_agent_id = ?5
                  WHERE id = ?1 RETURNING {TEAM_COLUMNS}"
             ),
             params![id, name, mission, members, organizer_agent_id],
@@ -283,8 +319,8 @@ mod tests {
         Store::new(&path.to_string_lossy()).expect("store")
     }
 
-    fn members() -> Vec<String> {
-        vec!["chief".to_string(), "ea".to_string()]
+    fn members() -> Vec<TeamMember> {
+        vec![TeamMember::local("chief"), TeamMember::local("ea")]
     }
 
     /// A team is a local row: created with no hub channel, listed, fetched by
@@ -298,7 +334,7 @@ mod tests {
         assert_eq!(team.id, "t-1");
         assert_eq!(team.hub_channel_id, None);
         assert_eq!(team.organizer_agent_id, "chief");
-        assert_eq!(team.member_agent_ids, members());
+        assert_eq!(team.members, members());
 
         assert_eq!(s.list_teams().unwrap().len(), 1);
         assert_eq!(s.get_team("t-1").unwrap().unwrap().name, "Operations");

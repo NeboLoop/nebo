@@ -12,6 +12,11 @@ pub fn routes() -> Router<AppState> {
             "/teams",
             axum::routing::get(handlers::teams::list_teams).post(handlers::teams::open_team),
         )
+        // Before `/teams/{teamId}` so the literal path is not swallowed by it.
+        .route(
+            "/teams/other-computers",
+            axum::routing::get(handlers::teams::other_computers),
+        )
         .route(
             "/teams/{teamId}",
             axum::routing::put(handlers::teams::edit_team)

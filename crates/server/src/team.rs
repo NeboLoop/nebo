@@ -137,13 +137,11 @@ pub(crate) fn post(
             }),
         );
 
-        // 3. The optional hub mirror (before fan-out so a slow hub never
-        // delays the members; best effort either way).
-        mirror_to_hub(&state, &team, &text, &sender_name, &post).await;
-
-        // 2. Fan-out: everyone receives the post; `act` decides who runs.
+        // Who acts is decided once, before anything is sent, because the hub
+        // mirror has to carry the asks for members on other machines.
+        let member_ids = tools::team::member_ids(&team);
         let mut mentioned = post.mention.clone();
-        for id in tools::team::mentioned_members(&text, &team.member_agent_ids) {
+        for id in tools::team::mentioned_members(&text, &member_ids) {
             if !mentioned.contains(&id) {
                 mentioned.push(id);
             }
@@ -151,14 +149,44 @@ pub(crate) fn post(
         let act = act_targets(
             &post.from_agent_id,
             &team.organizer_agent_id,
-            &team.member_agent_ids,
+            &member_ids,
             &mentioned,
             post.is_reply,
             tools::team::mentions_everyone(&text),
         );
+
+        // A member on another computer is reached the only way it can be:
+        // through the team's hub channel, addressed by name so that machine's
+        // own dispatch runs it. There is no second rail — the far Nebo treats
+        // this exactly like any other channel message that names one of its
+        // employees.
+        let remote_asks: Vec<&db::TeamMember> = team
+            .members
+            .iter()
+            .filter(|m| !m.is_local() && act.contains(&m.agent_id))
+            .collect();
+
+        // 3. The optional hub mirror (before fan-out so a slow hub never
+        // delays the members; best effort either way).
+        mirror_to_hub(&state, &team, &text, &sender_name, &post, &remote_asks).await;
+
         let mut asked: Vec<String> = Vec::new();
+        for m in &remote_asks {
+            let name = if m.name.is_empty() { m.agent_id.clone() } else { m.name.clone() };
+            asked.push(name);
+        }
+
+        // 2. Fan-out over the local rail. A remote member is not on it — it
+        // was asked through the hub above.
         for (member_id, member_name) in &roster {
             if *member_id == post.from_agent_id {
+                continue;
+            }
+            if team
+                .members
+                .iter()
+                .any(|m| m.agent_id == *member_id && !m.is_local())
+            {
                 continue;
             }
             let act_now = act.contains(member_id);
@@ -204,7 +232,14 @@ pub(crate) fn post(
 /// Forward a post to the team's hub channel, if the team is mirrored and
 /// the hub is connected. Local mention tokens become hub tokens for
 /// employees the hub knows; failures are logged, never returned.
-async fn mirror_to_hub(state: &AppState, team: &db::Team, text: &str, sender_name: &str, post: &TeamPost) {
+async fn mirror_to_hub(
+    state: &AppState,
+    team: &db::Team,
+    text: &str,
+    sender_name: &str,
+    post: &TeamPost,
+    remote_asks: &[&db::TeamMember],
+) {
     let Some(channel_id) = team.hub_channel_id.as_deref().filter(|c| !c.is_empty()) else {
         return;
     };
@@ -216,16 +251,29 @@ async fn mirror_to_hub(state: &AppState, team: &db::Team, text: &str, sender_nam
     }
     let mut content = text.to_string();
     if content.contains("<@") {
-        for id in &team.member_agent_ids {
-            let token = format!("<@{id}>");
+        // A LOCAL member is addressed locally in the team thread, so its token
+        // has to be translated into the identity the hub knows. A remote
+        // member's id is already a hub id and passes through untouched.
+        for m in team.members.iter().filter(|m| m.is_local()) {
+            let token = format!("<@{}>", m.agent_id);
             if !content.contains(&token) {
                 continue;
             }
-            if let Ok(Some(a)) = state.store.get_agent(id) {
+            if let Ok(Some(a)) = state.store.get_agent(&m.agent_id) {
                 if let Some(loop_id) = a.loop_agent_id.as_deref().filter(|s| !s.is_empty()) {
                     content = content.replace(&token, &format!("<@{loop_id}>"));
                 }
             }
+        }
+    }
+    // The asks for members on other machines. The far Nebo answers a channel
+    // message that names one of its employees, so naming them here IS the
+    // dispatch — appended rather than woven in, so the owner's own words reach
+    // that machine unchanged.
+    for m in remote_asks {
+        let token = format!("<@{}>", m.agent_id);
+        if !content.contains(&token) {
+            content.push_str(&format!(" {token}"));
         }
     }
     let mut metadata = std::collections::HashMap::new();

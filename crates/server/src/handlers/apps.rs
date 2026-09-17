@@ -470,6 +470,39 @@ pub async fn janus_stream(
     Sse::new(stream).into_response()
 }
 
+fn connected_profile(
+    store: &db::Store,
+    agent_id: &str,
+    slug: &str,
+) -> Result<Option<serde_json::Value>, types::NeboError> {
+    Ok(store.resolve_plugin_account_profile(agent_id, slug, None)?.map(|p| serde_json::json!({
+        "id": p.id, "config_dir": p.config_dir, "account_label": p.account_label, "needs_reauth": p.needs_reauth
+    })))
+}
+
+/// The native scheme proxy is a server-side request (no Origin). HTTP app
+/// windows are same-origin; authenticated tunnel requests carry a private stamp.
+fn app_connection_origin_allowed(headers: &axum::http::HeaderMap) -> bool {
+    if headers
+        .get("x-nebo-tunnel-auth")
+        .and_then(|v| v.to_str().ok())
+        == Some(comm::tunnel::tunnel_auth_secret())
+    {
+        return true;
+    }
+    let Some(origin) = headers.get(header::ORIGIN) else {
+        return true;
+    };
+    let Some(origin) = origin.to_str().ok().and_then(|s| url::Url::parse(s).ok()) else {
+        return false;
+    };
+    let Some(host) = headers.get(header::HOST).and_then(|v| v.to_str().ok()) else {
+        return false;
+    };
+    matches!(origin.scheme(), "http" | "https")
+        && origin[url::Position::BeforeHost..url::Position::AfterPort].eq_ignore_ascii_case(host)
+}
+
 /// ANY /apps/{agent_id}/api/*path — proxy HTTP request to sidecar via gRPC UIService.
 ///
 /// Sidecar binaries communicate over Unix socket. Nebo converts the HTTP request
@@ -538,10 +571,46 @@ pub async fn proxy_to_sidecar(
     let query = req.uri().query().unwrap_or("").to_string();
     let mut headers_map = std::collections::HashMap::new();
     for (name, value) in req.headers() {
+        // Native connection metadata is platform-owned, never browser-supplied.
+        if name.as_str().starts_with("x-nebo-connected-") { continue; }
         if let Ok(v) = value.to_str() {
             headers_map.insert(name.to_string(), v.to_string());
         }
     }
+    let declaration: serde_json::Value = serde_json::from_str(&agent.frontmatter).unwrap_or_default();
+    let declaration = if declaration.get("requires").is_some() { declaration } else {
+        super::agents::app_tool_dir(&agent)
+            .and_then(|dir| std::fs::read(dir.join("agent.json")).ok())
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default()
+    };
+    let mut connections = serde_json::Map::new();
+    if let Some(plugins) = declaration.pointer("/requires/plugins").and_then(|v| v.as_array()) {
+        for slug in plugins.iter().filter_map(|v| v.as_str()) {
+            // Same account resolver as plugin tool calls. No global fallback and
+            // no caller-controlled account or filesystem path. Only declared deps.
+            if state.plugin_store.get_manifest(slug).and_then(|m| m.auth)
+                .and_then(|a| a.profile_dir_env).is_none() { continue; }
+            match connected_profile(&state.store, &agent_id, slug) {
+                Ok(Some(profile)) => { connections.insert(slug.to_string(), profile); }
+                Ok(None) => {},
+                Err(_) => return (StatusCode::SERVICE_UNAVAILABLE, "could not resolve app connection").into_response(),
+            }
+        }
+    }
+    // First-party NeboAI apps (`requires.neboai: true`) reuse the owner's own
+    // NeboAI sign-in: no separate consent, the app is just who Nebo is.
+    let neboai_token = if declaration.pointer("/requires/neboai").and_then(|v| v.as_bool()) == Some(true) {
+        state.store.list_all_active_auth_profiles_by_provider("neboai").unwrap_or_default()
+            .first().map(|p| p.api_key.clone()).unwrap_or_default()
+    } else { String::new() };
+    // Credential-bearing sidecar requests must come from the app UI (or the
+    // native protocol proxy, which has no browser Origin), never a foreign page.
+    if (!connections.is_empty() || !neboai_token.is_empty()) && !app_connection_origin_allowed(req.headers()) {
+        return (StatusCode::FORBIDDEN, "app connection request has an untrusted origin").into_response();
+    }
+    headers_map.insert("x-nebo-connected-profiles".into(), serde_json::Value::Object(connections).to_string());
+    if !neboai_token.is_empty() { headers_map.insert("x-nebo-connected-neboai".into(), neboai_token); }
     let body_bytes = match axum::body::to_bytes(req.into_body(), 10 * 1024 * 1024).await {
         Ok(b) => b.to_vec(),
         Err(_) => return StatusCode::BAD_REQUEST.into_response(),
@@ -557,7 +626,8 @@ pub async fn proxy_to_sidecar(
                 }
             }));
 
-        let mut client = proto::ui_service_client::UiServiceClient::new(channel);
+        let mut client = proto::ui_service_client::UiServiceClient::new(channel)
+            .max_decoding_message_size(32 * 1024 * 1024);
         let grpc_req = proto::HttpRequest {
             method,
             path: path.trim_start_matches('/').to_string(),
@@ -985,5 +1055,61 @@ fn mime_from_path(path: &std::path::Path) -> &'static str {
         Some("ttf") => "font/ttf",
         Some("wasm") => "application/wasm",
         _ => "application/octet-stream",
+    }
+}
+
+#[cfg(test)]
+mod connection_origin_tests {
+    use super::*;
+    #[test]
+    fn connected_accounts_are_scoped_to_the_app_and_plugin() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = db::Store::new(dir.path().join("test.db").to_str().unwrap()).unwrap();
+        store
+            .upsert_plugin_account_profile("a1", "app-a", "mail", "Primary", "/a/primary")
+            .unwrap();
+        store
+            .upsert_plugin_account_profile("a2", "app-a", "mail", "Secondary", "/a/secondary")
+            .unwrap();
+        store
+            .upsert_plugin_account_profile("b1", "app-b", "mail", "Other account", "/b/primary")
+            .unwrap();
+        assert_eq!(
+            connected_profile(&store, "app-a", "mail").unwrap().unwrap()["config_dir"],
+            "/a/primary"
+        );
+        assert_eq!(
+            connected_profile(&store, "app-b", "mail").unwrap().unwrap()["config_dir"],
+            "/b/primary"
+        );
+        assert!(
+            connected_profile(&store, "app-c", "mail")
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            connected_profile(&store, "app-a", "other-plugin")
+                .unwrap()
+                .is_none()
+        );
+        store.set_plugin_account_reauth("a1", true).unwrap();
+        assert_eq!(
+            connected_profile(&store, "app-a", "mail").unwrap().unwrap()["needs_reauth"],
+            true
+        );
+    }
+    #[test]
+    fn native_and_same_origin_only() {
+        let mut h = axum::http::HeaderMap::new();
+        h.insert(header::HOST, "127.0.0.1:27895".parse().unwrap());
+        assert!(app_connection_origin_allowed(&h));
+        h.insert(header::ORIGIN, "http://127.0.0.1:27895".parse().unwrap());
+        assert!(app_connection_origin_allowed(&h));
+        h.insert(header::ORIGIN, "https://untrusted.example".parse().unwrap());
+        assert!(!app_connection_origin_allowed(&h));
+        h.insert(header::ORIGIN, "null".parse().unwrap());
+        assert!(!app_connection_origin_allowed(&h));
+        h.insert("x-nebo-tunnel-auth", "forged".parse().unwrap());
+        assert!(!app_connection_origin_allowed(&h));
     }
 }

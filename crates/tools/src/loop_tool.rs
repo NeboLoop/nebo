@@ -221,9 +221,10 @@ impl LoopTool {
             .and_then(|store| {
                 let room = store.get_team_by_hub_channel(channel_id).ok().flatten()?;
                 Some(
-                    room.member_agent_ids
+                    room.members
                         .iter()
-                        .filter_map(|id| store.get_agent(id).ok().flatten())
+                        .filter(|m| m.is_local())
+                        .filter_map(|m| store.get_agent(&m.agent_id).ok().flatten())
                         .collect(),
                 )
             })
@@ -961,7 +962,7 @@ mod tests {
 
         // A local team shows up in both listings, hub or not.
         store
-            .create_team("t-1", "Operations", "Run the office", &["a".into(), "b".into()], "a", None)
+            .create_team("t-1", "Operations", "Run the office", &[db::TeamMember::local("a"), db::TeamMember::local("b")], "a", None)
             .unwrap();
         let res = tool
             .execute_dyn(&ctx, serde_json::json!({"resource": "channel", "action": "list"}))

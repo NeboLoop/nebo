@@ -878,6 +878,10 @@ pub struct PluginStore {
     downloading: Arc<tokio::sync::Mutex<HashSet<String>>>,
     /// In-memory diagnostic log for plugin health tracking.
     diagnostics: Arc<std::sync::RwLock<Vec<PluginDiagnostic>>>,
+    /// Where the owner's NeboAI sign-in comes from (set by the host once the
+    /// DB is open). Plugins declaring `auth.type: "neboai"` receive it in every
+    /// key of their `auth.env` — no separate login, the plugin is who Nebo is.
+    neboai_token: Arc<std::sync::RwLock<Option<Arc<dyn Fn() -> Option<String> + Send + Sync>>>>,
     /// In-memory auth status per slug: `true` = authenticated, `false` = needs auth.
     /// Populated once at startup; updated on login/logout events.
     /// Uses std::sync::RwLock because writes never span .await points and sync
@@ -913,6 +917,32 @@ impl PluginStore {
             diagnostics: Arc::new(std::sync::RwLock::new(Vec::new())),
             auth_cache: Arc::new(std::sync::RwLock::new(HashMap::new())),
             env_cache: Arc::new(std::sync::RwLock::new(HashMap::new())),
+            neboai_token: Arc::new(std::sync::RwLock::new(None)),
+        }
+    }
+
+    pub fn set_neboai_token_source(&self, source: Arc<dyn Fn() -> Option<String> + Send + Sync>) {
+        *self.neboai_token.write().unwrap_or_else(|e| e.into_inner()) = Some(source);
+    }
+
+    /// Env for a first-party plugin (`auth.type: "neboai"`): each declared
+    /// `auth.env` key ending in `_TOKEN` set to the owner's current NeboAI
+    /// token (other keys stay user-configured, e.g. a base URL). Empty for
+    /// every other auth type, and when Nebo is not signed in.
+    pub fn neboai_auth_env(&self, slug: &str) -> Vec<(String, String)> {
+        let Some(auth) = self.get_manifest(slug).and_then(|m| m.auth) else { return Vec::new() };
+        if auth.auth_type != "neboai" {
+            return Vec::new();
+        }
+        let token = self.neboai_token.read().ok().and_then(|s| s.as_ref().and_then(|f| f()));
+        match token {
+            Some(t) if !t.is_empty() => auth
+                .env
+                .keys()
+                .filter(|k| k.ends_with("_TOKEN"))
+                .map(|k| (k.clone(), t.clone()))
+                .collect(),
+            _ => Vec::new(),
         }
     }
 

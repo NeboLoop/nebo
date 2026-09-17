@@ -1292,7 +1292,10 @@
             <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></svg>
           </div>
           <ul class="dropdown-content menu z-[55] mt-1 w-48 rounded-box border border-base-300 bg-base-100 p-1.5 shadow-lg">
-            <li><button onclick={() => { (document.activeElement as HTMLElement)?.blur(); computerFull = true; }}>{@render computerIcon()}{$t('chat.botComputer')}</button></li>
+            <!-- No Computer here. Watching an employee drive a desktop is a
+                 thing you do sitting down at one; on a phone it is a screen
+                 you cannot use, offered where the useful actions live. It
+                 stays on the icon row at wider widths. -->
             {#if flowsPane}
               <li><button onclick={() => { (document.activeElement as HTMLElement)?.blur(); togglePane('flows'); }}>{@render flowsIcon()}{$t('nav.flows')}</button></li>
             {/if}
