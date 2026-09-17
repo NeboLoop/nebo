@@ -18,6 +18,10 @@ env:
   OBSCURA_FORK: "https://github.com/localrivet/obscura"
   RIPGREP_VERSION: "14.1.1"
   OBSCURA_REF: "chromiumoxide-cdp-compat"
+  # Pinned so `cargo install` is a no-op where the binary already exists (the
+  # house runners) instead of rebuilding tauri-cli from source on every run
+  # (2.5 min on the Mac, 10 min on Windows for v0.14.0).
+  TAURI_CLI_VERSION: "2.11.4"
 
 jobs:
   # ─── Build frontend (shared by all platform builds) ───────────────────
@@ -73,6 +77,12 @@ jobs:
       HAS_SIGNING_CERT: ${{ secrets.APPLE_CERTIFICATE_P12 != '' && 'true' || 'false' }}
       HAS_CDN_URL: ${{ secrets.NEBOAI_CDN_URL != '' && 'true' || 'false' }}
       RUSTC_WRAPPER: ""
+      # The build cache lives BESIDE the checkout, not in it: actions/checkout
+      # wipes the workspace every run (v0.14.0 spent 8 min deleting a 3.6 GB
+      # target dir, then rebuilt everything cold), and the hosted cache never
+      # had it ("No cache found"). Beside the checkout it persists between runs.
+      CARGO_TARGET_DIR: ${{ github.workspace }}/../nebo-target-${{ matrix.arch }}
+      OBSCURA_TARGET_DIR: ${{ github.workspace }}/../obscura-target-${{ matrix.arch }}
       # NOTE: CMAKE_OSX_ARCHITECTURES, CFLAGS, CXXFLAGS for cross-build are
       # set ONLY on the "Build Tauri desktop app" step below — not at job
       # scope — so host-arch tools like `cargo install tauri-cli` link
@@ -94,12 +104,6 @@ jobs:
 
       # Cache the Rust dependency build so re-runs (and every release) don't
       # recompile the whole dep tree from scratch — the bulk of the ~hour.
-      - name: Cache Rust build
-        uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ matrix.target }}
-          cache-on-failure: true
-
       - name: Download frontend build
         uses: actions/cache/restore@v4
         with:
@@ -108,7 +112,7 @@ jobs:
           fail-on-cache-miss: true
 
       - name: Install Tauri CLI
-        run: cargo install tauri-cli --version "^2" --locked
+        run: cargo install tauri-cli --version "$TAURI_CLI_VERSION" --locked
 
       - name: Import signing certificate
         if: ${{ env.HAS_SIGNING_CERT == 'true' }}
@@ -170,10 +174,10 @@ jobs:
           # Always build with an explicit --target: on the arm64 host the amd64
           # matrix entry must cross-compile, or the Intel app ships arm64
           # sidecars that Intel Macs cannot exec.
-          ( cd obscura-src && cargo build --release -p obscura-cli --target "$TRIPLE" )
+          ( cd obscura-src && CARGO_TARGET_DIR="$OBSCURA_TARGET_DIR" cargo build --release -p obscura-cli --target "$TRIPLE" )
           mkdir -p src-tauri/binaries
           for bin in obscura obscura-worker; do
-            cp "obscura-src/target/${TRIPLE}/release/${bin}" "src-tauri/binaries/${bin}-${TRIPLE}"
+            cp "$OBSCURA_TARGET_DIR/${TRIPLE}/release/${bin}" "src-tauri/binaries/${bin}-${TRIPLE}"
             chmod +x "src-tauri/binaries/${bin}-${TRIPLE}"
           done
           ls -la src-tauri/binaries
@@ -203,7 +207,7 @@ jobs:
         env:
           SIGN_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         run: |
-          APP_PATH="target/${{ matrix.target }}/release/bundle/macos/Nebo.app"
+          APP_PATH="$CARGO_TARGET_DIR/${{ matrix.target }}/release/bundle/macos/Nebo.app"
 
           # Sign embedded frameworks/dylibs first (inside-out signing)
           find "$APP_PATH/Contents/Frameworks" -type f -perm +111 -o -name "*.dylib" 2>/dev/null | while read f; do
@@ -257,7 +261,7 @@ jobs:
 
       - name: Extract signed binary for auto-update
         run: |
-          APP_PATH="target/${{ matrix.target }}/release/bundle/macos/Nebo.app"
+          APP_PATH="$CARGO_TARGET_DIR/${{ matrix.target }}/release/bundle/macos/Nebo.app"
           cp "$APP_PATH/Contents/MacOS/nebo" nebo-darwin-${{ matrix.arch }}
 
       - uses: actions/cache/save@v4
@@ -268,7 +272,7 @@ jobs:
       - name: Create .dmg from signed .app
         id: dmg
         run: |
-          APP_PATH="target/${{ matrix.target }}/release/bundle/macos/Nebo.app"
+          APP_PATH="$CARGO_TARGET_DIR/${{ matrix.target }}/release/bundle/macos/Nebo.app"
           if [ -d "$APP_PATH" ]; then
             mkdir -p dist
             PKG_VERSION="${{ github.ref_name }}"
@@ -458,6 +462,11 @@ jobs:
     env:
       HAS_CDN_URL: ${{ secrets.NEBOAI_CDN_URL != '' && 'true' || 'false' }}
       RUSTC_WRAPPER: ""
+      # Persistent build cache beside the checkout (see build-macos). The
+      # sibling directory sits in the runner's _work tree, which the amd64
+      # container mounts too, so both arches keep their own warm cache.
+      CARGO_TARGET_DIR: ${{ github.workspace }}/../nebo-target-${{ matrix.arch }}
+      OBSCURA_TARGET_DIR: ${{ github.workspace }}/../obscura-target-${{ matrix.arch }}
     steps:
       # A fresh container has no sudo, curl or compilers; the VM itself does.
       - name: Container prep
@@ -487,12 +496,6 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{ env.RUST_VERSION }}
-
-      - name: Cache Rust build
-        uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ matrix.arch }}
-          cache-on-failure: true
 
       - name: Install Tauri Linux dependencies
         run: |
@@ -527,7 +530,7 @@ jobs:
           fail-on-cache-miss: true
 
       - name: Install Tauri CLI
-        run: cargo install tauri-cli --version "^2" --locked
+        run: cargo install tauri-cli --version "$TAURI_CLI_VERSION" --locked
 
       - name: Prepare bundled .napp files
         if: ${{ env.HAS_CDN_URL == 'true' }}
@@ -548,10 +551,10 @@ jobs:
         run: |
           TRIPLE="$(rustc -vV | sed -n 's/^host: //p')"
           git clone --depth 1 --branch "$OBSCURA_REF" "$OBSCURA_FORK" obscura-src
-          ( cd obscura-src && cargo build --release -p obscura-cli )
+          ( cd obscura-src && CARGO_TARGET_DIR="$OBSCURA_TARGET_DIR" cargo build --release -p obscura-cli )
           mkdir -p src-tauri/binaries
           for bin in obscura obscura-worker; do
-            cp "obscura-src/target/release/${bin}" "src-tauri/binaries/${bin}-${TRIPLE}"
+            cp "$OBSCURA_TARGET_DIR/release/${bin}" "src-tauri/binaries/${bin}-${TRIPLE}"
             chmod +x "src-tauri/binaries/${bin}-${TRIPLE}"
           done
           ls -la src-tauri/binaries
@@ -578,13 +581,13 @@ jobs:
 
       - name: Extract desktop binary
         run: |
-          cp target/release/nebo nebo-linux-${{ matrix.arch }}
+          cp "$CARGO_TARGET_DIR/release/nebo" nebo-linux-${{ matrix.arch }}
 
       - name: Build headless CLI binary
         run: cargo build --release -p nebo-cli
 
       - name: Extract headless binary
-        run: cp target/release/nebo-cli nebo-linux-${{ matrix.arch }}-headless
+        run: cp "$CARGO_TARGET_DIR/release/nebo-cli" nebo-linux-${{ matrix.arch }}-headless
 
       - name: Stage release artifacts
         run: |
@@ -593,13 +596,13 @@ jobs:
           cp nebo-linux-${{ matrix.arch }}-headless release-artifacts/
           PKG_VERSION="${{ github.ref_name }}"
           PKG_VERSION="${PKG_VERSION#v}"
-          DEB=$(ls target/release/bundle/deb/*.deb 2>/dev/null || true)
+          DEB=$(ls "$CARGO_TARGET_DIR"/release/bundle/deb/*.deb 2>/dev/null || true)
           if [ -n "$DEB" ]; then
             cp $DEB release-artifacts/
           fi
           # AppImage — rename to the arch-qualified name the updater expects
           # (bundle_asset_name → `Nebo-{ver}-{arch}.AppImage`).
-          APPIMAGE=$(ls target/release/bundle/appimage/*.AppImage 2>/dev/null | head -n1 || true)
+          APPIMAGE=$(ls "$CARGO_TARGET_DIR"/release/bundle/appimage/*.AppImage 2>/dev/null | head -n1 || true)
           if [ -n "$APPIMAGE" ]; then
             cp "$APPIMAGE" "release-artifacts/Nebo-${PKG_VERSION}-${{ matrix.arch }}.AppImage"
           else
@@ -652,8 +655,18 @@ jobs:
       - name: Install protobuf compiler
         run: choco install protoc -y --no-progress
 
+      # tauri-cli from source was 10 minutes of every Windows run; the binary
+      # is keyed by its version and restored in seconds.
+      - name: Cache Tauri CLI
+        id: tauri-cli-cache
+        uses: actions/cache@v4
+        with:
+          key: tauri-cli-${{ env.TAURI_CLI_VERSION }}-windows
+          path: ~/.cargo/bin/cargo-tauri.exe
+
       - name: Install Tauri CLI
-        run: cargo install tauri-cli --version "^2" --locked
+        if: ${{ steps.tauri-cli-cache.outputs.cache-hit != 'true' }}
+        run: cargo install tauri-cli --version "$TAURI_CLI_VERSION" --locked
 
       - name: Prepare bundled .napp files
         if: ${{ env.HAS_CDN_URL == 'true' }}
@@ -671,7 +684,22 @@ jobs:
             done < "src-tauri/bundled-napps/plugins/.manifest"
           fi
 
+      # The sidecars are keyed by the fork's commit, so a run rebuilds them
+      # (5 minutes) only when OBSCURA_REF moves.
+      - name: Resolve Obscura commit
+        id: obscura
+        shell: bash
+        run: echo "sha=$(git ls-remote "$OBSCURA_FORK" "refs/heads/$OBSCURA_REF" "refs/tags/$OBSCURA_REF" | head -n1 | cut -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Obscura sidecars
+        id: obscura-cache
+        uses: actions/cache@v4
+        with:
+          key: obscura-${{ steps.obscura.outputs.sha }}-x86_64-pc-windows-msvc
+          path: src-tauri/binaries/obscura*
+
       - name: Build & stage Obscura sidecars (from fork)
+        if: ${{ steps.obscura-cache.outputs.cache-hit != 'true' }}
         shell: bash
         run: |
           TRIPLE="$(rustc -vV | sed -n 's/^host: //p')"

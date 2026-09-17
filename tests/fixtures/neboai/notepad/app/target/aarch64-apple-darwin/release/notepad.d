@@ -1,1 +1,0 @@
-/Users/almatuck/workspaces/nebo/nebo-rs/tests/fixtures/neboloop/notepad/app/target/aarch64-apple-darwin/release/notepad: /Users/almatuck/workspaces/nebo/nebo-rs/tests/fixtures/neboloop/notepad/app/src/main.rs
