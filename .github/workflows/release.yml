@@ -475,6 +475,11 @@ jobs:
           test -n "$image" || { echo "snapshot nebo-runner-amd64-base not found"; exit 1; }
           cat > user-data.sh <<'EOS'
           #!/bin/bash
+          # A droplet booted from a snapshot comes up with root's password
+          # expired, which blocks even key-based SSH ("Password change
+          # required but no TTY available"); clear that so the box can be
+          # inspected while it lives.
+          chage -d "$(date +%F)" -M -1 root
           cd /home/runner/actions-runner
           nohup sudo -u runner ./run.sh --jitconfig '__JIT__' > /home/runner/runner.log 2>&1 &
           EOS
