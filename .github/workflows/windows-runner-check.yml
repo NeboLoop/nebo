@@ -37,17 +37,20 @@ jobs:
       # the pwsh they ask for. Git Bash is not subject to the policy, so this
       # step is what gets every later PowerShell step through.
       - name: Runner prep (no admin needed)
-        shell: bash
+        shell: cmd
         run: |
+          rem Windows PowerShell: the service account's own policy outranks the machine's Restricted one.
           powershell -NoProfile -ExecutionPolicy Bypass -Command "Set-ExecutionPolicy RemoteSigned -Scope CurrentUser -Force; Get-ExecutionPolicy -List | Out-String"
-          PWSH_DIR="$(cygpath -u "$RUNNER_TEMP")/../../pwsh7"
-          if [ ! -x "$PWSH_DIR/pwsh.exe" ]; then
-            curl -sSfL -o pwsh.zip https://github.com/PowerShell/PowerShell/releases/download/v7.4.6/PowerShell-7.4.6-win-x64.zip
-            powershell -NoProfile -ExecutionPolicy Bypass -Command "Expand-Archive -Force pwsh.zip '$(cygpath -w "$PWSH_DIR")'"
-            rm -f pwsh.zip
-          fi
-          "$PWSH_DIR/pwsh.exe" -NoProfile -ExecutionPolicy Bypass -Command "Set-ExecutionPolicy RemoteSigned -Scope CurrentUser -Force; \$PSVersionTable.PSVersion.ToString()"
-          cygpath -w "$PWSH_DIR" >> "$GITHUB_PATH"
+          rem Git's bin (bash, unzip, …) is not on the service account's PATH; the runner needs it to run bash steps.
+          echo C:\Program Files\Git\bin>> "%GITHUB_PATH%"
+          echo C:\Program Files\Git\usr\bin>> "%GITHUB_PATH%"
+          rem A portable PowerShell 7 beside the runner, for the composite actions that ask for pwsh.
+          set PWSH_DIR=%RUNNER_TEMP%\..\..\pwsh7
+          if not exist "%PWSH_DIR%\pwsh.exe" (
+            powershell -NoProfile -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol='Tls12'; Invoke-WebRequest -Uri https://github.com/PowerShell/PowerShell/releases/download/v7.4.6/PowerShell-7.4.6-win-x64.zip -OutFile pwsh.zip; Expand-Archive -Force pwsh.zip '%PWSH_DIR%'; Remove-Item pwsh.zip"
+          )
+          "%PWSH_DIR%\pwsh.exe" -NoProfile -ExecutionPolicy Bypass -Command "Set-ExecutionPolicy RemoteSigned -Scope CurrentUser -Force; $PSVersionTable.PSVersion.ToString()"
+          echo %PWSH_DIR%>> "%GITHUB_PATH%"
 
       - name: Who am I, and what is on PATH
         shell: powershell
