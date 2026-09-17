@@ -124,6 +124,15 @@ jobs:
           security import $RUNNER_TEMP/cert.p12 -k "$KEYCHAIN_PATH" \
             -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
           rm $RUNNER_TEMP/cert.p12
+          # Apple's Developer ID intermediates. A hosted Mac ships them; the
+          # house Mac mini does not, and without them codesign cannot chain the
+          # leaf to Apple's root ("unable to build chain to self-signed root",
+          # errSecInternalComponent — v0.14.0's Intel build).
+          for ca in DeveloperIDG2CA DeveloperIDCA; do
+            curl -sSf -o "$RUNNER_TEMP/$ca.cer" "https://www.apple.com/certificateauthority/$ca.cer"
+            security import "$RUNNER_TEMP/$ca.cer" -k "$KEYCHAIN_PATH"
+            rm "$RUNNER_TEMP/$ca.cer"
+          done
           security set-key-partition-list -S apple-tool:,apple: -s -k "" "$KEYCHAIN_PATH"
           security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain
 
