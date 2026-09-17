@@ -283,16 +283,14 @@ jobs:
             cp -R "$APP_PATH" "$STAGE/Nebo.app"
             # Install create-dmg for drag-to-Applications layout
             brew install create-dmg
-            create-dmg \
-              --volname "Nebo" \
-              --window-pos 200 120 \
-              --window-size 600 400 \
-              --icon-size 100 \
-              --icon "Nebo.app" 175 190 \
-              --hide-extension "Nebo.app" \
-              --app-drop-link 425 190 \
-              "$DEST" \
-              "$STAGE"
+            # The Finder layout needs Automation consent for the runner's node
+            # (a TCC prompt nobody is at the mini to click — v0.14.0 timed out
+            # with AppleEvent -1712). When Finder cannot be scripted, ship the
+            # plain layout rather than no DMG.
+            layout=(--window-pos 200 120 --window-size 600 400 --icon-size 100 \
+              --icon "Nebo.app" 175 190 --hide-extension "Nebo.app" --app-drop-link 425 190)
+            create-dmg --volname "Nebo" "${layout[@]}" "$DEST" "$STAGE" \
+              || { rm -f "$DEST"; create-dmg --volname "Nebo" --skip-jenkins "${layout[@]}" "$DEST" "$STAGE"; }
             rm -rf "$STAGE"
             echo "dmg_path=$DEST" >> "$GITHUB_OUTPUT"
           fi
@@ -456,7 +454,18 @@ jobs:
           # bare tag would resolve to the arm64 image and build the wrong arch.
           - runner: [self-hosted, Linux, ARM64, neboloop]
             arch: amd64
-            container: ubuntu@sha256:1e0a86e57d247923571b75e0aaf48a1449cf8c543d51fb3e07a4a7d7bfa79316
+            # The runner injects its OWN node (an arm64 binary) into the
+            # container to run every action, and an amd64 rootfs cannot load
+            # it: "exec /__e/node24/bin/node: no such file or directory"
+            # (v0.14.0, the first amd64 leg on the VM). The host's arm64
+            # loader and libraries are mounted read-only so that node runs
+            # natively while everything the build installs and links is
+            # amd64 under Rosetta.
+            container:
+              image: ubuntu@sha256:1e0a86e57d247923571b75e0aaf48a1449cf8c543d51fb3e07a4a7d7bfa79316
+              volumes:
+                - /usr/lib/aarch64-linux-gnu:/usr/lib/aarch64-linux-gnu:ro
+                - /usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1:/lib/ld-linux-aarch64.so.1:ro
     runs-on: ${{ matrix.runner }}
     container: ${{ matrix.container }}
     env:
