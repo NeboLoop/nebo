@@ -200,7 +200,9 @@ jobs:
           # producing x86_64 objects in a host rlib that the arm64
           # build-script link then rejects.
           MACOSX_DEPLOYMENT_TARGET: "11.0"
-        run: cargo tauri build --target ${{ matrix.target }}
+        run: |
+          rm -rf "$CARGO_TARGET_DIR/${{ matrix.target }}/release/bundle"
+          cargo tauri build --target ${{ matrix.target }}
 
       - name: Re-sign .app with Developer ID
         if: ${{ env.HAS_SIGNING_CERT == 'true' }}
@@ -629,7 +631,12 @@ jobs:
         env:
           APPIMAGE_EXTRACT_AND_RUN: 1
           NO_STRIP: true
-        run: cargo tauri build
+        run: |
+          # The build dir persists between runs on the VM, and so did the
+          # previous release's bundles: v0.14.3 shipped the 0.14.2 arm64
+          # AppImage under the new name. Start every build with no bundles.
+          rm -rf "$CARGO_TARGET_DIR/release/bundle"
+          cargo tauri build
 
       - name: Extract desktop binary
         run: |
@@ -648,13 +655,14 @@ jobs:
           cp nebo-linux-${{ matrix.arch }}-headless release-artifacts/
           PKG_VERSION="${{ github.ref_name }}"
           PKG_VERSION="${PKG_VERSION#v}"
-          DEB=$(ls "$CARGO_TARGET_DIR"/release/bundle/deb/*.deb 2>/dev/null || true)
+          # Only THIS version's bundles — never "whatever is in the directory".
+          DEB=$(ls "$CARGO_TARGET_DIR"/release/bundle/deb/*_"${PKG_VERSION}"_*.deb 2>/dev/null || true)
           if [ -n "$DEB" ]; then
             cp $DEB release-artifacts/
           fi
           # AppImage — rename to the arch-qualified name the updater expects
           # (bundle_asset_name → `Nebo-{ver}-{arch}.AppImage`).
-          APPIMAGE=$(ls "$CARGO_TARGET_DIR"/release/bundle/appimage/*.AppImage 2>/dev/null | head -n1 || true)
+          APPIMAGE=$(ls "$CARGO_TARGET_DIR"/release/bundle/appimage/*_"${PKG_VERSION}"_*.AppImage 2>/dev/null | head -n1 || true)
           if [ -n "$APPIMAGE" ]; then
             cp "$APPIMAGE" "release-artifacts/Nebo-${PKG_VERSION}-${{ matrix.arch }}.AppImage"
           else
