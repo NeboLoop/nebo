@@ -41,13 +41,14 @@ prompt_assertions:
       text: "Model does NOT use shell echo/redirect to write the file"
       severity: important
   cost:
-    - id: single-call
-      text: "Task completes in 1 tool call"
+    - id: write-then-verify
+      text: "Task completes in no more than 2 tool calls: the write, and a read that verifies the file landed"
       severity: important
+      check: { max_tool_calls: 2 }
 
 ideal_behavior:
-  tool_calls: 1
-  total_tokens: 1500
+  tool_calls: 2
+  total_tokens: 2000
   narrative: |
     Single os(resource: "file", action: "write", path: "/tmp/nebo-test-output.txt",
     content: "hello world") call. Model confirms the file was created.

@@ -147,13 +147,14 @@ impl PluginManager {
         filename: &str,
         mime_type: &str,
         data: Vec<u8>,
+        fields: &[(String, String)],
     ) -> Result<crate::wire::Attachment, CommError> {
         let inner = self.inner.read().await;
         let active = inner.active.as_ref().ok_or(CommError::NoActivePlugin)?;
         if !active.is_connected() {
             return Err(CommError::NotConnected);
         }
-        active.upload_file(filename, mime_type, data).await
+        active.upload_file(filename, mime_type, data, fields).await
     }
 
     /// List loop channels this bot belongs to (active plugin).

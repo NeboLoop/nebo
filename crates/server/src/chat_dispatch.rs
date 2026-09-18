@@ -2006,7 +2006,7 @@ pub(crate) async fn resolve_comm_attachments(
             .unwrap_or_else(|| "file".to_string());
         let mime = mime_from_extension(&path);
 
-        match mgr.upload_file(&filename, &mime, data).await {
+        match mgr.upload_file(&filename, &mime, data, &[]).await {
             Ok(att) => out.push(att),
             Err(e) => {
                 warn!(filename = %filename, error = %e, "failed to upload run artifact attachment");
@@ -2027,7 +2027,7 @@ pub(crate) async fn resolve_comm_attachments(
                     Ok(pdf) => {
                         let preview_name = format!("{filename}.preview.pdf");
                         if let Err(e) = mgr
-                            .upload_file(&preview_name, "application/pdf", pdf)
+                            .upload_file(&preview_name, "application/pdf", pdf, &[])
                             .await
                             .map(|att| out.push(att))
                         {

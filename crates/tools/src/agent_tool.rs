@@ -1099,6 +1099,19 @@ impl PersonaTool {
         format!("{}\n", body.trim())
     }
 
+    /// The frontmatter an update starts from. An employee with no agent.json
+    /// (a blank hire, or one created here without automations) has an empty
+    /// column; that is an EMPTY config, not an invalid one. Read as `""` it
+    /// fails validation with "EOF while parsing a value" and every update of
+    /// such an employee is refused (agent-update-description, 2026-09-17).
+    fn stored_frontmatter(stored: &str) -> String {
+        if stored.trim().is_empty() {
+            "{}".to_string()
+        } else {
+            stored.to_string()
+        }
+    }
+
     /// agent.json is parsed before it is written, never after: a file the
     /// loader rejects must not reach the disk or the DB, or the employee is
     /// refused on every scan from then on.
@@ -1155,7 +1168,7 @@ impl PersonaTool {
         let mut current_name = db_agent.name.clone();
         let mut current_desc = db_agent.description.clone();
         let mut current_md = db_agent.agent_md.clone();
-        let mut current_frontmatter = db_agent.frontmatter.clone();
+        let mut current_frontmatter = Self::stored_frontmatter(&db_agent.frontmatter);
         let mut changes = Vec::new();
 
         // Update name (rename)
@@ -3285,6 +3298,17 @@ mod tests {
         assert_eq!(PersonaTool::unknown_update_fields(&call), vec!["persona_text".to_string()]);
         let ok = serde_json::json!({"action": "update", "name": "Receptionist", "prompt": "x", "resource": "registry"});
         assert!(PersonaTool::unknown_update_fields(&ok).is_empty());
+    }
+
+    /// An employee with no agent.json updates cleanly: its empty frontmatter
+    /// column is an empty config, which validates; the raw empty string does not.
+    #[test]
+    fn empty_frontmatter_is_an_empty_config_not_an_invalid_one() {
+        assert!(PersonaTool::validated_frontmatter("").is_err());
+        let fm = PersonaTool::stored_frontmatter("");
+        assert_eq!(fm, "{}");
+        assert!(PersonaTool::validated_frontmatter(&fm).is_ok());
+        assert_eq!(PersonaTool::stored_frontmatter("{\"workflows\":{}}"), "{\"workflows\":{}}");
     }
 
     #[test]

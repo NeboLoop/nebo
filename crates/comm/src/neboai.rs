@@ -610,12 +610,13 @@ impl CommPlugin for NeboAIPlugin {
         filename: &str,
         mime_type: &str,
         data: Vec<u8>,
+        fields: &[(String, String)],
     ) -> Result<crate::wire::Attachment, CommError> {
         let api = self
             .api()
             .await
             .ok_or(CommError::NotConnected)?;
-        api.upload_file(filename, mime_type, data).await
+        api.upload_file(filename, mime_type, data, fields).await
     }
 
     async fn send(&self, msg: CommMessage) -> Result<(), CommError> {

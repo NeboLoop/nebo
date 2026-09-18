@@ -1576,13 +1576,18 @@ impl NeboAIApi {
         filename: &str,
         mime_type: &str,
         data: Vec<u8>,
+        fields: &[(String, String)],
     ) -> Result<crate::wire::Attachment, CommError> {
         let part = reqwest::multipart::Part::bytes(data)
             .file_name(filename.to_string())
             .mime_str(mime_type)
             .map_err(|e| CommError::Other(format!("invalid mime type: {}", e)))?;
 
-        let form = reqwest::multipart::Form::new().part("file", part);
+        let mut form = reqwest::multipart::Form::new();
+        for (name, value) in fields {
+            form = form.text(name.clone(), value.clone());
+        }
+        let form = form.part("file", part);
 
         let url = format!("{}/api/v1/files/upload", self.api_server);
         debug!(url = %url, filename = %filename, "uploading file");

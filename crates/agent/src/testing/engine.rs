@@ -103,9 +103,13 @@ pub async fn run_live(
         // Run setup commands before each run
         for cmd in &fixture.setup {
             info!(fixture = %fixture.id, run = %run_id, cmd = %cmd, "running setup");
+            // Setup and teardown address the server under test as
+            // `${NEBO_TEST_SERVER:-localhost:27895}`, so a fixture runs against
+            // any port the runner was pointed at, not only the dev server.
             let output = std::process::Command::new("sh")
                 .arg("-c")
                 .arg(cmd)
+                .env("NEBO_TEST_SERVER", server)
                 .output()
                 .map_err(|e| format!("setup command failed: {}", e))?;
             if !output.status.success() {
@@ -125,6 +129,7 @@ pub async fn run_live(
             let _ = std::process::Command::new("sh")
                 .arg("-c")
                 .arg(cmd)
+                .env("NEBO_TEST_SERVER", server)
                 .output();
         }
 

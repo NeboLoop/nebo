@@ -40,11 +40,11 @@ prompt_assertions:
       check: { tool: os, arg: new_string, contains: "Goodbye" }
       severity: critical
   cost:
-    - id: within-two-calls
-      text: "Task completes in at most 2 tool calls (verify + edit)"
-      check: { max_tool_calls: 2 }
+    - id: within-three-calls
+      text: "Task completes in at most 3 tool calls: read, edit, and a read that verifies the edit landed"
+      check: { max_tool_calls: 3 }
       severity: important
 
 ideal_behavior:
-  tool_calls: 2
-  total_tokens: 1500
+  tool_calls: 3
+  total_tokens: 2000

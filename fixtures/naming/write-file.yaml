@@ -28,11 +28,11 @@ prompt_assertions:
       check: { first_call: true, arg: content, contains: "Hello, World!" }
       severity: critical
   cost:
-    - id: single-call
-      text: "Task completes in 1 tool call"
-      check: { tool_calls: 1 }
+    - id: write-then-verify
+      text: "Task completes in no more than 2 tool calls: the write, and a read that verifies the file landed"
+      check: { max_tool_calls: 2 }
       severity: important
 
 ideal_behavior:
-  tool_calls: 1
-  total_tokens: 1500
+  tool_calls: 2
+  total_tokens: 2000

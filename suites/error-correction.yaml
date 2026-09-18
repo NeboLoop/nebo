@@ -25,3 +25,5 @@ fixtures:
   - ../fixtures/correction/spawn-prompt-with-path.yaml
   - ../fixtures/correction/quickbooks-payment-dry-run.yaml
   - ../fixtures/correction/pasted-document-read-whole.yaml
+  - ../fixtures/correction/large-document-read-whole.yaml
+  - ../fixtures/correction/read-over-budget-ranged.yaml
