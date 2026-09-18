@@ -159,6 +159,17 @@ impl Store {
         rows.collect::<Result<Vec<_>, _>>().db_err("list_backups collect")
     }
 
+    /// A copy reached the hub: `file_id` is the hub's handle for it.
+    pub fn mark_shipped(&self, id: &str, file_id: &str) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE backups SET shipped_at = ?2, file_id = ?3 WHERE id = ?1",
+            params![id, chrono_now(), file_id],
+        )
+        .db_err("mark shipped")?;
+        Ok(())
+    }
+
     /// Apply the retention rule: delete the files and rows that no longer
     /// earn their place. A file already gone is not an error; the row goes.
     pub fn retain_backups(&self) -> Result<usize, NeboError> {
