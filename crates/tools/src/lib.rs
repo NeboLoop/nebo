@@ -20,7 +20,11 @@ pub mod coworker;
 /// Cap on raw subprocess/tool output surfaced into context, in bytes (the
 /// truncation is byte-based, not character-based). ONE definition: shell and
 /// plugin execution truncate identically.
-pub(crate) const MAX_SUBPROCESS_OUTPUT: usize = 50000;
+/// Inline cap on a subprocess result (shell exec, plugin exec). 30 KB, the
+/// same as Claude Code's Bash default, and UNDER the runner's 50 KB spill
+/// threshold so the tool's own footer (which names where the full output
+/// was saved) is what the model reads — never a second preview on top.
+pub(crate) const MAX_SUBPROCESS_OUTPUT: usize = 30_000;
 pub mod deep_research;
 pub mod desktop_daemon;
 pub mod desktop_session;

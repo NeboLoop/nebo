@@ -615,12 +615,21 @@ fn extract_file_read_path(call: &ai::ToolCall) -> Option<String> {
     None
 }
 
-/// True for an unranged `os` file read: the shape the read ledger fingerprints
-/// and notes itself, so the duplicate-read note must not stack on it.
-fn is_full_os_file_read(call: &ai::ToolCall) -> bool {
+/// True for any `os` file read, ranged or not. A file read paginates itself
+/// (its own byte cap, a footer naming the exact `offset` to continue from),
+/// so the runner's spill-to-file preview must never replace it: the preview
+/// cut the footer off and the model saw 4 KB of a 36 KB document on every
+/// read, then read the spill file, which spilled again (2026-09-17).
+fn is_os_file_read(call: &ai::ToolCall) -> bool {
     call.name == "os"
         && call.input.get("action").and_then(|v| v.as_str()) == Some("read")
         && tools::OsTool::resolved_resource(&call.input) == "file"
+}
+
+/// True for an unranged `os` file read: the shape the read ledger fingerprints
+/// and notes itself, so the duplicate-read note must not stack on it.
+fn is_full_os_file_read(call: &ai::ToolCall) -> bool {
+    is_os_file_read(call)
         && call.input.get("offset").is_none()
         && call.input.get("limit").is_none()
 }
@@ -6613,13 +6622,19 @@ async fn run_loop(
             // and track whether ALL results in this iteration were errors.
             //
             // Context protection:
-            // - Success results: 30K cap. Oversized → persist to file, return preview + path.
+            // - Success results: 50K cap (Claude Code's per-tool default). Oversized →
+            //                   persist to file, return preview + path. Every built-in
+            //                   tool caps itself UNDER this (shell 30K, read 100K exempt)
+            //                   so its own footer reaches the model; this tier is for
+            //                   MCP/plugin results with no cap of their own.
             // - Error results:   10K cap. Oversized → first 5K + last 5K with truncation marker.
-            // - Universal:      100K hard ceiling as final safety net.
-            const RESULT_CAP: usize = 30_000;
+            // - Universal:      128K hard ceiling as final safety net — above the
+            //                   file read budget (100K) plus its outline prefix,
+            //                   so a whole read is never previewed.
+            const RESULT_CAP: usize = 50_000;
             const ERROR_CAP: usize = 10_000;
             const ERROR_HALF: usize = 5_000;
-            const UNIVERSAL_TOOL_RESULT_CAP: usize = 100_000;
+            const UNIVERSAL_TOOL_RESULT_CAP: usize = 128_000;
             let mut all_errors_this_iteration = true;
             // Per-call productivity, indexed alongside the hash push below, so the
             // identical-args guard can count only the repeats that made no progress.
@@ -6894,8 +6909,11 @@ async fn run_loop(
                     None
                 };
 
-                // Success result truncation: persist to file, return preview + path
-                if !result.is_error && result.content.len() > RESULT_CAP {
+                // Success result truncation: persist to file, return preview + path.
+                // A file read is exempt: it is already capped and paginated by
+                // the tool (see `is_os_file_read`); the universal ceiling below
+                // still bounds it.
+                if !result.is_error && result.content.len() > RESULT_CAP && !is_os_file_read(&tc) {
                     let total_len = result.content.len();
                     // Persist full result to temp file so agent can Read it if needed
                     let result_id = uuid::Uuid::new_v4().to_string();
@@ -9073,6 +9091,26 @@ mod tests {
         };
         assert!(!is_full_os_file_read(&ranged));
         assert!(!is_full_os_file_read(&os_exec("cat /tmp/a.rs")));
+    }
+
+    #[test]
+    fn any_os_file_read_is_never_spilled() {
+        // Ranged or not, a file read paginates itself and must reach the model
+        // whole; shell dumps and greps still go through the spill preview.
+        assert!(is_os_file_read(&os_read("/tmp/a.rs")));
+        let ranged = ai::ToolCall {
+            id: "c1".into(),
+            name: "os".into(),
+            input: serde_json::json!({"action": "read", "path": "/tmp/a.rs", "offset": 10, "limit": 20}),
+        };
+        assert!(is_os_file_read(&ranged));
+        assert!(!is_os_file_read(&os_exec("cat /tmp/a.rs")));
+        let grep = ai::ToolCall {
+            id: "c2".into(),
+            name: "os".into(),
+            input: serde_json::json!({"action": "grep", "path": "/tmp/a.rs", "pattern": "x"}),
+        };
+        assert!(!is_os_file_read(&grep));
     }
 
     #[test]
