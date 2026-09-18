@@ -32,6 +32,11 @@ pub struct Fixture {
     pub setup: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub teardown: Vec<String>,
+    /// What the owner does WHILE the first turn runs: press Esc (`cancel`) or
+    /// type a message (`message`), once the Nth tool call has started. The
+    /// only way to test that a stop stops and a mid-turn message is heard.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub interrupts: Vec<Interrupt>,
     pub conversation: Vec<ConversationTurn>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub tool_config: HashMap<String, ToolConfig>,
@@ -41,6 +46,17 @@ pub struct Fixture {
     pub integrated_assertions: Vec<Assertion>,
     #[serde(default, skip_serializing_if = "IdealBehavior::is_empty")]
     pub ideal_behavior: IdealBehavior,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Interrupt {
+    /// Fire once this many tool calls have started in the first turn.
+    pub after_tool_calls: usize,
+    /// `cancel` (Esc / the stop button) or `message` (typed while working).
+    pub action: String,
+    /// The message text, for `message`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub content: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

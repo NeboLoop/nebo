@@ -7,7 +7,7 @@ use tokio::time::timeout;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{info, warn};
 
-use super::fixture::Fixture;
+use super::fixture::{Fixture, Interrupt};
 use super::trace::*;
 
 /// Inspect the assembled prompt with optional overrides. Prints to stdout.
@@ -242,8 +242,10 @@ async fn run_single(
         let msg = json!({
             "type": "chat",
             "message_id": format!("eval-{}-{}-t{}", fixture.id, run_id, turn_idx),
-            "data": msg_data,
+            "data": msg_data.clone(),
         });
+        // Tool calls started in this turn; the fixture's interrupts fire on it.
+        let mut tool_starts = 0usize;
 
         ws.send(Message::Text(msg.to_string().into()))
             .await
@@ -294,6 +296,14 @@ async fn run_single(
                                 .to_string();
                             let args = event["data"]["input"].clone();
                             pending_tool = Some((tool_name, args, Instant::now()));
+                            tool_starts += 1;
+                            if turn_idx == 0 {
+                                for (n, it) in fixture.interrupts.iter().enumerate() {
+                                    if it.after_tool_calls == tool_starts {
+                                        send_interrupt(&mut ws, it, &session_id, &msg_data, &fixture.id, run_id, n).await?;
+                                    }
+                                }
+                            }
                         }
                         Some("tool_result") => {
                             if let Some((tool_name, args, tool_start)) = pending_tool.take() {
@@ -336,6 +346,11 @@ async fn run_single(
                             }
                         }
                         Some("chat_complete") => break,
+                        // The stop landed: the turn is over, whatever it was doing.
+                        Some("chat_cancelled") => {
+                            info!(fixture = %fixture.id, run = %run_id, "run cancelled by the fixture's interrupt");
+                            break;
+                        }
                         Some("chat_error") => {
                             // A run the server stopped (a spiral guard, a
                             // provider error) still has a story: keep the
@@ -539,6 +554,39 @@ fn event_belongs_to_session(event: &Value, session_id: &str) -> bool {
         Some("chat_complete") | Some("chat_error") => named == Some(session_id),
         _ => named.is_none_or(|s| s == session_id),
     }
+}
+
+/// What the owner does mid-turn, sent over the same socket the turn runs on.
+async fn send_interrupt<S>(
+    ws: &mut S,
+    it: &Interrupt,
+    session_id: &str,
+    base: &Value,
+    fixture_id: &str,
+    run_id: &str,
+    n: usize,
+) -> Result<(), String>
+where
+    S: SinkExt<Message> + Unpin,
+{
+    let msg = match it.action.as_str() {
+        "cancel" => json!({ "type": "cancel", "data": { "session_id": session_id } }),
+        "message" => {
+            let mut data = base.clone();
+            data["prompt"] = json!(it.content);
+            json!({
+                "type": "chat",
+                "message_id": format!("eval-{}-{}-i{}", fixture_id, run_id, n),
+                "data": data,
+            })
+        }
+        other => return Err(format!("unknown interrupt action `{other}` (cancel | message)")),
+    };
+    info!(fixture = %fixture_id, run = %run_id, action = %it.action, after_tool_calls = it.after_tool_calls, "interrupting the run");
+    if ws.send(Message::Text(msg.to_string().into())).await.is_err() {
+        return Err("WS send (interrupt): the socket is gone".to_string());
+    }
+    Ok(())
 }
 
 /// A fixture that gives up (timeout, empty run, error) must not leave its

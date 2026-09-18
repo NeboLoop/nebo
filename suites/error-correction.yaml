@@ -27,3 +27,4 @@ fixtures:
   - ../fixtures/correction/pasted-document-read-whole.yaml
   - ../fixtures/correction/large-document-read-whole.yaml
   - ../fixtures/correction/read-over-budget-ranged.yaml
+  - ../fixtures/correction/stop-means-stop.yaml
