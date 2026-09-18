@@ -25,7 +25,7 @@ prompt_assertions:
       text: "Model calls 'os', not 'edit' or 'bash'"
       severity: critical
     - id: correct-resource
-      text: "Model uses resource: 'file'"
+      text: "The call targets the file resource: resource: 'file' given explicitly, or omitted with a file action (read/edit) that the os tool resolves to file"
       severity: critical
     - id: correct-action
       text: "Model uses action: 'read' or 'edit' (read-then-edit is acceptable)"
