@@ -1,0 +1,48 @@
+id: correction-large-document-read-whole
+name: "Correction — a 36 KB document is read whole in one call"
+description: |
+  Replayed from a live thread on 2026-09-17. Asked "does it look correct"
+  about a 433-line, 36 KB PRD, the employee read it eight times: the os read
+  returned the whole file, the runner's spill tier replaced anything over
+  30 KB with a 4 KB preview and cut off the read's own continuation footer,
+  and reading the spill file spilled again. Grep on the spill file failed
+  (line-number prefixes), so it fell back to 100-line shell chunks. A file
+  read now reaches the model whole (100 KB budget, never spilled). This
+  fixture pins one read and an answer taken from the END of the document.
+target_component: tool
+
+setup:
+  - "mkdir -p /tmp/nebo-fixture && python3 -c \"lines=['# Platform notes', ''] + ['Section %d: paragraph %d of the platform notes, describing one operational detail at moderate length so the file is realistic.' % (i//10+1, i) for i in range(1, 430)] + ['', 'Decision of record: the rollout window is 2026-11-03 and the owner of record is the platform lead.']; open('/tmp/nebo-fixture/platform-notes.md','w').write('\\n'.join(lines)+'\\n')\""
+teardown:
+  - "rm -rf /tmp/nebo-fixture"
+
+conversation:
+  - role: user
+    content: "Read /tmp/nebo-fixture/platform-notes.md and tell me the rollout window date stated in the decision of record at the end."
+
+tool_config:
+  os:
+    enabled: true
+
+prompt_assertions:
+  first_call:
+    - id: read-first
+      text: "The first call is an os file read of /tmp/nebo-fixture/platform-notes.md"
+      severity: critical
+      check: { first_call: true, tool: os }
+  recovery:
+    - id: one-read
+      text: "The file is read once; no re-read of the same path, no offset paging, no grep or shell to recover a truncated result"
+      severity: critical
+      check: { max_tool_calls: 2 }
+    - id: no-tool-errors
+      text: "No tool result is an error"
+      severity: critical
+      check: { max_errors: 0 }
+    - id: answer
+      text: "The reply gives 2026-11-03 as the rollout window"
+      severity: critical
+
+ideal_behavior:
+  tool_calls: 1
+  narrative: "One read that returns all 433 lines, then a one-line answer with the date from the last line."
