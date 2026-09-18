@@ -56,6 +56,8 @@ struct FileInput {
     #[serde(default)]
     case_insensitive: bool,
     #[serde(default)]
+    multiline: bool,
+    #[serde(default)]
     output_mode: String,
     #[serde(default)]
     context_before: i64,
@@ -494,13 +496,18 @@ impl FileTool {
             Some(text) => Box::new(std::io::Cursor::new(text)),
             None => Box::new(BufReader::with_capacity(1024 * 1024, file)),
         };
-        // Cap on the whole rendered result, and on any single line inside it.
-        const FILE_READ_MAX_BYTES: usize = 50_000;
-        const LINE_MAX_BYTES: usize = 48_000;
+        // Read budget for the whole rendered result: ~25,000 tokens, the same
+        // shape as Claude Code's Read. A read that overruns it is an ERROR
+        // naming offset/limit, never a clipped result: the error costs ~100
+        // bytes, a clipped result costs the whole budget and still leaves the
+        // model without the part it wanted (Claude Code measured exactly this
+        // and reverted truncation, Mar 2026).
+        const FILE_READ_MAX_BYTES: usize = 100_000;
         let mut result = String::new();
         let mut line_num = 0usize;
         let mut lines_read = 0usize;
         let mut limit_truncated = false;
+        let mut over_budget = false;
         // Spill artifacts (large tool results persisted under <session>/tool-results/)
         // already CONTAIN the line numbers from the read that produced them —
         // numbering them again renders "1  1  #!/usr/bin/env" and the model
@@ -513,8 +520,6 @@ impl FileTool {
             .map(|n| n != "tool-results")
             .unwrap_or(true);
 
-        // The range note is appended AFTER the byte cap below, so it is never
-        // sliced off the end of a capped result.
         let mut range_note: Option<String> = None;
         // Total line count once known (the limit path counts the remainder).
         let mut total_lines: Option<usize> = None;
@@ -546,31 +551,23 @@ impl FileTool {
                 break;
             }
 
-            // A line is shown whole up to the read's own byte budget. The old
-            // 2,000-byte clip cut a pasted document (one long line, newlines
-            // lost in the paste) off mid-table with no way to read the rest,
-            // and the model re-read it until the repeat guard blocked it
-            // (Underwriter, 2026-09-09). Only a line that alone would overrun
-            // the result is clipped, under the budget so the footer below does
-            // not fire on top of this marker.
-            let display_line = if line.len() > LINE_MAX_BYTES {
-                format!(
-                    "{}  [line truncated: {} of {} bytes shown]",
-                    crate::truncate_str(&line, LINE_MAX_BYTES),
-                    LINE_MAX_BYTES,
-                    line.len()
-                )
-            } else {
-                line
-            };
-
+            // A line is always shown whole (a pasted document is one long
+            // line, newlines lost in the paste; clipping it mid-table left no
+            // way to read the rest — Underwriter, 2026-09-09).
             if numbering {
-                result.push_str(&format!("{:6}\t{}\n", line_num, display_line));
+                result.push_str(&format!("{:6}\t{}\n", line_num, line));
             } else {
-                result.push_str(&display_line);
+                result.push_str(&line);
                 result.push('\n');
             }
             lines_read += 1;
+
+            if result.len() > FILE_READ_MAX_BYTES {
+                over_budget = true;
+                // Count the rest so the error states the real total.
+                total_lines = Some(line_num + (&mut lines_iter).count());
+                break;
+            }
         }
 
         // `<system-reminder>` is NOT available here: it is the message-stream
@@ -603,49 +600,17 @@ impl FileTool {
             };
         }
 
-        // Cap total result size to prevent huge files from blowing up context.
-        // The cut lands on a line boundary and the footer names the last whole
-        // line shown, so the next read can start exactly after it.
-        let mut char_truncated = false;
-        if result.len() > FILE_READ_MAX_BYTES {
-            char_truncated = true;
-            let total_len = result.len();
-            let window = crate::truncate_str(&result, FILE_READ_MAX_BYTES);
-            let (kept, last_line) = match window.rfind('\n') {
-                Some(nl) => {
-                    let kept = &window[..nl + 1];
-                    // Every shown line ends in exactly one '\n'.
-                    let shown = kept.matches('\n').count();
-                    (kept.to_string(), Some(offset + shown - 1))
-                }
-                None => (window.to_string(), None),
-            };
-            let (last_desc, next_offset) = match last_line {
-                Some(n) => (n.to_string(), n + 1),
-                None => (
-                    format!("none (line {} alone exceeds the cap)", offset),
-                    offset + 1,
-                ),
-            };
-            let total_desc = match total_lines {
-                Some(t) => format!(" File has {} lines.", t),
-                None => String::new(),
-            };
-            result = format!(
-                "{}\n[Output truncated at 50,000 bytes (file rendering is {} bytes). Last complete line shown: {}. Use offset: {}.{}]",
-                kept, total_len, last_desc, next_offset, total_desc
-            );
-        } else if let Some(note) = range_note {
+        if let Some(note) = range_note {
             result.push_str(&note);
         }
 
         // Outline-first reads (PRD P4.1): a BLIND read (no offset/limit given)
-        // that came back truncated gets the file's tree-sitter outline
-        // prepended, so the next read can target a symbol's line range instead
-        // of paging forward blindly. Decoration of the ONE read pathway —
-        // never a second one. Ranged reads and files with no compiled-in
-        // grammar are untouched (absence, not noise).
-        if (limit_truncated || char_truncated)
+        // that does not cover the whole file gets the file's tree-sitter
+        // outline prepended, so the next read can target a symbol's line range
+        // instead of paging forward blindly. Decoration of the ONE read
+        // pathway — never a second one. Ranged reads and files with no
+        // compiled-in grammar are untouched (absence, not noise).
+        let outline = if (limit_truncated || over_budget)
             && input.offset <= 0
             && input.limit <= 0
             && !is_utf16
@@ -654,14 +619,27 @@ impl FileTool {
             && let Ok(symbols) = syntax::outline(&full, lang)
             && !symbols.is_empty()
         {
-            result = format!(
-                "[Outline ({}, {} lines total) — the read below is truncated; request specific sections with offset/limit using these [start-end] line ranges.]\n{}\n\n{}",
+            format!(
+                "[Outline ({}, {} lines total) — this read does not cover the whole file; request specific sections with offset/limit using these [start-end] line ranges.]\n{}\n\n",
                 lang.name(),
                 full.lines().count(),
                 crate::code_tool::render_outline(&symbols, 200),
-                result
-            );
+            )
+        } else {
+            String::new()
+        };
+
+        if over_budget {
+            return ToolResult::error(format!(
+                "{}File content ({} bytes rendered from line {}; the file has {} lines) exceeds the read budget of {} bytes (about 25,000 tokens). Use offset and limit to read a portion of the file, or grep for the content you need instead of reading the whole file.",
+                outline,
+                result.len(),
+                offset,
+                total_lines.unwrap_or(line_num),
+                FILE_READ_MAX_BYTES
+            ));
         }
+        result = format!("{}{}", outline, result);
 
         if let Some(ref callback) = self.on_file_read {
             callback(&path);
@@ -867,14 +845,18 @@ impl FileTool {
             Err(e) => return ToolResult::error(format!("Error reading file: {}", e)),
         };
 
-        if !content.contains(&input.old_string) {
+        // Exact match first; otherwise curly quotes read as straight ones (the
+        // model types ' and " where the document has ’ and “), and the file's
+        // own bytes for that span become the string to replace.
+        let Some(old_string) = find_actual_string(&content, &input.old_string) else {
             return ToolResult::error(format!(
                 "Error: old_string not found in file.\n\nSearched for:\n```\n{}\n```\n\nMake sure the string matches exactly, including whitespace and indentation.",
                 input.old_string
             ));
-        }
+        };
+        let new_string = preserve_quote_style(&input.old_string, &old_string, &input.new_string);
 
-        let count = content.matches(&input.old_string).count();
+        let count = content.matches(&old_string).count();
         if count > 1 && !input.replace_all {
             return ToolResult::error(format!(
                 "Error: old_string appears {} times in file. Use replace_all=true to replace all, or make the search string more specific.",
@@ -883,9 +865,9 @@ impl FileTool {
         }
 
         let new_content = if input.replace_all {
-            content.replace(&input.old_string, &input.new_string)
+            content.replace(&old_string, &new_string)
         } else {
-            content.replacen(&input.old_string, &input.new_string, 1)
+            content.replacen(&old_string, &new_string, 1)
         };
 
         if let Err(e) = std::fs::write(&path, &new_content) {
@@ -902,7 +884,7 @@ impl FileTool {
         } else {
             // Line of the (single) match in the pre-edit content.
             let at_line = content
-                .find(&input.old_string)
+                .find(&old_string)
                 .map(|idx| 1 + content[..idx].matches('\n').count())
                 .unwrap_or(1);
             format!("Edited {}: replaced 1 occurrence at line {}", path, at_line)
@@ -1156,6 +1138,7 @@ impl FileTool {
                 Some(&input.glob)
             },
             input.case_insensitive,
+            input.multiline,
             limit,
             offset,
             output_mode,
@@ -1565,6 +1548,61 @@ fn path_matches_or_inside(path: &str, target: &str) -> bool {
     }
     let target_with_sep = format!("{}/", target);
     path.starts_with(&target_with_sep)
+}
+
+fn straighten_quote(c: char) -> char {
+    match c {
+        '\u{2018}' | '\u{2019}' => '\'',
+        '\u{201C}' | '\u{201D}' => '"',
+        c => c,
+    }
+}
+
+/// Find `needle` in `haystack`: exactly, or with curly quotes on either side
+/// read as straight ones. Returns the haystack's own bytes for the span, so
+/// the caller replaces what is really in the file.
+fn find_actual_string(haystack: &str, needle: &str) -> Option<String> {
+    if haystack.contains(needle) {
+        return Some(needle.to_string());
+    }
+    let norm_needle: String = needle.chars().map(straighten_quote).collect();
+    // Straightened haystack plus a map from each straightened byte offset back
+    // to the original one (a curly quote is 3 bytes, its straight form 1).
+    let mut norm = String::with_capacity(haystack.len());
+    let mut back: Vec<usize> = Vec::with_capacity(haystack.len() + 1);
+    for (orig, c) in haystack.char_indices() {
+        let start = norm.len();
+        norm.push(straighten_quote(c));
+        back.extend(std::iter::repeat_n(orig, norm.len() - start));
+    }
+    back.push(haystack.len());
+    let idx = norm.find(&norm_needle)?;
+    Some(haystack[back[idx]..back[idx + norm_needle.len()]].to_string())
+}
+
+/// When old_string only matched through quote normalization (the file has
+/// curly quotes, the model sent straight ones), curl the straight quotes in
+/// new_string the same way so the edit keeps the document's typography. A
+/// quote after whitespace, start of text, or an opening bracket opens;
+/// any other closes.
+fn preserve_quote_style(old_string: &str, actual_old: &str, new_string: &str) -> String {
+    if old_string == actual_old || !actual_old.chars().any(|c| straighten_quote(c) != c) {
+        return new_string.to_string();
+    }
+    let mut out = String::with_capacity(new_string.len() + 8);
+    let mut prev: Option<char> = None;
+    for c in new_string.chars() {
+        let opening = prev.is_none_or(|p| p.is_whitespace() || matches!(p, '(' | '[' | '{'));
+        out.push(match c {
+            '\'' if opening => '\u{2018}',
+            '\'' => '\u{2019}',
+            '"' if opening => '\u{201C}',
+            '"' => '\u{201D}',
+            c => c,
+        });
+        prev = Some(c);
+    }
+    out
 }
 
 /// Expand `~` to the user's home directory. Tilde-only (no fuzzy
@@ -2672,25 +2710,25 @@ mod tests {
     /// The byte cap cuts on a line boundary and the footer names the last whole
     /// line and the offset to continue from; the footer is never sliced off.
     #[test]
-    fn byte_capped_read_names_last_complete_line() {
+    fn over_budget_read_is_an_error_naming_the_file_shape() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("wide.txt");
         let mut src = String::new();
-        for i in 0..1000 {
+        for i in 0..1200 {
             src.push_str(&format!("{i:04} {}\n", "x".repeat(95)));
         }
         fs::write(&path, &src).unwrap();
         let tool = FileTool::new();
         let r = tool.execute(&ctx(), json!({"action":"read","path": path.to_str().unwrap()}));
+        assert!(r.is_error, "{}", crate::truncate_str(&r.content, 200));
+        assert!(r.content.contains("the file has 1200 lines"), "{}", r.content);
+        assert!(r.content.contains("Use offset and limit"), "{}", r.content);
+        assert!(r.content.len() < 600, "an error, not a clipped payload: {} bytes", r.content.len());
+        // A ranged read that fits is served whole.
+        let r = tool.execute(&ctx(), json!({"action":"read","path": path.to_str().unwrap(), "offset": 600, "limit": 300}));
         assert!(!r.is_error, "{}", r.content);
-        assert!(r.content.contains("[Output truncated at 50,000 bytes (file rendering is"), "{}", crate::truncate_str(&r.content, 200));
-        assert!(r.content.trim_end().ends_with("]"), "footer must be last");
-        // The named last line is the one actually shown, and the next offset follows it.
-        let footer = r.content.rsplit("Last complete line shown: ").next().unwrap();
-        let n: usize = footer.split('.').next().unwrap().parse().unwrap();
-        assert!(r.content.contains(&format!("{:6}\t{:04} ", n, n - 1)), "line {n} must be shown");
-        assert!(!r.content.contains(&format!("{:6}\t{:04} ", n + 1, n)), "line {} must not be shown", n + 1);
-        assert!(footer.contains(&format!("Use offset: {}.", n + 1)), "{footer}");
+        assert!(r.content.contains("   600\t0599 "), "{}", crate::truncate_str(&r.content, 200));
+        assert!(r.content.contains("   899\t0898 "), "{}", crate::truncate_str(&r.content, 200));
     }
 
     /// A pasted document is one long line; it is shown whole.
@@ -2706,18 +2744,42 @@ mod tests {
         assert!(!r.content.contains("truncated"), "{}", crate::truncate_str(&r.content, 100));
     }
 
-    /// Only a line that alone would overrun the result is clipped, and it
-    /// says how much of it is shown; the byte-cap footer does not pile on.
+    /// A single line inside the budget is shown whole, however long.
     #[test]
-    fn huge_line_states_bytes_shown() {
+    fn huge_line_within_budget_is_shown_whole() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("huge.txt");
-        fs::write(&path, format!("{}\n", "y".repeat(60_000))).unwrap();
+        fs::write(&path, format!("{}END\n", "y".repeat(60_000))).unwrap();
         let tool = FileTool::new();
         let r = tool.execute(&ctx(), json!({"action":"read","path": path.to_str().unwrap()}));
+        assert!(!r.is_error, "{}", crate::truncate_str(&r.content, 100));
+        assert!(r.content.contains("yyyyEND"), "{}", crate::truncate_str(&r.content, 100));
+        assert!(!r.content.contains("truncated"), "{}", crate::truncate_str(&r.content, 100));
+    }
+
+    /// A straight-quoted old_string still lands on a curly-quoted document,
+    /// and the replacement keeps the document's quotes.
+    #[test]
+    fn edit_matches_through_curly_quotes_and_keeps_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("doc.md");
+        let p = path.to_str().unwrap();
+        fs::write(&path, "She said \u{201C}hello\u{201D} to Bob\u{2019}s team.\n").unwrap();
+        let tool = FileTool::new();
+        let r = tool.execute(&ctx(), json!({"action":"read","path": p}));
+        assert!(!r.is_error);
+        let r = tool.execute(&ctx(), json!({"action":"edit","path": p,
+            "old_string": "said \"hello\" to Bob's", "new_string": "said \"goodbye\" to Bob's"}));
         assert!(!r.is_error, "{}", r.content);
-        assert!(r.content.contains("[line truncated: 48000 of 60000 bytes shown]"), "{}", crate::truncate_str(&r.content, 100));
-        assert!(!r.content.contains("[Output truncated"), "{}", crate::truncate_str(&r.content, 100));
+        let after = fs::read_to_string(&path).unwrap();
+        assert_eq!(after, "She said \u{201C}goodbye\u{201D} to Bob\u{2019}s team.\n");
+        // An exact match is untouched: straight quotes stay straight.
+        fs::write(&path, "x = \"a\"\n").unwrap();
+        let r = tool.execute(&ctx(), json!({"action":"read","path": p}));
+        assert!(!r.is_error);
+        let r = tool.execute(&ctx(), json!({"action":"edit","path": p, "old_string": "\"a\"", "new_string": "\"b\""}));
+        assert!(!r.is_error, "{}", r.content);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "x = \"b\"\n");
     }
 
     /// Create and overwrite are distinct observations, and an edit names the line.
