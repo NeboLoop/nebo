@@ -359,20 +359,11 @@ fn main() {
     let stdout_layer = fmt::layer().with_filter(env_filter());
 
     // File layer (append to <data_dir>/logs/nebo.log)
-    let file_layer = config::data_dir().ok().and_then(|dir| {
-        let log_dir = dir.join("logs");
-        std::fs::create_dir_all(&log_dir).ok()?;
-        let file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(log_dir.join("nebo.log"))
-            .ok()?;
-        Some(
-            fmt::layer()
-                .with_writer(Mutex::new(file))
-                .with_ansi(false)
-                .with_filter(env_filter()),
-        )
+    let file_layer = config::log_file("nebo.log").map(|file| {
+        fmt::layer()
+            .with_writer(Mutex::new(file))
+            .with_ansi(false)
+            .with_filter(env_filter())
     });
 
     tracing_subscriber::registry()

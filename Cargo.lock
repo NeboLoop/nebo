@@ -5484,6 +5484,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "shellexpand",
+ "tempfile",
  "tracing",
  "uuid",
  "which 7.0.3",
