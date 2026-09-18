@@ -175,7 +175,7 @@ pub async fn upload_file(
     // Best-effort loop copy. Failing here costs sharing with other bots, not the
     // attachment itself, so it is logged rather than returned as an error.
     match crate::codes::build_api_client(&state) {
-        Ok(api) => match api.upload_file(&filename, &mime_type, data).await {
+        Ok(api) => match api.upload_file(&filename, &mime_type, data, &[]).await {
             Ok(attachment) => {
                 // Re-key the local copy to the loop's id so lookups by that id
                 // find it here instead of downloading what we already hold.

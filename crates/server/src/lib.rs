@@ -2,6 +2,7 @@ pub mod a2ui;
 pub mod a2ui_actions;
 pub mod agents_export;
 pub mod app_lifecycle;
+pub mod backup_ship;
 mod artifact_updates;
 mod channel_dispatch;
 pub mod chat_dispatch;

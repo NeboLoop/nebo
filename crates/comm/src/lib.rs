@@ -43,11 +43,14 @@ pub trait CommPlugin: Send + Sync {
     /// Upload a file and return populated attachment metadata (file_id, url, etc.)
     /// so it can be referenced in an outbound message's `attachments`.
     /// Default returns an error for plugins that don't support uploads.
+    /// `fields` are extra multipart form fields the hub reads beside the file
+    /// (a backup's purpose and checksum, for one).
     async fn upload_file(
         &self,
         _filename: &str,
         _mime_type: &str,
         _data: Vec<u8>,
+        _fields: &[(String, String)],
     ) -> Result<crate::wire::Attachment, CommError> {
         Err(CommError::Other("upload not supported".into()))
     }

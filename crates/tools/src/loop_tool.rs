@@ -197,7 +197,7 @@ impl LoopTool {
             .unwrap_or_else(|| "file".to_string());
         let mime = mime_for_path(p);
         self.comm
-            .upload_file(&filename, mime, data)
+            .upload_file(&filename, mime, data, &[])
             .await
             .map_err(|e| e.to_string())
     }
