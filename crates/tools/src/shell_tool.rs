@@ -440,17 +440,17 @@ impl ShellTool {
 
                     if persisted {
                         result.push_str(&format!(
-                            "\n\n--- Showing the first 50,000 of {} bytes ({} lines). Full output (stdout, then STDERR section) saved to: {}\n\
+                            "\n\n--- Showing the first {} of {} bytes ({} lines). Full output (stdout, then STDERR section) saved to: {}\n\
                              Read sections with: os(resource: \"file\", action: \"read\", path: \"{}\", offset: N, limit: M)",
-                            total_len, total_lines,
+                            crate::MAX_SUBPROCESS_OUTPUT, total_len, total_lines,
                             output_path.display(), output_path.display(),
                         ));
                     } else {
                         let removed = total_len - crate::MAX_SUBPROCESS_OUTPUT;
                         result.push_str(&format!(
-                            "\n... [output truncated: showing the first 50,000 of {} bytes; {} bytes not shown. \
+                            "\n... [output truncated: showing the first {} of {} bytes; {} bytes not shown. \
                              Use grep to search for specific content, or pipe through head/tail.]",
-                            total_len, removed
+                            crate::MAX_SUBPROCESS_OUTPUT, total_len, removed
                         ));
                     }
                 }

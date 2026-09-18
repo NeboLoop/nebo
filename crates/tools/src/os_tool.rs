@@ -772,6 +772,10 @@ impl DynTool for OsTool {
             prop("boolean", "Case-insensitive search"),
         );
         props.insert(
+            "multiline".into(),
+            prop("boolean", "Grep: let the pattern span lines and `.` match newlines (rg -U --multiline-dotall). Default false: a pattern matches within one line."),
+        );
+        props.insert(
             "glob".into(),
             prop("string", "File filter pattern for grep"),
         );

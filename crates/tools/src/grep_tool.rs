@@ -49,6 +49,7 @@ impl GrepTool {
         path: &str,
         file_glob: Option<&str>,
         case_insensitive: bool,
+        multiline: bool,
         limit: usize,
         offset: usize,
         output_mode: &str,
@@ -64,8 +65,12 @@ impl GrepTool {
 
         let limit = if limit == 0 { 250 } else { limit };
 
+        // multiline: `.` matches newlines and a pattern may span lines
+        // (rg -U --multiline-dotall), the same switch as Claude Code's Grep.
         let matcher = match RegexMatcherBuilder::new()
             .case_insensitive(case_insensitive)
+            .multi_line(multiline)
+            .dot_matches_new_line(multiline)
             .build(pattern)
         {
             Ok(m) => m,
@@ -95,10 +100,11 @@ impl GrepTool {
         };
 
         let mut result = match output_mode {
-            "files" => self.search_files_mode(&matcher, &files, &search_base, pattern, limit, offset),
-            "count" => self.search_count_mode(&matcher, &files, &search_base, pattern, limit, offset),
+            "files" => self.search_files_mode(&matcher, multiline, &files, &search_base, pattern, limit, offset),
+            "count" => self.search_count_mode(&matcher, multiline, &files, &search_base, pattern, limit, offset),
             _ => self.search_content_mode(
                 &matcher,
+                multiline,
                 &files,
                 &search_base,
                 pattern,
@@ -125,6 +131,7 @@ impl GrepTool {
     fn search_content_mode(
         &self,
         matcher: &grep_regex::RegexMatcher,
+        multiline: bool,
         files: &[String],
         search_base: &Path,
         pattern: &str,
@@ -134,6 +141,7 @@ impl GrepTool {
         context_after: usize,
     ) -> ToolResult {
         let mut searcher = SearcherBuilder::new()
+            .multi_line(multiline)
             .before_context(context_before)
             .after_context(context_after)
             .line_number(true)
@@ -231,6 +239,7 @@ impl GrepTool {
     fn search_files_mode(
         &self,
         matcher: &grep_regex::RegexMatcher,
+        multiline: bool,
         files: &[String],
         search_base: &Path,
         pattern: &str,
@@ -238,6 +247,7 @@ impl GrepTool {
         offset: usize,
     ) -> ToolResult {
         let mut searcher = SearcherBuilder::new()
+            .multi_line(multiline)
             .line_number(true)
             .binary_detection(BinaryDetection::quit(0))
             .build();
@@ -309,6 +319,7 @@ impl GrepTool {
     fn search_count_mode(
         &self,
         matcher: &grep_regex::RegexMatcher,
+        multiline: bool,
         files: &[String],
         search_base: &Path,
         pattern: &str,
@@ -316,6 +327,7 @@ impl GrepTool {
         offset: usize,
     ) -> ToolResult {
         let mut searcher = SearcherBuilder::new()
+            .multi_line(multiline)
             .line_number(true)
             .binary_detection(BinaryDetection::quit(0))
             .build();
@@ -616,7 +628,19 @@ mod tests {
         ctx_before: usize,
         ctx_after: usize,
     ) -> ToolResult {
-        tool.execute_search(pattern, path, file_glob, case_insensitive, limit, offset, output_mode, ctx_before, ctx_after)
+        tool.execute_search(pattern, path, file_glob, case_insensitive, false, limit, offset, output_mode, ctx_before, ctx_after)
+    }
+
+    /// multiline lets a pattern span lines; without it the same pattern finds nothing.
+    #[test]
+    fn multiline_pattern_spans_lines() {
+        let (_td, work) = test_dir();
+        fs::write(work.join("s.rs"), "struct A {\n    id: u32,\n    field: String,\n}\n").unwrap();
+        let tool = GrepTool;
+        let res = tool.execute_search(r"struct A \{[\s\S]*?field", work.to_str().unwrap(), None, false, false, 0, 0, "content", 0, 0);
+        assert!(res.content.contains("No matches"), "{}", res.content);
+        let res = tool.execute_search(r"struct A \{[\s\S]*?field", work.to_str().unwrap(), None, false, true, 0, 0, "content", 0, 0);
+        assert!(!res.is_error && res.content.contains("s.rs"), "{}", res.content);
     }
 
     #[test]
