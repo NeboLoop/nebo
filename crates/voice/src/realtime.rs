@@ -398,6 +398,20 @@ async fn handle_server_event(
                 send(ConversationEvent::TranscriptionText(t.to_string())).await?;
             }
         }
+        // What xAI sends today (2026-09-17, probed against grok-voice-latest):
+        // ONE finished transcript per utterance, and it lands AFTER
+        // `speech_stopped`. Without this arm no user transcript ever reached
+        // a client and no voice turn was ever persisted. The finish is
+        // re-announced so a consumer that already closed the utterance on
+        // `speech_stopped` opens it again with the words.
+        "conversation.item.input_audio_transcription.completed" => {
+            if let Some(t) = ev.get("transcript").and_then(|v| v.as_str())
+                && !t.is_empty()
+            {
+                send(ConversationEvent::TranscriptionText(t.to_string())).await?;
+                send(ConversationEvent::TranscriptionEnd).await?;
+            }
+        }
         "input_audio_buffer.speech_stopped" => {
             send(ConversationEvent::TranscriptionEnd).await?;
         }
@@ -548,6 +562,19 @@ mod tests {
         assert!(
             matches!(rx.recv().await, Some(ConversationEvent::TranscriptionText(t)) if t == "hello world")
         );
+
+        handle_server_event(
+            r#"{"type":"conversation.item.input_audio_transcription.completed","transcript":"hello world","status":"completed"}"#,
+            &tx,
+            &mut init,
+            &mut active,
+        )
+        .await
+        .unwrap();
+        assert!(
+            matches!(rx.recv().await, Some(ConversationEvent::TranscriptionText(t)) if t == "hello world")
+        );
+        assert!(matches!(rx.recv().await, Some(ConversationEvent::TranscriptionEnd)));
 
         handle_server_event(
             r#"{"type":"response.function_call_arguments.done","call_id":"c1","name":"os","arguments":"{\"action\":\"read\"}"}"#,
