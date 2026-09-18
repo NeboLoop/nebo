@@ -41,17 +41,17 @@ prompt_assertions:
       text: "Model does NOT fall back to shell sed command"
       severity: important
   cost:
-    - id: max-two-calls
-      text: "Task completes in no more than 2 tool calls (read + edit is acceptable)"
+    - id: max-three-calls
+      text: "Task completes in no more than 3 tool calls: read, edit, and a read that verifies the edit landed"
       severity: critical
-    - id: single-call
-      text: "Task completes in 1 tool call"
-      severity: important
+      check: { max_tool_calls: 3 }
 
 ideal_behavior:
-  tool_calls: 2
-  total_tokens: 3000
+  tool_calls: 3
+  total_tokens: 3500
   narrative: |
-    os(resource: "file", action: "read") then os(resource: "file", action: "edit",
+    os(resource: "file", action: "read"), then os(resource: "file", action: "edit",
     path: "/tmp/nebo-test/notes.txt", old_string: "draft version",
-    new_string: "final version"). Reading before editing is cautious and correct.
+    new_string: "final version"), then a read that confirms the line now says
+    "final version". Read, edit, verify is the shape the owner wants (2026-09-17);
+    the verifying read is not waste.
