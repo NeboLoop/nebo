@@ -773,13 +773,17 @@ pub struct StagedInstall {
 impl StagedInstall {
     /// Begin a staged install targeting `<root>/agents/<slug>`.
     pub fn begin(root: &std::path::Path, slug: &str) -> Result<Self, String> {
+        // Two installs of one slug can begin in the same nanosecond (two
+        // doors, see `commit`); the counter keeps their staging dirs apart.
+        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let staging = root.join(".staging").join(format!(
-            "agent-{}-{}",
+            "agent-{}-{}-{}",
             slug,
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_nanos())
-                .unwrap_or_default()
+                .unwrap_or_default(),
+            SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
         std::fs::create_dir_all(&staging).map_err(|e| format!("create staging dir: {e}"))?;
         Ok(Self {
@@ -796,7 +800,19 @@ impl StagedInstall {
 
     /// Publish the staged payload: replaces any previous install wholesale by
     /// renaming the staging dir into place. Returns the final directory.
+    ///
+    /// The swap is serialized process-wide. Two doors can install the same
+    /// employee at once — the owner's click redeems the code while the
+    /// employee's own `agent` tool installs it for a task (Client Finder,
+    /// 2026-09-17) — and with both swapping unlocked, the second `rename`
+    /// landed on a directory the first had just published: "Directory not
+    /// empty", a 500 to the web, and a hire that had in fact succeeded
+    /// reported as failed. Under the lock the second commit is an ordinary
+    /// replace of an identical payload.
     pub fn commit(mut self) -> Result<std::path::PathBuf, String> {
+        // ponytail: one process-wide lock around a millisecond swap; per-slug if installs ever contend.
+        static SWAP: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _swap = SWAP.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(parent) = self.final_dir.parent() {
             std::fs::create_dir_all(parent).map_err(|e| format!("create agents dir: {e}"))?;
         }
@@ -822,6 +838,31 @@ impl Drop for StagedInstall {
 #[cfg(test)]
 mod staged_install_tests {
     use super::StagedInstall;
+
+    /// Two doors installing the same employee at once: both commits succeed
+    /// and the slot holds one of the two identical payloads, never a
+    /// "Directory not empty" from a rename that raced the other's publish.
+    #[test]
+    fn concurrent_commits_of_one_slug_both_succeed() {
+        let root = tempfile::tempdir().unwrap();
+        let handles: Vec<_> = (0..8)
+            .map(|i| {
+                let root = root.path().to_path_buf();
+                std::thread::spawn(move || {
+                    for _ in 0..20 {
+                        let staged = StagedInstall::begin(&root, "sdr").unwrap();
+                        std::fs::write(staged.path().join("AGENT.md"), format!("door {i}")).unwrap();
+                        staged.commit().unwrap();
+                    }
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().unwrap();
+        }
+        assert!(root.path().join("agents/sdr/AGENT.md").exists());
+        assert!(std::fs::read_dir(root.path().join(".staging")).unwrap().next().is_none());
+    }
 
     // The failure contract: an install that dies mid-payload (download 404,
     // extraction error, validation failure) must leave NOTHING behind — no
