@@ -207,9 +207,80 @@ const MAX_OUTPUT_RECOVERY_ATTEMPTS: usize = 3;
 /// failure, and a model that concludes its tools are failing stops trusting the
 /// ones that work — 11 of these landed in the 2026-08-28 loop.
 const ORPHANED_TOOL_RESULT: &str = "(this call's result is missing from the \
-conversation history — it was trimmed, or the run was interrupted. This is NOT a \
-tool failure and says nothing about whether the call succeeded. Make the call \
-again if you still need the result.)";
+conversation history — it was trimmed to fit. This is NOT a tool failure and \
+says nothing about whether the call succeeded. Make the call again if you still \
+need the result.)";
+
+/// What an interrupted tool call's result says: the call did not finish, and
+/// the model must not retry it on its own initiative. Mirrors Claude Code's
+/// "[Request interrupted by user for tool use]".
+pub const INTERRUPTED_TOOL_RESULT: &str = "[Request interrupted by user for tool use]";
+
+/// The line the thread carries after a stop. The model reads it (the next
+/// turn starts from the owner's words, not from the interrupted step); the
+/// owner does not (isMeta — the chat already shows the stop).
+pub const INTERRUPT_MESSAGE: &str = "[Request interrupted by user] The owner stopped this work. \
+Do not resume the interrupted step on your own; wait for their next message and act on that.";
+
+/// Stop means stop, and the record must say so. A cancel can land after the
+/// assistant's tool calls were persisted and before their results were; left
+/// alone, the next turn's history sanitizer fills each gap with the
+/// trimmed-history note, which tells the model to make the call again — and
+/// it did, resuming the very search the owner had just stopped, three times
+/// in a row (2026-09-18). Each open call gets an interrupt result and the
+/// thread gets one interrupt line.
+fn record_interrupt(sessions: &SessionManager, session_id: &str) {
+    let messages = match sessions.get_messages(session_id) {
+        Ok(m) => m,
+        Err(e) => {
+            warn!(session_id, error = %e, "could not load the thread to record the interrupt");
+            return;
+        }
+    };
+    let mut open: Vec<String> = Vec::new();
+    if let Some(last) = messages.iter().rposition(|m| m.role == "assistant") {
+        let issued: Vec<String> = messages[last]
+            .tool_calls
+            .as_deref()
+            .and_then(|tc| serde_json::from_str::<Vec<serde_json::Value>>(tc).ok())
+            .map(|calls| {
+                calls
+                    .iter()
+                    .filter_map(|c| c.get("id").and_then(|v| v.as_str()).map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let answered: HashSet<String> = messages[last + 1..]
+            .iter()
+            .filter(|m| m.role == "tool")
+            .filter_map(|m| m.tool_results.as_deref())
+            .filter_map(|tr| serde_json::from_str::<Vec<serde_json::Value>>(tr).ok())
+            .flatten()
+            .filter_map(|r| r.get("tool_call_id").and_then(|v| v.as_str()).map(str::to_string))
+            .collect();
+        open = issued.into_iter().filter(|id| !answered.contains(id)).collect();
+    }
+    for id in &open {
+        let row = ToolResultRow {
+            tool_call_id: id.clone(),
+            content: INTERRUPTED_TOOL_RESULT.to_string(),
+            is_error: true,
+            image_url: None,
+            payload: None,
+            outcome: Some("Interrupted".to_string()),
+            duration_ms: None,
+        };
+        let tr_json = serde_json::json!([row]).to_string();
+        if let Err(e) = sessions.append_message(session_id, "tool", "", None, Some(&tr_json), None) {
+            warn!(session_id, error = %e, "could not record an interrupted tool call");
+        }
+    }
+    let meta = serde_json::json!({ "isMeta": true }).to_string();
+    if let Err(e) = sessions.append_message(session_id, "user", INTERRUPT_MESSAGE, None, None, Some(&meta)) {
+        warn!(session_id, error = %e, "could not record the interrupt line");
+    }
+    info!(session_id, open_calls = open.len(), "interrupt recorded");
+}
 
 /// This is the backstop for that class: it counts the CALL, not the answer.
 /// The bound is set by EVIDENCE, not vibes: the incident's own legitimate
@@ -1007,19 +1078,41 @@ pub struct RunRequest {
 pub struct ActiveTurn {
     pub started: std::time::Instant,
     pub progress: RunProgress,
+    /// The turn's cancel token: set means the owner stopped it and its loop
+    /// is unwinding, so the slot frees in a moment.
+    pub cancel_token: CancellationToken,
 }
 
 pub type ActiveTurns = Arc<std::sync::Mutex<HashMap<String, ActiveTurn>>>;
 
 /// Admit a turn on `session_key`, or say why not. Check and insert are one
 /// step under the lock so two callers cannot both pass.
-pub fn admit_turn(turns: &ActiveTurns, session_key: &str, progress: RunProgress) -> Result<TurnGuard, String> {
+pub fn admit_turn(
+    turns: &ActiveTurns,
+    session_key: &str,
+    progress: RunProgress,
+    cancel_token: CancellationToken,
+) -> Result<TurnGuard, String> {
     let mut map = turns.lock().unwrap_or_else(|p| p.into_inner());
     if let Some(active) = map.get(session_key) {
         return Err(busy_status_line(active));
     }
-    map.insert(session_key.to_string(), ActiveTurn { started: std::time::Instant::now(), progress });
+    map.insert(
+        session_key.to_string(),
+        ActiveTurn { started: std::time::Instant::now(), progress, cancel_token },
+    );
     Ok(TurnGuard { turns: turns.clone(), session_key: session_key.to_string() })
+}
+
+/// True when the turn holding `session_key` has been cancelled: it is on its
+/// way out, and the next message should wait for the slot rather than be
+/// queued into a loop that is about to exit.
+pub fn turn_is_cancelled(turns: &ActiveTurns, session_key: &str) -> bool {
+    turns
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .get(session_key)
+        .is_some_and(|t| t.cancel_token.is_cancelled())
 }
 
 /// The typed stop reason a busy session answers with. Consumers render it as
@@ -1443,18 +1536,40 @@ impl Runner {
             tool_call_count: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             current_tool: Arc::new(std::sync::Mutex::new(String::new())),
         });
-        let turn_guard = match admit_turn(&self.active_turns, &session_key, progress.clone()) {
+        let turn_guard = match admit_turn(&self.active_turns, &session_key, progress.clone(), req.cancel_token.clone()) {
             Ok(guard) => guard,
             Err(status) => {
-                // The owner's words reach the running turn as its next message,
-                // framed so the model knows they arrived mid-work. Untrusted
-                // caller framing (phone lines) rides along.
-                let queued = format!(
-                    "[Arrived while you were working, via {}] {}",
-                    if req.channel.is_empty() { "chat" } else { req.channel.as_str() },
-                    req.prompt
-                );
-                if let Err(e) = self.sessions.append_message(&session_id, "user", &queued, None, None, None) {
+                // The owner pressed stop and typed the next thing at once. The
+                // stopped turn is unwinding; queuing this message into it would
+                // leave it in the thread unanswered (that queue is read by a
+                // loop that is about to exit). Wait for the slot, briefly, and
+                // start the new turn.
+                let mut admitted = None;
+                if turn_is_cancelled(&self.active_turns, &session_key) {
+                    for _ in 0..100 {
+                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                        if let Ok(g) = admit_turn(&self.active_turns, &session_key, progress.clone(), req.cancel_token.clone()) {
+                            admitted = Some(g);
+                            break;
+                        }
+                    }
+                }
+                if let Some(g) = admitted {
+                    g
+                } else {
+                // The owner's words reach the running turn as its next message.
+                // They are stored as typed (the chat shows them clean) and
+                // marked as having arrived mid-work; the framing the model
+                // needs is added when the window is built (`convert_messages`),
+                // the way Claude Code keeps the transcript clean and frames the
+                // queued message for the model only. Untrusted caller framing
+                // (phone lines) rides along in the briefing below.
+                let meta = serde_json::json!({
+                    "arrivedMidTurn": true,
+                    "via": if req.channel.is_empty() { "chat" } else { req.channel.as_str() },
+                })
+                .to_string();
+                if let Err(e) = self.sessions.append_message(&session_id, "user", &req.prompt, None, None, Some(&meta)) {
                     warn!(session_id = %session_id, error = %e, "could not queue a message into the running turn");
                 }
                 // The briefing (team roster, turn rule) is for the model, never
@@ -1487,6 +1602,7 @@ impl Runner {
                     .await;
                 let _ = tx.send(StreamEvent::done()).await;
                 return Ok(rx);
+                }
             }
         };
 
@@ -2031,6 +2147,10 @@ impl Runner {
                 req.workflow.as_ref(),
             )
             .await;
+
+            if cancel_token.is_cancelled() {
+                record_interrupt(&session_mgr, &session_id);
+            }
 
             let (run_ok, loop_exit_reason) = match result {
                 Ok(reason) => (true, reason),
@@ -2784,9 +2904,6 @@ async fn run_loop(
     let auto_continuations = 0usize;
     // Cycle detection: track last auto-continued response to break loops
     let prev_auto_content: Option<String> = None;
-    // Sticky flag: once user demands action ("don't stop", "do them all"), stays true for the run
-    let mut user_demanded_action_sticky =
-        user_demanded_action(&sessions.get_messages(session_id).unwrap_or_default());
     // Cache for tool documentation (help/schema results) — survives sliding window eviction
     // via injection into the dynamic suffix. Max 5 entries, LRU-evict oldest.
     let mut tool_doc_cache: Vec<(String, String)> = Vec::new();
@@ -3657,13 +3774,7 @@ async fn run_loop(
 
         // Adaptive iteration limit: extend past default only if making genuine progress.
         if iteration > max_iterations && iteration <= hard_ceiling {
-            if consecutive_error_iterations >= 2
-                || steering::should_force_break(
-                    &sessions.get_messages(session_id).unwrap_or_default(),
-                    iteration,
-                )
-                .is_some()
-            {
+            if consecutive_error_iterations >= 2 {
                 turn_exit_reason = crate::guardrails::Exit::AdaptiveLimitNoProgress;
                 let last_tool = recent_tool_names.last().cloned().unwrap_or_default();
                 let worst_read = read_failures
@@ -3738,11 +3849,6 @@ async fn run_loop(
                 info!(session_id, iteration, old = %active_task, new = %refreshed, "active_task refreshed from DB");
                 active_task = refreshed;
             }
-        }
-
-        // Refresh sticky demand flag — once set, stays true for the entire run
-        if !user_demanded_action_sticky {
-            user_demanded_action_sticky = user_demanded_action(&all_messages);
         }
 
         if all_messages.is_empty() {
@@ -4226,21 +4332,10 @@ async fn run_loop(
         };
         last_model_name = selected_model_name.to_string();
 
-        // Circuit-breaker: hard-stop only on an explicit user stop command (budget handles
-        // the rest). The behavioral steering moved to the message-stream reminder channel.
-        if let Some(reason) = steering::should_force_break(&window_messages, iteration) {
-            warn!(session_id, iteration, reason = %reason, "circuit breaker triggered");
-            // Typed termination: a ControlNotice status event, never assistant
-            // prose (the old apology text leaked verbatim into channel replies).
-            turn_exit_reason = crate::guardrails::Exit::UserRequestedStop;
-            let _ = tx
-                .send(StreamEvent::control_notice(
-                    "Stopped at your request.",
-                    "user_requested_stop",
-                ))
-                .await;
-            break;
-        }
+        // A stop is the cancel path (Esc, the stop button): the token ends the
+        // stream and the tools and the record says "interrupted". It is never
+        // a phrase the runner matches — "stop searching and tell me" was not
+        // on the list, and the owner was ignored three times (2026-09-18).
 
         // Background-results context (the only survivor of the old steering pipeline).
         let proactive_context = steering::format_proactive_items(&proactive_items);
@@ -4492,7 +4587,35 @@ async fn run_loop(
         // ("use os(...)"), the first response must be a tool call: weak models
         // otherwise echo the syntax back as text. First iteration only — the
         // model needs Auto afterwards to write its final report.
-        let forced_choice = if iteration == 1 {
+        // The owner spoke while the turn ran: the step right after is a reply
+        // to them, in words — never another tool call. The framed message asks
+        // for that; this makes it so whatever the model's momentum (nebo-1
+        // read two more files past "stop reading and tell me" in one of two
+        // runs before this). If they said "keep going", the reply is one line
+        // and the work resumes at the next step.
+        //
+        // The message can land between this step's history load and now (it
+        // did, in the same second as a tool result): re-read the tail, and if
+        // the owner spoke, start the step over with their words in it.
+        if let Ok(fresh) = sessions.get_messages(session_id) {
+            let last_seen = all_messages.last().map(|m| m.id.clone());
+            let landed = fresh
+                .iter()
+                .rev()
+                .take_while(|m| last_seen.as_deref() != Some(m.id.as_str()))
+                .any(|m| m.role == "user" && arrived_mid_turn(m).is_some());
+            if landed {
+                info!(session_id, iteration, "owner spoke mid-turn: restarting the step with their message");
+                continue;
+            }
+        }
+        let owner_spoke_mid_turn = unanswered_mid_turn_message(&window_messages);
+        if owner_spoke_mid_turn {
+            info!(session_id, iteration, "owner spoke mid-turn: this step is a reply in words");
+        }
+        let forced_choice = if owner_spoke_mid_turn {
+            Some(ai::ToolChoice::None)
+        } else if iteration == 1 {
             ai_messages
                 .iter()
                 .rev()
@@ -6441,13 +6564,17 @@ async fn run_loop(
                 let mut ctx = ctx.clone();
                 ctx.parked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
                 let parked = ctx.parked.clone();
-                let mut result = match run_within_budget(
-                    budget,
-                    parked,
-                    tools.execute(&ctx, &tc.name, tc.input.clone()),
-                )
-                .await
-                {
+                let mut result = match tokio::select! {
+                    _ = cancel_token.cancelled() => {
+                        info!(session_id, "run cancelled during sequential tool execution");
+                        return Ok(turn_exit_reason.label());
+                    }
+                    r = run_within_budget(
+                        budget,
+                        parked,
+                        tools.execute(&ctx, &tc.name, tc.input.clone()),
+                    ) => r,
+                } {
                     Some(r) => r,
                     None => ToolResult::error(tool_timeout_text(&tc.name, budget)),
                 };
@@ -8009,65 +8136,6 @@ fn max_auto_continuations(work_tasks: &[steering::WorkTask]) -> usize {
     }
 }
 
-/// Check if recent user messages contain imperative language demanding action.
-/// Serves as an implicit active-task signal for auto-continuation when objective
-/// detection hasn't run yet.
-fn user_demanded_action(messages: &[ChatMessage]) -> bool {
-    let imperative_patterns = [
-        "do it",
-        "just do it",
-        "get it done",
-        "finish it",
-        "keep going",
-        "don't stop",
-        "dont stop",
-        "do not stop",
-        "handle it",
-        "do them all",
-        "go ahead",
-        "get them done",
-        "do them",
-        "finish them",
-        "just go",
-        "proceed",
-        "continue",
-        "keep at it",
-        "do the rest",
-        "all of them",
-        "finish all",
-        "complete all",
-        "process all",
-        "handle all",
-        "work through all",
-        "why did you stop",
-        "why are you stopping",
-    ];
-    // Check last 5 user messages (was 2) to catch demands that scroll off
-    let recent_user: Vec<&ChatMessage> = messages
-        .iter()
-        .rev()
-        .filter(|m| {
-            m.role == "user"
-                && !m.content.starts_with("<system>")
-                && !m.content.starts_with("<steering")
-        })
-        .take(5)
-        .collect();
-
-    for msg in &recent_user {
-        let lower = msg.content.to_lowercase();
-        // Match short-to-medium imperative messages (raised from 120 to 200)
-        if lower.len() < 200 {
-            for p in &imperative_patterns {
-                if lower.contains(p) {
-                    return true;
-                }
-            }
-        }
-    }
-    false
-}
-
 /// Convert database ChatMessages to ai::Messages for the provider.
 /// Detect a prompt that IS an explicit invocation of a declared tool —
 /// "use os(resource: ...)", "call web(...)", or the bare "skill(...)" — and
@@ -8101,6 +8169,44 @@ fn named_tool_invocation(
         .then(|| ai::ToolChoice::Tool(name))
 }
 
+/// The channel a message the owner typed mid-turn arrived on, if it is one
+/// (metadata `arrivedMidTurn` / `via`, written by the queue path in `run`).
+pub(crate) fn arrived_mid_turn(msg: &ChatMessage) -> Option<String> {
+    let meta: serde_json::Value = serde_json::from_str(msg.metadata.as_deref()?).ok()?;
+    if meta.get("arrivedMidTurn").and_then(|v| v.as_bool()) != Some(true) {
+        return None;
+    }
+    Some(meta.get("via").and_then(|v| v.as_str()).unwrap_or("chat").to_string())
+}
+
+/// True while the owner's latest mid-turn message has no worded reply after
+/// it. An assistant row that only calls tools (narration or not) is not a
+/// reply; the model is still on its old plan.
+pub(crate) fn unanswered_mid_turn_message(messages: &[ChatMessage]) -> bool {
+    let Some(at) = messages.iter().rposition(|m| m.role == "user" && arrived_mid_turn(m).is_some()) else {
+        return false;
+    };
+    !messages[at + 1..].iter().any(|m| {
+        m.role == "assistant"
+            && !m.content.trim().is_empty()
+            && m.tool_calls.as_deref().is_none_or(|tc| tc.is_empty() || tc == "[]" || tc == "null")
+    })
+}
+
+/// How a message the owner typed mid-turn reads to the model. Claude Code's
+/// framing, plus that the owner is waiting and the next step is the reply:
+/// a changed instruction takes effect now, and the interrupted plan is not
+/// continued past it.
+pub(crate) fn frame_mid_turn_message(words: &str, via: &str) -> String {
+    format!(
+        "The owner sent a new message while you were working (via {via}):\n{words}\n\n\
+         IMPORTANT: reply to the owner now, in words, before any further tool use. If this \
+         changes what they want, act on the new instruction and do not continue the interrupted \
+         plan. If they asked you to continue or to add something, say so in one line; the work \
+         resumes at your next step. They are waiting."
+    )
+}
+
 pub(crate) fn convert_messages(messages: &[ChatMessage]) -> Vec<Message> {
     messages
         .iter()
@@ -8129,16 +8235,25 @@ pub(crate) fn convert_messages(messages: &[ChatMessage]) -> Vec<Message> {
                 }
             });
 
-            let images = msg
+            let meta = msg
                 .metadata
                 .as_ref()
-                .and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok())
+                .and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok());
+            let images = meta
+                .as_ref()
                 .and_then(|v| v.get("images").cloned())
                 .and_then(|v| serde_json::from_value::<Vec<ai::ImageContent>>(v).ok());
+            // A message the owner sent while the turn was running is stored as
+            // their words; the model gets it framed: it arrived mid-work and
+            // they are waiting on it.
+            let content = match arrived_mid_turn(msg) {
+                Some(via) => frame_mid_turn_message(&msg.content, &via),
+                None => msg.content.clone(),
+            };
 
             Some(Message {
                 role: msg.role.clone(),
-                content: msg.content.clone(),
+                content,
                 tool_calls,
                 tool_results,
                 images,
@@ -8738,8 +8853,8 @@ mod tests {
     #[test]
     fn one_turn_per_session_and_the_guard_reopens_it() {
         let turns: ActiveTurns = Arc::new(std::sync::Mutex::new(HashMap::new()));
-        let first = admit_turn(&turns, "agent:a:thread:t", progress()).expect("first turn admitted");
-        let second = admit_turn(&turns, "agent:a:thread:t", progress());
+        let first = admit_turn(&turns, "agent:a:thread:t", progress(), CancellationToken::new()).expect("first turn admitted");
+        let second = admit_turn(&turns, "agent:a:thread:t", progress(), CancellationToken::new());
         let status = match second {
             Err(s) => s,
             Ok(_) => panic!("a second turn was admitted on a busy session"),
@@ -8751,10 +8866,10 @@ mod tests {
         let st = active_turn_status(&turns, "agent:a:thread:t").expect("status while busy");
         assert_eq!((st.tool_calls, st.current_tool.as_str()), (3, "os: exec"));
         assert!(active_turn_status(&turns, "agent:a:thread:other").is_none());
-        assert!(admit_turn(&turns, "agent:a:thread:other", progress()).is_ok(), "other sessions are unaffected");
+        assert!(admit_turn(&turns, "agent:a:thread:other", progress(), CancellationToken::new()).is_ok(), "other sessions are unaffected");
         drop(first);
         assert!(!session_is_busy(&turns, "agent:a:thread:t"));
-        assert!(admit_turn(&turns, "agent:a:thread:t", progress()).is_ok(), "released when the guard drops");
+        assert!(admit_turn(&turns, "agent:a:thread:t", progress(), CancellationToken::new()).is_ok(), "released when the guard drops");
     }
 
     /// The engine knows a case turn by its own session; the runner marks
@@ -8766,7 +8881,7 @@ mod tests {
     fn the_live_session_under_a_turn_key_is_its_activity_session() {
         let turns: ActiveTurns = Default::default();
         let activity = "agent:a:workflow:t1:capture::0";
-        let _guard = admit_turn(&turns, activity, progress()).unwrap();
+        let _guard = admit_turn(&turns, activity, progress(), CancellationToken::new()).unwrap();
         assert_eq!(live_session_under(&turns, "agent:a:workflow:t1").as_deref(), Some(activity));
         assert_eq!(live_session_under(&turns, activity).as_deref(), Some(activity), "the key itself");
         assert_eq!(live_session_under(&turns, "agent:a:workflow:t"), None, "a shared prefix is not a session under it");
@@ -9077,6 +9192,44 @@ mod tests {
         assert!(!counts_toward_action_spiral(&a, false, false));
         // Error + redundant: redundant still counts (wander via re-fetch).
         assert!(counts_toward_action_spiral(&a, true, true));
+    }
+
+    /// A mid-turn message is stored as the owner typed it and framed for the
+    /// model only; an ordinary message is passed through untouched.
+    #[test]
+    fn mid_turn_message_is_framed_for_the_model_only() {
+        let row = |content: &str, metadata: Option<&str>| ChatMessage {
+            id: "m".into(),
+            chat_id: "c".into(),
+            role: "user".into(),
+            content: content.into(),
+            metadata: metadata.map(str::to_string),
+            created_at: 0,
+            day_marker: None,
+            tool_calls: None,
+            tool_results: None,
+            token_estimate: None,
+            html: None,
+        };
+        let plain = convert_messages(&[row("stop searching and tell me", None)]);
+        assert_eq!(plain[0].content, "stop searching and tell me");
+        let queued = convert_messages(&[row(
+            "stop searching and tell me",
+            Some(r#"{"arrivedMidTurn":true,"via":"web"}"#),
+        )]);
+        assert!(queued[0].content.starts_with("The owner sent a new message while you were working (via web):\nstop searching and tell me"), "{}", queued[0].content);
+        assert!(queued[0].content.contains("They are waiting"));
+        // Unanswered until a worded reply follows it; a tool-calling row is not one.
+        let mid = row("stop reading", Some(r#"{"arrivedMidTurn":true,"via":"web"}"#));
+        let mut narrating = row("Reading part 3.", None);
+        narrating.role = "assistant".into();
+        narrating.tool_calls = Some(r#"[{"id":"c1","name":"os","input":{}}]"#.into());
+        let mut reply = row("So far: Northwind, March.", None);
+        reply.role = "assistant".into();
+        assert!(unanswered_mid_turn_message(&[mid.clone()]));
+        assert!(unanswered_mid_turn_message(&[mid.clone(), narrating.clone()]));
+        assert!(!unanswered_mid_turn_message(&[mid.clone(), narrating, reply]));
+        assert!(!unanswered_mid_turn_message(&[row("hello", None)]));
     }
 
     #[test]

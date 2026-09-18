@@ -112,6 +112,7 @@ pub fn fixture_from_run(
         proof: None,
         setup: Vec::new(),
         teardown: Vec::new(),
+        interrupts: Vec::new(),
         conversation,
         tool_config: Default::default(),
         prompt_assertions: PromptAssertions {

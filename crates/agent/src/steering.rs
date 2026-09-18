@@ -450,68 +450,11 @@ fn count_turns_since_any_tool_use(messages: &[ChatMessage]) -> i32 {
     -1 // never used tools
 }
 
-/// Detect if recent user messages contain stop/cancel/abort requests.
-fn user_requested_stop(messages: &[ChatMessage]) -> bool {
-    // Exact stop commands — the ENTIRE message (trimmed) must match one of these.
-    // This prevents false positives like "stop submitting the form" or
-    // "and stop doing that" which are instructions, not stop commands.
-    let exact_commands = [
-        "stop",
-        "stop.",
-        "stop!",
-        "stop it",
-        "stop it.",
-        "stop now",
-        "cancel",
-        "abort",
-        "halt",
-        "quit",
-        "enough",
-        "enough.",
-        "that's enough",
-        "break out",
-        "stop stop",
-        "please stop",
-        "just stop",
-        "ok stop",
-    ];
-    // Check last 3 user messages
-    let recent_user: Vec<&ChatMessage> = messages
-        .iter()
-        .rev()
-        .filter(|m| m.role == "user" && !m.content.starts_with("<system>"))
-        .take(3)
-        .collect();
-
-    for msg in &recent_user {
-        let lower = msg.content.to_lowercase();
-        let trimmed = lower.trim();
-        // Only match if the entire message is a stop command (< 30 chars)
-        if trimmed.len() < 30 {
-            for p in &exact_commands {
-                if trimmed == *p {
-                    return true;
-                }
-            }
-        }
-    }
-    false
-}
-
-/// Check if the loop should be force-broken. Called by the runner BEFORE
-/// making the next LLM call. Returns Some(reason) if the loop must stop.
-pub fn should_force_break(messages: &[ChatMessage], iteration: usize) -> Option<String> {
-    // Only hard-stop on explicit user stop command.
-    // Everything else is handled by the iteration budget (100 iterations).
-    // Budget-only pacing (~90-100 iterations, no error/loop tracking) is proven in production.
-    // The model is smart enough to self-correct — aggressive circuit breakers
-    // kill legitimate browser automation (Google Flights, Amazon, etc.).
-    if user_requested_stop(messages) && iteration > 2 {
-        return Some("Circuit breaker: user requested stop. Halting agent loop.".to_string());
-    }
-
-    None
-}
+// A stop is never a phrase. The owner's Esc / stop button cancels the run's
+// token, which ends the stream and the tools and records the interrupt
+// (runner::record_interrupt). Two phrase lists lived here until 2026-09-18:
+// an exact-match stop list that "stop searching and tell me" was not on, and
+// a substring "keep going" list. The model reads the owner's words itself.
 
 // R7/R8: the behavioral steering Generators are gone. ChannelAdapter/ChannelPluginRouting/
 // LoopFileSharing → static prompt (`prompt::channel_guidance`); IdentityGuard, plugin
@@ -732,7 +675,7 @@ impl Reminder for RepetitionDetector {
 // (legitimate browser work) from web(search, "flights") × 5 (actual loop).
 // LoopDetector was split in R6. Its budget warnings → BudgetWarning; its duplicate-
 // tool detection → DuplicateToolCall. Its soft "user asked to STOP" directive was
-// dropped — should_force_break already hard-stops on user-stop (the authoritative path).
+// dropped — a stop is the cancel path (Esc / stop button), never a phrase.
 
 /// BudgetWarning — iteration-budget pressure (70%/90% thresholds).
 struct BudgetWarning;
@@ -2203,43 +2146,6 @@ mod tests {
         assert_eq!(lines.len(), 1);
         assert!(lines[0].contains("3 urgent emails"));
         assert!(format_proactive_items(&[]).is_empty());
-    }
-
-    #[test]
-    fn test_user_stop_forces_break_without_errors() {
-        let messages = vec![
-            make_msg("user", "search for emails"),
-            make_msg("assistant", "I'll search for emails."),
-            make_msg("user", "stop"),
-        ];
-        let result = should_force_break(&messages, 3);
-        assert!(
-            result.is_some(),
-            "user stop should force break even with zero errors"
-        );
-        assert!(result.unwrap().contains("user requested stop"));
-    }
-
-    #[test]
-    fn test_user_stop_no_break_at_iteration_2() {
-        let messages = vec![make_msg("user", "stop"), make_msg("assistant", "ok")];
-        assert!(
-            should_force_break(&messages, 2).is_none(),
-            "should NOT break at iteration 2"
-        );
-    }
-
-    #[test]
-    fn test_no_hard_stop_without_user_stop() {
-        // Only an explicit user stop forces a break — errors/loops never do (budget only).
-        let messages = vec![
-            make_msg("user", "keep researching"),
-            make_msg("assistant", "working on it"),
-        ];
-        assert!(
-            should_force_break(&messages, 10).is_none(),
-            "should NOT break without an explicit user stop"
-        );
     }
 
     fn rctx_errors(consecutive_error_iterations: usize) -> ReminderContext<'static> {
