@@ -2298,6 +2298,25 @@ impl DynTool for WebTool {
         true
     }
 
+    fn execution_timeout(&self, input: &serde_json::Value) -> Option<std::time::Duration> {
+        // A search chains engines with per-hop timeouts and a 40 s follower
+        // wait; a fetch has its own 20–30 s client timeouts. Neither belongs
+        // on the runner's 300 s default: a call that long is a hang, not
+        // work, and one kept a turn busy for two minutes while the owner
+        // typed "stop" (2026-09-18). Browser actions keep the default.
+        let resource = input.get("resource").and_then(|v| v.as_str()).unwrap_or("");
+        let resource = if resource.is_empty() {
+            self.infer_resource(input.get("action").and_then(|v| v.as_str()).unwrap_or(""))
+        } else {
+            resource
+        };
+        match resource {
+            "search" => Some(std::time::Duration::from_secs(45)),
+            "http" => Some(std::time::Duration::from_secs(60)),
+            _ => None,
+        }
+    }
+
     fn execute_dyn<'a>(
         &'a self,
         ctx: &'a ToolContext,

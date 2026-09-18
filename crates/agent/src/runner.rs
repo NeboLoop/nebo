@@ -1557,15 +1557,19 @@ impl Runner {
                 if let Some(g) = admitted {
                     g
                 } else {
-                // The owner's words reach the running turn as its next message,
-                // framed so the model knows they arrived mid-work. Untrusted
-                // caller framing (phone lines) rides along.
-                let queued = format!(
-                    "[Arrived while you were working, via {}] {}",
-                    if req.channel.is_empty() { "chat" } else { req.channel.as_str() },
-                    req.prompt
-                );
-                if let Err(e) = self.sessions.append_message(&session_id, "user", &queued, None, None, None) {
+                // The owner's words reach the running turn as its next message.
+                // They are stored as typed (the chat shows them clean) and
+                // marked as having arrived mid-work; the framing the model
+                // needs is added when the window is built (`convert_messages`),
+                // the way Claude Code keeps the transcript clean and frames the
+                // queued message for the model only. Untrusted caller framing
+                // (phone lines) rides along in the briefing below.
+                let meta = serde_json::json!({
+                    "arrivedMidTurn": true,
+                    "via": if req.channel.is_empty() { "chat" } else { req.channel.as_str() },
+                })
+                .to_string();
+                if let Err(e) = self.sessions.append_message(&session_id, "user", &req.prompt, None, None, Some(&meta)) {
                     warn!(session_id = %session_id, error = %e, "could not queue a message into the running turn");
                 }
                 // The briefing (team roster, turn rule) is for the model, never
@@ -4583,7 +4587,35 @@ async fn run_loop(
         // ("use os(...)"), the first response must be a tool call: weak models
         // otherwise echo the syntax back as text. First iteration only — the
         // model needs Auto afterwards to write its final report.
-        let forced_choice = if iteration == 1 {
+        // The owner spoke while the turn ran: the step right after is a reply
+        // to them, in words — never another tool call. The framed message asks
+        // for that; this makes it so whatever the model's momentum (nebo-1
+        // read two more files past "stop reading and tell me" in one of two
+        // runs before this). If they said "keep going", the reply is one line
+        // and the work resumes at the next step.
+        //
+        // The message can land between this step's history load and now (it
+        // did, in the same second as a tool result): re-read the tail, and if
+        // the owner spoke, start the step over with their words in it.
+        if let Ok(fresh) = sessions.get_messages(session_id) {
+            let last_seen = all_messages.last().map(|m| m.id.clone());
+            let landed = fresh
+                .iter()
+                .rev()
+                .take_while(|m| last_seen.as_deref() != Some(m.id.as_str()))
+                .any(|m| m.role == "user" && arrived_mid_turn(m).is_some());
+            if landed {
+                info!(session_id, iteration, "owner spoke mid-turn: restarting the step with their message");
+                continue;
+            }
+        }
+        let owner_spoke_mid_turn = unanswered_mid_turn_message(&window_messages);
+        if owner_spoke_mid_turn {
+            info!(session_id, iteration, "owner spoke mid-turn: this step is a reply in words");
+        }
+        let forced_choice = if owner_spoke_mid_turn {
+            Some(ai::ToolChoice::None)
+        } else if iteration == 1 {
             ai_messages
                 .iter()
                 .rev()
@@ -8137,6 +8169,44 @@ fn named_tool_invocation(
         .then(|| ai::ToolChoice::Tool(name))
 }
 
+/// The channel a message the owner typed mid-turn arrived on, if it is one
+/// (metadata `arrivedMidTurn` / `via`, written by the queue path in `run`).
+pub(crate) fn arrived_mid_turn(msg: &ChatMessage) -> Option<String> {
+    let meta: serde_json::Value = serde_json::from_str(msg.metadata.as_deref()?).ok()?;
+    if meta.get("arrivedMidTurn").and_then(|v| v.as_bool()) != Some(true) {
+        return None;
+    }
+    Some(meta.get("via").and_then(|v| v.as_str()).unwrap_or("chat").to_string())
+}
+
+/// True while the owner's latest mid-turn message has no worded reply after
+/// it. An assistant row that only calls tools (narration or not) is not a
+/// reply; the model is still on its old plan.
+pub(crate) fn unanswered_mid_turn_message(messages: &[ChatMessage]) -> bool {
+    let Some(at) = messages.iter().rposition(|m| m.role == "user" && arrived_mid_turn(m).is_some()) else {
+        return false;
+    };
+    !messages[at + 1..].iter().any(|m| {
+        m.role == "assistant"
+            && !m.content.trim().is_empty()
+            && m.tool_calls.as_deref().is_none_or(|tc| tc.is_empty() || tc == "[]" || tc == "null")
+    })
+}
+
+/// How a message the owner typed mid-turn reads to the model. Claude Code's
+/// framing, plus that the owner is waiting and the next step is the reply:
+/// a changed instruction takes effect now, and the interrupted plan is not
+/// continued past it.
+pub(crate) fn frame_mid_turn_message(words: &str, via: &str) -> String {
+    format!(
+        "The owner sent a new message while you were working (via {via}):\n{words}\n\n\
+         IMPORTANT: reply to the owner now, in words, before any further tool use. If this \
+         changes what they want, act on the new instruction and do not continue the interrupted \
+         plan. If they asked you to continue or to add something, say so in one line; the work \
+         resumes at your next step. They are waiting."
+    )
+}
+
 pub(crate) fn convert_messages(messages: &[ChatMessage]) -> Vec<Message> {
     messages
         .iter()
@@ -8165,16 +8235,25 @@ pub(crate) fn convert_messages(messages: &[ChatMessage]) -> Vec<Message> {
                 }
             });
 
-            let images = msg
+            let meta = msg
                 .metadata
                 .as_ref()
-                .and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok())
+                .and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok());
+            let images = meta
+                .as_ref()
                 .and_then(|v| v.get("images").cloned())
                 .and_then(|v| serde_json::from_value::<Vec<ai::ImageContent>>(v).ok());
+            // A message the owner sent while the turn was running is stored as
+            // their words; the model gets it framed: it arrived mid-work and
+            // they are waiting on it.
+            let content = match arrived_mid_turn(msg) {
+                Some(via) => frame_mid_turn_message(&msg.content, &via),
+                None => msg.content.clone(),
+            };
 
             Some(Message {
                 role: msg.role.clone(),
-                content: msg.content.clone(),
+                content,
                 tool_calls,
                 tool_results,
                 images,
@@ -9113,6 +9192,44 @@ mod tests {
         assert!(!counts_toward_action_spiral(&a, false, false));
         // Error + redundant: redundant still counts (wander via re-fetch).
         assert!(counts_toward_action_spiral(&a, true, true));
+    }
+
+    /// A mid-turn message is stored as the owner typed it and framed for the
+    /// model only; an ordinary message is passed through untouched.
+    #[test]
+    fn mid_turn_message_is_framed_for_the_model_only() {
+        let row = |content: &str, metadata: Option<&str>| ChatMessage {
+            id: "m".into(),
+            chat_id: "c".into(),
+            role: "user".into(),
+            content: content.into(),
+            metadata: metadata.map(str::to_string),
+            created_at: 0,
+            day_marker: None,
+            tool_calls: None,
+            tool_results: None,
+            token_estimate: None,
+            html: None,
+        };
+        let plain = convert_messages(&[row("stop searching and tell me", None)]);
+        assert_eq!(plain[0].content, "stop searching and tell me");
+        let queued = convert_messages(&[row(
+            "stop searching and tell me",
+            Some(r#"{"arrivedMidTurn":true,"via":"web"}"#),
+        )]);
+        assert!(queued[0].content.starts_with("The owner sent a new message while you were working (via web):\nstop searching and tell me"), "{}", queued[0].content);
+        assert!(queued[0].content.contains("They are waiting"));
+        // Unanswered until a worded reply follows it; a tool-calling row is not one.
+        let mid = row("stop reading", Some(r#"{"arrivedMidTurn":true,"via":"web"}"#));
+        let mut narrating = row("Reading part 3.", None);
+        narrating.role = "assistant".into();
+        narrating.tool_calls = Some(r#"[{"id":"c1","name":"os","input":{}}]"#.into());
+        let mut reply = row("So far: Northwind, March.", None);
+        reply.role = "assistant".into();
+        assert!(unanswered_mid_turn_message(&[mid.clone()]));
+        assert!(unanswered_mid_turn_message(&[mid.clone(), narrating.clone()]));
+        assert!(!unanswered_mid_turn_message(&[mid.clone(), narrating, reply]));
+        assert!(!unanswered_mid_turn_message(&[row("hello", None)]));
     }
 
     #[test]

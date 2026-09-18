@@ -345,11 +345,28 @@ async fn run_single(
                                 total_cache_creation += n as usize;
                             }
                         }
-                        Some("chat_complete") => break,
-                        // The stop landed: the turn is over, whatever it was doing.
+                        Some("chat_complete") => {
+                            // A message typed mid-turn gets its own short stream
+                            // that ends at once with the typed "queued" stop;
+                            // the real turn is still running.
+                            if event["data"]["stop_reason"].as_str() == Some("queued_into_running_turn") {
+                                continue;
+                            }
+                            break;
+                        }
+                        // The stop landed. The cancelled turn still closes with
+                        // its own chat_complete a moment later; wait for it, or
+                        // it ends the NEXT turn's collection instead.
                         Some("chat_cancelled") => {
                             info!(fixture = %fixture.id, run = %run_id, "run cancelled by the fixture's interrupt");
-                            break;
+                            continue;
+                        }
+                        Some("chat_error")
+                            if event["data"]["stop_reason"].as_str() == Some("queued_into_running_turn") =>
+                        {
+                            // The queued message's status line ("still on the
+                            // last thing…"): the real turn is still running.
+                            continue;
                         }
                         Some("chat_error") => {
                             // A run the server stopped (a spiral guard, a
