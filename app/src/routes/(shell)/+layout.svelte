@@ -789,18 +789,16 @@
     return agentStatuses[id] ?? 'paused';
   }
 
+  // One list, one order: the primary employee first, then everyone else by
+  // name. An app is an employee like any other here (the row's badge says
+  // it is an app); it is not parked in its own group at the end.
   const sortedAgents = $derived.by(() => {
-    const primary = allAgents.filter(a => a.id === 'assistant' && !a.isApp);
-    const rest = allAgents.filter(a => a.id !== 'assistant' && !a.isApp).sort((a, b) => a.name.localeCompare(b.name));
+    const primary = allAgents.filter(a => a.id === 'assistant');
+    const rest = allAgents.filter(a => a.id !== 'assistant').sort((a, b) => a.name.localeCompare(b.name));
     return [...primary, ...rest];
   });
 
-  const sortedAppAgents = $derived.by(() => {
-    return allAgents.filter(a => a.isApp).sort((a, b) => a.name.localeCompare(b.name));
-  });
-
-  // One list: employees, then apps.
-  const listedAgents = $derived([...sortedAgents, ...sortedAppAgents]);
+  const listedAgents = $derived(sortedAgents);
 
   const agentId = $derived($page.params.agentId ?? '');
   // Whose runs the runs sheet shows: the page's employee, or on the
@@ -1508,7 +1506,7 @@
       >
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="8" height="8" rx="2"/><rect x="13" y="3" width="8" height="5" rx="2"/><rect x="13" y="10" width="8" height="11" rx="2"/><rect x="3" y="13" width="8" height="8" rx="2"/></svg>
       </button>
-      {#each sortedAgents.concat(sortedAppAgents) as a (a.id)}
+      {#each sortedAgents as a (a.id)}
         {@const st = agentStatus(a.id)}
         {@const ac = AGENT_COLORS_MAP[a.color] ?? AGENT_COLORS_MAP['teal']}
         {@const busy = working[a.id] !== undefined}
