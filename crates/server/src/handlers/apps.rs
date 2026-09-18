@@ -530,10 +530,22 @@ pub async fn proxy_to_sidecar(
         None => return (StatusCode::SERVICE_UNAVAILABLE, "app has no sidecar path").into_response(),
     };
 
-    // Auto-launch sidecar on first request (like plugins do on-demand)
+    // Auto-launch sidecar on first request (like plugins do on-demand).
+    //
+    // The socket is the only proof a sidecar is serving; a lifecycle entry is
+    // not. A sidecar killed out from under us (signal, OOM, a stray pkill)
+    // leaves its entry behind, and keying the launch off the map alone wedged
+    // the app on every later request until nebo restarted. Retire the dead
+    // entry here instead, so the next request brings the app back.
     if !sock_path.exists() {
         let mut lifecycles = state.app_lifecycles.write().await;
-        if !lifecycles.contains_key(&agent_id) {
+        // Re-check under the lock: a request that raced us may have just
+        // launched it, and relaunching now would kill a healthy sidecar.
+        if !sock_path.exists() {
+            if let Some(mut stale) = lifecycles.remove(&agent_id) {
+                warn!(agent = %agent_id, "sidecar socket is gone — retiring dead lifecycle and relaunching");
+                let _ = stale.shutdown().await;
+            }
             if let Some(tool_dir) = super::agents::app_tool_dir(&agent) {
                 let mut lifecycle = crate::app_lifecycle::AppLifecycle::new(
                     agent_id.clone(),
