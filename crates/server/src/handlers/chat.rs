@@ -218,7 +218,9 @@ pub fn build_message_metadata(messages: &mut Vec<db::models::ChatMessage>) {
     // never read the rows at all and the desktop shows a scrollable box.
     // Each result keeps its id, outcome, duration and status, and the first
     // few thousand characters of content, and says how much it left out.
-    const RESULT_PREVIEW_CHARS: usize = 4000;
+    // 1,000 characters: enough to read what came back, and the list is no
+    // longer paced by the tool rows (they were still half of a 183 KB page).
+    const RESULT_PREVIEW_CHARS: usize = 1000;
     let mut tool_statuses: HashMap<String, bool> = HashMap::new();
     for msg in messages.iter_mut() {
         if msg.role != "tool" {
