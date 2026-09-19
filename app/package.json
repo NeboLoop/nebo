@@ -29,7 +29,7 @@
     "tsx": "^4.21.0",
     "typescript": "^6.0.3",
     "vite": "^8.2.2",
-    "vitest": "^4.1.8"
+    "vitest": "^4.1.11"
   },
   "dependencies": {
     "@dagrejs/dagre": "^3.0.0",
