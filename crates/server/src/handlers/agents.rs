@@ -4616,6 +4616,12 @@ pub async fn get_workflow_approval_status(
 #[derive(serde::Deserialize)]
 pub struct LearningResolveBody {
     pub approved: bool,
+    /// The owner's edited proposal, when they changed it before approving.
+    /// Replaces the staged content; the conflict check is on the TARGET
+    /// (the file or binding on disk at stage time), never on the proposal,
+    /// so an edit applies cleanly while a target that moved still conflicts.
+    #[serde(default)]
+    pub content: Option<String>,
 }
 
 /// GET /api/v1/agents/learnings/{id} — a staged self-improvement write for
@@ -4700,11 +4706,11 @@ pub async fn resolve_learning(
                 "message": "The workflow changed after this was proposed; the proposal was discarded rather than overwriting it."
             })));
         }
-        let binding_val: serde_json::Value = row
-            .content
-            .as_deref()
+        let proposal = body.content.as_deref().or(row.content.as_deref());
+        let binding_val: serde_json::Value = proposal
             .and_then(|c| serde_json::from_str(c).ok())
-            .ok_or_else(|| to_error_response(types::NeboError::Internal("proposal content unparseable".into())))?;
+            .ok_or_else(|| to_error_response(types::NeboError::Validation(
+                "The proposed workflow is not valid JSON, so it cannot be applied.".into())))?;
         crate::workflow_manager::apply_workflow_binding(&state.store, &row.agent_id, &row.target, &binding_val)
             .map_err(|e| to_error_response(types::NeboError::Internal(format!("apply failed: {}", e))))?;
         restart_agent_worker_if_active(&state, &row.agent_id).await;
@@ -4770,7 +4776,7 @@ pub async fn resolve_learning(
         ..Default::default()
     };
     let mut input = serde_json::json!({ "action": row.action, "name": row.target });
-    if let Some(ref content) = row.content {
+    if let Some(content) = body.content.as_deref().or(row.content.as_deref()) {
         input["content"] = serde_json::json!(content);
     }
     let result = state.tools.execute(&ctx, "skill", input).await;
