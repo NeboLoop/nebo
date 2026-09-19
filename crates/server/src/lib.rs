@@ -5926,19 +5926,10 @@ async fn process_comm_attachments(
             }
         };
 
-        // The normalization gate: any decodable image — regardless of size or
-        // format — is resized and re-encoded to a canonical provider-friendly
-        // form. Only genuinely non-image bytes fall through to disk.
-        if let Some((media_type, data)) = ai::image_norm::normalize_for_llm(&bytes) {
-            images.push(ai::ImageContent { media_type, data });
-            continue;
-        }
-
-        // Everything else — documents, audio, video, oversized or mislabelled
-        // images — lands on disk and the agent gets the LOCAL PATH. A bare
-        // "[Attached: name]" gives it nothing to operate on, and the loop URL
-        // needs auth its tools don't have.
-        let saved = match local {
+        // Every attachment keeps a copy on disk and the agent gets the LOCAL
+        // PATH. A bare "[Attached: name]" gives it nothing to operate on, and
+        // the loop URL needs auth its tools don't have.
+        let saved = match &local {
             Some(path) => Some(path.to_string_lossy().to_string()),
             None => uploads_dir().and_then(|dir| {
                 let path = dir.join(upload_file_name(&att.file_id, &att.filename));
@@ -5946,6 +5937,23 @@ async fn process_comm_attachments(
                 Some(path.to_string_lossy().to_string())
             }),
         };
+
+        // The normalization gate: any decodable image — regardless of size or
+        // format — is resized and re-encoded to a canonical provider-friendly
+        // form. The model sees the pixels AND is told the file, so a tool that
+        // needs the bytes themselves (a photo going onto a postcard) can reach
+        // them; before this note a photo in chat could be looked at but never
+        // used. Only genuinely non-image bytes fall through to the branches below.
+        if let Some((media_type, data)) = ai::image_norm::normalize_for_llm(&bytes) {
+            images.push(ai::ImageContent { media_type, data });
+            if let Some(path) = &saved {
+                prompt.push_str(&format!(
+                    "\n[Attached image: {} ({}) — saved at {}]",
+                    att.filename, size_label, path
+                ));
+            }
+            continue;
+        }
 
         // Audio is inert to every provider we ship, so it becomes text here or
         // it never reaches the model at all.

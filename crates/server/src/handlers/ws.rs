@@ -1019,7 +1019,9 @@ fn extract_images_from_prompt(prompt: &str) -> (String, Vec<ai::ImageContent>) {
         return (prompt.to_string(), images);
     }
 
-    // Remove only the image path tokens, preserving surrounding text and formatting
+    // Lift only the image path tokens out of the text, preserving surrounding
+    // text and formatting; the paths come back as notes at the end so the
+    // model has the file as well as the pixels.
     let mut cleaned = prompt.to_string();
     for path in &image_paths {
         cleaned = cleaned.replacen(path, "", 1);
@@ -1049,11 +1051,14 @@ fn extract_images_from_prompt(prompt: &str) -> (String, Vec<ai::ImageContent>) {
     let cleaned = cleaned.trim().to_string();
 
     // If the entire prompt was just image paths, add a generic prompt
-    let cleaned = if cleaned.is_empty() && !images.is_empty() {
+    let mut cleaned = if cleaned.is_empty() && !images.is_empty() {
         "What's in this image?".to_string()
     } else {
         cleaned
     };
+    for path in &image_paths {
+        cleaned.push_str(&format!("\n[Attached image: {path}]"));
+    }
 
     (cleaned, images)
 }
@@ -2333,6 +2338,27 @@ mod prompt_image_extraction_tests {
         let (cleaned, images) = extract_images_from_prompt(&prompt);
         assert!(images.is_empty());
         assert_eq!(cleaned, prompt);
+    }
+
+    /// A real image is lifted into vision content AND left named in the prompt:
+    /// the model sees the picture and knows the file, so a tool that needs the
+    /// bytes (a photo onto a postcard) has a path to hand over.
+    #[test]
+    fn a_real_image_is_extracted_and_its_path_stays_named() {
+        use base64::Engine;
+        let dir = tempfile::tempdir().unwrap();
+        let png = dir.path().join("job.png");
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode("iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAIAAAAmkwkpAAAAEElEQVR4nGM4YWMDRwzEcQAREhQBbrqBkwAAAABJRU5ErkJggg==")
+            .unwrap();
+        std::fs::write(&png, bytes).unwrap();
+        let prompt = format!("put this on the card {}", png.display());
+        let (cleaned, images) = extract_images_from_prompt(&prompt);
+        assert_eq!(images.len(), 1);
+        assert_eq!(cleaned, format!("put this on the card\n[Attached image: {}]", png.display()));
+        let (only, images) = extract_images_from_prompt(&png.display().to_string());
+        assert_eq!(images.len(), 1);
+        assert_eq!(only, format!("What's in this image?\n[Attached image: {}]", png.display()));
     }
 
     /// Existing non-image files (wrong extension) are never treated as images.
