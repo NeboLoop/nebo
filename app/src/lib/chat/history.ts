@@ -2,7 +2,7 @@
 // shapes the live controller builds, so a reloaded thread reads like the live
 // one (same bubbles, same tool timeline, same outcome words and durations).
 import { toolDisplayName, artifactsToWorkItems, artifactsToAttachments } from '$lib/chat/controller.svelte';
-import type { ChatMessage } from '$lib/chat/controller.svelte';
+import type { ChatMessage, TeamPost } from '$lib/chat/controller.svelte';
 import { formatTime } from '$lib/time';
 import type { ChatMessage as ApiChatMessage } from '$lib/api/neboComponents';
 
@@ -27,6 +27,10 @@ interface MessageMeta {
   hidden?: boolean;
   /** Run-produced artifact URLs persisted at chat_complete (Work items + inline media). */
   artifacts?: string[];
+  /** A team post relayed into this employee's thread. Stored as `true` next
+   * to the envelope the model read; the list derives {teamId, teamName, from,
+   * text} at read time. Only the derived object is carried onto the bubble. */
+  teamPost?: boolean | TeamPost;
 }
 
 
@@ -86,11 +90,14 @@ export function parseMessages(rawMessages: ApiChatMessage[]): ChatMessage[] {
 
     if (m.role === 'user') {
       open = null;
+      const tp = meta?.teamPost;
+      const teamPost = tp && typeof tp === 'object' && tp.teamName ? tp : null;
       result.push({
         type: 'user' as const,
         id: m.id,
         content: m.content,
         time: formatTime(m.createdAt),
+        ...(teamPost ? { teamPost } : {}),
       });
       continue;
     }

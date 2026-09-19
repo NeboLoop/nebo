@@ -73,8 +73,9 @@
     research?: { kind: string; [k: string]: unknown };
   }
 
+  type TeamPost = { teamId: string; teamName: string; from: string; text: string };
   type Message =
-    | { type: 'user'; content: string; time?: string; attachments?: UploadedAttachment[]; pending?: boolean }
+    | { type: 'user'; content: string; time?: string; attachments?: UploadedAttachment[]; pending?: boolean; teamPost?: TeamPost }
     | { type: 'thinking'; content: string; duration: string }
     | { type: 'ask'; requestId: string; prompt: string; widgets: AskWidgetDef[]; response?: string; cancelled?: boolean }
     | { type: 'assistant'; content: string; time?: string; delegateAgentId?: string; delegateAgentName?: string; id?: string; attachments?: UploadedAttachment[]; tools?: ToolMsg[]; streaming?: boolean };
@@ -1603,9 +1604,21 @@
             </div>
           </div>
         {:else}
-          <div class="max-w-[640px] self-end mt-3" data-user-msg>
-            <div class="py-2.5 px-3.5 rounded-xl text-sm leading-relaxed bg-base-200 rounded-br-sm prose prose-sm max-w-none {msg.pending ? 'italic text-base-content/60' : ''} [&_p]:my-0 [&_ul]:my-1 [&_ol]:my-1 [&>:first-child]:mt-0 [&>:last-child]:mb-0">
-              {#if parseLargeInput(msg.content)}
+          <!-- A post that reached this employee through a team reads the way
+               the team's own thread reads it: who said it and in which team,
+               then the words — never the envelope the model was handed. A
+               teammate's post sits on the left like a reply; the owner's on
+               the right like their other messages. -->
+          {@const tp = msg.teamPost}
+          {@const fromOwner = !tp || tp.from === 'Owner'}
+          <div class="max-w-[640px] mt-3 {fromOwner ? 'self-end' : ''}" data-user-msg>
+            {#if tp}
+              <div class="text-xs font-medium text-base-content/60 mb-1 {fromOwner ? 'text-right' : ''}">{fromOwner ? $t('common.you') : tp.from} · {tp.teamName}</div>
+            {/if}
+            <div class="py-2.5 px-3.5 rounded-xl text-sm leading-relaxed bg-base-200 {fromOwner ? 'rounded-br-sm' : 'rounded-bl-sm'} prose prose-sm max-w-none {msg.pending ? 'italic text-base-content/60' : ''} [&_p]:my-0 [&_ul]:my-1 [&_ol]:my-1 [&>:first-child]:mt-0 [&>:last-child]:mb-0">
+              {#if tp}
+                {@html renderMarkdown(tp.text)}
+              {:else if parseLargeInput(msg.content)}
                 {@const li = parseLargeInput(msg.content)!}
                 <div class="not-prose mb-2 text-xs text-base-content/50">
                   {$t('chat.largeInputNote', { values: { chars: li.chars } })}
@@ -1653,23 +1666,25 @@
                 </div>
               {/if}
             </div>
-            <div class="flex items-center gap-1 justify-end mt-1.5">
+            <div class="flex items-center gap-1 mt-1.5 {fromOwner ? 'justify-end' : ''}">
               {#if msg.pending}
                 <span class="text-xs text-base-content/50 italic mr-1">{$t('chat.pending')}</span>
               {:else if msg.time}
                 <span class="text-xs text-base-content/50 font-mono mr-1">{msg.time}</span>
               {/if}
-              <button
-                class="w-7 h-7 rounded-md grid place-items-center text-base-content/50 hover:text-base-content hover:bg-base-200 cursor-pointer bg-transparent border-none transition-colors"
-                title={$t('chat.editResend')}
-                onclick={() => startEdit(origIdx, msg.content)}
-              >
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-              </button>
+              {#if !tp}
+                <button
+                  class="w-7 h-7 rounded-md grid place-items-center text-base-content/50 hover:text-base-content hover:bg-base-200 cursor-pointer bg-transparent border-none transition-colors"
+                  title={$t('chat.editResend')}
+                  onclick={() => startEdit(origIdx, msg.content)}
+                >
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                </button>
+              {/if}
               <button
                 class="w-7 h-7 rounded-md grid place-items-center {copiedIdx === origIdx ? 'text-success' : 'text-base-content/50 hover:text-base-content hover:bg-base-200'} cursor-pointer bg-transparent border-none transition-colors"
                 title={copiedIdx === origIdx ? $t('chat.copied') : $t('common.copy')}
-                onclick={() => copyMessage(msg.content, origIdx)}
+                onclick={() => copyMessage(tp ? tp.text : msg.content, origIdx)}
               >
                 {#if copiedIdx === origIdx}
                   <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>

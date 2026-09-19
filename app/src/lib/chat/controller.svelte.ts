@@ -77,8 +77,18 @@ export interface ToolUse {
   research?: { kind: string; [k: string]: unknown };
 }
 
+/** A post that reached this employee through a team: who said it and in
+ *  which team, then the words. `from` is "Owner" when the owner posted. The
+ *  row's content is the envelope the model read; never show that. */
+export interface TeamPost {
+  teamId: string;
+  teamName: string;
+  from: string;
+  text: string;
+}
+
 export type ChatMessage =
-  | { type: 'user'; content: string; time?: string; id?: string; attachments?: UploadedAttachment[]; pending?: boolean }
+  | { type: 'user'; content: string; time?: string; id?: string; attachments?: UploadedAttachment[]; pending?: boolean; teamPost?: TeamPost }
   | { type: 'thinking'; content: string; duration: string }
   | { type: 'ask'; requestId: string; prompt: string; widgets: AskWidgetDef[]; response?: string; cancelled?: boolean }
   | { type: 'assistant'; content: string; time?: string; delegateAgentId?: string; delegateAgentName?: string; id?: string; attachments?: UploadedAttachment[]; workItems?: WorkItem[]; tools?: ToolUse[]; streaming?: boolean };
