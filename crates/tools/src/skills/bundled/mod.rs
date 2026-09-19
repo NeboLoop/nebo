@@ -27,6 +27,11 @@ pub const BUNDLED_SKILLS: &[(&str, &str)] = &[
     // Bundled because a fresh Nebo must know the procedure before it has a
     // company: without it the owner would hand-write the markdown folders.
     ("company-layers", include_str!("company-layers.md")),
+    // How an app (an employee with a page) is created, wired to the SDK
+    // global, and iterated on. Bundled because the SDK contract lives
+    // nowhere an employee can read at runtime; without it every app page
+    // is written against a global that does not exist.
+    ("build-an-app", include_str!("build-an-app.md")),
 ];
 
 // ── Bundled Agents ──────────────────────────────────────────────────
@@ -93,6 +98,33 @@ mod bundled_skill_tests {
         // A pack is knowledge: the loader refuses one that carries a skill,
         // and the procedure has to say so before an employee tries it.
         assert!(skill.contains("SKILL.md"), "the skill must say a pack never holds a SKILL.md");
+    }
+
+    /// The app skill loads, fires on the words an owner actually says, and
+    /// names the real SDK global. The served bundle is an IIFE assigned to
+    /// `NeboAppSDK`; a page written against a bare `nebo` global throws, so
+    /// the skill has to spell the global and warn off the wrong one.
+    #[test]
+    fn the_build_an_app_skill_loads_with_its_triggers_and_the_real_global() {
+        let (_, content) = BUNDLED_SKILLS
+            .iter()
+            .find(|(k, _)| *k == "build-an-app")
+            .expect("build-an-app is registered");
+        let skill = super::super::parse_skill_frontmatter(content.as_bytes()).expect("parses");
+        assert_eq!(skill.name, "build-an-app");
+        for trigger in ["make an app", "dashboard", "app interface"] {
+            assert!(
+                skill.triggers.iter().any(|t| t == trigger),
+                "trigger `{trigger}` missing from {:?}",
+                skill.triggers
+            );
+        }
+        assert!(content.contains("NeboAppSDK.nebo.identity.get()"), "the skill shows the real global");
+        assert!(content.contains("/sdk/nebo.global.js"), "the skill loads the served bundle");
+        assert!(
+            content.contains("resource: \"registry\", action: \"delete\""),
+            "the skill sends deletion through the registry door, not the folder"
+        );
     }
 }
 

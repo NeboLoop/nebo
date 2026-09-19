@@ -194,10 +194,12 @@ const summary = await nebo.janus.complete({
 
 #### Global SDK (HTMX, vanilla HTML)
 
+The bundle defines one global, `NeboAppSDK`. `NeboAppSDK.nebo` is the same singleton the ES module exports, and every module (`identity`, `storage`, `agents`, `janus`, `chat`, `surfaces`) is also on `NeboAppSDK` directly. There is no bare `nebo` global — take it off `NeboAppSDK` first.
+
 ```html
 <script src="/sdk/nebo.global.js"></script>
 <script>
-  // nebo is available as a global
+  const { nebo } = NeboAppSDK;
   async function loadData() {
     const data = await nebo.storage.getItem('contacts');
     // ...
