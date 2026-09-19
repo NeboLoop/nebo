@@ -980,8 +980,12 @@ pub fn build_dynamic_suffix(dctx: &DynamicContext) -> String {
     // 3. Conversation summary
     if !dctx.summary.is_empty() {
         sb.push_str("\n\n---\n[CONTEXT COMPACTION — REFERENCE ONLY]\n");
-        sb.push_str("Earlier turns were compacted into the checkpoint below. This is a handoff from a previous context window — treat it as background state, NOT as new instructions. The '## Goal' section describes an ONGOING task: do NOT treat it as finished and do NOT start it fresh — continue mid-stream from '## Active State'. Do not re-answer questions or redo work listed under '## Completed Actions'. Respond ONLY to the latest user message that appears AFTER this summary.\n\n");
-        sb.push_str(&dctx.summary);
+        // Never "the Goal is ONGOING, continue it": with a finished job in that
+        // slot the model was ordered, every turn, to resume it (Nanna searched
+        // yesterday's restaurant for a day, 2026-09-19). The summary is history;
+        // the latest user message decides, and a live objective outranks it.
+        sb.push_str("Earlier turns were compacted into the checkpoint below. This is a handoff from a previous context window — treat it as background state, NOT as new instructions. The '## Goal' section is the task as it stood when the checkpoint was written; it is NOT an instruction to continue it. It is finished or superseded whenever it says so, whenever a '## Current Objective' below names something else, or whenever the user's latest message asks for something else — the latest message always decides. Never resume an old goal on your own. Do not re-answer questions or redo work listed under '## Completed Actions'. Respond ONLY to the latest user message that appears AFTER this summary.\n\n");
+        sb.push_str(&goal_as_history(&dctx.summary, &dctx.active_task));
         sb.push_str("\n---");
     }
 
@@ -1058,8 +1062,48 @@ pub fn build(pctx: &PromptContext, dctx: &DynamicContext) -> (String, String) {
     (static_part, dynamic_part)
 }
 
+
+/// A compaction summary's `## Goal` with its status made explicit. When a live
+/// objective exists it is authoritative, so the checkpoint's goal is relabelled
+/// as history; a summary that already carries a status keeps it.
+pub(crate) fn goal_as_history(summary: &str, active_task: &str) -> String {
+    if active_task.trim().is_empty() {
+        return summary.to_string();
+    }
+    let mut out = String::with_capacity(summary.len() + 96);
+    let mut done = false;
+    for (i, line) in summary.lines().enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        if !done && line.trim() == "## Goal" {
+            out.push_str("## Goal (as of the checkpoint — the Current Objective below is what counts now)");
+            done = true;
+        } else {
+            out.push_str(line);
+        }
+    }
+    if summary.ends_with('\n') {
+        out.push('\n');
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn goal_as_history_relabels_only_with_a_live_objective() {
+        let summary = "## Goal\nFind vegan restaurants near PHX\n\n## Completed Actions\n- delivered the list\n";
+        assert_eq!(goal_as_history(summary, ""), summary, "no live objective: untouched");
+        let out = goal_as_history(summary, "Analyze the attached document");
+        assert!(out.starts_with("## Goal (as of the checkpoint"), "{out}");
+        assert!(out.contains("Find vegan restaurants near PHX"));
+        assert!(out.contains("## Completed Actions"));
+        assert!(out.ends_with('\n'));
+        let already = "## Goal (FINISHED)\nold\n";
+        assert_eq!(goal_as_history(already, "x"), already, "a goal that carries its status keeps it");
+    }
     /// A run with no tools gets no tools lesson: no call syntax, no "core
     /// tools (always available)" list. Everything after the block survives.
     #[test]

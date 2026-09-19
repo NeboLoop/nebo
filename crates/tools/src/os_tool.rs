@@ -418,7 +418,7 @@ impl OsTool {
             // Shell
             "exec" | "poll" | "log" => "shell",
             // Input
-            "click" | "type" | "press" | "move" | "double_click" | "right_click" | "hotkey"
+            "click" | "tap" | "type" | "press" | "move" | "double_click" | "right_click" | "hotkey"
             | "scroll" | "drag" | "paste" => "input",
             // Capture ("capture" is what the desktop straps call a screenshot)
             "screenshot" | "see" | "capture" => "capture",

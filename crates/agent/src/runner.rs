@@ -291,6 +291,15 @@ fn record_interrupt(sessions: &SessionManager, session_id: &str) {
 /// ends only the TURN (honest ControlNotice, resumable) — never the session.
 const IDENTICAL_CALL_ABORT: usize = 16;
 
+/// The same ceiling for a call that only LOOKS: a search, a page read, a file
+/// read, a screenshot. Those return the same thing every time (the web tool
+/// even serves them from cache), so the third identical look is never work —
+/// it is the loop. 16 was tuned for `docker compose logs`, which legitimately
+/// changes between calls; the registry's concurrency-safety verdict is the
+/// tool's own declaration that a call does not change anything (Nanna,
+/// 2026-09-19: one search repeated 15 times in a turn, twice more the next).
+const IDENTICAL_READONLY_CALL_ABORT: usize = 3;
+
 /// Evicted messages that must accumulate before another background LLM
 /// compaction is spawned for a session.
 ///
@@ -2778,6 +2787,13 @@ async fn run_loop(
     let mut pending_stream_reminders: Vec<String> = Vec::new();
     // The owner's spending limit escalates once: wrap-up turn, then stop.
     let mut spend_cap_wrap_up_issued = false;
+    // The runaway backstop escalates the same way: the repeated call is
+    // refused and the next turn is a tool-less wrap-up ("answer with what you
+    // have"); only a repeat after that ends the turn. Ending it on the first
+    // trip left the user a red "Stopped:" banner and no reply (Nanna,
+    // 2026-09-19). Rule 12: never a silent kill.
+    let mut runaway_wrap_up: Option<String> = None;
+    let mut runaway_wrap_up_issued = false;
     // Temporal grounding (the harness pattern): every turn's first call
     // carries WHEN the message arrived, then the marker vanishes. The model
     // resolves "today/tomorrow/in an hour" against the message, not against
@@ -4419,6 +4435,23 @@ async fn run_loop(
             }
         }
 
+        // A new turn on a session with earlier tool-heavy turns: the model
+        // otherwise picks up the previous job's momentum (a pile of search
+        // results and its own "on it, I'll let you know") and keeps going down
+        // that path instead of answering what was just asked. Claude Code has
+        // no such reminder because its transcript is compacted and its model
+        // strong; here the first iteration says it outright. Ephemeral.
+        if iteration == 1 {
+            if let Some(text) = steering::latest_message_reminder(&all_messages) {
+                info!(session_id, "steering: latest-message-is-the-task reminder injected");
+                reminder_msgs.push(Message {
+                    role: "user".to_string(),
+                    content: steering::wrap_system_reminder(&text),
+                    ..Default::default()
+                });
+            }
+        }
+
         // On external channels (NeboLoop/Slack/…) a weak model sometimes opens by
         // claiming it "isn't connected" and offering to simulate — it has its full
         // toolset, it just doesn't believe it. Ground it on the first iteration with
@@ -4656,6 +4689,17 @@ async fn run_loop(
                     }
                 }
             }
+        }
+
+        // The runaway backstop's wrap-up turn (see runaway_wrap_up): no tools,
+        // one reminder, the model answers.
+        if let Some(text) = runaway_wrap_up.take() {
+            wrap_up_turn = true;
+            ai_messages.push(Message {
+                role: "user".to_string(),
+                content: steering::wrap_system_reminder(&text),
+                ..Default::default()
+            });
         }
 
         // Build ChatRequest
@@ -5369,6 +5413,35 @@ async fn run_loop(
             }
         }
 
+        // A wrap-up turn offered no tools. A tool call that comes back anyway
+        // (some providers still emit one) is dropped here, before persistence,
+        // so it is neither saved nor executed. No text with it = the model
+        // answered nothing; the turn ends with the exit the wrap-up was for.
+        if wrap_up_turn && !tool_calls.is_empty() {
+            warn!(
+                session_id,
+                iteration,
+                dropped = tool_calls.len(),
+                "wrap-up turn returned tool calls with no tools offered — dropped"
+            );
+            tool_calls.clear();
+            if assistant_content.trim().is_empty() {
+                turn_exit_reason = if runaway_wrap_up_issued {
+                    crate::guardrails::Exit::RunawayToolLoop
+                } else {
+                    crate::guardrails::Exit::SpendCapReached
+                };
+                let _ = tx
+                    .send(StreamEvent::control_notice(
+                        "Stopped: the model kept calling tools after being asked to \
+                         answer with what it has.",
+                        "runaway_tool_loop",
+                    ))
+                    .await;
+                break;
+            }
+        }
+
         // Save assistant message.
         // If there was a stream error, strip tool_calls — they won't be executed
         // so saving them would create orphans in the session history.
@@ -5716,13 +5789,49 @@ async fn run_loop(
             // nudges and still runs to the iteration ceiling.
             let mut identical_call_abort: Option<(String, usize)> = None;
             for (idx, tc) in tool_calls.iter().enumerate() {
-                if blocked_results[idx].is_some() {
+                // After the wrap-up turn a repeat ends the turn even when an
+                // earlier guard already refused it: the 3-strike block kept
+                // refusing the same search for ten more iterations until the
+                // same-error guard finally ended the run (2026-09-19).
+                if blocked_results[idx].is_some() && !runaway_wrap_up_issued {
                     continue;
                 }
-                if let Some(repeats) = identical_call_budget.abort_due(&tc.name, &tc.input, IDENTICAL_CALL_ABORT) {
+                let ceiling = if tools.is_concurrent_safe(&tc.name, &tc.input).await {
+                    IDENTICAL_READONLY_CALL_ABORT
+                } else {
+                    IDENTICAL_CALL_ABORT
+                };
+                if let Some(repeats) = identical_call_budget.abort_due(&tc.name, &tc.input, ceiling) {
                     identical_call_abort = Some((action_key(tc), repeats));
                     break;
                 }
+            }
+            if let Some((key, repeats)) = identical_call_abort.clone().filter(|_| !runaway_wrap_up_issued) {
+                // First trip: refuse the call, and make the next turn a
+                // tool-less wrap-up so the user gets an answer, not a banner.
+                runaway_wrap_up_issued = true;
+                warn!(session_id, action = %key, repeats, "runaway backstop: identical call refused — wrap-up turn next");
+                for (idx, tc) in tool_calls.iter().enumerate() {
+                    if blocked_results[idx].is_none() && action_key(tc) == key {
+                        blocked_results[idx] = Some((
+                            tc.clone(),
+                            ToolResult::error(format!(
+                                "Refused: this exact call has already been made {} times with identical \
+                                 arguments and returned the same thing each time. Do not call it again. \
+                                 Reply to the user now with what you have.",
+                                repeats
+                            )),
+                        ));
+                    }
+                }
+                runaway_wrap_up = Some(format!(
+                    "You called '{}' {} times with identical arguments; repeating it will not change \
+                     the result. Tools are unavailable this turn: answer the user's latest message \
+                     now, in plain words, with what you already have. If something is missing, say \
+                     what it is and ask one question.",
+                    key, repeats
+                ));
+                identical_call_abort = None;
             }
             if let Some((key, repeats)) = identical_call_abort {
                 warn!(
