@@ -1119,16 +1119,18 @@ conversation so the next model can continue it mid-stream.
 
 Compounding: if a \"## Previous Summary Snapshot\" is provided, FOLD it into your output — \
 take the union of its facts and the new transcript, dedupe, and update anything the \
-transcript supersedes. NEVER reset, drop, or restart the summary; the snapshot is earlier \
-state of the same ongoing work.
+transcript supersedes — a goal the snapshot called IN PROGRESS that the transcript shows \
+delivered becomes DONE. NEVER reset, drop, or restart the summary; the snapshot is earlier \
+state of the same conversation.
 
 Output ONLY the sections below, in this order, with these exact headings. SKIP any section \
 that would be empty — never write \"None\".
 
 ## Goal
-The user's active task. This is an ONGOING task, not a finished one: the next model must \
-NOT treat it as complete, wrap it up, or start it fresh — it must continue exactly where \
-the conversation left off.
+The user's most recent task, with its STATUS on the first line: IN PROGRESS, DONE, or \
+SUPERSEDED. It is DONE when the transcript shows it delivered or answered; SUPERSEDED when \
+the user has since asked for something else (then name the newer task as the goal). Only an \
+IN PROGRESS goal is continued by the next model; never present a finished task as ongoing.
 
 ## Constraints & Preferences
 Rules, limitations, and preferences the user stated.
