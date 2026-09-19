@@ -786,6 +786,7 @@ async fn start_app_agent_run(
             comm_reply: None,
             entity_config,
             images: vec![],
+            attachments: vec![],
             entity_name: agent_name.to_string(),
             origin_agent_id: None,
             mention_context,

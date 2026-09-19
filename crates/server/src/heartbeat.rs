@@ -166,6 +166,7 @@ pub(crate) async fn fire(state: &AppState, entity_type: &str, entity_id: &str) -
         comm_reply: None,
         entity_config: Some(resolved.clone()),
         images: vec![],
+        attachments: vec![],
         entity_name: String::new(),
         origin_agent_id: None,
         mention_context: None,

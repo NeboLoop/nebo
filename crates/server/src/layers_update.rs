@@ -142,6 +142,7 @@ async fn run_for_seat(state: &AppState, seat: &db::models::Agent, change: &Layer
         comm_reply: None,
         entity_config,
         images: vec![],
+        attachments: vec![],
         entity_name: seat.name.clone(),
         origin_agent_id: None,
         mention_context: None,

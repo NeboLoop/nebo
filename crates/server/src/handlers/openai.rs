@@ -369,6 +369,7 @@ async fn start_employee_run(
             comm_reply: None,
             entity_config,
             images: vec![],
+            attachments: vec![],
             entity_name: agent.name.clone(),
             origin_agent_id: None,
             mention_context: Some(mention),
