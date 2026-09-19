@@ -208,6 +208,21 @@ const VALID_PERMISSION_PREFIXES: &[&str] = &[
     "hook:",
 ];
 
+/// Every permission must carry a known prefix. The one check for a
+/// manifest's `permissions`, whether it arrives as a file (`validate`) or as
+/// the `app.permissions` a tool call is about to write.
+pub fn validate_permissions(permissions: &[String]) -> Result<(), NappError> {
+    for perm in permissions {
+        let valid = VALID_PERMISSION_PREFIXES
+            .iter()
+            .any(|prefix| perm.starts_with(prefix));
+        if !valid {
+            return Err(NappError::Manifest(format!("unknown permission: {}", perm)));
+        }
+    }
+    Ok(())
+}
+
 impl Manifest {
     /// Load manifest from a JSON file.
     pub fn load(path: &std::path::Path) -> Result<Self, NappError> {
@@ -262,15 +277,7 @@ impl Manifest {
             }
         }
 
-        // Validate permissions
-        for perm in &self.permissions {
-            let valid = VALID_PERMISSION_PREFIXES
-                .iter()
-                .any(|prefix| perm.starts_with(prefix));
-            if !valid {
-                return Err(NappError::Manifest(format!("unknown permission: {}", perm)));
-            }
-        }
+        validate_permissions(&self.permissions)?;
 
         // Overrides require hook: permission
         for override_name in &self.overrides {
@@ -320,6 +327,15 @@ impl Manifest {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The permission check a tool call uses is the manifest's own: a known
+    /// prefix passes, anything else is named in the error.
+    #[test]
+    fn validate_permissions_is_the_manifest_rule() {
+        validate_permissions(&["storage:readwrite".into(), "network:outbound".into()]).unwrap();
+        let err = validate_permissions(&["bogus:thing".into()]).unwrap_err();
+        assert_eq!(err.to_string(), NappError::Manifest("unknown permission: bogus:thing".into()).to_string());
+    }
 
     #[test]
     fn test_validate_valid_manifest() {

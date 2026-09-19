@@ -110,6 +110,10 @@ impl AgentWorker {
         // Use pre-parsed config if provided, otherwise load from DB
         let agent_config = config.or_else(|| {
             match store.get_agent(&agent_id) {
+                // No agent.json is no config, not a parse failure: an employee
+                // created without automations logged "EOF while parsing a
+                // value" on every load.
+                Ok(Some(r)) if r.frontmatter.trim().is_empty() => None,
                 Ok(Some(r)) => match napp::agent::parse_agent_config(&r.frontmatter) {
                     Ok(cfg) => Some(cfg),
                     Err(e) => {
