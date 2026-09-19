@@ -237,16 +237,19 @@
     <OnboardingTour />
   </div>
 {/if}
+<!-- Mounted for the embed too: the chat an app frames is the same chat, so a
+     hire card, an install code, or a tool approval inside the iframe needs the
+     same modals the shell has. Only the shell's own chrome stays out. -->
+<Toast />
+<!-- The ONE install/configure modal for the whole app. Opened via the
+     installFlow store (product/configure) or window nebo:code_* events (code
+     paste). Mounted once here so two install modals can never stack. -->
+<InstallFlowModal />
+<!-- The ONE tool-approval modal. Driven by the `approval_request` WS event
+     (runner pauses an OFF-capability tool call). Mounted once here so it shows
+     over any view; sends the decision back via `approval_response`. -->
+<ApprovalGate />
 {#if !isEmbed}
-  <Toast />
-  <!-- The ONE install/configure modal for the whole app. Opened via the
-       installFlow store (product/configure) or window nebo:code_* events (code
-       paste). Mounted once here so two install modals can never stack. -->
-  <InstallFlowModal />
-  <!-- The ONE tool-approval modal. Driven by the `approval_request` WS event
-       (runner pauses an OFF-capability tool call). Mounted once here so it shows
-       over any view; sends the decision back via `approval_response`. -->
-  <ApprovalGate />
   <CommandPalette bind:show={$commandPaletteOpen} />
   <UpgradeSuccessModal
     bind:show={showUpgradeSuccess}

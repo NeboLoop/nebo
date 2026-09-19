@@ -90,6 +90,10 @@ export interface ChatControllerConfig {
   sessionKey?: string;
   /** Channel for outbound messages (e.g., 'app', 'web'). */
   channel?: string;
+  /** Fields merged into EVERY outbound chat frame — a send, an edit, a redo
+   *  alike — read at send time (the embed's app context changes between
+   *  turns). Per-call `SendOptions.extraPayload` layers on top. */
+  extraPayload?: () => Record<string, unknown>;
   /** Called when a response completes — use for embed postMessage, etc. */
   onResponseComplete?: (content: string) => void;
   /** A turn on this session finished that this controller never streamed —
@@ -805,6 +809,7 @@ export function createChatController(config: ChatControllerConfig) {
     const payload: Record<string, unknown> = {
       prompt: text,
       agent_id: agentId,
+      ...(config.extraPayload?.() || {}),
       ...(options?.extraPayload || {}),
     };
     if (activeSessionKey) payload.session_id = activeSessionKey;
