@@ -15,11 +15,13 @@
 
 	const log = logger.child({ component: 'VoiceModeOverlay' });
 
-	let { agentId, agentName, chatId = '', onclose }: {
+	let { agentId, agentName, chatId = '', teamId = '', onclose }: {
 		agentId: string;
 		agentName: string;
 		/** Chat thread the transcript persists into (voice is a modality of the chat). */
 		chatId?: string;
+		/** Set when opened from a team thread: the turns post into that team's thread. */
+		teamId?: string;
 		onclose: () => void;
 	} = $props();
 
@@ -46,7 +48,7 @@
 	$effect(() => {
 		if (consented && status === 'idle') {
 			log.info('VoiceModeOverlay mounted, starting session for agent: ' + agentId);
-			voiceSession.start(agentId, chatId);
+			voiceSession.start(agentId, chatId, teamId);
 		}
 	});
 

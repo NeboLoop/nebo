@@ -37,6 +37,13 @@ pub struct ConversationQuery {
     /// Loop stream for the relay ("agent_space" for agent chats, "dm").
     #[serde(default)]
     pub loop_stream: Option<String>,
+    /// When the call is opened from a team thread: the team (local id). The
+    /// team's lead speaks for it, and every finished turn is a post in the
+    /// team's thread — the owner's words from the owner, the lead's reply
+    /// from the lead — the same rows and `team_message` broadcast a typed
+    /// post produces. `agent_id` and `chat_id` are derived and ignored.
+    #[serde(default)]
+    pub team_id: Option<String>,
     /// Telephony mode: the peer is a phone bridge, not a browser. Switches
     /// the wire audio to 8kHz μ-law (carried untouched from the carrier) and
     /// adds phone delivery guidance. Any value enables it.
@@ -913,11 +920,17 @@ impl TurnLedger {
 }
 
 /// Where a session's rows go: the thread (created on the first row), the
-/// loop relay, and the client's one `chat_bound` announcement.
+/// team thread when the call was opened from one, the loop relay, and the
+/// client's one `chat_bound` announcement.
 struct TurnSink {
     chat_id: Option<String>,
     session_key: String,
     phone_title: Option<String>,
+    /// The call was opened from this team's thread: every row is a team
+    /// post — the owner's from the owner, the lead's from `lead` — through
+    /// the ONE team record (`team::record`), so desktop and mobile team
+    /// views see them like typed posts. `chat_id` is None in this mode.
+    team: Option<(db::Team, String)>,
     loop_relay: Option<(String, String)>,
     chat_bound_announced: bool,
 }
@@ -929,6 +942,12 @@ impl TurnSink {
                 Row::User(t) => ("user", t.as_str()),
                 Row::Assistant(t) => ("assistant", t.as_str()),
             };
+            if let Some((team, lead)) = self.team.as_ref() {
+                let from = if role == "user" { "" } else { lead.as_str() };
+                if let Err(e) = crate::team::record(state, team, from, text, &serde_json::json!([])) {
+                    error!(error = %e, team = %team.id, "failed to post voice turn to the team");
+                }
+            }
             if let Some(cid) = self.chat_id.as_deref()
                 && ensure_chat_row(state, cid, &self.session_key, self.phone_title.as_deref())
             {
@@ -1001,6 +1020,59 @@ fn chat_history_context(state: &AppState, chat_id: &str) -> String {
     }
 }
 
+/// Who speaks for a team in its voice mode: the lead (the same member an
+/// owner's post that names nobody goes to), if it is on this computer; with
+/// no lead on record, the first local member. None = nobody here can speak.
+fn team_voice_lead(team: &db::Team) -> Option<String> {
+    let local = |id: &str| team.members.iter().any(|m| m.agent_id == id && m.is_local());
+    if !team.organizer_agent_id.is_empty() && local(&team.organizer_agent_id) {
+        return Some(team.organizer_agent_id.clone());
+    }
+    team.members
+        .iter()
+        .find(|m| m.is_local())
+        .map(|m| m.agent_id.clone())
+}
+
+/// What the lead needs to know when the owner opens a team's voice mode:
+/// which team it speaks for, who is in it, that the exchange is posted in
+/// the team's thread — and the thread's recent posts, so it continues the
+/// conversation instead of greeting blind (the team's counterpart of
+/// `chat_history_context`).
+fn team_voice_context(state: &AppState, team: &db::Team) -> String {
+    let members: Vec<String> = tools::team::member_roster(&state.store, team)
+        .into_iter()
+        .map(|(_, name)| name)
+        .collect();
+    let mut out = format!(
+        "\n\nYou are speaking with the owner in the \"{}\" team thread, as the team's lead. \
+         Team members: {}. Everything said here is posted in the team thread for the whole \
+         team to read. Answer the owner yourself; when a teammate should take a step, \
+         hand it to them through the `nebo` tool.",
+        team.name,
+        if members.is_empty() { "none yet".to_string() } else { members.join(", ") },
+    );
+    let tail: Vec<String> = state
+        .store
+        .list_team_messages(&team.id, 12)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|m| !m.content.is_empty())
+        .map(|m| {
+            let text: String = m.content.chars().take(300).collect();
+            format!("{}: {text}", m.from)
+        })
+        .collect();
+    if !tail.is_empty() {
+        out.push_str(&format!(
+            "\n\nThis call continues the team thread. Recent posts:\n{}\n\
+             Continue naturally — do not greet from scratch.",
+            tail.join("\n")
+        ));
+    }
+    out
+}
+
 /// Resolve a caller-supplied agent identifier to the local agent row id.
 /// Loop-originated calls only know the loop-side identity: the loop agent
 /// UUID or the bot-scoped handle (`bot_<id8>` primary / `bot_<id8>_<slug>`
@@ -1038,6 +1110,36 @@ fn resolve_local_agent_id(state: &AppState, given: &str) -> String {
 
 async fn handle_conversation_ws(mut socket: WebSocket, state: AppState, mut q: ConversationQuery) {
     info!("conversation WebSocket connected");
+    // Opened from a team thread: the lead answers the owner (the same seat a
+    // typed post that names nobody goes to), and the thread is the record.
+    // No chat is joined or minted — a voice turn here is a team post.
+    let team = match q.team_id.as_deref().filter(|t| !t.is_empty()) {
+        Some(id) => match state.store.get_team(id) {
+            Ok(Some(t)) => Some(t),
+            Ok(None) | Err(_) => {
+                let msg = serde_json::json!({
+                    "type": "Error",
+                    "message": format!("No team with id {id}."),
+                });
+                let _ = socket.send(Message::Text(msg.to_string().into())).await;
+                return;
+            }
+        },
+        None => None,
+    };
+    if let Some(t) = team.as_ref() {
+        let Some(lead) = team_voice_lead(t) else {
+            let msg = serde_json::json!({
+                "type": "Error",
+                "message": "This team has no employee on this computer to speak for it.",
+            });
+            let _ = socket.send(Message::Text(msg.to_string().into())).await;
+            return;
+        };
+        info!(team = %t.id, lead = %lead, "voice opened from a team thread");
+        q.agent_id = Some(lead);
+        q.chat_id = None;
+    }
     if let Some(given) = q.agent_id.as_deref().filter(|s| !s.is_empty()) {
         let resolved = resolve_local_agent_id(&state, given);
         if resolved != given {
@@ -1060,7 +1162,7 @@ async fn handle_conversation_ws(mut socket: WebSocket, state: AppState, mut q: C
         let _ = socket.send(Message::Text(msg.to_string().into())).await;
         return;
     }
-    if q.chat_id.as_deref().unwrap_or_default().is_empty() {
+    if team.is_none() && q.chat_id.as_deref().unwrap_or_default().is_empty() {
         let agent_id = q.agent_id.as_deref().unwrap_or_default();
         // A phone call on a multi-chat employee is its own thread: one
         // caller, one transcript, never appended to whoever rang before.
@@ -1358,7 +1460,9 @@ async fn handle_conversation_ws(mut socket: WebSocket, state: AppState, mut q: C
     }
     // A phone call is its own conversation — replaying desktop chat history
     // into it would have the employee greet a stranger mid-thread.
-    if !telephony
+    if let Some(t) = team.as_ref() {
+        instructions.push_str(&team_voice_context(&state, t));
+    } else if !telephony
         && let Some(chat_id) = q.chat_id.as_deref()
     {
         instructions.push_str(&chat_history_context(&state, chat_id));
@@ -1427,7 +1531,7 @@ async fn handle_conversation_ws(mut socket: WebSocket, state: AppState, mut q: C
             .await;
     }
 
-    handle_conversation_session(socket, state, q, call_tree, rt_tx, rt_rx).await;
+    handle_conversation_session(socket, state, q, team, call_tree, rt_tx, rt_rx).await;
 }
 
 /// Relay one finished voice turn into a loop conversation so the loop UI
@@ -1635,6 +1739,7 @@ async fn handle_conversation_session(
     mut socket: WebSocket,
     state: AppState,
     q: ConversationQuery,
+    team: Option<db::Team>,
     call_tree: Option<CallTree>,
     rt_tx: mpsc::Sender<voice::realtime::RealtimeCommand>,
     mut rt_rx: mpsc::Receiver<voice::conversation::ConversationEvent>,
@@ -1694,18 +1799,28 @@ async fn handle_conversation_session(
     // fence. Voice is a modality of the chat, so it uses the SAME
     // `agent:<id>:thread:<chat>` session key text chat uses — delegated
     // runs, tool activity, and history all land in the open thread. Both ids
-    // are guaranteed non-empty by the guard at connection time.
+    // are guaranteed non-empty by the guard at connection time. A call
+    // opened from a team thread has no chat: the lead works in its seat in
+    // that team (`agent:<lead>:coworker:team:<id>`) — the same thread a typed
+    // post's ask runs in — and the spoken turns are the team's posts.
     let mut ctx = tools::ToolContext::new(if caller_ctx.is_some() {
         tools::Origin::Caller
     } else {
         tools::Origin::User
     });
     ctx.tool_whitelist = caller_ctx.as_ref().map(|c| c.allowlist.clone());
-    ctx.session_key = format!(
-        "agent:{}:thread:{}",
-        q.agent_id.as_deref().unwrap_or_default(),
-        chat_id.as_deref().unwrap_or_default()
-    );
+    let voice_agent_id = q.agent_id.clone().unwrap_or_default();
+    let team_seat = team
+        .as_ref()
+        .map(|t| crate::coworker::team_seat(&voice_agent_id, t));
+    ctx.session_key = match team_seat.as_ref() {
+        Some((key, _)) => key.clone(),
+        None => format!(
+            "agent:{}:thread:{}",
+            voice_agent_id,
+            chat_id.as_deref().unwrap_or_default()
+        ),
+    };
     ctx.session_id = ctx.session_key.clone();
     // Memory scope for the improvised direct-execute fallback (delegated runs
     // scope themselves in the Runner). A bare user_id put every voice tool
@@ -1739,6 +1854,7 @@ async fn handle_conversation_session(
         chat_id: chat_id.clone(),
         session_key: ctx.session_key.clone(),
         phone_title: phone_title.clone(),
+        team: team.clone().map(|t| (t, voice_agent_id.clone())),
         loop_relay: loop_relay.clone(),
         // `chat_bound` announced to the client exactly once: now, when joining
         // a thread that already exists, else when the lazily created chat
@@ -1918,7 +2034,10 @@ async fn handle_conversation_session(
                         if name == "nebo" {
                             // The spoken request is the thread's user row, and
                             // it lands before the run's rows, not after them.
-                            let rows = ledger.user_final(true);
+                            // In a team thread the run's rows land in the
+                            // lead's seat, not the thread, so the lead's spoken
+                            // reply stays: it IS the team's record of the answer.
+                            let rows = ledger.user_final(team.is_none());
                             sink.write(&state, &mut socket, rows).await;
                         }
                         pending_tools += 1;
@@ -1926,6 +2045,7 @@ async fn handle_conversation_session(
                         let ctx = ctx.clone();
                         let done = tool_done_tx.clone();
                         let delegate_chat_id = chat_id.clone();
+                        let delegate_seat = team_seat.clone();
                         let phone_title = phone_title.clone();
                         let caller = caller_ctx.clone();
                         let tree = call_tree.clone();
@@ -1963,6 +2083,11 @@ async fn handle_conversation_session(
                                     // real activity, so the chat must exist.
                                     if let Some(cid) = delegate_chat_id.as_deref() {
                                         ensure_chat_row(&state, cid, &ctx.session_key, phone_title.as_deref());
+                                    } else if let Some((key, title)) = delegate_seat.as_ref()
+                                        && let Err(e) =
+                                            crate::coworker::ensure_conversation_thread(&state, key, title)
+                                    {
+                                        warn!(error = %e, "voice: could not open the lead's team seat");
                                     }
                                     run_delegated_task(&state, &ctx.session_key, task, caller.as_ref()).await
                                 };
@@ -2116,6 +2241,32 @@ mod voice_prompt_tests {
         assert_eq!(pick_voice_chat(&[fresh.clone()], now, |_| false).as_deref(), Some("new"));
         assert_eq!(pick_voice_chat(&[old.clone()], now, |_| false), None);
         assert_eq!(pick_voice_chat(&[], now, |_| true), None);
+    }
+
+    fn team(lead: &str, members: &[db::TeamMember]) -> db::Team {
+        db::Team {
+            id: "t1".into(),
+            name: "Ops".into(),
+            mission: String::new(),
+            members: members.to_vec(),
+            organizer_agent_id: lead.into(),
+            hub_channel_id: None,
+            created_at: 0,
+        }
+    }
+
+    /// The team's voice is its lead when the lead is here; a team with no
+    /// lead on this computer falls back to its first local member; a team
+    /// with nobody local has no voice.
+    #[test]
+    fn team_voice_is_the_lead_else_the_first_local_member() {
+        let remote = db::TeamMember { bot_id: "far".into(), agent_id: "r1".into(), name: "R".into() };
+        let local = [db::TeamMember::local("m1"), db::TeamMember::local("m2")];
+        assert_eq!(team_voice_lead(&team("m2", &local)).as_deref(), Some("m2"));
+        assert_eq!(team_voice_lead(&team("", &local)).as_deref(), Some("m1"));
+        let mixed = [remote.clone(), db::TeamMember::local("m2")];
+        assert_eq!(team_voice_lead(&team("r1", &mixed)).as_deref(), Some("m2"));
+        assert_eq!(team_voice_lead(&team("r1", &[remote])), None);
     }
 
     fn shape(rows: &[Row]) -> Vec<String> {

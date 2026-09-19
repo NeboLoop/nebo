@@ -328,6 +328,7 @@
       <ChatComposer
         agentId="team"
         threadId={team.id}
+        teamId={team.id}
         placeholder={$t('teams.composerPlaceholder')}
         allAgents={composerAgents}
         isLoading={sending}
