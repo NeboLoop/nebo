@@ -120,11 +120,10 @@ pub(crate) async fn send_coworker_message(
     // team thread is the record).
     let matter = agent::memory::scope_matter(&msg.requester_scope);
     let (thread_key, mirror_key, thread_title) = match team.as_ref() {
-        Some(t) => (
-            format!("agent:{}:{}:{}", to_id, COWORKER_CHANNEL, db::team_thread_key(&t.id)),
-            None,
-            format!("Team: {}", t.name),
-        ),
+        Some(t) => {
+            let (key, title) = team_seat(&to_id, t);
+            (key, None, title)
+        }
         None => {
             let (k, m) = coworker_thread_keys(&msg.from_agent_id, &to_id, matter);
             (k, m, format!("From {}", from_name))
@@ -524,6 +523,17 @@ fn team_post_metadata(team_id: &str) -> serde_json::Value {
     serde_json::json!({ "teamPost": true, "teamId": team_id })
 }
 
+/// A member's seat in a team: the thread it works in when the team asks it
+/// to act (`agent:<member>:coworker:team:<id>`), and that thread's title.
+/// One thread per team per member, whether the ask arrives as a text post
+/// over the rail or as a task the owner spoke in the team's voice mode.
+pub(crate) fn team_seat(agent_id: &str, team: &db::Team) -> (String, String) {
+    (
+        format!("agent:{}:{}:{}", agent_id, COWORKER_CHANNEL, db::team_thread_key(&team.id)),
+        format!("Team: {}", team.name),
+    )
+}
+
 fn coworker_thread_keys(
     from_agent_id: &str,
     to_id: &str,
@@ -593,7 +603,7 @@ fn record_reply(state: &AppState, mirror_sid: Option<&str>, to_name: &str, reply
 /// Get-or-create a conversation thread that has no runner behind it (the
 /// sender-side coworker thread). Fresh sessions get a REAL chat row so the
 /// thread renders with a readable title instead of a legacy key-named chat.
-fn ensure_conversation_thread(
+pub(crate) fn ensure_conversation_thread(
     state: &AppState,
     session_key: &str,
     title: &str,
