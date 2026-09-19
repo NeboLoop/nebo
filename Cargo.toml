@@ -163,6 +163,20 @@ jsonschema = "0.28"
 debug = 0
 split-debuginfo = "unpacked"
 
+# Screenshot decode/resize/encode on a Retina screen took ~5 s unoptimized,
+# which made every desktop observe/act in the dev app crawl; optimized it is
+# well under a second. Only the image codecs, so the dev build stays fast.
+[profile.dev.package.image]
+opt-level = 3
+[profile.dev.package.zune-jpeg]
+opt-level = 3
+[profile.dev.package.png]
+opt-level = 3
+[profile.dev.package.fdeflate]
+opt-level = 3
+[profile.dev.package.miniz_oxide]
+opt-level = 3
+
 [profile.release]
 # Thin LTO across 16 codegen units: fat LTO with one unit optimized the whole
 # program on ONE thread for ~16 minutes per binary per target (v0.14.0 on the

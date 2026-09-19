@@ -40,6 +40,16 @@ pub struct UIElement {
     /// Keyboard shortcut if available
     #[serde(skip_serializing_if = "Option::is_none")]
     pub keyboard_shortcut: Option<String>,
+    /// Accessibility actions the element accepts (`AXPress`, `AXSetValue`, …).
+    /// Empty when the walk could not read them (the AppleScript fallback).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub actions: Vec<String>,
+    /// Child-index path from the window, valid for the walk that produced it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub path: String,
+    /// Keyboard focus was on this element when the walk ran.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub focused: bool,
 }
 
 /// A snapshot combining a screenshot with detected UI elements.
@@ -53,6 +63,79 @@ pub struct Snapshot {
     pub created_at: Instant,
     /// Detected UI elements with IDs
     pub elements: Vec<UIElement>,
+    /// What the image covers, in screen points: the window's frame, or the
+    /// whole screen. `None` only when no frame could be read at all.
+    pub frame: Option<Rect>,
+    /// Screen points per image pixel (1.0 when the image was not downscaled).
+    pub scale: f64,
+    /// Which layer produced the elements: `ax`, `ax-shallow`, or `vision`.
+    pub via: String,
+}
+
+/// Where a pixel of the image the model saw lands on the screen now. The
+/// window may have moved since the image was taken (its origin is re-read);
+/// a window that changed SIZE invalidates the image, so that is refused.
+pub fn image_to_screen(px: (i64, i64), then: &Rect, now: &Rect, scale: f64) -> Result<(i64, i64), String> {
+    if (then.width, then.height) != (now.width, now.height) {
+        return Err(format!(
+            "the window changed size since the last capture ({}×{} → {}×{}); capture it again before acting",
+            then.width, then.height, now.width, now.height
+        ));
+    }
+    Ok((
+        now.x + (px.0 as f64 * scale).round() as i64,
+        now.y + (px.1 as f64 * scale).round() as i64,
+    ))
+}
+
+/// A screen point as a pixel of the image taken with `frame`/`scale`.
+pub fn screen_to_image(pt: (i64, i64), frame: &Rect, scale: f64) -> (i64, i64) {
+    (
+        ((pt.0 - frame.x) as f64 / scale).round() as i64,
+        ((pt.1 - frame.y) as f64 / scale).round() as i64,
+    )
+}
+
+/// A screen point recorded at capture time, moved with the window.
+pub fn screen_point_now(pt: (i64, i64), then: &Rect, now: &Rect) -> Result<(i64, i64), String> {
+    if (then.width, then.height) != (now.width, now.height) {
+        return Err(format!(
+            "the window changed size since the last capture ({}×{} → {}×{}); capture it again before acting",
+            then.width, then.height, now.width, now.height
+        ));
+    }
+    Ok((pt.0 + now.x - then.x, pt.1 + now.y - then.y))
+}
+
+/// One sentence on what changed between two captures of the same target,
+/// computed from what was measured — never a guess at what the action meant.
+pub fn delta_line(before: &Snapshot, after: &Snapshot) -> String {
+    let mut parts = Vec::new();
+    match (&before.frame, &after.frame) {
+        (Some(b), Some(a)) if (b.width, b.height) != (a.width, a.height) => {
+            parts.push(format!("The window resized to {}×{}.", a.width, a.height))
+        }
+        (Some(b), Some(a)) if (b.x, b.y) != (a.x, a.y) => {
+            parts.push(format!("The window moved to {},{}.", a.x, a.y))
+        }
+        _ => {}
+    }
+    let focus = |s: &Snapshot| s.elements.iter().find(|e| e.focused).map(|e| (e.id.clone(), e.label.clone()));
+    let (fb, fa) = (focus(before), focus(after));
+    if fa != fb {
+        if let Some((id, label)) = &fa {
+            parts.push(format!("Focus is now on {id} \"{label}\"."));
+        }
+    }
+    let (nb, na) = (before.elements.len(), after.elements.len());
+    if na != nb {
+        parts.push(format!("{} elements now ({} before).", na, nb));
+    }
+    if parts.is_empty() {
+        format!("Window unchanged: same frame, same {nb} elements.")
+    } else {
+        parts.join(" ")
+    }
 }
 
 /// In-memory LRU snapshot store with time-based expiry.
@@ -91,6 +174,14 @@ impl SnapshotStore {
     pub fn get_element(&self, snapshot_id: &str, element_id: &str) -> Option<&UIElement> {
         self.get(snapshot_id)
             .and_then(|snap| snap.elements.iter().find(|e| e.id == element_id))
+    }
+
+    /// The most recent non-expired snapshot of `app` (case-insensitive).
+    pub fn latest_for(&self, app: &str) -> Option<&Snapshot> {
+        self.snapshots.iter().rev().find(|s| {
+            s.created_at.elapsed() < SNAPSHOT_TTL
+                && s.app.as_deref().map_or(false, |a| a.eq_ignore_ascii_case(app))
+        })
     }
 
     /// Get the most recent non-expired snapshot.
@@ -212,6 +303,9 @@ pub fn parse_ax_output(output: &str) -> Vec<UIElement> {
             bounds,
             actionable,
             keyboard_shortcut: None,
+            actions: Vec::new(),
+            path: String::new(),
+            focused: false,
         });
     }
     elements
@@ -221,6 +315,68 @@ pub fn parse_ax_output(output: &str) -> Vec<UIElement> {
 mod tests {
     use super::*;
 
+    fn rect(x: i64, y: i64, w: i64, h: i64) -> Rect {
+        Rect { x, y, width: w, height: h }
+    }
+
+    // The model addresses pixels of the image it saw; the window may have
+    // moved since, so the origin is re-read. A downscaled image (scale 2)
+    // means one image pixel is two screen points.
+    #[test]
+    fn image_pixels_land_on_the_moved_window() {
+        let then = rect(100, 50, 2000, 1000);
+        let now = rect(300, 80, 2000, 1000);
+        assert_eq!(image_to_screen((10, 20), &then, &now, 2.0), Ok((320, 120)));
+        assert_eq!(screen_to_image((320, 120), &now, 2.0), (10, 20));
+        assert_eq!(screen_point_now((110, 70), &then, &now), Ok((310, 100)));
+    }
+
+    #[test]
+    fn a_resized_window_refuses_stale_coordinates() {
+        let then = rect(0, 0, 800, 600);
+        let now = rect(0, 0, 900, 600);
+        let err = image_to_screen((1, 1), &then, &now, 1.0).unwrap_err();
+        assert!(err.contains("800×600 → 900×600"), "{err}");
+        assert!(screen_point_now((1, 1), &then, &now).is_err());
+    }
+
+    fn snap(frame: Rect, n: usize, focused: Option<usize>) -> Snapshot {
+        let elements = (0..n)
+            .map(|i| UIElement {
+                id: format!("B{}", i + 1),
+                role: "AXButton".into(),
+                label: format!("b{i}"),
+                bounds: rect(0, 0, 1, 1),
+                actionable: true,
+                keyboard_shortcut: None,
+                actions: vec![],
+                path: String::new(),
+                focused: focused == Some(i),
+            })
+            .collect();
+        Snapshot {
+            id: "s".into(),
+            app: None,
+            created_at: Instant::now(),
+            frame: Some(frame),
+            scale: 1.0,
+            via: "ax".into(),
+            elements,
+        }
+    }
+
+    #[test]
+    fn delta_line_reports_only_what_was_measured() {
+        let a = snap(rect(0, 0, 100, 100), 3, None);
+        assert_eq!(delta_line(&a, &a), "Window unchanged: same frame, same 3 elements.");
+        let moved = snap(rect(5, 5, 100, 100), 3, None);
+        assert_eq!(delta_line(&a, &moved), "The window moved to 5,5.");
+        let resized = snap(rect(0, 0, 120, 100), 3, None);
+        assert_eq!(delta_line(&a, &resized), "The window resized to 120×100.");
+        let sheet = snap(rect(0, 0, 100, 100), 7, Some(1));
+        assert_eq!(delta_line(&a, &sheet), "Focus is now on B2 \"b1\". 7 elements now (3 before).");
+    }
+
     #[test]
     fn test_snapshot_store_insert_and_retrieve() {
         let mut store = SnapshotStore::new();
@@ -228,6 +384,9 @@ mod tests {
             id: "snap_test_001".into(),
             app: Some("Safari".into()),
             created_at: Instant::now(),
+            frame: None,
+            scale: 1.0,
+            via: String::new(),
             elements: vec![UIElement {
                 id: "B1".into(),
                 role: "AXButton".into(),
@@ -240,6 +399,9 @@ mod tests {
                 },
                 actionable: true,
                 keyboard_shortcut: None,
+                actions: vec![],
+                path: String::new(),
+                focused: false,
             }],
         };
         store.insert(snap);
@@ -254,12 +416,18 @@ mod tests {
             id: "snap_a".into(),
             app: None,
             created_at: Instant::now(),
+            frame: None,
+            scale: 1.0,
+            via: String::new(),
             elements: vec![],
         });
         store.insert(Snapshot {
             id: "snap_b".into(),
             app: None,
             created_at: Instant::now(),
+            frame: None,
+            scale: 1.0,
+            via: String::new(),
             elements: vec![],
         });
         assert_eq!(store.latest().unwrap().id, "snap_b");
@@ -273,6 +441,9 @@ mod tests {
                 id: format!("snap_{i}"),
                 app: None,
                 created_at: Instant::now(),
+                frame: None,
+                scale: 1.0,
+                via: String::new(),
                 elements: vec![],
             });
         }
@@ -289,6 +460,9 @@ mod tests {
             id: "snap_x".into(),
             app: None,
             created_at: Instant::now(),
+            frame: None,
+            scale: 1.0,
+            via: String::new(),
             elements: vec![
                 UIElement {
                     id: "B1".into(),
@@ -302,6 +476,9 @@ mod tests {
                     },
                     actionable: true,
                     keyboard_shortcut: None,
+                    actions: vec![],
+                    path: String::new(),
+                    focused: false,
                 },
                 UIElement {
                     id: "T1".into(),
@@ -315,6 +492,9 @@ mod tests {
                     },
                     actionable: true,
                     keyboard_shortcut: None,
+                    actions: vec![],
+                    path: String::new(),
+                    focused: false,
                 },
             ],
         });
@@ -349,6 +529,9 @@ mod tests {
                 },
                 actionable: true,
                 keyboard_shortcut: None,
+                actions: vec![],
+                path: String::new(),
+                focused: false,
             },
             UIElement {
                 id: String::new(),
@@ -362,6 +545,9 @@ mod tests {
                 },
                 actionable: true,
                 keyboard_shortcut: None,
+                actions: vec![],
+                path: String::new(),
+                focused: false,
             },
             UIElement {
                 id: String::new(),
@@ -375,6 +561,9 @@ mod tests {
                 },
                 actionable: true,
                 keyboard_shortcut: None,
+                actions: vec![],
+                path: String::new(),
+                focused: false,
             },
             UIElement {
                 id: String::new(),
@@ -388,6 +577,9 @@ mod tests {
                 },
                 actionable: false,
                 keyboard_shortcut: None,
+                actions: vec![],
+                path: String::new(),
+                focused: false,
             },
         ];
         assign_element_ids(&mut elements);

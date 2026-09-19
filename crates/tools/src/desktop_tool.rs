@@ -1,8 +1,10 @@
 #[cfg(target_os = "windows")]
 use crate::desktop_daemon::DesktopDaemon;
 use crate::errors;
+use crate::ax_native;
 use crate::desktop_snapshot::{
-    self, Snapshot, SnapshotStore, UIElement, assign_element_ids, generate_snapshot_id,
+    self, Rect, Snapshot, SnapshotStore, UIElement, assign_element_ids, delta_line,
+    generate_snapshot_id, image_to_screen, screen_point_now, screen_to_image,
 };
 #[cfg(target_os = "macos")]
 use crate::desktop_snapshot::parse_ax_output;
@@ -72,7 +74,11 @@ impl DynTool for DesktopTool {
          - shortcut: list, run\n\
          - tts: speak\n\
          - dock: badges, recent, is_running (macOS only)\n\n\
-         Workflow: Use capture(action: see) to get a snapshot with element IDs, then reference them in input actions.\n\n\
+         Workflow: capture(action: see, app) returns the window as an image plus the elements it found, \
+         with refs and positions in that image's pixels. Every input action on that app then returns the \
+         window as it looks AFTER the action (image + what changed) — read it before the next step. \
+         Act by ref when the element is listed, by image pixel (coordinate: [x, y]) when it is not; a pixel \
+         click on an app you have not captured is refused, capture first.\n\n\
          Examples:\n  \
          os(resource: \"capture\", action: \"see\", app: \"Safari\") — snapshot + element IDs\n  \
          os(resource: \"input\", action: \"click\", ref: \"B3\") — click element from snapshot\n  \
@@ -104,10 +110,10 @@ impl DynTool for DesktopTool {
                 "message": { "type": "string", "description": "Notification message" },
                 "text": { "type": "string", "description": "Text to type, write to clipboard, or speak" },
                 "key": { "type": "string", "description": "Key or combo to press (e.g. 'return', 'tab', 'cmd+shift+s')" },
-                "x": { "type": "integer", "description": "X coordinate (window move; tap: window-relative point)" },
-                "y": { "type": "integer", "description": "Y coordinate (window move; tap: window-relative point)" },
-                "wait_ms": { "type": "integer", "description": "For input tap: how long to wait after the tap before capturing the window (default 1200)" },
-                "coordinate": { "type": "array", "items": { "type": "integer" }, "description": "[x, y] target for input click/move (alternative to ref). For input tap: window-relative points from the app window's top-left." },
+                "x": { "type": "integer", "description": "X coordinate (window move; or an input target, same meaning as coordinate[0])" },
+                "y": { "type": "integer", "description": "Y coordinate (window move; or an input target, same meaning as coordinate[1])" },
+                "wait_ms": { "type": "integer", "description": "For input actions: how long to wait after acting before capturing the after-state (default 800, max 10000)" },
+                "coordinate": { "type": "array", "items": { "type": "integer" }, "description": "[x, y] target for input actions (alternative to ref). With `app`: a pixel of the last capture(see) image of that app. Without `app`: screen points." },
                 "start_coordinate": { "type": "array", "items": { "type": "integer" }, "description": "[x, y] drag start point" },
                 "click_count": { "type": "integer", "description": "For input click: 1=single, 2=double. Default 1." },
                 "button": { "type": "string", "description": "For input click: mouse button. Default left.", "enum": ["left", "right"] },
@@ -152,14 +158,7 @@ impl DynTool for DesktopTool {
                 }
                 "input" => {
                     let _guard = self.input_lock.lock().await;
-                    let result = handle_input(action, &input, &self.snapshot_store).await;
-                    if !result.is_error {
-                        // Invalidate AX cache on successful input actions
-                        if let Ok(mut guard) = self.ax_cache.lock() {
-                            guard.clear();
-                        }
-                    }
-                    result
+                    handle_input(action, &input, &self.snapshot_store, &self.ax_cache).await
                 }
                 "clipboard" => {
                     let _guard = self.clipboard_lock.lock().await;
@@ -633,145 +632,263 @@ fn input_target(input: &serde_json::Value) -> (&str, Option<(i64, i64)>) {
     (element_ref, coordinate)
 }
 
+/// The capture an input action's coordinates refer to: the one named by
+/// `snapshot_id`, else the latest of `app`, else the latest of anything.
+async fn snapshot_for(
+    store: &tokio::sync::Mutex<SnapshotStore>,
+    snapshot_id: &str,
+    app: &str,
+) -> Option<Snapshot> {
+    let store = store.lock().await;
+    if !snapshot_id.is_empty() {
+        store.get(snapshot_id).cloned()
+    } else if !app.is_empty() {
+        store.latest_for(app).cloned()
+    } else {
+        store.latest().cloned()
+    }
+}
+
+/// One input action, then the window as it looks after it. The point is
+/// resolved from what the model last SAW (a ref, or a pixel of that image)
+/// against where the window IS now; the result carries the next image, so
+/// acting blind is not a state this tool can be in.
 async fn handle_input(
     action: &str,
     input: &serde_json::Value,
     snapshot_store: &tokio::sync::Mutex<SnapshotStore>,
+    ax_cache: &AxCache,
 ) -> ToolResult {
-    // Resolve the target point: a `ref` (element from capture(see)) or a
-    // `coordinate: [x, y]`. Returns (x, y, label).
+    if action == "paste" {
+        return input_paste().await;
+    }
     let (element_ref, coordinate) = input_target(input);
     let snapshot_id = input["snapshot_id"].as_str().unwrap_or("");
-    let target: Option<(i64, i64, String)> = if !element_ref.is_empty() {
-        let store = snapshot_store.lock().await;
-        let element = if !snapshot_id.is_empty() {
-            store.get_element(snapshot_id, element_ref)
-        } else {
-            store
-                .latest()
-                .and_then(|snap| snap.elements.iter().find(|e| e.id == element_ref))
-        };
-        match element {
-            Some(elem) => {
-                let (cx, cy) = elem.bounds.center();
-                Some((cx, cy, elem.label.clone()))
-            }
-            None => {
-                return ToolResult::error(format!(
-                    "Element '{}' not found{}. Use capture(action: \"see\") first to detect elements.",
-                    element_ref,
-                    if !snapshot_id.is_empty() {
-                        format!(" in snapshot '{}'", snapshot_id)
-                    } else {
-                        String::new()
-                    }
-                ));
-            }
-        }
+    let app_arg = input["app"].as_str().unwrap_or("").trim().to_string();
+    let snap = snapshot_for(snapshot_store, snapshot_id, &app_arg).await;
+    let app = if !app_arg.is_empty() {
+        app_arg
     } else {
-        coordinate.map(|(x, y)| (x, y, String::new()))
+        snap.as_ref().and_then(|s| s.app.clone()).unwrap_or_default()
     };
 
-    match action {
+    let element: Option<UIElement> = if element_ref.is_empty() {
+        None
+    } else {
+        match snap.as_ref().and_then(|s| s.elements.iter().find(|e| e.id == element_ref)) {
+            Some(e) => Some(e.clone()),
+            None => {
+                return ToolResult::error(format!(
+                    "Element '{}' is not in the last capture{}. Call os(resource: \"capture\", action: \"see\"{}) and use a ref from that list.",
+                    element_ref,
+                    if app.is_empty() { String::new() } else { format!(" of {app}") },
+                    if app.is_empty() { String::new() } else { format!(", app: \"{app}\"") },
+                ))
+            }
+        }
+    };
+
+    // A pixel is only meaningful against an image of that app. Refused
+    // before anything moves: the fix is one capture, and the message says so.
+    if element.is_none() && coordinate.is_some() && !app.is_empty()
+        && !snap.as_ref().map_or(false, |s| s.frame.is_some())
+    {
+        let (x, y) = coordinate.unwrap();
+        return ToolResult::error(format!(
+            "{action}: no capture of {app} to read ({x},{y}) against. Call os(resource: \"capture\", action: \"see\", app: \"{app}\") first, then act by ref or by a pixel of that image."
+        ));
+    }
+
+    // Where the window is NOW (this also brings the app to the front).
+    let now: Option<Rect> = if app.is_empty() {
+        None
+    } else {
+        match window_frame(&app, true).await {
+            Ok(r) => Some(r),
+            Err(e) if cfg!(target_os = "macos") => {
+                return ToolResult::error(format!("{action}: {e}"));
+            }
+            Err(_) => snap.as_ref().and_then(|s| s.frame.clone()),
+        }
+    };
+
+    // The target in screen points, with the label the model used for it.
+    let to_screen = |px: (i64, i64)| -> Result<(i64, i64), String> {
+        if app.is_empty() {
+            return Ok(px);
+        }
+        match (&snap, &now) {
+            (Some(s), Some(now)) if s.frame.is_some() => {
+                image_to_screen(px, s.frame.as_ref().unwrap(), now, s.scale)
+            }
+            _ => Err(format!("no capture of {app} to read ({},{}) against", px.0, px.1)),
+        }
+    };
+    let target: Option<(i64, i64, String)> = if let Some(e) = &element {
+        let c = e.bounds.center();
+        let p = match (snap.as_ref().and_then(|s| s.frame.as_ref()), &now) {
+            (Some(then), Some(now)) => match screen_point_now(c, then, now) {
+                Ok(p) => p,
+                Err(err) => return ToolResult::error(format!("{action}: {err}")),
+            },
+            _ => c,
+        };
+        Some((p.0, p.1, format!("{} \"{}\"", e.id, e.label)))
+    } else if let Some(px) = coordinate {
+        match to_screen(px) {
+            Ok(p) => Some((p.0, p.1, format!("({},{})", px.0, px.1))),
+            Err(err) => return ToolResult::error(format!("{action}: {err}")),
+        }
+    } else {
+        None
+    };
+
+    let performed: ToolResult = match action {
         "type" => {
             let text = input["text"].as_str().unwrap_or("");
             if text.is_empty() {
                 return ToolResult::error(errors::missing_param("type", "text", "os(resource: \"input\", action: \"type\", text: \"hello\")"));
             }
-            // If a target was given, click it to focus first, then type.
-            if let Some((x, y, label)) = target {
-                let click_result = input_click(x, y).await;
+            if let Some((x, y, label)) = &target {
+                let click_result = input_click(*x, *y).await;
                 if click_result.is_error {
                     return click_result;
                 }
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                let type_result = input_type(text).await;
-                let where_ = if label.is_empty() {
-                    format!("({},{})", x, y)
-                } else {
-                    format!("'{}' at ({},{})", label, x, y)
-                };
-                if type_result.is_error {
-                    return ToolResult::error(format!(
-                        "Clicked {} but typing failed: {}",
-                        where_, type_result.content
-                    ));
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                let r = input_type(text).await;
+                if r.is_error {
+                    return ToolResult::error(format!("Clicked {label} but typing failed: {}", r.content));
                 }
-                return ToolResult::ok(format!(
-                    "Clicked {} and typed {} chars",
-                    where_,
-                    text.chars().count()
-                ));
+                ToolResult::ok(format!("Clicked {label} and typed {} chars", text.chars().count()))
+            } else {
+                let r = input_type(text).await;
+                if r.is_error {
+                    return r;
+                }
+                ToolResult::ok(format!("Typed {} chars", text.chars().count()))
             }
-            input_type(text).await
         }
-        "press" => {
+        "press" | "hotkey" => {
             let key = input["key"].as_str().unwrap_or("");
             if key.is_empty() {
                 return ToolResult::error(errors::missing_param("press", "key", "os(resource: \"input\", action: \"press\", key: \"return\")"));
             }
-            // A combo (contains '+', e.g. "cmd+shift+s") uses the hotkey path; else a single key.
-            if key.contains('+') {
-                input_hotkey(key).await
-            } else {
-                input_press(key).await
+            let r = if key.contains('+') { input_hotkey(key).await } else { input_press(key).await };
+            if r.is_error {
+                return r;
             }
+            ToolResult::ok(format!("Pressed {key}"))
         }
-        "tap" => tap(input).await,
-        "click" => {
-            let Some((x, y, label)) = target else {
+        "click" | "double_click" | "right_click" => {
+            let Some((x, y, label)) = &target else {
                 return ToolResult::error(
                     "click requires `ref` (from capture see) or `coordinate: [x, y]`.",
                 );
             };
-            let click_count = input["click_count"].as_u64().unwrap_or(1);
-            let button = input["button"].as_str().unwrap_or("left");
-            let (r, how) = match (click_count, button) {
-                (_, "right") => (input_right_click(x, y).await, "Right-clicked"),
-                (2, _) => (input_double_click(x, y).await, "Double-clicked"),
-                _ => (input_click(x, y).await, "Clicked"),
+            let click_count = if action == "double_click" { 2 } else { input["click_count"].as_u64().unwrap_or(1) };
+            let button = if action == "right_click" { "right" } else { input["button"].as_str().unwrap_or("left") };
+            // A plain click on an element that accepts AXPress is pressed
+            // through accessibility: no pointer travel, and it works on an
+            // element the pointer could not reach (occluded, off-screen).
+            let mut pressed_via_ax: Option<Result<(), String>> = None;
+            if click_count == 1 && button == "left" {
+                if let Some(e) = element.as_ref().filter(|e| !e.path.is_empty() && e.actions.iter().any(|a| a == "AXPress")) {
+                    pressed_via_ax = Some(ax_native::act(&app, 1, &e.path, "AXPress").await);
+                }
+            }
+            match pressed_via_ax {
+                Some(Ok(())) => ToolResult::ok(format!("Pressed {label} via accessibility")),
+                other => {
+                    let (r, how) = match (click_count, button) {
+                        (_, "right") => (input_right_click(*x, *y).await, "Right-clicked"),
+                        (2, _) => (input_double_click(*x, *y).await, "Double-clicked"),
+                        _ => (input_click(*x, *y).await, "Clicked"),
+                    };
+                    if r.is_error {
+                        return r;
+                    }
+                    let fallback = match other {
+                        Some(Err(err)) => format!(" (accessibility press failed: {err}; clicked the point instead)"),
+                        _ => String::new(),
+                    };
+                    ToolResult::ok(format!("{how} {label} at screen ({x},{y}){fallback}"))
+                }
+            }
+        }
+        "move" => {
+            let Some((x, y, label)) = &target else {
+                return ToolResult::error("move requires `ref` or `coordinate: [x, y]`.");
             };
+            let r = input_move(*x, *y).await;
             if r.is_error {
                 return r;
             }
-            let where_ = if label.is_empty() {
-                format!("({},{})", x, y)
-            } else {
-                format!("'{}' at ({},{})", label, x, y)
-            };
-            ToolResult::ok(format!("{} {}", how, where_))
-        }
-        "move" => {
-            let Some((x, y, _)) = target else {
-                return ToolResult::error("move requires `ref` or `coordinate: [x, y]`.");
-            };
-            input_move(x, y).await
+            ToolResult::ok(format!("Moved the pointer to {label}"))
         }
         "scroll" => {
             // Web-parity shape: direction + amount (ticks, ~100px each).
             let amount = input["amount"].as_i64().unwrap_or(3).max(1);
             let step = 100;
-            let (dx, dy) = match input["direction"].as_str().unwrap_or("down") {
+            let direction = input["direction"].as_str().unwrap_or("down");
+            let (dx, dy) = match direction {
                 "up" => (0, -amount * step),
                 "left" => (-amount * step, 0),
                 "right" => (amount * step, 0),
                 _ => (0, amount * step),
             };
-            input_scroll(dx, dy).await
+            if let Some((x, y, _)) = &target {
+                let _ = input_move(*x, *y).await;
+            }
+            let r = input_scroll(dx, dy).await;
+            if r.is_error {
+                return r;
+            }
+            ToolResult::ok(format!("Scrolled {direction} {amount} ticks"))
         }
         "drag" => {
-            let (Some((x, y)), Some((x2, y2))) = (coord(input, "start_coordinate"), coordinate)
-            else {
+            let (Some(start), Some((x2, y2, _))) = (coord(input, "start_coordinate"), &target) else {
                 return ToolResult::error(
                     "drag requires `start_coordinate: [x, y]` and `coordinate: [x, y]` (end point).",
                 );
             };
-            input_drag(x, y, x2, y2).await
+            let (x, y) = match to_screen(start) {
+                Ok(p) => p,
+                Err(err) => return ToolResult::error(format!("drag: {err}")),
+            };
+            let r = input_drag(x, y, *x2, *y2).await;
+            if r.is_error {
+                return r;
+            }
+            ToolResult::ok(format!("Dragged from ({},{}) to ({x2},{y2})", start.0, start.1))
         }
-        "paste" => input_paste().await,
-        _ => ToolResult::error(format!(
-            "Unknown input action '{}'. Use: click, type, press, move, scroll, drag, paste",
-            action
+        _ => {
+            return ToolResult::error(format!(
+                "Unknown input action '{}'. Use: click, double_click, right_click, type, press, hotkey, move, scroll, drag, paste",
+                action
+            ))
+        }
+    };
+
+    // The after-state: the same target, captured fresh.
+    let wait_ms = input["wait_ms"].as_u64().unwrap_or(800).min(10_000);
+    tokio::time::sleep(Duration::from_millis(wait_ms)).await;
+    if let Ok(mut guard) = ax_cache.lock() {
+        guard.clear();
+    }
+    let after_input = serde_json::json!({ "app": app, "quality": input["quality"] });
+    match observe(&app, &after_input, snapshot_store, ax_cache).await {
+        Ok(after) => {
+            let delta = match snap.as_ref().filter(|s| s.app.as_deref().map_or(app.is_empty(), |a| a.eq_ignore_ascii_case(&app))) {
+                Some(before) => delta_line(before, &after.snapshot),
+                None => String::new(),
+            };
+            let mut r = after.result;
+            r.content = format!("{}. {delta}\n\n{}", performed.content, r.content);
+            r
+        }
+        Err(e) => ToolResult::ok(format!(
+            "{}. Could not capture the after-state: {}",
+            performed.content, e.content
         )),
     }
 }
@@ -854,78 +971,70 @@ pub(crate) fn parse_frame(s: &str) -> Option<(i64, i64, i64, i64)> {
     (f.2 > 0 && f.3 > 0).then_some(f)
 }
 
-/// Bring `app` to the front and read its first window's frame, in screen
-/// points — the same units cliclick and screencapture -R take.
+/// `app`'s first window frame in screen points — the units cliclick and
+/// screencapture take. `raise` brings the app to the front first (needed
+/// before acting, not before looking).
 #[cfg(target_os = "macos")]
-async fn window_frame(app: &str) -> Result<(i64, i64, i64, i64), String> {
+async fn window_frame(app: &str, raise: bool) -> Result<Rect, String> {
     let script = format!(
         "tell application \"System Events\" to tell process \"{}\"\n\
-         set frontmost to true\n\
-         get {{position, size}} of window 1\n\
+         {}get {{position, size}} of window 1\n\
          end tell",
-        escape_applescript(app)
+        escape_applescript(app),
+        if raise { "set frontmost to true\n" } else { "" }
     );
-    let out = run_osascript_raw(&script, Some(AX_CAPTURE_TIMEOUT)).await?;
-    parse_frame(&out).ok_or_else(|| format!("could not read the window frame of {app} (got '{}')", out.trim()))
+    let out = match run_osascript_raw(&script, Some(AX_CAPTURE_TIMEOUT)).await {
+        Ok(out) => out,
+        Err(e) if e.contains("-1719") => return Err(format!("{app} has no open window")),
+        Err(e) => return Err(e),
+    };
+    parse_frame(&out)
+        .map(|(x, y, w, h)| Rect { x, y, width: w, height: h })
+        .ok_or_else(|| format!("could not read the window frame of {app} (got '{}')", out.trim()))
 }
 
-/// tap: one verified step of driving a window — read the window's live frame,
-/// click a window-relative point, wait, and come back with the window as it
-/// looks now, as an image. The model gets the "after" picture whether it asks
-/// or not, which is the difference between driving a UI and guessing at one
-/// (Nanna, 2026-09-19: seven captures written to disk, none looked at).
-async fn tap(input: &serde_json::Value) -> ToolResult {
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = input;
-        return ToolResult::error("tap is macOS-only for now; use input click + capture screenshot.");
-    }
+// ponytail: window frames are read on macOS only; elsewhere every capture is
+// the whole screen and coordinates are screen pixels. Add xdotool
+// getwindowgeometry / UIAutomation BoundingRectangle when a cloud task
+// needs window-relative acting.
+#[cfg(not(target_os = "macos"))]
+async fn window_frame(app: &str, _raise: bool) -> Result<Rect, String> {
+    Err(format!("window frames are not read on this platform ({app}); captures are the whole screen"))
+}
+
+/// The whole screen in screen points, for captures that are not of one window.
+async fn screen_rect() -> Option<Rect> {
     #[cfg(target_os = "macos")]
     {
-        let app = input["app"].as_str().unwrap_or("").trim();
-        if app.is_empty() {
-            return ToolResult::error(
-                "tap requires `app` (the window to tap in) and a window-relative point: \
-                 os(resource: \"input\", action: \"tap\", app: \"Simulator\", coordinate: [223, 900])",
-            );
-        }
-        let (_, coordinate) = input_target(input);
-        let (x, y) = match coordinate.or_else(|| Some((input["x"].as_i64()?, input["y"].as_i64()?))) {
-            Some(p) => p,
-            None => return ToolResult::error("tap requires `coordinate: [x, y]` (or `x`/`y`), measured from the window's top-left in points."),
-        };
-        let (fx, fy, fw, fh) = match window_frame(app).await {
-            Ok(f) => f,
-            Err(e) => return ToolResult::error(format!("tap: {e}")),
-        };
-        if x < 0 || y < 0 || x >= fw || y >= fh {
-            return ToolResult::error(format!(
-                "tap: ({x},{y}) is outside the {app} window, which is {fw}×{fh} points (top-left at {fx},{fy}). Points are window-relative."
-            ));
-        }
-        let (ax, ay) = (fx + x, fy + y);
-        let click = input_click(ax, ay).await;
-        if click.is_error {
-            return click;
-        }
-        let wait_ms = input["wait_ms"].as_u64().unwrap_or(1200).min(10_000);
-        tokio::time::sleep(std::time::Duration::from_millis(wait_ms)).await;
-        // The window may have moved on its own (Simulator does); capture where it is NOW.
-        let (cx, cy, cw, ch) = window_frame(app).await.unwrap_or((fx, fy, fw, fh));
-        let quality = input["quality"].as_str().unwrap_or("medium");
-        let mut shot = capture_screenshot(&serde_json::json!({
-            "region": format!("{cx},{cy},{cw},{ch}"),
-            "quality": quality,
-        }))
-        .await;
-        let moved = if (cx, cy) != (fx, fy) { format!(" The window moved to {cx},{cy} after the tap.") } else { String::new() };
-        shot.content = format!(
-            "Tapped {app} at window point ({x},{y}) = screen ({ax},{ay}); window was at {fx},{fy} size {fw}×{fh}.{moved} \
-             Below is the window as it looks now — read it before the next tap. {}",
-            shot.content
-        );
-        shot
+        let out = run_osascript_raw(
+            "tell application \"Finder\" to get bounds of window of desktop",
+            Some(AX_CAPTURE_TIMEOUT),
+        )
+        .await
+        .ok()?;
+        let (x, y, w, h) = parse_frame(&out)?;
+        return Some(Rect { x, y, width: w, height: h });
     }
+    #[cfg(target_os = "linux")]
+    {
+        let out = run_command_raw("xdotool", &["getdisplaygeometry"]).await.ok()?;
+        let mut it = out.split_whitespace().filter_map(|t| t.parse::<i64>().ok());
+        return Some(Rect { x: 0, y: 0, width: it.next()?, height: it.next()? });
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let out = ps_daemon()
+            .execute(
+                "Add-Type -AssemblyName System.Windows.Forms; $b=[System.Windows.Forms.Screen]::PrimaryScreen.Bounds; \"$($b.Width) $($b.Height)\"",
+                Duration::from_secs(5),
+            )
+            .await
+            .ok()?;
+        let mut it = out.split_whitespace().filter_map(|t| t.parse::<i64>().ok());
+        return Some(Rect { x: 0, y: 0, width: it.next()?, height: it.next()? });
+    }
+    #[allow(unreachable_code)]
+    None
 }
 
 async fn input_click(x: i64, y: i64) -> ToolResult {
@@ -1577,137 +1686,218 @@ async fn handle_capture(
     }
 }
 
-/// Capture screenshot + AX tree elements, store as a snapshot.
-/// Returns the snapshot_id and element list as JSON, plus the screenshot image.
+/// One look at a target: image, frame, scale and elements, stored as a
+/// snapshot the next act resolves against.
+struct Observed {
+    result: ToolResult,
+    snapshot: Snapshot,
+}
+
 async fn capture_see(
     input: &serde_json::Value,
     snapshot_store: &tokio::sync::Mutex<SnapshotStore>,
     ax_cache: &AxCache,
 ) -> ToolResult {
-    // Step 1: Take screenshot
-    let screenshot = capture_screenshot(input).await;
-    if screenshot.is_error {
-        return screenshot;
+    let app = input["app"].as_str().unwrap_or("").trim();
+    match observe(app, input, snapshot_store, ax_cache).await {
+        Ok(o) => o.result,
+        Err(e) => e,
     }
+}
 
-    // Step 2: Capture AX elements with positions (cached, 2s TTL)
-    let app = input["app"].as_str().unwrap_or("");
-    let max_elements = input["max_elements"].as_u64().unwrap_or(100).min(500) as usize;
+/// Walk `app` natively; when that is unavailable, the AppleScript walk. The
+/// layer used is named in the capture, never inferred by the caller.
+async fn walk_elements(app: &str) -> (AxCapture, Vec<UIElement>) {
+    match ax_native::tree(app, &ax_native::WalkOpts::default()).await {
+        Ok(tree) => {
+            let elements: Vec<UIElement> = tree
+                .nodes
+                .iter()
+                .map(|n| {
+                    let label = if !n.title.is_empty() {
+                        n.title.clone()
+                    } else {
+                        n.desc.clone().or_else(|| n.value.clone()).unwrap_or_default()
+                    };
+                    UIElement {
+                        id: String::new(),
+                        role: n.role.clone(),
+                        label,
+                        bounds: Rect { x: n.frame[0], y: n.frame[1], width: n.frame[2], height: n.frame[3] },
+                        actionable: !n.actions.is_empty(),
+                        keyboard_shortcut: None,
+                        actions: n.actions.clone(),
+                        path: n.path.clone(),
+                        focused: n.focused,
+                    }
+                })
+                .collect();
+            let actionable = elements.iter().filter(|e| e.actionable).count();
+            (
+                AxCapture {
+                    app: if tree.app.is_empty() { app.to_string() } else { tree.app },
+                    windows: Some(tree.windows),
+                    walk_error: None,
+                    via: if actionable >= 3 { "ax" } else { "vision" }.to_string(),
+                    truncated: tree.truncated,
+                    fallback: None,
+                },
+                elements,
+            )
+        }
+        Err(reason) => {
+            let (mut cap, elements) = capture_ax_elements(app).await;
+            let actionable = elements.iter().filter(|e| e.actionable).count();
+            cap.via = if cap.walk_error.is_none() && actionable >= 3 { "ax-shallow" } else { "vision" }.to_string();
+            cap.fallback = Some(reason);
+            (cap, elements)
+        }
+    }
+}
+
+async fn observe(
+    app: &str,
+    input: &serde_json::Value,
+    snapshot_store: &tokio::sync::Mutex<SnapshotStore>,
+    ax_cache: &AxCache,
+) -> Result<Observed, ToolResult> {
+    let quality = input["quality"].as_str().unwrap_or("medium");
+    let max_elements = input["max_elements"].as_u64().unwrap_or(60).min(500) as usize;
+
+    // 1. What the image will cover.
+    let (frame, window_image, frame_note) = if app.is_empty() {
+        (screen_rect().await, false, String::new())
+    } else {
+        match window_frame(app, false).await {
+            Ok(r) => (Some(r), true, String::new()),
+            Err(e) => (screen_rect().await, false, format!(" ({e}; captured the whole screen instead)")),
+        }
+    };
+
+    // 2. The image.
+    let shot_input = if window_image {
+        serde_json::json!({ "app": app, "quality": quality })
+    } else {
+        serde_json::json!({ "quality": quality })
+    };
+    let shot = capture_screenshot(&shot_input).await;
+    if shot.is_error {
+        return Err(shot);
+    }
+    let dims = shot
+        .payload
+        .as_ref()
+        .and_then(|p| Some((p["width"].as_u64()? as i64, p["height"].as_u64()? as i64)))
+        .filter(|(w, h)| *w > 0 && *h > 0);
+    let scale = match (&frame, dims) {
+        (Some(f), Some((w, _))) => f.width as f64 / w as f64,
+        _ => 1.0,
+    };
+
+    // 3. The elements (a walk done moments ago is reused; an act clears it).
     let cache_key = app.to_string();
-
-    // Check cache (snapshot-then-release — lock held <1μs)
     let cached = ax_cache.lock().ok().and_then(|guard| {
         guard
             .get(&cache_key)
             .filter(|(_, _, ts)| ts.elapsed() < Duration::from_secs(2))
-            .map(|(name, elems, ts)| (name.clone(), elems.clone(), ts.elapsed().as_millis() as u64))
+            .map(|(cap, elems, ts)| (cap.clone(), elems.clone(), ts.elapsed().as_millis() as u64))
     });
-
-    // When the element list is reused from a walk done moments ago, the
-    // response carries how many ms old it is; a fresh walk carries nothing.
     let mut ax_reused_from_ms_ago: Option<u64> = None;
-    let (observed, mut elements) = if let Some((name, elems, ms)) = cached {
+    let (observed, mut elements) = if let Some((cap, elems, ms)) = cached {
         ax_reused_from_ms_ago = Some(ms);
-        (name, elems)
+        (cap, elems)
     } else {
-        // Cache miss — subprocess runs with NO lock held
-        let (capture, elems) = capture_ax_elements(app).await;
+        let (cap, elems) = walk_elements(app).await;
         if let Ok(mut guard) = ax_cache.lock() {
-            guard.insert(cache_key, (capture.clone(), elems.clone(), Instant::now()));
+            guard.insert(cache_key, (cap.clone(), elems.clone(), Instant::now()));
         }
-        (capture, elems)
+        (cap, elems)
     };
-
-    // Limit and assign IDs
-    elements.truncate(max_elements);
+    let elements_total = elements.len();
+    elements.truncate(max_elements.max(1));
     assign_element_ids(&mut elements);
 
-    // Step 3: Build and store snapshot
-    let snapshot_id = generate_snapshot_id();
+    // 4. The snapshot the next act resolves against.
     let snapshot = Snapshot {
-        id: snapshot_id.clone(),
-        app: if observed.app.is_empty() {
-            None
-        } else {
-            Some(observed.app.clone())
-        },
-        created_at: std::time::Instant::now(),
+        id: generate_snapshot_id(),
+        app: if observed.app.is_empty() { None } else { Some(observed.app.clone()) },
+        created_at: Instant::now(),
         elements: elements.clone(),
+        frame: frame.clone(),
+        scale,
+        via: observed.via.clone(),
     };
+    snapshot_store.lock().await.insert(snapshot.clone());
 
-    {
-        let mut store = snapshot_store.lock().await;
-        store.insert(snapshot);
+    // 5. What the model reads: one header that says what it is looking at
+    //    and how it was read, then the elements in the image's own pixels.
+    let name = if observed.app.is_empty() { "the screen".to_string() } else { observed.app.clone() };
+    let covers = match &frame {
+        Some(f) if window_image => format!("window at {},{} size {}×{} pt", f.x, f.y, f.width, f.height),
+        Some(f) => format!("whole screen {}×{} pt", f.width, f.height),
+        None => "whole screen".to_string(),
+    };
+    let image_line = match dims {
+        Some((w, h)) if (scale - 1.0).abs() < 0.01 => format!("image {w}×{h} px (1 px = 1 pt)"),
+        Some((w, h)) => format!("image {w}×{h} px (1 px = {scale:.2} pt)"),
+        None => "image".to_string(),
+    };
+    let mut via = format!("via {}", observed.via);
+    if observed.via == "vision" {
+        let actionable = elements.iter().filter(|e| e.actionable).count();
+        via.push_str(&format!(" (accessibility tree had {actionable} actionable elements; act by image pixel)"));
     }
-
-    // Step 4: Build response
-    let elements_json: Vec<serde_json::Value> = elements
-        .iter()
-        .filter(|e| e.actionable || !e.label.is_empty())
-        .take(50) // Keep response concise for the LLM
-        .map(|e| {
-            serde_json::json!({
-                "id": e.id,
-                "role": e.role,
-                "label": e.label,
-                "bounds": { "x": e.bounds.x, "y": e.bounds.y, "w": e.bounds.width, "h": e.bounds.height },
-                "actionable": e.actionable,
-            })
-        })
-        .collect();
-
-    // Report the app that was actually inspected. Echoing the `app` argument
-    // meant a no-argument call always answered "" — the caller could not tell
-    // what it had just looked at.
-    // Two counts that must not read as one: what is listed below, and what
-    // the walk found. Unlabelled, non-actionable elements are left out and
-    // the list is capped, so the two differ on any busy window.
-    let elements_total = elements.len();
-    let elements_returned = elements_json.len();
-    let mut response = serde_json::json!({
-        "snapshot_id": snapshot_id,
-        "app": observed.app,
-        "elements_returned": elements_returned,
-        "elements_total": elements_total,
-        "elements": elements_json,
-    });
-    if elements_returned < elements_total {
-        response["note"] = serde_json::json!(format!(
-            "Listing {elements_returned} of {elements_total} elements: unlabelled, non-actionable ones are omitted and the list is capped at 50. Use ui find with a label to reach the rest."
-        ));
+    if let Some(reason) = &observed.fallback {
+        via.push_str(&format!(" (native walk unavailable: {reason})"));
+    }
+    if let Some(err) = &observed.walk_error {
+        via.push_str(&format!(" (walk failed: {err})"));
+    }
+    if observed.truncated {
+        via.push_str(" (walk cut short by its budget; elements may be missing)");
+    }
+    if observed.windows == Some(0) {
+        via.push_str(" (the app is running but has no open window)");
     }
     if let Some(ms) = ax_reused_from_ms_ago {
-        response["ax_reused_from_ms_ago"] = serde_json::json!(ms);
+        via.push_str(&format!(" (elements from a walk {ms} ms ago)"));
     }
-
-    // The walk itself failed or timed out: the empty element list is a
-    // consequence of that, not a statement about the window.
-    if let Some(err) = &observed.walk_error {
-        response["note"] = serde_json::json!(format!(
-            "Accessibility walk failed or timed out after {}s ({}); element list is empty because of that, not because the window is empty.",
-            AX_CAPTURE_TIMEOUT.as_secs(),
-            err
+    let listed: Vec<&UIElement> = elements.iter().filter(|e| e.actionable || !e.label.is_empty()).collect();
+    let mut text = format!(
+        "{name} — {covers}{frame_note}; {image_line}; {via}; {} of {elements_total} elements listed; snapshot {}\n",
+        listed.len(),
+        snapshot.id
+    );
+    for e in &listed {
+        let (x, y, w, h) = match &frame {
+            Some(f) => {
+                let (x, y) = screen_to_image((e.bounds.x, e.bounds.y), f, scale);
+                (x, y, (e.bounds.width as f64 / scale).round() as i64, (e.bounds.height as f64 / scale).round() as i64)
+            }
+            None => (e.bounds.x, e.bounds.y, e.bounds.width, e.bounds.height),
+        };
+        let mut tags = Vec::new();
+        if e.actions.iter().any(|a| a == "AXPress") { tags.push("press"); }
+        if e.actions.iter().any(|a| a == "AXSetValue") { tags.push("editable"); }
+        if e.focused { tags.push("focused"); }
+        let tags = if tags.is_empty() { String::new() } else { format!("  [{}]", tags.join(", ")) };
+        text.push_str(&format!("{}  {}  \"{}\"  at {x},{y} {w}×{h}{tags}\n", e.id, e.role, e.label));
+    }
+    if listed.len() < elements_total {
+        text.push_str(&format!(
+            "({} unlabelled or inert elements not listed; raise max_elements or use ui find.)\n",
+            elements_total - listed.len()
         ));
     }
+    text.push_str(&format!(
+        "Coordinates are pixels of the image below. Act by ref (input click, ref: \"B1\") or by pixel (input click, app: \"{}\", coordinate: [x, y]); every input action returns this view again, after the action.",
+        if observed.app.is_empty() { "App" } else { &observed.app }
+    ));
 
-    // An app can be running with no window open, in which case there is nothing
-    // to walk. Saying so is the difference between "this app has no visible
-    // window" and an empty element list the caller has to guess at.
-    if observed.windows == Some(0) {
-        response["window_count"] = serde_json::json!(0);
-        response["note"] = serde_json::json!(
-            "This application is running but has no open window, so no elements \
-             could be read. The screenshot shows the screen as a whole."
-        );
-    }
-
-    ToolResult { payload: None,
-        content: serde_json::to_string_pretty(&response).unwrap_or_default(),
-        is_error: false,
-        image_url: screenshot.image_url,
-        http_status: None,
-        terminal: false,
-    }
+    Ok(Observed {
+        result: ToolResult { payload: None, content: text, is_error: false, image_url: shot.image_url, http_status: None, terminal: false },
+        snapshot,
+    })
 }
 
 /// Hard ceiling on elements the AX script will walk. The cost is one Apple
@@ -1732,6 +1922,12 @@ struct AxCapture {
     /// element list then says nothing about the window; the caller must be
     /// told which of the two it is looking at.
     walk_error: Option<String>,
+    /// Which layer the elements came from: `ax`, `ax-shallow`, or `vision`.
+    via: String,
+    /// The walk stopped at its element or time budget.
+    truncated: bool,
+    /// Why the native walk was not used, when it was not.
+    fallback: Option<String>,
 }
 
 /// Capture AX elements with position information from the accessibility tree.
@@ -1820,6 +2016,7 @@ end tell"#,
                         app: name,
                         windows: header.windows,
                         walk_error: None,
+                        ..Default::default()
                     },
                     elements,
                 )
@@ -1829,6 +2026,7 @@ end tell"#,
                     app: app.to_string(),
                     windows: None,
                     walk_error: Some(e),
+                    ..Default::default()
                 },
                 Vec::new(),
             ),
@@ -1842,6 +2040,7 @@ end tell"#,
                 app: app.to_string(),
                 windows: None,
                 walk_error: None,
+                ..Default::default()
             },
             Vec::new(),
         )
@@ -1920,7 +2119,7 @@ async fn capture_screenshot(input: &serde_json::Value) -> ToolResult {
             match run_osascript_raw(&wid_script, Some(AX_CAPTURE_TIMEOUT)).await {
                 Ok(wid) => {
                     let wid = wid.trim().to_string();
-                    let mut args = vec!["-l".to_string(), wid];
+                    let mut args = vec!["-l".to_string(), wid, "-o".to_string()];
                     args.extend(base_args);
                     args.push(tmp_path.clone());
                     let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
@@ -2092,7 +2291,15 @@ fn persist_capture(bytes: &[u8], ext: &str) -> Option<(String, String)> {
 /// can share/display it), and keep the `data:` URI in `image_url` so the vision
 /// sidecar still works for vision-incapable providers.
 #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
-fn finalize_capture(bytes: &[u8], mime: &str, summary: &str) -> ToolResult {
+fn image_dims(bytes: &[u8]) -> Option<(u32, u32)> {
+    image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .ok()?
+        .into_dimensions()
+        .ok()
+}
+
+fn finalize_capture(bytes: &[u8], mime: &str, dims: Option<(u32, u32)>, summary: &str) -> ToolResult {
     use base64::Engine;
     let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
     let data_uri = format!("data:{};base64,{}", mime, b64);
@@ -2109,7 +2316,8 @@ fn finalize_capture(bytes: &[u8], mime: &str, summary: &str) -> ToolResult {
         ),
         None => summary.to_string(),
     };
-    ToolResult { payload: None,
+    ToolResult {
+        payload: dims.map(|(w, h)| serde_json::json!({ "kind": "capture", "width": w, "height": h })),
         content,
         is_error: false,
         image_url: Some(data_uri),
@@ -2137,6 +2345,7 @@ fn compress_and_encode(img_bytes: &[u8], quality: &str) -> ToolResult {
         return finalize_capture(
             img_bytes,
             mime,
+            image_dims(img_bytes),
             &format!("Screenshot captured (high quality, {} bytes)", img_bytes.len()),
         );
     }
@@ -2160,6 +2369,7 @@ fn compress_and_encode(img_bytes: &[u8], quality: &str) -> ToolResult {
             return finalize_capture(
                 img_bytes,
                 mime,
+                image_dims(img_bytes),
                 &format!(
                     "Screenshot captured (requested {} quality but compression failed; returning original {} bytes)",
                     quality,
@@ -2187,6 +2397,7 @@ fn compress_and_encode(img_bytes: &[u8], quality: &str) -> ToolResult {
             finalize_capture(
                 &jpeg_bytes,
                 "image/jpeg",
+                Some((img.width(), img.height())),
                 &format!(
                     "Screenshot captured: {}x{}, JPEG q{}, {} KiB (source {} KiB)",
                     img.width(),
@@ -2203,6 +2414,7 @@ fn compress_and_encode(img_bytes: &[u8], quality: &str) -> ToolResult {
             finalize_capture(
                 img_bytes,
                 mime,
+                image_dims(img_bytes),
                 &format!(
                     "Screenshot captured (requested {} quality but compression failed; returning original {} bytes)",
                     quality,
@@ -3932,20 +4144,76 @@ mod tests {
     #[tokio::test]
     async fn test_input_missing_params() {
         let store = tokio::sync::Mutex::new(SnapshotStore::new());
+        let cache = AxCache::default();
         // type without text
-        let result = handle_input("type", &serde_json::json!({}), &store).await;
+        let result = handle_input("type", &serde_json::json!({}), &store, &cache).await;
         assert!(result.is_error);
         assert!(result.content.contains("text"));
 
         // press without key
-        let result = handle_input("press", &serde_json::json!({}), &store).await;
+        let result = handle_input("press", &serde_json::json!({}), &store, &cache).await;
         assert!(result.is_error);
         assert!(result.content.contains("key"));
 
         // click with neither ref nor coordinate → explicit error (no silent click at 0,0)
-        let result = handle_input("click", &serde_json::json!({}), &store).await;
+        let result = handle_input("click", &serde_json::json!({}), &store, &cache).await;
         assert!(result.is_error);
         assert!(result.content.contains("coordinate"));
+    }
+
+    /// A pixel means a pixel of an image the model was given. With no capture
+    /// of the app there is no such image, so the click is refused before
+    /// anything moves, and the message names the one call that fixes it.
+    #[tokio::test]
+    async fn pixel_click_without_a_capture_is_refused_with_the_capture_hint() {
+        let store = tokio::sync::Mutex::new(SnapshotStore::new());
+        let cache = AxCache::default();
+        let r = handle_input(
+            "click",
+            &serde_json::json!({"app": "Simulator", "coordinate": [223, 900]}),
+            &store,
+            &cache,
+        )
+        .await;
+        assert!(r.is_error);
+        assert!(r.content.contains("no capture of Simulator"), "{}", r.content);
+        assert!(r.content.contains("action: \"see\", app: \"Simulator\""), "{}", r.content);
+    }
+
+    /// A ref is looked up in the capture of the app it names, not in whatever
+    /// capture happened to be last.
+    #[tokio::test]
+    async fn refs_resolve_against_the_named_apps_capture() {
+        let store = tokio::sync::Mutex::new(SnapshotStore::new());
+        let cache = AxCache::default();
+        let mk = |id: &str, app: &str| Snapshot {
+            id: id.into(),
+            app: Some(app.into()),
+            created_at: Instant::now(),
+            elements: vec![UIElement {
+                id: "B1".into(),
+                role: "AXButton".into(),
+                label: format!("{app} button"),
+                bounds: desktop_snapshot::Rect { x: 0, y: 0, width: 10, height: 10 },
+                actionable: true,
+                keyboard_shortcut: None,
+                actions: vec![],
+                path: String::new(),
+                focused: false,
+            }],
+            frame: Some(desktop_snapshot::Rect { x: 0, y: 0, width: 100, height: 100 }),
+            scale: 1.0,
+            via: "ax".into(),
+        };
+        store.lock().await.insert(mk("s1", "Finder"));
+        store.lock().await.insert(mk("s2", "Notes"));
+        let latest = snapshot_for(&store, "", "Finder").await.unwrap();
+        assert_eq!(latest.id, "s1");
+        assert_eq!(snapshot_for(&store, "", "").await.unwrap().id, "s2");
+        assert_eq!(snapshot_for(&store, "s1", "Notes").await.unwrap().id, "s1", "snapshot_id wins");
+        let r = handle_input("click", &serde_json::json!({"app": "Mail", "ref": "B1"}), &store, &cache).await;
+        assert!(r.is_error);
+        assert!(r.content.contains("not in the last capture of Mail"), "{}", r.content);
     }
 
     /// Every spelling the docs taught for an input target lands on the
@@ -3976,11 +4244,34 @@ mod tests {
     #[tokio::test]
     async fn element_id_is_looked_up_as_a_ref() {
         let store = tokio::sync::Mutex::new(SnapshotStore::new());
-        let result = handle_input("click", &serde_json::json!({"element_id": "Z9"}), &store).await;
+        let cache = AxCache::default();
+        let result = handle_input("click", &serde_json::json!({"element_id": "Z9"}), &store, &cache).await;
         assert!(result.is_error);
-        assert!(result.content.contains("Element 'Z9' not found"), "{}", result.content);
-        let result = handle_input("type", &serde_json::json!({"element": "Z9", "text": "hi"}), &store).await;
-        assert!(result.content.contains("Element 'Z9' not found"), "{}", result.content);
+        assert!(result.content.contains("Element 'Z9' is not in the last capture"), "{}", result.content);
+        let result = handle_input("type", &serde_json::json!({"element": "Z9", "text": "hi"}), &store, &cache).await;
+        assert!(result.content.contains("Element 'Z9' is not in the last capture"), "{}", result.content);
+    }
+
+    /// Live, read-only: one observe of Finder. Nothing is clicked or typed.
+    /// Run with `cargo test -p nebo-tools --lib live_observe -- --ignored --nocapture`.
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    #[ignore]
+    async fn live_observe_finder_returns_frame_scale_and_layer() {
+        let store = tokio::sync::Mutex::new(SnapshotStore::new());
+        let cache = AxCache::default();
+        let started = Instant::now();
+        let o = observe("Finder", &serde_json::json!({}), &store, &cache).await.map_err(|e| e.content).unwrap();
+        println!("{} ms\n{}", started.elapsed().as_millis(), o.result.content);
+        assert!(o.result.image_url.is_some(), "an observe carries the image");
+        assert!(o.snapshot.frame.is_some(), "an observe always knows what the image covers");
+        assert!(o.snapshot.scale > 0.0);
+        // Finder may have no window open, in which case the screen is what was captured — and the header says so.
+        assert!(
+            o.result.content.starts_with("Finder — window at ") || o.result.content.contains("Finder has no open window"),
+            "{}", o.result.content
+        );
+        assert!(o.result.content.contains("via ax"), "{}", o.result.content);
     }
 
     #[test]
