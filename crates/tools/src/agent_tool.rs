@@ -756,7 +756,9 @@ impl PersonaTool {
                 let scope = department.map(|d| format!(" in {d}")).unwrap_or_default();
                 return ToolResult::ok(format!(
                     "No marketplace employees{scope}. The catalog is organised by department; try \
-                     another department or broader words. Do not invent a listing."
+                     another department or broader words. If you were looking for a tool, a connection \
+                     or a service rather than a person, those are a separate catalog: \
+                     plugin(action: \"discover\", query: \"...\"). Do not invent a listing."
                 ));
             }
             let shown = items.len();
