@@ -1011,7 +1011,9 @@
     | { kind: 'note'; key: string; lines: string[] }
     | { kind: 'tool'; key: string; tool: ToolMsg };
 
-  /** Open state per turn; unset means "open while the turn is live". */
+  /** Open state per turn; unset means folded. A live turn stays folded too —
+   *  the summary line shimmers while the work happens, and the work is read
+   *  by whoever opens it. */
   let activityOpen = $state<Record<string, boolean>>({});
 
   function turnSegments(idx: number): AssistantMsg[] {
@@ -1366,7 +1368,7 @@
          folded under a summary line. Rows open on click; a page's address
          is a link. keyId = the turn's first segment id. -->
     {#snippet activityPanel(steps: ActivityStep[], tools: ToolMsg[], keyId: string, live: boolean)}
-      {@const open = activityOpen[keyId] ?? live}
+      {@const open = activityOpen[keyId] ?? false}
       <div class="max-w-[640px] my-1.5">
         <button
           type="button"
@@ -1374,10 +1376,7 @@
           aria-expanded={open}
           onclick={() => (activityOpen[keyId] = !open)}
         >
-          {#if live && tools.some((t: ToolMsg) => t.status === 'running')}
-            <svg width="14" height="14" viewBox="0 0 14 14" class="animate-spin text-primary shrink-0"><circle cx="7" cy="7" r="5.5" stroke="currentColor" stroke-width="1.5" fill="none" stroke-dasharray="20 14" stroke-linecap="round"/></svg>
-          {/if}
-          <span class="truncate max-w-[60vw] md:max-w-md">{tools.length ? workLineLabel(tools) : $t('chat.working')}</span>
+          <span class="truncate max-w-[60vw] md:max-w-md {live ? 'activity-live' : ''}">{tools.length ? workLineLabel(tools) : $t('chat.working')}</span>
           <span class="shrink-0 transition-transform {open ? 'rotate-90' : ''}">&rsaquo;</span>
         </button>
 
