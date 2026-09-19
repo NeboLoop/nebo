@@ -136,7 +136,25 @@ pub struct ListExtensionsResponse {
 pub async fn list_extensions(
     State(state): State<AppState>,
 ) -> HandlerResult<ListExtensionsResponse> {
-    let summaries = state.skill_loader.list_summaries(None).await;
+    extensions_visible_to(&state, None).await
+}
+
+/// GET /api/v1/agents/{id}/skills — the skills ONE employee can see: every
+/// global skill plus the ones it learned itself, which are owned by the
+/// agent and invisible to the global list. Until this existed there was no
+/// way, from any client, to see what an employee had taught itself.
+pub async fn list_agent_skills(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> HandlerResult<ListExtensionsResponse> {
+    extensions_visible_to(&state, Some(&id)).await
+}
+
+async fn extensions_visible_to(
+    state: &AppState,
+    agent: Option<&str>,
+) -> HandlerResult<ListExtensionsResponse> {
+    let summaries = state.skill_loader.list_summaries(agent).await;
     let mut extensions = Vec::with_capacity(summaries.len());
 
     for s in &summaries {
