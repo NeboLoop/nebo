@@ -2608,6 +2608,10 @@ impl DynTool for AgentTool {
          employees and its tools, ranked, marked [already hired]/[already installed], and ONE hire card offers the best \
          match for all of them with one confirm. Never search roles one at a time. Also takes department, limit, offset; \
          omit query to page the whole catalog.\n\
+         With no query the page lists EMPLOYEES ONLY. Tools, connections and services are a separate catalog \
+         behind a different door — plugin(action: \"discover\", query: \"...\") — and that is where a tool installs. \
+         Asked for a tool or a connection rather than a person, go there; an employee list without a tool on it \
+         does not mean the catalog has none.\n\
          STAFFING: when the user wants to set up a business, add people, or asks who could do a job, the employee is the \
          hire and a tool is what they use — discover shows both. Departments: \
          accounting, sales, customer-support, marketing, direct-response, operations, people-hr, legal, it, analytics, \
