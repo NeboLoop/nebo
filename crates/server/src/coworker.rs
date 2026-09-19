@@ -268,6 +268,7 @@ pub(crate) async fn send_coworker_message(
         comm_reply: None,
         entity_config,
         images: vec![],
+        attachments: vec![],
         entity_name: String::new(),
         origin_agent_id: None,
         mention_context: Some(mention_context),

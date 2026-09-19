@@ -987,6 +987,10 @@ pub struct RunRequest {
     pub personality_snippet: Option<String>,
     /// Images attached to the user's message (base64-encoded).
     pub images: Vec<ai::ImageContent>,
+    /// The files the owner attached, as uploaded (fileId, filename, mimeType,
+    /// size, url). Kept on the user row so a reloaded transcript still shows
+    /// them; the "[Attached: …]" note in the text is for the model.
+    pub attachments: Vec<serde_json::Value>,
     /// Allowed filesystem paths — restricts file writes and shell commands to these directories.
     /// Empty = unrestricted.
     pub allowed_paths: Vec<String>,
@@ -1804,6 +1808,17 @@ impl Runner {
             // owner speaking. It stays in the model's history (that is the
             // whole point) and out of the owner's transcript — `isMeta` is what
             // the read path filters on.
+            let metadata = if req.attachments.is_empty() {
+                metadata
+            } else {
+                let mut value: serde_json::Value = metadata
+                    .as_deref()
+                    .and_then(|m| serde_json::from_str(m).ok())
+                    .unwrap_or_else(|| serde_json::json!({}));
+                value["attachments"] = serde_json::json!(req.attachments);
+                Some(value.to_string())
+            };
+
             let metadata = if crate::goals::is_continuation_prompt(&effective_content) || req.hidden_prompt {
                 let mut value: serde_json::Value = metadata
                     .as_deref()

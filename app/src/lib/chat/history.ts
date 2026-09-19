@@ -5,6 +5,7 @@ import { toolDisplayName, artifactsToWorkItems, artifactsToAttachments } from '$
 import type { ChatMessage } from '$lib/chat/controller.svelte';
 import { formatTime } from '$lib/time';
 import type { ChatMessage as ApiChatMessage } from '$lib/api/neboComponents';
+import type { UploadedAttachment } from '$lib/types/attachment';
 
 // --- Metadata shapes embedded in API ChatMessage.metadata ---
 interface ToolCallMeta {
@@ -27,6 +28,8 @@ interface MessageMeta {
   hidden?: boolean;
   /** Run-produced artifact URLs persisted at chat_complete (Work items + inline media). */
   artifacts?: string[];
+  /** The files the owner attached to a user row, as uploaded. */
+  attachments?: UploadedAttachment[];
 }
 
 
@@ -91,6 +94,7 @@ export function parseMessages(rawMessages: ApiChatMessage[]): ChatMessage[] {
         id: m.id,
         content: m.content,
         time: formatTime(m.createdAt),
+        ...(meta?.attachments?.length ? { attachments: meta.attachments } : {}),
       });
       continue;
     }
