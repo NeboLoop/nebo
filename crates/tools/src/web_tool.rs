@@ -2963,10 +2963,13 @@ struct SearchResult {
 /// Wrap a cached search hit as a ToolResult (shared by the fast-path cache check
 /// and the single-flight follower path).
 fn cached_search_result(cached: &VisitedPage) -> ToolResult {
-    let age = cached.timestamp.elapsed().as_secs();
+    // No timestamp in the wrapper: the runner's redundancy guard hashes the
+    // whole result, and "{age}s ago" made every replay of the same cached
+    // search hash as new — a search loop then ran to the 16-call backstop
+    // instead of being flagged on its second repeat (Nanna, 2026-09-19).
     ToolResult {
         content: format!(
-            "[This same query ran {age}s ago; the results below are from that run, not a new search. Change the wording to search again.]\n\n{}",
+            "[This same query already ran this session; the results below are from that run, not a new search. Change the wording to search again.]\n\n{}",
             cached.content
         ),
         is_error: cached.is_error,

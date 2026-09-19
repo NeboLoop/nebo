@@ -96,6 +96,27 @@ pub struct ReminderContext<'a> {
     pub channel: &'a str,
 }
 
+/// Whether any turn BEFORE the latest user message called tools — the
+/// condition under which a fresh turn needs telling that the latest message,
+/// not the previous job, is the task. Meta rows (skills, briefings) are not
+/// user turns.
+pub fn prior_turns_used_tools(history: &[ChatMessage]) -> bool {
+    let is_meta = |m: &ChatMessage| {
+        m.metadata
+            .as_deref()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+            .and_then(|v| v.get("isMeta").and_then(|b| b.as_bool()))
+            .unwrap_or(false)
+    };
+    let Some(last_user) = history.iter().rposition(|m| m.role == "user" && !is_meta(m)) else {
+        return false;
+    };
+    history[..last_user].iter().any(|m| {
+        m.role == "assistant"
+            && m.tool_calls.as_deref().is_some_and(|tc| !tc.is_empty() && tc != "[]" && tc != "null")
+    })
+}
+
 /// An external messaging channel (NeboLoop/Slack/etc.) — NOT the local app's own
 /// surfaces (web/cli/dm/voice). On these the participant only sees messages, so the agent
 /// must narrate + confirm as if interactive even though the run itself is Autonomous.
@@ -2793,6 +2814,44 @@ mod tests {
             iteration,
             ..base_rctx()
         }
+    }
+
+    #[test]
+    fn prior_turns_used_tools_looks_only_before_the_latest_user_message() {
+        let m = |role: &str, tool_calls: Option<&str>, meta: Option<&str>| ChatMessage {
+            id: String::new(),
+            chat_id: String::new(),
+            role: role.into(),
+            content: "x".into(),
+            metadata: meta.map(String::from),
+            created_at: 0,
+            day_marker: None,
+            tool_calls: tool_calls.map(String::from),
+            tool_results: None,
+            token_estimate: None,
+            html: None,
+        };
+        // First turn ever: nothing before the user message.
+        assert!(!prior_turns_used_tools(&[m("user", None, None)]));
+        // A previous turn searched; a new user message arrives.
+        assert!(prior_turns_used_tools(&[
+            m("user", None, None),
+            m("assistant", Some(r#"[{"name":"web"}]"#), None),
+            m("tool", None, None),
+            m("user", None, None),
+        ]));
+        // Tool calls only AFTER the latest user message (mid-turn) do not count.
+        assert!(!prior_turns_used_tools(&[
+            m("user", None, None),
+            m("assistant", Some(r#"[{"name":"web"}]"#), None),
+        ]));
+        // A skill/briefing meta row is not a user turn.
+        assert!(prior_turns_used_tools(&[
+            m("user", None, None),
+            m("assistant", Some(r#"[{"name":"web"}]"#), None),
+            m("user", None, Some(r#"{"isMeta":true}"#)),
+            m("user", None, None),
+        ]));
     }
 
     #[test]

@@ -291,6 +291,15 @@ fn record_interrupt(sessions: &SessionManager, session_id: &str) {
 /// ends only the TURN (honest ControlNotice, resumable) — never the session.
 const IDENTICAL_CALL_ABORT: usize = 16;
 
+/// The same ceiling for a call that only LOOKS: a search, a page read, a file
+/// read, a screenshot. Those return the same thing every time (the web tool
+/// even serves them from cache), so the third identical look is never work —
+/// it is the loop. 16 was tuned for `docker compose logs`, which legitimately
+/// changes between calls; the registry's concurrency-safety verdict is the
+/// tool's own declaration that a call does not change anything (Nanna,
+/// 2026-09-19: one search repeated 15 times in a turn, twice more the next).
+const IDENTICAL_READONLY_CALL_ABORT: usize = 3;
+
 /// Evicted messages that must accumulate before another background LLM
 /// compaction is spawned for a session.
 ///
@@ -4419,6 +4428,26 @@ async fn run_loop(
             }
         }
 
+        // A new turn on a session with earlier tool-heavy turns: the model
+        // otherwise picks up the previous job's momentum (a pile of search
+        // results and its own "on it, I'll let you know") and keeps going down
+        // that path instead of answering what was just asked. Claude Code has
+        // no such reminder because its transcript is compacted and its model
+        // strong; here the first iteration says it outright. Ephemeral.
+        if iteration == 1 && steering::prior_turns_used_tools(&all_messages) {
+            reminder_msgs.push(Message {
+                role: "user".to_string(),
+                content: steering::wrap_system_reminder(
+                    "The user's LATEST message is the task now. Earlier work in this \
+                     conversation is finished unless that message asks you to continue \
+                     it — do not resume a previous search, plan, or promise on your own. \
+                     Read the latest message, do what it asks, and if it asks a question, \
+                     answer it.",
+                ),
+                ..Default::default()
+            });
+        }
+
         // On external channels (NeboLoop/Slack/…) a weak model sometimes opens by
         // claiming it "isn't connected" and offering to simulate — it has its full
         // toolset, it just doesn't believe it. Ground it on the first iteration with
@@ -5719,7 +5748,12 @@ async fn run_loop(
                 if blocked_results[idx].is_some() {
                     continue;
                 }
-                if let Some(repeats) = identical_call_budget.abort_due(&tc.name, &tc.input, IDENTICAL_CALL_ABORT) {
+                let ceiling = if tools.is_concurrent_safe(&tc.name, &tc.input).await {
+                    IDENTICAL_READONLY_CALL_ABORT
+                } else {
+                    IDENTICAL_CALL_ABORT
+                };
+                if let Some(repeats) = identical_call_budget.abort_due(&tc.name, &tc.input, ceiling) {
                     identical_call_abort = Some((action_key(tc), repeats));
                     break;
                 }
