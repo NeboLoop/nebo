@@ -5760,7 +5760,11 @@ async fn run_loop(
             // nudges and still runs to the iteration ceiling.
             let mut identical_call_abort: Option<(String, usize)> = None;
             for (idx, tc) in tool_calls.iter().enumerate() {
-                if blocked_results[idx].is_some() {
+                // After the wrap-up turn a repeat ends the turn even when an
+                // earlier guard already refused it: the 3-strike block kept
+                // refusing the same search for ten more iterations until the
+                // same-error guard finally ended the run (2026-09-19).
+                if blocked_results[idx].is_some() && !runaway_wrap_up_issued {
                     continue;
                 }
                 let ceiling = if tools.is_concurrent_safe(&tc.name, &tc.input).await {
