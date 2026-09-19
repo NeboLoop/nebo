@@ -84,6 +84,10 @@ pub fn routes() -> Router<AppState> {
             axum::routing::post(handlers::agents::chat_with_agent),
         )
         .route(
+            "/agents/{id}/skills",
+            axum::routing::get(handlers::skills::list_agent_skills),
+        )
+        .route(
             "/agents/{id}/workflows",
             axum::routing::get(handlers::agents::list_agent_workflows),
         )
