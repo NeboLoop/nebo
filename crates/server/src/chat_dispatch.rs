@@ -189,6 +189,8 @@ pub struct ChatConfig {
     pub entity_config: Option<crate::entity_config::ResolvedEntityConfig>,
     /// Images attached to the user's message (base64-encoded).
     pub images: Vec<ai::ImageContent>,
+    /// The files the owner attached, as uploaded; see `RunRequest::attachments`.
+    pub attachments: Vec<serde_json::Value>,
     /// Display name for the entity (agent name or "Nebo"). Used in RunRegistry.
     pub entity_name: String,
     /// For @mention routing: the agent that originated the mention.
@@ -1788,6 +1790,7 @@ fn maybe_auto_continue(
             comm_reply: p.comm_reply,
             entity_config: p.entity_config,
             images: Vec::new(),
+            attachments: Vec::new(),
             entity_name: p.entity_name,
             origin_agent_id: p.origin_agent_id,
             mention_context: None,
@@ -1864,6 +1867,7 @@ pub async fn run_chat_events(
         model_preference,
         personality_snippet,
         images: config.images,
+        attachments: config.attachments,
         allowed_paths,
         cwd,
         model_override: config.model_override.unwrap_or_default(),

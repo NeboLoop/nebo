@@ -287,6 +287,7 @@ async fn handle_app_ws_message(state: &AppState, agent_id: &str, text: &str) {
                     comm_reply: None,
                     entity_config,
                     images: vec![],
+                    attachments: vec![],
                     entity_name: String::new(),
                     origin_agent_id: None,
                     mention_context: None,
@@ -914,6 +915,7 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState, ua: String) {
                                             comm_reply: None,
                                             entity_config,
                                             images: vec![],
+                                            attachments: vec![],
                                             entity_name: String::new(),
                                             origin_agent_id: None,
                                             mention_context: None,
@@ -1816,6 +1818,10 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value) {
             comm_reply,
             entity_config,
             images,
+            attachments: ws_attachments
+                .iter()
+                .map(|a| serde_json::to_value(a).unwrap_or_default())
+                .collect(),
             entity_name: String::new(), // resolved from agent_registry in run_chat
             origin_agent_id: None,
             mention_context: app_context,
@@ -1916,6 +1922,7 @@ async fn fork_mention_chat(
         comm_reply: None,
         entity_config,
         images: vec![],
+        attachments: vec![],
         entity_name: String::new(),
         origin_agent_id: Some(origin_agent_id.to_string()),
         mention_context: None,
