@@ -365,6 +365,8 @@
 		"shareNotConnected": "Connect to NeboAI to share.",
 		"filesInThread": "Files in this chat",
 		"nothingHereYet": "Nothing here yet",
+		"noEmployeesOneTool": "No employees match, but 1 tool does — see Tools.",
+		"noEmployeesButTools": "No employees match, but {count} tools do — see Tools.",
 		"workEmptyDesc": "When Nebo makes a report, sheet, or design, it'll appear here.",
 		"closeImage": "Close image",
 		"fullSize": "Full size",

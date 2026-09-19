@@ -65,6 +65,10 @@
 	// list — grouping by department is browsing, not finding.
 	const searchQ = $derived(q);
 	let searchItems: AppItem[] = $state([]);
+	// Employees view, nothing found: how many tools the same words find (the
+	// hub carries it on the same response), so "shopify" reads "no employees,
+	// 1 tool" and never "there is no Shopify". The views stay separate.
+	let searchToolsTotal = $state(0);
 	let searching = $state(false);
 	let searchSeq = 0;
 	const searchable = $derived(isBrowseView || kind === 'collections');
@@ -81,9 +85,10 @@
 		const t = setTimeout(async () => {
 			const res = (await api
 				.browseStore(kind, undefined, price === 'all' ? undefined : price, q, 48, 0)
-				.catch(() => ({ products: [], total: 0 }))) as { products?: unknown[] };
+				.catch(() => ({ products: [], total: 0 }))) as { products?: unknown[]; toolsTotal?: number };
 			if (seq !== searchSeq) return;
 			searchItems = ((res.products as Record<string, unknown>[]) || []).map((r, i) => toAppItem(r, i));
+			searchToolsTotal = Number(res.toolsTotal ?? 0);
 			searching = false;
 		}, 250);
 		return () => clearTimeout(t);
@@ -277,6 +282,9 @@
 				<div class="flex flex-col items-center justify-center py-16 text-center">
 					<Search class="w-10 h-10 text-base-content/40 mb-3" />
 					<p class="text-base font-medium">{$t('marketplace.nothingHereYet')}</p>
+					{#if searchToolsTotal > 0}
+						<p class="text-sm text-base-content/60 mt-2">{searchToolsTotal === 1 ? $t('marketplace.noEmployeesOneTool') : $t('marketplace.noEmployeesButTools', { values: { count: searchToolsTotal } })}</p>
+					{/if}
 				</div>
 			{:else}
 				<div class="grid grid-cols-1 md:grid-cols-2 gap-5 mt-6">
