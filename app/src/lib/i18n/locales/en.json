@@ -288,6 +288,8 @@
 		"installFailed": "Install failed — try again.",
 		"hire": "Hire",
 		"hiring": "Hiring…",
+		"hireCount": "Hire all {count}",
+		"hiringCount": "Hiring {done} of {count}…",
 		"botComputer": "Computer",
 		"closeComputer": "Close the computer",
 		"fullView": "Full view",

@@ -659,11 +659,18 @@ impl PersonaTool {
                 info
     }
 
-    /// Browse the marketplace's employees — the same hub view the marketplace
-    /// page shows, with the same "already hired" answer — and, in an
-    /// interactive chat, park on a hire card for the best match. The card's
-    /// button redeems the listing's code through POST /codes, the one install
-    /// pathway, and "installed" resumes this call. Nothing here installs.
+    /// Search the marketplace the way the owner asks: one call for every role
+    /// they named, employees AND tools per query from the one search door,
+    /// installed state on every row, and — in an interactive chat — ONE hire
+    /// card for the best match of each query, one confirm. The card's button
+    /// redeems each listing's code through POST /codes, the one install
+    /// pathway, in sequence; "installed" resumes this call. Nothing here
+    /// installs.
+    ///
+    /// Before this the contract was serial: one query per call, one hire per
+    /// card, tools behind a different tool. "Set me up a bookkeeper and
+    /// someone for social media" was five round trips through the model and
+    /// five card-and-wait cycles for five roles (2026-09-19).
     pub(crate) async fn handle_discover(&self, input: &serde_json::Value, ctx: &ToolContext) -> ToolResult {
         // An unreachable marketplace is an error the model can say out loud,
         // never an empty list that reads as "there are none".
@@ -671,122 +678,245 @@ impl PersonaTool {
             Ok(a) => a,
             Err(e) => return ToolResult::error(format!("marketplace unavailable: {}", e)),
         };
-        let query = input["query"].as_str().map(str::trim).filter(|q| !q.is_empty());
+        // `query` is one string or a list of them. A list that arrives as a
+        // JSON string (`"[\"a\", \"b\"]"` — models do this) is still a list.
+        let queries: Vec<String> = match &input["query"] {
+            serde_json::Value::String(q) => {
+                let q = q.trim();
+                if q.is_empty() {
+                    Vec::new()
+                } else if let Ok(list) = serde_json::from_str::<Vec<String>>(q) {
+                    list.into_iter().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()
+                } else {
+                    vec![q.to_string()]
+                }
+            }
+            serde_json::Value::Array(a) => a
+                .iter()
+                .filter_map(|v| v.as_str())
+                .map(str::trim)
+                .filter(|q| !q.is_empty())
+                .map(str::to_string)
+                .collect(),
+            _ => Vec::new(),
+        };
+        const MAX_QUERIES: usize = 10;
+        if queries.len() > MAX_QUERIES {
+            return ToolResult::error(format!(
+                "discover takes at most {MAX_QUERIES} queries per call; you passed {}. Split the list.",
+                queries.len()
+            ));
+        }
         let department = input["department"].as_str().map(str::trim).filter(|d| !d.is_empty());
         let limit = input["limit"].as_i64().unwrap_or(20).clamp(1, 100);
         let offset = input["offset"].as_i64().unwrap_or(0).max(0);
-
-        let mut resp = match api
-            .browse_marketplace(Some("employees"), department, None, query, Some(limit), Some(offset))
-            .await
-        {
-            Ok(v) => v,
-            Err(e) => return ToolResult::error(format!("marketplace search failed: {}", e)),
-        };
-        crate::installed::enrich_installed_state(&mut resp, &self.store);
-        let total = resp.get("total").and_then(|t| t.as_i64()).unwrap_or(0);
-        let mut items: Vec<serde_json::Value> = resp
-            .get("products")
-            .and_then(|p| p.as_array())
-            .cloned()
-            .unwrap_or_default();
-        // NeboAI's own employees first, everything else in the hub's order.
-        // The owner's rule: prefer what we built; the best-match card below
-        // therefore lands on a NeboAI listing whenever one fits.
-        prefer_neboai(&mut items);
-
-        if items.is_empty() {
-            let scope = match (query, department) {
-                (Some(q), Some(d)) => format!(" for \"{q}\" in {d}"),
-                (Some(q), None) => format!(" for \"{q}\""),
-                (None, Some(d)) => format!(" in {d}"),
-                (None, None) => String::new(),
-            };
-            return ToolResult::ok(format!(
-                "No marketplace employees{scope}. The catalog is organised by department; try \
-                 another department or broader words. Do not invent a listing."
-            ));
-        }
-
         let str_of = |it: &serde_json::Value, k: &str| it.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
-        let mut lines = Vec::with_capacity(items.len());
-        for it in &items {
-            let hired = it.get("installed").and_then(|x| x.as_bool()).unwrap_or(false);
+        let installed = |it: &serde_json::Value| it.get("installed").and_then(|x| x.as_bool()).unwrap_or(false);
+        let employee_line = |it: &serde_json::Value| {
             let depts = it
                 .get("departments")
                 .and_then(|d| d.as_array())
                 .map(|a| a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", "))
                 .unwrap_or_default();
-            lines.push(format!(
+            format!(
                 "- {}{}{} ({}){} — {}",
                 str_of(it, "name"),
                 if is_neboai(it) { " [NeboAI]" } else { "" },
-                if hired { " [already hired]" } else { "" },
+                if installed(it) { " [already hired]" } else { "" },
                 str_of(it, "slug"),
                 if depts.is_empty() { String::new() } else { format!(" [{depts}]") },
                 str_of(it, "description"),
+            )
+        };
+        let tool_line = |it: &serde_json::Value| {
+            format!(
+                "- {}{} ({}) — {}",
+                str_of(it, "name"),
+                if installed(it) { " [already installed]" } else { "" },
+                str_of(it, "slug"),
+                str_of(it, "description"),
+            )
+        };
+
+        // Browsing: no query, one page of the employees view. The list is the answer.
+        if queries.is_empty() {
+            let mut resp = match api
+                .browse_marketplace(Some("employees"), department, None, None, Some(limit), Some(offset))
+                .await
+            {
+                Ok(v) => v,
+                Err(e) => return ToolResult::error(format!("marketplace search failed: {}", e)),
+            };
+            crate::installed::enrich_installed_state(&mut resp, &self.store);
+            let total = resp.get("total").and_then(|t| t.as_i64()).unwrap_or(0);
+            let mut items: Vec<serde_json::Value> =
+                resp.get("products").and_then(|p| p.as_array()).cloned().unwrap_or_default();
+            prefer_neboai(&mut items);
+            if items.is_empty() {
+                let scope = department.map(|d| format!(" in {d}")).unwrap_or_default();
+                return ToolResult::ok(format!(
+                    "No marketplace employees{scope}. The catalog is organised by department; try \
+                     another department or broader words. Do not invent a listing."
+                ));
+            }
+            let shown = items.len();
+            let lines: Vec<String> = items.iter().map(employee_line).collect();
+            return ToolResult::ok(format!(
+                "{} marketplace employee(s){}:\n{}\n\nTo hire, call discover with the roles you want \
+                 (one or a list) and the hire card will appear. Never paste install codes into chat.",
+                total,
+                if total > shown as i64 { format!(" (showing {shown}; page with offset)") } else { String::new() },
+                lines.join("\n")
             ));
         }
-        let shown = items.len();
-        let listing = format!(
-            "{} marketplace employee(s){}:\n{}",
-            total,
-            if total > shown as i64 { format!(" (showing {shown}; page with offset)") } else { String::new() },
-            lines.join("\n")
-        );
+
+        // Every query at once, employees and tools together: N roles is one round trip.
+        let searches = futures::future::join_all(queries.iter().map(|q| async {
+            let (emp, tools) = tokio::join!(
+                api.browse_marketplace(Some("employees"), department, None, Some(q), Some(limit), Some(offset)),
+                api.browse_marketplace(Some("tools"), None, None, Some(q), Some(limit), Some(0)),
+            );
+            (q.clone(), emp, tools)
+        }))
+        .await;
+
+        let mut sections: Vec<String> = Vec::new();
+        // The best not-yet-hired employee per query, for the one card.
+        let mut hires: Vec<serde_json::Value> = Vec::new();
+        let mut already: Vec<String> = Vec::new();
+        let mut failures = 0usize;
+        for (q, emp, tools) in searches {
+            let mut section = format!("## {q}");
+            match emp {
+                Ok(mut resp) => {
+                    crate::installed::enrich_installed_state(&mut resp, &self.store);
+                    let total = resp.get("total").and_then(|t| t.as_i64()).unwrap_or(0);
+                    let mut items: Vec<serde_json::Value> =
+                        resp.get("products").and_then(|p| p.as_array()).cloned().unwrap_or_default();
+                    prefer_neboai(&mut items);
+                    if items.is_empty() {
+                        section.push_str("\nEmployees: none found.");
+                    } else {
+                        let shown = items.len();
+                        section.push_str(&format!(
+                            "\nEmployees ({}{}):\n{}",
+                            total,
+                            if total > shown as i64 { format!(", showing {shown}") } else { String::new() },
+                            items.iter().map(employee_line).collect::<Vec<_>>().join("\n")
+                        ));
+                        let top = crate::plugin_tool::best_match(&items, &q);
+                        let top_code = str_of(top, "code");
+                        // Two queries for one role ("receptionist", "phone answerer")
+                        // meet the same listing: one card entry, one mention.
+                        if installed(top) {
+                            if !already.contains(&str_of(top, "name")) {
+                                already.push(str_of(top, "name"));
+                            }
+                        } else if !top_code.is_empty() && !hires.iter().any(|h| str_of(h, "code") == top_code) {
+                            hires.push(serde_json::json!({
+                                "query": q,
+                                "code": str_of(top, "code"),
+                                "name": str_of(top, "name"),
+                                "plugin": str_of(top, "slug"),
+                                "description": str_of(top, "description"),
+                            }));
+                        }
+                    }
+                }
+                Err(e) => {
+                    failures += 1;
+                    section.push_str(&format!("\nEmployees: search failed: {e}"));
+                }
+            }
+            match tools {
+                Ok(mut resp) => {
+                    crate::installed::enrich_installed_state(&mut resp, &self.store);
+                    let items: Vec<serde_json::Value> =
+                        resp.get("products").and_then(|p| p.as_array()).cloned().unwrap_or_default();
+                    if !items.is_empty() {
+                        section.push_str(&format!(
+                            "\nTools ({}):\n{}",
+                            items.len(),
+                            items.iter().map(tool_line).collect::<Vec<_>>().join("\n")
+                        ));
+                    }
+                }
+                Err(e) => {
+                    failures += 1;
+                    section.push_str(&format!("\nTools: search failed: {e}"));
+                }
+            }
+            sections.push(section);
+        }
+        if failures == sections.len() * 2 {
+            return ToolResult::error("marketplace search failed for every query".to_string());
+        }
+        let mut listing = sections.join("\n\n");
+        if !already.is_empty() {
+            listing.push_str(&format!(
+                "\n\nAlready on the roster: {}. Reach them as employees; do not offer to hire them again.",
+                already.join(", ")
+            ));
+        }
 
         let interactive = crate::origin::ExecutionMode::from(ctx.origin)
             == crate::origin::ExecutionMode::Interactive
             && ctx.ask_channels.is_some();
-        if !interactive || query.is_none() {
-            // Browsing, or no chat to park in: the list is the answer. Codes
-            // are machine currency and never appear in model-visible text —
-            // to hire one, call discover again with its exact name.
+        if !interactive || hires.is_empty() {
+            // No chat to park in, or nothing left to hire: the list is the answer.
+            // Codes are machine currency and never appear in model-visible text.
             return ToolResult::ok(format!(
-                "{listing}\n\nTo hire one, call discover again with its exact name and the hire \
-                 card will appear. Never paste install codes into chat."
+                "{listing}\n\nTo hire, call discover with the roles you want (one or a list) and one hire \
+                 card will appear for all of them. Tools install through plugin(action: \"discover\"). \
+                 Never paste install codes into chat."
             ));
         }
 
-        let top = crate::plugin_tool::best_match(&items, query.unwrap_or(""));
-        let name = str_of(top, "name");
-        let slug = str_of(top, "slug");
-        let desc = str_of(top, "description");
-        let code = str_of(top, "code");
-        if top.get("installed").and_then(|x| x.as_bool()).unwrap_or(false) {
-            return ToolResult::ok(format!(
-                "{listing}\n\n{name} is already hired — it is in the registry. Use \
-                 agent(resource: \"registry\", action: \"info\", name: \"{slug}\") to see it."
-            ));
-        }
-        if code.is_empty() {
-            return ToolResult::ok(format!(
-                "{listing}\n\nAsk the user which one they want, then call discover again with \
-                 its exact name to offer the hire card."
-            ));
-        }
+        let names: Vec<String> = hires.iter().map(|h| str_of(h, "name")).collect();
+        let named = match names.len() {
+            1 => format!("**{}**", names[0]),
+            n => format!(
+                "{} and **{}**",
+                names[..n - 1].iter().map(|s| format!("**{s}**")).collect::<Vec<_>>().join(", "),
+                names[n - 1]
+            ),
+        };
+        let first = &hires[0];
         let answer = ctx
             .ask_user(
-                &format!("**{name}** can do this. Hire them on the card and I'll pick up right where I left off."),
+                &format!(
+                    "{named} can do this. Hire {} on the card and I'll pick up right where I left off.",
+                    if names.len() == 1 { "them" } else { "them all" }
+                ),
                 serde_json::json!([{
                     "type": "hire_employee",
-                    "code": code,
-                    "name": name,
-                    "plugin": slug,
-                    "description": desc,
+                    "code": str_of(first, "code"),
+                    "name": names.join(", "),
+                    "plugin": str_of(first, "plugin"),
+                    "description": str_of(first, "description"),
+                    "hires": hires,
                 }]),
             )
             .await;
         if answer.as_deref() == Some(crate::plugin_tool::INSTALL_CARD_INSTALLED) {
+            // Everyone the owner asked for is accounted for here: the newly hired
+            // and the ones already on the roster. Nothing is left to search.
+            let was_already = if already.is_empty() {
+                String::new()
+            } else {
+                format!(" Already on the roster before this: {}.", already.join(", "))
+            };
             return ToolResult::ok(format!(
-                "{name} is hired and on the roster. Reach it as an employee (it appears in \
-                 agent(resource: \"registry\", action: \"list\")); no setup narration needed."
+                "Hired and on the roster: {}.{was_already} Reach them as employees (they appear in \
+                 agent(resource: \"registry\", action: \"list\")); no setup narration and no further search needed.",
+                names.join(", ")
             ));
         }
         ToolResult::ok(format!(
-            "{listing}\n\nThe user declined the hire card for {name}. Discuss alternatives or \
-             answer questions — do NOT paste install codes into chat; if they change their mind, \
-             call discover again to re-offer the card."
+            "{listing}\n\nThe user declined the hire card for {}. Discuss alternatives or answer \
+             questions — do NOT paste install codes into chat; if they change their mind, call \
+             discover again to re-offer the card.",
+            names.join(", ")
         ))
     }
 

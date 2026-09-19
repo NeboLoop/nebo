@@ -21,6 +21,11 @@
 		code?: string;
 		name?: string;
 		description?: string;
+		/** hire_employee: several listings behind one confirm — the owner asked for a
+		 *  team, not one yes-or-no per role. Each is redeemed in sequence through the
+		 *  same POST /codes path; `code`/`name` above describe the first for older
+		 *  clients. */
+		hires?: { code: string; name: string; plugin?: string; description?: string }[];
 	}
 
 	interface NormalizedOption {
@@ -72,17 +77,30 @@
 	let installing = $state(false);
 	let installError = $state<string | null>(null);
 	let installDone = $state(false);
+	// The listings on the card (one, or the team) and how many have landed.
+	const hireList = $derived((widgets?.[0]?.hires?.length ? widgets[0].hires : widgets?.[0]?.code ? [widgets[0]] : []) as { code?: string; name?: string; description?: string }[]);
+	let hiredCodes = $state<Set<string>>(new Set());
 
 	async function startInstall(w: AskWidgetDef) {
-		if (installing || !w.code) return;
+		const list = w.hires?.length ? w.hires : w.code ? [w] : [];
+		if (installing || list.length === 0) return;
 		installing = true;
 		installError = null;
 		try {
-			await submitCode({ code: w.code });
+			// One confirm, every code redeemed in sequence through the one install
+			// pathway. A failure stops the sequence and names the listing; the
+			// button then retries only what is left.
+			for (const h of list) {
+				if (!h.code || hiredCodes.has(h.code)) continue;
+				await submitCode({ code: h.code });
+				hiredCodes = new Set([...hiredCodes, h.code]);
+			}
 			installDone = true;
 			submit('installed');
 		} catch (e) {
-			installError = e instanceof Error ? e.message : $t('chat.installFailed');
+			const failed = list.find((h) => h.code && !hiredCodes.has(h.code));
+			const reason = e instanceof Error ? e.message : $t('chat.installFailed');
+			installError = failed?.name ? `${failed.name}: ${reason}` : reason;
 		} finally {
 			installing = false;
 		}
@@ -194,10 +212,21 @@
 				{#if installDone}<Check class="w-5 h-5 text-success" />{:else if hiring}<UserPlus class="w-5 h-5" />{:else}<Download class="w-5 h-5" />{/if}
 			</div>
 			<div class="flex-1 min-w-0">
-				<div class="text-sm font-medium truncate">{widget.name ?? widget.plugin}</div>
+				{#if hireList.length > 1}
+					<ul class="text-sm font-medium space-y-0.5">
+						{#each hireList as h (h.code)}
+							<li class="flex items-center gap-1.5 truncate">
+								{#if h.code && hiredCodes.has(h.code)}<Check class="w-3.5 h-3.5 text-success shrink-0" />{/if}
+								<span class="truncate">{h.name}</span>
+							</li>
+						{/each}
+					</ul>
+				{:else}
+					<div class="text-sm font-medium truncate">{widget.name ?? widget.plugin}</div>
+				{/if}
 				{#if installError}
 					<div class="text-xs text-error">{installError}</div>
-				{:else if widget.description}
+				{:else if hireList.length <= 1 && widget.description}
 					<div class="text-xs text-base-content/60 line-clamp-2">{widget.description}</div>
 				{/if}
 			</div>
@@ -208,7 +237,9 @@
 				onclick={() => widget && startInstall(widget)}
 			>
 				{#if installing}<span class="loading loading-spinner loading-xs"></span>{/if}
-				{#if hiring}{installing ? $t('chat.hiring') : $t('chat.hire')}{:else}{installing ? $t('chat.installing') : $t('chat.install')}{/if}
+				{#if hiring}
+					{#if hireList.length > 1}{installing ? $t('chat.hiringCount', { values: { done: hiredCodes.size, count: hireList.length } }) : $t('chat.hireCount', { values: { count: hireList.length } })}{:else}{installing ? $t('chat.hiring') : $t('chat.hire')}{/if}
+				{:else}{installing ? $t('chat.installing') : $t('chat.install')}{/if}
 			</button>
 		</div>
 		<div class="mt-2 flex">

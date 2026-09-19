@@ -2603,14 +2603,16 @@ impl DynTool for AgentTool {
          Coworkers: work for a NAMED employee is a MESSAGE, never a task spawn — message(resource: \"coworker\", action: \"send\", to: \"receptionist\", text: \"...\"). \
          Task spawns are anonymous extra hands for YOUR OWN work (type + skills); never pass an employee's name to one.\n\n\
          Registry (employees — the ones installed here, and the ones you can hire):\n\
-         - agent(resource: \"registry\", action: \"discover\", query: \"bookkeeper\") — SEARCH THE MARKETPLACE for employees to hire. \
-         Also takes department, limit, offset. Omit query to page the whole catalog.\n\
-         STAFFING: when the user wants to set up a business, add people, or asks who could do a job, search EMPLOYEES with \
-         discover before reaching for tools — a tool is what an employee uses, the employee is the hire. Departments: \
+         - agent(resource: \"registry\", action: \"discover\", query: [\"bookkeeper\", \"social media manager\"]) — SEARCH THE MARKETPLACE. \
+         ONE call for EVERY role the user named (a list; a single string works too): each query comes back with its \
+         employees and its tools, ranked, marked [already hired]/[already installed], and ONE hire card offers the best \
+         match for all of them with one confirm. Never search roles one at a time. Also takes department, limit, offset; \
+         omit query to page the whole catalog.\n\
+         STAFFING: when the user wants to set up a business, add people, or asks who could do a job, the employee is the \
+         hire and a tool is what they use — discover shows both. Departments: \
          accounting, sales, customer-support, marketing, direct-response, operations, people-hr, legal, it, analytics, \
          product-engineering, executive, corporate. Results put NeboAI's own employees first (tagged [NeboAI]) — prefer them. \
-         Calling discover with an employee's exact name offers the hire card; never paste install codes into chat. \
-         NEVER say the marketplace has nothing until discover itself says so.\n\
+         Never paste install codes into chat. NEVER say the marketplace has nothing until discover itself says so.\n\
          - agent(resource: \"registry\", action: \"list\") — List installed agents\n\
          - agent(resource: \"registry\", action: \"activate\", name: \"...\") — Activate an agent\n\
          - agent(resource: \"registry\", action: \"info\", name: \"...\") — Show agent details\n\
@@ -2636,7 +2638,7 @@ impl DynTool for AgentTool {
                 "key": { "type": "string", "description": "Memory key" },
                 "value": { "type": "string", "description": "Memory value or field value" },
                 "namespace": { "type": "string", "description": "Memory namespace (e.g. tacit/general, entity/people)" },
-                "query": { "type": "string", "description": "Search query (memory search; session query, where a query with no text is that session's history)" },
+                "query": { "type": ["string", "array"], "items": { "type": "string" }, "description": "Search query (memory search; session query, where a query with no text is that session's history). registry discover: one role, or a LIST of roles and tools — one call answers all of them." },
                 "limit": { "type": "integer", "description": "Max results" },
                 "department": { "type": "string", "description": "registry discover: narrow the marketplace search to one department (accounting, sales, customer-support, marketing, direct-response, operations, people-hr, legal, it, analytics, product-engineering, executive, corporate)" },
                 "offset": { "type": "integer", "description": "registry discover: page offset when browsing the whole catalog" },
@@ -2886,7 +2888,8 @@ mod tests {
         assert!(d.contains("action: \"discover\""), "discover is not advertised on the agent tool");
         assert!(d.contains("STAFFING"), "no staffing guidance on the agent tool");
         assert!(d.contains("[NeboAI]"), "does not say NeboAI's own employees come first");
-        assert!(d.contains("before reaching for tools"), "does not say employees before tools");
+        assert!(d.contains("the employee is the hire"), "does not say the employee is the hire and a tool is what they use");
+        assert!(d.contains("Never search roles one at a time"), "does not tell the model to search every role in one call");
         let _ = std::fs::remove_file(&path);
     }
     use super::*;
