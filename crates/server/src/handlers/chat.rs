@@ -210,22 +210,106 @@ pub fn build_message_metadata(messages: &mut Vec<db::models::ChatMessage>) {
             .and_then(|v| v.get("isMeta").and_then(|f| f.as_bool()))
             != Some(true)
     });
-    // Phase 1: Collect tool result statuses from role="tool" messages
+    // Phase 1: Collect tool result statuses from role="tool" messages — and
+    // bound what a listed result carries. A transcript page is measured in
+    // conversational text, so tool rows ride along uncounted, and one page of
+    // a tool-heavy chat came to 9.5 MB of which 9.45 MB was raw tool output
+    // (a single result of 2.8 MB). No client renders that whole: the phone
+    // never read the rows at all and the desktop shows a scrollable box.
+    // Each result keeps its id, outcome, duration and status, and the first
+    // few thousand characters of content, and says how much it left out.
+    // 1,000 characters: enough to read what came back, and the list is no
+    // longer paced by the tool rows (they were still half of a 183 KB page).
+    const RESULT_PREVIEW_CHARS: usize = 1000;
     let mut tool_statuses: HashMap<String, bool> = HashMap::new();
-    for msg in messages.iter() {
+    for msg in messages.iter_mut() {
         if msg.role != "tool" {
             continue;
         }
         if let Some(tr_json) = msg.tool_results.as_deref() {
-            if let Ok(results) = serde_json::from_str::<Vec<serde_json::Value>>(tr_json) {
-                for r in &results {
+            if let Ok(mut results) = serde_json::from_str::<Vec<serde_json::Value>>(tr_json) {
+                let mut bounded = false;
+                for r in results.iter_mut() {
                     if let Some(id) = r.get("tool_call_id").and_then(|v| v.as_str()) {
                         let is_error = r.get("is_error").and_then(|v| v.as_bool()).unwrap_or(false);
                         tool_statuses.insert(id.to_string(), is_error);
                     }
+                    let too_long = r
+                        .get("content")
+                        .and_then(|c| c.as_str())
+                        .map(|c| c.chars().count() > RESULT_PREVIEW_CHARS)
+                        .unwrap_or(false);
+                    if too_long {
+                        if let Some(obj) = r.as_object_mut() {
+                            let full = obj.get("content").and_then(|c| c.as_str()).unwrap_or("").to_string();
+                            let total = full.chars().count();
+                            let head: String = full.chars().take(RESULT_PREVIEW_CHARS).collect();
+                            obj.insert("content".into(), serde_json::json!(head));
+                            obj.insert("truncated".into(), serde_json::json!(true));
+                            obj.insert("total_chars".into(), serde_json::json!(total));
+                            bounded = true;
+                        }
+                    }
+                    // A screenshot stored inline as a data: URL is the actual
+                    // weight — measured: 9.25 MB of a 9.4 MB page, one result
+                    // 2.8 MB — and a transcript list is not the place to ship
+                    // it. An http(s) image URL is a reference and stays.
+                    let inline_image = r
+                        .get("image_url")
+                        .and_then(|u| u.as_str())
+                        .map(|u| u.starts_with("data:"))
+                        .unwrap_or(false);
+                    if inline_image {
+                        if let Some(obj) = r.as_object_mut() {
+                            let bytes = obj.get("image_url").and_then(|u| u.as_str()).map(|u| u.len()).unwrap_or(0);
+                            obj.remove("image_url");
+                            obj.insert("image_omitted".into(), serde_json::json!(true));
+                            obj.insert("image_bytes".into(), serde_json::json!(bytes));
+                            bounded = true;
+                        }
+                    }
+                }
+                if bounded {
+                    msg.tool_results = Some(serde_json::Value::Array(results).to_string());
                 }
             }
         }
+    }
+
+    // Phase 1b: a team post relayed into a member's own thread is stored as
+    // the prompt the model read — "[Team \"Customer Support\" — mission]\n
+    // [Post from Owner]\n\n<text>" — with metadata {teamPost: true, teamId}.
+    // The model needs that envelope; a person does not, and every client was
+    // printing it raw. Derive the display fields here, at read time, in the
+    // one place both clients read, so old rows get them too and nothing has
+    // to be re-stored: teamPost becomes {teamId, teamName, from, text}.
+    for msg in messages.iter_mut() {
+        if msg.role != "user" {
+            continue;
+        }
+        let Some(mut meta) = msg
+            .metadata
+            .as_deref()
+            .and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok())
+        else {
+            continue;
+        };
+        if meta.get("teamPost").and_then(|v| v.as_bool()) != Some(true) {
+            continue;
+        }
+        let content = msg.content.as_str();
+        let Some(rest) = content.strip_prefix("[Team \"") else { continue };
+        let Some((team_name, rest)) = rest.split_once("\" — ") else { continue };
+        let Some((_mission, rest)) = rest.split_once("]\n[Post from ") else { continue };
+        let Some((from, text)) = rest.split_once("]\n\n") else { continue };
+        let team_id = meta.get("teamId").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        meta["teamPost"] = serde_json::json!({
+            "teamId": team_id,
+            "teamName": team_name,
+            "from": from,
+            "text": text,
+        });
+        msg.metadata = Some(meta.to_string());
     }
 
     // Phase 2: For each assistant message, build/augment metadata
