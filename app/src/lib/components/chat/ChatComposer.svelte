@@ -48,10 +48,13 @@
 
   type AgentInfo = { id: string; name: string; role: string; initial: string; status: string; color: string; isApp?: boolean };
 
-  let { agentName = 'Agent', agentId = '', threadId = '', placeholder = '', allAgents = [], onsend, onstop, isLoading = false, sessionId = '', allowAttachments = true, onteach, prefill = '', onprefilled }: {
+  let { agentName = 'Agent', agentId = '', threadId = '', teamId = '', placeholder = '', allAgents = [], onsend, onstop, isLoading = false, sessionId = '', allowAttachments = true, onteach, prefill = '', onprefilled }: {
     agentName?: string;
     agentId?: string;
     threadId?: string;
+    /** Set on a team thread: voice opened here posts its turns into the
+     *  team's thread (the lead speaks), not into an employee's chat. */
+    teamId?: string;
     placeholder?: string;
     allAgents?: AgentInfo[];
     onsend?: (text: string, files: AttachedFile[], mentions?: MentionRef[]) => void;
@@ -479,7 +482,9 @@
   let voiceChatId = $state('');
 
   function handleStartConversation() {
-    voiceChatId = threadId; // may be '': the server joins or mints a thread
+    // A team thread is not a chat: the team id rides `teamId` and the server
+    // posts the turns into the team's thread.
+    voiceChatId = teamId ? '' : threadId; // may be '': the server joins or mints a thread
     showVoiceOverlay = true;
   }
 
@@ -782,6 +787,7 @@
     {agentId}
     agentName={agentName}
     chatId={voiceChatId}
+    {teamId}
     onclose={handleCloseConversation}
   />
 {/if}

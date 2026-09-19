@@ -403,8 +403,12 @@ function createVoiceSessionStore() {
 		 * @param chatId - the chat thread the transcript persists into; every
 		 *   finished turn lands there as a normal message, so closing the call
 		 *   leaves the whole exchange in the chat window.
+		 * @param teamId - set when the call is opened from a team thread: the
+		 *   server picks the team's lead to speak and posts every finished turn
+		 *   into the team thread (owner's words from the owner, the lead's
+		 *   reply from the lead); agentId and chatId are not sent.
 		 */
-		async start(agentId: string, chatId?: string) {
+		async start(agentId: string, chatId?: string, teamId?: string) {
 			const current = readState();
 			if (current.status !== 'idle') {
 				log.warn('Cannot start voice session — status is ' + current.status);
@@ -450,8 +454,12 @@ function createVoiceSessionStore() {
 				// time (serializing them wastes the slower of the two); mic chunks
 				// captured before the socket opens are buffered and flushed on open.
 				const params = new URLSearchParams();
-				if (agentId) params.set('agent_id', agentId);
-				if (chatId) params.set('chat_id', chatId);
+				if (teamId) {
+					params.set('team_id', teamId);
+				} else {
+					if (agentId) params.set('agent_id', agentId);
+					if (chatId) params.set('chat_id', chatId);
+				}
 				const qs = params.size > 0 ? `?${params.toString()}` : '';
 				const wsUrl = `${backendWsBase()}/ws/voice/conversation${qs}`;
 				ws = new WebSocket(wsUrl);

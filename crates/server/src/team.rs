@@ -103,39 +103,9 @@ pub(crate) fn post(
         }
         let attachments_json = serde_json::to_value(&post.attachments).unwrap_or_default();
 
-        let (sender_name, role) = if post.from_agent_id.is_empty() {
-            ("Owner".to_string(), "user")
-        } else {
-            (
-                state
-                    .store
-                    .get_agent(&post.from_agent_id)
-                    .ok()
-                    .flatten()
-                    .map(|a| a.name)
-                    .unwrap_or_else(|| post.from_agent_id.clone()),
-                "assistant",
-            )
-        };
-
         // 1. The record: the team's own thread.
-        let message = state
-            .store
-            .append_team_message(&team, role, &text, &sender_name, &post.from_agent_id, &attachments_json)
-            .map_err(|e| format!("record team post: {e}"))?;
-        state.hub.broadcast(
-            tools::team::TEAM_MESSAGE_EVENT,
-            serde_json::json!({
-                "teamId": team.id,
-                "messageId": message.id,
-                "from": sender_name,
-                "fromAgentId": post.from_agent_id,
-                "senderName": sender_name,
-                "role": role,
-                "text": text,
-                "attachments": attachments_json,
-            }),
-        );
+        let (message, sender_name) =
+            record(&state, &team, &post.from_agent_id, &text, &attachments_json)?;
 
         // Who acts is decided once, before anything is sent, because the hub
         // mirror has to carry the asks for members on other machines.
@@ -227,6 +197,54 @@ pub(crate) fn post(
             asked,
         })
     })
+}
+
+/// The record of one post — step 1 of `post` on its own: append the row to
+/// the team's thread and broadcast `team_message`, so every open team view
+/// (desktop and mobile) shows it live. The ONE writer of a team row. `post`
+/// calls it before the fan-out; a turn spoken in the team thread's voice
+/// mode calls it alone, because the lead already answered out loud and a
+/// fan-out would ask it the same thing again in text. Returns the row and
+/// the sender's display name ("Owner" when `from_agent_id` is empty).
+pub(crate) fn record(
+    state: &AppState,
+    team: &db::Team,
+    from_agent_id: &str,
+    text: &str,
+    attachments: &serde_json::Value,
+) -> Result<(db::TeamMessage, String), String> {
+    let (sender_name, role) = if from_agent_id.is_empty() {
+        ("Owner".to_string(), "user")
+    } else {
+        (
+            state
+                .store
+                .get_agent(from_agent_id)
+                .ok()
+                .flatten()
+                .map(|a| a.name)
+                .unwrap_or_else(|| from_agent_id.to_string()),
+            "assistant",
+        )
+    };
+    let message = state
+        .store
+        .append_team_message(team, role, text, &sender_name, from_agent_id, attachments)
+        .map_err(|e| format!("record team post: {e}"))?;
+    state.hub.broadcast(
+        tools::team::TEAM_MESSAGE_EVENT,
+        serde_json::json!({
+            "teamId": team.id,
+            "messageId": message.id,
+            "from": sender_name,
+            "fromAgentId": from_agent_id,
+            "senderName": sender_name,
+            "role": role,
+            "text": text,
+            "attachments": attachments,
+        }),
+    );
+    Ok((message, sender_name))
 }
 
 /// Forward a post to the team's hub channel, if the team is mirrored and
