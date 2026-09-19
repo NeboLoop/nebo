@@ -274,6 +274,42 @@ pub fn build_message_metadata(messages: &mut Vec<db::models::ChatMessage>) {
         }
     }
 
+    // Phase 1b: a team post relayed into a member's own thread is stored as
+    // the prompt the model read — "[Team \"Customer Support\" — mission]\n
+    // [Post from Owner]\n\n<text>" — with metadata {teamPost: true, teamId}.
+    // The model needs that envelope; a person does not, and every client was
+    // printing it raw. Derive the display fields here, at read time, in the
+    // one place both clients read, so old rows get them too and nothing has
+    // to be re-stored: teamPost becomes {teamId, teamName, from, text}.
+    for msg in messages.iter_mut() {
+        if msg.role != "user" {
+            continue;
+        }
+        let Some(mut meta) = msg
+            .metadata
+            .as_deref()
+            .and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok())
+        else {
+            continue;
+        };
+        if meta.get("teamPost").and_then(|v| v.as_bool()) != Some(true) {
+            continue;
+        }
+        let content = msg.content.as_str();
+        let Some(rest) = content.strip_prefix("[Team \"") else { continue };
+        let Some((team_name, rest)) = rest.split_once("\" — ") else { continue };
+        let Some((_mission, rest)) = rest.split_once("]\n[Post from ") else { continue };
+        let Some((from, text)) = rest.split_once("]\n\n") else { continue };
+        let team_id = meta.get("teamId").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        meta["teamPost"] = serde_json::json!({
+            "teamId": team_id,
+            "teamName": team_name,
+            "from": from,
+            "text": text,
+        });
+        msg.metadata = Some(meta.to_string());
+    }
+
     // Phase 2: For each assistant message, build/augment metadata
     for msg in messages.iter_mut() {
         if msg.role != "assistant" {
