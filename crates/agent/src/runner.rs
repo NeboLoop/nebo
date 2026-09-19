@@ -4441,19 +4441,15 @@ async fn run_loop(
         // that path instead of answering what was just asked. Claude Code has
         // no such reminder because its transcript is compacted and its model
         // strong; here the first iteration says it outright. Ephemeral.
-        if iteration == 1 && steering::prior_turns_used_tools(&all_messages) {
-            info!(session_id, "steering: latest-message-is-the-task reminder injected");
-            reminder_msgs.push(Message {
-                role: "user".to_string(),
-                content: steering::wrap_system_reminder(
-                    "The user's LATEST message is the task now. Earlier work in this \
-                     conversation is finished unless that message asks you to continue \
-                     it — do not resume a previous search, plan, or promise on your own. \
-                     Read the latest message, do what it asks, and if it asks a question, \
-                     answer it.",
-                ),
-                ..Default::default()
-            });
+        if iteration == 1 {
+            if let Some(text) = steering::latest_message_reminder(&all_messages) {
+                info!(session_id, "steering: latest-message-is-the-task reminder injected");
+                reminder_msgs.push(Message {
+                    role: "user".to_string(),
+                    content: steering::wrap_system_reminder(&text),
+                    ..Default::default()
+                });
+            }
         }
 
         // On external channels (NeboLoop/Slack/…) a weak model sometimes opens by

@@ -117,6 +117,59 @@ pub fn prior_turns_used_tools(history: &[ChatMessage]) -> bool {
     })
 }
 
+/// The first-iteration "latest message is the task" reminder for a fresh turn,
+/// or None when nothing before it used tools. When the latest message is a bare
+/// "continue"-style nudge, it names the user's PREVIOUS request as the thing to
+/// continue: after a restart notice, "continue" was being read as "repeat my own
+/// last tool call" — a search loop resumed itself (Nanna, 2026-09-19).
+pub fn latest_message_reminder(history: &[ChatMessage]) -> Option<String> {
+    if !prior_turns_used_tools(history) {
+        return None;
+    }
+    let is_meta = |m: &ChatMessage| {
+        m.metadata
+            .as_deref()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+            .and_then(|v| v.get("isMeta").and_then(|b| b.as_bool()))
+            .unwrap_or(false)
+    };
+    let users: Vec<&ChatMessage> = history.iter().filter(|m| m.role == "user" && !is_meta(m)).collect();
+    let latest = users.last()?;
+    let base = "The user's LATEST message is the task now. Earlier work in this conversation is \
+                finished unless that message asks you to continue it — do not resume a previous \
+                search, plan, or promise on your own. Read the latest message, do what it asks, \
+                and if it asks a question, answer it.";
+    if is_continue_nudge(&latest.content) {
+        // The request to continue is the last one that is not itself a nudge:
+        // "continue" after "continue" still means the real request before both.
+        if let Some(prev) = users.iter().rev().skip(1).find(|m| !is_continue_nudge(&m.content)) {
+            let quoted: String = prev.content.chars().take(300).collect();
+            return Some(format!(
+                "{base}\n\nThe latest message is \"{}\": that means continue the user's PREVIOUS \
+                 request — \"{}\" — from wherever it actually stands. It does not mean repeat your \
+                 own last tool call. If that request is already done, say so and ask what's next.",
+                latest.content.trim(),
+                quoted.trim()
+            ));
+        }
+    }
+    Some(base.to_string())
+}
+
+/// A message that only says "keep going": continue / go on / resume / proceed /
+/// keep going / carry on / yes, with trailing punctuation.
+pub fn is_continue_nudge(text: &str) -> bool {
+    let t: String = text
+        .trim()
+        .to_lowercase()
+        .trim_end_matches(['.', '!', '?', ' '])
+        .to_string();
+    matches!(
+        t.as_str(),
+        "continue" | "go on" | "resume" | "proceed" | "keep going" | "carry on" | "yes" | "yes continue" | "ok continue" | "please continue" | "go ahead"
+    )
+}
+
 /// An external messaging channel (NeboLoop/Slack/etc.) — NOT the local app's own
 /// surfaces (web/cli/dm/voice). On these the participant only sees messages, so the agent
 /// must narrate + confirm as if interactive even though the run itself is Autonomous.
@@ -2852,6 +2905,43 @@ mod tests {
             m("user", None, Some(r#"{"isMeta":true}"#)),
             m("user", None, None),
         ]));
+    }
+
+    #[test]
+    fn continue_nudge_names_the_users_previous_request() {
+        let m = |role: &str, content: &str, tool_calls: Option<&str>| ChatMessage {
+            id: String::new(),
+            chat_id: String::new(),
+            role: role.into(),
+            content: content.into(),
+            metadata: None,
+            created_at: 0,
+            day_marker: None,
+            tool_calls: tool_calls.map(String::from),
+            tool_results: None,
+            token_estimate: None,
+            html: None,
+        };
+        let history = vec![
+            m("user", "let's see if we can do what claude did", None),
+            m("assistant", "", Some(r#"[{"name":"web"}]"#)),
+            m("assistant", "I was interrupted by a restart. Say \"continue\".", None),
+            m("user", "continue", None),
+        ];
+        let r = latest_message_reminder(&history).expect("fires after tool-using turns");
+        assert!(r.contains("PREVIOUS request"), "{r}");
+        assert!(r.contains("do what claude did"), "{r}");
+        // "continue" after "continue" still names the real request.
+        let mut twice = history.clone();
+        twice.push(m("assistant", "", Some(r#"[{"name":"web"}]"#)));
+        twice.push(m("user", "continue", None));
+        assert!(latest_message_reminder(&twice).unwrap().contains("do what claude did"));
+        // A real request gets the plain reminder, no quoting.
+        let mut plain = history.clone();
+        plain.last_mut().unwrap().content = "open the calculator".into();
+        let r = latest_message_reminder(&plain).unwrap();
+        assert!(!r.contains("PREVIOUS request"));
+        assert!(is_continue_nudge("Continue.") && is_continue_nudge("go on!") && !is_continue_nudge("continue the search for vegan places"));
     }
 
     #[test]

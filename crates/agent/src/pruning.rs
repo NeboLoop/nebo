@@ -1127,10 +1127,13 @@ Output ONLY the sections below, in this order, with these exact headings. SKIP a
 that would be empty — never write \"None\".
 
 ## Goal
-The user's most recent task, with its STATUS on the first line: IN PROGRESS, DONE, or \
-SUPERSEDED. It is DONE when the transcript shows it delivered or answered; SUPERSEDED when \
-the user has since asked for something else (then name the newer task as the goal). Only an \
-IN PROGRESS goal is continued by the next model; never present a finished task as ongoing.
+The user's most recent request, in the user's own words, with its STATUS on the first line: \
+IN PROGRESS, DONE, or SUPERSEDED. The goal comes ONLY from user messages — the assistant's \
+tool activity never defines it, and the same tool call repeated with the same arguments is a \
+stall, not progress: never describe it as the current step or as work toward the goal. DONE \
+when the transcript shows the request delivered or answered; SUPERSEDED when the user has \
+since asked for something else (then that newer request is the goal). Only an IN PROGRESS \
+goal is continued by the next model; never present a finished request as ongoing.
 
 ## Constraints & Preferences
 Rules, limitations, and preferences the user stated.
