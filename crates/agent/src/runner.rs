@@ -2787,6 +2787,13 @@ async fn run_loop(
     let mut pending_stream_reminders: Vec<String> = Vec::new();
     // The owner's spending limit escalates once: wrap-up turn, then stop.
     let mut spend_cap_wrap_up_issued = false;
+    // The runaway backstop escalates the same way: the repeated call is
+    // refused and the next turn is a tool-less wrap-up ("answer with what you
+    // have"); only a repeat after that ends the turn. Ending it on the first
+    // trip left the user a red "Stopped:" banner and no reply (Nanna,
+    // 2026-09-19). Rule 12: never a silent kill.
+    let mut runaway_wrap_up: Option<String> = None;
+    let mut runaway_wrap_up_issued = false;
     // Temporal grounding (the harness pattern): every turn's first call
     // carries WHEN the message arrived, then the marker vanishes. The model
     // resolves "today/tomorrow/in an hour" against the message, not against
@@ -4435,6 +4442,7 @@ async fn run_loop(
         // no such reminder because its transcript is compacted and its model
         // strong; here the first iteration says it outright. Ephemeral.
         if iteration == 1 && steering::prior_turns_used_tools(&all_messages) {
+            info!(session_id, "steering: latest-message-is-the-task reminder injected");
             reminder_msgs.push(Message {
                 role: "user".to_string(),
                 content: steering::wrap_system_reminder(
@@ -4685,6 +4693,17 @@ async fn run_loop(
                     }
                 }
             }
+        }
+
+        // The runaway backstop's wrap-up turn (see runaway_wrap_up): no tools,
+        // one reminder, the model answers.
+        if let Some(text) = runaway_wrap_up.take() {
+            wrap_up_turn = true;
+            ai_messages.push(Message {
+                role: "user".to_string(),
+                content: steering::wrap_system_reminder(&text),
+                ..Default::default()
+            });
         }
 
         // Build ChatRequest
@@ -5757,6 +5776,33 @@ async fn run_loop(
                     identical_call_abort = Some((action_key(tc), repeats));
                     break;
                 }
+            }
+            if let Some((key, repeats)) = identical_call_abort.clone().filter(|_| !runaway_wrap_up_issued) {
+                // First trip: refuse the call, and make the next turn a
+                // tool-less wrap-up so the user gets an answer, not a banner.
+                runaway_wrap_up_issued = true;
+                warn!(session_id, action = %key, repeats, "runaway backstop: identical call refused — wrap-up turn next");
+                for (idx, tc) in tool_calls.iter().enumerate() {
+                    if blocked_results[idx].is_none() && action_key(tc) == key {
+                        blocked_results[idx] = Some((
+                            tc.clone(),
+                            ToolResult::error(format!(
+                                "Refused: this exact call has already been made {} times with identical \
+                                 arguments and returned the same thing each time. Do not call it again. \
+                                 Reply to the user now with what you have.",
+                                repeats
+                            )),
+                        ));
+                    }
+                }
+                runaway_wrap_up = Some(format!(
+                    "You called '{}' {} times with identical arguments; repeating it will not change \
+                     the result. Tools are unavailable this turn: answer the user's latest message \
+                     now, in plain words, with what you already have. If something is missing, say \
+                     what it is and ask one question.",
+                    key, repeats
+                ));
+                identical_call_abort = None;
             }
             if let Some((key, repeats)) = identical_call_abort {
                 warn!(
