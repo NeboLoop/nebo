@@ -5413,6 +5413,35 @@ async fn run_loop(
             }
         }
 
+        // A wrap-up turn offered no tools. A tool call that comes back anyway
+        // (some providers still emit one) is dropped here, before persistence,
+        // so it is neither saved nor executed. No text with it = the model
+        // answered nothing; the turn ends with the exit the wrap-up was for.
+        if wrap_up_turn && !tool_calls.is_empty() {
+            warn!(
+                session_id,
+                iteration,
+                dropped = tool_calls.len(),
+                "wrap-up turn returned tool calls with no tools offered — dropped"
+            );
+            tool_calls.clear();
+            if assistant_content.trim().is_empty() {
+                turn_exit_reason = if runaway_wrap_up_issued {
+                    crate::guardrails::Exit::RunawayToolLoop
+                } else {
+                    crate::guardrails::Exit::SpendCapReached
+                };
+                let _ = tx
+                    .send(StreamEvent::control_notice(
+                        "Stopped: the model kept calling tools after being asked to \
+                         answer with what it has.",
+                        "runaway_tool_loop",
+                    ))
+                    .await;
+                break;
+            }
+        }
+
         // Save assistant message.
         // If there was a stream error, strip tool_calls — they won't be executed
         // so saving them would create orphans in the session history.

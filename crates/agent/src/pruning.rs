@@ -178,10 +178,19 @@ pub fn apply_sliding_window(
 /// copy still matches the original it duplicates.
 const REDUNDANT_RESULT_NOTE: &str = "\n\n(Note: this is identical to a result you already received earlier in this session.";
 
-/// What a duplicate becomes. The original stays whole; every later copy is
-/// one line, so a run that re-fetched the same page or re-ran the same search
-/// N times costs one result, not N.
+/// What a duplicate becomes: the event (a repeat), the original it repeats
+/// (by tool_call_id), and the recovery (use that one). The original stays
+/// whole; every later copy is one line, so a run that re-fetched the same
+/// page or re-ran the same search N times costs one result, not N.
+fn duplicate_result_stub(original_call_id: &str) -> String {
+    if original_call_id.is_empty() {
+        DUPLICATE_RESULT_STUB.to_string()
+    } else {
+        format!("(identical to the result of tool call {original_call_id} earlier in this conversation — you already have this content there; do not fetch it again)")
+    }
+}
 const DUPLICATE_RESULT_STUB: &str = "(identical to an earlier result in this conversation — you already have this content; do not fetch it again)";
+const DUPLICATE_RESULT_STUB_PREFIX: &str = "(identical to ";
 
 fn dedup_key(text: &str) -> u64 {
     use std::hash::{Hash, Hasher};
@@ -278,7 +287,8 @@ pub fn micro_compact(
     // under "protect the most recent" and never got under the threshold.
     // Frozen like every other rendering, keyed on the tool_call_id.
     {
-        let mut seen: std::collections::HashSet<u64> = std::collections::HashSet::new();
+        // content hash → tool_call_id of the first (kept) copy
+        let mut seen: std::collections::HashMap<u64, String> = std::collections::HashMap::new();
         for i in 0..result.len() {
             let msg = &result[i];
             if msg.role != "tool" && msg.role != "assistant" {
@@ -289,17 +299,28 @@ pub fn micro_compact(
                 continue;
             }
             let text = tool_result_text(msg);
-            if text.len() < 200 || text == DUPLICATE_RESULT_STUB {
+            if text.len() < 200 || text.starts_with(DUPLICATE_RESULT_STUB_PREFIX) {
                 continue;
             }
-            if !seen.insert(dedup_key(&text)) {
-                let old_tokens = estimate_message_tokens(msg);
-                if let Some(k) = first_tool_call_id(msg) {
-                    frozen.entry(k).or_insert_with(|| DUPLICATE_RESULT_STUB.to_string());
+            let key = dedup_key(&text);
+            let call_id = first_tool_call_id(msg).unwrap_or_default();
+            match seen.get(&key) {
+                None => {
+                    seen.insert(key, call_id);
                 }
-                let stub = stub_result(msg, DUPLICATE_RESULT_STUB);
-                tokens_saved += old_tokens.saturating_sub(estimate_message_tokens(&stub));
-                result[i] = stub;
+                Some(original) => {
+                    let old_tokens = estimate_message_tokens(msg);
+                    let text = frozen
+                        .get(&call_id)
+                        .cloned()
+                        .unwrap_or_else(|| duplicate_result_stub(original));
+                    if !call_id.is_empty() {
+                        frozen.entry(call_id).or_insert_with(|| text.clone());
+                    }
+                    let stub = stub_result(msg, &text);
+                    tokens_saved += old_tokens.saturating_sub(estimate_message_tokens(&stub));
+                    result[i] = stub;
+                }
             }
         }
     }
@@ -362,7 +383,7 @@ pub fn micro_compact(
 
         let msg = &result[*idx];
         let old_tokens = estimate_message_tokens(msg);
-        if old_tokens < 100 || msg.content == DUPLICATE_RESULT_STUB {
+        if old_tokens < 100 || msg.content.starts_with(DUPLICATE_RESULT_STUB_PREFIX) {
             continue; // Not worth compacting small results
         }
 
@@ -1498,14 +1519,16 @@ mod tests {
         }
         let mut frozen = std::collections::HashMap::new();
         let (result, saved) = micro_compact(&messages, 1_000, &mut frozen);
-        let stubs = result.iter().filter(|m| m.content == DUPLICATE_RESULT_STUB).count();
+        let stubs = result.iter().filter(|m| m.content.starts_with(DUPLICATE_RESULT_STUB_PREFIX)).count();
         assert_eq!(stubs, 4, "every copy after the first is a stub");
+        let original_id = first_tool_call_id(&messages[1]).unwrap();
+        assert!(result[3].content.contains(&original_id), "a stub names the call it repeats: {}", result[3].content);
         assert!(result[1].content.starts_with("search result"), "the first copy stays whole");
         assert!(saved > 4 * 1500, "saved {saved} tokens");
         assert_eq!(frozen.len(), 4, "each stub is frozen on its tool_call_id");
         // Second pass over the compacted history is a no-op for the stubs.
         let (again, _) = micro_compact(&result, 1_000, &mut frozen);
-        assert_eq!(again.iter().filter(|m| m.content == DUPLICATE_RESULT_STUB).count(), 4);
+        assert_eq!(again.iter().filter(|m| m.content.starts_with(DUPLICATE_RESULT_STUB_PREFIX)).count(), 4);
     }
 
     #[test]
