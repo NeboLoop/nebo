@@ -3169,6 +3169,31 @@ mod tests {
         assert_eq!(produced_work_document(&args, None, stale), None);
         std::fs::remove_dir_all(&dir).ok();
     }
+
+    /// An exec that writes a picture hands the picture back: the raster a
+    /// `screencapture` or `sips` run produced is detected like any document,
+    /// and a path `image_url` is read from disk by every provider.
+    #[test]
+    fn test_produced_work_document_detects_rasters() {
+        let dir = std::env::temp_dir().join(format!("nebo-pwd-raster-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let shot = dir.join("a.png");
+        let crop = dir.join("b.jpg");
+        let input = dir.join("in.png");
+        std::fs::write(&input, "old").unwrap();
+        let started = std::time::SystemTime::now();
+        std::fs::write(&shot, "png").unwrap();
+        std::fs::write(&crop, "jpg").unwrap();
+        let s = |p: &std::path::Path| p.to_string_lossy().into_owned();
+
+        let cap: Vec<String> = ["screencapture", "-x", "-R", "0,0,100,100", &s(&shot)].map(String::from).to_vec();
+        assert_eq!(produced_work_document(&cap, None, started), Some(s(&shot)));
+        let sips: Vec<String> = ["sips", "-s", "format", "jpeg", &s(&input), "--out", &s(&crop)].map(String::from).to_vec();
+        assert_eq!(produced_work_document(&sips, None, started), Some(s(&crop)), "the fresh output, not the stale input");
+        let stale = started + std::time::Duration::from_secs(5);
+        assert_eq!(produced_work_document(&cap, None, stale), None);
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }
 
 #[cfg(test)]

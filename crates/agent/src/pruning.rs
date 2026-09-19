@@ -173,6 +173,116 @@ pub fn apply_sliding_window(
 /// summaries, rewriting every earlier file read in the model's history as
 /// "nothing came back" — which the model then believed about fresh reads too
 /// (2026-09-01: "the file appears empty" on files that read fine).
+/// The note the runner appends to a result it already flagged as a repeat
+/// (runner.rs, redundancy guard). Stripped before comparing, so the flagged
+/// copy still matches the original it duplicates.
+const REDUNDANT_RESULT_NOTE: &str = "\n\n(Note: this is identical to a result you already received earlier in this session.";
+
+/// What a duplicate becomes: the event (a repeat), the original it repeats
+/// (by tool_call_id), and the recovery (use that one). The original stays
+/// whole; every later copy is one line, so a run that re-fetched the same
+/// page or re-ran the same search N times costs one result, not N.
+fn duplicate_result_stub(original_call_id: &str) -> String {
+    if original_call_id.is_empty() {
+        DUPLICATE_RESULT_STUB.to_string()
+    } else {
+        format!("(identical to the result of tool call {original_call_id} earlier in this conversation — you already have this content there; do not fetch it again)")
+    }
+}
+const DUPLICATE_RESULT_STUB: &str = "(identical to an earlier result in this conversation — you already have this content; do not fetch it again)";
+const DUPLICATE_RESULT_STUB_PREFIX: &str = "(identical to ";
+
+/// How many image-bearing tool results keep their image. A UI drive returns
+/// a picture per step (~1.5K tokens each); the model needs the latest one or
+/// two to act, never the twenty before them.
+const KEEP_RECENT_IMAGES: usize = 2;
+/// Appended to a result whose image was dropped, so the text says what is
+/// missing and what to do about it instead of silently reading as text-only.
+const IMAGE_REMOVED_NOTE: &str = "(screenshot removed from context — this was the view at that step; take a fresh capture if you need it)";
+
+/// Drop `image_url` from every tool-result row of `msg`, noting it in the
+/// row text and the message text. Returns how many images were dropped.
+fn strip_result_images(msg: &mut ChatMessage) -> usize {
+    let Some(tr) = msg.tool_results.as_deref() else { return 0 };
+    let Ok(mut rows) = serde_json::from_str::<Vec<serde_json::Value>>(tr) else { return 0 };
+    let mut dropped = 0;
+    for row in rows.iter_mut() {
+        let Some(obj) = row.as_object_mut() else { continue };
+        if obj.remove("image_url").and_then(|v| v.as_str().map(|s| !s.is_empty())).unwrap_or(false) {
+            dropped += 1;
+            let text = obj.get("content").and_then(|c| c.as_str()).unwrap_or("");
+            let noted = if text.is_empty() { IMAGE_REMOVED_NOTE.to_string() } else { format!("{text}\n{IMAGE_REMOVED_NOTE}") };
+            obj.insert("content".into(), serde_json::Value::String(noted));
+        }
+    }
+    if dropped > 0 {
+        msg.tool_results = serde_json::to_string(&rows).ok();
+        if !msg.content.contains(IMAGE_REMOVED_NOTE) {
+            if !msg.content.is_empty() {
+                msg.content.push('\n');
+            }
+            msg.content.push_str(IMAGE_REMOVED_NOTE);
+        }
+    }
+    dropped
+}
+
+/// True when any tool-result row of `msg` still carries an image.
+fn result_has_image(msg: &ChatMessage) -> bool {
+    msg.tool_results
+        .as_deref()
+        .and_then(|tr| serde_json::from_str::<Vec<serde_json::Value>>(tr).ok())
+        .map(|rows| rows.iter().any(|r| r.get("image_url").and_then(|v| v.as_str()).is_some_and(|s| !s.is_empty())))
+        .unwrap_or(false)
+}
+
+fn dedup_key(text: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let body = match text.find(REDUNDANT_RESULT_NOTE) {
+        Some(i) => &text[..i],
+        None => text,
+    };
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    body.trim_end().hash(&mut h);
+    h.finish()
+}
+
+/// A result message with its content replaced, tool_call_ids and error flags
+/// intact so the orphan filter still pairs it with its call.
+fn stub_result(msg: &ChatMessage, text: &str) -> ChatMessage {
+    let tool_results = msg.tool_results.as_deref().map(|tr| {
+        match serde_json::from_str::<Vec<serde_json::Value>>(tr) {
+            Ok(results) => serde_json::to_string(
+                &results
+                    .iter()
+                    .map(|r| {
+                        serde_json::json!({
+                            "tool_call_id": r.get("tool_call_id").and_then(|v| v.as_str()).unwrap_or(""),
+                            "content": text,
+                            "is_error": r.get("is_error").and_then(|v| v.as_bool()).unwrap_or(false)
+                        })
+                    })
+                    .collect::<Vec<_>>(),
+            )
+            .unwrap_or_default(),
+            Err(_) => serde_json::json!([{"tool_call_id": "", "content": text, "is_error": false}]).to_string(),
+        }
+    });
+    ChatMessage {
+        id: msg.id.clone(),
+        chat_id: msg.chat_id.clone(),
+        role: msg.role.clone(),
+        content: text.to_string(),
+        metadata: msg.metadata.clone(),
+        created_at: msg.created_at,
+        day_marker: msg.day_marker.clone(),
+        tool_calls: msg.tool_calls.clone(),
+        tool_results,
+        token_estimate: Some(((text.len() / crate::CHARS_PER_TOKEN).max(10)) as i64),
+        html: None,
+    }
+}
+
 fn tool_result_text(msg: &ChatMessage) -> String {
     if let Some(tr) = msg.tool_results.as_deref() {
         if let Ok(results) = serde_json::from_str::<Vec<serde_json::Value>>(tr) {
@@ -215,6 +325,68 @@ pub fn micro_compact(
     let mut result = messages.to_vec();
     let mut tokens_saved = 0usize;
 
+    // Duplicates first, and outside the keep-recent protection: a result whose
+    // text is byte-identical to an earlier one adds nothing however recent it
+    // is. The 2026-09-19 search loop kept 5 copies of one ~10K-token search
+    // under "protect the most recent" and never got under the threshold.
+    // Frozen like every other rendering, keyed on the tool_call_id.
+    {
+        // content hash → tool_call_id of the first (kept) copy
+        let mut seen: std::collections::HashMap<u64, String> = std::collections::HashMap::new();
+        for i in 0..result.len() {
+            let msg = &result[i];
+            if msg.role != "tool" && msg.role != "assistant" {
+                continue;
+            }
+            let Some(tr) = msg.tool_results.as_deref() else { continue };
+            if tr.is_empty() || tr == "[]" || tr == "null" {
+                continue;
+            }
+            let text = tool_result_text(msg);
+            if text.len() < 200 || text.starts_with(DUPLICATE_RESULT_STUB_PREFIX) {
+                continue;
+            }
+            let key = dedup_key(&text);
+            let call_id = first_tool_call_id(msg).unwrap_or_default();
+            match seen.get(&key) {
+                None => {
+                    seen.insert(key, call_id);
+                }
+                Some(original) => {
+                    let old_tokens = estimate_message_tokens(msg);
+                    let text = frozen
+                        .get(&call_id)
+                        .cloned()
+                        .unwrap_or_else(|| duplicate_result_stub(original));
+                    if !call_id.is_empty() {
+                        frozen.entry(call_id).or_insert_with(|| text.clone());
+                    }
+                    let stub = stub_result(msg, &text);
+                    tokens_saved += old_tokens.saturating_sub(estimate_message_tokens(&stub));
+                    result[i] = stub;
+                }
+            }
+        }
+    }
+
+    // Old screenshots next, also outside the keep-recent protection: every
+    // step of a UI drive returns a picture, and only the newest couple say
+    // anything about the screen as it is now. Not frozen: the rule is
+    // monotonic (a result that lost its image only gets older), so each pass
+    // makes the same decision without a map.
+    {
+        let mut with_images: Vec<usize> = result.iter().enumerate().filter(|(_, m)| result_has_image(m)).map(|(i, _)| i).collect();
+        with_images.truncate(with_images.len().saturating_sub(KEEP_RECENT_IMAGES));
+        for i in with_images {
+            let old_tokens = estimate_message_tokens(&result[i]);
+            let dropped = strip_result_images(&mut result[i]);
+            // A path `image_url` is a few bytes here but a whole image at the
+            // provider; count what the provider would have sent.
+            let provider_tokens = dropped * IMAGE_CHAR_ESTIMATE / crate::CHARS_PER_TOKEN;
+            tokens_saved += old_tokens.saturating_sub(estimate_message_tokens(&result[i])).max(provider_tokens);
+        }
+    }
+
     // Find tool result indices eligible for compaction.
     // ALL tool results are compactable — the keep-recent protection prevents
     // stripping results the model still needs.
@@ -249,7 +421,9 @@ pub fn micro_compact(
     let candidates = if tool_result_indices.len() > protect_count {
         &tool_result_indices[..tool_result_indices.len() - protect_count]
     } else {
-        return (result, 0);
+        // Nothing beyond the protected tail — but the duplicate pass above
+        // may already have paid for itself.
+        return if tokens_saved >= MICRO_COMPACT_MIN_SAVINGS { (result, tokens_saved) } else { (messages.to_vec(), 0) };
     };
 
     // Count-based trigger: when compactable results exceed threshold,
@@ -271,7 +445,7 @@ pub fn micro_compact(
 
         let msg = &result[*idx];
         let old_tokens = estimate_message_tokens(msg);
-        if old_tokens < 100 {
+        if old_tokens < 100 || msg.content.starts_with(DUPLICATE_RESULT_STUB_PREFIX) {
             continue; // Not worth compacting small results
         }
 
@@ -1028,16 +1202,21 @@ conversation so the next model can continue it mid-stream.
 
 Compounding: if a \"## Previous Summary Snapshot\" is provided, FOLD it into your output — \
 take the union of its facts and the new transcript, dedupe, and update anything the \
-transcript supersedes. NEVER reset, drop, or restart the summary; the snapshot is earlier \
-state of the same ongoing work.
+transcript supersedes — a goal the snapshot called IN PROGRESS that the transcript shows \
+delivered becomes DONE. NEVER reset, drop, or restart the summary; the snapshot is earlier \
+state of the same conversation.
 
 Output ONLY the sections below, in this order, with these exact headings. SKIP any section \
 that would be empty — never write \"None\".
 
 ## Goal
-The user's active task. This is an ONGOING task, not a finished one: the next model must \
-NOT treat it as complete, wrap it up, or start it fresh — it must continue exactly where \
-the conversation left off.
+The user's most recent request, in the user's own words, with its STATUS on the first line: \
+IN PROGRESS, DONE, or SUPERSEDED. The goal comes ONLY from user messages — the assistant's \
+tool activity never defines it, and the same tool call repeated with the same arguments is a \
+stall, not progress: never describe it as the current step or as work toward the goal. DONE \
+when the transcript shows the request delivered or answered; SUPERSEDED when the user has \
+since asked for something else (then that newer request is the goal). Only an IN PROGRESS \
+goal is continued by the next model; never present a finished request as ongoing.
 
 ## Constraints & Preferences
 Rules, limitations, and preferences the user stated.
@@ -1383,6 +1562,66 @@ mod tests {
         assert_eq!(tokens_saved, 0, "active session should not be compacted");
     }
 
+    /// Five identical search results (a re-run search loop) collapse to the
+    /// first copy plus one-line stubs — including the "most recent" ones the
+    /// keep-recent protection would otherwise hold whole.
+    #[test]
+    fn test_micro_compact_collapses_identical_results() {
+        let big = "search result ".repeat(600); // ~8K chars
+        let mut messages = Vec::new();
+        for i in 0..5 {
+            let mut assistant = make_old_msg("assistant", "searching");
+            assistant.tool_calls = Some(
+                serde_json::json!([{"name": "web", "id": format!("call_{i}"), "input": {"action": "search", "query": "same"}}]).to_string(),
+            );
+            messages.push(assistant);
+            // The runner appends its redundancy note to repeats; the copy must still match.
+            let text = if i == 0 { big.clone() } else { format!("{big}{REDUNDANT_RESULT_NOTE} You already have this content.)") };
+            messages.push(make_tool_result_msg(&text, 1000));
+        }
+        let mut frozen = std::collections::HashMap::new();
+        let (result, saved) = micro_compact(&messages, 1_000, &mut frozen);
+        let stubs = result.iter().filter(|m| m.content.starts_with(DUPLICATE_RESULT_STUB_PREFIX)).count();
+        assert_eq!(stubs, 4, "every copy after the first is a stub");
+        let original_id = first_tool_call_id(&messages[1]).unwrap();
+        assert!(result[3].content.contains(&original_id), "a stub names the call it repeats: {}", result[3].content);
+        assert!(result[1].content.starts_with("search result"), "the first copy stays whole");
+        assert!(saved > 4 * 1500, "saved {saved} tokens");
+        assert_eq!(frozen.len(), 4, "each stub is frozen on its tool_call_id");
+        // Second pass over the compacted history is a no-op for the stubs.
+        let (again, _) = micro_compact(&result, 1_000, &mut frozen);
+        assert_eq!(again.iter().filter(|m| m.content.starts_with(DUPLICATE_RESULT_STUB_PREFIX)).count(), 4);
+    }
+
+    #[test]
+    fn test_micro_compact_keeps_only_the_two_newest_screenshots() {
+        let shot = |i: usize| {
+            let mut m = make_tool_result_msg(&format!("Tapped Simulator at ({i},{i})"), 1000 + i as i64);
+            m.tool_results = Some(
+                serde_json::json!([{
+                    "tool_call_id": format!("call_{i}"),
+                    "content": format!("Tapped Simulator at ({i},{i})"),
+                    "image_url": format!("data:image/jpeg;base64,{}", "A".repeat(16_000)),
+                }])
+                .to_string(),
+            );
+            m
+        };
+        let messages = vec![make_old_msg("user", "drive the app"), shot(0), shot(1), shot(2)];
+        let mut frozen = std::collections::HashMap::new();
+        let (result, saved) = micro_compact(&messages, 1_000, &mut frozen);
+        assert!(!result_has_image(&result[1]), "the oldest screenshot is dropped");
+        assert!(result[1].content.ends_with(IMAGE_REMOVED_NOTE), "and says so: {}", result[1].content);
+        assert!(result[1].content.starts_with("Tapped Simulator at (0,0)"), "the step's text stays");
+        assert!(result_has_image(&result[2]) && result_has_image(&result[3]), "the two newest keep theirs");
+        // The image is ~4K tokens; the note it leaves behind costs a few dozen.
+        assert!(saved >= 16_000 / crate::CHARS_PER_TOKEN - 100, "saved {saved} tokens");
+        // Idempotent: a second pass over the compacted history changes nothing.
+        let (again, _) = micro_compact(&result, 1_000, &mut frozen);
+        assert_eq!(again[1].content, result[1].content);
+        assert_eq!(again[1].tool_results, result[1].tool_results);
+    }
+
     #[test]
     fn test_micro_compact_universal_tools() {
         // Tool results from non-standard tools (e.g. "search_emails") should
@@ -1402,7 +1641,9 @@ mod tests {
                 .to_string(),
             );
             messages.push(assistant);
-            messages.push(make_tool_result_msg(&big, 1000));
+            // Distinct per call: identical results are collapsed by the
+            // duplicate pass and would never reach the summary path.
+            messages.push(make_tool_result_msg(&format!("{big}{i}"), 1000));
         }
 
         // Threshold below the ~16K estimated total so the pressure gate opens.
@@ -1734,9 +1975,10 @@ mod tests {
             tmsg("user", "go", None, None),
             tmsg("assistant", "", Some(calls), None),
             // Production shape: the payload rides tool_results; `content` is empty.
-            tmsg("tool", "", None, Some(&serde_json::json!([{"tool_call_id":"c1","content":big}]).to_string())),
-            tmsg("tool", "", None, Some(&serde_json::json!([{"tool_call_id":"c2","content":big}]).to_string())),
-            tmsg("tool", "", None, Some(&serde_json::json!([{"tool_call_id":"c3","content":big}]).to_string())),
+            // Distinct per call: byte-identical results collapse to one copy.
+            tmsg("tool", "", None, Some(&serde_json::json!([{"tool_call_id":"c1","content":format!("{big}c1")}]).to_string())),
+            tmsg("tool", "", None, Some(&serde_json::json!([{"tool_call_id":"c2","content":format!("{big}c2")}]).to_string())),
+            tmsg("tool", "", None, Some(&serde_json::json!([{"tool_call_id":"c3","content":format!("{big}c3")}]).to_string())),
         ];
         pad_past_compaction(&mut convo);
         let (out, saved) = micro_compact(&convo, 1_000, &mut std::collections::HashMap::new());
