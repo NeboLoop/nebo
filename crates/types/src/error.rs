@@ -55,6 +55,23 @@ pub enum NeboError {
 }
 
 impl NeboError {
+    /// What a client is told, as opposed to what a log line records.
+    ///
+    /// `Display` carries the Rust taxonomy — "validation error: …" — which is
+    /// exactly right beside a status code in a log and exactly wrong in an app,
+    /// where it lands under a Save button as "validation error: A team needs at
+    /// least two employees." A validation message is already written for the
+    /// person reading it and needs no prefix naming the kind of error it is.
+    ///
+    /// Every other variant keeps its `Display`: those strings are the whole
+    /// message, not a prefix plus one.
+    pub fn client_message(&self) -> String {
+        match self {
+            Self::Validation(message) => message.clone(),
+            other => other.to_string(),
+        }
+    }
+
     /// HTTP status code for this error.
     pub fn status_code(&self) -> u16 {
         match self {
