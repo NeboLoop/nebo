@@ -52,3 +52,28 @@ describe('parseMessages', () => {
     expect(tool?.label).toBeTruthy();
   });
 });
+
+// A team post relayed into a member's thread is stored as the envelope the
+// model read, with metadata.teamPost derived by the list into {teamId,
+// teamName, from, text}. The bubble carries that object; a row whose
+// teamPost is still the bare `true` (derivation found no envelope) reads as
+// an ordinary user message.
+describe('parseMessages team posts', () => {
+  const envelope = '[Team "Content & SEO" — rank for our services]\n[Post from Alma]\n\nDraft the outline.';
+  const row = (teamPost: unknown) => ({
+    id: 'u1', role: 'user', content: envelope, createdAt: 0,
+    metadata: JSON.stringify({ teamPost, teamId: 'team-1' }),
+  });
+
+  it('carries the derived team post onto the user message', () => {
+    const tp = { teamId: 'team-1', teamName: 'Content & SEO', from: 'Alma', text: 'Draft the outline.' };
+    const [msg] = parseMessages([row(tp)] as never);
+    expect(msg.type).toBe('user');
+    expect((msg as { teamPost?: unknown }).teamPost).toEqual(tp);
+  });
+
+  it('leaves an underived team post as a plain user message', () => {
+    const [msg] = parseMessages([row(true)] as never);
+    expect((msg as { teamPost?: unknown }).teamPost).toBeUndefined();
+  });
+});
