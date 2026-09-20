@@ -944,7 +944,13 @@ impl TurnSink {
             };
             if let Some((team, lead)) = self.team.as_ref() {
                 let from = if role == "user" { "" } else { lead.as_str() };
-                if let Err(e) = crate::team::record(state, team, from, text, &serde_json::json!([])) {
+                if let Err(e) = crate::team::record(
+                    state,
+                    team,
+                    crate::team::TeamSender::Local(from),
+                    text,
+                    &serde_json::json!([]),
+                ) {
                     error!(error = %e, team = %team.id, "failed to post voice turn to the team");
                 }
             }
@@ -1018,20 +1024,6 @@ fn chat_history_context(state: &AppState, chat_id: &str) -> String {
             tail.join("\n")
         )
     }
-}
-
-/// Who speaks for a team in its voice mode: the lead (the same member an
-/// owner's post that names nobody goes to), if it is on this computer; with
-/// no lead on record, the first local member. None = nobody here can speak.
-fn team_voice_lead(team: &db::Team) -> Option<String> {
-    let local = |id: &str| team.members.iter().any(|m| m.agent_id == id && m.is_local());
-    if !team.organizer_agent_id.is_empty() && local(&team.organizer_agent_id) {
-        return Some(team.organizer_agent_id.clone());
-    }
-    team.members
-        .iter()
-        .find(|m| m.is_local())
-        .map(|m| m.agent_id.clone())
 }
 
 /// What the lead needs to know when the owner opens a team's voice mode:
@@ -1128,10 +1120,23 @@ async fn handle_conversation_ws(mut socket: WebSocket, state: AppState, mut q: C
         None => None,
     };
     if let Some(t) = team.as_ref() {
-        let Some(lead) = team_voice_lead(t) else {
+        // The speaker is the same member a typed post that names nobody goes
+        // to — the ONE lead rule (`team::lead_for_unaddressed`). A typed post
+        // with no lead fans out to everyone once; a call needs one voice, so
+        // without a lead it refuses rather than picking a member. The lead
+        // is always on this computer (`tools::team` never records another);
+        // the local check only keeps a row written before that rule honest.
+        let lead = crate::team::lead_for_unaddressed(
+            &t.organizer_agent_id,
+            &tools::team::member_ids(t),
+        )
+        .filter(|id| t.members.iter().any(|m| m.agent_id == *id && m.is_local()));
+        let Some(lead) = lead else {
             let msg = serde_json::json!({
                 "type": "Error",
-                "message": "This team has no employee on this computer to speak for it.",
+                "message": "This team has no lead on this computer. A typed post reaches every \
+                            member, but a call needs one voice: set a lead in the team's \
+                            settings, then call again.",
             });
             let _ = socket.send(Message::Text(msg.to_string().into())).await;
             return;
@@ -2241,32 +2246,6 @@ mod voice_prompt_tests {
         assert_eq!(pick_voice_chat(&[fresh.clone()], now, |_| false).as_deref(), Some("new"));
         assert_eq!(pick_voice_chat(&[old.clone()], now, |_| false), None);
         assert_eq!(pick_voice_chat(&[], now, |_| true), None);
-    }
-
-    fn team(lead: &str, members: &[db::TeamMember]) -> db::Team {
-        db::Team {
-            id: "t1".into(),
-            name: "Ops".into(),
-            mission: String::new(),
-            members: members.to_vec(),
-            organizer_agent_id: lead.into(),
-            hub_channel_id: None,
-            created_at: 0,
-        }
-    }
-
-    /// The team's voice is its lead when the lead is here; a team with no
-    /// lead on this computer falls back to its first local member; a team
-    /// with nobody local has no voice.
-    #[test]
-    fn team_voice_is_the_lead_else_the_first_local_member() {
-        let remote = db::TeamMember { bot_id: "far".into(), agent_id: "r1".into(), name: "R".into() };
-        let local = [db::TeamMember::local("m1"), db::TeamMember::local("m2")];
-        assert_eq!(team_voice_lead(&team("m2", &local)).as_deref(), Some("m2"));
-        assert_eq!(team_voice_lead(&team("", &local)).as_deref(), Some("m1"));
-        let mixed = [remote.clone(), db::TeamMember::local("m2")];
-        assert_eq!(team_voice_lead(&team("r1", &mixed)).as_deref(), Some("m2"));
-        assert_eq!(team_voice_lead(&team("r1", &[remote])), None);
     }
 
     fn shape(rows: &[Row]) -> Vec<String> {

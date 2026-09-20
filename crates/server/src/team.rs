@@ -69,10 +69,31 @@ pub(crate) fn act_targets(
     if !from_owner || is_reply {
         return Vec::new();
     }
-    if !organizer_agent_id.is_empty() && members.contains(&organizer_agent_id.to_string()) {
-        return vec![organizer_agent_id.to_string()];
+    match lead_for_unaddressed(organizer_agent_id, members) {
+        Some(lead) => vec![lead],
+        None => others(),
     }
-    others()
+}
+
+/// The ONE member an owner's unaddressed post goes to: the lead, when one is
+/// on record and on the team. The single rule behind both ways of talking to
+/// a team — a typed post (`act_targets`) and a voice call opened from the
+/// team thread. `None` = the team has no lead: a typed post then reaches
+/// every member once, so nothing is left unanswered; a call, which needs one
+/// speaker, refuses instead.
+pub(crate) fn lead_for_unaddressed(organizer_agent_id: &str, members: &[String]) -> Option<String> {
+    (!organizer_agent_id.is_empty() && members.iter().any(|m| m == organizer_agent_id))
+        .then(|| organizer_agent_id.to_string())
+}
+
+/// Who wrote a team row, for `record`. Everything that happens on this Nebo
+/// is `Local`: the owner (empty id) or one of this Nebo's employees, whose
+/// name is looked up here. A post that arrived through the team's hub mirror
+/// is `Hub`: its author lives on another Nebo, so only the hub message knows
+/// the name and whether it was a person or an employee.
+pub(crate) enum TeamSender<'a> {
+    Local(&'a str),
+    Hub { agent_id: &'a str, name: &'a str, is_agent: bool },
 }
 
 /// Post into a team. Boxed because a member's reply is itself a post (the
@@ -104,8 +125,13 @@ pub(crate) fn post(
         let attachments_json = serde_json::to_value(&post.attachments).unwrap_or_default();
 
         // 1. The record: the team's own thread.
-        let (message, sender_name) =
-            record(&state, &team, &post.from_agent_id, &text, &attachments_json)?;
+        let (message, sender_name) = record(
+            &state,
+            &team,
+            TeamSender::Local(&post.from_agent_id),
+            &text,
+            &attachments_json,
+        )?;
 
         // Who acts is decided once, before anything is sent, because the hub
         // mirror has to carry the asks for members on other machines.
@@ -204,28 +230,32 @@ pub(crate) fn post(
 /// (desktop and mobile) shows it live. The ONE writer of a team row. `post`
 /// calls it before the fan-out; a turn spoken in the team thread's voice
 /// mode calls it alone, because the lead already answered out loud and a
-/// fan-out would ask it the same thing again in text. Returns the row and
-/// the sender's display name ("Owner" when `from_agent_id` is empty).
+/// fan-out would ask it the same thing again in text; the hub-mirror feed
+/// calls it for every message the mirrored channel delivers. Returns the
+/// row and the sender's display name ("Owner" for the owner of this Nebo).
 pub(crate) fn record(
     state: &AppState,
     team: &db::Team,
-    from_agent_id: &str,
+    sender: TeamSender<'_>,
     text: &str,
     attachments: &serde_json::Value,
 ) -> Result<(db::TeamMessage, String), String> {
-    let (sender_name, role) = if from_agent_id.is_empty() {
-        ("Owner".to_string(), "user")
-    } else {
-        (
+    let (from_agent_id, sender_name, role) = match sender {
+        TeamSender::Local("") => ("", "Owner".to_string(), "user"),
+        TeamSender::Local(id) => (
+            id,
             state
                 .store
-                .get_agent(from_agent_id)
+                .get_agent(id)
                 .ok()
                 .flatten()
                 .map(|a| a.name)
-                .unwrap_or_else(|| from_agent_id.to_string()),
+                .unwrap_or_else(|| id.to_string()),
             "assistant",
-        )
+        ),
+        TeamSender::Hub { agent_id, name, is_agent } => {
+            (agent_id, name.to_string(), if is_agent { "assistant" } else { "user" })
+        }
     };
     let message = state
         .store
@@ -331,7 +361,7 @@ async fn mirror_to_hub(
 
 #[cfg(test)]
 mod tests {
-    use super::act_targets;
+    use super::{act_targets, lead_for_unaddressed};
 
     fn members(n: usize) -> Vec<String> {
         (1..=n).map(|i| format!("m{i}")).collect()
@@ -405,5 +435,22 @@ mod tests {
         let team = members(3);
         assert_eq!(act_targets("", "", &team, &[], false, false), team);
         assert!(act_targets("m2", "", &team, &[], false, false).is_empty());
+    }
+
+    /// The lead is ONE rule for text and voice: the member on record, if it
+    /// is on the team; nobody when there is no lead or the lead left the
+    /// team — and then the typed post fans out to everyone (above) while a
+    /// call refuses, never picks a member.
+    #[test]
+    fn the_lead_is_one_rule_for_text_and_voice() {
+        let team = members(3);
+        assert_eq!(lead_for_unaddressed("m2", &team).as_deref(), Some("m2"));
+        assert_eq!(lead_for_unaddressed("", &team), None);
+        assert_eq!(lead_for_unaddressed("gone", &team), None);
+        assert_eq!(
+            act_targets("", "gone", &team, &[], false, false),
+            team,
+            "a lead that left the team counts as no lead"
+        );
     }
 }

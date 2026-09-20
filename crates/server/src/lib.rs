@@ -4616,41 +4616,19 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
                 .get("fromAgentName")
                 .cloned()
                 .unwrap_or_else(|| sender_label.clone());
-            let role = if !from_agent_id.is_empty()
-                || msg.metadata.get("senderKind").map(String::as_str) == Some("agent")
-            {
-                "assistant"
-            } else {
-                "user"
-            };
-            let message_id = state
-                .store
-                .append_team_message(
-                    room,
-                    role,
-                    &text,
-                    &sender_name,
-                    &from_agent_id,
-                    &serde_json::to_value(&msg.attachments).unwrap_or_default(),
-                )
-                .map(|m| m.id)
-                .unwrap_or_else(|e| {
-                    tracing::warn!(error = %e, team = %room.id, "failed to record mirrored hub message in the team thread");
-                    String::new()
-                });
-            state.hub.broadcast(
-                tools::team::TEAM_MESSAGE_EVENT,
-                serde_json::json!({
-                    "teamId": room.id,
-                    "messageId": message_id,
-                    "conversationId": msg.conversation_id,
-                    "from": msg.from,
-                    "fromAgentId": from_agent_id,
-                    "senderName": sender_name,
-                    "role": role,
-                    "text": text,
-                }),
-            );
+            let is_agent = !from_agent_id.is_empty()
+                || msg.metadata.get("senderKind").map(String::as_str) == Some("agent");
+            // The ONE writer of a team row (`team::record`): the row and the
+            // `team_message` event every open team view renders.
+            if let Err(e) = team::record(
+                &state,
+                room,
+                team::TeamSender::Hub { agent_id: &from_agent_id, name: &sender_name, is_agent },
+                &text,
+                &serde_json::to_value(&msg.attachments).unwrap_or_default(),
+            ) {
+                tracing::warn!(error = %e, team = %room.id, "failed to record mirrored hub message in the team thread");
+            }
         }
 
         // Inside a REGISTERED workroom, an exact member name after '@'

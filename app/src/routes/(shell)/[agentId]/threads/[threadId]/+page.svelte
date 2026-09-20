@@ -2,15 +2,13 @@
   import { launchApp } from '$lib/apps/launcher';
   import FlowsPane from '$lib/components/flows/FlowsPane.svelte';
   import { goto } from '$lib/nav';
-  import { getContext, onMount, onDestroy, untrack } from 'svelte';
-  import { sendClientEvent } from '$lib/api/gocliRequest';
+  import { getContext, onMount, onDestroy } from 'svelte';
   import { t } from 'svelte-i18n';
   import { page } from '$app/stores';
   import { replaceState } from '$app/navigation';
   import ChatPane from '$lib/components/chat/ChatPane.svelte';
   import type { AgentPageContext, EnrichedChat } from '$lib/types/agentPage';
   import { createChatController } from '$lib/chat/controller.svelte';
-  import { parseMessages } from '$lib/chat/history';
   import type { ChatMessage } from '$lib/chat/controller.svelte';
   import { toMentionAgent } from '$lib/chat/roster';
   import { threadKey } from '$lib/chat/sessionKey';
@@ -40,9 +38,13 @@
   const chat = createChatController({
     agentId: initialAgentId,
     sessionKey: threadKey(initialAgentId, initialThreadId),
-    // A voice, coworker, or workflow turn on this thread: reload the rows.
-    onTurnLandedElsewhere: () => { void loadMessages(); },
   });
+
+  /** The transcript, through the controller's ONE loader; resolves true when
+   *  no turn is running on the thread (nothing more will arrive by event). */
+  function loadMessages(): Promise<boolean> {
+    return chat.loadHistory(threadId ?? '');
+  }
 
   // When navigated from a fresh send, the run is started on THIS page (after
   // subscribe). Settle listeners clear the pending-send stash and strip ?active=1
@@ -115,15 +117,6 @@
     }));
   }
 
-  // Pagination state
-  let oldestMessageId = $state<string | null>(null);
-  let isLoadingMore = $state(false);
-  // The server says whether a page older than the oldest loaded message
-  // exists. A count comparison did this before, and the count (user and
-  // assistant rows) never matched a page (which carries tool rows too), so
-  // the first page looked complete and the top of the thread was unreachable.
-  let hasMore = $state(false);
-
   onMount(async () => {
     // Load agents for @mention chips
     try {
@@ -145,28 +138,10 @@
     });
   });
 
-  // The socket came back after a drop (a phone in the background, a tunnel
-  // blip): whatever streamed while it was down is gone from the view, since
-  // the server keeps no backlog. Reload the thread the way a fresh open does.
-  let wsStatusUnsub: (() => void) | null = null;
-  onMount(() => {
-    const ws = getWebSocketClient();
-    let seenDisruptions = ws.getDisruptionCount();
-    wsStatusUnsub = ws.onStatus((status) => {
-      if (status !== 'connected') return;
-      const now = ws.getDisruptionCount();
-      if (now === seenDisruptions) return;
-      seenDisruptions = now;
-      sendClientEvent('thread_resync', { detail: threadId, code: now });
-      loadMessages();
-    });
-  });
-
   onDestroy(() => {
     for (const off of activeRunUnsubs) off();
     activeRunUnsubs = [];
     voiceMsgUnsub?.();
-    wsStatusUnsub?.();
     chat.destroy();
   });
 
@@ -245,93 +220,6 @@
     }
   });
 
-  /** Loads the transcript. Resolves true when no turn is running on the thread
-   *  (nothing more will arrive by event), false while one is, or on failure. */
-  /** The first fetch of a thread is in flight: the pane shows a spinner, not
-   *  the "start a new chat" copy, so a slow tunnel never reads as an empty thread. */
-  let historyLoading = $state(false);
-
-  async function loadMessages(): Promise<boolean> {
-    if (!threadId) return false;
-    oldestMessageId = null;
-    hasMore = false;
-    const loadingFor = threadId;
-    // Read the transcript without depending on it: this function is called
-    // from the thread $effect and then writes chat.messages through
-    // setMessages. Tracking the read is how a loader effect re-fires itself —
-    // it cost ~57 fetches a second of the same thread, all day, until a
-    // machine went to sleep. The effect depends on threadId, and nothing else.
-    if (untrack(() => chat.messages.length) === 0) historyLoading = true;
-    try {
-      // Over a tunnel on a phone, one fetch failing is ordinary — and so is
-      // the chunk import itself ("Importing a module script failed", iPhone,
-      // 2026-09-15). One silent failure left the thread blank until a
-      // refresh; retry both, then say so.
-      let resp: Awaited<ReturnType<typeof import('$lib/api/nebo').getChatMessages>> | null = null;
-      let lastErr: unknown = null;
-      for (const wait of [0, 400, 1200, 3000]) {
-        if (wait) await new Promise((r) => setTimeout(r, wait));
-        if (threadId !== loadingFor) return false;
-        try {
-          const api = await import('$lib/api/nebo');
-          resp = await api.getChatMessages(threadId);
-          lastErr = null;
-          break;
-        } catch (e) {
-          lastErr = e;
-        }
-      }
-      if (!resp) throw lastErr ?? new Error('no response');
-      if (resp?.messages?.length) {
-        hasMore = !!resp.hasMore;
-        oldestMessageId = resp.messages[0]?.id ?? null;
-        chat.setMessages(parseMessages(resp.messages));
-      }
-      // The thread is still working: show it now, not at the next event.
-      const run = resp.activeRun;
-      if (run) {
-        chat.isLoading = true;
-        chat.activityStatus = run.currentTool ? $t('chat.resumedActivity', { values: { tool: run.currentTool } }) : $t('chat.working');
-      }
-      // ...and if that work is parked on a question, the card the live event
-      // carried is rendered here too, answerable the same way.
-      if (resp.pendingAsk) {
-        chat.isLoading = true;
-        chat.showPendingAsk(resp.pendingAsk);
-      }
-      return !run && !resp.pendingAsk;
-    } catch (e) {
-      console.warn('[nebo] Failed to load messages for thread', threadId, e);
-      if (chat.messages.length === 0) chat.setError($t('chat.historyLoadFailed'));
-      return false;
-    } finally {
-      if (threadId === loadingFor) historyLoading = false;
-    }
-  }
-
-  async function loadOlderMessages() {
-    if (!threadId || !oldestMessageId || isLoadingMore || !hasMore) return;
-    isLoadingMore = true;
-    try {
-      const api = await import('$lib/api/nebo');
-      const resp = await api.getChatMessages(threadId, undefined, oldestMessageId);
-      if (resp?.messages?.length) {
-        hasMore = !!resp.hasMore;
-        oldestMessageId = resp.messages[0]?.id ?? oldestMessageId;
-        chat.prependMessages(parseMessages(resp.messages));
-      } else {
-        // No more messages — stop pagination to prevent infinite re-triggers
-        hasMore = false;
-      }
-    } catch (e) {
-      console.warn('[nebo] Failed to load older messages', e);
-      // On error, stop pagination to prevent infinite retry loop
-      hasMore = false;
-    } finally {
-      isLoadingMore = false;
-    }
-  }
-
   // ?ask= — a starter prompt from a pane CTA lands in the composer, then the
   // param is cleared so refresh doesn't re-insert it.
   const askPrefill = $derived($page.url.searchParams.get('ask') ?? '');
@@ -344,20 +232,11 @@
 
 <ChatPane
   messages={chat.messages}
-  {historyLoading}
+  historyLoading={chat.historyLoading}
   agentName={agent?.name ?? $t('common.agent')}
   agentId={agentId}
   {threadId}
-  onteachsent={(message) => {
-    if (!message) return;
-    chat.setMessages([...chat.messages, {
-      id: 'msg-' + Date.now(),
-      type: 'user',
-      content: message,
-      time: formatTime(Date.now()),
-    }]);
-    chat.isLoading = true;
-  }}
+  onteachsent={(message) => chat.noteSent(message)}
   headerTitle={thread?.name ?? $t('chat.thread')}
   headerRight={$t('chat.work')}
   onopenruns={ctx.openRuns}
@@ -375,9 +254,9 @@
   quotaWarning={chat.quotaWarning}
   chatError={chat.chatError}
   activityStatus={chat.activityStatus}
-  {hasMore}
-  {isLoadingMore}
-  onloadmore={loadOlderMessages}
+  hasMore={chat.hasMore}
+  isLoadingMore={chat.isLoadingMore}
+  onloadmore={() => chat.loadHistory(threadId ?? '', { older: true })}
   onsend={async (text, files) => {
     if (threadId) {
       sessionStorage.removeItem(pendingSendKey(threadId));
