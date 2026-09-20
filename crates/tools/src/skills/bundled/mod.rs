@@ -126,6 +126,67 @@ mod bundled_skill_tests {
             "the skill sends deletion through the registry door, not the folder"
         );
     }
+
+    /// ONE door to change an app, and it is the tool. The skill used to send
+    /// the employee to the file tool to rewrite ui/ by hand while the tool
+    /// description said never to hand-write the files (2026-09-19); an
+    /// employee reading both had two contradictory procedures.
+    #[test]
+    fn the_app_skill_changes_an_app_through_the_tool_not_the_file_door() {
+        let (_, content) = BUNDLED_SKILLS
+            .iter()
+            .find(|(k, _)| *k == "build-an-app")
+            .expect("build-an-app is registered");
+        let iterate = content
+            .split("## Iterate")
+            .nth(1)
+            .expect("the skill has an Iterate section");
+        assert!(
+            iterate.contains("action: \"update\""),
+            "Iterate must send the change through the registry door: {iterate}"
+        );
+        assert!(
+            !iterate.contains("file tool"),
+            "Iterate must not send the employee to the file tool: {iterate}"
+        );
+        // The name is the folder, never the id the page is served under.
+        assert!(
+            content.contains("It is NOT\n  the app id"),
+            "the skill must say the name is not the app id"
+        );
+    }
+
+    /// Every SDK name the skill promises is in the bundle the page loads.
+    /// The contract lives in the skill alone — when it drifts from
+    /// `app/static/sdk/nebo.global.js`, a page written from it throws.
+    #[test]
+    fn every_sdk_name_the_skill_promises_is_exported_by_the_served_bundle() {
+        let (_, content) = BUNDLED_SKILLS
+            .iter()
+            .find(|(k, _)| *k == "build-an-app")
+            .expect("build-an-app is registered");
+        let bundle = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../app/static/sdk/nebo.global.js");
+        let bundle = std::fs::read_to_string(&bundle)
+            .unwrap_or_else(|e| panic!("the served SDK bundle must be readable at {}: {e}", bundle.display()));
+        for name in [
+            "nebo", "identity", "storage", "agents", "janus", "surfaces", "chat", "a2ui",
+            "neboFetch", "NeboWebSocket", "NeboSDK", "NeboSurfaces", "NeboA2UI", "getAppId",
+            "getBaseUrl", "setAppId", "setBaseUrl",
+        ] {
+            assert!(
+                content.contains(&format!("`{name}`")) || content.contains(&format!("NeboAppSDK.{name}")),
+                "the skill must name the export `{name}`"
+            );
+            assert!(
+                bundle.contains(&format!(".{name}=")),
+                "the bundle does not export `{name}` — the skill's contract has drifted"
+            );
+        }
+        // The two renamed at the top level, said as such.
+        assert!(content.contains("NeboAppSDK.neboFetch"), "nebo.fetch is exported as neboFetch");
+        assert!(content.contains("NeboAppSDK.NeboWebSocket"), "nebo.WebSocket is exported as NeboWebSocket");
+    }
 }
 
 #[cfg(test)]

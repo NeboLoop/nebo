@@ -316,6 +316,13 @@ pub fn bound_providers(plugin_store: &napp::plugin::PluginStore, db_store: &db::
         .collect()
 }
 
+/// The one sentence that sends a reader to the tool catalog's door: an
+/// employee hires on a card, a tool installs through plugin discover. Said
+/// once here and used wherever it is still needed — the same redirect used to
+/// be written out in a dozen places, and had already drifted (2026-09-19).
+pub const TOOL_INSTALL_DOOR: &str =
+    "A tool, connection or service installs through plugin(action: \"discover\", query: \"...\").";
+
 impl PluginTool {
     pub fn new(
         plugin_store: Arc<napp::plugin::PluginStore>,

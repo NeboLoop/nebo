@@ -557,10 +557,17 @@ pub async fn list_agents(
     })))
 }
 
-/// POST /agents
-/// Write a user-owned agent's files to `user/agents/<name>/` (AGENT.md, agent.json,
-/// manifest.json) and record its napp_path. Shared by create_agent and
-/// duplicate_agent so there is one filesystem-write path for user agents.
+/// The directory a user-owned employee's package lives in: `user/agents/<dir
+/// name>`, the ONE place a user agent's files go.
+fn user_agent_dir(name: &str) -> Option<std::path::PathBuf> {
+    Some(config::user_dir().ok()?.join("agents").join(agent_dir_name(name)))
+}
+
+/// Write a user-owned employee's package to `user/agents/<name>/` and record
+/// its napp_path. Create and duplicate both come here, and both go on through
+/// `napp::write_user_agent` — the ONE writer the registry tool uses too, so an
+/// app stays an app whichever door made it. Best-effort, as it has always
+/// been: a write that fails leaves the row, and says so in the log.
 fn write_user_agent_files(
     store: &db::Store,
     id: &str,
@@ -568,29 +575,24 @@ fn write_user_agent_files(
     description: &str,
     agent_md: &str,
     agent_json: &str,
+    app: Option<napp::AppFields>,
+    ui: Vec<(std::path::PathBuf, Vec<u8>)>,
 ) {
-    let Ok(user_dir) = config::user_dir() else {
+    let Some(agent_dir) = user_agent_dir(name) else {
         return;
     };
-    let agent_dir = user_dir.join("agents").join(agent_dir_name(name));
-    if std::fs::create_dir_all(&agent_dir).is_err() {
+    let package = napp::AgentPackage {
+        id,
+        name,
+        description,
+        agent_md,
+        agent_json: Some(agent_json),
+        app,
+        ui,
+    };
+    if let Err(e) = napp::write_user_agent(&agent_dir, &package) {
+        warn!(name, error = %e, "failed to write user agent files");
         return;
-    }
-    let _ = std::fs::write(agent_dir.join("AGENT.md"), agent_md);
-    let _ = std::fs::write(agent_dir.join("agent.json"), agent_json);
-    let manifest_path = agent_dir.join("manifest.json");
-    if !manifest_path.exists() {
-        let manifest = serde_json::json!({
-            "id": id,
-            "name": name,
-            "version": "1.0.0",
-            "type": "agent",
-            "description": description,
-        });
-        let _ = std::fs::write(
-            &manifest_path,
-            serde_json::to_string_pretty(&manifest).unwrap_or_default(),
-        );
     }
     let _ = store.set_agent_napp_path(id, &agent_dir.to_string_lossy());
 }
@@ -768,7 +770,16 @@ pub async fn create_agent(
     // provided, else the merged frontmatter.
     let agent_json_content =
         extract_agent_json_str(&body).unwrap_or_else(|| frontmatter_json.to_string());
-    write_user_agent_files(&state.store, &id, name, description, agent_md, &agent_json_content);
+    write_user_agent_files(
+        &state.store,
+        &id,
+        name,
+        description,
+        agent_md,
+        &agent_json_content,
+        None,
+        Vec::new(),
+    );
 
     // Process agent.json workflow bindings if provided
     let mut install_report = Vec::new();
@@ -2924,7 +2935,28 @@ pub async fn duplicate_agent(
         None,
     );
 
-    // Persist to user/agents/<name>/ (+ napp_path) so it loads and survives restart.
+    // Persist to user/agents/<name>/ (+ napp_path) so it loads and survives
+    // restart. A copy of an app is an app: the source's manifest app fields
+    // and its ui/ page come along, or duplicating a tracker would hand back a
+    // plain employee with no page (2026-09-19).
+    let source_dir = source
+        .napp_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(|| user_agent_dir(&source.name));
+    let (source_app, source_ui) = match source_dir {
+        Some(dir) => (
+            std::fs::read_to_string(dir.join("manifest.json"))
+                .ok()
+                .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+                .as_ref()
+                .and_then(napp::AppFields::from_manifest),
+            napp::read_ui_files(&dir).unwrap_or_default(),
+        ),
+        None => (None, Vec::new()),
+    };
     write_user_agent_files(
         &state.store,
         &new_id,
@@ -2932,6 +2964,8 @@ pub async fn duplicate_agent(
         &source.description,
         &new_agent_md,
         &source.frontmatter,
+        source_app,
+        source_ui,
     );
 
     // Copy agent_workflow bindings from source.

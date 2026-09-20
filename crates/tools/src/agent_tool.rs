@@ -6,6 +6,7 @@ use tokio::sync::RwLock;
 use tracing::{info, warn};
 
 use crate::origin::ToolContext;
+use crate::plugin_tool::TOOL_INSTALL_DOOR;
 use crate::registry::{DynTool, ToolResult};
 use db::Store;
 
@@ -738,12 +739,17 @@ impl PersonaTool {
             )
         };
 
-        // Browsing: no query, one page of the employees view. The list is the answer.
+        // Browsing: no query, one page of BOTH catalogs — the same pair of
+        // searches a query makes. A browse that listed employees only had to
+        // end in a sentence sending the reader to the other door, and that
+        // sentence then had to be repeated everywhere the model might land
+        // (2026-09-19). The page is the answer.
         if queries.is_empty() {
-            let mut resp = match api
-                .browse_marketplace(Some("employees"), department, None, None, Some(limit), Some(offset))
-                .await
-            {
+            let (employees, tools) = tokio::join!(
+                api.browse_marketplace(Some("employees"), department, None, None, Some(limit), Some(offset)),
+                api.browse_marketplace(Some("tools"), None, None, None, Some(limit), Some(offset)),
+            );
+            let mut resp = match employees {
                 Ok(v) => v,
                 Err(e) => return ToolResult::error(format!("marketplace search failed: {}", e)),
             };
@@ -752,24 +758,39 @@ impl PersonaTool {
             let mut items: Vec<serde_json::Value> =
                 resp.get("products").and_then(|p| p.as_array()).cloned().unwrap_or_default();
             prefer_neboai(&mut items);
-            if items.is_empty() {
+            let tool_items: Vec<serde_json::Value> = match tools {
+                Ok(mut resp) => {
+                    crate::installed::enrich_installed_state(&mut resp, &self.store);
+                    resp.get("products").and_then(|p| p.as_array()).cloned().unwrap_or_default()
+                }
+                Err(_) => Vec::new(),
+            };
+            if items.is_empty() && tool_items.is_empty() {
                 let scope = department.map(|d| format!(" in {d}")).unwrap_or_default();
                 return ToolResult::ok(format!(
-                    "No marketplace employees{scope}. The catalog is organised by department; try \
-                     another department or broader words. If you were looking for a tool, a connection \
-                     or a service rather than a person, those are a separate catalog: \
-                     plugin(action: \"discover\", query: \"...\"). Do not invent a listing."
+                    "Nothing in the marketplace{scope}. The catalog is organised by department; try \
+                     another department or a query. Do not invent a listing."
                 ));
             }
             let shown = items.len();
-            let lines: Vec<String> = items.iter().map(employee_line).collect();
-            return ToolResult::ok(format!(
-                "{} marketplace employee(s){}:\n{}\n\nTo hire, call discover with the roles you want \
-                 (one or a list) and the hire card will appear. Never paste install codes into chat.",
+            let mut page = format!(
+                "{} marketplace employee(s){}:\n{}",
                 total,
                 if total > shown as i64 { format!(" (showing {shown}; page with offset)") } else { String::new() },
-                lines.join("\n")
+                items.iter().map(employee_line).collect::<Vec<_>>().join("\n")
+            );
+            if !tool_items.is_empty() {
+                page.push_str(&format!(
+                    "\n\nTools, connections and services ({}):\n{}",
+                    tool_items.len(),
+                    tool_items.iter().map(tool_line).collect::<Vec<_>>().join("\n")
+                ));
+            }
+            page.push_str(&format!(
+                "\n\nTo hire an employee, call discover with the roles you want (one or a list) and the \
+                 hire card will appear. {TOOL_INSTALL_DOOR} Never paste install codes into chat."
             ));
+            return ToolResult::ok(page);
         }
 
         // Every query at once, employees and tools together: N roles is one round trip.
@@ -869,8 +890,7 @@ impl PersonaTool {
             // Codes are machine currency and never appear in model-visible text.
             return ToolResult::ok(format!(
                 "{listing}\n\nTo hire, call discover with the roles you want (one or a list) and one hire \
-                 card will appear for all of them. Tools install through plugin(action: \"discover\"). \
-                 Never paste install codes into chat."
+                 card will appear for all of them. {TOOL_INSTALL_DOOR} Never paste install codes into chat."
             ));
         }
 
@@ -1053,11 +1073,11 @@ impl PersonaTool {
             Err(e) => return ToolResult::error(e),
         };
         let app_fields = match input.get("app") {
-            Some(app) => match Self::app_manifest_fields(app) {
+            Some(app) => match napp::AppFields::from_json(app) {
                 Ok(fields) => Some(fields),
-                Err(e) => return ToolResult::error(e),
+                Err(e) => return ToolResult::error(e.to_string()),
             },
-            None if !ui_files.is_empty() => Self::app_manifest_fields(&serde_json::json!({})).ok(),
+            None if !ui_files.is_empty() => Some(napp::AppFields::default()),
             None => None,
         };
 
@@ -1078,23 +1098,21 @@ impl PersonaTool {
         // the directory by manifest id and would otherwise mint a second one.
         let id = uuid::Uuid::new_v4().to_string();
 
-        // manifest.json carries the version info the loader reports.
-        let mut manifest_obj = serde_json::Map::new();
-        manifest_obj.insert("id".into(), serde_json::json!(id));
-        manifest_obj.insert("name".into(), serde_json::json!(display));
-        manifest_obj.insert("version".into(), serde_json::json!("1.0.0"));
-        manifest_obj.insert("type".into(), serde_json::json!("agent"));
-        manifest_obj.insert("description".into(), serde_json::json!(description));
-        if let Some(fields) = app_fields.clone() {
-            Self::apply_app_fields(&mut manifest_obj, fields);
-        }
-        let manifest = serde_json::to_string_pretty(&serde_json::Value::Object(manifest_obj))
-            .unwrap_or_default();
-        if let Err(e) = Self::write_ui_files(&agent_dir, &ui_files) {
-            return ToolResult::error(e);
-        }
-        if let Err(e) = Self::write_agent_files(&agent_dir, agent_json_str.as_deref(), &manifest, &agent_md) {
-            return ToolResult::error(e);
+        // The package through the ONE writer (`napp::write_user_agent`): the
+        // manifest (with the row's id, the app fields when it is an app),
+        // agent.json, AGENT.md, and the page under ui/ — the same call the
+        // REST create and duplicate make.
+        let package = napp::AgentPackage {
+            id: &id,
+            name: &display,
+            description,
+            agent_md: &agent_md,
+            agent_json: agent_json_str.as_deref(),
+            app: app_fields.clone(),
+            ui: ui_files.clone(),
+        };
+        if let Err(e) = napp::write_user_agent(&agent_dir, &package) {
+            return ToolResult::error(e.to_string());
         }
 
         // Create DB entry so the agent has a proper UUID
@@ -1449,8 +1467,10 @@ impl PersonaTool {
             }
         }
 
-        // App manifest (`app`) and page (`ui`, `ui_jsx`). Same rules as
-        // create; an `app` block changes only the fields it names.
+        // App manifest (`app`) and page (`ui`, `ui_jsx`), through the ONE
+        // writer create and the REST doors use. Same rules as create; an
+        // `app` block changes only the fields it names, and a manifest
+        // already on disk keeps everything the writer is not given.
         if input.get("app").is_some() || input.get("ui").is_some() || input.get("ui_jsx").is_some() {
             let agent_dir = self.agent_loader.user_dir().join(&current_name);
             if !agent_dir.is_dir() {
@@ -1463,52 +1483,39 @@ impl PersonaTool {
                 Ok(files) => files,
                 Err(e) => return ToolResult::error(e),
             };
-            let manifest_path = agent_dir.join("manifest.json");
-            let mut manifest = std::fs::read_to_string(&manifest_path)
-                .ok()
-                .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-                .and_then(|v| v.as_object().cloned())
-                .unwrap_or_else(|| {
-                    let mut m = serde_json::Map::new();
-                    m.insert("id".into(), serde_json::json!(agent_id));
-                    m.insert("name".into(), serde_json::json!(current_name));
-                    m.insert("version".into(), serde_json::json!("1.0.0"));
-                    m.insert("description".into(), serde_json::json!(current_desc));
-                    m
-                });
             let app_fields = match input.get("app") {
-                Some(app) => match Self::app_manifest_fields(app) {
+                Some(app) => match napp::AppFields::from_json(app) {
                     Ok(fields) => Some(fields),
-                    Err(e) => return ToolResult::error(e),
+                    Err(e) => return ToolResult::error(e.to_string()),
                 },
-                None if !ui_files.is_empty() && !Self::manifest_is_app(&manifest) => {
-                    Self::app_manifest_fields(&serde_json::json!({})).ok()
-                }
+                None if !ui_files.is_empty() => Some(napp::AppFields::default()),
                 None => None,
             };
-            if let Err(e) = Self::write_ui_files(&agent_dir, &ui_files) {
-                return ToolResult::error(e);
+            // An `app` block is a manifest change; a page on its own is not.
+            let app_named = input.get("app").is_some();
+            let package = napp::AgentPackage {
+                id: agent_id,
+                name: &current_name,
+                description: &current_desc,
+                agent_md: &current_md,
+                // agent.json is the business of the automation edits above;
+                // an app edit never rewrites it.
+                agent_json: None,
+                app: app_fields,
+                ui: ui_files.clone(),
+            };
+            if let Err(e) = napp::write_user_agent(&agent_dir, &package) {
+                return ToolResult::error(e.to_string());
             }
-            if let Some(fields) = app_fields {
-                Self::apply_app_fields(&mut manifest, fields);
-                let text = serde_json::to_string_pretty(&serde_json::Value::Object(manifest))
-                    .unwrap_or_default();
-                if let Err(e) = std::fs::write(&manifest_path, text) {
-                    return ToolResult::error(format!("Failed to write manifest.json: {e}"));
-                }
+            if app_named {
                 changes.push(format!(
                     "app manifest updated. {}",
                     Self::app_created_note(agent_id, &ui_files).trim_start()
                 ));
             } else if !ui_files.is_empty() {
-                changes.push(format!(
-                    "ui/ files written: {}",
-                    ui_files
-                        .iter()
-                        .map(|(p, _)| p.display().to_string())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ));
+                changes.push(
+                    Self::app_created_note(agent_id, &ui_files).trim_start().to_string(),
+                );
             }
         }
 
@@ -2775,109 +2782,8 @@ impl PersonaTool {
         }
     }
 
-    /// The files of a new employee, written so the filesystem watcher never
-    /// finalizes a half-made one: agent.json and manifest.json first, AGENT.md
-    /// last, since AGENT.md is what makes a directory an employee to the
-    /// loader. A scan between two writes logged "agent.json: EOF while
-    /// parsing" and kept a broken employee (2026-09-05).
-    fn write_agent_files(
-        dir: &std::path::Path,
-        agent_json: Option<&str>,
-        manifest: &str,
-        agent_md: &str,
-    ) -> Result<(), String> {
-        let mut plan: Vec<(&str, &str)> = Vec::new();
-        if let Some(json) = agent_json {
-            plan.push(("agent.json", json));
-        }
-        plan.push(("manifest.json", manifest));
-        plan.push(("AGENT.md", agent_md));
-        for (file, content) in plan {
-            std::fs::write(dir.join(file), content).map_err(|e| format!("Failed to write {file}: {e}"))?;
-        }
-        Ok(())
-    }
-
-    /// The one permission an app gets when the call names none: its own
-    /// key-value store, what nearly every app page touches first.
-    const APP_DEFAULT_PERMISSIONS: &[&str] = &["storage:readwrite"];
-
     /// The script an app page loads for `NeboAppSDK`.
     const APP_SDK_SCRIPT: &str = "<script src=\"/sdk/nebo.global.js\"></script>";
-
-    /// The manifest fields an `app` block carries: the app marker (both
-    /// spellings the loader reads), `window` when given, `permissions` when
-    /// given. Checked with the loader's own rules (`AppWindowConfig`,
-    /// `validate_permissions`) before anything is written. Defaults are
-    /// applied by `apply_app_fields`, once the existing manifest is known.
-    fn app_manifest_fields(
-        app: &serde_json::Value,
-    ) -> Result<serde_json::Map<String, serde_json::Value>, String> {
-        let Some(obj) = app.as_object() else {
-            return Err(
-                "`app` must be an object: {\"window\": {\"title\": \"...\", \"width\": 900, \"height\": 700}, \"permissions\": [\"storage:readwrite\"]} (both fields optional; {} is fine). Nothing was written."
-                    .into(),
-            );
-        };
-        let mut fields = serde_json::Map::new();
-        fields.insert("type".into(), serde_json::json!("app"));
-        fields.insert("artifact_type".into(), serde_json::json!("app"));
-        if let Some(window) = obj.get("window") {
-            if !window.is_object() {
-                return Err(
-                    "`app.window` must be an object: {\"title\", \"width\", \"height\", \"min_width\", \"min_height\", \"resizable\"}. Nothing was written."
-                        .into(),
-                );
-            }
-            serde_json::from_value::<napp::manifest::AppWindowConfig>(window.clone())
-                .map_err(|e| format!("`app.window` is invalid and was not saved: {e}"))?;
-            fields.insert("window".into(), window.clone());
-        }
-        if let Some(perms) = obj.get("permissions") {
-            let permissions = perms
-                .as_array()
-                .ok_or_else(|| {
-                    "`app.permissions` must be an array of strings, e.g. [\"storage:readwrite\", \"network:outbound\"]. Nothing was written.".to_string()
-                })?
-                .iter()
-                .map(|p| {
-                    p.as_str().map(String::from).ok_or_else(|| {
-                        format!("`app.permissions` entry {p} must be a string like \"storage:readwrite\". Nothing was written.")
-                    })
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            napp::manifest::validate_permissions(&permissions)
-                .map_err(|e| format!("`app.permissions` refused and nothing was written: {e}"))?;
-            fields.insert("permissions".into(), serde_json::json!(permissions));
-        }
-        Ok(fields)
-    }
-
-    /// An app's fields laid over a manifest; permissions default when the
-    /// manifest ends up with none.
-    fn apply_app_fields(
-        manifest: &mut serde_json::Map<String, serde_json::Value>,
-        fields: serde_json::Map<String, serde_json::Value>,
-    ) {
-        manifest.extend(fields);
-        let has_permissions = manifest
-            .get("permissions")
-            .and_then(|p| p.as_array())
-            .is_some_and(|a| !a.is_empty());
-        if !has_permissions {
-            manifest.insert(
-                "permissions".into(),
-                serde_json::json!(Self::APP_DEFAULT_PERMISSIONS),
-            );
-        }
-    }
-
-    /// True when a manifest already marks its employee as an app.
-    fn manifest_is_app(manifest: &serde_json::Map<String, serde_json::Value>) -> bool {
-        ["artifact_type", "type"]
-            .iter()
-            .any(|k| manifest.get(*k).and_then(|v| v.as_str()) == Some("app"))
-    }
 
     /// The files of an app's `ui/` directory from the call: `ui` (relative
     /// path → content) and `ui_jsx` (one component, compiled to
@@ -2885,7 +2791,7 @@ impl PersonaTool {
     fn app_ui_files(
         input: &serde_json::Value,
         title: &str,
-    ) -> Result<Vec<(std::path::PathBuf, String)>, String> {
+    ) -> Result<Vec<(std::path::PathBuf, Vec<u8>)>, String> {
         let mut files = Vec::new();
         if let Some(ui) = input.get("ui") {
             let Some(map) = ui.as_object() else {
@@ -2900,7 +2806,10 @@ impl PersonaTool {
                         "`ui[\"{path}\"]` must be a string (the file's content). Nothing was written."
                     ));
                 };
-                files.push((Self::ui_relative_path(path)?, text.to_string()));
+                files.push((
+                    napp::user_agent::ui_relative_path(path).map_err(|e| e.to_string())?,
+                    text.as_bytes().to_vec(),
+                ));
             }
         }
         if let Some(src) = input.get("ui_jsx") {
@@ -2910,42 +2819,12 @@ impl PersonaTool {
                         .into(),
                 );
             };
-            files.push((std::path::PathBuf::from("index.html"), Self::app_ui_from_jsx(src, title)?));
+            files.push((
+                std::path::PathBuf::from("index.html"),
+                Self::app_ui_from_jsx(src, title)?.into_bytes(),
+            ));
         }
         Ok(files)
-    }
-
-    /// A `ui` path, relative to the app's `ui/` directory and staying inside
-    /// it: no `..`, no root, no drive, no backslashes.
-    fn ui_relative_path(path: &str) -> Result<std::path::PathBuf, String> {
-        use std::path::Component;
-        let refuse = |why: &str| {
-            Err(format!(
-                "`ui` path \"{path}\" refused ({why}); nothing was written. Paths are relative to the app's ui/ directory, e.g. \"index.html\" or \"assets/app.js\"."
-            ))
-        };
-        if path.trim().is_empty() {
-            return refuse("empty");
-        }
-        if path.contains('\\') {
-            return refuse("backslashes are not allowed");
-        }
-        let p = std::path::Path::new(path);
-        let mut normal = 0;
-        for component in p.components() {
-            match component {
-                Component::Normal(_) => normal += 1,
-                Component::CurDir => {}
-                Component::ParentDir => return refuse("`..` is not allowed"),
-                Component::RootDir | Component::Prefix(_) => {
-                    return refuse("absolute paths are not allowed")
-                }
-            }
-        }
-        if normal == 0 {
-            return refuse("names no file");
-        }
-        Ok(p.to_path_buf())
     }
 
     /// `ui_jsx` through the one JSX converter — the same call
@@ -2964,7 +2843,7 @@ impl PersonaTool {
 
     /// What a create or update says once an app's manifest and page are on
     /// disk: where it is served and what its page can call.
-    fn app_created_note(id: &str, ui_files: &[(std::path::PathBuf, String)]) -> String {
+    fn app_created_note(id: &str, ui_files: &[(std::path::PathBuf, Vec<u8>)]) -> String {
         let page = if ui_files.is_empty() {
             "No ui/ files yet — add them with update (ui: {\"index.html\": ...} or ui_jsx) before opening it.".to_string()
         } else {
@@ -2981,26 +2860,6 @@ impl PersonaTool {
             "\nThis employee is an app. {page} It is served at /apps/{id}/ui within seconds (the loader watches the directory; no restart). The page gets `NeboAppSDK` from {}.",
             Self::APP_SDK_SCRIPT
         )
-    }
-
-    /// The app's page files, under `<agent dir>/ui/`. Written before
-    /// AGENT.md so the loader's first look at the employee already finds
-    /// its `ui/` directory.
-    fn write_ui_files(
-        dir: &std::path::Path,
-        files: &[(std::path::PathBuf, String)],
-    ) -> Result<(), String> {
-        let ui_dir = dir.join("ui");
-        for (rel, content) in files {
-            let target = ui_dir.join(rel);
-            if let Some(parent) = target.parent() {
-                std::fs::create_dir_all(parent)
-                    .map_err(|e| format!("Failed to create ui/{}: {e}", rel.display()))?;
-            }
-            std::fs::write(&target, content)
-                .map_err(|e| format!("Failed to write ui/{}: {e}", rel.display()))?;
-        }
-        Ok(())
     }
 
     /// Workflow bindings from the tool's `automations` shape. Refuses, before
@@ -3377,8 +3236,8 @@ fn install_code_shape_error(code: &str) -> Option<String> {
         "'{code}' is not an install code. Codes are issued by the marketplace and look like \
          PREFIX-XXXX-XXXX (four letters, then two groups of four); they are never built from a \
          name. To hire an employee, find it with agent(resource: \"registry\", action: \
-         \"discover\"); for a tool, plugin(action: \"discover\") — each offers the card that \
-         installs it. An employee that is already in the registry \
+         \"discover\") — the card it offers installs it. {TOOL_INSTALL_DOOR} \
+         An employee that is already in the registry \
          (agent(resource: \"registry\", action: \"list\")) needs no install: use info, \
          update or reload on it."
     ))
@@ -3437,14 +3296,12 @@ impl DynTool for PersonaTool {
            {\"name\": \"x\", \"trigger\": \"manual\", \"steps\": [...]}\n\n\
          Optional fields: emit (event name on completion), description (human label).\n\n\
          APPS (an employee with its own web page — a tracker, a dashboard, a form) — pass `app` and/or `ui`/`ui_jsx` to create or update; never hand-write the files:\n  \
-           app: {\"window\": {\"title\", \"width\", \"height\", \"min_width\", \"min_height\", \"resizable\"}, \"permissions\": [\"storage:readwrite\"]} — both optional, {} is fine.\n  \
+           app: {\"window\": {\"title\", \"width\", \"height\", \"resizable\"}, \"permissions\": [\"storage:readwrite\"]} — both optional, {} is fine.\n  \
              manifest.json gets \"artifact_type\": \"app\", the window block and permissions (default [\"storage:readwrite\"]; prefixes: storage:, network:, subagent:, filesystem:, tool:, shell:, memory:, oauth:).\n  \
            ui: {\"index.html\": \"<!doctype html>...\", \"app.js\": \"...\"} — files written under the app's ui/ (paths relative to ui/, no .. or absolute paths). ui without app still makes an app.\n  \
            ui_jsx: the source of ONE .jsx/.tsx file that `export default`s a React component — compiled to ui/index.html by the same converter as os(file, convert, to: \"html\") (Tailwind classes, bare npm imports OK, no relative imports), SDK script added for you.\n  \
-           The page loads <script src=\"/sdk/nebo.global.js\"></script> and gets the global NeboAppSDK: NeboAppSDK.nebo.identity.get() (who is running it), NeboAppSDK.storage.getItem/setItem/removeItem/keys/clear (app KV, JSON values),\n  \
-             NeboAppSDK.agents.invoke(message, {agent?, data?}) → {text} and agents.stream(...), NeboAppSDK.janus.complete({messages: [{role, content}], model?, system?}) → text and janus.stream,\n  \
-             NeboAppSDK.chat.mount(el, {height?, placeholder?, theme?}) embeds a chat with this employee, NeboAppSDK.neboFetch(url) proxies HTTP. Same-origin URLs work as-is.\n  \
-           The app appears within seconds at /apps/<id>/ui (the loader watches the directory; no restart) and in the Employees list.\n  \
+           The page loads <script src=\"/sdk/nebo.global.js\"></script> and gets the global NeboAppSDK (identity, storage, agents, janus, chat, surfaces). Its call list is the build-an-app skill — read that skill before writing a page; it is the one place the SDK contract is written down.\n  \
+           The app appears within seconds at /apps/<id>/ui — <id> is the UUID the create result reports, never the name (the loader watches the directory; no restart) — and in the Employees list.\n  \
            agent(resource: \"registry\", action: \"create\", name: \"deal-tracker\", description: \"Tracks deals in a board\",\n    \
              app: {\"window\": {\"title\": \"Deal Tracker\", \"width\": 900, \"height\": 700}},\n    \
              ui: {\"index.html\": \"<!doctype html><html><head><script src=\\\"/sdk/nebo.global.js\\\"></script></head><body><script>NeboAppSDK.storage.getItem('deals').then(...)</script></body></html>\"})\n  \
@@ -3609,8 +3466,6 @@ impl DynTool for PersonaTool {
                                 "title": { "type": "string" },
                                 "width": { "type": "integer", "description": "Default 1024" },
                                 "height": { "type": "integer", "description": "Default 768" },
-                                "min_width": { "type": "integer" },
-                                "min_height": { "type": "integer" },
                                 "resizable": { "type": "boolean", "description": "Default true" }
                             }
                         },
@@ -3754,6 +3609,9 @@ mod tests {
         assert!(install_code_shape_error("AGNT-AB_D-1234").is_some(), "punctuation in a group");
         assert!(install_code_shape_error("AGNT-ABCD-1234").is_none());
         assert!(install_code_shape_error("PLUG-3TKG-GHKN").is_none(), "a real code from today");
+        // The sentence pointing at the tool catalog is said once, from the
+        // one constant, wherever it is still needed.
+        assert!(e.contains(TOOL_INSTALL_DOOR), "{e}");
     }
 
     #[test]
@@ -3891,121 +3749,39 @@ mod tests {
         assert!(text.contains(REGISTRY_ACTIONS), "{text}");
     }
 
-    /// AGENT.md is written last: a watcher scan that lands between writes
-    /// sees agent.json and manifest.json whole, never an employee without them.
+    /// The `ui` map the call carries: every path checked by the writer's
+    /// rule (a path that leaves ui/ is refused here, before a byte is
+    /// written), every content a string, every file addressed relative to
+    /// ui/. The rule itself is tested where the writer lives.
     #[test]
-    fn agent_files_are_written_with_agent_md_last() {
-        let dir = tempfile::tempdir().unwrap();
-        PersonaTool::write_agent_files(dir.path(), Some("{}"), "{\"name\":\"x\"}", "---\nname: x\n---\nHi").unwrap();
-        for file in ["agent.json", "manifest.json", "AGENT.md"] {
-            assert!(dir.path().join(file).is_file(), "{file}");
-        }
-
-        // A directory in AGENT.md's place makes its write fail; the two
-        // files that must precede it are already there.
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir(dir.path().join("AGENT.md")).unwrap();
-        let err = PersonaTool::write_agent_files(dir.path(), Some("{}"), "{}", "Hi").unwrap_err();
-        assert!(err.starts_with("Failed to write AGENT.md"), "{err}");
-        assert!(dir.path().join("agent.json").is_file());
-        assert!(dir.path().join("manifest.json").is_file());
-    }
-
-    /// An `app` block marks the manifest with both spellings the loader
-    /// reads, carries the window through, and defaults the permissions to
-    /// the app's own storage; an unknown permission prefix is refused with
-    /// the loader's own words.
-    #[test]
-    fn app_block_marks_the_manifest_the_way_the_loader_reads_it() {
-        use serde_json::json;
-        let fields = PersonaTool::app_manifest_fields(&json!({
-            "window": {"title": "Deals", "width": 900, "height": 700, "min_width": 400, "resizable": false}
-        }))
-        .unwrap();
-        let mut manifest = serde_json::Map::new();
-        manifest.insert("name".into(), json!("Deals"));
-        PersonaTool::apply_app_fields(&mut manifest, fields);
-        assert_eq!(manifest["artifact_type"], "app");
-        assert_eq!(manifest["type"], "app");
-        assert_eq!(manifest["window"]["title"], "Deals");
-        assert_eq!(manifest["window"]["min_width"], 400);
-        assert_eq!(manifest["window"]["resizable"], false);
-        assert_eq!(manifest["permissions"], json!(["storage:readwrite"]));
-        assert!(PersonaTool::manifest_is_app(&manifest));
-        // What the loader deserializes from it.
-        let window: napp::manifest::AppWindowConfig =
-            serde_json::from_value(manifest["window"].clone()).unwrap();
-        assert_eq!((window.width, window.height, window.resizable), (900, 700, false));
-
-        // Named permissions are kept, not replaced by the default.
-        let fields = PersonaTool::app_manifest_fields(&json!({
-            "permissions": ["storage:read", "network:outbound"]
-        }))
-        .unwrap();
-        let mut manifest = serde_json::Map::new();
-        PersonaTool::apply_app_fields(&mut manifest, fields);
-        assert_eq!(manifest["permissions"], json!(["storage:read", "network:outbound"]));
-        assert!(manifest.get("window").is_none());
-
-        // An update's `app: {}` keeps the permissions already on disk.
-        let mut existing = serde_json::Map::new();
-        existing.insert("permissions".into(), json!(["network:outbound"]));
-        PersonaTool::apply_app_fields(&mut existing, PersonaTool::app_manifest_fields(&json!({})).unwrap());
-        assert_eq!(existing["permissions"], json!(["network:outbound"]));
-
-        let err = PersonaTool::app_manifest_fields(&json!({"permissions": ["bogus:thing"]})).unwrap_err();
-        assert!(err.contains("unknown permission: bogus:thing"), "{err}");
-        assert!(err.contains("nothing was written"), "{err}");
-        let err = PersonaTool::app_manifest_fields(&json!({"window": {"width": "wide"}})).unwrap_err();
-        assert!(err.starts_with("`app.window` is invalid"), "{err}");
-        let err = PersonaTool::app_manifest_fields(&json!("app")).unwrap_err();
-        assert!(err.starts_with("`app` must be an object"), "{err}");
-
-        let mut plain = serde_json::Map::new();
-        plain.insert("type".into(), json!("agent"));
-        assert!(!PersonaTool::manifest_is_app(&plain));
-    }
-
-    /// A `ui` path stays inside the app's ui/ directory: `..`, a root, a
-    /// drive, or a backslash is refused before anything is written.
-    #[test]
-    fn ui_paths_stay_inside_the_ui_directory() {
-        for ok in ["index.html", "assets/app.js", "./app.js", "css/theme/dark.css"] {
-            let p = PersonaTool::ui_relative_path(ok).unwrap_or_else(|e| panic!("{ok}: {e}"));
-            assert!(p.is_relative(), "{ok}");
-        }
-        for (bad, why) in [
-            ("../x", "`..`"),
-            ("a/../../x", "`..`"),
-            ("/etc/x", "absolute"),
-            ("C:\\x", "backslash"),
-            ("..\\x", "backslash"),
-            ("", "empty"),
-            ("./", "names no file"),
-        ] {
-            let err = PersonaTool::ui_relative_path(bad).unwrap_err();
-            assert!(err.contains(why), "{bad}: {err}");
-            assert!(err.contains("nothing was written"), "{bad}: {err}");
-        }
-
-        // The map form: every path checked, every content a string.
+    fn the_ui_map_is_checked_before_anything_is_written() {
         let err = PersonaTool::app_ui_files(&serde_json::json!({"ui": {"../x": "boo"}}), "t").unwrap_err();
         assert!(err.contains("`..`"), "{err}");
+        assert!(err.contains("nothing was written"), "{err}");
+        let err = PersonaTool::app_ui_files(&serde_json::json!({"ui": {"/etc/x": "boo"}}), "t").unwrap_err();
+        assert!(err.contains("absolute"), "{err}");
         let err = PersonaTool::app_ui_files(&serde_json::json!({"ui": {"a.js": 1}}), "t").unwrap_err();
         assert!(err.contains("must be a string"), "{err}");
         let err = PersonaTool::app_ui_files(&serde_json::json!({"ui": "index.html"}), "t").unwrap_err();
         assert!(err.starts_with("`ui` must be a map"), "{err}");
 
-        // Files land under ui/, nested directories made on the way.
-        let dir = tempfile::tempdir().unwrap();
         let files = PersonaTool::app_ui_files(
             &serde_json::json!({"ui": {"index.html": "<p>hi</p>", "assets/app.js": "1"}}),
             "t",
         )
         .unwrap();
-        PersonaTool::write_ui_files(dir.path(), &files).unwrap();
-        assert_eq!(std::fs::read_to_string(dir.path().join("ui/index.html")).unwrap(), "<p>hi</p>");
-        assert_eq!(std::fs::read_to_string(dir.path().join("ui/assets/app.js")).unwrap(), "1");
+        let mut named: Vec<(String, String)> = files
+            .iter()
+            .map(|(p, c)| (p.display().to_string(), String::from_utf8_lossy(c).to_string()))
+            .collect();
+        named.sort();
+        assert_eq!(
+            named,
+            vec![
+                ("assets/app.js".to_string(), "1".to_string()),
+                ("index.html".to_string(), "<p>hi</p>".to_string()),
+            ]
+        );
     }
 
     /// `ui_jsx` goes through the one JSX converter and comes out as an
@@ -4023,7 +3799,7 @@ export default function App() {
         let files = PersonaTool::app_ui_files(&serde_json::json!({"ui_jsx": jsx}), "Counter").unwrap();
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].0, std::path::PathBuf::from("index.html"));
-        let html = &files[0].1;
+        let html = &String::from_utf8(files[0].1.clone()).unwrap();
         assert!(html.contains(PersonaTool::APP_SDK_SCRIPT), "sdk loaded: {html}");
         assert!(html.find(PersonaTool::APP_SDK_SCRIPT) < html.find("<body>"), "sdk in head");
         assert!(!html.contains("<button className"), "JSX transformed");

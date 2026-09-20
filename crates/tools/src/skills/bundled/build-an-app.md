@@ -59,11 +59,15 @@ agent(
 
 Parameters, exactly:
 
-- `name` — the employee's name. It is also the folder name and the app id.
+- `name` — the employee's name, and the folder its package lives in. It is NOT
+  the app id: the id is a UUID, minted at create. The create result says it
+  ("Created agent 'deal-board' (id: ...)"), and
+  `agent(resource: "registry", action: "info", name: "deal-board")` says it
+  again later. The page is served at `/apps/<that id>/ui/`.
 - `description` — one line; it becomes the persona if you do not pass `agent_md`.
 - `app` — `{window, permissions}`. Passing it makes the employee an app.
-  - `window`: `title`, `width`, `height`, `min_width`, `min_height`, `resizable`.
-    Defaults are 1024 x 768, resizable, titled after the employee.
+  - `window`: `title`, `width`, `height`, `resizable` — those four and no
+    others. Defaults are 1024 x 768, resizable, titled after the employee.
   - `permissions`: strings in `prefix:scope` form. `storage:readwrite` for the
     key-value store, `subagent:<employee-id>` to invoke another employee (your
     own employee needs no permission), `network:<host>` or `network:*` for the
@@ -81,10 +85,19 @@ On disk this is `<data_dir>/user/agents/<name>/` holding `manifest.json`
 
 ## The SDK Global
 
+This table is the SDK contract — the one place it is written down. The tool
+description points here rather than repeating it.
+
 The page loads the SDK and reads it from `NeboAppSDK`. There is no `nebo`
-global. `NeboAppSDK.nebo` is the singleton; every module is also exported at the
-top level, so `NeboAppSDK.identity` and `NeboAppSDK.nebo.identity` are the same
-object.
+global. `NeboAppSDK.nebo` is the singleton, an instance of `NeboAppSDK.NeboSDK`;
+every module is also exported at the top level, so `NeboAppSDK.identity` and
+`NeboAppSDK.nebo.identity` are the same object. Two of them are named
+differently at the top level than on the instance, because a bare `fetch` or
+`WebSocket` export would shadow the browser's: `nebo.fetch` is exported as
+`NeboAppSDK.neboFetch`, and `nebo.WebSocket` as `NeboAppSDK.NeboWebSocket`.
+The full top-level export list is `nebo`, `identity`, `storage`, `agents`,
+`janus`, `surfaces`, `chat`, `a2ui`, `neboFetch`, `NeboWebSocket`, `NeboSDK`,
+`NeboSurfaces`, `NeboA2UI`, `getAppId`, `getBaseUrl`, `setAppId`, `setBaseUrl`.
 
 ```html
 <script src="/sdk/nebo.global.js"></script>
@@ -108,12 +121,12 @@ What it exposes, one line each:
 | `agents.stream(message, {agent?, data?}): AsyncGenerator<{text, done}>` | The same, streamed. |
 | `janus.complete({messages, model?, temperature?, max_tokens?, system?}): Promise<string>` | A raw model call: no persona, no memory, no tools. |
 | `janus.stream(same): AsyncGenerator<string>` | The same, streamed. |
-| `nebo.fetch(pathOrUrl, init?)` | Relative path goes to the app's own sidecar API; absolute `http(s)://` goes through Nebo's proxy (needs `network:<host>`). |
-| `new nebo.WebSocket()` | Live socket to the app's employee at `/ws/app/<id>`; reconnects with backoff. `send(data)`, `close()`, `onmessage`. No arguments. |
+| `nebo.fetch(pathOrUrl, init?)` — top level `NeboAppSDK.neboFetch` | Relative path goes to the app's own sidecar API; absolute `http(s)://` goes through Nebo's proxy (needs `network:<host>`). |
+| `new nebo.WebSocket()` — top level `new NeboAppSDK.NeboWebSocket()` | Live socket to the app's employee at `/ws/app/<id>`; reconnects with backoff. `send(data)`, `close()`, `onopen/onmessage/onerror/onclose`. No arguments. |
 | `surfaces.connect()`, `surfaces.on(type, handler)`, `surfaces.send(name, payload)`, `surfaces.state` | Typed events from the employee (`text_content`, `state_delta`, `surface_update`, ...). `on("*", h)` hears all. |
 | `chat.mount(el, {placeholder?, theme?, height?, borderless?, contextId?, scope?})` | Nebo's chat with this employee, inside the page. |
 | `chat.send(text)`, `chat.setContext(ctx \| null)`, `chat.onMessage(h)`, `chat.newThread()`, `chat.unmount()` | Drive the mounted chat. |
-| `nebo.configure({appId?, baseUrl?})` | Only for a page served outside Nebo. |
+| `nebo.configure({appId?, baseUrl?})` | Only for a page served outside Nebo. It is a method on `nebo` alone; at the top level the same two settings are `NeboAppSDK.setAppId(id)` and `NeboAppSDK.setBaseUrl(url)`, and `getAppId()` / `getBaseUrl()` read them back. |
 
 ---
 
@@ -150,10 +163,21 @@ HTML and JavaScript against the table above.
 
 ## Iterate
 
-The page is read from disk on every request. To change it, write the files
-again under `<data_dir>/user/agents/<name>/ui/` with the file tool and reload
-the window; nothing to restart. Changing `manifest.json` or `AGENT.md` is
-picked up by the watcher within a few seconds.
+Change an app the same way you made it — through the registry door. Never
+hand-write the files: the tool is the one writer of an app's package, and it
+checks the manifest, the permissions and every `ui` path before a byte lands.
+
+```
+agent(resource: "registry", action: "update", name: "deal-board",
+      ui: { "index.html": "<the whole new page>" })
+```
+
+`update` takes the same `ui`, `ui_jsx`, `app` and `agent_md` the create took.
+Each names what it replaces: a path in `ui` overwrites that one file and leaves
+the rest of the folder alone; `app` changes only the fields it carries; passing
+`agent_md` rewrites the persona. The page is read from disk on every request,
+so reload the window and the change is there — nothing to restart, and a
+manifest or persona change is picked up by the watcher within a few seconds.
 
 Keep state in `storage`, not in the page: the window is closed and reopened,
 and the store survives that.
