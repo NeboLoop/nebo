@@ -1,4 +1,5 @@
 pub mod a2ui;
+pub mod attachments;
 pub mod a2ui_actions;
 pub mod agents_export;
 pub mod app_lifecycle;
@@ -3957,7 +3958,7 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
             }),
             entity_config,
             images,
-            attachments: msg.attachments.iter().map(|a| serde_json::to_value(a).unwrap_or_default()).collect(),
+            attachments: msg.attachments.clone(),
             entity_name: agent_name.clone(),
             origin_agent_id: None,
             mention_context: None,
@@ -4130,7 +4131,7 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
             }),
             entity_config,
             images,
-            attachments: msg.attachments.iter().map(|a| serde_json::to_value(a).unwrap_or_default()).collect(),
+            attachments: msg.attachments.clone(),
             entity_name: String::new(),
             origin_agent_id: None,
             mention_context,
@@ -4412,7 +4413,7 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
                 }),
                 entity_config,
                 images,
-                attachments: msg.attachments.iter().map(|a| serde_json::to_value(a).unwrap_or_default()).collect(),
+                attachments: msg.attachments.clone(),
                 entity_name: agent_name.clone(),
                 origin_agent_id: None,
                 mention_context: None,
@@ -4523,7 +4524,7 @@ pub(crate) async fn handle_comm_message(state: AppState, msg: comm::CommMessage)
             }),
             entity_config,
             images,
-            attachments: msg.attachments.iter().map(|a| serde_json::to_value(a).unwrap_or_default()).collect(),
+            attachments: msg.attachments.clone(),
             entity_name: String::new(),
             origin_agent_id: None,
             mention_context: None,
@@ -5796,40 +5797,6 @@ fn extract_message_text(content: &str) -> String {
     content.to_string()
 }
 
-/// Convert image attachments to AI vision content and append text descriptions
-/// for non-image attachments to the prompt.
-/// Directory holding attachments this machine has bytes for — ones uploaded
-/// here, and ones downloaded from the loop.
-pub(crate) fn uploads_dir() -> Option<std::path::PathBuf> {
-    let dir = config::data_dir().ok()?.join("files").join("uploads");
-    std::fs::create_dir_all(&dir).ok()?;
-    Some(dir)
-}
-
-/// Stored name for an attachment. The id prefix keeps it unique across
-/// re-sends while leaving the original filename readable on disk.
-pub(crate) fn upload_file_name(file_id: &str, filename: &str) -> String {
-    let short_id: String = file_id.chars().take(8).collect();
-    format!("{}-{}", short_id, filename)
-}
-
-/// Find a locally-held attachment by id alone (the filename isn't always known
-/// at the call site — a rendering `<img>` has only the id).
-///
-/// ponytail: linear scan of the uploads dir. Index it if that directory ever
-/// grows past a few thousand files.
-pub(crate) fn local_upload_by_id(file_id: &str) -> Option<std::path::PathBuf> {
-    let short_id: String = file_id.chars().take(8).collect();
-    if short_id.is_empty() {
-        return None;
-    }
-    let prefix = format!("{}-", short_id);
-    std::fs::read_dir(uploads_dir()?)
-        .ok()?
-        .filter_map(|e| e.ok())
-        .find(|e| e.file_name().to_string_lossy().starts_with(&prefix))
-        .map(|e| e.path())
-}
 
 /// Where to send audio for transcription: `(api_key, base_url, model)`.
 ///
@@ -5864,11 +5831,16 @@ fn transcription_endpoint(state: &state::AppState) -> Option<(String, String, St
     ))
 }
 
+/// Convert image attachments to AI vision content and append a note to the
+/// prompt for every attachment, so the agent knows what arrived and where the
+/// file is. Every note is built by `attachments::note` — the one shape the
+/// clients strip out of the bubble.
 async fn process_comm_attachments(
     state: &state::AppState,
     attachments: &[comm::wire::Attachment],
     prompt: &mut String,
 ) -> Vec<ai::ImageContent> {
+    use crate::attachments::{note, Kind};
 
     if attachments.is_empty() {
         return vec![];
@@ -5881,25 +5853,22 @@ async fn process_comm_attachments(
     let mut images = Vec::new();
 
     for att in attachments {
-        let size_kb = att.size / 1024;
-        let size_label = if size_kb >= 1024 {
-            format!("{:.1} MB", size_kb as f64 / 1024.0)
-        } else {
-            format!("{} KB", size_kb)
-        };
-
         // Local disk first — this machine uploaded it. Only reach for the loop
         // when the bytes genuinely live somewhere else.
-        let local = local_upload_by_id(&att.file_id);
+        let local = agent::uploads::by_id(&att.file_id);
         let bytes = match &local {
             Some(path) => match std::fs::read(path) {
                 Ok(b) => b,
                 Err(e) => {
                     tracing::warn!(path = %path.display(), error = %e, "local attachment unreadable");
-                    prompt.push_str(&format!(
-                        "\n[Attached: {} ({}) — the saved copy could not be read: {}. Tell the \
-                         user the attachment is unavailable.]",
-                        att.filename, size_label, e
+                    prompt.push_str(&note(
+                        Kind::File,
+                        &att.filename,
+                        att.size,
+                        &format!(
+                            "the saved copy could not be read: {e}. Tell the user the \
+                             attachment is unavailable."
+                        ),
                     ));
                     continue;
                 }
@@ -5909,10 +5878,12 @@ async fn process_comm_attachments(
                     // Say so in the prompt, not just the log. A silent skip here is
                     // how "I attached a photo and it did nothing" happens.
                     tracing::warn!(file_id = %att.file_id, "no local copy and no API client");
-                    prompt.push_str(&format!(
-                        "\n[Attached: {} ({}) — could not be retrieved (not signed in to NeboAI, \
-                         and no local copy). Tell the user the attachment did not arrive.]",
-                        att.filename, size_label
+                    prompt.push_str(&note(
+                        Kind::File,
+                        &att.filename,
+                        att.size,
+                        "could not be retrieved (not signed in to NeboAI, and no local copy). \
+                         Tell the user the attachment did not arrive.",
                     ));
                     continue;
                 };
@@ -5920,10 +5891,14 @@ async fn process_comm_attachments(
                     Ok(b) => b,
                     Err(e) => {
                         tracing::warn!(file_id = %att.file_id, error = %e, "failed to download attachment");
-                        prompt.push_str(&format!(
-                            "\n[Attached: {} ({}) — download failed: {}. Tell the user the \
-                             attachment did not arrive; do NOT answer as if nothing was attached.]",
-                            att.filename, size_label, e
+                        prompt.push_str(&note(
+                            Kind::File,
+                            &att.filename,
+                            att.size,
+                            &format!(
+                                "download failed: {e}. Tell the user the attachment did not \
+                                 arrive; do NOT answer as if nothing was attached."
+                            ),
                         ));
                         continue;
                     }
@@ -5936,8 +5911,8 @@ async fn process_comm_attachments(
         // the loop URL needs auth its tools don't have.
         let saved = match &local {
             Some(path) => Some(path.to_string_lossy().to_string()),
-            None => uploads_dir().and_then(|dir| {
-                let path = dir.join(upload_file_name(&att.file_id, &att.filename));
+            None => agent::uploads::dir().and_then(|dir| {
+                let path = dir.join(agent::uploads::file_name(&att.file_id, &att.filename));
                 std::fs::write(&path, &bytes).ok()?;
                 Some(path.to_string_lossy().to_string())
             }),
@@ -5952,9 +5927,11 @@ async fn process_comm_attachments(
         if let Some((media_type, data)) = ai::image_norm::normalize_for_llm(&bytes) {
             images.push(ai::ImageContent { media_type, data });
             if let Some(path) = &saved {
-                prompt.push_str(&format!(
-                    "\n[Attached image: {} ({}) — saved at {}]",
-                    att.filename, size_label, path
+                prompt.push_str(&note(
+                    Kind::File,
+                    &att.filename,
+                    att.size,
+                    &format!("an image, shown above — saved at {path}"),
                 ));
             }
             continue;
@@ -5963,7 +5940,8 @@ async fn process_comm_attachments(
         // Audio is inert to every provider we ship, so it becomes text here or
         // it never reaches the model at all.
         if ai::transcribe::is_transcribable(&att.filename, &att.mime_type) {
-            let note = match transcription_endpoint(state) {
+            let audio = |body: &str| note(Kind::Audio, &att.filename, att.size, body);
+            let spoken = match transcription_endpoint(state) {
                 Some((key, base_url, model)) => {
                     match ai::transcribe::transcribe(
                         &key,
@@ -5974,36 +5952,30 @@ async fn process_comm_attachments(
                     )
                     .await
                     {
-                        Ok(text) if text.is_empty() => format!(
-                            "\n[Audio: {} ({}) — transcribed, but no speech was found in it. \
-                             Say so rather than guessing at its contents.]",
-                            att.filename, size_label
+                        Ok(text) if text.is_empty() => audio(
+                            "transcribed, but no speech was found in it. Say so rather than \
+                             guessing at its contents.",
                         ),
-                        Ok(text) => format!(
-                            "\n[Audio: {} ({}) — transcript follows]\n{}",
-                            att.filename, size_label, text
-                        ),
+                        Ok(text) => format!("{}\n{}", audio("transcript follows"), text),
                         Err(e) => {
                             tracing::warn!(file = %att.filename, error = %e, "transcription failed");
-                            format!(
-                                "\n[Audio: {} ({}) — transcription failed: {}. Tell the user you \
-                                 could not listen to it; do NOT guess at what it says.]",
-                                att.filename, size_label, e
-                            )
+                            audio(&format!(
+                                "transcription failed: {e}. Tell the user you could not listen \
+                                 to it; do NOT guess at what it says."
+                            ))
                         }
                     }
                 }
-                None => format!(
-                    "\n[Audio: {} ({}) — no transcription provider is configured, so its contents \
-                     are unknown. Tell the user to add an OpenAI key or sign in to NeboAI.]",
-                    att.filename, size_label
+                None => audio(
+                    "no transcription provider is configured, so its contents are unknown. Tell \
+                     the user to add an OpenAI key or sign in to NeboAI.",
                 ),
             };
-            prompt.push_str(&note);
+            prompt.push_str(&spoken);
             // The audio file itself stays reachable — a transcript is not always
             // what the user is asking about.
             if let Some(path) = &saved {
-                prompt.push_str(&format!("\n[The audio file is saved at {}.]", path));
+                prompt.push_str(&audio(&format!("the file itself is saved at {path}")));
             }
             continue;
         }
@@ -6018,16 +5990,22 @@ async fn process_comm_attachments(
                 } else {
                     ""
                 };
-                prompt.push_str(&format!(
-                    "\n[Attached: {} ({}) — saved at {}{}. Its contents are not included above; \
-                     open the file if the user's request depends on what is inside it.]",
-                    att.filename, size_label, path, hint
+                prompt.push_str(&note(
+                    Kind::File,
+                    &att.filename,
+                    att.size,
+                    &format!(
+                        "saved at {path}{hint}. Its contents are not included above; open the \
+                         file if the user's request depends on what is inside it."
+                    ),
                 ));
             }
-            None => prompt.push_str(&format!(
-                "\n[Attached: {} ({}) — could not be saved to disk. Tell the user it is \
-                 unavailable rather than guessing at its contents.]",
-                att.filename, size_label
+            None => prompt.push_str(&note(
+                Kind::File,
+                &att.filename,
+                att.size,
+                "could not be saved to disk. Tell the user it is unavailable rather than \
+                 guessing at its contents.",
             )),
         }
     }

@@ -51,6 +51,10 @@ export function parseMessages(rawMessages: ApiChatMessage[]): ChatMessage[] {
   // Tool results live on the tool-role rows, keyed by tool_call_id; join them
   // up front so history reloads show real Request/Response like live streams.
   const resultsById = new Map<string, string>();
+  // Results the server cut to a preview (RESULT_PREVIEW_CHARS): the row shows
+  // what came back and fetches the rest from /chats/{id}/tool-output/{id} when
+  // the reader opens it, instead of a transcript page carrying every byte.
+  const truncatedIds = new Set<string>();
   const payloadsById = new Map<string, { kind: string; [k: string]: unknown }>();
   // The live stream's past-tense outcome ("Ran shell") and duration, persisted
   // with the result so a reloaded thread reads exactly like the live one.
@@ -70,6 +74,7 @@ export function parseMessages(rawMessages: ApiChatMessage[]): ChatMessage[] {
             if (r.payload && typeof r.payload === 'object' && r.payload.kind) {
               payloadsById.set(r.tool_call_id, r.payload);
             }
+            if (r.truncated) truncatedIds.add(r.tool_call_id);
             if (typeof r.outcome === 'string' && r.outcome) outcomesById.set(r.tool_call_id, r.outcome);
             if (typeof r.duration_ms === 'number') durationsById.set(r.tool_call_id, r.duration_ms);
           }
@@ -145,6 +150,8 @@ export function parseMessages(rawMessages: ApiChatMessage[]): ChatMessage[] {
         ...(durationsById.has(callId) ? { durationMs: durationsById.get(callId) } : {}),
         status: tc.status === 'error' ? 'error' : 'success',
         request,
+        ...(callId ? { toolId: callId } : {}),
+        ...(truncatedIds.has(callId) ? { truncated: true } : {}),
         response: resultsById.get(callId) ?? '',
         ...(payloadsById.has(callId) ? { payload: payloadsById.get(callId) } : {}),
       });

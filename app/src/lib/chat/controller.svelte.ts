@@ -75,6 +75,9 @@ export interface ToolUse {
   /** Live deep-research panel snapshot (research_progress events) — replaced
    *  whole on every update; the final state comes from the result payload. */
   research?: { kind: string; [k: string]: unknown };
+  /** The stored result was cut to a preview; `response` is its first
+   *  characters. Opening the row fetches the rest by `toolId`. */
+  truncated?: boolean;
 }
 
 /** A post that reached this employee through a team: who said it and in
@@ -84,6 +87,9 @@ export interface TeamPost {
   teamId: string;
   teamName: string;
   from: string;
+  /** The owner said this, decided on the server — the clients no longer
+   *  re-test the name. Absent on rows read before the server said it. */
+  fromOwner?: boolean;
   text: string;
 }
 

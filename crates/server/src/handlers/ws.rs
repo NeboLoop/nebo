@@ -987,12 +987,18 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState, ua: String) {
     );
 }
 
-/// Scan prompt text for image file paths, read them, and return (cleaned_prompt, images).
-/// Preserves the original prompt formatting (newlines, whitespace) when no images are found.
-fn extract_images_from_prompt(prompt: &str) -> (String, Vec<ai::ImageContent>) {
-
+/// Lift image file paths out of prompt text (drag/drop, paste) and take those
+/// files into the upload store, so a dragged picture arrives the same way an
+/// uploaded one does: as an attachment with an id. What it means to the model
+/// — the pixels, the note naming the saved file — is then decided in exactly
+/// one place, `process_comm_attachments`.
+///
+/// Returns the prompt with those tokens removed, and the ingested attachments.
+/// The original prompt's formatting is preserved byte-for-byte when no image
+/// path is found.
+fn extract_image_paths(prompt: &str) -> (String, Vec<comm::wire::Attachment>) {
     let image_extensions = ["png", "jpg", "jpeg", "gif", "webp", "bmp", "tiff"];
-    let mut images = Vec::new();
+    let mut ingested = Vec::new();
     let mut image_paths: Vec<&str> = Vec::new();
 
     for token in prompt.split_whitespace() {
@@ -1004,26 +1010,20 @@ fn extract_images_from_prompt(prompt: &str) -> (String, Vec<ai::ImageContent>) {
             .unwrap_or(false);
 
         if is_image && path.exists() {
-            if let Ok(bytes) = std::fs::read(path) {
-                // Same normalization gate as uploaded attachments: resized and
-                // canonically re-encoded regardless of input size/format, so a
-                // dragged-in 12MP photo works exactly like an uploaded one.
-                if let Some((media_type, data)) = ai::image_norm::normalize_for_llm(&bytes) {
-                    images.push(ai::ImageContent { media_type, data });
-                    image_paths.push(token);
-                }
+            if let Some(att) = crate::attachments::ingest_path(path) {
+                ingested.push(att);
+                image_paths.push(token);
             }
         }
     }
 
-    // No images found — return original prompt with all formatting intact
-    if images.is_empty() {
-        return (prompt.to_string(), images);
+    // Nothing lifted — return the original prompt with all formatting intact
+    if ingested.is_empty() {
+        return (prompt.to_string(), ingested);
     }
 
     // Lift only the image path tokens out of the text, preserving surrounding
-    // text and formatting; the paths come back as notes at the end so the
-    // model has the file as well as the pixels.
+    // text and formatting; the attachment note names the stored file.
     let mut cleaned = prompt.to_string();
     for path in &image_paths {
         cleaned = cleaned.replacen(path, "", 1);
@@ -1053,16 +1053,13 @@ fn extract_images_from_prompt(prompt: &str) -> (String, Vec<ai::ImageContent>) {
     let cleaned = cleaned.trim().to_string();
 
     // If the entire prompt was just image paths, add a generic prompt
-    let mut cleaned = if cleaned.is_empty() && !images.is_empty() {
+    let cleaned = if cleaned.is_empty() {
         "What's in this image?".to_string()
     } else {
         cleaned
     };
-    for path in &image_paths {
-        cleaned.push_str(&format!("\n[Attached image: {path}]"));
-    }
 
-    (cleaned, images)
+    (cleaned, ingested)
 }
 
 /// Handle built-in slash commands. Returns Some(response) if handled, None to
@@ -1613,19 +1610,24 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value) {
         // Not a recognized command — fall through to normal agent processing
     }
 
-    // Extract images from file paths in the prompt (drag/drop, paste)
-    let (prompt, mut images) = extract_images_from_prompt(&prompt);
-    if !images.is_empty() {
-        info!(count = images.len(), "extracted images from prompt");
+    // A picture dragged into the composer is an attachment like any other: it
+    // is taken into the upload store here, then joins the uploaded ones in a
+    // single list. `ws_attachments` stays the loop's own list — the hub knows
+    // those ids, and a locally ingested file is not one of them.
+    let (prompt, dragged) = extract_image_paths(&prompt);
+    if !dragged.is_empty() {
+        info!(count = dragged.len(), "ingested images named in the prompt");
     }
+    let mut attachments = ws_attachments.clone();
+    attachments.extend(dragged);
 
-    // Convert uploaded attachments: images become vision content; other files
-    // (video, audio, documents) are saved locally and referenced in the prompt
-    // so the agent can operate on them.
+    // Convert attachments: images become vision content; other files (video,
+    // audio, documents) are saved locally and referenced in the prompt so the
+    // agent can operate on them.
     let mut prompt = prompt;
-    if !ws_attachments.is_empty() {
-        let att_images =
-            crate::process_comm_attachments(state, &ws_attachments, &mut prompt).await;
+    let mut images = Vec::new();
+    if !attachments.is_empty() {
+        let att_images = crate::process_comm_attachments(state, &attachments, &mut prompt).await;
         if !att_images.is_empty() {
             info!(count = att_images.len(), "extracted images from attachments");
             images.extend(att_images);
@@ -1823,10 +1825,7 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value) {
             comm_reply,
             entity_config,
             images,
-            attachments: ws_attachments
-                .iter()
-                .map(|a| serde_json::to_value(a).unwrap_or_default())
-                .collect(),
+            attachments: attachments.clone(),
             entity_name: String::new(), // resolved from agent_registry in run_chat
             origin_agent_id: None,
             mention_context: app_context,
@@ -2310,7 +2309,25 @@ mod extension_auth_tests {
 
 #[cfg(test)]
 mod prompt_image_extraction_tests {
-    use super::extract_images_from_prompt;
+    use super::extract_image_paths;
+
+    /// The store writes under `config::data_dir()`; point it at a scratch
+    /// directory so a test never files anything in the owner's Nebo. Once per
+    /// process, and never over a root another test already set — the staffed
+    /// proof boots a whole server on its own `NEBO_HOME` and reads it for the
+    /// rest of the run.
+    fn scratch_home() {
+        static HOME: std::sync::OnceLock<Option<tempfile::TempDir>> = std::sync::OnceLock::new();
+        HOME.get_or_init(|| {
+            if std::env::var_os("NEBO_HOME").is_some() {
+                return None;
+            }
+            let dir = tempfile::tempdir().unwrap();
+            // SAFETY: one-time initialization, and only when no root is set.
+            unsafe { std::env::set_var("NEBO_HOME", dir.path()) };
+            Some(dir)
+        });
+    }
 
     /// A prompt with no image-path tokens comes back byte-identical —
     /// formatting (newlines, markdown) must never be re-flowed when there is
@@ -2318,65 +2335,77 @@ mod prompt_image_extraction_tests {
     #[test]
     fn plain_prompts_pass_through_untouched() {
         let prompt = "Summarize this:\n\n- item  one\n- item two";
-        let (cleaned, images) = extract_images_from_prompt(prompt);
-        assert!(images.is_empty());
+        let (cleaned, atts) = extract_image_paths(prompt);
+        assert!(atts.is_empty());
         assert_eq!(cleaned, prompt);
     }
 
     /// An image-looking token whose path does not exist on disk is left in
-    /// the prompt verbatim — only real files are lifted into vision content.
+    /// the prompt verbatim — only real files are taken into the store.
     #[test]
     fn nonexistent_image_paths_are_left_alone() {
         let prompt = "look at /definitely/not/here/shot.png please";
-        let (cleaned, images) = extract_images_from_prompt(prompt);
-        assert!(images.is_empty());
+        let (cleaned, atts) = extract_image_paths(prompt);
+        assert!(atts.is_empty());
         assert_eq!(cleaned, prompt);
     }
 
-    /// A real file with an image extension but non-image bytes fails the
-    /// normalization gate and is NOT extracted (the prompt keeps the token) —
-    /// same gate as uploaded attachments.
+    /// A real file with an image extension but non-image bytes is NOT
+    /// ingested (the prompt keeps the token) — the same gate uploaded
+    /// attachments meet.
     #[test]
-    fn garbage_bytes_behind_an_image_extension_are_not_extracted() {
+    fn garbage_bytes_behind_an_image_extension_are_not_ingested() {
+        scratch_home();
         let dir = tempfile::tempdir().unwrap();
         let fake = dir.path().join("fake.png");
         std::fs::write(&fake, b"this is not a png").unwrap();
         let prompt = format!("describe {} now", fake.display());
-        let (cleaned, images) = extract_images_from_prompt(&prompt);
-        assert!(images.is_empty());
+        let (cleaned, atts) = extract_image_paths(&prompt);
+        assert!(atts.is_empty());
         assert_eq!(cleaned, prompt);
     }
 
-    /// A real image is lifted into vision content AND left named in the prompt:
-    /// the model sees the picture and knows the file, so a tool that needs the
-    /// bytes (a photo onto a postcard) has a path to hand over.
+    /// A real image becomes an attachment with an id and a copy in the upload
+    /// store, and its path leaves the text: from here on it is indistinguishable
+    /// from a file the composer uploaded, so one code path describes both.
     #[test]
-    fn a_real_image_is_extracted_and_its_path_stays_named() {
+    fn a_real_image_is_ingested_as_an_attachment() {
         use base64::Engine;
+        scratch_home();
         let dir = tempfile::tempdir().unwrap();
         let png = dir.path().join("job.png");
         let bytes = base64::engine::general_purpose::STANDARD
             .decode("iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAIAAAAmkwkpAAAAEElEQVR4nGM4YWMDRwzEcQAREhQBbrqBkwAAAABJRU5ErkJggg==")
             .unwrap();
         std::fs::write(&png, bytes).unwrap();
+
         let prompt = format!("put this on the card {}", png.display());
-        let (cleaned, images) = extract_images_from_prompt(&prompt);
-        assert_eq!(images.len(), 1);
-        assert_eq!(cleaned, format!("put this on the card\n[Attached image: {}]", png.display()));
-        let (only, images) = extract_images_from_prompt(&png.display().to_string());
-        assert_eq!(images.len(), 1);
-        assert_eq!(only, format!("What's in this image?\n[Attached image: {}]", png.display()));
+        let (cleaned, atts) = extract_image_paths(&prompt);
+        assert_eq!(atts.len(), 1);
+        assert_eq!(atts[0].filename, "job.png");
+        assert_eq!(atts[0].mime_type, "image/png");
+        assert!(!atts[0].file_id.is_empty());
+        assert_eq!(cleaned, "put this on the card");
+        // The bytes are in the store, findable by id — this is what lets the
+        // user row keep the id alone instead of a base64 copy of the picture.
+        assert!(agent::uploads::by_id(&atts[0].file_id).is_some());
+
+        // A prompt that was only a path still asks the model something.
+        let (only, atts) = extract_image_paths(&png.display().to_string());
+        assert_eq!(atts.len(), 1);
+        assert_eq!(only, "What's in this image?");
     }
 
     /// Existing non-image files (wrong extension) are never treated as images.
     #[test]
     fn non_image_extensions_are_ignored_even_when_the_file_exists() {
+        scratch_home();
         let dir = tempfile::tempdir().unwrap();
         let txt = dir.path().join("notes.txt");
         std::fs::write(&txt, b"hello").unwrap();
         let prompt = format!("read {}", txt.display());
-        let (cleaned, images) = extract_images_from_prompt(&prompt);
-        assert!(images.is_empty());
+        let (cleaned, atts) = extract_image_paths(&prompt);
+        assert!(atts.is_empty());
         assert_eq!(cleaned, prompt);
     }
 }

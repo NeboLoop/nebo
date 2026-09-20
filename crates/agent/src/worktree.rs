@@ -577,18 +577,7 @@ pub fn render_outcome(desc: &str, outcome: &MergeOutcome) -> String {
 mod tests {
     use super::*;
 
-    /// Tests share the process env; serialize NEBO_HOME on one lock so
-    /// parallel tests never race each other (or the tools crate's tests).
-    fn with_home<T>(f: impl FnOnce(&Path) -> T) -> T {
-        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let home = tempfile::tempdir().unwrap();
-        // SAFETY: the lock above serializes env mutation across these tests.
-        unsafe { std::env::set_var("NEBO_HOME", home.path()) };
-        let out = f(home.path());
-        unsafe { std::env::remove_var("NEBO_HOME") };
-        out
-    }
+    use crate::test_home::with_home;
 
     async fn repo() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();

@@ -39,6 +39,9 @@ pub mod search;
 pub mod search_adapter;
 pub mod selector;
 pub mod session;
+pub mod uploads;
+#[cfg(test)]
+mod test_home;
 pub mod sidecar;
 pub mod steering;
 pub mod structured;

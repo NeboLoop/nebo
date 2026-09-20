@@ -163,12 +163,12 @@ pub async fn upload_file(
     let size = data.len() as u64;
     let file_id = uuid::Uuid::new_v4().to_string();
 
-    let dir = crate::uploads_dir().ok_or_else(|| {
+    let dir = agent::uploads::dir().ok_or_else(|| {
         to_error_response(types::NeboError::Internal(
             "cannot open the uploads directory".into(),
         ))
     })?;
-    let path = dir.join(crate::upload_file_name(&file_id, &filename));
+    let path = dir.join(agent::uploads::file_name(&file_id, &filename));
     std::fs::write(&path, &data)
         .map_err(|e| to_error_response(types::NeboError::Internal(e.to_string())))?;
 
@@ -179,7 +179,7 @@ pub async fn upload_file(
             Ok(attachment) => {
                 // Re-key the local copy to the loop's id so lookups by that id
                 // find it here instead of downloading what we already hold.
-                let renamed = dir.join(crate::upload_file_name(&attachment.file_id, &filename));
+                let renamed = dir.join(agent::uploads::file_name(&attachment.file_id, &filename));
                 if let Err(e) = std::fs::rename(&path, &renamed) {
                     tracing::warn!(error = %e, "could not re-key local attachment copy");
                 }
@@ -226,7 +226,7 @@ pub async fn serve_comm_file(
     }
     // Local copy first — an attachment uploaded on this machine renders while
     // signed out, and never costs a round trip to fetch what is already here.
-    let bytes = match crate::local_upload_by_id(&file_id) {
+    let bytes = match agent::uploads::by_id(&file_id) {
         Some(path) => std::fs::read(&path)
             .map_err(|e| to_error_response(types::NeboError::Internal(e.to_string())))?,
         None => {

@@ -6,7 +6,7 @@
   import AgentAvatar from '$lib/components/AgentAvatar.svelte';
   import WorkViewer from './WorkViewer.svelte';
   import DesktopView from './DesktopView.svelte';
-  import { teachStart, teachStop } from '$lib/api/nebo';
+  import { teachStart, teachStop, getToolOutput } from '$lib/api/nebo';
   import ShareArtifactModal from './ShareArtifactModal.svelte';
   import AskWidget from './AskWidget.svelte';
   import type { AskWidgetDef } from './AskWidget.svelte';
@@ -71,9 +71,14 @@
     payload?: { kind: string; [k: string]: unknown };
     /** Live deep-research snapshot (research_progress events). */
     research?: { kind: string; [k: string]: unknown };
+    /** The call id — what the server keys a tool's stored output by. */
+    toolId?: string;
+    /** The stored result was cut to a preview; opening the row fetches the
+     *  rest instead of every transcript page carrying every byte. */
+    truncated?: boolean;
   }
 
-  type TeamPost = { teamId: string; teamName: string; from: string; text: string };
+  type TeamPost = { teamId: string; teamName: string; from: string; fromOwner?: boolean; text: string };
   type Message =
     | { type: 'user'; content: string; time?: string; attachments?: UploadedAttachment[]; pending?: boolean; teamPost?: TeamPost }
     | { type: 'thinking'; content: string; duration: string }
@@ -1085,8 +1090,30 @@
 
   // Individual tool result expand state
   let expandedResults = $state<Record<string, boolean>>({});
-  function toggleResult(key: string) {
-    expandedResults[key] = !expandedResults[key];
+  // Full outputs fetched for rows whose stored result was cut to a preview,
+  // by tool call id. The list ships previews so a tool-heavy thread stays a
+  // readable page; the whole thing arrives when someone opens the row.
+  let fullOutputs = $state<Record<string, string>>({});
+  const outputChatId = $derived(threadId || sessionId);
+  async function toggleResult(key: string, tool?: ToolMsg) {
+    const opening = !expandedResults[key];
+    expandedResults[key] = opening;
+    if (!opening || !tool?.truncated || !tool.toolId || !outputChatId) return;
+    if (fullOutputs[tool.toolId] !== undefined) return;
+    // Hold the preview under the id: it is what stays on screen if the fetch
+    // fails, and it keeps a second open from firing the same request.
+    fullOutputs[tool.toolId] = tool.response;
+    try {
+      const full = await getToolOutput(outputChatId, tool.toolId);
+      if (full?.output) fullOutputs[tool.toolId] = full.output;
+    } catch (e) {
+      console.warn('tool output fetch failed', e);
+    }
+  }
+  /** What a row shows: the full output once it has been fetched, the stored
+   *  preview until then. */
+  function toolResponse(tool: ToolMsg): string {
+    return (tool.toolId && fullOutputs[tool.toolId]) || tool.response;
   }
 
   // Friendly tool-use display (mirrors the NeboLoop web timeline). The backend
@@ -1420,7 +1447,7 @@
                       class="flex min-w-0 items-center gap-2 text-left bg-transparent border-none p-0 {expandable ? 'cursor-pointer' : 'cursor-default'} {meta?.href ? 'shrink-0' : 'flex-1'}"
                       disabled={!expandable}
                       aria-expanded={expandable ? isExpanded : undefined}
-                      onclick={() => toggleResult(step.key)}
+                      onclick={() => toggleResult(step.key, tool)}
                     >
                       <span class="shrink-0 text-base-content/70">{tool.status === 'running' ? (tool.label ?? tool.name) : stepOutcome(tool)}{#if tool.status === 'running' && tool.statusText}<span class="text-base-content/70 ml-1">{tool.statusText}</span>{/if}</span>
                       {#if tool.status === 'error'}<span class="shrink-0 text-error">{$t('chat.failed')}</span>{/if}
@@ -1432,7 +1459,7 @@
                     {#if meta?.href}
                       <a href={meta.href} target="_blank" rel="noopener noreferrer" class="truncate text-primary underline flex-1" title={meta.href}>{meta.text}</a>
                       {#if expandable}
-                        <button type="button" class="shrink-0 bg-transparent border-none p-0 cursor-pointer text-base-content/70 transition-transform {isExpanded ? 'rotate-90' : ''}" aria-expanded={isExpanded} aria-label={$t('chat.result')} onclick={() => toggleResult(step.key)}>&rsaquo;</button>
+                        <button type="button" class="shrink-0 bg-transparent border-none p-0 cursor-pointer text-base-content/70 transition-transform {isExpanded ? 'rotate-90' : ''}" aria-expanded={isExpanded} aria-label={$t('chat.result')} onclick={() => toggleResult(step.key, tool)}>&rsaquo;</button>
                       {/if}
                     {/if}
                   </div>
@@ -1541,7 +1568,7 @@
                         {#if tool.response}
                           <div class="rounded-lg bg-base-200/60 px-3 py-2 max-h-[200px] overflow-y-auto">
                             <div class="text-[11px] font-medium text-base-content/50 mb-1">{$t('chat.output')}</div>
-                            <pre class="text-xs font-mono leading-relaxed whitespace-pre-wrap m-0">{tool.response}</pre>
+                            <pre class="text-xs font-mono leading-relaxed whitespace-pre-wrap m-0">{toolResponse(tool)}</pre>
                           </div>
                         {/if}
                       {:else if !searchPayload(tool) && !researchState(tool) && !runReceipt(tool)}
@@ -1553,7 +1580,7 @@
                           {#if tool.response}
                             <div class="px-3 pt-1.5 pb-2 border-t border-base-300">
                               <div class="text-[11px] font-medium text-base-content/50 mb-1">{$t('chat.output')}</div>
-                              <pre class="text-xs font-mono leading-relaxed whitespace-pre-wrap m-0">{tool.response}</pre>
+                              <pre class="text-xs font-mono leading-relaxed whitespace-pre-wrap m-0">{toolResponse(tool)}</pre>
                             </div>
                           {/if}
                         </div>
@@ -1609,7 +1636,7 @@
                teammate's post sits on the left like a reply; the owner's on
                the right like their other messages. -->
           {@const tp = msg.teamPost}
-          {@const fromOwner = !tp || tp.from === 'Owner'}
+          {@const fromOwner = !tp || (tp.fromOwner ?? tp.from === 'Owner')}
           <div class="max-w-[640px] mt-3 {fromOwner ? 'self-end' : ''}" data-user-msg>
             {#if tp}
               <div class="text-xs font-medium text-base-content/60 mb-1 {fromOwner ? 'text-right' : ''}">{fromOwner ? $t('common.you') : tp.from} · {tp.teamName}</div>
