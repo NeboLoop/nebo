@@ -345,6 +345,21 @@ async fn run_single(
                                 total_cache_creation += n as usize;
                             }
                         }
+                        // A parked question (an install card, a connect card, a
+                        // plan to approve). Nobody is at this keyboard: the card
+                        // itself is the observable outcome, so it is recorded in
+                        // the transcript and answered as an owner who declined,
+                        // and the run continues. Left unanswered, the run sat
+                        // parked until the 15-minute idle guard ended it — two of
+                        // three skill-plugin-choreography runs, every gate run,
+                        // 2026-09-20.
+                        Some("ask_request") => {
+                            let (note, reply) = decline_card(&event);
+                            all_text.push(note);
+                            if ws.send(Message::Text(reply.to_string().into())).await.is_err() {
+                                warn!(fixture = %fixture.id, run = %run_id, "could not answer a card; the run will stall");
+                            }
+                        }
                         Some("chat_complete") => {
                             // A message typed mid-turn gets its own short stream
                             // that ends at once with the typed "queued" stop;
@@ -573,6 +588,25 @@ fn event_belongs_to_session(event: &Value, session_id: &str) -> bool {
     }
 }
 
+/// A card nobody will act on: the transcript line that records it, and the
+/// `ask_response` that declines it so the tool returns and the turn goes on.
+fn decline_card(event: &Value) -> (String, Value) {
+    let data = &event["data"];
+    let request_id = data["request_id"].as_str().unwrap_or("");
+    let prompt = data["prompt"].as_str().unwrap_or("");
+    let kinds: Vec<&str> = data["widgets"]
+        .as_array()
+        .map(|w| w.iter().filter_map(|x| x["type"].as_str()).collect())
+        .unwrap_or_default();
+    let note = format!(
+        "[card shown: {}{} — declined by the harness, nobody is at this keyboard]\n",
+        prompt.trim(),
+        if kinds.is_empty() { String::new() } else { format!(" ({})", kinds.join(", ")) }
+    );
+    let reply = json!({ "type": "ask_response", "data": { "request_id": request_id, "value": "declined" } });
+    (note, reply)
+}
+
 /// What the owner does mid-turn, sent over the same socket the turn runs on.
 async fn send_interrupt<S>(
     ws: &mut S,
@@ -622,6 +656,28 @@ where
 #[cfg(test)]
 mod session_filter_tests {
     use super::*;
+
+    /// A card is answered with a decline addressed to its request id, and
+    /// the transcript keeps what was offered so a check can see the offer.
+    #[test]
+    fn a_card_is_declined_and_recorded() {
+        let event = json!({
+            "type": "ask_request",
+            "data": {
+                "session_id": "eval:x:run-1",
+                "request_id": "req-7",
+                "prompt": "**X** can do this. Install it on the card and I'll pick up right where I left off.",
+                "widgets": [{ "type": "install_plugin", "plugin": "x" }]
+            }
+        });
+        let (note, reply) = decline_card(&event);
+        assert_eq!(reply["type"], "ask_response");
+        assert_eq!(reply["data"]["request_id"], "req-7");
+        assert_eq!(reply["data"]["value"], "declined");
+        assert!(note.contains("**X** can do this"), "{note}");
+        assert!(note.contains("(install_plugin)"), "{note}");
+        assert!(note.contains("declined by the harness"), "{note}");
+    }
 
     #[test]
     fn a_foreign_completion_never_ends_our_run() {
