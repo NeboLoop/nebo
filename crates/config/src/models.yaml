@@ -37,7 +37,11 @@ defaults:
   # When the reviewer would stop a run, it first moves the next few steps to
   # this model (once per run). A stronger speed costs more per step, but a run
   # stopped at step forty has already spent forty steps. Empty = stop instead.
-  escalation: janus/nebo-1-high
+  # nebo-1-pro IS the high speed: "high" was merged into pro when the three
+  # speeds were settled, and the gateway has served no nebo-1-high since.
+  # Escalation skips fuzzy resolution, so a name the gateway does not serve
+  # failed terminally at exactly the moment a run was already in trouble.
+  escalation: janus/nebo-1-pro
 
   # Fallback chain (tried in order if primary fails)
   fallbacks:
