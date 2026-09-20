@@ -1,0 +1,85 @@
+name: Cancel a closed PR's runs
+
+# The house runners are two Linux runners sharing one Lima VM on the stadium
+# Mac mini, and the gate that runs on them takes the better part of an hour.
+# Merging a PR does not stop the work GitHub has already started for it: the
+# PR's run keeps its runner to the end, while main's own run — a different
+# concurrency group, so nothing supersedes anything — waits behind a branch
+# that no longer matters. On 2026-09-20 the queue was cleared by hand three
+# times for exactly this.
+#
+# So when a PR closes, merged or not, let go of its runners: list everything
+# still moving for the PR's head branch and cancel it.
+#
+# Nothing is checked out here and no code from the PR runs. The only thing
+# taken from the event is the head branch name, and it reaches the shell
+# through the environment, never interpolated into the script.
+#
+# This one job runs on a GitHub-hosted runner deliberately: it is a few
+# seconds of `gh`, and it must not queue behind the hour-long jobs it exists
+# to cancel. The house-runner rule covers the gate and the release builds
+# (CLAUDE.md, "Release builds") and is untouched.
+
+on:
+  pull_request:
+    types: [closed]
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: pr-closed-cancel-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+env:
+  # Branches whose runs are never cancelled, even when a PR is opened from
+  # one of them. The default branch is always spared on top of this list;
+  # nebo has no other long-lived branch.
+  NEVER_CANCEL: ""
+
+jobs:
+  cancel:
+    name: Let go of the runners
+    runs-on: ubuntu-latest
+    steps:
+      - name: Cancel every run still moving for this PR's head branch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          SELF_RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+
+          for spared in $DEFAULT_BRANCH $NEVER_CANCEL; do
+            if [ "$HEAD_REF" = "$spared" ]; then
+              echo "PR #$PR_NUMBER came from $HEAD_REF, which is never cancelled; nothing to do."
+              exit 0
+            fi
+          done
+
+          # A run's status is one of queued, waiting, requested, pending,
+          # in_progress or completed. Anything that is not completed is
+          # holding a runner or waiting to hold one.
+          gh run list --branch "$HEAD_REF" --limit 100 \
+            --json databaseId,status,workflowName \
+            --jq '.[] | select(.status != "completed") | "\(.databaseId)\t\(.workflowName)"' > runs.tsv
+
+          cancelled=0
+          while IFS=$'\t' read -r id workflow; do
+            [ -n "$id" ] || continue
+            # This workflow's own run is on the same head branch.
+            [ "$id" != "$SELF_RUN_ID" ] || continue
+            if gh run cancel "$id"; then
+              echo "cancelled $id ($workflow)"
+              cancelled=$((cancelled + 1))
+            else
+              echo "could not cancel $id ($workflow); it most likely finished on its own"
+            fi
+          done < runs.tsv
+
+          echo "PR #$PR_NUMBER closed: cancelled $cancelled run(s) on $HEAD_REF." \
+            | tee -a "$GITHUB_STEP_SUMMARY"

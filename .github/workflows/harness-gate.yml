@@ -33,7 +33,12 @@ name: Harness gate
 # instead of failing on it (2026-09-20: every gate run for two weeks was
 # exit 100 on the apt lock or "Cannot connect to Nebo" because both jobs
 # started a server on 27895 and the first cleanup killed the other's).
-# The concurrency group below drops superseded PR runs.
+#
+# The concurrency group below drops superseded PR runs: on a pull_request
+# event github.ref is refs/pull/<n>/merge, which is the same for every push
+# to the PR, so a force-push cancels the run it replaced. What it cannot do
+# is notice that the PR was merged — pr-closed-cancel.yml does that, and
+# hands the runner back the moment the PR closes.
 
 on:
   push:
@@ -45,12 +50,18 @@ on:
       - "scripts/correction-rate.py"
       - ".github/workflows/harness-gate.yml"
   pull_request:
+    # The same allowlist as the push lane, minus this file. Everything the
+    # gate can actually prove is engine code, fixtures, suites and the
+    # correction-rate script; a change to docs, to the app, or to a workflow
+    # cannot move the number, and an hour of a house runner spent finding
+    # that out is an hour main's own gate spends queued. A change to this
+    # file still gets a real gate run — on demand through workflow_dispatch
+    # before merge, and on the push lane once it lands on main.
     paths:
       - "crates/**"
       - "fixtures/**"
       - "suites/**"
       - "scripts/correction-rate.py"
-      - ".github/workflows/harness-gate.yml"
   schedule:
     - cron: "17 7 * * *"   # 07:17 UTC nightly
   workflow_dispatch:
