@@ -1004,7 +1004,6 @@ pub fn watch_packs(
             return;
         }
 
-        let mut last_reload = std::time::Instant::now();
         let debounce = std::time::Duration::from_secs(1);
         while let Some(result) = rx.recv().await {
             match result {
@@ -1015,12 +1014,21 @@ pub fn watch_packs(
                     ) {
                         continue;
                     }
-                    let since = last_reload.elapsed();
-                    if since < debounce {
-                        tokio::time::sleep(debounce - since).await;
+                    // A pack arrives as a burst: a folder copied in, a pack
+                    // written file by file. The first event is the first file,
+                    // and reading the disk on it parks half a pack — a company
+                    // layer missing the laws that had not landed yet. Wait for
+                    // the burst to stop before reading, and only then read.
+                    for _ in 0..30 {
+                        tokio::time::sleep(debounce).await;
+                        let mut more = false;
+                        while rx.try_recv().is_ok() {
+                            more = true;
+                        }
+                        if !more {
+                            break;
+                        }
                     }
-                    while rx.try_recv().is_ok() {}
-                    last_reload = std::time::Instant::now();
                     let packs = scan_packs(&packs_dir);
                     info!(count = packs.len(), "packs directory changed, rescanned");
                     on_change(packs);
