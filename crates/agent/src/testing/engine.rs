@@ -251,15 +251,25 @@ async fn run_single(
             .await
             .map_err(|e| format!("WS send: {}", e))?;
 
-        // Collect events until done. This is an inter-event silence cap, not a
-        // run cap: it resets on every WS event. It must outlast the slowest
-        // single tool execution (web navigation, plugin exec) — efficiency is
-        // judged by cost assertions, not by killing the run mid-tool.
+        // Collect events until done. This is a silence cap, not a run cap:
+        // it resets on this run's own progress — reply text or tool activity,
+        // the same two things the server's stall guard watches. It must
+        // outlast the slowest single tool execution (web navigation, plugin
+        // exec) — efficiency is judged by cost assertions, not by killing the
+        // run mid-tool.
+        //
+        // Progress, not traffic: the socket also carries keepalives and every
+        // other client's broadcasts, and a cap that reset on those never
+        // fired. A silent run then sat until the server's own 15-minute stall
+        // guard ended it, and two such runs of one smoke fixture spent 30
+        // minutes of a 60-minute gate job doing nothing (2026-09-20).
         let turn_timeout = Duration::from_secs(180);
+        let mut last_progress = Instant::now();
         let mut pending_tool: Option<(String, Value, Instant)> = None;
 
         loop {
-            match timeout(turn_timeout, ws.next()).await {
+            let silence_left = turn_timeout.saturating_sub(last_progress.elapsed());
+            match timeout(silence_left, ws.next()).await {
                 Ok(Some(Ok(msg))) => {
                     let text = match msg.to_text() {
                         Ok(t) => t,
@@ -277,6 +287,10 @@ async fn run_single(
                     // while the server kept running the fixture's turn.
                     if !event_belongs_to_session(&event, &session_id) {
                         continue;
+                    }
+
+                    if is_progress(event["type"].as_str()) {
+                        last_progress = Instant::now();
                     }
 
                     match event["type"].as_str() {
@@ -408,7 +422,11 @@ async fn run_single(
                 Ok(None) => break,
                 Err(_) => {
                     cancel_run(&mut ws, &session_id).await;
-                    return Err("Timeout waiting for response".into());
+                    return Err(format!(
+                        "no reply text and no tool activity for {}s — the run was ended \
+                         instead of left hanging",
+                        turn_timeout.as_secs()
+                    ));
                 }
             }
         }
@@ -576,6 +594,18 @@ fn print_annotated_prompt(prompt: &str, overrides: &HashMap<String, String>) {
     }
 }
 
+/// Does this event move the run on? Reply text or tool activity — the same
+/// two things the server's stall guard watches (`guardrails::stall_notice`).
+/// Everything else the socket carries (keepalives, `usage`, presence, another
+/// client's broadcast) is traffic, not progress, and must not hold the
+/// silence cap open.
+fn is_progress(event_type: Option<&str>) -> bool {
+    matches!(
+        event_type,
+        Some("chat_stream") | Some("tool_start") | Some("tool_result")
+    )
+}
+
 /// True when a hub event is ours: a terminal event (`chat_complete`,
 /// `chat_error`) must name our session; any other event is ours unless it
 /// names a different session (or a different chat via `chatId`).
@@ -693,5 +723,18 @@ mod session_filter_tests {
         assert!(event_belongs_to_session(&usage, mine));
         let other_stream = json!({"type": "chat_stream", "data": {"session_id": "someone-else", "content": "y"}});
         assert!(!event_belongs_to_session(&other_stream, mine));
+    }
+
+    #[test]
+    fn only_reply_text_and_tool_activity_hold_the_silence_cap_open() {
+        for moving in ["chat_stream", "tool_start", "tool_result"] {
+            assert!(is_progress(Some(moving)), "{moving} is progress");
+        }
+        // Traffic that used to reset the cap and let a silent run sit for the
+        // server's full 15-minute stall window.
+        for traffic in ["connected", "usage", "presence", "chat_cancelled"] {
+            assert!(!is_progress(Some(traffic)), "{traffic} is not progress");
+        }
+        assert!(!is_progress(None));
     }
 }
