@@ -33,6 +33,8 @@
   import { getWebSocketClient } from '$lib/websocket/client';
   import Bot from 'lucide-svelte/icons/bot';
   import AudioLines from 'lucide-svelte/icons/audio-lines';
+  import { loadModelOptions, modelLabel, type ModelOption } from '$lib/models/speeds';
+  import * as api from '$lib/api/nebo';
 
   interface AttachedFile {
     file: File;
@@ -104,6 +106,49 @@
   let draftSaveTimer: ReturnType<typeof setTimeout> | null = null;
   let hasHydrated = $state(false);
   const draftKey = $derived(agentId ? `nebo:draft:${agentId}:${threadId || 'new'}` : '');
+
+  // ── Which model this conversation runs at ────────────────────────────
+  // The chip names the model the NEXT turn will use. Precedence: this chat's
+  // own choice, then the employee's Settings → General → MODEL, then the
+  // default speed. Picking one writes the chat row (PUT /chats/:id) and takes
+  // effect on the next turn — it never rewrites what is already said.
+  // Empty label (catalog not synced, or no employee) renders nothing.
+  let modelOptions = $state<ModelOption[]>([]);
+  let chatModel = $state('');
+  let agentModel = $state('');
+  const activeModel = $derived(chatModel || agentModel);
+  const modelName = $derived(modelLabel(activeModel, modelOptions));
+
+  async function loadModel() {
+    if (!agentId) return;
+    const [opts, cfg] = await Promise.all([
+      loadModelOptions(),
+      (api.getEntityConfig('agent', agentId) as Promise<{ config?: { modelPreference?: string | null } }>).catch(() => null),
+    ]);
+    modelOptions = opts;
+    agentModel = cfg?.config?.modelPreference ?? '';
+    if (!threadId) { chatModel = ''; return; }
+    const chat = await (api.getChat(threadId) as Promise<{ model?: string | null }>).catch(() => null);
+    chatModel = chat?.model ?? '';
+  }
+
+  async function pickModel(value: string) {
+    if (value === activeModel) return;
+    const previous = chatModel;
+    chatModel = value;
+    // No chat row yet (nothing sent): the choice has nowhere to live, so it
+    // becomes this employee's preference — which is what a first turn would
+    // have used anyway.
+    try {
+      if (threadId) await api.updateChat(threadId, { model: value });
+      else { await api.updateEntityConfig('agent', agentId, { modelPreference: value }); agentModel = value; chatModel = ''; }
+    } catch {
+      chatModel = previous;
+    }
+  }
+
+  // Follow the conversation: opening another thread re-reads its model.
+  $effect(() => { void threadId; void agentId; loadModel(); });
 
   function saveDraft() {
     if (!editor || !draftKey) return;
@@ -731,6 +776,36 @@
               <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
             </svg>
           </button>
+        {/if}
+
+        {#if modelName}
+          <!-- The model this conversation runs at. Text only, no icon: it
+               names a thing, it is not a control glyph. -->
+          <div class="dropdown dropdown-top">
+            <button
+              class="px-1.5 h-8 rounded-lg text-xs text-base-content/60 hover:text-base-content hover:bg-base-200 cursor-pointer transition-colors border-none bg-transparent whitespace-nowrap"
+              title={$t('modelPick.hint')}
+              tabindex={-1}
+            >{modelName}</button>
+            <ul class="dropdown-content menu bg-base-100 rounded-box z-20 w-64 p-1 shadow-md border border-base-300 flex-nowrap max-h-80 overflow-y-auto">
+              {#each modelOptions as opt (opt.value)}
+                <li>
+                  <button
+                    class="text-sm flex-col items-start gap-0"
+                    onclick={() => { pickModel(opt.value); (document.activeElement as HTMLElement | null)?.blur(); }}
+                  >
+                    <span class="flex items-center gap-1.5">
+                      {opt.label}
+                      {#if modelLabel(activeModel, modelOptions) === opt.label}<span class="text-primary">&check;</span>{/if}
+                    </span>
+                    {#if opt.description}
+                      <span class="text-xs text-base-content/60 whitespace-normal">{opt.description}</span>
+                    {/if}
+                  </button>
+                </li>
+              {/each}
+            </ul>
+          </div>
         {/if}
       </div>
 

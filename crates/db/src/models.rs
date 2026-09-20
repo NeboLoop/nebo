@@ -179,6 +179,11 @@ pub struct Chat {
     /// API (skip_serializing keeps the response shape unchanged).
     #[serde(default, skip_serializing)]
     pub title_custom: bool,
+    /// The model this conversation runs at, as the owner chose it from the
+    /// composer — a resolved "provider/model" string. None = no override:
+    /// the employee's `model_preference`, then the selector's choice.
+    #[serde(default)]
+    pub model: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

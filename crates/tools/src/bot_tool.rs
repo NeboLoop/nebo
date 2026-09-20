@@ -1193,6 +1193,10 @@ impl AgentTool {
                         task_prompt,
                         "",
                         &ctx.session_id,
+                        // The children of a decomposition are this run's own
+                        // work — they run at this conversation's model, the
+                        // same way a plain spawn inherits it.
+                        ctx.model_preference.as_deref().unwrap_or(""),
                         Some(ctx.cancel_token.clone()),
                     )
                     .await
@@ -2875,6 +2879,166 @@ fn employee_named_in_prompt(prompt: &str, names: &[String]) -> Option<String> {
     match (hits.next(), hits.next()) {
         (Some(n), None) => Some(n.clone()),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod spawn_model_inheritance {
+    use super::*;
+    use crate::orchestrator::{SpawnRequest, SpawnResult, SubAgentOrchestrator};
+    use std::pin::Pin;
+    use std::sync::Mutex;
+    use tokio_util::sync::CancellationToken;
+
+    type Fut<'a, T> = Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;
+
+    fn done() -> SpawnResult {
+        SpawnResult { task_id: "t".into(), success: true, output: "done".into(), error: None }
+    }
+
+    /// Records what the agent tool asked the orchestrator for, so a test can
+    /// read the model a child would have run at without standing up a runner.
+    #[derive(Default)]
+    struct Recorder {
+        spawned: Mutex<Vec<SpawnRequest>>,
+        dag_models: Mutex<Vec<String>>,
+    }
+
+    impl SubAgentOrchestrator for Arc<Recorder> {
+        fn spawn(&self, req: SpawnRequest) -> Fut<'_, Result<SpawnResult, String>> {
+            self.spawned.lock().unwrap().push(req);
+            Box::pin(async { Ok(done()) })
+        }
+
+        fn execute_dag(
+            &self,
+            _prompt: &str,
+            _user_id: &str,
+            _parent_session_id: &str,
+            model_override: &str,
+            _parent_cancel: Option<CancellationToken>,
+        ) -> Fut<'_, Result<SpawnResult, String>> {
+            self.dag_models.lock().unwrap().push(model_override.to_string());
+            Box::pin(async { Ok(done()) })
+        }
+
+        fn cancel(&self, _task_id: &str) -> Fut<'_, Result<(), String>> {
+            Box::pin(async { Ok(()) })
+        }
+        fn status(&self, _task_id: &str) -> Fut<'_, Result<String, String>> {
+            Box::pin(async { Ok(String::new()) })
+        }
+        fn send(
+            &self,
+            _task_id: &str,
+            _message: &str,
+            _parent_cancel: Option<CancellationToken>,
+            _parent_stream_tx: Option<tokio::sync::mpsc::Sender<ai::StreamEvent>>,
+        ) -> Fut<'_, Result<SpawnResult, String>> {
+            Box::pin(async { Ok(done()) })
+        }
+        fn list_active(&self) -> Fut<'_, Vec<(String, String, String)>> {
+            Box::pin(async { Vec::new() })
+        }
+        fn spawn_parallel(
+            &self,
+            requests: Vec<SpawnRequest>,
+            _progress_tx: tokio::sync::mpsc::Sender<ai::StreamEvent>,
+        ) -> Fut<'_, Result<SpawnResult, String>> {
+            self.spawned.lock().unwrap().extend(requests);
+            Box::pin(async { Ok(done()) })
+        }
+        fn recover(&self) -> Fut<'_, ()> {
+            Box::pin(async {})
+        }
+    }
+
+    fn tool_with(recorder: Arc<Recorder>) -> (tempfile::TempDir, AgentTool) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("spawn-model.db");
+        let store = Arc::new(db::Store::new(&path.to_string_lossy()).unwrap());
+        let handle = crate::orchestrator::new_handle();
+        let _ = handle.set(Box::new(recorder));
+        (dir, AgentTool::new(store, handle))
+    }
+
+    fn ctx_at(model: Option<&str>) -> ToolContext {
+        ToolContext {
+            session_id: "s1".into(),
+            session_key: "agent:a1:web".into(),
+            model_preference: model.map(str::to_string),
+            ..Default::default()
+        }
+    }
+
+    async fn spawn_with(ctx: &ToolContext, extra: serde_json::Value) -> Arc<Recorder> {
+        let rec = Arc::new(Recorder::default());
+        let (_dir, tool) = tool_with(rec.clone());
+        let mut input = serde_json::json!({
+            "resource": "task",
+            "action": "spawn",
+            "prompt": "summarise the quarter",
+            "wait": true,
+        });
+        for (k, v) in extra.as_object().unwrap() {
+            input[k] = v.clone();
+        }
+        tool.execute_dyn(ctx, input).await;
+        rec
+    }
+
+    /// The owner picks a model for THIS conversation; the anonymous helpers the
+    /// turn spawns must run at it too, or an answer is half one model's work
+    /// and half another's.
+    #[tokio::test]
+    async fn a_spawned_run_inherits_the_conversations_model() {
+        let rec = spawn_with(&ctx_at(Some("janus/nebo-1-pro")), serde_json::json!({})).await;
+        let spawned = rec.spawned.lock().unwrap();
+        assert_eq!(spawned.len(), 1, "the spawn did not reach the orchestrator");
+        assert_eq!(
+            spawned[0].model_override, "janus/nebo-1-pro",
+            "the sub-agent did not inherit the conversation's model"
+        );
+    }
+
+    /// Inheritance is the default, not a cage: an explicit model on the call
+    /// still wins.
+    #[tokio::test]
+    async fn an_explicit_model_on_the_call_still_wins() {
+        let rec = spawn_with(
+            &ctx_at(Some("janus/nebo-1-pro")),
+            serde_json::json!({ "model_override": "janus/nebo-1-flash" }),
+        )
+        .await;
+        let spawned = rec.spawned.lock().unwrap();
+        assert_eq!(spawned[0].model_override, "janus/nebo-1-flash");
+    }
+
+    /// No choice anywhere = no override, and the selector still picks per task.
+    #[tokio::test]
+    async fn no_choice_leaves_the_selector_alone() {
+        let rec = spawn_with(&ctx_at(None), serde_json::json!({})).await;
+        let spawned = rec.spawned.lock().unwrap();
+        assert_eq!(spawned[0].model_override, "", "an empty override is the selector's cue");
+    }
+
+    /// A decomposition's children are this run's own work too — the whole DAG
+    /// runs at the conversation's model, not the global default.
+    #[tokio::test]
+    async fn a_decomposed_task_carries_the_model_into_the_dag() {
+        let rec = Arc::new(Recorder::default());
+        let (_dir, tool) = tool_with(rec.clone());
+        tool.execute_dyn(
+            &ctx_at(Some("janus/nebo-1-pro")),
+            serde_json::json!({
+                "resource": "task",
+                "action": "orchestrate",
+                "prompt": "rebuild the quarterly pack end to end",
+            }),
+        )
+        .await;
+        let models = rec.dag_models.lock().unwrap();
+        assert_eq!(models.as_slice(), ["janus/nebo-1-pro"], "the DAG lost the conversation's model");
     }
 }
 

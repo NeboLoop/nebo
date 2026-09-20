@@ -503,6 +503,7 @@ impl Orchestrator {
         prompt: &str,
         user_id: &str,
         parent_session_id: &str,
+        parent_model: &str,
         parent_cancel: Option<CancellationToken>,
     ) -> Result<SpawnResult, String> {
         // 1. Decompose task into sub-tasks
@@ -517,7 +518,7 @@ impl Orchestrator {
                 prompt: node.prompt.clone(),
                 description: node.description.clone(),
                 agent_type: node.agent_type.as_str().to_string(),
-                model_override: String::new(),
+                model_override: parent_model.to_string(),
                 parent_session_id: parent_session_id.to_string(),
                 parent_session_key: parent_session_id.to_string(),
                 user_id: user_id.to_string(),
@@ -580,7 +581,13 @@ impl Orchestrator {
                 let dep_context = format_dep_context(&graph.collect_dependency_results(&task_id));
                 let task_prefix = task_prefix_for_type(&node.agent_type);
                 let prompt = format!("{}{}", task_prefix, node.prompt);
-                let model_override = node.model_override.clone();
+                // A node only names a model when the decomposition asked for
+                // one; otherwise the whole DAG runs at the parent's model.
+                let model_override = if node.model_override.is_empty() {
+                    parent_model.to_string()
+                } else {
+                    node.model_override.clone()
+                };
                 let user_id = user_id.to_string();
                 let cancel = dag_cancel.clone();
                 let session_key = format!("subagent:{}:{}", parent_session_id, task_id);
@@ -1455,14 +1462,22 @@ impl SubAgentOrchestrator for Orchestrator {
         prompt: &str,
         user_id: &str,
         parent_session_id: &str,
+        model_override: &str,
         parent_cancel: Option<CancellationToken>,
     ) -> Pin<Box<dyn Future<Output = Result<SpawnResult, String>> + Send + '_>> {
         let prompt = prompt.to_string();
         let user_id = user_id.to_string();
         let parent_session_id = parent_session_id.to_string();
+        let model_override = model_override.to_string();
         Box::pin(async move {
-            self.execute_dag_internal(&prompt, &user_id, &parent_session_id, parent_cancel)
-                .await
+            self.execute_dag_internal(
+                &prompt,
+                &user_id,
+                &parent_session_id,
+                &model_override,
+                parent_cancel,
+            )
+            .await
         })
     }
 

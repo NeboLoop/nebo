@@ -239,6 +239,26 @@ pub struct ChatConfig {
     pub model_override: Option<String>,
 }
 
+/// The model one conversation runs at, if its owner picked one from the
+/// composer. Resolves the session key to its active chat and reads that
+/// chat's `model` column.
+///
+/// Read fresh on every turn rather than captured when the session opened, so
+/// a mid-conversation change applies to the next turn and leaves the
+/// transcript behind it untouched. Any failure to resolve is simply "no
+/// override" — the employee's preference still decides.
+fn chat_model_for_session(runner: &std::sync::Arc<agent::Runner>, session_key: &str) -> Option<String> {
+    let session_id = runner.sessions().resolve_session_id_by_key(session_key).ok()?;
+    let chat_id = runner.sessions().active_chat_id(&session_id);
+    runner
+        .store()
+        .get_chat(&chat_id)
+        .ok()
+        .flatten()?
+        .model
+        .filter(|m| !m.is_empty())
+}
+
 /// Configuration for sending a reply back through a communication channel.
 #[derive(Clone)]
 pub struct CommReplyConfig {
@@ -448,7 +468,22 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
     let tool_scope = config.tool_scope;
     let plan_mode = config.plan_mode;
     let run_cwd_path = config.cwd.clone();
-    let run_model_override = config.model_override.clone().unwrap_or_default();
+    // Which model this turn runs at. Precedence, highest first:
+    //   1. an explicit override on the request (the harness's `--model`),
+    //   2. the conversation's own model — what the owner picked in the
+    //      composer, stored on the chat row,
+    //   3. the employee's `model_preference` (Settings → General → MODEL),
+    //      applied inside the runner,
+    //   4. the selector's choice.
+    // Read per turn, so changing it mid-conversation lands on the next turn
+    // and rewrites nothing behind it. It rides the same `model_override`
+    // field a spawned sub-agent already inherits — no second pathway.
+    let run_model_override = config
+        .model_override
+        .clone()
+        .filter(|m| !m.is_empty())
+        .or_else(|| chat_model_for_session(&runner, &sid))
+        .unwrap_or_default();
 
     // "Full Access" master flag (settings.full_access) — when on, the runner's
     // per-tool approval gate is bypassed. Loaded here (state in scope) and moved
@@ -1875,7 +1910,11 @@ pub async fn run_chat_events(
         attachments: config.attachments,
         allowed_paths,
         cwd,
-        model_override: config.model_override.unwrap_or_default(),
+        model_override: config
+            .model_override
+            .filter(|m| !m.is_empty())
+            .or_else(|| chat_model_for_session(&runner, &sid))
+            .unwrap_or_default(),
         presence_tracker: Some(presence_tracker),
         proactive_inbox: Some(proactive_inbox),
         progress: Some(progress),
