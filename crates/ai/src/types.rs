@@ -730,6 +730,48 @@ pub fn is_transient_error(err: &ProviderError) -> bool {
     }
 }
 
+/// Check if an error is a refusal the provider will repeat for the same
+/// request — an invalid parameter, an unknown model, an unsupported feature.
+///
+/// These arrive as ordinary stream errors, and `ProviderError::Stream` is
+/// blanket-retryable, so without this the retry ladder re-sends the identical
+/// payload until the budget runs out: the owner waits through five round trips
+/// to be told the same thing five times. Nothing about the request changes
+/// between attempts, so the first answer is the final one.
+///
+/// Capacity and quota refusals are deliberately excluded — they arrive with
+/// similar shapes but do clear on their own, and belong to the retry ladder.
+pub fn is_deterministic_request_error(err: &ProviderError) -> bool {
+    if let ProviderError::Stream(msg) | ProviderError::Request(msg) = err {
+        let lower = msg.to_lowercase();
+        let clears_on_its_own = [
+            "rate limit",
+            "rate_limit",
+            "429",
+            "quota",
+            "billing",
+            "payment",
+            "overloaded",
+            "capacity",
+        ];
+        if clears_on_its_own.iter().any(|kw| lower.contains(kw)) {
+            return false;
+        }
+        let refusals = [
+            "invalid_parameter_error",
+            "invalid_request_error",
+            "model_not_found",
+            "unsupported parameter",
+            "is not supported for",
+            "does not support",
+            "unknown model",
+        ];
+        refusals.iter().any(|kw| lower.contains(kw))
+    } else {
+        false
+    }
+}
+
 /// Check if an error is due to message role ordering issues.
 pub fn is_role_ordering_error(err: &ProviderError) -> bool {
     let msg = err.to_string().to_lowercase();
@@ -907,5 +949,78 @@ mod transient_tests {
         );
 
         assert_eq!(ToolChoice::default(), ToolChoice::Auto);
+    }
+}
+
+#[cfg(test)]
+mod deterministic_refusal_tests {
+    use super::*;
+
+    /// The refusal that took the owner's employee down: dashscope rejecting
+    /// the temperature for the model behind "Nebo 1 Pro". It arrives as a
+    /// plain stream error, and `Stream(_)` is blanket-retryable, so without
+    /// this predicate the runner re-sent the same payload five times.
+    #[test]
+    fn an_unsupported_parameter_is_never_retried() {
+        let err = ProviderError::Stream(
+            "Provider dashscope error: OpenAI API error (HTTP 400): \
+             [invalid_parameter_error] <400> InternalError.Algo.InvalidParameter: \
+             Parameter 'temperature'=0.699999988079071 is not supported for kimi-k3 model."
+                .to_string(),
+        );
+        assert!(is_deterministic_request_error(&err));
+        // The blanket-retryable classification is exactly what this guards.
+        assert!(err.is_retryable());
+    }
+
+    #[test]
+    fn an_unknown_model_is_never_retried() {
+        for msg in [
+            "model_not_found: no such model",
+            "invalid_request_error: unknown model nebo-1-high",
+            "This endpoint does not support streaming",
+        ] {
+            assert!(
+                is_deterministic_request_error(&ProviderError::Stream(msg.to_string())),
+                "should be deterministic: {msg}"
+            );
+        }
+    }
+
+    /// Anything that clears on its own must stay on the retry ladder — the
+    /// predicate narrows what gets retried, it must not empty it.
+    #[test]
+    fn refusals_that_clear_on_their_own_still_retry() {
+        for msg in [
+            "429 rate limit exceeded",
+            "insufficient quota for this request",
+            "billing: payment required",
+            "upstream is overloaded, try again",
+            "connection reset by peer",
+            "stream error: unexpected EOF",
+        ] {
+            assert!(
+                !is_deterministic_request_error(&ProviderError::Stream(msg.to_string())),
+                "must stay retryable: {msg}"
+            );
+        }
+    }
+
+    /// A rate limit whose body happens to mention an invalid parameter must
+    /// still be treated as transient — the self-clearing check runs first.
+    #[test]
+    fn self_clearing_wins_over_a_refusal_keyword() {
+        let err = ProviderError::Stream(
+            "429 rate limit: invalid_request_error while shedding load".to_string(),
+        );
+        assert!(!is_deterministic_request_error(&err));
+    }
+
+    #[test]
+    fn other_error_kinds_are_left_alone() {
+        assert!(!is_deterministic_request_error(&ProviderError::RateLimit));
+        assert!(!is_deterministic_request_error(&ProviderError::Auth(
+            "bad key".into()
+        )));
     }
 }

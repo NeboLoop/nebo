@@ -70,6 +70,25 @@ pub fn retry_notice(had_partial: bool, retry: usize) -> String {
     }
 }
 
+/// What the owner reads when the model he picked refuses the request outright.
+/// The raw upstream text ("Parameter 'temperature'=0.699… is not supported for
+/// …") tells him nothing he can act on, so lead with the decision he can
+/// change and keep the provider's words underneath for whoever needs them.
+pub fn model_refusal_notice(model: &str, detail: &str) -> String {
+    let name = model.rsplit('/').next().unwrap_or(model);
+    let named = if name.is_empty() {
+        "The model this employee is set to".to_string()
+    } else {
+        format!("The model this employee is set to ({name})")
+    };
+    format!(
+        "{named} turned this request down, and would answer the same way every \
+         time, so I stopped instead of retrying. Pick a different model under \
+         Settings → General → Model and send this again.\n\nWhat the provider \
+         said: {detail}"
+    )
+}
+
 pub fn slow_first_token_notice(waited_secs: u64) -> String {
     format!("Still waiting on the model, {waited_secs} seconds with no reply yet.")
 }
@@ -157,6 +176,29 @@ mod notice_tests {
         let fresh = retry_notice(false, 3);
         assert!(fresh.contains("retry 3") && !fresh.contains("resume"));
         assert!(slow_first_token_notice(60).contains("60 seconds"));
+    }
+
+    /// The live failure: "Nebo 1 Pro" resolved to a model that rejects the
+    /// temperature every Nebo chat turn sends, so the owner's employee died
+    /// on a 400 the retry ladder could never clear. What he reads has to name
+    /// the setting he can change, not the parameter he has never heard of.
+    #[test]
+    fn a_refused_model_names_the_setting_the_owner_can_change() {
+        use super::model_refusal_notice;
+        let notice = model_refusal_notice(
+            "janus/nebo-1-pro",
+            "Provider dashscope error: OpenAI API error (HTTP 400): \
+             [invalid_parameter_error] Parameter 'temperature'=0.7 is not \
+             supported for kimi-k3 model.",
+        );
+        assert!(notice.contains("nebo-1-pro"), "names the model: {notice}");
+        assert!(!notice.contains("janus/"), "not the wire id: {notice}");
+        assert!(notice.contains("Settings → General → Model"), "says where to fix it: {notice}");
+        // The provider's words stay available underneath, never the headline.
+        assert!(notice.contains("kimi-k3"));
+        assert!(notice.find("turned this request down").unwrap() < notice.find("kimi-k3").unwrap());
+        // No model set at all still reads as a sentence.
+        assert!(model_refusal_notice("", "boom").starts_with("The model this employee is set to turned"));
     }
 }
 
@@ -5209,6 +5251,10 @@ async fn run_loop(
             warn!("stream error: {}", err_msg);
             let err = ProviderError::Stream(err_msg.clone());
             let reason = ai::classify_error_reason(&err);
+            // A refusal the provider will repeat verbatim. Both ladders below
+            // re-send the identical payload, so letting one through costs the
+            // owner the whole retry budget and tells him nothing new.
+            let deterministic = ai::is_deterministic_request_error(&err);
 
             // Mid-stream cutoff continuation: partial text the user already
             // watched stream would die with the retry `continue` below (which
@@ -5274,7 +5320,7 @@ async fn run_loop(
             };
 
             // Layer 1: Transient errors (connection reset, timeout, EOF)
-            if ai::is_transient_error(&err) {
+            if !deterministic && ai::is_transient_error(&err) {
                 transient_retries += 1;
                 if transient_retries <= MAX_TRANSIENT_RETRIES {
                     queue_cutoff_continuation();
@@ -5299,11 +5345,12 @@ async fn run_loop(
             }
 
             // Layer 2: Retryable errors (rate_limit, billing, provider errors)
-            let is_retryable = err.is_retryable()
-                || reason == "rate_limit"
-                || reason == "billing"
-                || reason == "provider"
-                || reason == "timeout";
+            let is_retryable = !deterministic
+                && (err.is_retryable()
+                    || reason == "rate_limit"
+                    || reason == "billing"
+                    || reason == "provider"
+                    || reason == "timeout");
             if is_retryable {
                 retryable_retries += 1;
                 if retryable_retries > MAX_RETRYABLE_RETRIES {
@@ -5335,7 +5382,19 @@ async fn run_loop(
             }
 
             // Layer 3: Non-retryable — send error to user
-            let _ = tx.send(StreamEvent::error(err_msg.clone())).await;
+            if deterministic {
+                warn!(
+                    model = model_override,
+                    "provider refused the request outright; not retrying"
+                );
+            }
+            let _ = tx
+                .send(StreamEvent::error(if deterministic {
+                    model_refusal_notice(model_override, err_msg)
+                } else {
+                    err_msg.clone()
+                }))
+                .await;
         }
 
         let stream_total_ms = t_stream_start.elapsed().as_millis() as u64;
