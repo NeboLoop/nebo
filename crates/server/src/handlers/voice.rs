@@ -1134,7 +1134,7 @@ async fn handle_conversation_ws(mut socket: WebSocket, state: AppState, mut q: C
         let Some(lead) = lead else {
             let msg = serde_json::json!({
                 "type": "Error",
-                "message": "This team has no lead on this computer. A typed post reaches every \
+                "message": "This team has no lead on this bot. A typed post reaches every \
                             member, but a call needs one voice: set a lead in the team's \
                             settings, then call again.",
             });
