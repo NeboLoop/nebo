@@ -10,13 +10,13 @@ description: |
 target_component: tool
 
 setup:
-  - "mkdir -p /tmp/nebo-fixture/Nebo/sessions && printf '{\"QueryResponse\":{\"Purchase\":[{\"Id\":\"1\",\"TotalAmt\":42.5,\"EntityRef\":{\"name\":\"Acme Supply\"},\"Line\":[{\"DetailType\":\"AccountBasedExpenseLineDetail\",\"AccountBasedExpenseLineDetail\":{\"AccountRef\":{\"name\":\"Office Supplies\"}}}]},{\"Id\":\"2\",\"TotalAmt\":19,\"EntityRef\":{\"name\":\"Corner Cafe\"},\"Line\":[]}]}}' > /tmp/nebo-fixture/Nebo/sessions/purchases.txt"
+  - "mkdir -p {{scratch}}/Nebo/sessions && printf '{\"QueryResponse\":{\"Purchase\":[{\"Id\":\"1\",\"TotalAmt\":42.5,\"EntityRef\":{\"name\":\"Acme Supply\"},\"Line\":[{\"DetailType\":\"AccountBasedExpenseLineDetail\",\"AccountBasedExpenseLineDetail\":{\"AccountRef\":{\"name\":\"Office Supplies\"}}}]},{\"Id\":\"2\",\"TotalAmt\":19,\"EntityRef\":{\"name\":\"Corner Cafe\"},\"Line\":[]}]}}' > {{scratch}}/Nebo/sessions/purchases.txt"
 teardown:
-  - "rm -rf /tmp/nebo-fixture"
+  - "rm -rf {{scratch}}"
 
 conversation:
   - role: user
-    content: "Use a sub-agent to read /tmp/nebo-fixture/Nebo/sessions/purchases.txt (QuickBooks Purchase JSON) and report which purchases have no account on their lines. Hand the whole file-reading job to the sub-agent; just relay its findings."
+    content: "Use a sub-agent to read {{scratch}}/Nebo/sessions/purchases.txt (QuickBooks Purchase JSON) and report which purchases have no account on their lines. Hand the whole file-reading job to the sub-agent; just relay its findings."
 
 tool_config:
   agent:

@@ -7,13 +7,13 @@ description: |
 target_component: os
 
 setup:
-  - "mkdir -p /tmp/nebo-test && echo 'This is the draft version of the document.' > /tmp/nebo-test/notes.txt"
+  - "mkdir -p {{scratch}} && echo 'This is the draft version of the document.' > {{scratch}}/notes.txt"
 teardown:
-  - "rm -f /tmp/nebo-test/notes.txt"
+  - "rm -rf {{scratch}}"
 
 conversation:
   - role: user
-    content: "In the file /tmp/nebo-test/notes.txt, replace 'draft version' with 'final version'."
+    content: "In the file {{scratch}}/notes.txt, replace 'draft version' with 'final version'."
 
 tool_config:
   os:
@@ -51,7 +51,7 @@ ideal_behavior:
   total_tokens: 3500
   narrative: |
     os(resource: "file", action: "read"), then os(resource: "file", action: "edit",
-    path: "/tmp/nebo-test/notes.txt", old_string: "draft version",
+    path: "{{scratch}}/notes.txt", old_string: "draft version",
     new_string: "final version"), then a read that confirms the line now says
     "final version". Read, edit, verify is the shape the owner wants (2026-09-17);
     the verifying read is not waste.

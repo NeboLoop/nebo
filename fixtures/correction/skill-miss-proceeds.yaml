@@ -8,13 +8,13 @@ description: |
 target_component: skill
 
 setup:
-  - "mkdir -p /tmp/nebo-corr && printf 'Q1 revenue 120\nQ2 revenue 150\n' > /tmp/nebo-corr/revenue.txt"
+  - "mkdir -p {{scratch}} && printf 'Q1 revenue 120\nQ2 revenue 150\n' > {{scratch}}/revenue.txt"
 teardown:
-  - "rm -f /tmp/nebo-corr/revenue.txt"
+  - "rm -rf {{scratch}}"
 
 conversation:
   - role: user
-    content: "Use the quarterly-summary skill to total the revenue in /tmp/nebo-corr/revenue.txt."
+    content: "Use the quarterly-summary skill to total the revenue in {{scratch}}/revenue.txt."
 
 tool_config:
   skill:

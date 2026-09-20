@@ -7,13 +7,13 @@ description: |
 target_component: os
 
 setup:
-  - "mkdir -p /tmp/nebo-corr && printf 'one\ntwo\nthree\n' > /tmp/nebo-corr/short.txt"
+  - "mkdir -p {{scratch}} && printf 'one\ntwo\nthree\n' > {{scratch}}/short.txt"
 teardown:
-  - "rm -f /tmp/nebo-corr/short.txt"
+  - "rm -rf {{scratch}}"
 
 conversation:
   - role: user
-    content: "Show me lines 500 to 520 of /tmp/nebo-corr/short.txt."
+    content: "Show me lines 500 to 520 of {{scratch}}/short.txt."
 
 tool_config:
   os:

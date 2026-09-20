@@ -11,14 +11,14 @@ description: |
 target_component: work
 
 setup:
-  - "curl -s -X POST ${NEBO_TEST_SERVER:-localhost:27895}/api/v1/agents -H 'Content-Type: application/json' -d '{\"blank\":true,\"name\":\"cs-agent\"}' > /dev/null"
+  - "curl -s -X POST ${NEBO_TEST_SERVER:-localhost:27895}/api/v1/agents -H 'Content-Type: application/json' -d '{\"blank\":true,\"name\":\"cs-agent-{{tag}}\"}' > /dev/null"
 teardown:
   - "python3 -c \"import json,urllib.request as u; d=json.load(u.urlopen('http://${NEBO_TEST_SERVER:-localhost:27895}/api/v1/workflows')); ws=d.get('workflows', d) if isinstance(d,dict) else d; [u.urlopen(u.Request('http://${NEBO_TEST_SERVER:-localhost:27895}/api/v1/workflows/'+str(w['id']), method='DELETE')) for w in ws if 'web-form' in (str(w.get('slug',''))+str(w.get('name',''))).lower().replace(' ','-')]\" || true"
-  - "python3 -c \"import json,urllib.request as u; ags=json.load(u.urlopen('http://${NEBO_TEST_SERVER:-localhost:27895}/api/v1/agents'))['agents']; ids=[a['id'] for a in ags if a.get('name')=='cs-agent']; [u.urlopen(u.Request('http://${NEBO_TEST_SERVER:-localhost:27895}/api/v1/agents/'+i, method='DELETE')) for i in ids]\""
+  - "python3 -c \"import json,urllib.request as u; ags=json.load(u.urlopen('http://${NEBO_TEST_SERVER:-localhost:27895}/api/v1/agents'))['agents']; ids=[a['id'] for a in ags if a.get('name')=='cs-agent-{{tag}}']; [u.urlopen(u.Request('http://${NEBO_TEST_SERVER:-localhost:27895}/api/v1/agents/'+i, method='DELETE')) for i in ids]\""
 
 conversation:
   - role: user
-    content: "Create this workflow for the employee cs-agent, exactly as written, and do not run it: {\"name\": \"Handle Web Form Submission\", \"activities\": [{\"id\": \"capture\", \"intent\": \"Read the webhook payload for name, email and message\", \"steps\": [\"Extract name, email and message from the payload\"]}, {\"id\": \"classify\", \"intent\": \"Classify the inquiry\", \"steps\": [\"Pick one of: product question, billing, technical, complaint\"]}, {\"id\": \"respond\", \"intent\": \"Reply by email\", \"steps\": [\"Draft a warm reply and send it by email\"]}]}"
+    content: "Create this workflow for the employee cs-agent-{{tag}}, exactly as written, and do not run it: {\"name\": \"Handle Web Form Submission\", \"activities\": [{\"id\": \"capture\", \"intent\": \"Read the webhook payload for name, email and message\", \"steps\": [\"Extract name, email and message from the payload\"]}, {\"id\": \"classify\", \"intent\": \"Classify the inquiry\", \"steps\": [\"Pick one of: product question, billing, technical, complaint\"]}, {\"id\": \"respond\", \"intent\": \"Reply by email\", \"steps\": [\"Draft a warm reply and send it by email\"]}]}"
 
 tool_config:
   work:

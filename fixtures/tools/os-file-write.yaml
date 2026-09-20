@@ -7,13 +7,13 @@ description: |
 target_component: os
 
 setup:
-  - "rm -f /tmp/nebo-test-output.txt"
+  - "rm -f {{scratch}}/nebo-test-output.txt"
 teardown:
-  - "rm -f /tmp/nebo-test-output.txt"
+  - "rm -rf {{scratch}}"
 
 conversation:
   - role: user
-    content: "Create a file at /tmp/nebo-test-output.txt with the content 'hello world'."
+    content: "Create a file at {{scratch}}/nebo-test-output.txt with the content 'hello world'."
 
 tool_config:
   os:
@@ -31,7 +31,7 @@ prompt_assertions:
       text: "Model uses action: 'write'"
       severity: critical
     - id: correct-path
-      text: "Model passes the correct path '/tmp/nebo-test-output.txt'"
+      text: "Model passes the correct path '{{scratch}}/nebo-test-output.txt'"
       severity: critical
     - id: correct-content
       text: "Model passes content: 'hello world'"
@@ -50,5 +50,5 @@ ideal_behavior:
   tool_calls: 2
   total_tokens: 2000
   narrative: |
-    Single os(resource: "file", action: "write", path: "/tmp/nebo-test-output.txt",
+    Single os(resource: "file", action: "write", path: "{{scratch}}/nebo-test-output.txt",
     content: "hello world") call. Model confirms the file was created.

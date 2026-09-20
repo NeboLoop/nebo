@@ -8,13 +8,13 @@ description: |
 target_component: os
 
 setup:
-  - "mkdir -p /tmp/nebo-corr/empty-src"
+  - "mkdir -p {{scratch}}/empty-src"
 teardown:
-  - "rm -rf /tmp/nebo-corr/empty-src"
+  - "rm -rf {{scratch}}"
 
 conversation:
   - role: user
-    content: "Search /tmp/nebo-corr/empty-src for where the function handle_login is defined and tell me the file and line."
+    content: "Search {{scratch}}/empty-src for where the function handle_login is defined and tell me the file and line."
 
 tool_config:
   os:
@@ -44,5 +44,5 @@ ideal_behavior:
   tool_calls: 1
   total_tokens: 1500
   narrative: |
-    One grep, "No files to search under /tmp/nebo-corr/empty-src", then:
+    One grep, "No files to search under {{scratch}}/empty-src", then:
     "That directory has no files, so nothing was searched. Where is the code?"
