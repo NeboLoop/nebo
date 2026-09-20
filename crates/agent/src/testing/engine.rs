@@ -594,15 +594,16 @@ fn print_annotated_prompt(prompt: &str, overrides: &HashMap<String, String>) {
     }
 }
 
-/// Does this event move the run on? Reply text or tool activity — the same
-/// two things the server's stall guard watches (`guardrails::stall_notice`).
-/// Everything else the socket carries (keepalives, `usage`, presence, another
-/// client's broadcast) is traffic, not progress, and must not hold the
-/// silence cap open.
+/// Does this event move the run on? Reply text or tool activity — the two
+/// things the server's stall guard watches (`guardrails::stall_notice`) — plus
+/// a card, which is this run's own session asking and which `decline_card`
+/// answers on the spot, so the turn carries on. Everything else the socket
+/// carries (keepalives, `usage`, presence, another client's broadcast) is
+/// traffic, not progress, and must not hold the silence cap open.
 fn is_progress(event_type: Option<&str>) -> bool {
     matches!(
         event_type,
-        Some("chat_stream") | Some("tool_start") | Some("tool_result")
+        Some("chat_stream") | Some("tool_start") | Some("tool_result") | Some("ask_request")
     )
 }
 
@@ -727,7 +728,7 @@ mod session_filter_tests {
 
     #[test]
     fn only_reply_text_and_tool_activity_hold_the_silence_cap_open() {
-        for moving in ["chat_stream", "tool_start", "tool_result"] {
+        for moving in ["chat_stream", "tool_start", "tool_result", "ask_request"] {
             assert!(is_progress(Some(moving)), "{moving} is progress");
         }
         // Traffic that used to reset the cap and let a silent run sit for the
