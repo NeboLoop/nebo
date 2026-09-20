@@ -1777,6 +1777,24 @@ pub async fn list_event_sources(State(state): State<AppState>) -> HandlerResult<
         }
     }
 
+    // An attachment landing on this bot. Always offered: it needs no watcher
+    // and no other employee — a file arriving is something the bot itself
+    // announces, and the kind in the source is what keeps a recording flow
+    // off a PDF.
+    for (kind, label) in [
+        ("audio", "A recording lands on this bot"),
+        ("file", "A file lands on this bot"),
+    ] {
+        sources.push(serde_json::json!({
+            "value": format!("attachment.{}", kind),
+            "label": label,
+            "kind": "attachment",
+            "agentName": "",
+            "bindingName": "",
+            "description": "Carries the file id, kind, filename, size, employee and conversation.",
+        }));
+    }
+
     // Dedupe by value (several watchers can surface the same plugin event).
     let mut seen = std::collections::HashSet::new();
     sources.retain(|s| {

@@ -179,7 +179,7 @@
       let attachments;
       if (files?.length) {
         try {
-          attachments = await uploadFiles(files.map(f => f.file));
+          attachments = await uploadFiles(files.map(f => f.file), { agentId });
         } catch (e) {
           chat.setError(`File upload failed — message not sent. ${e instanceof Error ? e.message : ''}`.trim());
           return;

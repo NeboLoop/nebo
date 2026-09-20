@@ -28,6 +28,26 @@ impl Kind {
             Kind::Audio => "Audio",
         }
     }
+
+    /// What kind a landing file is. Asked once, here, so the word a workflow
+    /// subscribes to is the same word the prompt note gives the employee —
+    /// audio is what can be listened to, everything else is a file.
+    pub(crate) fn of(filename: &str, mime_type: &str) -> Kind {
+        if ai::transcribe::is_transcribable(filename, mime_type) {
+            Kind::Audio
+        } else {
+            Kind::File
+        }
+    }
+
+    /// The kind as it travels: the last segment of the event source, and the
+    /// `kind` field of its payload.
+    fn slug(&self) -> &'static str {
+        match self {
+            Kind::File => "file",
+            Kind::Audio => "audio",
+        }
+    }
 }
 
 /// One attachment note, ready to push onto a prompt (it opens with a newline).
@@ -94,6 +114,42 @@ pub(crate) fn ingest_path(path: &std::path::Path) -> Option<Attachment> {
     let mime = ai::sniff_image_mime(&bytes)?;
     let filename = path.file_name()?.to_string_lossy().to_string();
     store(&filename, mime, &bytes)
+}
+
+/// An attachment has landed on this bot: say so, so work can start without
+/// anyone typing.
+///
+/// One event on the ONE bus every other trigger uses (`AppState::emit_lifecycle`,
+/// the same door `agent.installed` and `account.connected` go through), so a
+/// binding subscribes to it the way it subscribes to anything: an `event`
+/// trigger naming the source. The source carries the kind — `attachment.audio`
+/// for a recording, `attachment.file` for everything else — so a flow that only
+/// wants recordings names `attachment.audio` and a PDF never wakes it;
+/// `attachment.*` takes both.
+///
+/// The payload is what a workflow needs to go and act on the file: which file,
+/// what kind, what it is called, how big, the employee it landed on and the
+/// conversation it came from. The last two are null when the client did not
+/// name them — an upload with no conversation behind it is still an arrival.
+pub(crate) fn announce(
+    state: &crate::state::AppState,
+    att: &Attachment,
+    agent_id: Option<&str>,
+    chat_id: Option<&str>,
+) {
+    let kind = Kind::of(&att.filename, &att.mime_type);
+    state.emit_lifecycle(
+        &format!("attachment.{}", kind.slug()),
+        serde_json::json!({
+            "file_id": att.file_id,
+            "kind": kind.slug(),
+            "filename": att.filename,
+            "size": att.size,
+            "agent_id": agent_id,
+            "chat_id": chat_id,
+        }),
+        format!("attachment:{}", att.file_id),
+    );
 }
 
 #[cfg(test)]
