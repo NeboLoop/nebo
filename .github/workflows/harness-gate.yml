@@ -85,8 +85,10 @@ jobs:
       - name: A port of this runner's own
         run: |
           n="${RUNNER_NAME##*-}"
-          case "$n" in [0-9]|[0-9][0-9]) echo "GATE_PORT=$((27890 + n))" >> "$GITHUB_ENV" ;; esac
-          echo "runner $RUNNER_NAME → port ${GATE_PORT}"
+          port="$GATE_PORT"
+          case "$n" in [0-9]|[0-9][0-9]) port=$((27890 + n)) ;; esac
+          echo "GATE_PORT=$port" >> "$GITHUB_ENV"
+          echo "runner $RUNNER_NAME → port $port"
 
       # Same dependency set as release.yml's Linux leg, already present on the
       # VM; apt is idempotent, so this only pays when the VM is rebuilt.
