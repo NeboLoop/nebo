@@ -13,7 +13,7 @@ mod desktop;
 mod chat;
 mod commander;
 mod entity_config;
-mod files;
+pub mod files;
 mod import;
 mod integrations;
 mod memory;
