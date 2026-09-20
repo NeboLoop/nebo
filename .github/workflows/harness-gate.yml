@@ -68,6 +68,18 @@ jobs:
   harness:
     name: ${{ github.event_name == 'schedule' && 'Nightly judged suites' || 'Program-check gate' }}
     runs-on: [self-hosted, Linux, ARM64, neboloop] # the Mac mini's Lima VM, see CLAUDE.md "Release builds"
+    # One gate job on the VM at a time. Both neboloop runners live in the
+    # same VM and the fixtures share /tmp/nebo-test: two engines running
+    # os-file-edit at once wrote "draft"/"final" over each other's file
+    # (2026-09-20 06:16–06:37, jobs 35474673976 and 35481278899 — a 5-call
+    # trace that read as a model failure). A separate port per runner
+    # keeps the servers apart; this keeps the files apart. Queued jobs
+    # wait; a newer queued job replaces an older queued one (GitHub keeps
+    # one pending per group), so a PR run can be superseded by a push to
+    # main and must then be re-run.
+    concurrency:
+      group: harness-gate-vm
+      cancel-in-progress: false
     timeout-minutes: ${{ github.event_name == 'schedule' && 120 || 60 }}
     env:
       RUSTC_WRAPPER: ""
