@@ -5917,7 +5917,7 @@ async fn process_comm_attachments(
 
         // Audio is inert to every provider we ship, so it becomes text here or
         // it never reaches the model at all.
-        if ai::transcribe::is_transcribable(&att.filename, &att.mime_type) {
+        if matches!(Kind::of(&att.filename, &att.mime_type), Kind::Audio) {
             let audio = |body: &str| note(Kind::Audio, &att.filename, att.size, body);
             let spoken = match transcription_endpoint(state) {
                 Some((key, base_url, model)) => {

@@ -267,7 +267,8 @@
     let attachments;
     if (files?.length) {
       try {
-        attachments = await uploadFiles(files.map(f => f.file));
+        // Named so the arrival event says whose it is and where it came from.
+        attachments = await uploadFiles(files.map(f => f.file), { agentId, chatId: threadId });
       } catch (e) {
         chat.setError(`File upload failed — message not sent. ${e instanceof Error ? e.message : ''}`.trim());
         return;

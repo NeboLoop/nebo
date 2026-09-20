@@ -41,6 +41,13 @@ async function convertHeicToJpeg(file: File): Promise<File> {
 	}
 }
 
+/** Where a file is landing: the employee it is for, and the conversation it
+ *  came from. The backend announces every arrival as an event a flow can wait
+ *  on (`attachment.audio` / `attachment.file`), and these are how that event
+ *  says who and where. Omitted when there is no single employee behind the
+ *  upload — a team post, say. */
+export type UploadLanding = { agentId?: string; chatId?: string };
+
 /**
  * Upload a file to NeboAI via the local server proxy.
  * HEIC/HEIF converts to JPEG first (see convertHeicToJpeg).
@@ -48,6 +55,7 @@ async function convertHeicToJpeg(file: File): Promise<File> {
  */
 export async function uploadFile(
 	file: File,
+	landing?: UploadLanding,
 	onProgress?: (percent: number) => void
 ): Promise<UploadedAttachment> {
 	if (isHeic(file)) {
@@ -59,6 +67,8 @@ export async function uploadFile(
 		const xhr = new XMLHttpRequest();
 		const formData = new FormData();
 		formData.append('file', file);
+		if (landing?.agentId) formData.append('agentId', landing.agentId);
+		if (landing?.chatId) formData.append('chatId', landing.chatId);
 
 		xhr.upload.addEventListener('progress', (e) => {
 			if (e.lengthComputable) {
@@ -94,10 +104,11 @@ export async function uploadFile(
  */
 export async function uploadFiles(
 	files: File[],
+	landing?: UploadLanding,
 	onProgress?: (index: number, percent: number) => void
 ): Promise<UploadedAttachment[]> {
 	const results = await Promise.all(
-		files.map((file, i) => uploadFile(file, (pct) => onProgress?.(i, pct)))
+		files.map((file, i) => uploadFile(file, landing, (pct) => onProgress?.(i, pct)))
 	);
 	return results;
 }

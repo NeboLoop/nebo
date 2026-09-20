@@ -148,6 +148,11 @@ pub async fn upload_file(
     let mut filename = String::new();
     let mut mime_type = String::new();
     let mut data: Vec<u8> = Vec::new();
+    // Where the file landed. Optional: a client that has no conversation
+    // behind the upload sends neither, and the arrival is announced without
+    // them rather than not at all.
+    let mut agent_id = String::new();
+    let mut chat_id = String::new();
 
     // The same ceiling the door was built with, so the sentence names the
     // number that actually refused the file.
@@ -158,20 +163,35 @@ pub async fn upload_file(
         .await
         .map_err(|e| too_big_or_bad(max_upload_bytes, e))?
     {
-        if field.name() == Some("file") {
-            filename = field
-                .file_name()
-                .unwrap_or("upload")
-                .to_string();
-            mime_type = field
-                .content_type()
-                .unwrap_or("application/octet-stream")
-                .to_string();
-            data = field
-                .bytes()
-                .await
-                .map_err(|e| too_big_or_bad(max_upload_bytes, e))?
-                .to_vec();
+        match field.name().unwrap_or_default().to_string().as_str() {
+            "file" => {
+                filename = field
+                    .file_name()
+                    .unwrap_or("upload")
+                    .to_string();
+                mime_type = field
+                    .content_type()
+                    .unwrap_or("application/octet-stream")
+                    .to_string();
+                data = field
+                    .bytes()
+                    .await
+                    .map_err(|e| too_big_or_bad(max_upload_bytes, e))?
+                    .to_vec();
+            }
+            "agentId" => {
+                agent_id = field
+                    .text()
+                    .await
+                    .map_err(|e| too_big_or_bad(max_upload_bytes, e))?
+            }
+            "chatId" => {
+                chat_id = field
+                    .text()
+                    .await
+                    .map_err(|e| too_big_or_bad(max_upload_bytes, e))?
+            }
+            _ => {}
         }
     }
 
@@ -193,6 +213,20 @@ pub async fn upload_file(
     std::fs::write(&path, &data)
         .map_err(|e| to_error_response(types::NeboError::Internal(e.to_string())))?;
 
+    // The attachment as it stands: the local copy, until the loop copy below
+    // re-keys it to the id the loop gave it.
+    let mut landed = comm::wire::Attachment {
+        url: format!("/api/v1/comm-files/{}", file_id),
+        file_id,
+        filename: filename.clone(),
+        mime_type: mime_type.clone(),
+        size,
+        thumbnail_url: None,
+        width: None,
+        height: None,
+        duration: None,
+    };
+
     // Best-effort loop copy. Failing here costs sharing with other bots, not the
     // attachment itself, so it is logged rather than returned as an error.
     match crate::codes::build_api_client(&state) {
@@ -204,7 +238,7 @@ pub async fn upload_file(
                 if let Err(e) = std::fs::rename(&path, &renamed) {
                     tracing::warn!(error = %e, "could not re-key local attachment copy");
                 }
-                return Ok(Json(serde_json::to_value(attachment).unwrap_or_default()));
+                landed = attachment;
             }
             Err(e) => {
                 tracing::warn!(error = %e, "loop upload failed; attachment is local-only")
@@ -213,13 +247,18 @@ pub async fn upload_file(
         Err(e) => tracing::debug!(error = %e, "not signed in; attachment is local-only"),
     }
 
-    Ok(Json(serde_json::json!({
-        "fileId": file_id,
-        "filename": filename,
-        "mimeType": mime_type,
-        "size": size,
-        "url": format!("/api/v1/comm-files/{}", file_id),
-    })))
+    // The file is on this machine and named: announce the arrival so a flow
+    // waiting on this kind of attachment starts on its own. Announced with the
+    // id the caller is about to get back, whichever copy that is, and after
+    // the bytes are on disk — nothing subscribes to a file that is not there.
+    crate::attachments::announce(
+        &state,
+        &landed,
+        Some(agent_id.as_str()).filter(|s| !s.is_empty()),
+        Some(chat_id.as_str()).filter(|s| !s.is_empty()),
+    );
+
+    Ok(Json(serde_json::to_value(&landed).unwrap_or_default()))
 }
 
 /// GET /api/v1/comm-files/{id} — stream a loop attachment through the bot's
