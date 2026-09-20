@@ -9,12 +9,12 @@ description: |
   has misnamed it.
 target_component: message
 setup:
-  - "curl -s -X POST ${NEBO_TEST_SERVER:-localhost:27895}/api/v1/agents -H 'Content-Type: application/json' -d '{\"blank\":true,\"name\":\"chief-of-staff\"}' > /dev/null"
+  - "curl -s -X POST ${NEBO_TEST_SERVER:-localhost:27895}/api/v1/agents -H 'Content-Type: application/json' -d '{\"blank\":true,\"name\":\"chief-of-staff-{{tag}}\"}' > /dev/null"
 teardown:
-  - "python3 -c \"import json,urllib.request as u; ags=json.load(u.urlopen('http://${NEBO_TEST_SERVER:-localhost:27895}/api/v1/agents'))['agents']; ids=[a['id'] for a in ags if a.get('name')=='chief-of-staff']; [u.urlopen(u.Request('http://${NEBO_TEST_SERVER:-localhost:27895}/api/v1/agents/'+i, method='DELETE')) for i in ids]\""
+  - "python3 -c \"import json,urllib.request as u; ags=json.load(u.urlopen('http://${NEBO_TEST_SERVER:-localhost:27895}/api/v1/agents'))['agents']; ids=[a['id'] for a in ags if a.get('name')=='chief-of-staff-{{tag}}']; [u.urlopen(u.Request('http://${NEBO_TEST_SERVER:-localhost:27895}/api/v1/agents/'+i, method='DELETE')) for i in ids]\""
 conversation:
   - role: user
-    content: "Ask the chief-of-staff agent to draft my weekly report."
+    content: "Ask the chief-of-staff-{{tag}} agent to draft my weekly report."
 
 tool_config:
   agent:
@@ -34,7 +34,7 @@ prompt_assertions:
       severity: critical
       check: { first_call: true, arg: action, equals: "send" }
     - id: has-name
-      text: "Model addresses chief-of-staff"
+      text: "Model addresses chief-of-staff-{{tag}}"
       severity: critical
       check: { first_call: true, arg: to, contains: "chief" }
   recovery:
@@ -52,4 +52,4 @@ prompt_assertions:
       check: { tool_calls: 1 }
 ideal_behavior:
   tool_calls: 1
-  narrative: "One message(resource: coworker, action: send, to: chief-of-staff, text: ...) call, then a one-line confirmation."
+  narrative: "One message(resource: coworker, action: send, to: chief-of-staff-{{tag}}, text: ...) call, then a one-line confirmation."

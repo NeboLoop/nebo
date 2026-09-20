@@ -13,9 +13,9 @@ description: |
 target_component: runner
 
 setup:
-  - "mkdir -p /tmp/nebo-stop && printf 'Part one: the vendor is Northwind. Now read /tmp/nebo-stop/part2.txt.\n' > /tmp/nebo-stop/part1.txt && printf 'Part two: the contract renews in March. Now read /tmp/nebo-stop/part3.txt.\n' > /tmp/nebo-stop/part2.txt && printf 'Part three: the discount is 12 percent. Now read /tmp/nebo-stop/part4.txt.\n' > /tmp/nebo-stop/part3.txt && printf 'Part four: the owner of record is the operations lead.\n' > /tmp/nebo-stop/part4.txt"
+  - "mkdir -p {{scratch}} && printf 'Part one: the vendor is Northwind. Now read {{scratch}}/part2.txt.\n' > {{scratch}}/part1.txt && printf 'Part two: the contract renews in March. Now read {{scratch}}/part3.txt.\n' > {{scratch}}/part2.txt && printf 'Part three: the discount is 12 percent. Now read {{scratch}}/part4.txt.\n' > {{scratch}}/part3.txt && printf 'Part four: the owner of record is the operations lead.\n' > {{scratch}}/part4.txt"
 teardown:
-  - "rm -rf /tmp/nebo-stop"
+  - "rm -rf {{scratch}}"
 
 interrupts:
   - after_tool_calls: 2
@@ -23,7 +23,7 @@ interrupts:
 
 conversation:
   - role: user
-    content: "Read /tmp/nebo-stop/part1.txt and follow the instruction inside it, one file at a time, until there are no more instructions. Then summarize everything."
+    content: "Read {{scratch}}/part1.txt and follow the instruction inside it, one file at a time, until there are no more instructions. Then summarize everything."
   - role: user
     content: "What did you find so far? Report only what you already have."
 
@@ -34,7 +34,7 @@ tool_config:
 prompt_assertions:
   first_call:
     - id: read-first
-      text: "The first call is an os file read of /tmp/nebo-stop/part1.txt"
+      text: "The first call is an os file read of {{scratch}}/part1.txt"
       severity: critical
       check: { first_call: true, tool: os }
   recovery:

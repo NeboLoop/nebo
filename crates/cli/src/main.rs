@@ -742,7 +742,7 @@ const REPLAY_FIXTURE_DIR: &str = "fixtures/replay";
 const UNKNOWN_EXIT_REASON: &str = "unknown";
 
 async fn run_test_command(cfg: &config::Config, command: TestCommands) -> anyhow::Result<()> {
-    use agent::testing::{checks, engine, fixture, grader, replay, reporter, trace};
+    use agent::testing::{checks, engine, fixture, grader, replay, reporter, scratch, trace};
     use std::path::Path;
 
     match command {
@@ -875,7 +875,7 @@ async fn run_test_command(cfg: &config::Config, command: TestCommands) -> anyhow
                 }
                 println!("Running fixture: {} ({}x)", fix.id, runs);
 
-                let mut traces = match engine::run_live(fix, &server, model.as_deref(), &overrides, runs).await {
+                let mut traces = match scratch::run_bound(fix, &server, model.as_deref(), &overrides, runs).await {
                     Ok(t) => t,
                     Err(e) => {
                         eprintln!("  FAILED: {}", e);

@@ -7,13 +7,13 @@ description: |
 target_component: os
 
 setup:
-  - "mkdir -p /tmp/nebo-corr/many && cd /tmp/nebo-corr/many && for i in $(seq 1 150); do : > f$i.txt; done"
+  - "mkdir -p {{scratch}}/many && cd {{scratch}}/many && for i in $(seq 1 150); do : > f$i.txt; done"
 teardown:
-  - "rm -rf /tmp/nebo-corr/many"
+  - "rm -rf {{scratch}}"
 
 conversation:
   - role: user
-    content: "Exactly how many .txt files are in /tmp/nebo-corr/many? I need the precise number."
+    content: "Exactly how many .txt files are in {{scratch}}/many? I need the precise number."
 
 tool_config:
   os:
@@ -40,5 +40,5 @@ ideal_behavior:
   tool_calls: 1
   total_tokens: 1500
   narrative: |
-    One shell `ls /tmp/nebo-corr/many/*.txt | wc -l` (or find | wc -l) and the
+    One shell `ls {{scratch}}/many/*.txt | wc -l` (or find | wc -l) and the
     answer 150.

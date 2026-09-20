@@ -17,13 +17,13 @@ setup:
   # A user-created employee WITH files under user/agents, the shape of the
   # live thread this fixture replays (a blank hire has no files and takes a
   # different path through info).
-  - "curl -s -X POST ${NEBO_TEST_SERVER:-localhost:27895}/api/v1/agents -H 'Content-Type: application/json' -d '{\"name\": \"night-desk\", \"description\": \"After-hours receptionist for a small firm.\", \"agentMd\": \"---\\nname: night-desk\\ndescription: After-hours receptionist for a small firm.\\n---\\nYou answer after-hours calls, take the name and number of the caller, and schedule a callback.\\n\"}' > /dev/null"
+  - "curl -s -X POST ${NEBO_TEST_SERVER:-localhost:27895}/api/v1/agents -H 'Content-Type: application/json' -d '{\"name\": \"night-desk-{{tag}}\", \"description\": \"After-hours receptionist for a small firm.\", \"agentMd\": \"---\\nname: night-desk-{{tag}}\\ndescription: After-hours receptionist for a small firm.\\n---\\nYou answer after-hours calls, take the name and number of the caller, and schedule a callback.\\n\"}' > /dev/null"
 teardown:
-  - "python3 -c \"import json,urllib.request as u; ags=json.load(u.urlopen('http://${NEBO_TEST_SERVER:-localhost:27895}/api/v1/agents'))['agents']; ids=[a['id'] for a in ags if a.get('name')=='night-desk']; [u.urlopen(u.Request('http://${NEBO_TEST_SERVER:-localhost:27895}/api/v1/agents/'+i, method='DELETE')) for i in ids]\""
+  - "python3 -c \"import json,urllib.request as u; ags=json.load(u.urlopen('http://${NEBO_TEST_SERVER:-localhost:27895}/api/v1/agents'))['agents']; ids=[a['id'] for a in ags if a.get('name')=='night-desk-{{tag}}']; [u.urlopen(u.Request('http://${NEBO_TEST_SERVER:-localhost:27895}/api/v1/agents/'+i, method='DELETE')) for i in ids]\""
 
 conversation:
   - role: user
-    content: "Inspect the night-desk employee's full prompt and instructions. Add an instruction to end phone calls properly: summarize what was captured, confirm next steps, thank the caller, and say goodbye before hanging up, instead of disconnecting abruptly."
+    content: "Inspect the night-desk-{{tag}} employee's full prompt and instructions. Add an instruction to end phone calls properly: summarize what was captured, confirm next steps, thank the caller, and say goodbye before hanging up, instead of disconnecting abruptly."
 
 tool_config:
   agent:
@@ -34,7 +34,7 @@ tool_config:
 prompt_assertions:
   first_call:
     - id: starts-with-registry
-      text: "The first call is agent(resource: registry, action: info) on night-desk, or its update"
+      text: "The first call is agent(resource: registry, action: info) on night-desk-{{tag}}, or its update"
       severity: critical
       check: { first_call: true, tool: agent }
   recovery:

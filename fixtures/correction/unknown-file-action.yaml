@@ -7,13 +7,13 @@ description: |
 target_component: os
 
 setup:
-  - "mkdir -p /tmp/nebo-corr && printf 'alpha\nbeta\n' > /tmp/nebo-corr/notes.txt"
+  - "mkdir -p {{scratch}} && printf 'alpha\nbeta\n' > {{scratch}}/notes.txt"
 teardown:
-  - "rm -f /tmp/nebo-corr/notes.txt"
+  - "rm -rf {{scratch}}"
 
 conversation:
   - role: user
-    content: "Append a line that says 'gamma' to the end of /tmp/nebo-corr/notes.txt, then show me the whole file."
+    content: "Append a line that says 'gamma' to the end of {{scratch}}/notes.txt, then show me the whole file."
 
 tool_config:
   os:

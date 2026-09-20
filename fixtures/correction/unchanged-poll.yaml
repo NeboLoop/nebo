@@ -10,13 +10,13 @@ induced_errors: 2  # the identical-call block and the bounded wait ending at its
 target_component: os
 
 setup:
-  - "mkdir -p /tmp/nebo-corr && printf 'line one\n' > /tmp/nebo-corr/poll.txt"
+  - "mkdir -p {{scratch}} && printf 'line one\n' > {{scratch}}/poll.txt"
 teardown:
-  - "rm -f /tmp/nebo-corr/poll.txt"
+  - "rm -rf {{scratch}}"
 
 conversation:
   - role: user
-    content: "A script is appending to /tmp/nebo-corr/poll.txt right now. Keep re-reading it until it has at least 3 lines, then tell me the third line."
+    content: "A script is appending to {{scratch}}/poll.txt right now. Keep re-reading it until it has at least 3 lines, then tell me the third line."
 
 tool_config:
   os:
@@ -25,7 +25,7 @@ tool_config:
 prompt_assertions:
   first_call:
     - id: reads-the-file
-      text: "First call reads /tmp/nebo-corr/poll.txt (os file read or a shell cat)"
+      text: "First call reads {{scratch}}/poll.txt (os file read or a shell cat)"
       severity: critical
   recovery:
     - id: bounded-reads

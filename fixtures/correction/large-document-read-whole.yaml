@@ -12,13 +12,13 @@ description: |
 target_component: tool
 
 setup:
-  - "mkdir -p /tmp/nebo-fixture && python3 -c \"lines=['# Platform notes', ''] + ['Section %d: paragraph %d of the platform notes, describing one operational detail at moderate length so the file is realistic.' % (i//10+1, i) for i in range(1, 430)] + ['', 'Decision of record: the rollout window is 2026-11-03 and the owner of record is the platform lead.']; open('/tmp/nebo-fixture/platform-notes.md','w').write('\\n'.join(lines)+'\\n')\""
+  - "mkdir -p {{scratch}} && python3 -c \"lines=['# Platform notes', ''] + ['Section %d: paragraph %d of the platform notes, describing one operational detail at moderate length so the file is realistic.' % (i//10+1, i) for i in range(1, 430)] + ['', 'Decision of record: the rollout window is 2026-11-03 and the owner of record is the platform lead.']; open('{{scratch}}/platform-notes.md','w').write('\\n'.join(lines)+'\\n')\""
 teardown:
-  - "rm -rf /tmp/nebo-fixture"
+  - "rm -rf {{scratch}}"
 
 conversation:
   - role: user
-    content: "Read /tmp/nebo-fixture/platform-notes.md and tell me the rollout window date stated in the decision of record at the end."
+    content: "Read {{scratch}}/platform-notes.md and tell me the rollout window date stated in the decision of record at the end."
 
 tool_config:
   os:
@@ -27,7 +27,7 @@ tool_config:
 prompt_assertions:
   first_call:
     - id: read-first
-      text: "The first call is an os file read of /tmp/nebo-fixture/platform-notes.md"
+      text: "The first call is an os file read of {{scratch}}/platform-notes.md"
       severity: critical
       check: { first_call: true, tool: os }
   recovery:

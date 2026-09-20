@@ -5,3 +5,6 @@ pub mod engine;
 pub mod grader;
 pub mod reporter;
 pub mod replay;
+pub mod scratch;
+#[cfg(test)]
+mod isolation;

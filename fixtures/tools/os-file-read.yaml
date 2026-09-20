@@ -7,13 +7,13 @@ description: |
 target_component: os
 
 setup:
-  - "echo 'hello from nebo config' > /tmp/nebo-config.txt"
+  - "echo 'hello from nebo config' > {{scratch}}/nebo-config.txt"
 teardown:
-  - "rm -f /tmp/nebo-config.txt"
+  - "rm -rf {{scratch}}"
 
 conversation:
   - role: user
-    content: "Read the file at /tmp/nebo-config.txt and tell me what it says."
+    content: "Read the file at {{scratch}}/nebo-config.txt and tell me what it says."
 
 tool_config:
   os:
@@ -34,11 +34,11 @@ prompt_assertions:
       text: "Model uses action: 'read'"
       severity: critical
     - id: correct-path
-      text: "Model passes path: '/tmp/nebo-config.txt' exactly"
+      text: "Model passes path: '{{scratch}}/nebo-config.txt' exactly"
       severity: critical
   recovery:
     - id: no-shell-fallback
-      text: "Model does NOT fall back to os(resource: 'shell', action: 'exec', command: 'cat /tmp/nebo-config.txt') after a successful file read"
+      text: "Model does NOT fall back to os(resource: 'shell', action: 'exec', command: 'cat {{scratch}}/nebo-config.txt') after a successful file read"
       severity: important
   cost:
     - id: single-call
@@ -49,5 +49,5 @@ ideal_behavior:
   tool_calls: 1
   total_tokens: 1500
   narrative: |
-    Single os(resource: "file", action: "read", path: "/tmp/nebo-config.txt") call.
+    Single os(resource: "file", action: "read", path: "{{scratch}}/nebo-config.txt") call.
     Model reads the response and reports the contents to the user.

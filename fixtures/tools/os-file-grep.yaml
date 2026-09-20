@@ -7,13 +7,13 @@ description: |
 target_component: os
 
 setup:
-  - "mkdir -p /tmp/nebo-test && printf 'line one\nTODO: fix this\nline three\n' > /tmp/nebo-test/sample.txt"
+  - "mkdir -p {{scratch}} && printf 'line one\nTODO: fix this\nline three\n' > {{scratch}}/sample.txt"
 teardown:
-  - "rm -f /tmp/nebo-test/sample.txt"
+  - "rm -rf {{scratch}}"
 
 conversation:
   - role: user
-    content: "Search for the word 'TODO' in all files under /tmp/nebo-test/"
+    content: "Search for the word 'TODO' in all files under {{scratch}}/"
 
 tool_config:
   os:
@@ -34,11 +34,11 @@ prompt_assertions:
       text: "Model passes a regex/pattern parameter containing 'TODO'"
       severity: critical
     - id: has-path
-      text: "Model passes path: '/tmp/nebo-test/' or similar"
+      text: "Model passes path: '{{scratch}}/' or similar"
       severity: critical
   recovery:
     - id: no-shell-grep
-      text: "Model does NOT fall back to os(resource: 'shell', action: 'exec', command: 'grep -r TODO /tmp/nebo-test/')"
+      text: "Model does NOT fall back to os(resource: 'shell', action: 'exec', command: 'grep -r TODO {{scratch}}/')"
       severity: important
   cost:
     - id: single-call
@@ -50,4 +50,4 @@ ideal_behavior:
   total_tokens: 1500
   narrative: |
     Single os(resource: "file", action: "grep", regex: "TODO",
-    path: "/tmp/nebo-test/") call. Model reports the matches.
+    path: "{{scratch}}/") call. Model reports the matches.

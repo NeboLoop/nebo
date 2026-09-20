@@ -357,7 +357,7 @@ pub async fn run_optimization_round(
         let mut any_error = false;
 
         for fix in fixtures {
-            match engine::run_live(fix, server, model, &overrides, config.runs_per_mutation).await {
+            match super::scratch::run_bound(fix, server, model, &overrides, config.runs_per_mutation).await {
                 Ok(mut traces) => {
                     for trace in &mut traces {
                         match super::grader::grade(trace, fix, server, grader_model).await {
@@ -468,7 +468,7 @@ pub async fn run_baseline(
 
     for fix in fixtures {
         println!("  Fixture: {}", fix.id);
-        let mut traces = engine::run_live(fix, server, model, &overrides, runs).await?;
+        let mut traces = super::scratch::run_bound(fix, server, model, &overrides, runs).await?;
 
         for trace in &mut traces {
             match super::grader::grade(trace, fix, server, grader_model).await {

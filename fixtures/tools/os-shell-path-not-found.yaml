@@ -10,11 +10,13 @@ induced_errors: 1
 target_component: os
 
 setup:
-  - "rm -f /tmp/nebo-test-nonexistent-xyz.txt"
+  - "rm -f {{scratch}}/nebo-test-nonexistent-xyz.txt"
+teardown:
+  - "rm -rf {{scratch}}"
 
 conversation:
   - role: user
-    content: "Can you read the file at /tmp/nebo-test-nonexistent-xyz.txt and summarize it for me?"
+    content: "Can you read the file at {{scratch}}/nebo-test-nonexistent-xyz.txt and summarize it for me?"
 
 tool_config:
   os:
