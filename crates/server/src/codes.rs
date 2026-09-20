@@ -99,11 +99,17 @@ struct CodeHandlerResult {
 }
 
 /// Handle a detected code: broadcast processing event, dispatch to handler, broadcast result.
-/// The install codes being handled right now, so a code arriving twice — a
-/// second click, or the hub's own `tool_installed` echo of a redeem this
-/// device just made — never starts a second install of the same artifact.
+/// The install work in flight right now: the codes being handled, so a code
+/// arriving twice (a second click) never starts a second install of the same
+/// artifact, plus a count of running dependency cascades, which redeem their
+/// deps directly rather than through `handle_code`. Together they answer
+/// "is this device installing anything?" — what the hub's `tool_installed`
+/// echo of our own redeem has to wait on (see `settle`).
 #[derive(Default)]
-pub struct InFlightCodes(std::sync::Mutex<std::collections::HashSet<String>>);
+pub struct InFlightCodes {
+    codes: std::sync::Mutex<std::collections::HashSet<String>>,
+    cascades: std::sync::atomic::AtomicUsize,
+}
 
 /// Held for the life of one code's handling; the code leaves the set on drop.
 pub struct InFlightGuard<'a> {
@@ -111,20 +117,55 @@ pub struct InFlightGuard<'a> {
     code: String,
 }
 
+/// Held for the life of one dependency cascade; the count drops with it.
+pub struct CascadeGuard<'a>(&'a InFlightCodes);
+
 impl InFlightCodes {
     /// Claim a code. `None` means it is already being handled.
     pub fn begin(&self, code: &str) -> Option<InFlightGuard<'_>> {
-        let mut set = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let mut set = self.codes.lock().unwrap_or_else(|e| e.into_inner());
         if !set.insert(code.to_string()) {
             return None;
         }
         Some(InFlightGuard { set: self, code: code.to_string() })
     }
+
+    /// Count a dependency cascade as running until the guard drops.
+    pub fn cascade_begin(&self) -> CascadeGuard<'_> {
+        self.cascades.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        CascadeGuard(self)
+    }
+
+    fn busy(&self) -> bool {
+        !self.codes.lock().unwrap_or_else(|e| e.into_inner()).is_empty()
+            || self.cascades.load(std::sync::atomic::Ordering::SeqCst) > 0
+    }
+
+    /// Wait until nothing is being installed locally. NeboAI emits
+    /// `tool_installed` the moment a redeem is recorded — before the redeem
+    /// response, let alone the local persist — so an echo of our own install
+    /// looked "not installed" and ran the whole install again (agent AND every
+    /// dependency, each flashing the install modal). Only once local work is
+    /// done is "is it installed?" a truthful question.
+    /// ponytail: polls every 250ms, gives up after 10 min; switch to a Notify
+    /// if that ever shows up in a profile.
+    pub async fn settle(&self) {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(600);
+        while self.busy() && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        }
+    }
 }
 
 impl Drop for InFlightGuard<'_> {
     fn drop(&mut self) {
-        self.set.0.lock().unwrap_or_else(|e| e.into_inner()).remove(&self.code);
+        self.set.codes.lock().unwrap_or_else(|e| e.into_inner()).remove(&self.code);
+    }
+}
+
+impl Drop for CascadeGuard<'_> {
+    fn drop(&mut self) {
+        self.0.cascades.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
     }
 }
 
@@ -2778,6 +2819,24 @@ pub(crate) async fn refresh_license_keys(state: &AppState) -> Result<(), NeboErr
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A code in hand or a cascade in progress both count as "installing";
+    /// `settle` returns at once when neither is. Mutation check: drop the
+    /// cascade count from `busy` and the second assertion fails.
+    #[tokio::test]
+    async fn in_flight_counts_codes_and_cascades() {
+        let set = InFlightCodes::default();
+        assert!(!set.busy());
+        let code = set.begin("SKIL-AAAA-BBBB").expect("first claim wins");
+        assert!(set.begin("SKIL-AAAA-BBBB").is_none());
+        assert!(set.busy());
+        drop(code);
+        let cascade = set.cascade_begin();
+        assert!(set.busy());
+        drop(cascade);
+        assert!(!set.busy());
+        set.settle().await;
+    }
 
     /// Rule 8.1 / 13.1: every creation path converges on finalize, so the
     /// finalizer may run twice for one employee (an explicit install, then

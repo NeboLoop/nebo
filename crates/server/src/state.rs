@@ -188,13 +188,15 @@ pub struct AppState {
     /// std::sync::Mutex — the lock is never held across an await (snapshot then
     /// release in the handler), so the cheaper sync lock is correct.
     pub store_cache: Arc<std::sync::Mutex<HashMap<String, (std::time::Instant, serde_json::Value)>>>,
-    /// Install codes being handled right now. Every install of an artifact
-    /// runs through `codes::handle_code`, and the hub answers each redeem with
-    /// a `tool_installed` event that comes back through the same door before
-    /// the first install has finished — without this set the event started a
-    /// second install of the same plugin, which redeemed again, which sent
-    /// another event, until the racing installs deleted each other's files
-    /// (Odoo, 2026-09-16: "IO error: No such file or directory").
+    /// Install work in flight right now: codes being handled by
+    /// `codes::handle_code` and running dependency cascades (`deps::resolve_cascade`
+    /// redeems deps directly). The hub answers each redeem with a `tool_installed`
+    /// event that comes back through the same door before the install has
+    /// finished — without this the event started a second install of the same
+    /// plugin, which redeemed again, which sent another event, until the racing
+    /// installs deleted each other's files (Odoo, 2026-09-16: "IO error: No such
+    /// file or directory"); and an agent install re-ran itself plus every dep,
+    /// flashing the install modal once per echo (2026-09-17).
     pub codes_in_flight: Arc<crate::codes::InFlightCodes>,
 }
 

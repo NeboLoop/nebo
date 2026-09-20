@@ -678,7 +678,11 @@ async fn handle_comm_install_event(
             let artifact_type = item.artifact_type.as_deref().unwrap_or("skill");
             // Dedup the self-echo: a fresh "tool_installed" for something already
             // present (e.g. the device that just installed it) skips the redundant
-            // re-download. Updates always re-install.
+            // re-download. Updates always re-install. The echo lands before our
+            // own install has persisted (the hub emits it as the redeem is
+            // recorded), so the check is only truthful once local install work
+            // — the code handler and its dependency cascade — has finished.
+            state.codes_in_flight.settle().await;
             if event.event_type == "tool_installed"
                 && crate::handlers::store::is_installed(
                     &item.slug,
