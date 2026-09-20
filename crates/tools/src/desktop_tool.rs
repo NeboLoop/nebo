@@ -104,9 +104,10 @@ impl DynTool for DesktopTool {
                 "message": { "type": "string", "description": "Notification message" },
                 "text": { "type": "string", "description": "Text to type, write to clipboard, or speak" },
                 "key": { "type": "string", "description": "Key or combo to press (e.g. 'return', 'tab', 'cmd+shift+s')" },
-                "x": { "type": "integer", "description": "X coordinate (window move)" },
-                "y": { "type": "integer", "description": "Y coordinate (window move)" },
-                "coordinate": { "type": "array", "items": { "type": "integer" }, "description": "[x, y] target for input click/move (alternative to ref)" },
+                "x": { "type": "integer", "description": "X coordinate (window move; tap: window-relative point)" },
+                "y": { "type": "integer", "description": "Y coordinate (window move; tap: window-relative point)" },
+                "wait_ms": { "type": "integer", "description": "For input tap: how long to wait after the tap before capturing the window (default 1200)" },
+                "coordinate": { "type": "array", "items": { "type": "integer" }, "description": "[x, y] target for input click/move (alternative to ref). For input tap: window-relative points from the app window's top-left." },
                 "start_coordinate": { "type": "array", "items": { "type": "integer" }, "description": "[x, y] drag start point" },
                 "click_count": { "type": "integer", "description": "For input click: 1=single, 2=double. Default 1." },
                 "button": { "type": "string", "description": "For input click: mouse button. Default left.", "enum": ["left", "right"] },
@@ -716,6 +717,7 @@ async fn handle_input(
                 input_press(key).await
             }
         }
+        "tap" => tap(input).await,
         "click" => {
             let Some((x, y, label)) = target else {
                 return ToolResult::error(
@@ -838,6 +840,91 @@ async fn input_press(key: &str) -> ToolResult {
     {
         let _ = key;
         ToolResult::error("Input press is not supported on this platform")
+    }
+}
+
+
+/// `x, y, w, h` as System Events prints a window's `{position, size}`.
+pub(crate) fn parse_frame(s: &str) -> Option<(i64, i64, i64, i64)> {
+    let mut it = s
+        .split(|c: char| c == ',' || c.is_whitespace())
+        .filter(|t| !t.is_empty())
+        .map(|t| t.parse::<i64>().ok());
+    let f = (it.next()??, it.next()??, it.next()??, it.next()??);
+    (f.2 > 0 && f.3 > 0).then_some(f)
+}
+
+/// Bring `app` to the front and read its first window's frame, in screen
+/// points — the same units cliclick and screencapture -R take.
+#[cfg(target_os = "macos")]
+async fn window_frame(app: &str) -> Result<(i64, i64, i64, i64), String> {
+    let script = format!(
+        "tell application \"System Events\" to tell process \"{}\"\n\
+         set frontmost to true\n\
+         get {{position, size}} of window 1\n\
+         end tell",
+        escape_applescript(app)
+    );
+    let out = run_osascript_raw(&script, Some(AX_CAPTURE_TIMEOUT)).await?;
+    parse_frame(&out).ok_or_else(|| format!("could not read the window frame of {app} (got '{}')", out.trim()))
+}
+
+/// tap: one verified step of driving a window — read the window's live frame,
+/// click a window-relative point, wait, and come back with the window as it
+/// looks now, as an image. The model gets the "after" picture whether it asks
+/// or not, which is the difference between driving a UI and guessing at one
+/// (Nanna, 2026-09-19: seven captures written to disk, none looked at).
+async fn tap(input: &serde_json::Value) -> ToolResult {
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = input;
+        return ToolResult::error("tap is macOS-only for now; use input click + capture screenshot.");
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let app = input["app"].as_str().unwrap_or("").trim();
+        if app.is_empty() {
+            return ToolResult::error(
+                "tap requires `app` (the window to tap in) and a window-relative point: \
+                 os(resource: \"input\", action: \"tap\", app: \"Simulator\", coordinate: [223, 900])",
+            );
+        }
+        let (_, coordinate) = input_target(input);
+        let (x, y) = match coordinate.or_else(|| Some((input["x"].as_i64()?, input["y"].as_i64()?))) {
+            Some(p) => p,
+            None => return ToolResult::error("tap requires `coordinate: [x, y]` (or `x`/`y`), measured from the window's top-left in points."),
+        };
+        let (fx, fy, fw, fh) = match window_frame(app).await {
+            Ok(f) => f,
+            Err(e) => return ToolResult::error(format!("tap: {e}")),
+        };
+        if x < 0 || y < 0 || x >= fw || y >= fh {
+            return ToolResult::error(format!(
+                "tap: ({x},{y}) is outside the {app} window, which is {fw}×{fh} points (top-left at {fx},{fy}). Points are window-relative."
+            ));
+        }
+        let (ax, ay) = (fx + x, fy + y);
+        let click = input_click(ax, ay).await;
+        if click.is_error {
+            return click;
+        }
+        let wait_ms = input["wait_ms"].as_u64().unwrap_or(1200).min(10_000);
+        tokio::time::sleep(std::time::Duration::from_millis(wait_ms)).await;
+        // The window may have moved on its own (Simulator does); capture where it is NOW.
+        let (cx, cy, cw, ch) = window_frame(app).await.unwrap_or((fx, fy, fw, fh));
+        let quality = input["quality"].as_str().unwrap_or("medium");
+        let mut shot = capture_screenshot(&serde_json::json!({
+            "region": format!("{cx},{cy},{cw},{ch}"),
+            "quality": quality,
+        }))
+        .await;
+        let moved = if (cx, cy) != (fx, fy) { format!(" The window moved to {cx},{cy} after the tap.") } else { String::new() };
+        shot.content = format!(
+            "Tapped {app} at window point ({x},{y}) = screen ({ax},{ay}); window was at {fx},{fy} size {fw}×{fh}.{moved} \
+             Below is the window as it looks now — read it before the next tap. {}",
+            shot.content
+        );
+        shot
     }
 }
 
@@ -3667,6 +3754,14 @@ fn key_name_to_sendkeys(key: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn parse_frame_reads_system_events_output() {
+        assert_eq!(super::parse_frame("868, 60, 447, 950\n"), Some((868, 60, 447, 950)));
+        assert_eq!(super::parse_frame("1319,209,447,950"), Some((1319, 209, 447, 950)));
+        assert_eq!(super::parse_frame("menu bar 1 of application process Simulator"), None);
+        assert_eq!(super::parse_frame("0, 0, 0, 950"), None, "a zero-size window is not a frame");
+    }
+
     use super::*;
 
     // `see` reported an empty app on every no-argument call because it echoed

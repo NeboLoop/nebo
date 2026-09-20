@@ -161,6 +161,54 @@ pub fn tool_call(tool_name: &str, input: &serde_json::Value) -> (String, String)
             return (format!("using {svc}"), format!("Used {svc}"));
         }
     }
+    // The os tool: say WHAT was done. "Checked the workspace ×17" hid a model
+    // tapping the same point seven times and never looking (2026-09-19); the
+    // command, the app and the point are what the owner needs to see.
+    if tool_name == "os" {
+        let action = action.unwrap_or("");
+        let short = |s: &str, n: usize| -> String {
+            let t: String = s.split_whitespace().collect::<Vec<_>>().join(" ");
+            if t.chars().count() > n { format!("{}…", t.chars().take(n).collect::<String>()) } else { t }
+        };
+        let app = input.get("app").and_then(|v| v.as_str()).unwrap_or("");
+        let point = input
+            .get("coordinate")
+            .and_then(|v| v.as_array())
+            .filter(|a| a.len() == 2)
+            .map(|a| format!("({},{})", a[0], a[1]))
+            .or_else(|| Some(format!("({},{})", input.get("x")?.as_i64()?, input.get("y")?.as_i64()?)));
+        let labelled = match action {
+            "exec" => input.get("command").and_then(|v| v.as_str()).map(|c| {
+                let c = short(c, 72);
+                (format!("running `{c}`"), format!("Ran `{c}`"))
+            }),
+            "tap" => Some((
+                format!("tapping {} at {}", app, point.clone().unwrap_or_default()),
+                format!("Tapped {} at {}", app, point.unwrap_or_default()),
+            )),
+            "click" | "double_click" | "right_click" => point.map(|p| (format!("clicking at {p}"), format!("Clicked at {p}"))),
+            "screenshot" | "see" | "capture" => {
+                let what = if !app.is_empty() {
+                    app.to_string()
+                } else if let Some(r) = input.get("region").and_then(|v| v.as_str()) {
+                    format!("region {r}")
+                } else {
+                    "the screen".to_string()
+                };
+                Some((format!("capturing {what}"), format!("Captured {what}")))
+            }
+            "activate" | "launch" if !app.is_empty() => Some((format!("opening {app}"), format!("Opened {app}"))),
+            "read" | "write" | "edit" | "append" => input.get("path").and_then(|v| v.as_str()).map(|path| {
+                let name = path.rsplit('/').next().unwrap_or(path);
+                let (g, p) = match action { "read" => ("reading", "Read"), "write" => ("writing", "Wrote"), "append" => ("appending to", "Appended to"), _ => ("editing", "Edited") };
+                (format!("{g} {name}"), format!("{p} {name}"))
+            }),
+            _ => None,
+        };
+        if let Some(l) = labelled {
+            return l;
+        }
+    }
     if let (Some(resource), Some(action)) = (resource, action) {
         let noun = resource.replace('_', " ");
         if let Some((gerund, past)) = strap_verb(action) {
@@ -188,6 +236,25 @@ pub fn tool_call(tool_name: &str, input: &serde_json::Value) -> (String, String)
 mod tests {
     use super::{service_name as humanize_slug, tool_call as humanize_tool_call, strap_verb};
     use serde_json::json;
+
+    #[test]
+    fn os_calls_say_what_they_did() {
+        let (g, p) = humanize_tool_call("os", &json!({"action":"exec","command":"cliclick c:1091,367 && sleep 1.5 && screencapture -x -R868,60,447,950 /tmp/a.jpg"}));
+        assert!(g.starts_with("running `cliclick c:1091,367"), "{g}");
+        assert!(p.starts_with("Ran `cliclick"), "{p}");
+        assert!(p.ends_with("…`"), "long commands are cut: {p}");
+        let (_, p) = humanize_tool_call("os", &json!({"action":"tap","app":"Simulator","coordinate":[223,900]}));
+        assert_eq!(p, "Tapped Simulator at (223,900)");
+        let (_, p) = humanize_tool_call("os", &json!({"resource":"capture","action":"screenshot","app":"Simulator"}));
+        assert_eq!(p, "Captured Simulator");
+        let (_, p) = humanize_tool_call("os", &json!({"action":"screenshot"}));
+        assert_eq!(p, "Captured the screen");
+        let (_, p) = humanize_tool_call("os", &json!({"action":"read","path":"/Users/x/files/sim-half.png"}));
+        assert_eq!(p, "Read sim-half.png");
+        // Anything else keeps the STRAP signature wording.
+        let (_, p) = humanize_tool_call("os", &json!({"resource":"app","action":"list"}));
+        assert!(p.contains("app"), "{p}");
+    }
 
     /// Service slugs render as the service's own name — dashes/underscores
     /// become spaces, each word capitalized, empty segments dropped.
