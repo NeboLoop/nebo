@@ -99,7 +99,7 @@ pub(crate) async fn send_coworker_message(
         // same way ("Nebo" when no agent). A team post with no agent is the
         // OWNER speaking.
         if team.is_some() {
-            "Owner".to_string()
+            OWNER.to_string()
         } else {
             "Nebo".to_string()
         }
@@ -142,7 +142,7 @@ pub(crate) async fn send_coworker_message(
     // Team post, context only: the member reads it in its team thread and
     // is not asked to act. The post is delivered — nothing runs.
     if let (Some(t), false) = (team.as_ref(), act) {
-        let record = format!("[Team \"{}\" — {}]\n[Post from {}]\n\n{}", t.name, t.mission, from_name, msg.text);
+        let record = team_envelope(&t.name, &t.mission, &from_name, &msg.text);
         let meta = team_post_metadata(&t.id).to_string();
         if let Err(e) = state
             .runner
@@ -203,10 +203,7 @@ pub(crate) async fn send_coworker_message(
                  lead runs the room; an owner post that does not name you is the lead's to answer."
             };
             (
-                format!(
-                    "[Team \"{}\" — {}]\n[Post from {}]\n\n{}",
-                    t.name, t.mission, from_name, msg.text
-                ),
+                team_envelope(&t.name, &t.mission, &from_name, &msg.text),
                 format!(
                     "Team \"{name}\" — mission: {mission}. This post is from {from_name}, a member of \
                      your team (not your owner), and you were asked to act on it. Teammates: {roster}. \
@@ -524,6 +521,43 @@ fn team_post_metadata(team_id: &str) -> serde_json::Value {
     serde_json::json!({ "teamPost": true, "teamId": team_id })
 }
 
+/// The owner's name in a team post. A post with no sending agent behind it
+/// is the owner speaking; every reader asks "was this the owner?" and this is
+/// the one place the answer is spelled.
+pub(crate) const OWNER: &str = "Owner";
+
+/// A team post as the model reads it: which team, whose words, then the words.
+/// The ONE way the envelope is written — a member asked to act and a member
+/// given the post as context read the same bytes, so `parse_team_envelope`
+/// can hand every client the pieces no matter which path stored the row.
+pub(crate) fn team_envelope(team_name: &str, mission: &str, from: &str, text: &str) -> String {
+    format!("[Team \"{team_name}\" — {mission}]\n[Post from {from}]\n\n{text}")
+}
+
+/// What a team post says, taken back out of the envelope. `None` when the
+/// content is not one — a person's own message in the same thread stays
+/// whole. The model needs the envelope; a person does not, so every client
+/// renders these fields instead of the raw text.
+pub(crate) struct TeamEnvelope<'a> {
+    pub team_name: &'a str,
+    pub from: &'a str,
+    pub text: &'a str,
+}
+
+pub(crate) fn parse_team_envelope(content: &str) -> Option<TeamEnvelope<'_>> {
+    let rest = content.strip_prefix("[Team \"")?;
+    let (team_name, rest) = rest.split_once("\" — ")?;
+    // The mission is briefing for the model; a person reading the post is
+    // already in that team's thread, so nothing renders it.
+    let (_mission, rest) = rest.split_once("]\n[Post from ")?;
+    let (from, text) = rest.split_once("]\n\n")?;
+    Some(TeamEnvelope {
+        team_name,
+        from,
+        text,
+    })
+}
+
 /// A member's seat in a team: the thread it works in when the team asks it
 /// to act (`agent:<member>:coworker:team:<id>`), and that thread's title.
 /// One thread per team per member, whether the ask arrives as a text post
@@ -733,8 +767,39 @@ pub(crate) fn origin_matter_context(
 
 #[cfg(test)]
 mod tests {
-    use super::{coworker_thread_keys, label_tainted_reply, team_post_metadata};
+    use super::{
+        coworker_thread_keys, label_tainted_reply, parse_team_envelope, team_envelope,
+        team_post_metadata, OWNER,
+    };
     use types::provenance::ProvenanceClass;
+
+    /// The envelope is written and read in one place, so what a member's model
+    /// sees and what the owner's transcript shows can never disagree. Every
+    /// piece comes back out — including text with its own newlines and
+    /// brackets, which a member quoting a log will have.
+    #[test]
+    fn a_team_envelope_round_trips() {
+        let text = "Check the [inbox] rule:\n\n- it fires twice";
+        let written = team_envelope("Customer Support", "answer within an hour", OWNER, text);
+        let env = parse_team_envelope(&written).expect("envelope parses");
+        assert_eq!(env.team_name, "Customer Support");
+        assert_eq!(env.from, OWNER);
+        assert_eq!(env.text, text);
+    }
+
+    /// A member's own message in the same thread is not an envelope, and must
+    /// come through whole — the parser decides by content, so anything it
+    /// claims wrongly would be shown with its first lines eaten.
+    #[test]
+    fn plain_messages_are_not_envelopes() {
+        for content in [
+            "Can you take the Smith file?",
+            "[Coworker message from Pam]\n\nTook it.",
+            "[Team \"Support\" — no mission]",
+        ] {
+            assert!(parse_team_envelope(content).is_none(), "claimed: {content}");
+        }
+    }
 
     // A team post is the team talking to a member; it must reach the owner's
     // transcript. `isMeta` on it hid every member's team thread.

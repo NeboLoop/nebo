@@ -190,7 +190,7 @@ pub struct ChatConfig {
     /// Images attached to the user's message (base64-encoded).
     pub images: Vec<ai::ImageContent>,
     /// The files the owner attached, as uploaded; see `RunRequest::attachments`.
-    pub attachments: Vec<serde_json::Value>,
+    pub attachments: Vec<comm::wire::Attachment>,
     /// Display name for the entity (agent name or "Nebo"). Used in RunRegistry.
     pub entity_name: String,
     /// For @mention routing: the agent that originated the mention.
@@ -919,12 +919,17 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                     "duration_ms": event.widgets.as_ref().and_then(|w| w.get("duration_ms")).cloned(),
                                 ),
                             );
-                            // Mirror the tool result to the loop (char-safe, capped
-                            // well under the 32KB frame) so the timeline can show
-                            // Request/Response like the local app.
+                            // Mirror the tool result to the loop so the timeline
+                            // can show Request/Response like the local app —
+                            // bounded by the same preview the desktop transcript
+                            // gets, well under the 32KB frame.
                             if let Some(cfg) = &comm_reply {
-                                let response: String =
-                                    event.text.trim().chars().take(4000).collect();
+                                let response: String = event
+                                    .text
+                                    .trim()
+                                    .chars()
+                                    .take(crate::handlers::chat::RESULT_PREVIEW_CHARS)
+                                    .collect();
                                 send_comm_tool_activity(
                                     cfg,
                                     &comm_manager,

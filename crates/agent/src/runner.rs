@@ -988,6 +988,23 @@ pub(crate) fn restrict_outside_origin(req: &mut RunRequest) {
     }
 }
 
+/// The pictures a user row has to store as bytes: the ones no attachment
+/// covers. An image that arrived as an attachment is already on disk under its
+/// file id, and `convert_messages` reads it back from there when the turn is
+/// replayed, so storing the base64 beside it put the same picture in the
+/// database twice — once as a row a person loads, once as a file.
+fn images_to_store(req: &RunRequest) -> Option<&[ai::ImageContent]> {
+    if req.images.is_empty() {
+        return None;
+    }
+    let stored = req
+        .attachments
+        .iter()
+        .filter(|a| !a.file_id.is_empty() && a.mime_type.starts_with("image/"))
+        .count();
+    (stored < req.images.len()).then_some(req.images.as_slice())
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct RunRequest {
     pub session_key: String,
@@ -1032,7 +1049,7 @@ pub struct RunRequest {
     /// The files the owner attached, as uploaded (fileId, filename, mimeType,
     /// size, url). Kept on the user row so a reloaded transcript still shows
     /// them; the "[Attached: …]" note in the text is for the model.
-    pub attachments: Vec<serde_json::Value>,
+    pub attachments: Vec<comm::wire::Attachment>,
     /// Allowed filesystem paths — restricts file writes and shell commands to these directories.
     /// Empty = unrestricted.
     pub allowed_paths: Vec<String>,
@@ -1824,8 +1841,8 @@ impl Runner {
                 // Merge with image metadata when both are present
                 let mut meta_value: serde_json::Value =
                     serde_json::from_str(&result.metadata_json).unwrap_or_default();
-                if !req.images.is_empty() {
-                    meta_value["images"] = serde_json::json!(req.images);
+                if let Some(images) = images_to_store(&req) {
+                    meta_value["images"] = serde_json::json!(images);
                 }
 
                 info!(
@@ -1838,11 +1855,8 @@ impl Runner {
                 (result.content, Some(meta_value.to_string()))
             } else {
                 // Normal-sized prompt — pass through as-is
-                let metadata = if !req.images.is_empty() {
-                    Some(serde_json::json!({"images": req.images}).to_string())
-                } else {
-                    None
-                };
+                let metadata = images_to_store(&req)
+                    .map(|images| serde_json::json!({ "images": images }).to_string());
                 (req.prompt.clone(), metadata)
             };
 
@@ -8313,10 +8327,25 @@ pub(crate) fn convert_messages(messages: &[ChatMessage]) -> Vec<Message> {
                 .metadata
                 .as_ref()
                 .and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok());
-            let images = meta
+            // A picture the owner attached is stored once, as an attachment;
+            // read it back from the upload store so the model sees it again on
+            // every later turn. `images` is the older shape (rows written
+            // before attachments carried an id) and rows that still have it.
+            let from_attachments: Vec<ai::ImageContent> = meta
                 .as_ref()
-                .and_then(|v| v.get("images").cloned())
-                .and_then(|v| serde_json::from_value::<Vec<ai::ImageContent>>(v).ok());
+                .and_then(|v| v.get("attachments").cloned())
+                .and_then(|v| serde_json::from_value::<Vec<comm::wire::Attachment>>(v).ok())
+                .unwrap_or_default()
+                .iter()
+                .filter_map(crate::uploads::image)
+                .collect();
+            let images = if from_attachments.is_empty() {
+                meta.as_ref()
+                    .and_then(|v| v.get("images").cloned())
+                    .and_then(|v| serde_json::from_value::<Vec<ai::ImageContent>>(v).ok())
+            } else {
+                Some(from_attachments)
+            };
             // A message the owner sent while the turn was running is stored as
             // their words; the model gets it framed: it arrived mid-work and
             // they are waiting on it.
@@ -8905,6 +8934,71 @@ mod named_invocation_tests {
         ] {
             assert!(named_tool_invocation(p, &tools).is_none(), "{p}");
         }
+    }
+}
+
+#[cfg(test)]
+mod attachment_storage_tests {
+    use super::{images_to_store, RunRequest};
+
+    fn attachment(mime: &str) -> comm::wire::Attachment {
+        comm::wire::Attachment {
+            file_id: "f-1".into(),
+            filename: "photo.jpg".into(),
+            mime_type: mime.into(),
+            size: 1024,
+            url: String::new(),
+            thumbnail_url: None,
+            width: None,
+            height: None,
+            duration: None,
+        }
+    }
+
+    fn picture() -> ai::ImageContent {
+        ai::ImageContent {
+            media_type: "image/jpeg".into(),
+            data: "aGVsbG8=".into(),
+        }
+    }
+
+    /// A picture that arrived as an attachment is on disk under its file id;
+    /// the row keeps the id alone. Writing the base64 beside it stored the
+    /// same image twice, and the transcript carries both.
+    #[test]
+    fn an_attached_picture_is_not_also_stored_as_bytes() {
+        let req = RunRequest {
+            images: vec![picture()],
+            attachments: vec![attachment("image/jpeg")],
+            ..Default::default()
+        };
+        assert!(images_to_store(&req).is_none());
+    }
+
+    /// A picture no attachment covers — a channel that hands over bytes with
+    /// no file behind them — still has to be stored, or the model loses it on
+    /// the next turn.
+    #[test]
+    fn a_picture_with_no_file_behind_it_is_stored() {
+        let uncovered = RunRequest {
+            images: vec![picture()],
+            ..Default::default()
+        };
+        assert_eq!(images_to_store(&uncovered).map(|i| i.len()), Some(1));
+
+        // A document attachment covers no picture.
+        let document = RunRequest {
+            images: vec![picture()],
+            attachments: vec![attachment("application/pdf")],
+            ..Default::default()
+        };
+        assert_eq!(images_to_store(&document).map(|i| i.len()), Some(1));
+    }
+
+    /// No pictures, nothing to store — the row keeps no `images` key at all.
+    #[test]
+    fn a_message_without_pictures_stores_none() {
+        assert!(images_to_store(&RunRequest::default()).is_none());
     }
 }
 

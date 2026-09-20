@@ -15,6 +15,21 @@ use types::api::ActiveTurnStatus;
 /// STATE of the thread, never as something the employee said.
 pub(crate) const RESTART_NOTICE_KEY: &str = "restartNotice";
 
+/// How much of a tool's output a person is shown before it is cut: the
+/// desktop transcript here, and the loop timeline's mirror of the same result
+/// (`chat_dispatch`). ONE number, because it answers one question — how much
+/// of a result reads well in a list — and the two readers drifted (1,000 here
+/// against 4,000 there) while showing the same rows.
+///
+/// A transcript page is measured in conversational text, so tool rows used to
+/// ride along uncounted: one page of a tool-heavy chat came to 9.5 MB, of
+/// which 9.45 MB was raw tool output (a single result of 2.8 MB). No client
+/// renders that whole. Each result keeps its id, outcome, duration and status,
+/// and the first thousand characters of content, and says how much it left
+/// out — the desktop fetches the rest on demand from
+/// `GET /chats/{id}/tool-output/{tool_call_id}` when a row is opened.
+pub(crate) const RESULT_PREVIEW_CHARS: usize = 1000;
+
 /// The metadata the restart note is written with.
 pub(crate) fn restart_notice_metadata() -> String {
     serde_json::json!({ RESTART_NOTICE_KEY: true }).to_string()
@@ -211,16 +226,7 @@ pub fn build_message_metadata(messages: &mut Vec<db::models::ChatMessage>) {
             != Some(true)
     });
     // Phase 1: Collect tool result statuses from role="tool" messages — and
-    // bound what a listed result carries. A transcript page is measured in
-    // conversational text, so tool rows ride along uncounted, and one page of
-    // a tool-heavy chat came to 9.5 MB of which 9.45 MB was raw tool output
-    // (a single result of 2.8 MB). No client renders that whole: the phone
-    // never read the rows at all and the desktop shows a scrollable box.
-    // Each result keeps its id, outcome, duration and status, and the first
-    // few thousand characters of content, and says how much it left out.
-    // 1,000 characters: enough to read what came back, and the list is no
-    // longer paced by the tool rows (they were still half of a 183 KB page).
-    const RESULT_PREVIEW_CHARS: usize = 1000;
+    // bound what a listed result carries (see RESULT_PREVIEW_CHARS).
     let mut tool_statuses: HashMap<String, bool> = HashMap::new();
     for msg in messages.iter_mut() {
         if msg.role != "tool" {
@@ -278,36 +284,42 @@ pub fn build_message_metadata(messages: &mut Vec<db::models::ChatMessage>) {
 
     // Phase 1b: a team post relayed into a member's own thread is stored as
     // the prompt the model read — "[Team \"Customer Support\" — mission]\n
-    // [Post from Owner]\n\n<text>" — with metadata {teamPost: true, teamId}.
-    // The model needs that envelope; a person does not, and every client was
-    // printing it raw. Derive the display fields here, at read time, in the
-    // one place both clients read, so old rows get them too and nothing has
-    // to be re-stored: teamPost becomes {teamId, teamName, from, text}.
+    // [Post from Owner]\n\n<text>". The model needs that envelope; a person
+    // does not, and every client was printing it raw. Derive the display
+    // fields here, at read time, in the one place both clients read, so old
+    // rows get them too and nothing has to be re-stored.
+    //
+    // The row's CONTENT decides — not a flag. Only one of the two writers ever
+    // set `teamPost: true` (the context-only relay); the lead's row and every
+    // addressed member's row are written by the runner from the same envelope
+    // with no flag at all, and those threads rendered the envelope raw
+    // (2026-09-19). The flag survives as the carrier of `teamId`, which the
+    // text does not hold.
     for msg in messages.iter_mut() {
         if msg.role != "user" {
             continue;
         }
-        let Some(mut meta) = msg
+        let Some(env) = crate::coworker::parse_team_envelope(&msg.content) else {
+            continue;
+        };
+        let mut meta = msg
             .metadata
             .as_deref()
             .and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok())
-        else {
-            continue;
-        };
-        if meta.get("teamPost").and_then(|v| v.as_bool()) != Some(true) {
-            continue;
-        }
-        let content = msg.content.as_str();
-        let Some(rest) = content.strip_prefix("[Team \"") else { continue };
-        let Some((team_name, rest)) = rest.split_once("\" — ") else { continue };
-        let Some((_mission, rest)) = rest.split_once("]\n[Post from ") else { continue };
-        let Some((from, text)) = rest.split_once("]\n\n") else { continue };
-        let team_id = meta.get("teamId").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            .unwrap_or_else(|| serde_json::json!({}));
+        let team_id = meta
+            .get("teamId")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
         meta["teamPost"] = serde_json::json!({
             "teamId": team_id,
-            "teamName": team_name,
-            "from": from,
-            "text": text,
+            "teamName": env.team_name,
+            "from": env.from,
+            // Said once, on the server: the clients showed the owner's own
+            // post as a teammate's whenever they spelled the name differently.
+            "fromOwner": env.from == crate::coworker::OWNER,
+            "text": env.text,
         });
         msg.metadata = Some(meta.to_string());
     }
@@ -872,6 +884,58 @@ mod transcript_metadata_tests {
             token_estimate: None,
             html: None,
         }
+    }
+
+    /// A team post is unpacked for the clients whether or not the row carries
+    /// the `teamPost` flag. The flag is only ever set on the context-only
+    /// relay; the lead's row and an addressed member's row are written by the
+    /// runner from the same envelope with no metadata at all, and those
+    /// threads used to print "[Team \"…\" — …]" at the reader.
+    #[test]
+    fn a_team_post_is_unpacked_with_or_without_the_flag() {
+        let envelope =
+            crate::coworker::team_envelope("Support", "answer fast", "Owner", "Where is the file?");
+        let mut flagged = msg("user", &envelope);
+        flagged.metadata =
+            Some(serde_json::json!({ "teamPost": true, "teamId": "team-1" }).to_string());
+        let unflagged = msg("user", &envelope);
+
+        let mut messages = vec![flagged, unflagged];
+        build_message_metadata(&mut messages);
+
+        for m in &messages {
+            let meta: serde_json::Value =
+                serde_json::from_str(m.metadata.as_deref().unwrap()).unwrap();
+            assert_eq!(meta["teamPost"]["teamName"], "Support");
+            assert_eq!(meta["teamPost"]["from"], "Owner");
+            assert_eq!(meta["teamPost"]["text"], "Where is the file?");
+            // Said once, on the server — no client re-tests the name.
+            assert_eq!(meta["teamPost"]["fromOwner"], true);
+        }
+        // Only the flagged row knows which team; the envelope doesn't carry an id.
+        let flagged: serde_json::Value =
+            serde_json::from_str(messages[0].metadata.as_deref().unwrap()).unwrap();
+        assert_eq!(flagged["teamPost"]["teamId"], "team-1");
+    }
+
+    /// A teammate's post is not the owner's: `fromOwner` is what separates the
+    /// two, and an ordinary message keeps no teamPost at all.
+    #[test]
+    fn a_teammate_post_is_not_from_the_owner() {
+        let mut messages = vec![
+            msg(
+                "user",
+                &crate::coworker::team_envelope("Support", "answer fast", "Pam", "On it."),
+            ),
+            msg("user", "Just a message."),
+        ];
+        build_message_metadata(&mut messages);
+
+        let post: serde_json::Value =
+            serde_json::from_str(messages[0].metadata.as_deref().unwrap()).unwrap();
+        assert_eq!(post["teamPost"]["from"], "Pam");
+        assert_eq!(post["teamPost"]["fromOwner"], false);
+        assert!(messages[1].metadata.is_none());
     }
 
     /// Messages stamped `isMeta` (system steering, auto-continue nudges) are

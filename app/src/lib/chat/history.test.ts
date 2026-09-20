@@ -45,6 +45,22 @@ describe('parseMessages', () => {
     expect(shape).toEqual(['(tools):3', 'Installed.:1', 'user', '(tools):1']);
   });
 
+  // A result the server cut to a preview says so, and the row keeps the call
+  // id — that pair is what lets the open row fetch the rest instead of the
+  // page carrying every byte of every tool result.
+  it('marks a cut result and keeps the call id to fetch the rest', () => {
+    const msgs = parseMessages([base, result({ truncated: true, total_chars: 51234 })] as never);
+    const tool = (msgs[0] as { tools?: { truncated?: boolean; toolId?: string }[] }).tools?.[0];
+    expect(tool?.truncated).toBe(true);
+    expect(tool?.toolId).toBe('c1');
+  });
+
+  it('leaves a whole result unmarked', () => {
+    const msgs = parseMessages([base, result({})] as never);
+    const tool = (msgs[0] as { tools?: { truncated?: boolean }[] }).tools?.[0];
+    expect(tool?.truncated).toBeUndefined();
+  });
+
   it('maps rows written before outcomes were persisted', () => {
     const msgs = parseMessages([base, result({})] as never);
     const tool = (msgs[0] as { tools?: { outcome?: string; label?: string }[] }).tools?.[0];
@@ -70,6 +86,15 @@ describe('parseMessages team posts', () => {
     const [msg] = parseMessages([row(tp)] as never);
     expect(msg.type).toBe('user');
     expect((msg as { teamPost?: unknown }).teamPost).toEqual(tp);
+  });
+
+  // Who the owner is was decided on the server: the bubble reads `fromOwner`
+  // and never re-tests the name (rows from before it was sent keep the
+  // name comparison as their fallback).
+  it('carries the server\'s fromOwner onto the bubble', () => {
+    const tp = { teamId: 'team-1', teamName: 'Content & SEO', from: 'Owner', fromOwner: true, text: 'Draft the outline.' };
+    const [msg] = parseMessages([row(tp)] as never);
+    expect((msg as { teamPost?: { fromOwner?: boolean } }).teamPost?.fromOwner).toBe(true);
   });
 
   it('leaves an underived team post as a plain user message', () => {
