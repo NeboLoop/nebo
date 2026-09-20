@@ -27,8 +27,13 @@ name: Harness gate
 # GitHub only triggers the job. Nothing of ours runs or is stored there: no
 # hosted cache, no artifact upload. The build cache is the runner's own target
 # directory, which persists between jobs, and every run's traces and server
-# log stay on the VM under ~/harness-runs/<run id>. One runner, so jobs queue;
-# the concurrency group below drops superseded PR runs.
+# log stay on the VM under ~/harness-runs/<run id>. Two runners share that
+# VM (stadium-org-1 and -2), so two gate jobs can run at once: each takes
+# its own port from its runner name, and apt waits for the dpkg lock
+# instead of failing on it (2026-09-20: every gate run for two weeks was
+# exit 100 on the apt lock or "Cannot connect to Nebo" because both jobs
+# started a server on 27895 and the first cleanup killed the other's).
+# The concurrency group below drops superseded PR runs.
 
 on:
   push:
@@ -76,12 +81,19 @@ jobs:
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
           "$HOME/.cargo/bin/cargo" --version
 
+      # stadium-org-1 → 27891, stadium-org-2 → 27892; anything else keeps the default.
+      - name: A port of this runner's own
+        run: |
+          n="${RUNNER_NAME##*-}"
+          case "$n" in [0-9]|[0-9][0-9]) echo "GATE_PORT=$((27890 + n))" >> "$GITHUB_ENV" ;; esac
+          echo "runner $RUNNER_NAME → port ${GATE_PORT}"
+
       # Same dependency set as release.yml's Linux leg, already present on the
       # VM; apt is idempotent, so this only pays when the VM is rebuilt.
       - name: Install system dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
+          sudo apt-get -o DPkg::Lock::Timeout=900 update
+          sudo apt-get -o DPkg::Lock::Timeout=900 install -y \
             libwebkit2gtk-4.1-dev \
             libgtk-3-dev \
             libappindicator3-dev \
