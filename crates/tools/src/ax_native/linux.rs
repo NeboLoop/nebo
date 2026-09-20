@@ -39,6 +39,30 @@ pub(super) async fn set_raw(app: &str, window: usize, path: &str, value: &str) -
     .map(|_| ())
 }
 
+/// Text in an image via tesseract's tsv output, grouped into lines here.
+pub(super) async fn text_raw(image: &std::path::Path) -> Result<String, String> {
+    let out = tokio::time::timeout(
+        Duration::from_secs(20),
+        tokio::process::Command::new("tesseract")
+            .arg(image)
+            .arg("-")
+            .arg("tsv")
+            .output(),
+    )
+    .await
+    .map_err(|_| "tesseract took longer than 20s".to_string())?
+    .map_err(|e| format!("tesseract is not installed ({e}); the cloud image ships it, a dev box needs `apt install tesseract-ocr`"))?;
+    if !out.status.success() {
+        return Err(format!("tesseract failed: {}", failure_text(out.status.code(), &String::from_utf8_lossy(&out.stderr))));
+    }
+    let lines = super::tesseract_tsv_to_lines(&String::from_utf8_lossy(&out.stdout));
+    Ok(lines
+        .iter()
+        .map(|l| serde_json::json!({ "text": l.text, "frame": l.frame, "confidence": l.confidence }).to_string())
+        .collect::<Vec<_>>()
+        .join("\n"))
+}
+
 fn tree_args(app: &str, opts: &WalkOpts) -> Vec<String> {
     [
         "tree",

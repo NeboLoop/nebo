@@ -6,7 +6,7 @@ use std::time::Duration;
 use tokio::io::AsyncReadExt;
 
 const SOURCE: &str = include_str!("ax_helper.swift");
-const FRAMEWORKS: &[&str] = &["ApplicationServices", "AppKit"];
+const FRAMEWORKS: &[&str] = &["ApplicationServices", "AppKit", "Vision"];
 const ACTION_DEADLINE: Duration = Duration::from_secs(5);
 
 async fn helper() -> Result<PathBuf, String> {
@@ -81,6 +81,27 @@ async fn run_cmd(program: &Path, args: &[String], deadline: Duration) -> Result<
 pub(super) async fn tree_raw(app: &str, opts: &WalkOpts) -> Result<String, String> {
     let bin = helper().await?;
     run_cmd(&bin, &tree_args(app, opts), opts.timeout + Duration::from_millis(500)).await
+}
+
+pub(super) async fn window_raw(app: &str, index: usize) -> Result<String, String> {
+    let program = helper().await?;
+    run_cmd(
+        &program,
+        &["window".to_string(), "--app".to_string(), app.to_string(), "--window".to_string(), index.to_string()],
+        ACTION_DEADLINE,
+    )
+    .await
+}
+
+/// Text in an image, via the Vision framework in the same helper.
+pub(super) async fn text_raw(image: &Path) -> Result<String, String> {
+    let program = helper().await?;
+    run_cmd(
+        &program,
+        &["text".to_string(), "--image".to_string(), image.to_string_lossy().into_owned()],
+        Duration::from_secs(10),
+    )
+    .await
 }
 
 pub(super) async fn act_raw(app: &str, window: usize, path: &str, action: &str) -> Result<(), String> {
