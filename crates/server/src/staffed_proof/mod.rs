@@ -200,7 +200,18 @@ impl Nebo {
             }
         });
 
-        let client = reqwest::Client::new();
+        // One server, but every scenario runs on a `#[tokio::test]` runtime of
+        // its own, and that runtime is dropped when the scenario returns. A
+        // pooled keep-alive connection belongs to the runtime that opened it —
+        // its dispatch task was spawned there — so the next scenario, on a new
+        // runtime, picks a connection whose task is gone and the request fails
+        // with `User(DispatchGone), "runtime dropped the dispatch task"`. No
+        // connection is kept: each request opens its own, on the runtime making
+        // it, and that is the whole of it.
+        let client = reqwest::Client::builder()
+            .pool_max_idle_per_host(0)
+            .build()
+            .expect("client");
         let health = format!("http://127.0.0.1:{port}/health");
         let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
         loop {
