@@ -2553,7 +2553,8 @@ impl DynTool for AgentTool {
     }
 
     fn description(&self) -> String {
-        "Agent self-management — memory, tasks, sub-agents, sessions, context, advisors, vision, and ask.\n\
+        let mut description = String::from(
+            "Agent self-management — memory, tasks, sub-agents, sessions, context, advisors, vision, and ask.\n\
          USE THIS when: spawning sub-agents, tracking multi-step work, searching memory, managing sessions, analyzing images, or asking the user a question.\n\n\
          Sub-agents (parallel work):\n\
          - agent(resource: \"task\", action: \"spawn\", prompt: \"Research competitor pricing\") — Spawn and wait (default)\n\
@@ -2608,10 +2609,12 @@ impl DynTool for AgentTool {
          employees and its tools, ranked, marked [already hired]/[already installed], and ONE hire card offers the best \
          match for all of them with one confirm. Never search roles one at a time. Also takes department, limit, offset; \
          omit query to page the whole catalog.\n\
-         With no query the page lists EMPLOYEES ONLY. Tools, connections and services are a separate catalog \
-         behind a different door — plugin(action: \"discover\", query: \"...\") — and that is where a tool installs. \
-         Asked for a tool or a connection rather than a person, go there; an employee list without a tool on it \
-         does not mean the catalog has none.\n\
+         With a query or without one, the page shows BOTH catalogs: the employees and the tools, connections \
+         and services they use. An employee hires on the card discover offers. ",
+        );
+        description.push_str(crate::plugin_tool::TOOL_INSTALL_DOOR);
+        description.push_str(
+            "\n\
          STAFFING: when the user wants to set up a business, add people, or asks who could do a job, the employee is the \
          hire and a tool is what they use — discover shows both. Departments: \
          accounting, sales, customer-support, marketing, direct-response, operations, people-hr, legal, it, analytics, \
@@ -2622,8 +2625,9 @@ impl DynTool for AgentTool {
          - agent(resource: \"registry\", action: \"info\", name: \"...\") — Show agent details\n\
          - agent(resource: \"registry\", action: \"install\", code: \"AGNT-XXXX-XXXX\") — Install from marketplace\n\
          - agent(resource: \"registry\", action: \"create\", name: \"...\", description: \"...\", automations: [{\"name\": \"...\", \"schedule\": \"weekdays at 9am\", \"steps\": [\"...\"]}]) — Create a user agent. Any recurring duty MUST go in automations (each becomes the agent's own scheduled workflow — shown in its Workflows tab and the Schedule page, runs as the agent) — never a bare create plus event crons.\n\
-         - agent(resource: \"registry\", action: \"update\", name: \"...\", add_automations: [...]) — Add workflows to an existing agent (automations: replaces ALL existing ones; remove_automations: delete by name)"
-            .to_string()
+         - agent(resource: \"registry\", action: \"update\", name: \"...\", add_automations: [...]) — Add workflows to an existing agent (automations: replaces ALL existing ones; remove_automations: delete by name)",
+        );
+        description
     }
 
     fn schema(&self) -> serde_json::Value {
@@ -2894,6 +2898,18 @@ mod tests {
         assert!(d.contains("[NeboAI]"), "does not say NeboAI's own employees come first");
         assert!(d.contains("the employee is the hire"), "does not say the employee is the hire and a tool is what they use");
         assert!(d.contains("Never search roles one at a time"), "does not tell the model to search every role in one call");
+        // The description used to promise both catalogs in one sentence and
+        // deny it in the next ("discover shows both" / "with no query the
+        // page lists EMPLOYEES ONLY ... a separate catalog behind a different
+        // door"). Browse searches both now, and the door is said once, from
+        // the one constant (2026-09-19).
+        assert!(
+            d.contains(crate::plugin_tool::TOOL_INSTALL_DOOR),
+            "the tool catalog's door is not the one constant"
+        );
+        for contradiction in ["EMPLOYEES ONLY", "separate catalog", "different door"] {
+            assert!(!d.contains(contradiction), "the description still says `{contradiction}`");
+        }
         let _ = std::fs::remove_file(&path);
     }
     use super::*;
