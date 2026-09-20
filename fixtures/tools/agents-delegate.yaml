@@ -27,9 +27,8 @@ prompt_assertions:
       severity: critical
       check: { first_call: true, tool: message }
     - id: correct-resource
-      text: "Model uses resource: 'coworker'"
+      text: "The call targets the coworker resource: resource: 'coworker' given explicitly, or omitted with a `to` naming an employee, which the message tool resolves to coworker (the same contract os-file-edit's correct-resource states for the os tool)"
       severity: critical
-      check: { first_call: true, arg: resource, equals: "coworker" }
     - id: correct-action
       text: "Model uses action: 'send'"
       severity: critical
