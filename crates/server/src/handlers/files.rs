@@ -124,6 +124,22 @@ pub async fn pick_folder() -> HandlerResult<serde_json::Value> {
 /// out, and a file the user can see in the composer must not be lost because
 /// an upload failed. The loop copy is what makes an attachment shareable with
 /// other bots, so it is still attempted — just never as the only copy.
+/// A multipart failure says which of the two things went wrong. Axum answers a
+/// body over the limit with the same opaque "Error parsing `multipart/form-data`
+/// request" it uses for a malformed one, so a file that is merely too big reads
+/// as a broken request; `MultipartError::status()` tells them apart.
+fn too_big_or_bad(
+    e: axum::extract::multipart::MultipartError,
+) -> (axum::http::StatusCode, axum::Json<crate::handlers::ErrorResponse>) {
+    if e.status() == axum::http::StatusCode::PAYLOAD_TOO_LARGE {
+        return to_error_response(types::NeboError::Validation(format!(
+            "That file is larger than {} MB, which is the most one upload may carry.",
+            crate::routes::files::MAX_UPLOAD_BYTES / (1024 * 1024)
+        )));
+    }
+    to_error_response(types::NeboError::Validation(e.to_string()))
+}
+
 pub async fn upload_file(
     State(state): State<AppState>,
     mut multipart: Multipart,
@@ -132,11 +148,7 @@ pub async fn upload_file(
     let mut mime_type = String::new();
     let mut data: Vec<u8> = Vec::new();
 
-    while let Some(field) = multipart
-        .next_field()
-        .await
-        .map_err(|e| to_error_response(types::NeboError::Validation(e.to_string())))?
-    {
+    while let Some(field) = multipart.next_field().await.map_err(too_big_or_bad)? {
         if field.name() == Some("file") {
             filename = field
                 .file_name()
@@ -146,11 +158,7 @@ pub async fn upload_file(
                 .content_type()
                 .unwrap_or("application/octet-stream")
                 .to_string();
-            data = field
-                .bytes()
-                .await
-                .map_err(|e| to_error_response(types::NeboError::Internal(e.to_string())))?
-                .to_vec();
+            data = field.bytes().await.map_err(too_big_or_bad)?.to_vec();
         }
     }
 

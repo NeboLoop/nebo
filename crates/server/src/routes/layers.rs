@@ -11,7 +11,13 @@ pub fn routes() -> Router<AppState> {
         .route("/layers", axum::routing::get(handlers::layers::list_layers))
         .route("/layers/seats", axum::routing::get(handlers::layers::list_layer_seats))
         .route("/layers/apply", axum::routing::post(handlers::layers::apply_layers))
-        .route("/layers/upload", axum::routing::post(handlers::layers::upload_layer_pack))
+        .route(
+            "/layers/upload",
+            axum::routing::post(handlers::layers::upload_layer_pack)
+                // A real pack is a zip, and zips are not small: the same
+                // ceiling the file door uses, for the same reason.
+                .layer(axum::extract::DefaultBodyLimit::max(crate::routes::files::MAX_UPLOAD_BYTES)),
+        )
         .route(
             "/layers/{slug}/files",
             axum::routing::get(handlers::layers::list_layer_files),
