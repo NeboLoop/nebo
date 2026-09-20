@@ -28,6 +28,9 @@ pub(crate) const MAX_SUBPROCESS_OUTPUT: usize = 30_000;
 pub mod deep_research;
 pub mod desktop_daemon;
 pub mod desktop_session;
+pub mod ax_native;
+#[cfg(target_os = "macos")]
+pub mod swift_helper;
 pub mod desktop_snapshot;
 pub mod desktop_tool;
 pub mod domain;

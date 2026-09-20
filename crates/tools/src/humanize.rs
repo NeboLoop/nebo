@@ -182,11 +182,16 @@ pub fn tool_call(tool_name: &str, input: &serde_json::Value) -> (String, String)
                 let c = short(c, 72);
                 (format!("running `{c}`"), format!("Ran `{c}`"))
             }),
-            "tap" => Some((
-                format!("tapping {} at {}", app, point.clone().unwrap_or_default()),
-                format!("Tapped {} at {}", app, point.unwrap_or_default()),
-            )),
-            "click" | "double_click" | "right_click" => point.map(|p| (format!("clicking at {p}"), format!("Clicked at {p}"))),
+            "click" | "double_click" | "right_click" => {
+                let what = input
+                    .get("ref")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string)
+                    .or(point)
+                    .unwrap_or_default();
+                let where_ = if app.is_empty() { what } else { format!("{what} in {app}") };
+                Some((format!("clicking {where_}"), format!("Clicked {where_}")))
+            }
             "screenshot" | "see" | "capture" => {
                 let what = if !app.is_empty() {
                     app.to_string()
@@ -243,8 +248,10 @@ mod tests {
         assert!(g.starts_with("running `cliclick c:1091,367"), "{g}");
         assert!(p.starts_with("Ran `cliclick"), "{p}");
         assert!(p.ends_with("…`"), "long commands are cut: {p}");
-        let (_, p) = humanize_tool_call("os", &json!({"action":"tap","app":"Simulator","coordinate":[223,900]}));
-        assert_eq!(p, "Tapped Simulator at (223,900)");
+        let (_, p) = humanize_tool_call("os", &json!({"action":"click","app":"Simulator","coordinate":[223,900]}));
+        assert_eq!(p, "Clicked (223,900) in Simulator");
+        let (_, p) = humanize_tool_call("os", &json!({"action":"click","ref":"B2"}));
+        assert_eq!(p, "Clicked B2");
         let (_, p) = humanize_tool_call("os", &json!({"resource":"capture","action":"screenshot","app":"Simulator"}));
         assert_eq!(p, "Captured Simulator");
         let (_, p) = humanize_tool_call("os", &json!({"action":"screenshot"}));

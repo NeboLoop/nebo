@@ -192,6 +192,50 @@ fn duplicate_result_stub(original_call_id: &str) -> String {
 const DUPLICATE_RESULT_STUB: &str = "(identical to an earlier result in this conversation — you already have this content; do not fetch it again)";
 const DUPLICATE_RESULT_STUB_PREFIX: &str = "(identical to ";
 
+/// How many image-bearing tool results keep their image. A UI drive returns
+/// a picture per step (~1.5K tokens each); the model needs the latest one or
+/// two to act, never the twenty before them.
+const KEEP_RECENT_IMAGES: usize = 2;
+/// Appended to a result whose image was dropped, so the text says what is
+/// missing and what to do about it instead of silently reading as text-only.
+const IMAGE_REMOVED_NOTE: &str = "(screenshot removed from context — this was the view at that step; take a fresh capture if you need it)";
+
+/// Drop `image_url` from every tool-result row of `msg`, noting it in the
+/// row text and the message text. Returns how many images were dropped.
+fn strip_result_images(msg: &mut ChatMessage) -> usize {
+    let Some(tr) = msg.tool_results.as_deref() else { return 0 };
+    let Ok(mut rows) = serde_json::from_str::<Vec<serde_json::Value>>(tr) else { return 0 };
+    let mut dropped = 0;
+    for row in rows.iter_mut() {
+        let Some(obj) = row.as_object_mut() else { continue };
+        if obj.remove("image_url").and_then(|v| v.as_str().map(|s| !s.is_empty())).unwrap_or(false) {
+            dropped += 1;
+            let text = obj.get("content").and_then(|c| c.as_str()).unwrap_or("");
+            let noted = if text.is_empty() { IMAGE_REMOVED_NOTE.to_string() } else { format!("{text}\n{IMAGE_REMOVED_NOTE}") };
+            obj.insert("content".into(), serde_json::Value::String(noted));
+        }
+    }
+    if dropped > 0 {
+        msg.tool_results = serde_json::to_string(&rows).ok();
+        if !msg.content.contains(IMAGE_REMOVED_NOTE) {
+            if !msg.content.is_empty() {
+                msg.content.push('\n');
+            }
+            msg.content.push_str(IMAGE_REMOVED_NOTE);
+        }
+    }
+    dropped
+}
+
+/// True when any tool-result row of `msg` still carries an image.
+fn result_has_image(msg: &ChatMessage) -> bool {
+    msg.tool_results
+        .as_deref()
+        .and_then(|tr| serde_json::from_str::<Vec<serde_json::Value>>(tr).ok())
+        .map(|rows| rows.iter().any(|r| r.get("image_url").and_then(|v| v.as_str()).is_some_and(|s| !s.is_empty())))
+        .unwrap_or(false)
+}
+
 fn dedup_key(text: &str) -> u64 {
     use std::hash::{Hash, Hasher};
     let body = match text.find(REDUNDANT_RESULT_NOTE) {
@@ -322,6 +366,24 @@ pub fn micro_compact(
                     result[i] = stub;
                 }
             }
+        }
+    }
+
+    // Old screenshots next, also outside the keep-recent protection: every
+    // step of a UI drive returns a picture, and only the newest couple say
+    // anything about the screen as it is now. Not frozen: the rule is
+    // monotonic (a result that lost its image only gets older), so each pass
+    // makes the same decision without a map.
+    {
+        let mut with_images: Vec<usize> = result.iter().enumerate().filter(|(_, m)| result_has_image(m)).map(|(i, _)| i).collect();
+        with_images.truncate(with_images.len().saturating_sub(KEEP_RECENT_IMAGES));
+        for i in with_images {
+            let old_tokens = estimate_message_tokens(&result[i]);
+            let dropped = strip_result_images(&mut result[i]);
+            // A path `image_url` is a few bytes here but a whole image at the
+            // provider; count what the provider would have sent.
+            let provider_tokens = dropped * IMAGE_CHAR_ESTIMATE / crate::CHARS_PER_TOKEN;
+            tokens_saved += old_tokens.saturating_sub(estimate_message_tokens(&result[i])).max(provider_tokens);
         }
     }
 
@@ -1529,6 +1591,35 @@ mod tests {
         // Second pass over the compacted history is a no-op for the stubs.
         let (again, _) = micro_compact(&result, 1_000, &mut frozen);
         assert_eq!(again.iter().filter(|m| m.content.starts_with(DUPLICATE_RESULT_STUB_PREFIX)).count(), 4);
+    }
+
+    #[test]
+    fn test_micro_compact_keeps_only_the_two_newest_screenshots() {
+        let shot = |i: usize| {
+            let mut m = make_tool_result_msg(&format!("Tapped Simulator at ({i},{i})"), 1000 + i as i64);
+            m.tool_results = Some(
+                serde_json::json!([{
+                    "tool_call_id": format!("call_{i}"),
+                    "content": format!("Tapped Simulator at ({i},{i})"),
+                    "image_url": format!("data:image/jpeg;base64,{}", "A".repeat(16_000)),
+                }])
+                .to_string(),
+            );
+            m
+        };
+        let messages = vec![make_old_msg("user", "drive the app"), shot(0), shot(1), shot(2)];
+        let mut frozen = std::collections::HashMap::new();
+        let (result, saved) = micro_compact(&messages, 1_000, &mut frozen);
+        assert!(!result_has_image(&result[1]), "the oldest screenshot is dropped");
+        assert!(result[1].content.ends_with(IMAGE_REMOVED_NOTE), "and says so: {}", result[1].content);
+        assert!(result[1].content.starts_with("Tapped Simulator at (0,0)"), "the step's text stays");
+        assert!(result_has_image(&result[2]) && result_has_image(&result[3]), "the two newest keep theirs");
+        // The image is ~4K tokens; the note it leaves behind costs a few dozen.
+        assert!(saved >= 16_000 / crate::CHARS_PER_TOKEN - 100, "saved {saved} tokens");
+        // Idempotent: a second pass over the compacted history changes nothing.
+        let (again, _) = micro_compact(&result, 1_000, &mut frozen);
+        assert_eq!(again[1].content, result[1].content);
+        assert_eq!(again[1].tool_results, result[1].tool_results);
     }
 
     #[test]
