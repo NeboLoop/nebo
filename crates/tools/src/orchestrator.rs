@@ -66,11 +66,17 @@ pub trait SubAgentOrchestrator: Send + Sync {
     ) -> Pin<Box<dyn Future<Output = Result<SpawnResult, String>> + Send + '_>>;
 
     /// Decompose a complex task into a DAG and execute it.
+    ///
+    /// `model_override` is the resolved "provider/model" of the run that asked
+    /// for the decomposition — the same string `SpawnRequest.model_override`
+    /// carries, so a DAG's children run at the conversation's model instead of
+    /// each falling back to the global default. Empty = let the selector pick.
     fn execute_dag(
         &self,
         prompt: &str,
         user_id: &str,
         parent_session_id: &str,
+        model_override: &str,
         parent_cancel: Option<CancellationToken>,
     ) -> Pin<Box<dyn Future<Output = Result<SpawnResult, String>> + Send + '_>>;
 

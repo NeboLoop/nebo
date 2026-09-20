@@ -53,6 +53,18 @@ impl Store {
         .map_err(|e| NeboError::Database(e.to_string()))
     }
 
+    /// Set (or clear, with `None`) the model this conversation runs at. The
+    /// owner's choice from the composer; the next turn picks it up.
+    pub fn set_chat_model(&self, id: &str, model: Option<&str>) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE chats SET model = ?1, updated_at = unixepoch() WHERE id = ?2",
+            params![model, id],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
+
     pub fn get_chat(&self, id: &str) -> Result<Option<Chat>, NeboError> {
         let conn = self.conn()?;
         conn.query_row("SELECT * FROM chats WHERE id = ?1", params![id], |row| {
@@ -1018,6 +1030,7 @@ fn row_to_chat(row: &rusqlite::Row) -> rusqlite::Result<Chat> {
         user_id: row.get("user_id")?,
         session_name: row.get("session_name")?,
         title_custom: row.get("title_custom")?,
+        model: row.get("model")?,
     })
 }
 
@@ -1184,6 +1197,36 @@ mod tests {
         assert!(store.get_chat("api-abc-deal-1").unwrap().is_none(), "empty api row is gone");
         assert!(store.get_chat("api-abc-deal-2").unwrap().is_some(), "a conversation stays");
         assert!(store.get_chat("agent:a:api:deal-3").unwrap().is_some(), "legacy rows are untouched");
+    }
+
+    /// The composer's choice belongs to the conversation: it round-trips on
+    /// the chat row, and clearing it hands the choice back to the employee's
+    /// own preference rather than pinning the chat to a model forever.
+    #[test]
+    fn a_conversations_model_round_trips_and_clears() {
+        let (_dir, store) = store();
+        store.create_chat("c1", "Quarter review").unwrap();
+        assert!(store.get_chat("c1").unwrap().unwrap().model.is_none(), "a new chat names no model");
+
+        store.set_chat_model("c1", Some("janus/nebo-1-pro")).unwrap();
+        assert_eq!(
+            store.get_chat("c1").unwrap().unwrap().model.as_deref(),
+            Some("janus/nebo-1-pro")
+        );
+
+        store.set_chat_model("c1", None).unwrap();
+        assert!(store.get_chat("c1").unwrap().unwrap().model.is_none(), "clearing returns to the default");
+    }
+
+    /// A new conversation starts clean: rotating never inherits the last
+    /// conversation's model, so Settings stays the default for new chats.
+    #[test]
+    fn a_new_conversation_starts_on_the_employees_default() {
+        let (_dir, store) = store();
+        store.create_chat("c1", "First").unwrap();
+        store.set_chat_model("c1", Some("janus/nebo-1-pro")).unwrap();
+        store.create_chat("c2", "Second").unwrap();
+        assert!(store.get_chat("c2").unwrap().unwrap().model.is_none());
     }
 
     fn store() -> (tempfile::TempDir, Store) {

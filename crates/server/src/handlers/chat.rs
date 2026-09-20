@@ -143,6 +143,17 @@ pub async fn update_chat(
             .update_chat_title(&id, title, true)
             .map_err(to_error_response)?;
     }
+    // The model this one conversation runs at, chosen from the composer.
+    // "" (or null) clears the override and hands the choice back to the
+    // employee's preference. Absent key = leave it alone, so a title-only
+    // rename never touches the model.
+    if !body["model"].is_null() {
+        let model = body["model"].as_str().unwrap_or("").trim();
+        state
+            .store
+            .set_chat_model(&id, (!model.is_empty()).then_some(model))
+            .map_err(to_error_response)?;
+    }
     Ok(Json(serde_json::json!({"success": true})))
 }
 

@@ -2231,6 +2231,7 @@ mod voice_prompt_tests {
             user_id: None,
             session_name: Some(key.into()),
             title_custom: false,
+            model: None,
         }
     }
 

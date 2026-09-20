@@ -12,35 +12,24 @@
   import { onMount } from 'svelte';
   import { t } from 'svelte-i18n';
   import * as api from '$lib/api/nebo';
+  import { loadModelOptions, type ModelOption } from '$lib/models/speeds';
 
   let { agentId }: { agentId: string } = $props();
-
-  type Option = { value: string; label: string; description: string };
-  type CatalogModel = { id: string; displayName: string; description?: string | null; isActive: boolean };
 
   let loading = $state(true);
   let saving = $state(false);
   let saved = $state(false);
-  let options = $state<Option[]>([]);
+  let options = $state<ModelOption[]>([]);
   let selected = $state('');
-
-  const DEFAULT_ID = 'nebo-1';
 
   async function load() {
     loading = true;
     try {
-      const [modelsRes, cfgRes] = await Promise.all([
-        api.listModels() as Promise<{ models?: Record<string, CatalogModel[]> }>,
+      const [opts, cfgRes] = await Promise.all([
+        loadModelOptions(),
         api.getEntityConfig('agent', agentId) as Promise<{ config?: { modelPreference?: string | null } }>,
       ]);
-      const janus = (modelsRes.models?.['janus'] ?? []).filter((m) => m.isActive && (m.id === DEFAULT_ID || m.description));
-      // Default first, then the ladder as Janus orders it (cheapest first).
-      janus.sort((a, b) => (a.id === DEFAULT_ID ? -1 : b.id === DEFAULT_ID ? 1 : 0));
-      options = janus.map((m) => ({
-        value: m.id === DEFAULT_ID ? '' : `janus/${m.id}`,
-        label: m.displayName,
-        description: m.description ?? '',
-      }));
+      options = opts;
       selected = cfgRes.config?.modelPreference ?? '';
     } catch {
       options = [];
