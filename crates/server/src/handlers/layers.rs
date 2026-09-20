@@ -490,10 +490,14 @@ pub async fn upload_layer_pack(
         let mut multipart = Multipart::from_request(req, &state)
             .await
             .map_err(|e| bad(e.to_string()))?;
+        // A pack over the ceiling is a file that is too big, not a broken
+        // request — the same sentence the file door gives, from the same number.
+        let max_upload_bytes = state.config.runtime.max_upload_bytes();
+        let too_big = |e| crate::handlers::files::too_big_or_bad(max_upload_bytes, e);
         let mut bytes: Vec<u8> = Vec::new();
-        while let Some(field) = multipart.next_field().await.map_err(|e| bad(e.to_string()))? {
+        while let Some(field) = multipart.next_field().await.map_err(too_big)? {
             if field.name() == Some("file") {
-                bytes = field.bytes().await.map_err(|e| bad(e.to_string()))?.to_vec();
+                bytes = field.bytes().await.map_err(too_big)?.to_vec();
             }
         }
         if bytes.is_empty() {

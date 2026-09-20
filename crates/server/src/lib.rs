@@ -2828,7 +2828,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         )
         .nest(
             "/api/v1",
-            routes::api_routes(jwt_secret)
+            routes::api_routes(jwt_secret, state.config.runtime.max_upload_bytes())
                 .layer(axum::middleware::from_fn(middleware::api_security_headers)),
         )
         .fallback(spa::spa_handler)

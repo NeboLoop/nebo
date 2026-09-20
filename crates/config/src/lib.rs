@@ -6,7 +6,9 @@ pub mod models;
 mod settings;
 
 pub use cli_detect::{AllCliStatuses, CliAvailability, CliStatus, detect_all_clis};
-pub use config::{memory_url, Config, DEFAULT_MEMORY_URL};
+pub use config::{
+    memory_url, Config, RuntimeConfig, DEFAULT_MAX_UPLOAD_BYTES, DEFAULT_MEMORY_URL,
+};
 pub use logging::{RotatingFile, log_file};
 pub use defaults::{
     appdata_dir, artifact_napp_path, bundled_napps_dir, data_dir, data_dir_overridden,
