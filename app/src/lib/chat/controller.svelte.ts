@@ -6,14 +6,20 @@
  * send/stop/edit/redo actions.
  *
  * Each surface (thread page, embed, web app) creates a controller instance
- * and wires it to ChatPane. Surface-specific logic (routing, history loading,
- * parent postMessage, A2UI) stays in the surface page.
+ * and wires it to ChatPane. History loading (the first page, older pages,
+ * the reload after a reconnect) is here too — ONE loader for every surface.
+ * Surface-specific logic (routing, parent postMessage, A2UI) stays in the
+ * surface page.
  */
 
+import { untrack } from 'svelte';
 import { getWebSocketClient } from '$lib/websocket/client';
 import type { AskWidgetDef } from '$lib/components/chat/AskWidget.svelte';
 import type { UploadedAttachment } from '$lib/types/attachment';
+import type { ChatMessagesResponse } from '$lib/api/neboComponents';
+import { sendClientEvent } from '$lib/api/gocliRequest';
 import { sendInstallCode } from '$lib/marketplace/installCodes';
+import { parseMessages } from '$lib/chat/history';
 import { formatTime } from '$lib/time';
 import { get } from 'svelte/store';
 import { t } from 'svelte-i18n';
@@ -102,19 +108,13 @@ export interface ChatControllerConfig {
   channel?: string;
   /** Fields merged into EVERY outbound chat frame — a send, an edit, a redo
    *  alike — read at send time (the embed's app context changes between
-   *  turns). Per-call `SendOptions.extraPayload` layers on top. */
+   *  turns). The ONE door for per-surface payload. */
   extraPayload?: () => Record<string, unknown>;
   /** Called when a response completes — use for embed postMessage, etc. */
   onResponseComplete?: (content: string) => void;
-  /** A turn on this session finished that this controller never streamed —
-   *  a voice call, a coworker's reply, a workflow on the thread. Its rows are
-   *  on the server, not in `messages`; the owner reloads the transcript. */
-  onTurnLandedElsewhere?: () => void;
 }
 
 export interface SendOptions {
-  /** Extra payload fields merged into the WS message. */
-  extraPayload?: Record<string, unknown>;
   /** If true, send without adding a user message to the chat. */
   silent?: boolean;
 }
@@ -435,10 +435,11 @@ export function createChatController(config: ChatControllerConfig) {
     if (idx === -1 && (attachments.length || workItems.length)) idx = startReply(aid);
     // No reply bubble here means the run's text never streamed to this
     // pane — voice runs stream to the voice socket, coworker and workflow
-    // turns to nobody — yet its rows are persisted. Without this, a voice
-    // conversation only appeared after a hard refresh (2026-09-15).
+    // turns to nobody — yet its rows are persisted: reload the transcript.
+    // Without this, a voice conversation only appeared after a hard refresh
+    // (2026-09-15).
     if (idx === -1 && activeSessionKey && data.session_id === activeSessionKey) {
-      config.onTurnLandedElsewhere?.();
+      void loadHistory(historyTarget);
     }
     if (idx !== -1) {
       const m = messages[idx];
@@ -820,7 +821,6 @@ export function createChatController(config: ChatControllerConfig) {
       prompt: text,
       agent_id: agentId,
       ...(config.extraPayload?.() || {}),
-      ...(options?.extraPayload || {}),
     };
     if (activeSessionKey) payload.session_id = activeSessionKey;
     if (config.channel) payload.channel = config.channel;
@@ -866,10 +866,151 @@ export function createChatController(config: ChatControllerConfig) {
     messages = [];
     resetStreaming();
     isLoading = false;
+    oldestMessageId = null;
+    hasMore = false;
     if (config.sessionKey) {
       ws.send('rotate_chat', { session_id: config.sessionKey });
     }
   }
+
+  /** A message another door already delivered on this session (the teach
+   *  modal posts its own): show the owner's bubble and wait for the reply. */
+  function noteSent(text: string) {
+    if (!text) return;
+    messages = [...messages, { id: nextId(), type: 'user' as const, content: text, time: formatTime(Date.now()) }];
+    isLoading = true;
+  }
+
+  // --- History: the ONE loader every surface uses ---
+  /** The first fetch of a transcript is in flight: the pane shows a spinner,
+   *  not the "start a new chat" copy, so a slow tunnel never reads as an
+   *  empty thread. */
+  let historyLoading = $state(false);
+  /** The server says whether a page older than the oldest loaded message
+   *  exists. A count comparison did this before, and the count (user and
+   *  assistant rows) never matched a page (which carries tool rows too), so
+   *  the first page looked complete and the top of the thread was unreachable. */
+  let hasMore = $state(false);
+  let isLoadingMore = $state(false);
+  let oldestMessageId: string | null = null;
+  /** What the last first-page load fetched — a chat id or a session key —
+   *  and where an older page, a reconnect, or a turn that landed elsewhere
+   *  goes back to. */
+  let historyTarget = '';
+  /** Bumped by every first-page load and by a session switch: an older fetch
+   *  still in flight sees the bump and drops its result. */
+  let historyGen = 0;
+
+  /** Loads the transcript through the ONE history door: /chats/{id}/messages
+   *  takes a chat id or a session key (resolving its active chat) and carries
+   *  the tool rows (the activity panel), whether a turn is running, and a
+   *  question the run is parked on.
+   *
+   *  Without `older`, the newest page replaces `messages`; resolves true when
+   *  no turn is running on the thread (nothing more will arrive by event),
+   *  false while one is, or on failure. With `older`, the page before the
+   *  oldest loaded message is prepended (nothing happens when the server
+   *  said there is none, or a page is already on its way); resolves true
+   *  when the page landed. */
+  async function loadHistory(chatId: string, opts?: { older?: boolean }): Promise<boolean> {
+    if (!chatId) return false;
+    if (opts?.older) return loadOlderPage(chatId);
+    historyTarget = chatId;
+    const gen = ++historyGen;
+    oldestMessageId = null;
+    hasMore = false;
+    // Read the transcript without depending on it: a page's loader effect
+    // that tracks what it writes re-fires itself — it cost ~57 fetches a
+    // second of the same thread, all day, until a machine went to sleep.
+    if (untrack(() => messages.length) === 0) historyLoading = true;
+    try {
+      // Over a tunnel on a phone, one fetch failing is ordinary — and so is
+      // the chunk import itself ("Importing a module script failed", iPhone,
+      // 2026-09-15). One silent failure left the thread blank until a
+      // refresh; retry both, then say so.
+      let resp: ChatMessagesResponse | null = null;
+      let lastErr: unknown = null;
+      for (const wait of [0, 400, 1200, 3000]) {
+        if (wait) await new Promise((r) => setTimeout(r, wait));
+        if (gen !== historyGen) return false;
+        try {
+          const api = await import('$lib/api/nebo');
+          resp = await api.getChatMessages(chatId);
+          lastErr = null;
+          break;
+        } catch (e) {
+          lastErr = e;
+        }
+      }
+      if (!resp) throw lastErr ?? new Error('no response');
+      if (gen !== historyGen) return false;
+      if (resp.messages?.length) {
+        hasMore = !!resp.hasMore;
+        oldestMessageId = resp.messages[0]?.id ?? null;
+        messages = parseMessages(resp.messages);
+      }
+      // The thread is still working: show it now, not at the next event.
+      const run = resp.activeRun;
+      if (run) {
+        isLoading = true;
+        activityStatus = run.currentTool
+          ? get(t)('chat.resumedActivity', { values: { tool: run.currentTool } })
+          : get(t)('chat.working');
+      }
+      // ...and if that work is parked on a question, the card the live event
+      // carried is rendered here too, answerable the same way.
+      if (resp.pendingAsk) {
+        isLoading = true;
+        showPendingAsk(resp.pendingAsk);
+      }
+      return !run && !resp.pendingAsk;
+    } catch (e) {
+      console.warn('[chat] Failed to load messages for', chatId, e);
+      if (untrack(() => messages.length) === 0) setError(get(t)('chat.historyLoadFailed'));
+      return false;
+    } finally {
+      if (gen === historyGen) historyLoading = false;
+    }
+  }
+
+  async function loadOlderPage(chatId: string): Promise<boolean> {
+    if (!oldestMessageId || isLoadingMore || !hasMore) return false;
+    isLoadingMore = true;
+    try {
+      const api = await import('$lib/api/nebo');
+      const resp = await api.getChatMessages(chatId, undefined, oldestMessageId);
+      if (resp?.messages?.length) {
+        hasMore = !!resp.hasMore;
+        oldestMessageId = resp.messages[0]?.id ?? oldestMessageId;
+        prependMessages(parseMessages(resp.messages));
+      } else {
+        // Nothing older: stop, or the scroll re-triggers this forever.
+        hasMore = false;
+      }
+      return true;
+    } catch (e) {
+      console.warn('[chat] Failed to load older messages for', chatId, e);
+      hasMore = false;
+      return false;
+    } finally {
+      isLoadingMore = false;
+    }
+  }
+
+  // The socket came back after a drop (a phone in the background, a tunnel
+  // blip): whatever streamed while it was down is gone from the view, since
+  // the server keeps no backlog. Reload the transcript the way a fresh open
+  // does. (`onStatus` reports the current status at once; a surface that has
+  // not loaded history yet has nothing to reload.)
+  let seenDisruptions = ws.getDisruptionCount();
+  unsubs.push(ws.onStatus((status) => {
+    if (status !== 'connected' || !historyTarget) return;
+    const now = ws.getDisruptionCount();
+    if (now === seenDisruptions) return;
+    seenDisruptions = now;
+    sendClientEvent('thread_resync', { detail: historyTarget, code: now });
+    void loadHistory(historyTarget);
+  }));
 
   function restoreVersion(documentId: string, version: number) {
     ws.send('restore_version', {
@@ -964,10 +1105,15 @@ export function createChatController(config: ChatControllerConfig) {
     get activityStatus() { return activityStatus; },
     set activityStatus(v: string) { activityStatus = v; },
     get allAgents() { return allAgents; },
+    get historyLoading() { return historyLoading; },
+    get hasMore() { return hasMore; },
+    get isLoadingMore() { return isLoadingMore; },
 
     send,
+    noteSent,
     stop,
     newThread,
+    loadHistory,
     submitAsk,
     showPendingAsk,
     restoreVersion,
@@ -975,7 +1121,6 @@ export function createChatController(config: ChatControllerConfig) {
     redo,
     clearMessages,
     setMessages,
-    prependMessages,
     setAllAgents,
     setSessionKey(key: string) {
       if (key !== activeSessionKey) {
@@ -984,6 +1129,9 @@ export function createChatController(config: ChatControllerConfig) {
         isLoading = false;
         activityStatus = '';
         resetStreaming();
+        // A history fetch for the old session must not land on the new one.
+        historyGen++;
+        historyLoading = false;
       }
     },
     dismissWarning,
