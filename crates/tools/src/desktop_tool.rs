@@ -126,7 +126,7 @@ impl DynTool for DesktopTool {
                 "name": { "type": "string", "description": "Name for shortcut/menu/dialog element" },
                 "value": { "type": "string", "description": "Value for set_value/fill" },
                 "role": { "type": "string", "description": "UI element role filter (e.g. 'AXButton')" },
-                "label": { "type": "string", "description": "UI element label/identifier" },
+                "label": { "type": "string", "description": "UI element label/identifier (ui find: substring matched against every element's label, role and value)" },
                 "index": { "type": "integer", "description": "Index for space/menu item" },
                 "voice": { "type": "string", "description": "TTS voice name" },
                 "rate": { "type": "integer", "description": "TTS speaking rate (words per minute)" },
@@ -170,7 +170,7 @@ impl DynTool for DesktopTool {
                 }
                 "ui" => {
                     let _guard = self.input_lock.lock().await;
-                    handle_ui(action, &input).await
+                    handle_ui(action, &input, &self.snapshot_store, &self.ax_cache).await
                 }
                 "menu" => {
                     let _guard = self.input_lock.lock().await;
@@ -1775,10 +1775,9 @@ async fn observe(
     };
 
     // 2. The image.
-    let shot_input = if window_image {
-        serde_json::json!({ "app": app, "quality": quality })
-    } else {
-        serde_json::json!({ "quality": quality })
+    let shot_input = match (&frame, window_image) {
+        (Some(f), true) => serde_json::json!({ "region": format!("{},{},{},{}", f.x, f.y, f.width, f.height), "quality": quality }),
+        _ => serde_json::json!({ "quality": quality }),
     };
     let shot = capture_screenshot(&shot_input).await;
     if shot.is_error {
@@ -1862,7 +1861,19 @@ async fn observe(
     if let Some(ms) = ax_reused_from_ms_ago {
         via.push_str(&format!(" (elements from a walk {ms} ms ago)"));
     }
-    let listed: Vec<&UIElement> = elements.iter().filter(|e| e.actionable || !e.label.is_empty()).collect();
+    let filter = input["filter"].as_str().unwrap_or("").to_lowercase();
+    let role_filter = input["role"].as_str().unwrap_or("").to_lowercase();
+    let listed: Vec<&UIElement> = elements
+        .iter()
+        .filter(|e| e.actionable || !e.label.is_empty())
+        .filter(|e| {
+            (filter.is_empty()
+                || e.label.to_lowercase().contains(&filter)
+                || e.role.to_lowercase().contains(&filter)
+                || e.actions.iter().any(|a| a.to_lowercase().contains(&filter)))
+                && (role_filter.is_empty() || e.role.to_lowercase().contains(&role_filter))
+        })
+        .collect();
     let mut text = format!(
         "{name} — {covers}{frame_note}; {image_line}; {via}; {} of {elements_total} elements listed; snapshot {}\n",
         listed.len(),
@@ -1883,7 +1894,14 @@ async fn observe(
         let tags = if tags.is_empty() { String::new() } else { format!("  [{}]", tags.join(", ")) };
         text.push_str(&format!("{}  {}  \"{}\"  at {x},{y} {w}×{h}{tags}\n", e.id, e.role, e.label));
     }
-    if listed.len() < elements_total {
+    if !filter.is_empty() || !role_filter.is_empty() {
+        text.push_str(&format!(
+            "({} of {elements_total} elements match \"{}\"{}.)\n",
+            listed.len(),
+            input["filter"].as_str().unwrap_or(""),
+            if role_filter.is_empty() { String::new() } else { format!(" with role {role_filter}") }
+        ));
+    } else if listed.len() < elements_total {
         text.push_str(&format!(
             "({} unlabelled or inert elements not listed; raise max_elements or use ui find.)\n",
             elements_total - listed.len()
@@ -2111,33 +2129,21 @@ async fn capture_screenshot(input: &serde_json::Value) -> ToolResult {
             base_args.extend_from_slice(&["-t".to_string(), "jpg".to_string()]);
         }
 
-        if !app.is_empty() {
-            let wid_script = format!(
-                "tell application \"System Events\" to return id of first window of process \"{}\"",
-                escape_applescript(app)
-            );
-            match run_osascript_raw(&wid_script, Some(AX_CAPTURE_TIMEOUT)).await {
-                Ok(wid) => {
-                    let wid = wid.trim().to_string();
-                    let mut args = vec!["-l".to_string(), wid, "-o".to_string()];
-                    args.extend(base_args);
-                    args.push(tmp_path.clone());
-                    let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-                    tokio::process::Command::new("screencapture")
-                        .args(&arg_refs)
-                        .output()
-                        .await
-                }
-                Err(_) => {
-                    base_args.push(tmp_path.clone());
-                    let arg_refs: Vec<&str> = base_args.iter().map(|s| s.as_str()).collect();
-                    tokio::process::Command::new("screencapture")
-                        .args(&arg_refs)
-                        .output()
-                        .await
+        // A window is captured by its frame. System Events cannot return a
+        // window id for `-l` (error -1728 on every app), so that path only
+        // ever produced the whole screen while claiming the window.
+        let region: Option<String> = if !app.is_empty() {
+            match window_frame(app, false).await {
+                Ok(f) => Some(format!("{},{},{},{}", f.x, f.y, f.width, f.height)),
+                Err(e) => {
+                    return ToolResult::error(format!("Screenshot of {app} not taken: {e}. Capture without `app` for the whole screen."));
                 }
             }
-        } else if let Some(region) = region {
+        } else {
+            region.map(str::to_string)
+        };
+        let region = region.as_deref();
+        if let Some(region) = region {
             let parts: Vec<&str> = region.split(',').collect();
             if parts.len() == 4 {
                 let mut args = base_args;
@@ -2428,7 +2434,12 @@ fn compress_and_encode(img_bytes: &[u8], quality: &str) -> ToolResult {
 // --- UI / Accessibility ---
 
 #[allow(unused_variables)]
-async fn handle_ui(action: &str, input: &serde_json::Value) -> ToolResult {
+async fn handle_ui(
+    action: &str,
+    input: &serde_json::Value,
+    snapshot_store: &tokio::sync::Mutex<SnapshotStore>,
+    ax_cache: &AxCache,
+) -> ToolResult {
     let app = input["app"].as_str().unwrap_or("");
     let role = input["role"].as_str().unwrap_or("");
     let label = input["label"].as_str().unwrap_or("");
@@ -2441,11 +2452,17 @@ async fn handle_ui(action: &str, input: &serde_json::Value) -> ToolResult {
             }
             ui_tree(app, role).await
         }
+        // find is an observe with a filter: same walk, same refs, same image,
+        // so a ref it returns is one the next act can use.
         "find" => {
             if label.is_empty() && role.is_empty() {
                 return ToolResult::error(errors::missing_param("find", "label", "os(resource: \"ui\", action: \"find\", app: \"Safari\", label: \"Search\")"));
             }
-            ui_find(app, role, label).await
+            let query = serde_json::json!({ "app": app, "max_elements": 500, "filter": label, "role": role, "quality": input["quality"] });
+            match observe(app, &query, snapshot_store, ax_cache).await {
+                Ok(o) => o.result,
+                Err(e) => e,
+            }
         }
         "click" => {
             if label.is_empty() {
@@ -2539,68 +2556,6 @@ if ($app) {{
     ToolResult::error("UI accessibility is not supported on this platform")
 }
 
-#[allow(unused_variables)]
-async fn ui_find(app: &str, role: &str, label: &str) -> ToolResult {
-    #[cfg(target_os = "macos")]
-    {
-        let target = if app.is_empty() {
-            "first application process whose frontmost is true".to_string()
-        } else {
-            format!("process \"{}\"", escape_applescript(app))
-        };
-        let search = if !label.is_empty() {
-            format!("whose name contains \"{}\"", escape_applescript(label))
-        } else if !role.is_empty() {
-            format!("whose role is \"{}\"", escape_applescript(role))
-        } else {
-            String::new()
-        };
-        let script = format!(
-            r#"tell application "System Events"
-    tell {}
-        set results to ""
-        repeat with elem in (every UI element of window 1 {})
-            set results to results & (role of elem) & " | " & (name of elem) & " | " & (position of elem) & linefeed
-        end repeat
-        return results
-    end tell
-end tell"#,
-            target, search
-        );
-        return run_osascript(&script).await;
-    }
-    #[cfg(target_os = "linux")]
-    {
-        return ToolResult::error("UI find is not available on Linux. Use capture(action: see) for a screenshot and input(action: click, coordinate: [x,y]) instead.");
-    }
-    #[cfg(target_os = "windows")]
-    {
-        let cond = if !label.is_empty() {
-            format!(
-                "New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, '{}')",
-                escape_powershell(label)
-            )
-        } else {
-            "[System.Windows.Automation.Condition]::TrueCondition".to_string()
-        };
-        let script = format!(
-            r#"Add-Type -AssemblyName UIAutomationClient
-Add-Type -AssemblyName UIAutomationTypes
-$root = [System.Windows.Automation.AutomationElement]::RootElement
-$cond = {}
-$results = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $cond)
-foreach ($e in $results) {{
-    "$($e.Current.ControlType.ProgrammaticName) | $($e.Current.Name) | $($e.Current.BoundingRectangle)"
-}}"#,
-            cond
-        );
-        return run_powershell(&script).await;
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-    ToolResult::error("UI find is not supported on this platform")
-}
-
-#[allow(unused_variables)]
 async fn ui_click(app: &str, label: &str) -> ToolResult {
     #[cfg(target_os = "macos")]
     {
@@ -4272,6 +4227,58 @@ mod tests {
             "{}", o.result.content
         );
         assert!(o.result.content.contains("via ax"), "{}", o.result.content);
+    }
+
+    /// Live: drive Calculator through observe → act. Buttons carry AXPress,
+    /// so this presses through accessibility and moves no pointer. Launches
+    /// Calculator and quits it afterwards.
+    /// Run with `cargo test -p nebo-tools --lib live_act -- --ignored --nocapture`.
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    #[ignore]
+    async fn live_act_drives_calculator_and_reads_the_result() {
+        let store = tokio::sync::Mutex::new(SnapshotStore::new());
+        let cache = AxCache::default();
+        let _ = run_osascript_raw("tell application \"Calculator\" to activate", Some(AX_CAPTURE_TIMEOUT)).await;
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        let _ = handle_input("press", &serde_json::json!({"app": "Calculator", "key": "escape", "wait_ms": 200}), &store, &cache).await;
+        let o = observe("Calculator", &serde_json::json!({}), &store, &cache).await.map_err(|e| e.content).unwrap();
+        println!("{}", o.result.content);
+        let find = |label: &str| {
+            o.snapshot.elements.iter().find(|e| e.label.eq_ignore_ascii_case(label)).map(|e| e.id.clone())
+                .unwrap_or_else(|| panic!("no element labelled {label:?}"))
+        };
+        let mut last = String::new();
+        for key in ["7", "+", "8", "="] {
+            let alias = match key { "+" => "add", "=" => "equals", k => k };
+            let id = o.snapshot.elements.iter()
+                .find(|e| e.label.eq_ignore_ascii_case(key) || e.label.eq_ignore_ascii_case(alias))
+                .map(|e| e.id.clone())
+                .unwrap_or_else(|| find(key));
+            let r = handle_input("click", &serde_json::json!({"app": "Calculator", "ref": id, "snapshot_id": o.snapshot.id, "wait_ms": 300}), &store, &cache).await;
+            assert!(!r.is_error, "{}", r.content);
+            assert!(r.image_url.is_some(), "an act returns the after-image");
+            assert!(r.content.contains("via accessibility"), "{}", r.content.lines().next().unwrap_or(""));
+            last = r.content;
+        }
+        println!("{}", last.lines().take(3).collect::<Vec<_>>().join("\n"));
+        assert!(last.contains("15"), "the after-state shows the result: {last}");
+
+        // The vision path: click "9" by a pixel of the LAST image (no ref),
+        // which exercises image px → window pt → screen pt and a real click.
+        let after = snapshot_for(&store, "", "Calculator").await.unwrap();
+        let nine = after.elements.iter().find(|e| e.label == "9").expect("a 9 button");
+        let frame = after.frame.as_ref().unwrap();
+        let (cx, cy) = nine.bounds.center();
+        let px = screen_to_image((cx, cy), frame, after.scale);
+        let r = handle_input("click", &serde_json::json!({"app": "Calculator", "coordinate": [px.0, px.1], "wait_ms": 300}), &store, &cache).await;
+        assert!(!r.is_error, "{}", r.content);
+        let first = r.content.lines().next().unwrap_or("").to_string();
+        println!("{first}");
+        assert!(first.starts_with("Clicked (") && first.contains("at screen ("), "{first}");
+        let shown = r.content.lines().find(|l| l.contains("AXStaticText") && !l.contains("\"\"")).unwrap_or("");
+        assert!(shown.contains("\"9\"") || r.content.contains("\"9\"  at"), "after a pixel click on 9 the display shows 9: {}", r.content);
+        let _ = run_osascript_raw("tell application \"Calculator\" to quit", Some(AX_CAPTURE_TIMEOUT)).await;
     }
 
     #[test]
