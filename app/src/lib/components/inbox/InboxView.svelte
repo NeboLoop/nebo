@@ -254,6 +254,67 @@
 </script>
 
 
+<!-- ONE row template for the whole list. The band above the stream holds
+     pending decisions and the stream holds mail, but a row is a row: the
+     `pending` parameter is the only difference, and there is no third
+     template. The leading unread indicator is always laid out — read rows
+     keep the slot and only lose the dot's colour — so every row's text
+     starts on the same left edge whatever its kind or read state. -->
+{#snippet row(n: Notification, pending: boolean)}
+  {@const runId = approvalRunId(n)}
+  {@const chip = pending ? null : approvalChip(n)}
+  {@const isUpdate = approvalRef(n)?.kind === 'update'}
+  {@const strong = pending || !n.read}
+  {@const tone = selectedId === n.id
+    ? `bg-base-100 ${pending ? 'border-l-warning' : 'border-l-primary'}`
+    : `border-l-transparent ${pending ? 'hover:bg-warning/10' : 'hover:bg-base-200'}`}
+  <div
+    class="group relative flex items-start gap-2.5 pr-4 pl-[14px] border-l-2 cursor-pointer transition-colors {pending ? 'py-2.5' : 'py-3 border-b border-base-content/10'} {tone}"
+    onclick={() => open(n)}
+    onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(n); } }}
+    role="button"
+    tabindex="0"
+  >
+    <div class="w-2 h-2 rounded-full mt-1.5 shrink-0 {n.read ? 'bg-transparent' : typeColors[n.type] || 'bg-info'}"></div>
+    <div class="flex-1 min-w-0">
+      <div class="flex items-baseline gap-2">
+        {#if n.agentId && roster[n.agentId]}
+          <span class="text-xs shrink-0 {strong ? 'text-base-content/70 font-medium' : 'text-base-content/50'}">{roster[n.agentId].name}</span>
+        {/if}
+        <span class="text-sm truncate {strong ? 'font-semibold text-base-content' : 'font-normal text-base-content/70'}">{n.title}</span>
+        {#if chip}
+          <span class="badge badge-sm shrink-0 {chip === 'inbox.approved' ? 'badge-success badge-outline' : 'badge-ghost text-base-content/60'}">{$t(chip)}</span>
+        {/if}
+        <span class="text-xs text-base-content/50 font-mono shrink-0 ml-auto">{n.time}</span>
+      </div>
+      <p class="text-xs mt-0.5 {pending ? 'text-base-content/70' : 'text-base-content/60 truncate'}">{n.message}</p>
+      {#if pending}
+        <div class="flex items-center gap-2 mt-2">
+          <button
+            class="btn btn-xs btn-success"
+            disabled={!!(runId && deciding[runId])}
+            onclick={(e) => { e.stopPropagation(); decide(n, true); }}
+          >{$t(isUpdate ? 'inbox.updateNow' : 'inbox.approve')}</button>
+          <button
+            class="btn btn-xs btn-ghost border border-base-content/15"
+            disabled={!!(runId && deciding[runId])}
+            onclick={(e) => { e.stopPropagation(); decide(n, false); }}
+          >{$t(isUpdate ? 'inbox.later' : 'inbox.deny')}</button>
+        </div>
+      {/if}
+    </div>
+    {#if !pending}
+      <button
+        onclick={(e) => { e.stopPropagation(); remove(n.id); }}
+        class="absolute right-2 bottom-2 p-1 rounded hover:bg-base-content/10 transition-opacity cursor-pointer bg-base-200 border-none opacity-0 group-hover:opacity-100"
+        aria-label={$t('notifications.closeNotification')}
+      >
+        <Trash2 class="w-3 h-3 text-base-content/40" />
+      </button>
+    {/if}
+  </div>
+{/snippet}
+
 <div class="flex-1 flex min-h-0 min-w-0 bg-base-100">
   <!-- Message list (email-style rows). On mobile the list and reading pane swap full-screen. -->
   <div class="w-full min-w-0 md:w-80 lg:w-96 md:shrink-0 border-r border-base-300 bg-base-200/50 flex-col min-h-0 {selected ? 'hidden md:flex' : 'flex'}">
@@ -320,35 +381,7 @@
             {$t('inbox.needsApproval')}
           </div>
           {#each pendingApprovals as n (n.id)}
-            {@const runId = approvalRunId(n)}
-            <div
-              class="px-4 py-2.5 cursor-pointer transition-colors border-l-2 {selectedId === n.id ? 'bg-base-100 border-l-warning' : 'border-l-transparent hover:bg-warning/10'}"
-              onclick={() => open(n)}
-              onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(n); } }}
-              role="button"
-              tabindex="0"
-            >
-              <div class="flex items-baseline gap-2">
-                {#if n.agentId && roster[n.agentId]}
-                  <span class="text-xs shrink-0 font-medium text-base-content/70">{roster[n.agentId].name}</span>
-                {/if}
-                <span class="text-sm font-semibold truncate text-base-content">{n.title}</span>
-                <span class="text-xs text-base-content/50 font-mono shrink-0 ml-auto">{n.time}</span>
-              </div>
-              <p class="text-xs text-base-content/70 mt-0.5">{n.message}</p>
-              <div class="flex items-center gap-2 mt-2">
-                <button
-                  class="btn btn-xs btn-success"
-                  disabled={!!(runId && deciding[runId])}
-                  onclick={(e) => { e.stopPropagation(); decide(n, true); }}
-                >{$t(approvalRef(n)?.kind === 'update' ? 'inbox.updateNow' : 'inbox.approve')}</button>
-                <button
-                  class="btn btn-xs btn-ghost border border-base-content/15"
-                  disabled={!!(runId && deciding[runId])}
-                  onclick={(e) => { e.stopPropagation(); decide(n, false); }}
-                >{$t(approvalRef(n)?.kind === 'update' ? 'inbox.later' : 'inbox.deny')}</button>
-              </div>
-            </div>
+            {@render row(n, true)}
           {/each}
         </div>
       {/if}
@@ -360,37 +393,7 @@
         </div>
       {:else}
         {#each sorted as n (n.id)}
-          <div
-            class="group relative flex items-start gap-2.5 px-4 py-3 border-b border-base-content/10 cursor-pointer transition-colors {selectedId === n.id
-              ? 'bg-base-100 border-l-2 border-l-primary pl-[14px]'
-              : 'border-l-2 border-l-transparent hover:bg-base-200 pl-[14px]'}"
-            onclick={() => open(n)}
-            onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(n); } }}
-            role="button"
-            tabindex="0"
-          >
-            <div class="w-2 h-2 rounded-full mt-1.5 shrink-0 {n.read ? 'bg-transparent' : typeColors[n.type] || 'bg-info'}"></div>
-            <div class="flex-1 min-w-0">
-              <div class="flex items-baseline gap-2">
-                {#if n.agentId && roster[n.agentId]}
-                  <span class="text-xs shrink-0 {n.read ? 'text-base-content/50' : 'text-base-content/70 font-medium'}">{roster[n.agentId].name}</span>
-                {/if}
-                <span class="text-sm truncate {n.read ? 'font-normal text-base-content/70' : 'font-semibold text-base-content'}">{n.title}</span>
-                {#if approvalChip(n)}
-                  <span class="badge badge-sm shrink-0 {approvalChip(n) === 'inbox.approved' ? 'badge-success badge-outline' : 'badge-ghost text-base-content/60'}">{$t(approvalChip(n)!)}</span>
-                {/if}
-                <span class="text-xs text-base-content/50 font-mono shrink-0 ml-auto">{n.time}</span>
-              </div>
-              <p class="text-xs text-base-content/60 truncate mt-0.5">{n.message}</p>
-            </div>
-            <button
-              onclick={(e) => { e.stopPropagation(); remove(n.id); }}
-              class="absolute right-2 bottom-2 p-1 rounded hover:bg-base-content/10 transition-opacity cursor-pointer bg-base-200 border-none opacity-0 group-hover:opacity-100"
-              aria-label={$t('notifications.closeNotification')}
-            >
-              <Trash2 class="w-3 h-3 text-base-content/40" />
-            </button>
-          </div>
+          {@render row(n, false)}
         {/each}
         {#if $hasMore}
           <div bind:this={sentinel} class="flex justify-center py-3">
