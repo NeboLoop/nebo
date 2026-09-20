@@ -227,7 +227,8 @@ impl WebTool {
             | "evaluate" | "list_tabs" | "new_tab" | "close_tab" | "history"
             | "scroll" | "hover" | "select" | "press" | "wait" | "drag" | "status"
             | "read_console_messages" | "read_network_requests" | "resize_window"
-            | "file_upload" | "find" | "fill_form" | "browser_batch" => "browser",
+            | "file_upload" | "find" | "fill_form" | "browser_batch"
+            | "webmcp_list" | "webmcp_call" => "browser",
             "console" => "devtools",
             _ => "",
         }
@@ -1826,6 +1827,14 @@ impl WebTool {
             args_keys = ?args.as_object().map(|o| o.keys().collect::<Vec<_>>()),
             "browser extension execute"
         );
+        // Site tools live in the page shim the extension injects; the built-in
+        // browser has no such shim, so say that instead of "unsupported".
+        if tool_name.starts_with("webmcp_") && !executor.extension_connected() {
+            return ToolResult::error(
+                "Site tools (WebMCP) need the Nebo Chrome extension connected; the built-in browser \
+                 cannot list or call them. Use read_page and the page controls, or connect the extension.",
+            );
+        }
         let result = executor.execute(tool_name, &args, session_id).await;
         match &result {
             Ok(val) => {
@@ -2052,6 +2061,8 @@ impl DynTool for WebTool {
          you do NOT need to call read_page after actions. The snapshot shows interactive elements with refs.\n\n\
          Actions: navigate, read_page, click, hover, fill, type, select, screenshot, scroll, press, drag, \
          wait, evaluate, history, find, file_upload, fill_form, browser_batch\n\n\
+         Site tools (WebMCP): webmcp_list shows tools the current page exposes to agents; \
+         webmcp_call(name, args) runs one — prefer these over clicking through a site that offers them.\n\n\
          Batching: browser_batch chains 2+ predictable steps in one round trip. fill_form fills multiple \
          form fields at once. USE THESE for multi-step sequences.\n\n\
          ## Rules\n\
@@ -2087,6 +2098,7 @@ impl DynTool for WebTool {
                              "list_tabs", "new_tab", "close_tab",
                              "history", "find", "file_upload",
                              "fill_form", "browser_batch",
+                             "webmcp_list", "webmcp_call",
                              "read_console_messages", "read_network_requests", "resize_window",
                              "status", "console"]
                 },
@@ -2105,6 +2117,14 @@ impl DynTool for WebTool {
                 "body": {
                     "type": "string",
                     "description": "HTTP request body"
+                },
+                "name": {
+                    "type": "string",
+                    "description": "For webmcp_call: the site tool to run, as listed by webmcp_list"
+                },
+                "args": {
+                    "type": "object",
+                    "description": "For webmcp_call: the tool's arguments, matching its inputSchema"
                 },
                 "query": {
                     "type": "string",
@@ -2496,6 +2516,8 @@ fn map_action_to_tool(action: &str) -> Option<&'static str> {
         "resize_window" => Some("resize_window"),
         "file_upload" => Some("file_upload"),
         "find" => Some("find"),
+        "webmcp_list" => Some("webmcp_list"),
+        "webmcp_call" => Some("webmcp_call"),
         _ => None,
     }
 }
@@ -2525,6 +2547,7 @@ fn build_extension_args(action: &str, input: &serde_json::Value) -> serde_json::
         "resize_window" => vec!["width", "height"],
         "file_upload" => vec!["paths", "ref"],
         "find" => vec!["query"],
+        "webmcp_call" => vec!["name", "args"],
         _ => vec![],
     };
 
@@ -3421,6 +3444,19 @@ fn chunk_text(text: &str, max_chars: usize) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Site tools ride the same extension pathway as every other browser action:
+    // both actions map to their extension tool, and a call forwards exactly
+    // its name and arguments.
+    #[test]
+    fn webmcp_actions_map_and_forward() {
+        assert_eq!(map_action_to_tool("webmcp_list"), Some("webmcp_list"));
+        assert_eq!(map_action_to_tool("webmcp_call"), Some("webmcp_call"));
+        let input = serde_json::json!({"action": "webmcp_call", "name": "add_to_cart", "args": {"id": "p1"}, "url": "ignored"});
+        let args = build_extension_args("webmcp_call", &input);
+        assert_eq!(args, serde_json::json!({"name": "add_to_cart", "args": {"id": "p1"}}));
+        assert_eq!(build_extension_args("webmcp_list", &input), serde_json::json!({}));
+    }
 
     #[test]
     fn test_detect_auth_page_twitter_login() {
