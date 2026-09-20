@@ -102,6 +102,9 @@ pub async fn resolve_cascade(
     deps: Vec<DepRef>,
     visited: &mut HashSet<String>,
 ) -> CascadeResult {
+    // Counted as local install work so the hub's `tool_installed` echo of a
+    // dep we redeem here waits for it (codes::InFlightCodes::settle).
+    let _cascade = state.codes_in_flight.cascade_begin();
     announce_cascade_start(state, &deps);
     resolve_cascade_inner(state, deps, visited).await
 }
