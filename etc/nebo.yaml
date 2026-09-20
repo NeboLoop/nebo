@@ -30,8 +30,18 @@ Database: {}
 # MaxConcurrentRuns caps in-flight LLM calls across all agents.
 # 0 = auto (scales from available memory/load, up to 100).
 # Override at runtime via env var: NEBO_MAX_CONCURRENT_RUNS
+#
+# MaxUploadBytes is what one upload may weigh, in bytes, at every upload door
+# (/api/v1/files/upload and /api/v1/layers/upload). 0 = 100 MB, the same number
+# the edge lets through (edgelb main.go, MaxRequestBodySize), so a file the
+# edge accepts is not refused here. The edge is a separate repo and binary:
+# raise this without raising that one and the lower of the two is still the
+# real ceiling. A file over the ceiling is refused in plain words; with no
+# ceiling of our own, axum refuses anything over 2 MiB — a phone photo — as a
+# malformed request.
 Runtime:
   MaxConcurrentRuns: 0
+  MaxUploadBytes: 0
 
 # NeboAI integration (managed services)
 # Enables: Loops (social trust circles), Marketplace, Gateway plugins

@@ -42,7 +42,7 @@ use crate::middleware::{self, JwtSecret};
 use crate::state::AppState;
 
 /// Compose all API sub-routers into the `/api/v1` router.
-pub fn api_routes(jwt_secret: JwtSecret) -> Router<AppState> {
+pub fn api_routes(jwt_secret: JwtSecret, max_upload_bytes: usize) -> Router<AppState> {
     // Auth routes with rate limiting (10 req/min per IP)
     let auth_limiter = middleware::RateLimiter::new(10, std::time::Duration::from_secs(60));
     let auth_routes = auth::auth_routes()
@@ -66,13 +66,13 @@ pub fn api_routes(jwt_secret: JwtSecret) -> Router<AppState> {
         .merge(browser::routes())
         .merge(desktop::routes())
         .merge(update::routes())
-        .merge(files::routes())
+        .merge(files::routes(max_upload_bytes))
         .merge(neboai::routes())
         .merge(workflows::routes())
         .merge(teams::routes())
         .merge(backups::routes())
         .merge(org::routes())
-        .merge(layers::routes())
+        .merge(layers::routes(max_upload_bytes))
         .merge(roles::routes())
         .merge(commander::routes())
         .merge(plugins::routes())

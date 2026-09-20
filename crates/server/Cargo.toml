@@ -69,6 +69,9 @@ tempfile = "3"
 
 [dev-dependencies]
 tempfile = "3"
+# `util` for `ServiceExt::oneshot`, which drives a router in a test the way a
+# real request drives it. The main dependency does not need it.
+tower = { workspace = true, features = ["util"] }
 reqwest = { workspace = true }
 tokio = { workspace = true }
 serde_json = { workspace = true }

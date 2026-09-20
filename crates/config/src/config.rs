@@ -215,6 +215,34 @@ pub struct RuntimeConfig {
     /// concurrency controller scales from available memory and load.
     #[serde(rename = "MaxConcurrentRuns")]
     pub max_concurrent_runs: usize,
+    /// What one upload may weigh, in bytes. 0 = the default below.
+    /// Read it through [`RuntimeConfig::max_upload_bytes`], never directly.
+    #[serde(rename = "MaxUploadBytes")]
+    pub max_upload_bytes: usize,
+}
+
+/// What one upload may weigh when nothing is configured: the same 100 MB the
+/// edge enforces (`edgelb/main.go`, `MaxRequestBodySize`), so a file the edge
+/// accepts is not refused here.
+///
+/// Without a ceiling of our own, axum's 2 MiB default applied: a photo or an
+/// hour of audio came back as `500 Error parsing 'multipart/form-data'
+/// request`, which reads like a malformed request rather than a file that is
+/// too big. The edge lives in another repo and another binary, so raising one
+/// number without the other still refuses the file — at whichever door is
+/// lower.
+pub const DEFAULT_MAX_UPLOAD_BYTES: usize = 100 * 1024 * 1024;
+
+impl RuntimeConfig {
+    /// The upload ceiling every door reads: the configured value, or
+    /// [`DEFAULT_MAX_UPLOAD_BYTES`] when it is unset.
+    pub fn max_upload_bytes(&self) -> usize {
+        if self.max_upload_bytes == 0 {
+            DEFAULT_MAX_UPLOAD_BYTES
+        } else {
+            self.max_upload_bytes
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -495,6 +523,29 @@ mod tests {
         assert!(!parse_bool("no", true));
         assert!(parse_bool("", true)); // empty uses default
         assert!(!parse_bool("", false));
+    }
+
+    /// An unset `MaxUploadBytes` is 100 MB — the number the edge enforces.
+    #[test]
+    fn unset_upload_cap_is_100_mb() {
+        let config = Config::default();
+        assert_eq!(config.runtime.max_upload_bytes(), 100 * 1024 * 1024);
+
+        let parsed = Config::load_from_bytes(b"Name: nebo\nRuntime:\n  MaxConcurrentRuns: 0\n")
+            .expect("config without MaxUploadBytes parses");
+        assert_eq!(parsed.runtime.max_upload_bytes(), DEFAULT_MAX_UPLOAD_BYTES);
+
+        // The shipped config leaves it unset, so the default is what runs.
+        let embedded = Config::load_embedded().expect("embedded config parses");
+        assert_eq!(embedded.runtime.max_upload_bytes(), DEFAULT_MAX_UPLOAD_BYTES);
+    }
+
+    /// A configured value is used as written, large or small.
+    #[test]
+    fn configured_upload_cap_is_honoured() {
+        let parsed = Config::load_from_bytes(b"Name: nebo\nRuntime:\n  MaxUploadBytes: 1048576\n")
+            .expect("config with MaxUploadBytes parses");
+        assert_eq!(parsed.runtime.max_upload_bytes(), 1024 * 1024);
     }
 
     #[test]
