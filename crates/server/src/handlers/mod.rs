@@ -58,7 +58,7 @@ impl IntoResponse for ApiError {
         (
             status,
             Json(ErrorResponse {
-                error: self.0.to_string(),
+                error: self.0.client_message(),
             }),
         )
             .into_response()
@@ -83,7 +83,7 @@ pub fn to_error_response(e: NeboError) -> (StatusCode, Json<ErrorResponse>) {
     (
         status,
         Json(ErrorResponse {
-            error: e.to_string(),
+            error: e.client_message(),
         }),
     )
 }
