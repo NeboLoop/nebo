@@ -57,6 +57,9 @@ FROM debian:bookworm-slim
 # The desktop rows (xvfb…fonts) are the bot's on-demand computer: a curated
 # xfce subset (NOT the xfce4 metapackage — no screensaver/power-manager),
 # x11vnc for the live view, xdotool/wmctrl/scrot/xclip/at-spi2-core so the
+# desktop tool can drive it, python3-gi + gir1.2-atspi-2.0 so the native
+# accessibility walk (crates/tools/src/ax_native/ax_helper_atspi.py) can read
+# the tree — without them every window is vision-only;
 # existing desktop-tool Linux backend works against the session's DISPLAY.
 # Nothing starts at boot; nebo-server spawns the tree on demand.
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -69,6 +72,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       jq unzip zip ripgrep less procps sqlite3 \
       ffmpeg \
       xvfb x11vnc xdotool wmctrl scrot xclip x11-utils x11-xserver-utils xinput dbus-x11 at-spi2-core \
+      python3-gi gir1.2-atspi-2.0 \
       xfwm4 xfce4-panel xfce4-terminal thunar adwaita-icon-theme \
       chromium \
       fonts-dejavu fonts-liberation fonts-noto-color-emoji \

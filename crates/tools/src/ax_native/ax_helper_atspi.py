@@ -17,6 +17,13 @@ import argparse
 import json
 import sys
 import time
+import warnings
+
+# gi flips which of get_component()/get_component_iface() (and the action
+# pair) it marks deprecated between at-spi2 releases; both work on every
+# release we ship. stderr is this helper's failure channel, so the
+# notices must not land there (seen live 2026-09-20, bookworm).
+warnings.simplefilter("ignore", DeprecationWarning)
 
 # AT-SPI role name (Atspi.Accessible.get_role_name) -> AX vocabulary.
 ROLE_MAP = {
