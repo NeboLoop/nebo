@@ -2560,7 +2560,8 @@ impl DynTool for AgentTool {
         let mut description = String::from(
             "Agent self-management — memory, tasks, sub-agents, sessions, context, advisors, vision, and ask.\n\
          USE THIS when: spawning sub-agents, tracking multi-step work, searching memory, managing sessions, analyzing images, or asking the user a question.\n\n\
-         Sub-agents (parallel work):\n\
+         Sub-agents (parallel work) — anonymous extra hands for YOUR OWN work. Work for a named employee (\"ask the chief-of-staff to…\") is never a spawn: \
+         message(resource: \"coworker\", action: \"send\", to: \"chief-of-staff\", text: \"…\") runs it in their session, with their memory and accounts.\n\
          - agent(resource: \"task\", action: \"spawn\", prompt: \"Research competitor pricing\") — Spawn and wait (default)\n\
          - agent(resource: \"task\", action: \"spawn\", prompt: \"Draft an NDA for...\", skills: [\"docx-generation\", \"contract-summary\"]) — Spawn with skills pre-loaded\n\
          - agent(resource: \"task\", action: \"spawn\", prompt: \"Check inbox for urgent items\", plugins: [\"PLUG-PJ3Z-ECFV\"], tools: [\"loop\", \"message\"]) — Spawn with plugin and tool docs\n\
