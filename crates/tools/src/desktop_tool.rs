@@ -3,7 +3,7 @@ use crate::desktop_daemon::DesktopDaemon;
 use crate::errors;
 use crate::ax_native;
 use crate::desktop_snapshot::{
-    self, Rect, Snapshot, SnapshotStore, UIElement, assign_element_ids, delta_line,
+    self, Rect, Snapshot, SnapshotStore, UIElement, assign_element_ids, delta_line, drop_report,
     generate_snapshot_id, image_to_screen, screen_point_now, screen_to_image,
 };
 #[cfg(target_os = "macos")]
@@ -78,7 +78,10 @@ impl DynTool for DesktopTool {
          with refs and positions in that image's pixels. Every input action on that app then returns the \
          window as it looks AFTER the action (image + what changed) — read it before the next step. \
          Act by ref when the element is listed, by image pixel (coordinate: [x, y]) when it is not; a pixel \
-         click on an app you have not captured is refused, capture first.\n\n\
+         click on an app you have not captured is refused, capture first. Text the accessibility tree does not \
+         expose is read from the image and listed as OCRText elements, clickable by ref. \
+         scroll(until: \"text\") pages until that text is on screen; drag(ref, to_ref | coordinate) reports where \
+         the dragged element ended up.\n\n\
          Examples:\n  \
          os(resource: \"capture\", action: \"see\", app: \"Safari\") — snapshot + element IDs\n  \
          os(resource: \"input\", action: \"click\", ref: \"B3\") — click element from snapshot\n  \
@@ -132,7 +135,10 @@ impl DynTool for DesktopTool {
                 "rate": { "type": "integer", "description": "TTS speaking rate (words per minute)" },
                 "ref": { "type": "string", "description": "Element ref from capture(action: see) (e.g. B1, T2)" },
                 "snapshot_id": { "type": "string", "description": "Snapshot ID from a previous see action" },
-                "max_elements": { "type": "integer", "description": "Max elements returned by see (default: 100)" }
+                "max_elements": { "type": "integer", "description": "Max elements returned by see (default: 60)" },
+                "until": { "type": "string", "description": "For input scroll: keep scrolling a page at a time until an element whose label contains this text is on screen (case-insensitive), up to max_pages" },
+                "max_pages": { "type": "integer", "description": "For input scroll with until: page budget (default 8, max 30)" },
+                "to_ref": { "type": "string", "description": "For input drag: the element to drop onto (from the last capture); alternative to coordinate" }
             },
             "required": ["resource", "action"]
         })
@@ -743,6 +749,8 @@ async fn handle_input(
         None
     };
 
+    // A drag remembers what it moved and where it dropped, for the after-state.
+    let mut drop_check: Option<(String, (i64, i64))> = None;
     let performed: ToolResult = match action {
         "type" => {
             let text = input["text"].as_str().unwrap_or("");
@@ -839,27 +847,100 @@ async fn handle_input(
             if let Some((x, y, _)) = &target {
                 let _ = input_move(*x, *y).await;
             }
-            let r = input_scroll(dx, dy).await;
-            if r.is_error {
-                return r;
+            let until = input["until"].as_str().unwrap_or("").trim().to_lowercase();
+            if until.is_empty() {
+                let r = input_scroll(dx, dy).await;
+                if r.is_error {
+                    return r;
+                }
+                ToolResult::ok(format!("Scrolled {direction} {amount} ticks"))
+            } else {
+                // Scroll a page at a time until an element whose label carries
+                // the text is on screen, or the page budget runs out. Each page
+                // is a fresh observe, so the match is what is visible NOW.
+                let max_pages = input["max_pages"].as_u64().unwrap_or(8).clamp(1, 30) as usize;
+                let visible = |snap: &Snapshot| snap.elements.iter().any(|e| e.label.to_lowercase().contains(&until));
+                let mut pages = 0;
+                let mut found = snap.as_ref().map_or(false, |s| visible(s));
+                while !found && pages < max_pages {
+                    let r = input_scroll(dx, dy).await;
+                    if r.is_error {
+                        return r;
+                    }
+                    pages += 1;
+                    tokio::time::sleep(Duration::from_millis(400)).await;
+                    if let Ok(mut guard) = ax_cache.lock() {
+                        guard.clear();
+                    }
+                    match observe(&app, &serde_json::json!({ "app": app, "quality": input["quality"] }), snapshot_store, ax_cache).await {
+                        Ok(o) => found = visible(&o.snapshot),
+                        Err(e) => return e,
+                    }
+                }
+                if found {
+                    ToolResult::ok(format!("Scrolled {direction} {pages} page(s); \"{}\" is on screen — find it in the list below", input["until"].as_str().unwrap_or("")))
+                } else {
+                    ToolResult::ok(format!("Scrolled {direction} {pages} page(s) and \"{}\" did not appear; it may be elsewhere or worded differently", input["until"].as_str().unwrap_or("")))
+                }
             }
-            ToolResult::ok(format!("Scrolled {direction} {amount} ticks"))
         }
         "drag" => {
-            let (Some(start), Some((x2, y2, _))) = (coord(input, "start_coordinate"), &target) else {
+            // What to drag: `ref` (the element) or `start_coordinate`; where
+            // to: `to_ref` (an element) or `coordinate`.
+            let start: Option<((i64, i64), String)> = if let Some(e) = &element {
+                match (snap.as_ref().and_then(|s| s.frame.as_ref()), &now) {
+                    (Some(then), Some(now)) => match screen_point_now(e.bounds.center(), then, now) {
+                        Ok(p) => Some((p, e.label.clone())),
+                        Err(err) => return ToolResult::error(format!("drag: {err}")),
+                    },
+                    _ => Some((e.bounds.center(), e.label.clone())),
+                }
+            } else if let Some(px) = coord(input, "start_coordinate") {
+                match to_screen(px) {
+                    Ok(p) => Some((p, String::new())),
+                    Err(err) => return ToolResult::error(format!("drag: {err}")),
+                }
+            } else {
+                None
+            };
+            let to_ref = input["to_ref"].as_str().unwrap_or("");
+            let end: Option<((i64, i64), (i64, i64))> = if !to_ref.is_empty() {
+                let Some(e) = snap.as_ref().and_then(|s| s.elements.iter().find(|e| e.id == to_ref)) else {
+                    return ToolResult::error(format!("drag: to_ref '{to_ref}' is not in the last capture; capture again and use a ref from that list."));
+                };
+                let c = e.bounds.center();
+                let p = match (snap.as_ref().and_then(|s| s.frame.as_ref()), &now) {
+                    (Some(then), Some(now)) => match screen_point_now(c, then, now) {
+                        Ok(p) => p,
+                        Err(err) => return ToolResult::error(format!("drag: {err}")),
+                    },
+                    _ => c,
+                };
+                let px = match (snap.as_ref().and_then(|s| s.frame.as_ref()), snap.as_ref()) {
+                    (Some(f), Some(s)) => screen_to_image(c, f, s.scale),
+                    _ => c,
+                };
+                Some((p, px))
+            } else if let Some(px) = coordinate {
+                match to_screen(px) {
+                    Ok(p) => Some((p, px)),
+                    Err(err) => return ToolResult::error(format!("drag: {err}")),
+                }
+            } else {
+                None
+            };
+            let (Some(((x, y), label)), Some(((x2, y2), end_px))) = (start, end) else {
                 return ToolResult::error(
-                    "drag requires `start_coordinate: [x, y]` and `coordinate: [x, y]` (end point).",
+                    "drag needs what to drag (`ref`, or `start_coordinate: [x, y]`) and where to (`to_ref`, or `coordinate: [x, y]`).",
                 );
             };
-            let (x, y) = match to_screen(start) {
-                Ok(p) => p,
-                Err(err) => return ToolResult::error(format!("drag: {err}")),
-            };
-            let r = input_drag(x, y, *x2, *y2).await;
+            let r = input_drag(x, y, x2, y2).await;
             if r.is_error {
                 return r;
             }
-            ToolResult::ok(format!("Dragged from ({},{}) to ({x2},{y2})", start.0, start.1))
+            let what = if label.is_empty() { format!("({x},{y})") } else { format!("\"{label}\"") };
+            drop_check = Some((label, end_px));
+            ToolResult::ok(format!("Dragged {what} to ({},{})", end_px.0, end_px.1))
         }
         _ => {
             return ToolResult::error(format!(
@@ -878,10 +959,16 @@ async fn handle_input(
     let after_input = serde_json::json!({ "app": app, "quality": input["quality"] });
     match observe(&app, &after_input, snapshot_store, ax_cache).await {
         Ok(after) => {
-            let delta = match snap.as_ref().filter(|s| s.app.as_deref().map_or(app.is_empty(), |a| a.eq_ignore_ascii_case(&app))) {
+            let mut delta = match snap.as_ref().filter(|s| s.app.as_deref().map_or(app.is_empty(), |a| a.eq_ignore_ascii_case(&app))) {
                 Some(before) => delta_line(before, &after.snapshot),
                 None => String::new(),
             };
+            if let Some((label, end_px)) = drop_check {
+                let report = drop_report(&label, end_px, &after.snapshot);
+                if !report.is_empty() {
+                    delta = format!("{delta} {report}");
+                }
+            }
             let mut r = after.result;
             r.content = format!("{}. {delta}\n\n{}", performed.content, r.content);
             r
@@ -1738,7 +1825,7 @@ async fn walk_elements(app: &str) -> (AxCapture, Vec<UIElement>) {
                     app: if tree.app.is_empty() { app.to_string() } else { tree.app },
                     windows: Some(tree.windows),
                     walk_error: None,
-                    via: if actionable >= 3 { "ax" } else { "vision" }.to_string(),
+                    via: if actionable >= 3 && elements.iter().any(|e| !e.label.is_empty()) { "ax" } else { "vision" }.to_string(),
                     truncated: tree.truncated,
                     fallback: None,
                 },
@@ -1755,6 +1842,48 @@ async fn walk_elements(app: &str) -> (AxCapture, Vec<UIElement>) {
     }
 }
 
+/// Add recognized text lines to the element list as `OCRText` elements in
+/// screen points, skipping lines whose centre falls inside an element that
+/// already carries a label. Returns (added, total lines).
+fn merge_text_lines(
+    elements: &mut Vec<UIElement>,
+    lines: &[ax_native::TextLine],
+    frame: Option<&Rect>,
+    scale: f64,
+) -> (usize, usize) {
+    let (ox, oy) = frame.map(|f| (f.x, f.y)).unwrap_or((0, 0));
+    let mut added = 0;
+    for l in lines {
+        let to_screen = |px: i64, py: i64| (ox + (px as f64 * scale).round() as i64, oy + (py as f64 * scale).round() as i64);
+        let (x, y) = to_screen(l.frame[0], l.frame[1]);
+        let (w, h) = (((l.frame[2] as f64) * scale).round() as i64, ((l.frame[3] as f64) * scale).round() as i64);
+        let (cx, cy) = (x + w / 2, y + h / 2);
+        let known = elements.iter().any(|e| {
+            !e.label.is_empty()
+                && cx >= e.bounds.x
+                && cx < e.bounds.x + e.bounds.width
+                && cy >= e.bounds.y
+                && cy < e.bounds.y + e.bounds.height
+        });
+        if known {
+            continue;
+        }
+        elements.push(UIElement {
+            id: String::new(),
+            role: "OCRText".into(),
+            label: l.text.clone(),
+            bounds: Rect { x, y, width: w.max(1), height: h.max(1) },
+            actionable: true,
+            keyboard_shortcut: None,
+            actions: Vec::new(),
+            path: String::new(),
+            focused: false,
+        });
+        added += 1;
+    }
+    (added, lines.len())
+}
+
 async fn observe(
     app: &str,
     input: &serde_json::Value,
@@ -1764,19 +1893,31 @@ async fn observe(
     let quality = input["quality"].as_str().unwrap_or("medium");
     let max_elements = input["max_elements"].as_u64().unwrap_or(60).min(500) as usize;
 
-    // 1. What the image will cover.
+    // 1. What the image will cover. The window's own pixels by id when the
+    //    platform gives one (they are right even under other windows); by
+    //    screen region otherwise, which shows whatever is on top there.
+    let mut window_id: Option<u64> = None;
     let (frame, window_image, frame_note) = if app.is_empty() {
         (screen_rect().await, false, String::new())
     } else {
-        match window_frame(app, false).await {
-            Ok(r) => (Some(r), true, String::new()),
-            Err(e) => (screen_rect().await, false, format!(" ({e}; captured the whole screen instead)")),
+        match ax_native::window(app, 1).await {
+            Ok(w) => {
+                window_id = w.window_id;
+                let f = Rect { x: w.frame[0], y: w.frame[1], width: w.frame[2], height: w.frame[3] };
+                let note = if w.window_id.is_some() { String::new() } else { " (captured by screen region; windows on top of it show through)".to_string() };
+                (Some(f), true, note)
+            }
+            Err(_) => match window_frame(app, false).await {
+                Ok(r) => (Some(r), true, " (captured by screen region; windows on top of it show through)".to_string()),
+                Err(e) => (screen_rect().await, false, format!(" ({e}; captured the whole screen instead)")),
+            },
         }
     };
 
     // 2. The image.
-    let shot_input = match (&frame, window_image) {
-        (Some(f), true) => serde_json::json!({ "region": format!("{},{},{},{}", f.x, f.y, f.width, f.height), "quality": quality }),
+    let shot_input = match (&frame, window_image, window_id) {
+        (_, true, Some(id)) => serde_json::json!({ "window_id": id, "quality": quality }),
+        (Some(f), true, None) => serde_json::json!({ "region": format!("{},{},{},{}", f.x, f.y, f.width, f.height), "quality": quality }),
         _ => serde_json::json!({ "quality": quality }),
     };
     let shot = capture_screenshot(&shot_input).await;
@@ -1812,6 +1953,26 @@ async fn observe(
         }
         (cap, elems)
     };
+    // 3b. The text in the image. The accessibility tree misses whatever an
+    //     app draws itself (Simulator content, Electron without the switch,
+    //     games, canvases); the recognizer reads it off the same pixels the
+    //     model sees, so its boxes are already in image coordinates. Lines
+    //     that sit inside a labelled AX element are that element, not news.
+    let mut ocr_note = String::new();
+    let mut ocr_added = 0usize;
+    let image_path = shot.payload.as_ref().and_then(|p| p["path"].as_str()).map(std::path::PathBuf::from);
+    if let Some(path) = image_path {
+        match ax_native::text(&path).await {
+            Ok(lines) => {
+                let (added, total) = merge_text_lines(&mut elements, &lines, frame.as_ref(), scale);
+                ocr_added = added;
+                if total > 0 {
+                    ocr_note = format!(" +ocr ({added} of {total} text lines not already in the tree)");
+                }
+            }
+            Err(e) => ocr_note = format!(" (text recognition unavailable: {e})"),
+        }
+    }
     let elements_total = elements.len();
     elements.truncate(max_elements.max(1));
     assign_element_ids(&mut elements);
@@ -1824,7 +1985,7 @@ async fn observe(
         elements: elements.clone(),
         frame: frame.clone(),
         scale,
-        via: observed.via.clone(),
+        via: if observed.via == "vision" && ocr_added > 0 { "ocr".to_string() } else { observed.via.clone() },
     };
     snapshot_store.lock().await.insert(snapshot.clone());
 
@@ -1841,11 +2002,14 @@ async fn observe(
         Some((w, h)) => format!("image {w}×{h} px (1 px = {scale:.2} pt)"),
         None => "image".to_string(),
     };
-    let mut via = format!("via {}", observed.via);
-    if observed.via == "vision" {
+    let mut via = format!("via {}", snapshot.via);
+    if snapshot.via == "vision" {
         let actionable = elements.iter().filter(|e| e.actionable).count();
-        via.push_str(&format!(" (accessibility tree had {actionable} actionable elements; act by image pixel)"));
+        via.push_str(&format!(" (accessibility tree had {actionable} actionable elements and no text was read; act by image pixel)"));
+    } else if snapshot.via == "ocr" {
+        via.push_str(" (accessibility tree was empty; the elements are lines of text read from the image, clickable by ref)");
     }
+    via.push_str(&ocr_note);
     if let Some(reason) = &observed.fallback {
         via.push_str(&format!(" (native walk unavailable: {reason})"));
     }
@@ -1888,6 +2052,7 @@ async fn observe(
             None => (e.bounds.x, e.bounds.y, e.bounds.width, e.bounds.height),
         };
         let mut tags = Vec::new();
+        if e.role == "OCRText" { tags.push("text read from the image"); }
         if e.actions.iter().any(|a| a == "AXPress") { tags.push("press"); }
         if e.actions.iter().any(|a| a == "AXSetValue") { tags.push("editable"); }
         if e.focused { tags.push("focused"); }
@@ -2132,7 +2297,34 @@ async fn capture_screenshot(input: &serde_json::Value) -> ToolResult {
         // A window is captured by its frame. System Events cannot return a
         // window id for `-l` (error -1728 on every app), so that path only
         // ever produced the whole screen while claiming the window.
-        let region: Option<String> = if !app.is_empty() {
+        let window_id = input["window_id"].as_u64();
+        let region: Option<String> = if let Some(id) = window_id {
+            let mut args = base_args.clone();
+            args.extend_from_slice(&["-l".to_string(), id.to_string(), "-o".to_string()]);
+            args.push(tmp_path.clone());
+            let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+            let out = tokio::process::Command::new("screencapture").args(&arg_refs).output().await;
+            // The rest of this function reads `result`; a window-id capture
+            // produces it directly.
+            match out {
+                Ok(o) if o.status.success() => {
+                    return match tokio::fs::read(&tmp_path).await {
+                        Ok(bytes) => {
+                            let _ = tokio::fs::remove_file(&tmp_path).await;
+                            compress_and_encode(&bytes, quality)
+                        }
+                        Err(e) => ToolResult::error(format!("Failed to read screenshot: {}", e)),
+                    };
+                }
+                Ok(o) => {
+                    return ToolResult::error(format!(
+                        "Screenshot of window {id} not taken: {}",
+                        String::from_utf8_lossy(&o.stderr).trim()
+                    ));
+                }
+                Err(e) => return ToolResult::error(format!("Failed to run screenshot tool: {e}")),
+            }
+        } else if !app.is_empty() {
             match window_frame(app, false).await {
                 Ok(f) => Some(format!("{},{},{},{}", f.x, f.y, f.width, f.height)),
                 Err(e) => {
@@ -2316,14 +2508,19 @@ fn finalize_capture(bytes: &[u8], mime: &str, dims: Option<(u32, u32)>, summary:
     } else {
         "jpg"
     };
+    let mut persist_path: Option<String> = None;
     let content = match persist_capture(bytes, ext) {
-        Some((filename, abs)) => format!(
-            "{summary}\nSaved to: {abs}\nTo share or display this image, use the path {abs} (served at /api/v1/files/{filename})."
-        ),
+        Some((filename, abs)) => {
+            persist_path = Some(abs.clone());
+            format!(
+                "{summary}\nSaved to: {abs}\nTo share or display this image, use the path {abs} (served at /api/v1/files/{filename})."
+            )
+        }
         None => summary.to_string(),
     };
+    let saved = persist_path.clone();
     ToolResult {
-        payload: dims.map(|(w, h)| serde_json::json!({ "kind": "capture", "width": w, "height": h })),
+        payload: dims.map(|(w, h)| serde_json::json!({ "kind": "capture", "width": w, "height": h, "path": saved })),
         content,
         is_error: false,
         image_url: Some(data_uri),
@@ -4215,15 +4412,17 @@ mod tests {
     async fn live_observe_finder_returns_frame_scale_and_layer() {
         let store = tokio::sync::Mutex::new(SnapshotStore::new());
         let cache = AxCache::default();
+        // NEBO_LIVE_APP picks another running app (Simulator, zed, …) to read.
+        let app = std::env::var("NEBO_LIVE_APP").unwrap_or_else(|_| "Finder".into());
         let started = Instant::now();
-        let o = observe("Finder", &serde_json::json!({}), &store, &cache).await.map_err(|e| e.content).unwrap();
+        let o = observe(&app, &serde_json::json!({}), &store, &cache).await.map_err(|e| e.content).unwrap();
         println!("{} ms\n{}", started.elapsed().as_millis(), o.result.content);
         assert!(o.result.image_url.is_some(), "an observe carries the image");
         assert!(o.snapshot.frame.is_some(), "an observe always knows what the image covers");
         assert!(o.snapshot.scale > 0.0);
-        // Finder may have no window open, in which case the screen is what was captured — and the header says so.
+        // The app may have no window open, in which case the screen is what was captured — and the header says so.
         assert!(
-            o.result.content.starts_with("Finder — window at ") || o.result.content.contains("Finder has no open window"),
+            o.result.content.starts_with(&format!("{app} — window at ")) || o.result.content.contains("has no open window"),
             "{}", o.result.content
         );
         assert!(o.result.content.contains("via ax"), "{}", o.result.content);
@@ -4279,6 +4478,34 @@ mod tests {
         let shown = r.content.lines().find(|l| l.contains("AXStaticText") && !l.contains("\"\"")).unwrap_or("");
         assert!(shown.contains("\"9\"") || r.content.contains("\"9\"  at"), "after a pixel click on 9 the display shows 9: {}", r.content);
         let _ = run_osascript_raw("tell application \"Calculator\" to quit", Some(AX_CAPTURE_TIMEOUT)).await;
+    }
+
+    /// A text line inside a labelled element is that element; one outside
+    /// becomes an OCRText element in screen points (image px × scale + origin).
+    #[test]
+    fn text_lines_join_the_elements_unless_the_tree_already_names_them() {
+        let frame = desktop_snapshot::Rect { x: 100, y: 50, width: 2000, height: 1000 };
+        let mut elements = vec![UIElement {
+            id: String::new(),
+            role: "AXButton".into(),
+            label: "Save".into(),
+            bounds: desktop_snapshot::Rect { x: 120, y: 90, width: 100, height: 40 },
+            actionable: true,
+            keyboard_shortcut: None,
+            actions: vec!["AXPress".into()],
+            path: "0".into(),
+            focused: false,
+        }];
+        let lines = vec![
+            ax_native::TextLine { text: "Save".into(), frame: [12, 22, 40, 12], confidence: 0.9 }, // centre (32,28) px → (164,106) pt: inside Save
+            ax_native::TextLine { text: "Total: $41".into(), frame: [300, 400, 120, 14], confidence: 0.8 },
+        ];
+        let (added, total) = merge_text_lines(&mut elements, &lines, Some(&frame), 2.0);
+        assert_eq!((added, total), (1, 2));
+        let t = &elements[1];
+        assert_eq!((t.role.as_str(), t.label.as_str()), ("OCRText", "Total: $41"));
+        assert_eq!((t.bounds.x, t.bounds.y, t.bounds.width, t.bounds.height), (700, 850, 240, 28));
+        assert!(t.actionable && t.actions.is_empty() && t.path.is_empty());
     }
 
     #[test]

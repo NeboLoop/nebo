@@ -12,6 +12,7 @@
 // request), 2 (usage), 3 (no accessibility permission).
 
 import AppKit
+import Vision
 import ApplicationServices
 import Foundation
 
@@ -28,13 +29,33 @@ func fail(_ msg: String, _ code: Int32 = 1) -> Never {
 }
 
 let args = CommandLine.arguments
-guard args.count >= 2 else { fail("usage: ax-helper tree|act|set --app <name|bundle|pid> …", 2) }
+guard args.count >= 2 else { fail("usage: ax-helper tree|act|set --app <name|bundle|pid> … | text --image <file>", 2) }
 let command = args[1]
 var params: [String: String] = [:]
 var i = 2
 while i < args.count {
     if args[i].hasPrefix("--"), i + 1 < args.count { params[String(args[i].dropFirst(2))] = args[i + 1]; i += 2 } else { i += 1 }
 }
+// MARK: - text: every line of text in an image, boxes in the image's own pixels.
+// Needs no app and no Accessibility permission, so it runs before those guards.
+if command == "text" {
+    guard let path = params["image"], let img = NSImage(contentsOfFile: path),
+          let cg = img.cgImage(forProposedRect: nil, context: nil, hints: nil) else { fail("text needs --image <readable image file>", 2) }
+    let (w, h) = (Double(cg.width), Double(cg.height))
+    let req = VNRecognizeTextRequest()
+    req.recognitionLevel = .accurate
+    req.usesLanguageCorrection = true
+    do { try VNImageRequestHandler(cgImage: cg, options: [:]).perform([req]) } catch { fail("text recognition failed: \(error)") }
+    for obs in req.results ?? [] {
+        guard let top = obs.topCandidates(1).first else { continue }
+        let b = obs.boundingBox // normalized, origin bottom-left
+        emit(["text": top.string,
+              "frame": [Int((b.minX * w).rounded()), Int(((1 - b.maxY) * h).rounded()), Int((b.width * w).rounded()), Int((b.height * h).rounded())],
+              "confidence": Double(top.confidence)])
+    }
+    exit(0)
+}
+
 guard let appSpec = params["app"], !appSpec.isEmpty else { fail("--app is required", 2) }
 
 guard AXIsProcessTrusted() else {
@@ -182,6 +203,27 @@ case "tree":
     for (idx, child) in children(win).enumerated() { walk(child, [idx], 1) }
     emit(["truncated": truncated, "elapsed_ms": Int(Date().timeIntervalSince(start) * 1000)])
 
+case "window":
+    // The window's frame and its CGWindowID, so it can be captured by id
+    // (its own pixels, even under other windows) instead of by screen region.
+    let (win, winCount) = window(windowIndex)
+    guard let f = frame(win) else { fail("could not read the window frame") }
+    var best: (Int, Double)? = nil
+    if let list = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] {
+        for w in list {
+            guard (w[kCGWindowOwnerPID as String] as? Int32) == app.processIdentifier,
+                  (w[kCGWindowLayer as String] as? Int) == 0,
+                  let num = w[kCGWindowNumber as String] as? Int,
+                  let b = w[kCGWindowBounds as String] as? [String: Double] else { continue }
+            let d = abs((b["X"] ?? 0) - f.minX) + abs((b["Y"] ?? 0) - f.minY) + abs((b["Width"] ?? 0) - f.width) + abs((b["Height"] ?? 0) - f.height)
+            if best == nil || d < best!.1 { best = (num, d) }
+        }
+    }
+    var obj: [String: Any] = ["frame": [Int(f.minX.rounded()), Int(f.minY.rounded()), Int(f.width.rounded()), Int(f.height.rounded())],
+                              "windows": winCount, "frontmost": app.isActive]
+    if let b = best, b.1 < 8 { obj["window_id"] = b.0 }
+    emit(obj)
+
 case "act":
     guard let path = params["path"], let action = params["action"] else { fail("act needs --path and --action", 2) }
     let (win, _) = window(windowIndex)
@@ -197,5 +239,5 @@ case "set":
     if r != .success { fail("set value on \(path) failed (AXError \(r.rawValue))") }
 
 default:
-    fail("unknown command \(command); use tree, act, set", 2)
+    fail("unknown command \(command); use tree, window, act, set, text", 2)
 }

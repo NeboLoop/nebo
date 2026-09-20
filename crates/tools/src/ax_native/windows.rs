@@ -131,6 +131,38 @@ $vp.SetValue($value)
 "#;
 
 /// Single-quoted PowerShell literal: the only escape is doubling the quote.
+/// Windows.Media.Ocr through WinRT: the OS's own recognizer, the user's
+/// profile languages. Boxes are the union of each line's word boxes.
+const TEXT: &str = r#"
+$null = [Windows.Media.Ocr.OcrEngine,Windows.Foundation,ContentType=WindowsRuntime]
+$null = [Windows.Storage.StorageFile,Windows.Storage,ContentType=WindowsRuntime]
+$null = [Windows.Graphics.Imaging.BitmapDecoder,Windows.Graphics.Imaging,ContentType=WindowsRuntime]
+$null = [Windows.Storage.Streams.IRandomAccessStream,Windows.Storage.Streams,ContentType=WindowsRuntime]
+Add-Type -AssemblyName System.Runtime.WindowsRuntime
+$asTask = ([System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object { $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1' })[0]
+function Await($op, $type) { $t = $asTask.MakeGenericMethod($type).Invoke($null, @($op)); $t.Wait(); $t.Result }
+$file = Await ([Windows.Storage.StorageFile]::GetFileFromPathAsync('IMAGE_PATH')) ([Windows.Storage.StorageFile])
+$stream = Await ($file.OpenAsync([Windows.Storage.FileAccessMode]::Read)) ([Windows.Storage.Streams.IRandomAccessStream])
+$decoder = Await ([Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($stream)) ([Windows.Graphics.Imaging.BitmapDecoder])
+$bitmap = Await ($decoder.GetSoftwareBitmapAsync()) ([Windows.Graphics.Imaging.SoftwareBitmap])
+$engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromUserProfileLanguages()
+if ($null -eq $engine) { [Console]::Error.WriteLine('no OCR language pack installed for the user profile languages'); exit 1 }
+$result = Await ($engine.RecognizeAsync($bitmap)) ([Windows.Media.Ocr.OcrResult])
+foreach ($line in $result.Lines) {
+  $x1 = [double]::MaxValue; $y1 = [double]::MaxValue; $x2 = 0.0; $y2 = 0.0
+  foreach ($w in $line.Words) { $r = $w.BoundingRect; $x1 = [Math]::Min($x1, $r.X); $y1 = [Math]::Min($y1, $r.Y); $x2 = [Math]::Max($x2, $r.X + $r.Width); $y2 = [Math]::Max($y2, $r.Y + $r.Height) }
+  Write-Output (@{ text = $line.Text; frame = @([int]$x1, [int]$y1, [int]($x2 - $x1), [int]($y2 - $y1)); confidence = 1.0 } | ConvertTo-Json -Compress)
+}
+"#;
+
+pub(super) async fn text_raw(image: &std::path::Path) -> Result<String, String> {
+    run(&text_script(&image.to_string_lossy()), Duration::from_secs(20) + STARTUP_GRACE).await
+}
+
+fn text_script(image: &str) -> String {
+    TEXT.replace("IMAGE_PATH", &ps_quote(image))
+}
+
 fn ps_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "''"))
 }
@@ -228,6 +260,13 @@ async fn run(script: &str, timeout: Duration) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn text_script_binds_the_image_path_quoted() {
+        let s = text_script("C:\\tmp\\it's.png");
+        assert!(s.contains("GetFileFromPathAsync('C:\\tmp\\it''s.png')"), "{s}");
+        assert!(!s.contains("IMAGE_PATH"));
+    }
 
     #[test]
     fn ps_quote_doubles_single_quotes_only() {

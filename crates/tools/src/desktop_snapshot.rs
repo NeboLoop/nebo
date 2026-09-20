@@ -107,6 +107,35 @@ pub fn screen_point_now(pt: (i64, i64), then: &Rect, now: &Rect) -> Result<(i64,
     Ok((pt.0 + now.x - then.x, pt.1 + now.y - then.y))
 }
 
+/// Where a dragged element ended up, from the capture taken after the drop.
+/// Refs are reassigned per capture, so the element is found by its label
+/// (stated as such); `end` is the drop point in image pixels.
+pub fn drop_report(label: &str, end: (i64, i64), after: &Snapshot) -> String {
+    if label.is_empty() {
+        return String::new();
+    }
+    let Some(frame) = after.frame.as_ref() else { return String::new() };
+    let found: Vec<(&UIElement, (i64, i64))> = after
+        .elements
+        .iter()
+        .filter(|e| e.label == label)
+        .map(|e| (e, screen_to_image(e.bounds.center(), frame, after.scale)))
+        .collect();
+    if found.is_empty() {
+        return format!("No element labelled \"{label}\" is visible after the drop; the drag may not have landed.");
+    }
+    let (e, (cx, cy)) = found
+        .iter()
+        .min_by_key(|(_, (cx, cy))| (cx - end.0).abs() + (cy - end.1).abs())
+        .unwrap();
+    let dist = (((cx - end.0).pow(2) + (cy - end.1).pow(2)) as f64).sqrt().round() as i64;
+    if dist <= 40 {
+        format!("{} \"{label}\" is now at ({cx},{cy}), at the drop point (matched by label).", e.id)
+    } else {
+        format!("{} \"{label}\" is now at ({cx},{cy}), {dist} px from the drop point ({},{}); the drop may not have landed where intended (matched by label).", e.id, end.0, end.1)
+    }
+}
+
 /// One sentence on what changed between two captures of the same target,
 /// computed from what was measured — never a guess at what the action meant.
 pub fn delta_line(before: &Snapshot, after: &Snapshot) -> String {
@@ -223,7 +252,7 @@ fn role_prefix(role: &str) -> &'static str {
         "T"
     } else if r.contains("link") {
         "L"
-    } else if r.contains("statictext") || r.contains("heading") || r.contains("label") {
+    } else if r.contains("statictext") || r.contains("heading") || r.contains("label") || r.contains("ocrtext") {
         "S"
     } else if r.contains("image") {
         "I"
@@ -363,6 +392,22 @@ mod tests {
             via: "ax".into(),
             elements,
         }
+    }
+
+    #[test]
+    fn drop_report_finds_the_dragged_label_and_measures_the_miss() {
+        let mut after = snap(rect(100, 100, 400, 400), 2, None);
+        after.elements[0].label = "Report.pdf".into();
+        after.elements[0].bounds = rect(300, 300, 20, 20); // centre (310,310) screen = (210,210) image
+        after.elements[1].label = "Other".into();
+        assert!(drop_report("", (0, 0), &after).is_empty());
+        assert_eq!(
+            drop_report("Report.pdf", (215, 205), &after),
+            "B1 \"Report.pdf\" is now at (210,210), at the drop point (matched by label)."
+        );
+        let miss = drop_report("Report.pdf", (10, 10), &after);
+        assert!(miss.contains("283 px from the drop point"), "{miss}");
+        assert!(drop_report("Missing", (0, 0), &after).starts_with("No element labelled \"Missing\""));
     }
 
     #[test]
