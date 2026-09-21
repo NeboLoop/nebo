@@ -7,6 +7,7 @@
 // setOptions), which meant the inbox and marketplace inherited chat's options by
 // accident. Owning it in one module makes that explicit.
 import { marked, Renderer } from 'marked';
+import markedKatex from 'marked-katex-extension';
 
 /**
  * marked does NO url sanitization — it dropped `sanitize` years ago and renders
@@ -28,6 +29,15 @@ function isSafeHref(href: string): boolean {
 	const scheme = /^([a-z][a-z0-9+.-]*):/.exec(cleaned);
 	return !scheme || SAFE_SCHEMES.includes(scheme[1]);
 }
+
+// Mathematics. The model is told (server prompt, `channel_guidance`) that
+// `$…$` is inline math and `$$…$$` a displayed equation, and that both
+// surfaces render them — this is the web's half; the phone renders the same
+// delimiters with flutter_math. throwOnError off: malformed TeX is still the
+// model's words, so it renders as text rather than taking the reply down.
+// nonStandard off: a dollar amount (`$5 to $10`) needs the strict form —
+// no space after the opening `$`, none before the closing — to be math.
+marked.use(markedKatex({ throwOnError: false, nonStandard: false }));
 
 marked.use({
 	gfm: true,

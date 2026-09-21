@@ -39,6 +39,30 @@ describe('parseMarkdown', () => {
 		expect(parseMarkdown('[top](#top)')).toContain('href="#top"');
 	});
 
+	// Math: the delimiters the server prompt fixes, and only those. The phone
+	// renders the same ones, so a reply reads the same on both.
+	it('renders a displayed equation', () => {
+		const html = parseMarkdown('Energy:\n\n$$\nE = mc^2\n$$\n\nas written.');
+		expect(html).toContain('katex-display');
+		expect(html).not.toContain('$$');
+	});
+
+	it('renders inline math inside a sentence', () => {
+		const html = parseMarkdown('The area is $\\pi r^2$ for a circle.');
+		expect(html).toContain('class="katex"');
+		expect(html).not.toContain('$\\pi');
+	});
+
+	it('leaves a price alone', () => {
+		const html = parseMarkdown('Plans run $5 to $10 a month.');
+		expect(html).not.toContain('katex');
+		expect(html).toContain('$5 to $10');
+	});
+
+	it('shows malformed TeX as text rather than throwing', () => {
+		expect(() => parseMarkdown('Bad: $\\frac{1$ here.')).not.toThrow();
+	});
+
 	it('keeps gfm and breaks enabled', () => {
 		expect(parseMarkdown('one\ntwo')).toContain('<br>');
 		expect(parseMarkdown('~~gone~~')).toContain('<del>');

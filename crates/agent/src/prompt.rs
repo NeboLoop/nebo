@@ -390,6 +390,14 @@ const GEMINI_OPERATIONAL_GUIDANCE: &str = r#"
 /// NeboAI loop (file sharing via the `loop` tool), desktop/web surfaces (""/web/app —
 /// Work-panel document steering), or any other plugin-backed channel (route I/O +
 /// uploads through `plugin(...)`). `neboai` is served by the `loop` tool, not a plugin.
+/// Mathematics renders on the desktop/web/app surfaces and in loop chats.
+/// One inline form, one display form — the two both renderers accept.
+const MATH_GUIDANCE: &str = " MATH: this surface renders LaTeX. Inline math goes in \
+    `$…$` (no space inside the dollars: `$E = mc^2$`) and a displayed equation in \
+    `$$…$$` on its own lines. Use these for any formula, derivation or symbol-heavy \
+    expression; never `\\(…\\)`, `\\[…\\]` or bare TeX, which show as text. Plain \
+    prices (`$5`) stay as they are.";
+
 fn channel_guidance(channel: &str) -> String {
     if let Some(fmt) = match channel {
         "dm" => Some("Keep responses concise for direct messages. Avoid markdown formatting."),
@@ -456,6 +464,12 @@ fn channel_guidance(channel: &str) -> String {
              path: \"<abs_path>\")` — it renders as a download card. NEVER point the \
              user at a local path or claim you cannot share a file.",
         );
+        // Both surfaces that render this channel's markdown — the web (marked +
+        // KaTeX) and the phone (flutter_math) — render these two delimiters and
+        // only these two, so the model is told exactly them. Without this the
+        // model picks whatever its training prefers (`\(…\)`, `\[…\]`, bare
+        // TeX) and the reader sees the delimiters instead of the equation.
+        guidance.push_str(MATH_GUIDANCE);
         return guidance;
     }
 
@@ -1810,5 +1824,24 @@ fn get_hostname() -> String {
         } else {
             "unknown".to_string()
         }
+    }
+}
+
+#[cfg(test)]
+mod math_guidance_tests {
+    use super::{channel_guidance, MATH_GUIDANCE};
+
+    /// The delimiter rule goes exactly where markdown renders: the desktop,
+    /// web and app surfaces and loop chats. A terse channel gets none of it,
+    /// since a voice reply or a terminal cannot show an equation either way.
+    #[test]
+    fn math_delimiters_follow_the_renderers() {
+        for ch in ["", "web", "app", "neboai"] {
+            assert!(channel_guidance(ch).contains(MATH_GUIDANCE), "{ch:?} should carry math guidance");
+        }
+        for ch in ["voice", "cli", "dm"] {
+            assert!(!channel_guidance(ch).contains("LaTeX"), "{ch:?} should not carry math guidance");
+        }
+        assert!(MATH_GUIDANCE.contains("`$…$`") && MATH_GUIDANCE.contains("`$$…$$`"));
     }
 }
