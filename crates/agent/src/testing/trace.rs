@@ -15,6 +15,12 @@ pub struct Trace {
     pub metrics: TraceMetrics,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grade: Option<GradeResult>,
+    /// Set only for a run that never completed — a silence-cap timeout, a WS
+    /// error, an empty run, a setup failure — carrying why. A failed run
+    /// still leaves a trace file under this, instead of vanishing along with
+    /// the rest of its fixture.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -233,11 +239,59 @@ pub fn compute_strap_hashes() -> HashMap<String, String> {
     hashes
 }
 
+/// Turn a failure reason into a filesystem-safe fragment for a trace
+/// filename: lowercase, runs of non-alphanumerics collapsed to `-`, capped
+/// so the filename stays sane.
+fn slugify(reason: &str) -> String {
+    let mut slug = String::new();
+    let mut last_was_dash = false;
+    for c in reason.chars() {
+        if c.is_ascii_alphanumeric() {
+            slug.push(c.to_ascii_lowercase());
+            last_was_dash = false;
+        } else if !last_was_dash && !slug.is_empty() {
+            slug.push('-');
+            last_was_dash = true;
+        }
+    }
+    while slug.ends_with('-') {
+        slug.pop();
+    }
+    slug.chars().take(60).collect()
+}
+
 impl Trace {
+    /// A synthetic trace for a run that stopped before it produced anything
+    /// worth judging: no tool calls, no response — only the reason it ended.
+    pub fn failed(fixture_id: &str, run_id: &str, model: Option<&str>, reason: &str) -> Self {
+        Self {
+            fixture_id: fixture_id.to_string(),
+            run_id: run_id.to_string(),
+            model: model.unwrap_or("default").to_string(),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            overrides: Vec::new(),
+            tool_calls: Vec::new(),
+            final_response: TracedResponse::default(),
+            metrics: TraceMetrics::default(),
+            grade: None,
+            failure_reason: Some(reason.to_string()),
+        }
+    }
+
     pub fn save(&self, dir: &std::path::Path) -> Result<(), String> {
         std::fs::create_dir_all(dir)
             .map_err(|e| format!("create dir {}: {}", dir.display(), e))?;
-        let filename = format!("{}_{}.json", self.fixture_id, self.run_id);
+        // A failed run's file names itself as failed and why, so it sorts
+        // and reads as the one that matters first among a fixture's traces.
+        let filename = match &self.failure_reason {
+            Some(reason) => format!(
+                "{}_{}_FAILED_{}.json",
+                self.fixture_id,
+                self.run_id,
+                slugify(reason)
+            ),
+            None => format!("{}_{}.json", self.fixture_id, self.run_id),
+        };
         let path = dir.join(&filename);
         let json = serde_json::to_string_pretty(self)
             .map_err(|e| format!("serialize trace: {}", e))?;
