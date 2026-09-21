@@ -163,6 +163,15 @@ jobs:
           # cancelled 35582523046. Whatever listens there is a leftover of
           # this runner's own earlier job; free the port before starting.
           fuser -k -TERM "$GATE_PORT/tcp" 2>/dev/null && sleep 2 || true
+          # A listener the job cannot kill (35585471453: port held with no
+          # owning pid visible even to root) must not block the job: step
+          # past it. The port is this job's for the rest of the run.
+          while ss -ltn 2>/dev/null | grep -q ":$GATE_PORT "; do
+            echo "port $GATE_PORT is held by something this job cannot stop; trying the next"
+            GATE_PORT=$((GATE_PORT + 10))
+          done
+          echo "GATE_PORT=$GATE_PORT" >> "$GITHUB_ENV"
+          export NEBO_PORT="$GATE_PORT"
           nohup ./target/debug/nebo-cli agent > "${{ runner.temp }}/server.log" 2>&1 &
           server=$!
           echo "server=$server" >> "$GITHUB_ENV"
