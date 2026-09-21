@@ -6,10 +6,18 @@ description: |
   "coworker", action: "send"), which runs it in that employee's own session
   with its own memory and permissions. The employee exists (setup creates
   it), so the first call must succeed; a run that ends with "not installed"
-  has misnamed it. Cost ceiling raised from 1 to 2 (owner, 2026-09-21): with
-  a tagged, opaque employee name the model looks the name up before sending,
-  taking pass rate against a ceiling of 1 from 2/3 to 0/3 — the lookup call
-  is expected, not a wrong turn.
+  has misnamed it. The cost check is one call, and it is an equality, not a
+  ceiling: `tool_calls` fails a trace whose count differs from the number in
+  either direction. Raised to 2 on 2026-09-21 on the reading that a tagged,
+  opaque employee name costs a lookup first, it measured 0 of 3 on the next
+  gate run (35631082325) — the three traces are 1, 3 and 1 calls, and no run
+  makes a lookup of any kind: all three send message(resource: "coworker",
+  action: "send", to: "chief-of-staff-<tag>") as their very first call. The
+  2/3 that a number of 1 had scored was those one-call runs passing, and
+  moving the number to 2 could only lose them. Run 2's extra two calls come
+  after the coworker replies that it has nothing to report — an agent memory
+  search and an os listing — not from resolving the name. So the honest
+  number is 1.
 target_component: message
 setup:
   - "curl -s -X POST ${NEBO_TEST_SERVER:-localhost:27895}/api/v1/agents -H 'Content-Type: application/json' -d '{\"blank\":true,\"name\":\"chief-of-staff-{{tag}}\"}' > /dev/null"
@@ -49,10 +57,10 @@ prompt_assertions:
       severity: critical
       check: { max_errors: 0 }
   cost:
-    - id: two-calls
-      text: "Task completes in 2 tool calls"
+    - id: single-call
+      text: "Task completes in exactly 1 tool call — `tool_calls` is an equality, so a trace with more calls or fewer fails it"
       severity: important
-      check: { tool_calls: 2 }
+      check: { tool_calls: 1 }
 ideal_behavior:
-  tool_calls: 2
-  narrative: "A lookup on the opaque tagged name, then message(resource: coworker, action: send, to: chief-of-staff-{{tag}}, text: ...), then a one-line confirmation."
+  tool_calls: 1
+  narrative: "One message(resource: coworker, action: send, to: chief-of-staff-{{tag}}, text: ...) call — the tagged name needs no lookup — then a one-line confirmation."

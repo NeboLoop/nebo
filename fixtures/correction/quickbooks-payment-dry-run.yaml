@@ -11,7 +11,46 @@ description: |
   counter is keyed on the plugin. This fixture pins the clean path: a
   dry-run payment request built in one or two plugin calls with the JSON
   passed through args, never the shell, and nothing posted.
+
+  Setup installs quickbooks through the one install pathway (the store
+  product's install code) and teardown removes it, the way
+  correction-plugin-discover-installed does. Until 2026-09-21 this fixture
+  claimed a machine with the plugin installed and made none, so on the
+  gate's fresh bot every run passed vacuously: plugin(action: "list") came
+  back "No plugins installed", plugin(action: "discover") found it in the
+  marketplace, and the run ended two calls in without ever reaching the
+  payment path this fixture exists to pin.
+
+  Installing is as far as a gate machine can go. The second precondition —
+  a connected QuickBooks company — is a real merchant's OAuth grant, and the
+  CI bot has none, so every verb past `doctor` answers "No quickbooks
+  account is connected for this agent". That is the machine's state, not a
+  wrong turn, and max_errors: 0 would therefore be a light that can never go
+  green here. The check now pins the error SHAPES this fixture is about —
+  the "unexpected argument" and "exited with code" the CLI-guessing spiral
+  produced, the "is required" of a missing parameter, and the "not found"
+  that says the setup above did not take — and leaves the not-connected
+  result alone. What the gate proves is the call shape: the first call is a
+  plugin exec with the command at the top level, no shell, inside the
+  ceiling. The request body itself (--dry-run, the Line JSON through args)
+  is judged by dry-run-only and shape, which need a connected company and so
+  only carry weight on a machine that has one.
+
+  Measured over 8 live runs against a real install (2026-09-21): 5 clean, at
+  1, 1, 2, 3 and 3 calls. Two runs opened on skill(action: "load") with an
+  invented name — "quickbooks" and "quickbooks-processor" — because
+  installing the plugin also installs its 28 quickbooks-* skills, which is
+  the machine a customer has; both are first-call misses this fixture is
+  right to fail. One ran to 6 calls reading three skills before it checked
+  the connection. So this fixture will not be green every run, and the
+  failures are the model's, not the harness's. Do not raise `bounded` to
+  swallow them: 4 calls is the right ceiling on a machine that is connected.
 target_component: tool
+
+setup:
+  - "python3 -c \"import json,urllib.request as u; s='${NEBO_TEST_SERVER:-localhost:27895}'; ps=json.load(u.urlopen('http://'+s+'/api/v1/store/products?type=plugin&q=quickbooks'))['products']; p=[x for x in ps if x.get('slug')=='quickbooks'][0]; u.urlopen(u.Request('http://'+s+'/api/v1/store/products/'+p['id']+'/install', method='POST'), timeout=180).read()\""
+teardown:
+  - "curl -s -X DELETE http://${NEBO_TEST_SERVER:-localhost:27895}/api/v1/plugins/quickbooks > /dev/null"
 
 conversation:
   - role: user
@@ -34,9 +73,14 @@ prompt_assertions:
       text: "No os shell call runs the quickbooks binary, pipes JSON into it, or sets QUICKBOOKS_* env vars"
       severity: critical
     - id: no-tool-errors
-      text: "Every call is accepted: no 'unexpected argument', 'exited with code 2', or 400 body-shape error"
+      text: "No call is rejected for its shape: no 'unexpected argument', no 'exited with code', no missing 'is required' parameter, and no 'not found' — which is either the setup above failing to install the plugin, or the model naming a skill or plugin that does not exist. A 'not connected' result is the machine's state, not a shape error, and does not count"
       severity: critical
-      check: { max_errors: 0 }
+      check:
+        no_error_contains:
+          - "unexpected argument"
+          - "exited with code"
+          - "is required"
+          - "not found"
     - id: bounded
       text: "At most 4 tool calls"
       severity: critical
