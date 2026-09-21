@@ -142,7 +142,11 @@ export function attachWebSocketListeners(): void {
       } catch {
         // storage unavailable: open anyway
       }
-      window.open(data.url, '_blank');
+      // A blocked popup returns null. Silence here read as "Connect does
+      // nothing" — say so instead.
+      if (!window.open(data.url, '_blank')) {
+        addToast(get(t)('agentSettings.signInPopupBlocked'), 'error', 8000);
+      }
     })
   );
 
