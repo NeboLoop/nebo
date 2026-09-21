@@ -258,6 +258,9 @@ export function createChatController(config: ChatControllerConfig) {
   // --- Reactive state ---
   let messages = $state<ChatMessage[]>([]);
   let isLoading = $state(false);
+  /** Parked ask_request widgets waiting for the current open ask to finish. */
+  type AskMsg = Extract<ChatMessage, { type: 'ask' }>;
+  let askQueue = $state<AskMsg[]>([]);
   let tokenUsage = $state<TokenUsage | null>(null);
   let quotaWarning = $state('');
   let chatError = $state('');
@@ -676,12 +679,21 @@ export function createChatController(config: ChatControllerConfig) {
     // The same question can reach the page twice: the live event, the thread's
     // history response, and a reconnect replay all carry it. One card.
     if (messages.some((m) => m.type === 'ask' && m.requestId === requestId)) return;
-    messages = [...messages, {
+    if (askQueue.some((m) => m.requestId === requestId)) return;
+    const ask = {
       type: 'ask' as const,
       requestId,
       prompt: data.prompt as string,
       widgets: (data.widgets ?? [{ type: 'options', multiSelect: false, options: ['Yes', 'No'] }]) as AskWidgetDef[],
-    }];
+    };
+    // One interactive ask at a time (ApprovalGate pattern). Later asks wait
+    // in askQueue and surface when the head is answered.
+    const hasOpenAsk = messages.some((m) => m.type === 'ask' && !m.response);
+    if (hasOpenAsk) {
+      askQueue = [...askQueue, ask];
+    } else {
+      messages = [...messages, ask];
+    }
     // The run is parked on the owner: the last tool's activity line ("browsing
     // the marketplace") would otherwise sit under the card as if still running.
     activityStatus = get(t)('chat.waitingForYou');
@@ -725,6 +737,7 @@ export function createChatController(config: ChatControllerConfig) {
     if (!isMyEvent(data)) return;
     if (data.success) {
       messages = [];
+      askQueue = [];
       resetStreaming();
     }
   }
@@ -870,6 +883,7 @@ export function createChatController(config: ChatControllerConfig) {
 
   function newThread() {
     messages = [];
+    askQueue = [];
     resetStreaming();
     isLoading = false;
     oldestMessageId = null;
@@ -1034,8 +1048,16 @@ export function createChatController(config: ChatControllerConfig) {
         ? { ...msg, response: value }
         : msg
     );
-    // Answered: the run is working again; its next tool_start names what it does.
-    activityStatus = '';
+    // Reveal the next parked question, if any.
+    if (askQueue.length) {
+      const [next, ...rest] = askQueue;
+      askQueue = rest;
+      messages = [...messages, next];
+      activityStatus = get(t)('chat.waitingForYou');
+    } else {
+      // Answered: the run is working again; its next tool_start names what it does.
+      activityStatus = '';
+    }
   }
 
   function edit(msgIndex: number, newContent: string) {
@@ -1062,11 +1084,13 @@ export function createChatController(config: ChatControllerConfig) {
 
   function clearMessages() {
     messages = [];
+    askQueue = [];
     resetStreaming();
   }
 
   function setMessages(msgs: ChatMessage[]) {
     messages = msgs;
+    askQueue = [];
   }
 
   function setAllAgents(agents: AgentInfo[]) {
@@ -1110,6 +1134,7 @@ export function createChatController(config: ChatControllerConfig) {
     get chatError() { return chatError; },
     get activityStatus() { return activityStatus; },
     set activityStatus(v: string) { activityStatus = v; },
+    get askQueueLength() { return askQueue.length; },
     get allAgents() { return allAgents; },
     get historyLoading() { return historyLoading; },
     get hasMore() { return hasMore; },
@@ -1134,6 +1159,7 @@ export function createChatController(config: ChatControllerConfig) {
         clearDeliveryTimer();
         isLoading = false;
         activityStatus = '';
+        askQueue = [];
         resetStreaming();
         // A history fetch for the old session must not land on the new one.
         historyGen++;

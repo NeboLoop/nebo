@@ -109,6 +109,7 @@
   emptyDesc={$t('chat.newThreadEmptyDesc', { values: { name: agent?.name ?? $t('chat.yourEmployee') } })}
   allAgents={chat.allAgents}
   onsend={handleSend}
+  askQueueLength={chat.askQueueLength}
   onteachsent={(_message, sessionKey) => {
     const chatId = threadIdFromKey(sessionKey);
     if (chatId) goto(`/${agentId}/threads/${chatId}?active=1`);
