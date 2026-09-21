@@ -162,14 +162,25 @@ async fn handle_search(input: &serde_json::Value) -> ToolResult {
                 }
             }
             _ => {
-                // Fallback to find
-                let search_dir = if dir.is_empty() { "/" } else { dir };
-                let find_output = tokio::process::Command::new("find")
-                    .args([search_dir, "-name", query, "-maxdepth", "5"])
-                    .output()
-                    .await;
+                // Fallback to find, bounded in scope and time. `find /` walked
+                // /proc, /sys and a 100k-file cargo target on the CI VM for
+                // three minutes until the harness gave up (gate run
+                // 35522052383, 2026-09-20); a cloud pod would crawl the same way.
+                let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
+                let args = find_args(dir, &home, query);
+                let find_output = tokio::time::timeout(
+                    FIND_BUDGET,
+                    tokio::process::Command::new("find").args(&args).output(),
+                )
+                .await;
                 match find_output {
-                    Ok(out) => {
+                    Err(_) => ToolResult::error(format!(
+                        "Search stopped after {}s: no file index (plocate) is installed and a walk of {} took longer than that. \
+                         Search a narrower dir: \"...\", or use glob with a path: os(resource: \"file\", action: \"glob\", path: \"~/Documents\", pattern: \"*.md\").",
+                        FIND_BUDGET.as_secs(),
+                        args[0]
+                    )),
+                    Ok(Ok(out)) => {
                         let text = String::from_utf8_lossy(&out.stdout);
                         let results: Vec<&str> = text.lines().take(limit).collect();
                         if results.is_empty() {
@@ -182,7 +193,7 @@ async fn handle_search(input: &serde_json::Value) -> ToolResult {
                             ))
                         }
                     }
-                    Err(e) => ToolResult::error(format!("Search failed: {}", e)),
+                    Ok(Err(e)) => ToolResult::error(format!("Search failed: {}", e)),
                 }
             }
         }
@@ -233,6 +244,31 @@ async fn handle_search(input: &serde_json::Value) -> ToolResult {
     }
 }
 
+/// How long the no-index `find` fallback may walk before the search says so.
+#[cfg(target_os = "linux")]
+const FIND_BUDGET: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// The `find` fallback's arguments: the given dir, else the home directory
+/// (never `/`); build caches, package trees and pseudo-filesystems pruned;
+/// a case-insensitive name match; depth 6. Pure, so the shape is tested.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn find_args(dir: &str, home: &str, query: &str) -> Vec<String> {
+    let root = if dir.is_empty() { home } else { dir };
+    let mut a: Vec<String> = vec![root.to_string(), "-maxdepth".into(), "6".into()];
+    a.push("(".into());
+    for (i, name) in ["proc", "sys", "dev", "target", "node_modules", ".git", ".cargo", ".cache"].iter().enumerate() {
+        if i > 0 {
+            a.push("-o".into());
+        }
+        a.push("-name".into());
+        a.push((*name).into());
+    }
+    a.extend([")", "-prune", "-o", "-iname"].map(String::from));
+    a.push(if query.contains('*') || query.contains('?') { query.to_string() } else { format!("*{query}*") });
+    a.push("-print".into());
+    a
+}
+
 /// "Found N results", and when the list was cut at `limit`, says so and
 /// names the parameter that raises it.
 #[cfg_attr(not(any(target_os = "macos", target_os = "linux", target_os = "windows")), allow(dead_code))]
@@ -247,6 +283,23 @@ fn found_header(n: usize, limit: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The fallback never walks `/`, prunes what is never a user's file, and
+    /// matches a bare word as a substring, a pattern as given.
+    #[test]
+    fn find_fallback_is_rooted_pruned_and_substring_matched() {
+        let a = find_args("", "/home/nebo", "report");
+        assert_eq!(a[0], "/home/nebo", "no dir means the home directory, never /");
+        assert_eq!(&a[1..3], &["-maxdepth", "6"]);
+        let joined = a.join(" ");
+        for pruned in ["proc", "sys", "target", "node_modules", ".git"] {
+            assert!(joined.contains(&format!("-name {pruned}")), "{pruned} is pruned: {joined}");
+        }
+        assert!(joined.ends_with("-prune -o -iname *report* -print"), "{joined}");
+        let b = find_args("/srv/data", "/home/nebo", "*.md");
+        assert_eq!(b[0], "/srv/data");
+        assert!(b.join(" ").ends_with("-iname *.md -print"), "a pattern is used as given: {}", b.join(" "));
+    }
 
     #[test]
     fn found_header_names_the_limit_only_when_it_was_hit() {
