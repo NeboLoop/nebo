@@ -1,5 +1,81 @@
+use std::path::{Path, PathBuf};
+use std::process::Stdio;
+use std::time::{Duration, Instant};
+
+use tokio::io::AsyncBufReadExt;
+
 use crate::origin::ToolContext;
 use crate::registry::{DynTool, ToolResult};
+
+/// How long a file search may run before it gives up.
+///
+/// The runner's per-tool budget is 300 s and the harness ends a silent run at
+/// 180 s, so neither of those can ever be the thing that stops a search: the
+/// run is over before the tool says a word. A search that has not found the
+/// file in twenty seconds is searching the wrong place, and the employee is
+/// better served by a sentence telling it to narrow the search than by three
+/// more minutes of walking the disk.
+///
+/// This is the whole call's budget, not one command's: when plocate is absent
+/// and the find fallback runs, both share these twenty seconds.
+const SEARCH_DEADLINE: Duration = Duration::from_secs(20);
+
+/// The engine budget this tool asks for: the search's own deadline plus room
+/// to format the answer. The tool always stops itself first, so the model
+/// reads the search's own sentence about narrowing the query instead of the
+/// runner's generic timeout text.
+const SEARCH_EXECUTION_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How deep a name search walks. Matches the depth the Linux fallback has
+/// always used; a file further down than this wants a `dir`.
+const MAX_DEPTH: &str = "5";
+
+/// Paths a name search must never walk: kernel and device trees that are not
+/// files, the runtime churn beside them, and the autofs triggers that mount a
+/// remote filesystem merely by being looked at. Pruned only when they are
+/// actually under the root, so a scoped search pays nothing for them.
+const NEVER_WALK: [&str; 11] = [
+    "/proc",
+    "/sys",
+    "/dev",
+    "/run",
+    "/var/run",
+    "/mnt",
+    "/media",
+    "/net",
+    "/private/var/vm",
+    "/System/Volumes/Data",
+    "/Volumes",
+];
+
+/// Filesystem types a name search must never enter. A read of a directory on
+/// one of these can block in the kernel with no timeout and no signal: the
+/// gate's orphaned `find` processes were stuck in uninterruptible sleep inside
+/// `fuse_readdir` on a virtiofs mount, where neither a deadline, a `kill`, nor
+/// `kill_on_drop` can reach them. The only fix that works is not going in.
+/// Matched against `/proc/self/mounts`; anything starting with `fuse` counts.
+/// The table is Linux-shaped, so only a Linux build reads it — macOS keeps the
+/// autofs and removable-volume roots in `NEVER_WALK` instead.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+const FOREIGN_FS: [&str; 17] = [
+    "virtiofs",
+    "nfs",
+    "nfs4",
+    "cifs",
+    "smbfs",
+    "smb3",
+    "afpfs",
+    "autofs",
+    "9p",
+    "sshfs",
+    "davfs",
+    "webdav",
+    "ceph",
+    "glusterfs",
+    "lustre",
+    "afs",
+    "coda",
+];
 
 /// Spotlight tool: search files using platform-native search (mdfind on macOS, plocate/find on Linux).
 pub struct SpotlightTool;
@@ -19,6 +95,8 @@ impl DynTool for SpotlightTool {
         "Search for files using the OS search index (Spotlight on macOS, plocate on Linux, PowerShell on Windows).\n\n\
          Actions:\n\
          - search: Find files matching a query\n\n\
+         The search is bounded: it starts from `dir`, or from the bot's own working area when no `dir` is given, \
+         and gives up after 20 seconds. Pass `dir` whenever you know roughly where the file is.\n\n\
          Examples:\n  \
          spotlight(action: \"search\", query: \"budget 2024\")\n  \
          spotlight(action: \"search\", query: \"*.pdf\", dir: \"~/Documents\")"
@@ -40,7 +118,7 @@ impl DynTool for SpotlightTool {
                 },
                 "dir": {
                     "type": "string",
-                    "description": "Directory to search within (optional)"
+                    "description": "Directory to search within (defaults to the bot's working area)"
                 },
                 "limit": {
                     "type": "integer",
@@ -55,22 +133,319 @@ impl DynTool for SpotlightTool {
         false
     }
 
+    fn execution_timeout(&self, _input: &serde_json::Value) -> Option<std::time::Duration> {
+        Some(SEARCH_EXECUTION_TIMEOUT)
+    }
+
     fn execute_dyn<'a>(
         &'a self,
-        _ctx: &'a ToolContext,
+        ctx: &'a ToolContext,
         input: serde_json::Value,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send + 'a>> {
         Box::pin(async move {
             let action = input["action"].as_str().unwrap_or("");
             match action {
-                "search" => handle_search(&input).await,
+                "search" => handle_search(ctx, &input).await,
                 _ => ToolResult::error(format!("Unknown action '{}'. Use: search", action)),
             }
         })
     }
 }
 
-async fn handle_search(input: &serde_json::Value) -> ToolResult {
+/// What a bounded search command came back with. `lines` is everything it had
+/// printed when it stopped, whether it finished or ran out of time.
+struct Search {
+    lines: Vec<String>,
+    /// The deadline passed and the child was killed before it finished.
+    timed_out: bool,
+    /// The command exited successfully (meaningless when it timed out).
+    ok: bool,
+    stderr: String,
+    /// The child's pid. Carried for the test that proves nothing outlives the
+    /// deadline; the running server reads it from the log line instead.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pid: Option<u32>,
+    /// The command could not be started at all (plocate absent, for instance).
+    spawn_error: Option<String>,
+}
+
+impl Search {
+    fn failed_to_start(e: std::io::Error) -> Self {
+        Self {
+            lines: Vec::new(),
+            timed_out: false,
+            ok: false,
+            stderr: String::new(),
+            pid: None,
+            spawn_error: Some(e.to_string()),
+        }
+    }
+}
+
+/// Run one search command under a deadline it cannot outlive.
+///
+/// Output is read line by line as it arrives, so a search that is stopped
+/// still hands back what it had found. The child is spawned with
+/// `kill_on_drop` and killed and reaped explicitly on the way out: the gate
+/// found `find` processes still walking the filesystem three and seven
+/// minutes after their runs were cancelled, because nothing here ever ended
+/// the child.
+async fn run_search(
+    mut cmd: tokio::process::Command,
+    limit: usize,
+    deadline: Instant,
+) -> Search {
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => return Search::failed_to_start(e),
+    };
+    let pid = child.id();
+    let mut out = tokio::io::BufReader::new(child.stdout.take().expect("stdout piped")).lines();
+    let mut err = tokio::io::BufReader::new(child.stderr.take().expect("stderr piped")).lines();
+
+    let mut lines: Vec<String> = Vec::new();
+    let mut stderr = String::new();
+    let mut out_done = false;
+    let mut err_done = false;
+    let mut timed_out = false;
+    let mut enough = false;
+
+    let sleep = tokio::time::sleep_until(tokio::time::Instant::from_std(deadline));
+    tokio::pin!(sleep);
+
+    while !(out_done && err_done) {
+        tokio::select! {
+            _ = &mut sleep => { timed_out = true; break; }
+            line = out.next_line(), if !out_done => match line {
+                Ok(Some(l)) => {
+                    if !l.trim().is_empty() {
+                        lines.push(l);
+                    }
+                    if lines.len() >= limit {
+                        enough = true;
+                        break;
+                    }
+                }
+                _ => out_done = true,
+            },
+            line = err.next_line(), if !err_done => match line {
+                Ok(Some(l)) => {
+                    // Broad searches print a "Permission denied" per unreadable
+                    // directory; keep enough to explain a real failure, not the noise.
+                    if stderr.len() < 2000 {
+                        stderr.push_str(l.trim());
+                        stderr.push('\n');
+                    }
+                }
+                _ => err_done = true,
+            },
+        }
+    }
+
+    let ok = if timed_out || enough {
+        // Kill and reap: the child dies with this call, never after it.
+        if timed_out {
+            tracing::debug!(pid = ?pid, "file search hit its deadline; killing the child");
+        }
+        let _ = child.kill().await;
+        enough
+    } else {
+        child.wait().await.map(|s| s.success()).unwrap_or(false)
+    };
+
+    Search {
+        lines,
+        timed_out,
+        ok,
+        stderr: stderr.trim().to_string(),
+        pid,
+        spawn_error: None,
+    }
+}
+
+/// Where a search starts. A search with no `dir` searches the bot's own
+/// working area — never `/`. On a Linux bot (every cloud bot is one) `find /`
+/// walks `/proc`, `/sys` and every build tree on the box, and there is no
+/// index to fall back on. An explicit `/` from the caller is honoured, and
+/// bounded in time like any other root.
+fn search_root(dir: &str, ctx: &ToolContext) -> PathBuf {
+    let dir = dir.trim();
+    if !dir.is_empty() {
+        return PathBuf::from(crate::file_tool::expand_path(dir));
+    }
+    if let Some(cwd) = ctx.cwd.as_deref().map(str::trim).filter(|c| !c.is_empty()) {
+        return PathBuf::from(cwd);
+    }
+    if let Some(home) = dirs::home_dir() {
+        return home;
+    }
+    config::data_dir().unwrap_or_else(|_| PathBuf::from("."))
+}
+
+/// A bare word matches anywhere in the name; a pattern the caller already
+/// wrote as a glob is used as written. One rule on every platform.
+fn name_pattern(query: &str) -> String {
+    if query.contains('*') || query.contains('?') || query.contains('[') {
+        query.to_string()
+    } else {
+        format!("*{query}*")
+    }
+}
+
+/// Mount points on a filesystem a search must not enter, read from a
+/// `/proc/self/mounts`-shaped table: `device mountpoint fstype options…`,
+/// with the kernel's octal escapes for the awkward characters in a path.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn parse_foreign_mounts(table: &str) -> Vec<PathBuf> {
+    table
+        .lines()
+        .filter_map(|line| {
+            let mut f = line.split_whitespace();
+            let _device = f.next()?;
+            let point = f.next()?;
+            let fstype = f.next()?;
+            let foreign = fstype.starts_with("fuse") || FOREIGN_FS.contains(&fstype);
+            foreign.then(|| PathBuf::from(unescape_mount_path(point)))
+        })
+        .collect()
+}
+
+/// `/proc/self/mounts` escapes space, tab, newline and backslash in octal.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn unescape_mount_path(raw: &str) -> String {
+    if !raw.contains('\\') {
+        return raw.to_string();
+    }
+    let bytes = raw.as_bytes();
+    let mut out = String::with_capacity(raw.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'\\' && i + 3 < bytes.len() {
+            if let Some(c) = std::str::from_utf8(&bytes[i + 1..i + 4])
+                .ok()
+                .and_then(|o| u8::from_str_radix(o, 8).ok())
+            {
+                out.push(c as char);
+                i += 4;
+                continue;
+            }
+        }
+        out.push(bytes[i] as char);
+        i += 1;
+    }
+    out
+}
+
+/// Every mount on this box a search must not walk into. Linux reads the live
+/// table; macOS has no `/proc`, and the autofs and removable-volume roots that
+/// would hang a walk there are already in `NEVER_WALK`.
+fn foreign_mounts() -> Vec<PathBuf> {
+    #[cfg(target_os = "linux")]
+    {
+        std::fs::read_to_string("/proc/self/mounts")
+            .map(|t| parse_foreign_mounts(&t))
+            .unwrap_or_default()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        Vec::new()
+    }
+}
+
+/// The paths this search must step around: the kernel and device trees, plus
+/// every foreign mount, narrowed to the ones actually under the root.
+fn skip_paths(root: &Path) -> Vec<PathBuf> {
+    let under = |p: &Path| p.starts_with(root) && p != root;
+    NEVER_WALK
+        .iter()
+        .map(PathBuf::from)
+        .chain(foreign_mounts())
+        .filter(|p| under(p))
+        .collect()
+}
+
+/// The find command for this root: depth-bounded, kept on the root's own
+/// filesystem with `-xdev`, and with every path in `skip` pruned by name
+/// before find ever asks the kernel about it.
+fn find_command(root: &Path, query: &str, skip: &[PathBuf]) -> tokio::process::Command {
+    let mut cmd = tokio::process::Command::new("find");
+    // `-xdev` keeps the walk on one filesystem: a virtiofs, NFS or SMB mount
+    // under the root is never entered, so a directory read can never block
+    // forever in the kernel. The named prunes below cover what `-xdev` cannot
+    // — an autofs trigger that would mount the remote filesystem the moment
+    // find looked at it.
+    cmd.arg(root).arg("-xdev").args(["-maxdepth", MAX_DEPTH]);
+
+    if !skip.is_empty() {
+        cmd.arg("(");
+        for (i, p) in skip.iter().enumerate() {
+            if i > 0 {
+                cmd.arg("-o");
+            }
+            cmd.arg("-path").arg(p);
+        }
+        cmd.arg(")").arg("-prune").arg("-o");
+    }
+
+    cmd.arg("-iname").arg(name_pattern(query)).arg("-print");
+    cmd
+}
+
+/// Walk `root` for a name, bounded by `deadline`. The ONE fallback for every
+/// platform whose index came back empty or is not installed.
+async fn run_find(
+    root: &Path,
+    query: &str,
+    limit: usize,
+    deadline: Instant,
+    skip: &[PathBuf],
+) -> Search {
+    run_search(find_command(root, query, skip), limit, deadline).await
+}
+
+/// The plain sentence a search that ran out of time gives back: what was
+/// searched, that it was stopped, how to narrow it, and whatever it had
+/// already found.
+fn took_too_long(query: &str, root: &Path, budget: Duration, partial: &[String]) -> String {
+    let mut msg = format!(
+        "The search for \"{}\" under {} took longer than {} seconds, so it was stopped. \
+         Narrow it and search again: pass dir with the folder the file is likely in, \
+         or give a more specific name.",
+        query,
+        root.display(),
+        budget.as_secs()
+    );
+    if !partial.is_empty() {
+        msg.push_str(&format!(
+            "\n\nWhat it had found before it stopped ({}):\n{}",
+            partial.len(),
+            partial.join("\n")
+        ));
+    }
+    msg
+}
+
+/// Nothing matched — the same advice on every platform.
+const NOTHING_FOUND: &str = "No files found. To find files by name or extension pattern, use glob instead: os(resource: \"file\", action: \"glob\", pattern: \"*.ext\", path: \".\")";
+
+fn render(found: &[String], limit: usize) -> ToolResult {
+    if found.is_empty() {
+        ToolResult::ok(NOTHING_FOUND)
+    } else {
+        ToolResult::ok(format!(
+            "{}:\n{}",
+            found_header(found.len(), limit),
+            found.join("\n")
+        ))
+    }
+}
+
+async fn handle_search(ctx: &ToolContext, input: &serde_json::Value) -> ToolResult {
     let query = input["query"].as_str().unwrap_or("");
     if query.is_empty() {
         return ToolResult::error(crate::errors::missing_param(
@@ -80,151 +455,111 @@ async fn handle_search(input: &serde_json::Value) -> ToolResult {
         ));
     }
     #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
-    let limit = input["limit"].as_i64().unwrap_or(50) as usize;
+    let limit = input["limit"].as_i64().unwrap_or(50).clamp(1, 1000) as usize;
     #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
     let dir = input["dir"].as_str().unwrap_or("");
+    #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+    let root = search_root(dir, ctx);
+    #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+    let deadline = Instant::now() + SEARCH_DEADLINE;
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    let skip = skip_paths(&root);
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    let _ = ctx;
 
     #[cfg(target_os = "macos")]
     {
         let mut cmd = tokio::process::Command::new("mdfind");
-        if !dir.is_empty() {
-            cmd.arg("-onlyin").arg(dir);
-        }
-        cmd.arg(query);
+        cmd.arg("-onlyin").arg(&root).arg(query);
+        let indexed = run_search(cmd, limit, deadline).await;
 
-        match cmd.output().await {
-            Ok(output) if output.status.success() => {
-                let text = String::from_utf8_lossy(&output.stdout);
-                let results: Vec<&str> = text.lines().take(limit).collect();
-                if results.is_empty() {
-                    // Spotlight does not index ~/Library (app data lives there), so
-                    // fall back to a bounded find when a dir was given, and say why
-                    // otherwise.
-                    if !dir.is_empty() {
-                        if let Ok(out) = tokio::process::Command::new("find")
-                            .arg(dir)
-                            .args(["-maxdepth", "8", "-iname"])
-                            .arg(format!("*{}*", query))
-                            .output()
-                            .await
-                        {
-                            let text = String::from_utf8_lossy(&out.stdout);
-                            let found: Vec<&str> = text.lines().take(limit).collect();
-                            if !found.is_empty() {
-                                return ToolResult::ok(format!(
-                                    "{} (mdfind returned nothing; results are from a bounded find in {}):\n{}",
-                                    found_header(found.len(), limit),
-                                    dir,
-                                    found.join("\n")
-                                ));
-                            }
-                        }
-                    }
-                    ToolResult::ok("No files found. Note: Spotlight does not index ~/Library — for app data pass dir: \"~/Library\" (a find fallback runs there). For name/extension patterns use glob: os(resource: \"file\", action: \"glob\", pattern: \"*.ext\", path: \".\")")
-                } else {
-                    ToolResult::ok(format!(
-                        "{}:\n{}",
-                        found_header(results.len(), limit),
-                        results.join("\n")
-                    ))
-                }
-            }
-            Ok(output) => {
-                let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-                ToolResult::error(format!("mdfind error: {}", stderr))
-            }
-            Err(e) => ToolResult::error(format!("Failed to run mdfind: {}", e)),
+        if let Some(e) = &indexed.spawn_error {
+            return ToolResult::error(format!("Failed to run mdfind: {e}"));
         }
+        if indexed.timed_out {
+            return ToolResult::error(took_too_long(query, &root, SEARCH_DEADLINE, &indexed.lines));
+        }
+        if !indexed.ok && indexed.lines.is_empty() && !indexed.stderr.is_empty() {
+            return ToolResult::error(format!("mdfind error: {}", indexed.stderr));
+        }
+        if !indexed.lines.is_empty() {
+            return render(&indexed.lines, limit);
+        }
+
+        // Spotlight does not index ~/Library (app data lives there), so fall
+        // back to a bounded find over the same root, inside the same deadline.
+        let walked = run_find(&root, query, limit, deadline, &skip).await;
+        if walked.timed_out {
+            return ToolResult::error(took_too_long(query, &root, SEARCH_DEADLINE, &walked.lines));
+        }
+        if walked.lines.is_empty() {
+            return ToolResult::ok(format!(
+                "No files found under {}. Note: Spotlight does not index ~/Library — for app data pass dir: \"~/Library\". For name/extension patterns use glob: os(resource: \"file\", action: \"glob\", pattern: \"*.ext\", path: \".\")",
+                root.display()
+            ));
+        }
+        ToolResult::ok(format!(
+            "{} (mdfind returned nothing; results are from a bounded find in {}):\n{}",
+            found_header(walked.lines.len(), limit),
+            root.display(),
+            walked.lines.join("\n")
+        ))
     }
 
     #[cfg(target_os = "linux")]
     {
-        // Try plocate first, fall back to find
-        let output = tokio::process::Command::new("plocate")
-            .arg("-l")
-            .arg(limit.to_string())
-            .arg(query)
-            .output()
-            .await;
+        // The index first, when the box has one.
+        let mut cmd = tokio::process::Command::new("plocate");
+        cmd.arg("-l").arg(limit.to_string()).arg(query);
+        let indexed = run_search(cmd, limit, deadline).await;
 
-        match output {
-            Ok(out) if out.status.success() => {
-                let text = String::from_utf8_lossy(&out.stdout);
-                let results: Vec<&str> = text.lines().take(limit).collect();
-                if results.is_empty() {
-                    ToolResult::ok("No files found. To find files by name or extension pattern, use glob instead: os(resource: \"file\", action: \"glob\", pattern: \"*.ext\", path: \".\")")
-                } else {
-                    ToolResult::ok(format!(
-                        "{}:\n{}",
-                        found_header(results.len(), limit),
-                        results.join("\n")
-                    ))
-                }
-            }
-            _ => {
-                // Fallback to find
-                let search_dir = if dir.is_empty() { "/" } else { dir };
-                let find_output = tokio::process::Command::new("find")
-                    .args([search_dir, "-name", query, "-maxdepth", "5"])
-                    .output()
-                    .await;
-                match find_output {
-                    Ok(out) => {
-                        let text = String::from_utf8_lossy(&out.stdout);
-                        let results: Vec<&str> = text.lines().take(limit).collect();
-                        if results.is_empty() {
-                            ToolResult::ok("No files found. To find files by name or extension pattern, use glob instead: os(resource: \"file\", action: \"glob\", pattern: \"*.ext\", path: \".\")")
-                        } else {
-                            ToolResult::ok(format!(
-                                "{}:\n{}",
-                                found_header(results.len(), limit),
-                                results.join("\n")
-                            ))
-                        }
-                    }
-                    Err(e) => ToolResult::error(format!("Search failed: {}", e)),
-                }
-            }
+        if indexed.timed_out {
+            return ToolResult::error(took_too_long(query, &root, SEARCH_DEADLINE, &indexed.lines));
         }
+        if indexed.spawn_error.is_none() && indexed.ok && !indexed.lines.is_empty() {
+            return render(&indexed.lines, limit);
+        }
+        if indexed.spawn_error.is_none() && indexed.ok {
+            return ToolResult::ok(NOTHING_FOUND);
+        }
+
+        // No plocate on this box — every cloud bot is in this branch. Walk,
+        // but only the bot's own working area, and only until the deadline.
+        let walked = run_find(&root, query, limit, deadline, &skip).await;
+        if let Some(e) = &walked.spawn_error {
+            return ToolResult::error(format!("Search failed: {e}"));
+        }
+        if walked.timed_out {
+            return ToolResult::error(took_too_long(query, &root, SEARCH_DEADLINE, &walked.lines));
+        }
+        render(&walked.lines, limit)
     }
 
     #[cfg(target_os = "windows")]
     {
-        // Use PowerShell to search via Windows Search API
-        let escaped_query = query.replace("'", "''");
-        let search_dir = if dir.is_empty() {
-            "$env:USERPROFILE".to_string()
-        } else {
-            format!("'{}'", dir.replace("'", "''"))
-        };
+        let escaped_root = root.to_string_lossy().replace('\'', "''");
         let script = format!(
-            "Get-ChildItem -Path {} -Recurse -Filter '*{}*' -ErrorAction SilentlyContinue | Select-Object -First {} -ExpandProperty FullName",
-            search_dir, escaped_query, limit
+            "Get-ChildItem -Path '{}' -Recurse -Depth {} -Filter '{}' -ErrorAction SilentlyContinue | Select-Object -First {} -ExpandProperty FullName",
+            escaped_root,
+            MAX_DEPTH,
+            name_pattern(query).replace('\'', "''"),
+            limit
         );
-        match tokio::process::Command::new("powershell")
-            .args(["-NoProfile", "-Command", &script])
-            .output()
-            .await
-        {
-            Ok(output) if output.status.success() => {
-                let text = String::from_utf8_lossy(&output.stdout);
-                let results: Vec<&str> = text.lines().take(limit).collect();
-                if results.is_empty() {
-                    ToolResult::ok("No files found. To find files by name or extension pattern, use glob instead: os(resource: \"file\", action: \"glob\", pattern: \"*.ext\", path: \".\")")
-                } else {
-                    ToolResult::ok(format!(
-                        "{}:\n{}",
-                        found_header(results.len(), limit),
-                        results.join("\n")
-                    ))
-                }
-            }
-            Ok(output) => {
-                let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-                ToolResult::error(format!("Search error: {}", stderr))
-            }
-            Err(e) => ToolResult::error(format!("Failed to run search: {}", e)),
+        let mut cmd = tokio::process::Command::new("powershell");
+        cmd.args(["-NoProfile", "-Command", &script]);
+        let walked = run_search(cmd, limit, deadline).await;
+
+        if let Some(e) = &walked.spawn_error {
+            return ToolResult::error(format!("Failed to run search: {e}"));
         }
+        if walked.timed_out {
+            return ToolResult::error(took_too_long(query, &root, SEARCH_DEADLINE, &walked.lines));
+        }
+        if !walked.ok && walked.lines.is_empty() && !walked.stderr.is_empty() {
+            return ToolResult::error(format!("Search error: {}", walked.stderr));
+        }
+        render(&walked.lines, limit)
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
@@ -247,6 +582,16 @@ fn found_header(n: usize, limit: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A pid is gone (or a reaped-any-moment zombie) — not still walking the disk.
+    fn still_running(pid: u32) -> bool {
+        let out = std::process::Command::new("ps")
+            .args(["-o", "state=", "-p", &pid.to_string()])
+            .output()
+            .expect("ps runs");
+        let state = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        !state.is_empty() && !state.starts_with('Z')
+    }
 
     #[test]
     fn found_header_names_the_limit_only_when_it_was_hit() {
@@ -281,5 +626,218 @@ mod tests {
         let result = tool.execute_dyn(&ctx, input).await;
         assert!(result.is_error);
         assert!(result.content.contains("Unknown action"));
+    }
+
+    /// The engine's budget must be the tool's, so the search's own sentence
+    /// about narrowing the query is what the model reads — never the runner's
+    /// timeout text, which the harness would cut off before it ever arrived.
+    #[test]
+    fn the_engine_budget_is_the_tools_own() {
+        let tool = SpotlightTool::new();
+        let budget = tool
+            .execution_timeout(&serde_json::json!({"action": "search", "query": "x"}))
+            .expect("search declares its own budget");
+        assert!(budget > SEARCH_DEADLINE, "the tool must stop itself first");
+        assert!(
+            budget < Duration::from_secs(180),
+            "must land inside the harness's silence cap"
+        );
+    }
+
+    /// The defect: a search with no `dir` used to become `find /`. The root
+    /// is the bot's own working area instead, and an explicit root is kept.
+    #[test]
+    fn a_search_with_no_dir_never_starts_at_the_filesystem_root() {
+        let ctx = ToolContext::default();
+        assert_ne!(search_root("", &ctx), PathBuf::from("/"));
+
+        let mut scoped = ToolContext::default();
+        scoped.cwd = Some("/tmp/work-area".to_string());
+        assert_eq!(search_root("", &scoped), PathBuf::from("/tmp/work-area"));
+
+        // A caller who asks for `/` gets `/` — bounded in time, not refused.
+        assert_eq!(search_root("/", &scoped), PathBuf::from("/"));
+    }
+
+    /// A broad root prunes the kernel and device trees and stays on one
+    /// filesystem; a scoped one pays nothing for them.
+    #[test]
+    fn a_broad_root_prunes_the_trees_that_are_not_files() {
+        let broad = find_command(Path::new("/"), "*.md", &skip_paths(Path::new("/")));
+        let args: Vec<String> = broad
+            .as_std()
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert!(args.contains(&"-xdev".to_string()), "the walk must stay on one filesystem");
+        assert!(args.contains(&"-prune".to_string()));
+        assert!(args.contains(&"/proc".to_string()));
+        assert!(args.contains(&"/sys".to_string()));
+        assert!(args.contains(&"/mnt".to_string()));
+        assert!(args.windows(2).any(|w| w[0] == "-maxdepth" && w[1] == MAX_DEPTH));
+
+        let scoped = find_command(Path::new("/tmp/fixture"), "*.md", &skip_paths(Path::new("/tmp/fixture")));
+        let args: Vec<String> = scoped
+            .as_std()
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert!(!args.contains(&"-prune".to_string()));
+        assert!(args.contains(&"-xdev".to_string()));
+    }
+
+    /// The mounts table, read the way the kernel writes it: only the
+    /// filesystems a walk must not enter come back, escapes and all.
+    #[test]
+    fn the_mounts_table_names_only_the_filesystems_to_stay_out_of() {
+        let table = "\
+/dev/vda1 / ext4 rw,relatime 0 0
+proc /proc proc rw,nosuid 0 0
+mount0 /mnt/lima-rosetta fuse.virtiofs rw,nosuid,nodev 0 0
+share /Users/stadium virtiofs rw,relatime 0 0
+fileserver:/vol /srv/files nfs4 rw 0 0
+//host/share /srv/win\\040share cifs rw 0 0
+tmpfs /tmp tmpfs rw 0 0
+";
+        let foreign = parse_foreign_mounts(table);
+        assert_eq!(
+            foreign,
+            vec![
+                PathBuf::from("/mnt/lima-rosetta"),
+                PathBuf::from("/Users/stadium"),
+                PathBuf::from("/srv/files"),
+                PathBuf::from("/srv/win share"),
+            ],
+            "ext4, proc and tmpfs are walkable; fuse, virtiofs, nfs and cifs are not"
+        );
+    }
+
+    /// The incident's shape, run for real: a directory standing in for the
+    /// virtiofs mount that hung the gate's `find`. The search must not enter
+    /// it, and must still find what is beside it.
+    #[tokio::test]
+    async fn a_search_never_enters_a_foreign_mount() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mount = tmp.path().join("lima-rosetta");
+        std::fs::create_dir_all(&mount).expect("fixture mount");
+        std::fs::write(mount.join("notes.md"), "x").expect("fixture file");
+        std::fs::write(tmp.path().join("notes.md"), "x").expect("fixture file");
+
+        // The mounts table this box would have reported, stubbed.
+        let table = format!(
+            "/dev/vda1 / ext4 rw 0 0\nmount0 {} fuse.virtiofs rw 0 0\n",
+            mount.display()
+        );
+        let skip = parse_foreign_mounts(&table);
+        assert_eq!(skip, vec![mount.clone()]);
+
+        let walked = run_find(tmp.path(), "notes", 50, Instant::now() + SEARCH_DEADLINE, &skip).await;
+        assert!(!walked.timed_out);
+        assert_eq!(walked.lines.len(), 1, "found {:?}", walked.lines);
+        assert!(
+            !walked.lines[0].contains("lima-rosetta"),
+            "the walk stepped into the mount it was told to skip: {:?}",
+            walked.lines
+        );
+    }
+
+    /// The incident, reproduced: a walk of a root far too big to finish in the
+    /// budget it was given. It must come back inside the deadline, say plainly
+    /// that it was stopped and how to narrow it, and leave nothing behind
+    /// still walking the disk. The budget is a fraction of a second on purpose
+    /// — what is under test is the deadline, not the size of the disk.
+    #[tokio::test]
+    async fn a_walk_of_a_huge_root_stops_at_the_deadline_and_kills_its_child() {
+        let budget = Duration::from_millis(100);
+        let root = Path::new("/");
+        let started = Instant::now();
+        let walked = run_find(root, "*.md", 50, started + budget, &skip_paths(root)).await;
+        let elapsed = started.elapsed();
+
+        assert!(walked.timed_out, "a walk of / cannot finish in {budget:?}");
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "the search must return at its deadline, took {elapsed:?}"
+        );
+
+        let pid = walked.pid.expect("the walk spawned a child");
+        assert!(
+            !still_running(pid),
+            "find (pid {pid}) outlived the search that started it"
+        );
+
+        let msg = took_too_long("*.md", root, budget, &walked.lines);
+        assert!(msg.contains("took longer than"));
+        assert!(msg.contains("Narrow it"));
+        assert!(msg.contains("dir"));
+        assert!(!msg.contains('!'));
+    }
+
+    /// A scoped search still does its job: it finds the file and comes back.
+    #[tokio::test]
+    async fn a_scoped_search_finds_its_file() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let nested = tmp.path().join("reports/2024");
+        std::fs::create_dir_all(&nested).expect("fixture tree");
+        std::fs::write(nested.join("budget-2024.md"), "x").expect("fixture file");
+        std::fs::write(tmp.path().join("unrelated.txt"), "x").expect("fixture file");
+
+        let walked = run_find(tmp.path(), "budget", 50, Instant::now() + SEARCH_DEADLINE, &[]).await;
+        assert!(!walked.timed_out, "a three-file tree finishes");
+        assert_eq!(walked.lines.len(), 1, "found {:?}", walked.lines);
+        assert!(walked.lines[0].ends_with("budget-2024.md"));
+
+        let rendered = render(&walked.lines, 50);
+        assert!(!rendered.is_error);
+        assert!(rendered.content.contains("budget-2024.md"));
+    }
+
+    /// The whole tool, through its public door: a search scoped to a fixture
+    /// tree comes back with the file and no timeout.
+    #[tokio::test]
+    async fn the_tool_searches_the_directory_it_was_given() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        std::fs::write(tmp.path().join("invoice-441.pdf"), "x").expect("fixture file");
+
+        let tool = SpotlightTool::new();
+        let ctx = ToolContext::default();
+        let result = tool
+            .execute_dyn(
+                &ctx,
+                serde_json::json!({
+                    "action": "search",
+                    "query": "invoice-441",
+                    "dir": tmp.path().to_string_lossy(),
+                }),
+            )
+            .await;
+        assert!(!result.is_error, "{}", result.content);
+        assert!(
+            result.content.contains("invoice-441.pdf"),
+            "{}",
+            result.content
+        );
+    }
+
+    /// A command that would run for half a minute is killed at the deadline,
+    /// and its partial output survives.
+    #[tokio::test]
+    async fn a_slow_command_is_killed_at_the_deadline_with_its_partial_output() {
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.args(["-c", "echo first; echo second; sleep 30"]);
+        let started = Instant::now();
+        let ran = run_search(cmd, 50, started + Duration::from_millis(600)).await;
+
+        assert!(ran.timed_out);
+        assert!(started.elapsed() < Duration::from_secs(3));
+        assert_eq!(ran.lines, vec!["first".to_string(), "second".to_string()]);
+        let pid = ran.pid.expect("spawned");
+        assert!(!still_running(pid), "sleep (pid {pid}) outlived its deadline");
+    }
+
+    #[test]
+    fn a_bare_word_matches_anywhere_a_glob_is_used_as_written() {
+        assert_eq!(name_pattern("budget"), "*budget*");
+        assert_eq!(name_pattern("*.md"), "*.md");
     }
 }
