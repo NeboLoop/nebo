@@ -56,9 +56,6 @@ importers:
       marked:
         specifier: ^18.0.3
         version: 18.0.3
-      marked-katex-extension:
-        specifier: ^5.1.13
-        version: 5.1.13(katex@0.18.7)(marked@18.0.3)
       pdfjs-dist:
         specifier: ^6.3.289
         version: 6.3.289
@@ -1454,12 +1451,6 @@ packages:
   markdown-it@14.3.1:
     resolution: {integrity: sha512-4Ej49aYTDFIQ+uBkfX8GBvJGccoARxxPep+7aWTs55ozbjQJpW9M26Fe53vnGgvLeVzva/amzjQQaQu9w0vMhA==}
     hasBin: true
-
-  marked-katex-extension@5.1.13:
-    resolution: {integrity: sha512-+6gVygGg5at9g+YsuIQZk7XcAc6Pg1P0grEJKEWvF7DAwceZ7ZIvU0fhQe6auUqSbnPmSjJxZuICdSCdbGaFRw==}
-    peerDependencies:
-      katex: '>=0.16 <0.19'
-      marked: '>=4 <19'
 
   marked@18.0.3:
     resolution: {integrity: sha512-7VT90JOkDeaRWpfjOReRGPEKn0ecdARBkDGL+tT1wZY0efPPqkUxLUSmzy/C7TIylQYJC9STISEsCHrqb/7VIA==}
@@ -2982,11 +2973,6 @@ snapshots:
       mdurl: 2.0.0
       punycode.js: 2.3.1
       uc.micro: 2.1.0
-
-  marked-katex-extension@5.1.13(katex@0.18.7)(marked@18.0.3):
-    dependencies:
-      katex: 0.18.7
-      marked: 18.0.3
 
   marked@18.0.3: {}
 

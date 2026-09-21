@@ -40,6 +40,33 @@ function webkitNodeDedupe() {
 	};
 }
 
+// KaTeX ships each of its 60-odd font faces three times — woff2, woff and a
+// bare ttf — and its stylesheet names all three, so Vite copies all three into
+// the bundle: about 730 KB of files no browser we run on will ever request.
+// Every webview here (Chromium, WebKit, the Tauri shell) has supported woff2
+// for years, so the other two `src` entries are dropped from the stylesheet on
+// the way through, and the files stop being referenced and stop being emitted.
+function katexWoff2Only() {
+	return {
+		name: 'nebo-katex-woff2-only',
+		// Before `vite:css`, which rewrites every `url()` into a hashed asset
+		// reference — after that the `.woff` in the path is gone and there is
+		// nothing left to match on.
+		enforce: 'pre',
+		transform(/** @type {string} */ code, /** @type {string} */ id) {
+			if (!/katex(\.min)?\.css$/.test(id.replace(/\\/g, '/').split('?')[0])) return null;
+			// Each face reads `src: url(x.woff2) format("woff2"), url(x.woff) …`.
+			// Keep the first pair, drop the rest of the list.
+			const trimmed = code.replace(
+				/src:\s*(url\([^)]*\.woff2\)\s*format\("woff2"\))[^;]*;/g,
+				'src: $1;'
+			);
+			if (trimmed === code) return null;
+			return { code: trimmed, map: null };
+		}
+	};
+}
+
 // Shared by dev and preview so `vite preview` can exercise the PRODUCTION
 // bundle against the same live backend (WebKit prod-bundle debugging).
 const backendProxy = {
@@ -75,7 +102,7 @@ const backendProxy = {
 };
 
 export default defineConfig({
-	plugins: [tailwindcss(), sveltekit(), webkitNodeDedupe()],
+	plugins: [tailwindcss(), sveltekit(), webkitNodeDedupe(), katexWoff2Only()],
 	resolve: {
 		alias: {
 			'daisyui/theme': resolve('node_modules/daisyui/theme/index.js'),

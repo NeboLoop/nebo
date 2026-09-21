@@ -392,11 +392,12 @@ const GEMINI_OPERATIONAL_GUIDANCE: &str = r#"
 /// uploads through `plugin(...)`). `neboai` is served by the `loop` tool, not a plugin.
 /// Mathematics renders on the desktop/web/app surfaces and in loop chats.
 /// One inline form, one display form — the two both renderers accept.
-const MATH_GUIDANCE: &str = " MATH: this surface renders LaTeX. Inline math goes in \
-    `$…$` (no space inside the dollars: `$E = mc^2$`) and a displayed equation in \
-    `$$…$$` on its own lines. Use these for any formula, derivation or symbol-heavy \
-    expression; never `\\(…\\)`, `\\[…\\]` or bare TeX, which show as text. Plain \
-    prices (`$5`) stay as they are.";
+const MATH_GUIDANCE: &str = "\n\n## Math\n\
+    This surface renders LaTeX. Inline math goes in `$…$` (no space inside the \
+    dollars: `$E = mc^2$`) and a displayed equation in `$$…$$` on its own lines. \
+    Use these for any formula, derivation or symbol-heavy expression; never \
+    `\\(…\\)`, `\\[…\\]` or bare TeX, which show as text. Plain prices (`$5`) \
+    stay as they are.";
 
 fn channel_guidance(channel: &str) -> String {
     if let Some(fmt) = match channel {
@@ -469,6 +470,9 @@ fn channel_guidance(channel: &str) -> String {
         // only these two, so the model is told exactly them. Without this the
         // model picks whatever its training prefers (`\(…\)`, `\[…\]`, bare
         // TeX) and the reader sees the delimiters instead of the equation.
+        // Its own `## Math` heading: how to write a formula is not a clause of
+        // how to file a deliverable, and a rule buried under someone else's
+        // heading is a rule the model reads as an aside.
         guidance.push_str(MATH_GUIDANCE);
         return guidance;
     }
@@ -1843,5 +1847,10 @@ mod math_guidance_tests {
             assert!(!channel_guidance(ch).contains("LaTeX"), "{ch:?} should not carry math guidance");
         }
         assert!(MATH_GUIDANCE.contains("`$…$`") && MATH_GUIDANCE.contains("`$$…$$`"));
+        // Its own heading, not a tail on the Work Documents section.
+        assert!(MATH_GUIDANCE.starts_with("\n\n## Math\n"));
+        let desktop = channel_guidance("");
+        assert!(desktop.ends_with(MATH_GUIDANCE));
+        assert!(desktop.contains("## Work Documents"));
     }
 }

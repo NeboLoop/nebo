@@ -7,7 +7,8 @@
 // setOptions), which meant the inbox and marketplace inherited chat's options by
 // accident. Owning it in one module makes that explicit.
 import { marked, Renderer } from 'marked';
-import markedKatex from 'marked-katex-extension';
+import type { TokenizerAndRendererExtension, Tokens } from 'marked';
+import katex from 'katex';
 
 /**
  * marked does NO url sanitization — it dropped `sanitize` years ago and renders
@@ -30,14 +31,101 @@ function isSafeHref(href: string): boolean {
 	return !scheme || SAFE_SCHEMES.includes(scheme[1]);
 }
 
-// Mathematics. The model is told (server prompt, `channel_guidance`) that
-// `$…$` is inline math and `$$…$$` a displayed equation, and that both
-// surfaces render them — this is the web's half; the phone renders the same
-// delimiters with flutter_math. throwOnError off: malformed TeX is still the
-// model's words, so it renders as text rather than taking the reply down.
-// nonStandard off: a dollar amount (`$5 to $10`) needs the strict form —
-// no space after the opening `$`, none before the closing — to be math.
-marked.use(markedKatex({ throwOnError: false, nonStandard: false }));
+/*
+ * Mathematics. The model is told (server prompt, `channel_guidance`) that
+ * `$…$` is inline math and `$$…$$` a displayed equation, and that both
+ * surfaces render them — this is the web's half; the phone renders the same
+ * delimiters with flutter_math (nebo-mobile `lib/theme/chat_math.dart`).
+ *
+ * The rule below IS the phone's rule, so a reply reads the same in both
+ * places. marked-katex-extension cannot express it — even with
+ * `nonStandard: false` it allows a `$` inside the span and requires nothing
+ * of the characters next to the delimiters, so `Between $5 and $10, pick
+ * $x$.` rendered a red KaTeX error across the prose and `Spaces $ x $ here.`
+ * became math. Hence our own tokenizers, with KaTeX still the renderer.
+ *
+ * A span is inline math when: the opening `$` is not followed by a space,
+ * the closing `$` is not preceded by a space, the span holds no other `$`
+ * and no newline, and the closing `$` is not followed by a digit. `$$…$$`
+ * is a displayed equation, on one line or on its own lines. Inline code and
+ * fenced code are untouched: both tokenizers are anchored, so marked's code
+ * rules win at the backtick and a fence is consumed whole before either
+ * one is offered the text.
+ */
+
+// The phone writes the "not preceded by a space" half as a lookbehind. Here
+// it is unrolled into "the last character of the span is not a space", which
+// is the same language and needs no lookbehind support from the webview.
+const INLINE_MATH =
+	/^(?:\$\$([\s\S]+?)\$\$|\$(?!\s)((?:\\\$|[^$\n])*?[^\s$])\$(?![0-9]))/;
+
+// `$$` alone on a line opens a displayed equation; `$$` alone on a later
+// line closes it.
+const BLOCK_MATH = /^[ \t]*\$\$[ \t]*\r?\n([\s\S]*?)(?:\r?\n)?[ \t]*\$\$[ \t]*(?:\r?\n|$)/;
+
+function escapeHtml(text: string): string {
+	return text
+		.replace(/&/g, '&amp;')
+		.replace(/</g, '&lt;')
+		.replace(/>/g, '&gt;')
+		.replace(/"/g, '&quot;');
+}
+
+/**
+ * Malformed TeX is still the model's words. KaTeX's own `throwOnError: false`
+ * paints the source red mid-sentence, which reads as a fault in the app; the
+ * phone shows the source in its code style instead, so the web does too.
+ */
+function renderMath(tex: string, display: boolean): string {
+	try {
+		return katex.renderToString(tex, { displayMode: display, throwOnError: true });
+	} catch {
+		const fence = display ? '$$' : '$';
+		return `<code>${escapeHtml(fence + tex + fence)}</code>`;
+	}
+}
+
+const mathBlock: TokenizerAndRendererExtension = {
+	name: 'mathBlock',
+	level: 'block',
+	start(src: string) {
+		const at = /(^|\n)[ \t]*\$\$/.exec(src);
+		return at ? at.index : undefined;
+	},
+	tokenizer(src: string) {
+		const match = BLOCK_MATH.exec(src);
+		if (!match) return undefined;
+		return { type: 'mathBlock', raw: match[0], text: match[1].trim() };
+	},
+	renderer(token: Tokens.Generic) {
+		return renderMath(String(token.text), true);
+	},
+};
+
+const mathInline: TokenizerAndRendererExtension = {
+	name: 'mathInline',
+	level: 'inline',
+	start(src: string) {
+		const at = src.indexOf('$');
+		return at < 0 ? undefined : at;
+	},
+	tokenizer(src: string) {
+		const match = INLINE_MATH.exec(src);
+		if (!match) return undefined;
+		const display = match[1] !== undefined;
+		return {
+			type: 'mathInline',
+			raw: match[0],
+			text: (display ? match[1] : match[2]).trim(),
+			display,
+		};
+	},
+	renderer(token: Tokens.Generic) {
+		return renderMath(String(token.text), Boolean(token.display));
+	},
+};
+
+marked.use({ extensions: [mathBlock, mathInline] });
 
 marked.use({
 	gfm: true,

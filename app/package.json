@@ -48,7 +48,6 @@
     "katex": "^0.18.7",
     "lucide-svelte": "^1.0.1",
     "marked": "^18.0.3",
-    "marked-katex-extension": "^5.1.13",
     "pdfjs-dist": "^6.3.289",
     "shiki": "^4.2.0",
     "svelte-i18n": "^4.0.1",
