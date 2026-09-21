@@ -1211,6 +1211,54 @@ mod tests {
         }
     }
 
+    /// The shell door answers at its own timeout, even when the command left
+    /// behind a process the kill cannot reach. The gate's run 3 of
+    /// `os-shell-retry-spiral` went silent for the harness's whole 180 s under
+    /// a 120 s timeout, because the kill waited on a `find` grandchild stuck
+    /// in uninterruptible sleep; the timeout sentence has to come back
+    /// regardless, and the process that will not die is let go.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_timeout_sentence_arrives_even_with_a_child_the_kill_cannot_reach() {
+        let file = std::env::temp_dir().join(format!("nebo-shell-escape-{}", std::process::id()));
+        let _ = std::fs::remove_file(&file);
+        let t = tool();
+        let started = std::time::Instant::now();
+        // `set -m` puts the background job in its own process group, which the
+        // group kill does not reach — the stand-in for a `D`-state child.
+        let r = t
+            .execute(
+                &ctx(),
+                json!({
+                    "action": "exec",
+                    "command": format!("set -m; sleep 30 & echo $! > {}; wait", file.display()),
+                    "timeout": 1
+                }),
+            )
+            .await;
+        let waited = started.elapsed();
+
+        assert!(r.is_error, "a killed command reports as an error: {}", r.content);
+        assert!(
+            r.content.contains("Command killed after 1s"),
+            "the timeout sentence must be what comes back: {}",
+            r.content
+        );
+        assert!(
+            waited < std::time::Duration::from_secs(10),
+            "the answer waited on a process that would not die ({waited:?})"
+        );
+
+        if let Ok(text) = std::fs::read_to_string(&file)
+            && let Ok(pid) = text.trim().parse::<i32>()
+        {
+            // SAFETY: a pid this test created; the escaped process is let go by
+            // the tool, not by the test.
+            unsafe { libc::kill(pid, libc::SIGKILL) };
+        }
+        let _ = std::fs::remove_file(&file);
+    }
+
     #[tokio::test]
     async fn plain_commands_still_execute() {
         let t = tool();

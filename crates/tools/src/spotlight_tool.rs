@@ -131,11 +131,11 @@ impl Search {
 /// Run one search command under a deadline it cannot outlive.
 ///
 /// Output is read line by line as it arrives, so a search that is stopped
-/// still hands back what it had found. The child is spawned with
-/// `kill_on_drop` and killed and reaped explicitly on the way out: the gate
-/// found `find` processes still walking the filesystem three and seven
-/// minutes after their runs were cancelled, because nothing here ever ended
-/// the child.
+/// still hands back what it had found. The child goes through
+/// `process::GroupChild`, the one spawn-with-a-deadline door in this crate:
+/// it leads its own process group and the group is what gets killed, so the
+/// gate's `find` processes — still walking the filesystem three and seven
+/// minutes after their runs were cancelled — cannot happen here either.
 async fn run_search(
     mut cmd: tokio::process::Command,
     limit: usize,
@@ -143,16 +143,15 @@ async fn run_search(
 ) -> Search {
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
+        .stderr(Stdio::piped());
 
-    let mut child = match cmd.spawn() {
+    let mut child = match crate::process::GroupChild::spawn(cmd) {
         Ok(c) => c,
         Err(e) => return Search::failed_to_start(e),
     };
     let pid = child.id();
-    let mut out = tokio::io::BufReader::new(child.stdout.take().expect("stdout piped")).lines();
-    let mut err = tokio::io::BufReader::new(child.stderr.take().expect("stderr piped")).lines();
+    let mut out = tokio::io::BufReader::new(child.stdout().expect("stdout piped")).lines();
+    let mut err = tokio::io::BufReader::new(child.stderr().expect("stderr piped")).lines();
 
     let mut lines: Vec<String> = Vec::new();
     let mut stderr = String::new();
@@ -198,7 +197,7 @@ async fn run_search(
         if timed_out {
             tracing::debug!(pid = ?pid, "file search hit its deadline; killing the child");
         }
-        let _ = child.kill().await;
+        child.kill_and_reap().await;
         enough
     } else {
         child.wait().await.map(|s| s.success()).unwrap_or(false)
@@ -673,6 +672,47 @@ mod tests {
         assert_eq!(ran.lines, vec!["first".to_string(), "second".to_string()]);
         let pid = ran.pid.expect("spawned");
         assert!(!still_running(pid), "sleep (pid {pid}) outlived its deadline");
+    }
+
+    /// The search door spawns through the same process-group helper as the
+    /// shell door, so a grandchild dies with the command that started it.
+    /// The defect (gate fixture `os-shell-retry-spiral`): the wrapper was
+    /// killed at its deadline and the `find` it had started kept walking,
+    /// reparented to init — sixteen of them on the CI VM at a load average
+    /// near 22.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_search_that_hits_its_deadline_takes_its_grandchildren_with_it() {
+        let file = std::env::temp_dir().join(format!(
+            "nebo-search-group-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        let _ = std::fs::remove_file(&file);
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.arg("-c")
+            .arg(format!("sleep 30 & echo $! > {}; wait", file.display()));
+
+        let ran = run_search(cmd, 50, Instant::now() + Duration::from_millis(500)).await;
+        assert!(ran.timed_out, "expected the deadline to stop the command");
+
+        let mut grandchild = None;
+        for _ in 0..50 {
+            if let Ok(text) = std::fs::read_to_string(&file)
+                && let Ok(pid) = text.trim().parse::<u32>()
+            {
+                grandchild = Some(pid);
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let grandchild = grandchild.expect("the shell reported its grandchild's pid");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(
+            !still_running(grandchild),
+            "the sleeping grandchild (pid {grandchild}) outlived its grandparent's deadline"
+        );
+        let _ = std::fs::remove_file(&file);
     }
 
     #[test]
