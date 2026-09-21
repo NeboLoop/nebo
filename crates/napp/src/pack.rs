@@ -1004,14 +1004,17 @@ pub fn watch_packs(
             return;
         }
 
+        let is_write = |event: &Event| {
+            matches!(
+                event.kind,
+                EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_)
+            )
+        };
         let debounce = std::time::Duration::from_secs(1);
         while let Some(result) = rx.recv().await {
             match result {
                 Ok(event) => {
-                    if !matches!(
-                        event.kind,
-                        EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_)
-                    ) {
+                    if !is_write(&event) {
                         continue;
                     }
                     // A pack arrives as a burst: a folder copied in, a pack
@@ -1026,9 +1029,11 @@ pub fn watch_packs(
                         __rounds += 1;
                         tokio::time::sleep(debounce).await;
                         let mut more = false;
-                        while rx.try_recv().is_ok() {
-                            more = true;
+                        while let Ok(next) = rx.try_recv() {
                             __events += 1;
+                            if next.as_ref().is_ok_and(is_write) {
+                                more = true;
+                            }
                         }
                         if !more {
                             break;
