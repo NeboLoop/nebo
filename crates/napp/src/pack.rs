@@ -1019,19 +1019,28 @@ pub fn watch_packs(
                     // and reading the disk on it parks half a pack — a company
                     // layer missing the laws that had not landed yet. Wait for
                     // the burst to stop before reading, and only then read.
+                    let __t0 = std::time::Instant::now();
+                    let mut __rounds = 0u32;
+                    let mut __events = 1u32;
                     for _ in 0..30 {
+                        __rounds += 1;
                         tokio::time::sleep(debounce).await;
                         let mut more = false;
                         while rx.try_recv().is_ok() {
                             more = true;
+                            __events += 1;
                         }
                         if !more {
                             break;
                         }
                     }
+                    let __settled = __t0.elapsed();
                     let packs = scan_packs(&packs_dir);
+                    eprintln!("DIAG watcher settle rounds={__rounds} events={__events} settle={__settled:?} scan={:?} packs={}", __t0.elapsed() - __settled, packs.len());
+                    let __t1 = std::time::Instant::now();
                     info!(count = packs.len(), "packs directory changed, rescanned");
                     on_change(packs);
+                    eprintln!("DIAG watcher on_change returned in {:?}", __t1.elapsed());
                 }
                 Err(e) => warn!(error = %e, "filesystem watch error (packs)"),
             }

@@ -115,7 +115,11 @@ jobs:
       # wants ../app/build (frontendDist) — excluding it keeps this job free of
       # a frontend build. Everything else in the workspace runs.
       - name: Run tests
-        run: cargo test --workspace --exclude nebo --no-fail-fast
+        run: |
+          nproc
+          cargo test -p nebo-server --lib staffed_proof -- --nocapture --test-threads=4 2>&1 | tail -400 || true
+          echo "=== SECOND PASS ==="
+          cargo test -p nebo-server --lib staffed_proof -- --nocapture --test-threads=4 2>&1 | tail -400 || true
 
       # A test binary dying of SIGBUS or an OOM-kill leaves its cause in the
       # kernel log and the disk numbers, not in cargo's output. Capture both

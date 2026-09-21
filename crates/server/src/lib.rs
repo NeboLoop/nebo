@@ -2203,8 +2203,12 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
             let handle = tokio::runtime::Handle::current();
             let _detached = napp::watch_packs(dir, move |packs| {
                 let st = watch_state.clone();
+                let queued = std::time::Instant::now();
                 handle.spawn(async move {
-                    layers_update::detect_changes(&st, packs).await;
+                    eprintln!("DIAG detect_changes started after {:?}", queued.elapsed());
+                    let t = std::time::Instant::now();
+                    let n = layers_update::detect_changes(&st, packs).await;
+                    eprintln!("DIAG detect_changes took {:?} pending={n}", t.elapsed());
                 });
             });
         }

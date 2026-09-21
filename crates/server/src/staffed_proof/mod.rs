@@ -354,11 +354,14 @@ impl Nebo {
     /// and wait for the watcher to park it. Returns the parked entry as the
     /// layers screen shows it.
     pub async fn park_pack(&self, slug: &str, files: &[(&str, &str)]) -> Value {
+        let __t0 = std::time::Instant::now();
         write_tree(&self.home.join("packs").join(slug), files);
+        eprintln!("DIAG park_pack {slug}: wrote {} files in {:?}", files.len(), __t0.elapsed());
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         loop {
             let (_, body) = self.get("/layers").await;
             if let Some(p) = body["pending"].as_array().and_then(|a| a.iter().find(|p| p["slug"] == slug)) {
+                eprintln!("DIAG park_pack {slug}: parked after {:?}", __t0.elapsed());
                 return p.clone();
             }
             assert!(tokio::time::Instant::now() < deadline, "the pack watcher never parked `{slug}`: {body}");
@@ -433,6 +436,7 @@ impl Nebo {
     /// and ends with no layer in force: the owner deleting the folders and
     /// saying now. Waits for the watcher and the apply to settle.
     pub async fn clear_layers(&self) {
+        let __t0 = std::time::Instant::now();
         let packs = self.home.join("packs");
         let mut removed = false;
         for entry in std::fs::read_dir(&packs).unwrap().flatten() {
@@ -453,6 +457,7 @@ impl Nebo {
             if none_on_disk && (applied_gone || parked.iter().any(|p| p.kind == "removed")) {
                 self.apply_layers().await;
                 if self.state.packs.read().await.is_empty() && self.state.pending_layers.read().await.is_empty() {
+                    eprintln!("DIAG clear_layers: cleared after {:?}", __t0.elapsed());
                     return;
                 }
             }
