@@ -22,6 +22,7 @@
   import ModelControls from '$lib/components/settings/ModelControls.svelte';
   import type { AgentInputField } from '$lib/types/agentPage';
   import { installFlow } from '$lib/stores/installFlow';
+  import { addToast } from '$lib/stores/toast';
   import { capabilityLabel } from '$lib/utils/operationLabels';
 
   const ctx = getContext<AgentPageContext>('agentPage');
@@ -691,7 +692,10 @@
     // IS adding an account. The old credentials modal here was a dead end
     // that could never configure them; send the user to the real flow.
     if (ch.pluginSlug === 'phonecall') {
-      goto(`/${agentId}/settings/accounts`);
+      // Phone has its own settings section; Connected Accounts filters
+      // phonecall OUT, so this used to land on an empty page with nothing
+      // to click. Send the owner where attaching a number actually happens.
+      goto(`/${agentId}/settings/phone`);
       return;
     }
     channelAuthModal = ch;
@@ -749,7 +753,9 @@
         await api.enableAgentChannel(agentId, slug);
       }
       channelList = channelList.map(ch => ch.pluginSlug === slug ? { ...ch, enabled: !currentlyEnabled } : ch);
-    } catch { /* silent */ }
+    } catch (e) {
+      addToast((e as Error)?.message || $t('agentSettings.channelToggleFailed'), 'error');
+    }
     finally { channelTogglingSlug = null; }
   }
 
@@ -782,7 +788,9 @@
         } catch { /* first visit */ }
         helpChatOpen = true;
       }
-    } catch { /* silent */ }
+    } catch (e) {
+      addToast((e as Error)?.message || $t('agentSettings.helpChatFailed'), 'error');
+    }
     finally { helpChatLoading = false; }
   }
 
@@ -811,6 +819,9 @@
   type AccountPlugin = { slug: string; name: string; description: string; authType: string; authFields: AuthField[]; accounts: PluginAccount[] };
   let accountPlugins = $state<AccountPlugin[]>([]);
   let accountsLoading = $state(false);
+  // An accounts/claimable API failure used to look like empty inventory —
+  // "go buy a number" when the call simply failed. Keep them apart.
+  let accountsLoadError = $state<string | null>(null);
   let addAccountPlugin = $state<AccountPlugin | null>(null);
   let addAccountLabel = $state('');
   let addAccountCreds = $state<Record<string, string>>({});
@@ -822,6 +833,7 @@
   type ClaimablePhoneNumber = { number: string; label?: string; status: string };
   let claimableNumbers = $state<ClaimablePhoneNumber[]>([]);
   let claimableLoading = $state(false);
+  let claimableError = $state<string | null>(null);
 
   $effect(() => { if (section === 'accounts' || section === 'phone') loadAccounts(); });
 
@@ -1031,6 +1043,7 @@
 
   async function loadAccounts() {
     accountsLoading = true;
+    accountsLoadError = null;
     try {
       const api = await import('$lib/api/nebo');
       const resp = await api.listPlugins() as { plugins: { slug: string; name?: string; description?: string; hasAuth?: boolean; multiAccount?: boolean; authType?: string; authFields?: AuthField[] }[] };
@@ -1056,7 +1069,10 @@
       // Surface plugins that already have connected accounts first; keep the
       // rest so the user can add a first account to a multi-account plugin.
       accountPlugins = loaded.sort((a, b) => b.accounts.length - a.accounts.length || a.name.localeCompare(b.name));
-    } catch { accountPlugins = []; }
+    } catch (e) {
+      accountPlugins = [];
+      accountsLoadError = (e as Error)?.message || $t('agentSettings.accountsLoadFailed');
+    }
     finally { accountsLoading = false; }
   }
 
@@ -1067,7 +1083,9 @@
       accountPlugins = accountPlugins.map(p =>
         p.slug === slug ? { ...p, accounts: (r.accounts ?? []) as PluginAccount[] } : p
       );
-    } catch { /* silent */ }
+    } catch (e) {
+      addToast((e as Error)?.message || $t('agentSettings.accountListRefreshFailed'), 'warning', 6000);
+    }
   }
 
   function openAddAccount(p: AccountPlugin) {
@@ -1077,6 +1095,7 @@
     addAccountError = null;
     addAccountNumber = '';
     claimableNumbers = [];
+    claimableError = null;
     // ponytail: phonecall is first-party — its "account" is a phone line, so
     // the modal shows a picker of the owner's attachable numbers instead of
     // a free-text label guessing game. Generalize via a manifest field when
@@ -1087,9 +1106,13 @@
         .then((api) => api.neboAIPhoneClaimable())
         .then((res) => {
           claimableNumbers = (res as { numbers?: ClaimablePhoneNumber[] })?.numbers ?? [];
+          claimableError = null;
           if (claimableNumbers.length === 1) addAccountNumber = claimableNumbers[0].number;
         })
-        .catch(() => { claimableNumbers = []; })
+        .catch((e: unknown) => {
+          claimableNumbers = [];
+          claimableError = e instanceof Error ? e.message : $t('agentSettings.claimableLoadFailed');
+        })
         .finally(() => { claimableLoading = false; });
     }
   }
@@ -1103,6 +1126,7 @@
     addAccountLabel = '';
     addAccountCreds = {};
     addAccountError = null;
+    claimableError = null;
   }
 
   // Re-run the OAuth login for an account whose token expired. Same pathway as
@@ -1114,8 +1138,9 @@
     try {
       const api = await import('$lib/api/nebo');
       await api.authLoginAccount(slug, { agentId, accountLabel: label, accountNumber: '' });
-    } catch {
+    } catch (e) {
       addAccountConnectingSlug = null;
+      addToast((e as Error)?.message || $t('agentSettings.startSignInFailed'), 'error');
     }
   }
 
@@ -1128,7 +1153,9 @@
       accountPlugins = accountPlugins.map(p =>
         p.slug === slug ? { ...p, accounts: p.accounts.filter(a => a.accountLabel !== label) } : p
       );
-    } catch { /* leave list; user can retry */ }
+    } catch (e) {
+      addToast((e as Error)?.message || $t('agentSettings.disconnectFailed'), 'error');
+    }
   }
 
   async function submitAddAccount() {
@@ -2139,6 +2166,11 @@
       {/if}
       {#if accountsLoading}
         <div class="text-xs text-base-content/50 py-6 text-center">{$t('agentSettings.loadingAccounts')}</div>
+      {:else if accountsLoadError}
+        <div class="py-8 text-center space-y-3">
+          <div class="text-sm text-error">{accountsLoadError}</div>
+          <button type="button" class="btn btn-sm btn-outline" onclick={() => loadAccounts()}>{$t('agentSettings.tryAgain')}</button>
+        </div>
       {:else if shownPlugins.length === 0}
         <div class="py-8 text-center">
           {#if section === 'phone'}
@@ -2370,10 +2402,15 @@
         {#if plugin.slug === 'phonecall'}
           {#if claimableLoading}
             <div class="flex items-center gap-2 text-xs text-base-content/60"><span class="loading loading-spinner loading-xs"></span> Loading your numbers…</div>
+          {:else if claimableError}
+            <div class="rounded-lg bg-error/5 border border-error/30 p-3 space-y-2">
+              <div class="text-xs text-error">{claimableError}</div>
+              <button type="button" class="btn btn-xs btn-outline" disabled={connecting} onclick={() => openAddAccount(plugin)}>{$t('agentSettings.tryAgain')}</button>
+            </div>
           {:else if claimableNumbers.length === 0}
             <div class="rounded-lg bg-base-200 p-3 text-xs text-base-content/70">
               No numbers are free to attach. Buy a number (or park one from another employee) at
-              <span class="font-mono">neboai.com/manage/phone</span>, then come back here.
+              <a href="https://neboai.com/manage/phone" target="_blank" rel="noopener" class="font-mono text-primary">neboai.com/manage/phone</a>, then come back here.
             </div>
           {:else}
             <div class="flex flex-col gap-1.5">
