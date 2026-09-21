@@ -1029,7 +1029,7 @@ impl FileTool {
 
         let limit = if input.limit <= 0 { 100 } else { input.limit } as usize;
 
-        let matches = glob_with_globset(&base_path, pattern, limit);
+        let (matches, walk_cut_short) = glob_with_globset(&base_path, pattern, limit, GlobWalkBudget::default());
 
         // Sort by modification time (newest first)
         let mut files_with_time: Vec<(String, i64)> = matches
@@ -1058,6 +1058,13 @@ impl FileTool {
         }
 
         if files_with_time.is_empty() {
+            if walk_cut_short {
+                return ToolResult::ok(format!(
+                    "Nothing matched \"{}\" in the part of {} the walk reached before its budget ({} entries or {}s) ran out — {} is too wide to walk whole. \
+                     Start from a narrower path (a home or project directory), or search by name with os(resource: \"search\", action: \"search\", query: \"...\").",
+                    pattern, base_path, GlobWalkBudget::default().max_entries, GlobWalkBudget::default().deadline.as_secs(), base_path
+                ));
+            }
             return ToolResult::ok(format!(
                 "No files found matching \"{}\" in {}. This is not an error; nothing here matches. \
                  Next: widen the search with os(resource: \"file\", action: \"glob\", pattern: \"{}\", path: \"{}\"), \
@@ -1086,6 +1093,14 @@ impl FileTool {
         } else {
             format!("Found {} entries matching \"{}\"", total_found, pattern)
         };
+        if walk_cut_short {
+            result.push_str(&format!(
+                " The walk of {} stopped at its budget ({} entries or {}s) before covering everything, so a miss here is not proof of absence: start from a narrower path.",
+                base_path,
+                GlobWalkBudget::default().max_entries,
+                GlobWalkBudget::default().deadline.as_secs()
+            ));
+        }
         result.push_str("\n\n");
         result.push_str(&paths.join("\n"));
 
@@ -1154,8 +1169,26 @@ impl Default for FileTool {
     }
 }
 
-/// Glob using globset (supports brace expansion like *.{rs,toml}).
-fn glob_with_globset(base_path: &str, pattern: &str, limit: usize) -> Vec<String> {
+/// How far a glob walk may go. `**/image.png` from `/` walked the CI VM's
+/// filesystem for three minutes until the harness ended the run (gate
+/// 35577273218, 2026-09-21); a cloud pod would do the same. Whichever bound
+/// trips first ends the walk, and the result says it was cut short.
+#[derive(Clone, Copy)]
+pub(crate) struct GlobWalkBudget {
+    pub max_entries: usize,
+    pub deadline: std::time::Duration,
+}
+
+impl Default for GlobWalkBudget {
+    fn default() -> Self {
+        Self { max_entries: 200_000, deadline: std::time::Duration::from_secs(15) }
+    }
+}
+
+/// Glob using globset (supports brace expansion like *.{rs,toml}). Returns
+/// the matches (limit + 1 at most) and whether the walk was cut short by
+/// its budget.
+fn glob_with_globset(base_path: &str, pattern: &str, limit: usize, budget: GlobWalkBudget) -> (Vec<String>, bool) {
     let full_pattern = if pattern.contains("**") {
         // For recursive patterns, prepend base only if pattern doesn't start with /
         if Path::new(pattern).is_absolute() {
@@ -1175,11 +1208,14 @@ fn glob_with_globset(base_path: &str, pattern: &str, limit: usize) -> Vec<String
         .build()
     {
         Ok(g) => g.compile_matcher(),
-        Err(_) => return Vec::new(),
+        Err(_) => return (Vec::new(), false),
     };
 
     let is_recursive = pattern.contains("**");
     let mut matches = Vec::new();
+    let mut visited = 0usize;
+    let mut cut_short = false;
+    let started = std::time::Instant::now();
 
     let walker = walkdir::WalkDir::new(base_path)
         .follow_links(false)
@@ -1198,6 +1234,11 @@ fn glob_with_globset(base_path: &str, pattern: &str, limit: usize) -> Vec<String
                 {
                     return false;
                 }
+                // Pseudo-filesystems and system trees a walk from `/` would
+                // otherwise spend its whole budget in.
+                if e.depth() == 1 && matches!(name.as_ref(), "proc" | "sys" | "dev" | "nix" | "System" | "Volumes" | "private") {
+                    return false;
+                }
             }
             true
         });
@@ -1205,6 +1246,11 @@ fn glob_with_globset(base_path: &str, pattern: &str, limit: usize) -> Vec<String
     // Collect limit+1 so the caller can detect truncation.
     for entry in walker {
         if matches.len() > limit {
+            break;
+        }
+        visited += 1;
+        if visited > budget.max_entries || (visited % 512 == 0 && started.elapsed() > budget.deadline) {
+            cut_short = true;
             break;
         }
 
@@ -1227,7 +1273,7 @@ fn glob_with_globset(base_path: &str, pattern: &str, limit: usize) -> Vec<String
         }
     }
 
-    matches
+    (matches, cut_short)
 }
 
 /// Split a path at the first glob metacharacter, returning (base_dir, glob_pattern).
@@ -1786,6 +1832,28 @@ pub fn edit_snippet(old: &str, new: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A walk that hits its entry budget stops and says so; one that does not
+    /// finishes clean. Both on the same tree, so only the budget differs.
+    #[test]
+    fn glob_walk_stops_at_its_entry_budget_and_says_so() {
+        let dir = tempfile::tempdir().unwrap();
+        for d in 0..5 {
+            let sub = dir.path().join(format!("d{d}"));
+            std::fs::create_dir(&sub).unwrap();
+            for f in 0..5 {
+                std::fs::write(sub.join(format!("f{f}.txt")), "x").unwrap();
+            }
+        }
+        let base = dir.path().to_string_lossy().to_string();
+        let big = GlobWalkBudget { max_entries: 1_000, deadline: std::time::Duration::from_secs(60) };
+        let (all, cut) = glob_with_globset(&base, "**/*.txt", 100, big);
+        assert_eq!((all.len(), cut), (25, false));
+        let small = GlobWalkBudget { max_entries: 8, deadline: std::time::Duration::from_secs(60) };
+        let (some, cut) = glob_with_globset(&base, "**/*.txt", 100, small);
+        assert!(cut, "the walk must report it stopped early");
+        assert!(some.len() < 25, "fewer matches than exist: {}", some.len());
+    }
 
     /// Spill artifacts under nebo-tool-results/ already carry line numbers
     /// from the read that produced them; reading one back must NOT number the
