@@ -2985,6 +2985,7 @@
 	},
 	"voice": {
 		"startConversation": "Voice conversation",
+		"reconnecting": "Reconnecting…",
 		"consentTitle": "Voice uses a cloud service",
 		"consentBody": "Voice conversation streams your microphone audio to a cloud voice service for processing while a call is active. Audio leaves this computer. Typing in chat stays local as always.",
 		"consentAccept": "Enable voice",

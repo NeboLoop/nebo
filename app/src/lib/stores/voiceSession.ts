@@ -48,6 +48,8 @@ export function grantVoiceCloudConsent(): void {
 export type VoiceSessionStatus =
 	| 'idle'
 	| 'connecting'
+	/** The line dropped mid-call and the client is redialing the same thread. */
+	| 'reconnecting'
 	| 'listening'
 	| 'processing'
 	| 'speaking'
@@ -83,6 +85,30 @@ const initialState: VoiceSessionState = {
 
 const KEEPALIVE_MS = 4_000;
 const ERROR_DISPLAY_MS = 5_000;
+const CONNECT_TIMEOUT_MS = 5_000;
+
+/**
+ * Reconnect window and backoff.
+ *
+ * A bot's carrier tunnel resets at arbitrary intervals — a hub deploy severs
+ * it, and an overnight log shows resets minutes apart — so a dropped socket is
+ * not the end of the call. The server rejoins a voice session by THREAD ID:
+ * hand the same `chat_id` back on the redial and it binds that thread again
+ * and feeds its history to the employee, and it counts a thread as the live
+ * one for VOICE_RESUME_WINDOW — 30 minutes
+ * (crates/server/src/handlers/voice.rs). The client redials for exactly that
+ * long before it admits the call is over.
+ *
+ * Backoff doubles from half a second to eight, jittered ±25% so a hub deploy
+ * that dropped every bot at once doesn't bring them all back in lockstep.
+ */
+const RESUME_WINDOW_MS = 30 * 60_000;
+const RECONNECT_BASE_MS = 500;
+const RECONNECT_MAX_MS = 8_000;
+const RECONNECT_JITTER = 0.25;
+/** Close 1012 — the server said it is restarting, so it answers again shortly. */
+const SERVER_RESTART_CODE = 1012;
+const SERVER_RESTART_DELAY_MS = 250;
 
 // --- Store ---
 
@@ -94,6 +120,17 @@ function createVoiceSessionStore() {
 	let captureHandle: AudioCaptureHandle | null = null;
 	let keepAliveInterval: ReturnType<typeof setInterval> | null = null;
 	let errorClearTimer: ReturnType<typeof setTimeout> | null = null;
+	// What this call dialed with, kept so a drop can redial the same session.
+	let sessionAgentId = '';
+	let sessionChatId: string | undefined;
+	let sessionTeamId: string | undefined;
+	// Reconnect bookkeeping: the pending retry, how many redials this outage
+	// has cost (the backoff step), when the resume window closes, and whether a
+	// socket is already opening — the guard against a second one.
+	let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+	let reconnectAttempt = 0;
+	let resumeDeadline = 0;
+	let socketPending = false;
 
 	// TTS playback resources
 	let playbackCtx: AudioContext | null = null;
@@ -163,6 +200,10 @@ function createVoiceSessionStore() {
 		if (errorClearTimer) {
 			clearTimeout(errorClearTimer);
 			errorClearTimer = null;
+		}
+		if (reconnectTimer) {
+			clearTimeout(reconnectTimer);
+			reconnectTimer = null;
 		}
 	}
 
@@ -245,10 +286,145 @@ function createVoiceSessionStore() {
 			ws.close();
 			ws = null;
 		}
+		// Nulling ws above is what keeps a closing socket from redialing: every
+		// close handler bails on a socket the store no longer holds.
+		socketPending = false;
 
 		if (playbackCtx) {
 			playbackCtx.close();
 			playbackCtx = null;
+		}
+	}
+
+	/**
+	 * The one voice URL, built fresh for every dial.
+	 *
+	 * On a redial the chat id is the resume handle: `boundChatId` is the thread
+	 * the server announced (`chat_bound`), so handing it back rejoins that
+	 * transcript instead of letting the server resolve a thread afresh. Before
+	 * any turn has persisted there is no bound thread, so the id the call was
+	 * opened with rides instead, and a call opened with neither lets the server
+	 * pick the same way it did the first time.
+	 */
+	function dialUrl(): string {
+		const params = new URLSearchParams();
+		if (sessionTeamId) {
+			params.set('team_id', sessionTeamId);
+		} else {
+			if (sessionAgentId) params.set('agent_id', sessionAgentId);
+			const chat = readState().boundChatId ?? sessionChatId;
+			if (chat) params.set('chat_id', chat);
+		}
+		const qs = params.size > 0 ? `?${params.toString()}` : '';
+		return `${backendWsBase()}/ws/voice/conversation${qs}`;
+	}
+
+	/**
+	 * Open the call's WebSocket — the ONE socket path, used by the first dial
+	 * and by every redial. Resolves once the socket is open, its handlers are
+	 * wired and the session is announced; rejects if it never opens.
+	 */
+	function openSocket(): Promise<void> {
+		const sock = new WebSocket(dialUrl());
+		ws = sock;
+		sock.binaryType = 'arraybuffer';
+		socketPending = true;
+		return new Promise<void>((resolve, reject) => {
+			const settle = (err?: Error) => {
+				socketPending = false;
+				if (err) reject(err);
+				else resolve();
+			};
+			sock.onopen = () => {
+				sock.onmessage = handleWsMessage;
+				sock.onclose = (ev: CloseEvent) => handleWsClose(sock, ev);
+				sock.send(JSON.stringify({ type: 'Start', agentId: sessionAgentId }));
+				for (const chunk of preOpenAudio) sock.send(chunk);
+				preOpenAudio = [];
+				startKeepAlive();
+				settle();
+			};
+			sock.onerror = () => settle(new Error('WebSocket connection failed'));
+			setTimeout(() => {
+				if (sock.readyState === WebSocket.OPEN) return;
+				sock.close();
+				settle(new Error('WebSocket connection timeout'));
+			}, CONNECT_TIMEOUT_MS);
+		});
+	}
+
+	function startKeepAlive() {
+		if (keepAliveInterval) clearInterval(keepAliveInterval);
+		keepAliveInterval = setInterval(() => {
+			if (ws && ws.readyState === WebSocket.OPEN) {
+				ws.send(JSON.stringify({ type: 'KeepAlive' }));
+			}
+		}, KEEPALIVE_MS);
+	}
+
+	/**
+	 * A socket died with the call still up. Anything the dead socket owned goes
+	 * — the keepalive, the tail of a sentence the employee will not finish, the
+	 * half-heard utterance — but the transcript and the screen wake lock stay:
+	 * this is the same call, and it is about to be rejoined.
+	 */
+	function handleWsClose(sock: WebSocket, ev: CloseEvent) {
+		// A socket the store has already moved on from (cleanup, or superseded
+		// by a redial) is nobody's business.
+		if (ws !== sock) return;
+		ws = null;
+		const status = readState().status;
+		if (status === 'idle' || status === 'error') return;
+		log.warn('Voice session WebSocket closed unexpectedly (code ' + ev.code + ')');
+		if (keepAliveInterval) {
+			clearInterval(keepAliveInterval);
+			keepAliveInterval = null;
+		}
+		stopPlayback();
+		agentEntryOpen = false;
+		userEntryOpen = false;
+		// Audio spoken into a dead line belongs to no session — dropped, never
+		// replayed into the rejoined one.
+		preOpenAudio = [];
+		if (status !== 'reconnecting') {
+			resumeDeadline = Date.now() + RESUME_WINDOW_MS;
+		}
+		update((s) => ({ ...s, status: 'reconnecting', interimTranscript: '', audioLevel: 0 }));
+		scheduleReconnect(ev.code === SERVER_RESTART_CODE);
+	}
+
+	/** Arm the next redial, or give up once the resume window has closed. */
+	function scheduleReconnect(serverRestarting: boolean) {
+		// Never a second socket: one retry armed, one dial in flight.
+		if (reconnectTimer || socketPending) return;
+		if (Date.now() >= resumeDeadline) {
+			transitionToError(
+				'The call dropped and could not be rejoined within the 30-minute window. Everything said before that is saved in the thread.'
+			);
+			return;
+		}
+		reconnectAttempt++;
+		const base =
+			serverRestarting && reconnectAttempt === 1
+				? SERVER_RESTART_DELAY_MS
+				: Math.min(RECONNECT_BASE_MS * 2 ** (reconnectAttempt - 1), RECONNECT_MAX_MS);
+		const delay = Math.round(base * (1 + (Math.random() * 2 - 1) * RECONNECT_JITTER));
+		log.info('Voice session redialing in ' + delay + 'ms (attempt ' + reconnectAttempt + ')');
+		reconnectTimer = setTimeout(() => {
+			reconnectTimer = null;
+			void attemptReconnect();
+		}, delay);
+	}
+
+	async function attemptReconnect() {
+		const status = readState().status;
+		if (status !== 'reconnecting' || socketPending) return;
+		try {
+			await openSocket();
+			// Still 'reconnecting' until the server answers with
+			// session_initialized — an open socket is not yet a rejoined call.
+		} catch {
+			scheduleReconnect(false);
 		}
 	}
 
@@ -284,12 +460,19 @@ function createVoiceSessionStore() {
 
 			switch (msg.type) {
 				case 'session_initialized':
+					// The call is live again (or for the first time) — the backoff
+					// starts from scratch for whatever the next outage is.
+					if (readState().status === 'reconnecting') {
+						log.info('Voice session rejoined after ' + reconnectAttempt + ' redial(s)');
+					} else {
+						log.info('Voice session initialized');
+					}
+					reconnectAttempt = 0;
 					update((s) => ({
 						...s,
 						status: 'listening',
 						conversationId: msg.conversationId ?? s.conversationId
 					}));
-					log.info('Voice session initialized');
 					break;
 
 				case 'transcription_start':
@@ -380,7 +563,13 @@ function createVoiceSessionStore() {
 					break;
 
 				case 'Error':
-					transitionToError(msg.message || 'Unknown server error');
+					// A refusal that lands mid-redial is the end of the resuming:
+					// the server has told us why it will not take this call back.
+					transitionToError(
+						readState().status === 'reconnecting'
+							? 'Could not rejoin the call: ' + (msg.message || 'the bot refused the session')
+							: msg.message || 'Unknown server error'
+					);
 					break;
 
 				default:
@@ -424,6 +613,12 @@ function createVoiceSessionStore() {
 				return;
 			}
 
+			sessionAgentId = agentId;
+			sessionChatId = chatId;
+			sessionTeamId = teamId;
+			reconnectAttempt = 0;
+			resumeDeadline = 0;
+
 			update((s) => ({
 				...s,
 				status: 'connecting',
@@ -453,31 +648,14 @@ function createVoiceSessionStore() {
 				// PARALLEL INIT: open the WebSocket and acquire the mic at the same
 				// time (serializing them wastes the slower of the two); mic chunks
 				// captured before the socket opens are buffered and flushed on open.
-				const params = new URLSearchParams();
-				if (teamId) {
-					params.set('team_id', teamId);
-				} else {
-					if (agentId) params.set('agent_id', agentId);
-					if (chatId) params.set('chat_id', chatId);
-				}
-				const qs = params.size > 0 ? `?${params.toString()}` : '';
-				const wsUrl = `${backendWsBase()}/ws/voice/conversation${qs}`;
-				ws = new WebSocket(wsUrl);
-				ws.binaryType = 'arraybuffer';
-
-				const wsOpen = new Promise<void>((resolve, reject) => {
-					if (!ws) return reject(new Error('WebSocket is null'));
-					ws.onopen = () => resolve();
-					ws.onerror = () => reject(new Error('WebSocket connection failed'));
-					setTimeout(() => reject(new Error('WebSocket connection timeout')), 5000);
-				});
+				const wsOpen = openSocket();
 
 				const sendOrBuffer = (buffer: ArrayBuffer) => {
 					const state = readState();
 					if (state.isMuted) return;
 					if (ws && ws.readyState === WebSocket.OPEN) {
 						ws.send(buffer);
-					} else if (preOpenAudio.length < 50) {
+					} else if (state.status !== 'reconnecting' && preOpenAudio.length < 50) {
 						// ≤ ~5s of early audio; beyond that the connection is the problem
 						preOpenAudio.push(buffer);
 					}
@@ -509,28 +687,7 @@ function createVoiceSessionStore() {
 				})();
 
 				await wsOpen;
-
-				// Wire up handlers and flush any early mic audio
-				ws.send(JSON.stringify({ type: 'Start', agentId }));
-				ws.onmessage = handleWsMessage;
-				ws.onclose = () => {
-					const state = readState();
-					if (state.status !== 'idle' && state.status !== 'error') {
-						log.warn('Voice session WebSocket closed unexpectedly');
-						transitionToError('Connection lost');
-					}
-				};
-				for (const chunk of preOpenAudio) ws.send(chunk);
-				preOpenAudio = [];
-
 				await micReady;
-
-				// Keepalive
-				keepAliveInterval = setInterval(() => {
-					if (ws && ws.readyState === WebSocket.OPEN) {
-						ws.send(JSON.stringify({ type: 'KeepAlive' }));
-					}
-				}, KEEPALIVE_MS);
 
 				log.info('Voice session mic capture started, waiting for session_initialized');
 			} catch (err) {

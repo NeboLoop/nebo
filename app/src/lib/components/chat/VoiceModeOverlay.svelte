@@ -94,6 +94,7 @@
 	// Status display text
 	let statusText = $derived(
 		status === 'connecting' ? $t('settingsPlugins.connecting')
+		: status === 'reconnecting' ? $t('voice.reconnecting')
 		: status === 'listening' ? (isMuted ? $t('chatInput.muted') : $t('chatInput.listening'))
 		: status === 'processing' ? $t('chatInput.thinking')
 		: status === 'speaking' ? $t('chatInput.speaking')
@@ -181,14 +182,14 @@
 
 			<!-- Inner circle -->
 			<div class="relative w-24 h-24 rounded-full grid place-items-center {
-				status === 'connecting' ? 'bg-base-300' :
+				status === 'connecting' || status === 'reconnecting' ? 'bg-base-300' :
 				status === 'listening' ? (isMuted ? 'bg-base-300' : 'bg-primary/20') :
 				status === 'processing' ? 'bg-warning/20' :
 				status === 'speaking' ? 'bg-primary/30' :
 				status === 'error' ? 'bg-error/20' :
 				'bg-base-300'
 			}">
-				{#if status === 'connecting'}
+				{#if status === 'connecting' || status === 'reconnecting'}
 					<div class="loading loading-spinner loading-lg text-base-content/40"></div>
 				{:else if status === 'listening'}
 					{#if isMuted}
