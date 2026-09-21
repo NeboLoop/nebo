@@ -1837,15 +1837,18 @@ mod tests {
     /// finishes clean. Both on the same tree, so only the budget differs.
     #[test]
     fn glob_walk_stops_at_its_entry_budget_and_says_so() {
-        let dir = tempfile::tempdir().unwrap();
+        // tempdir names start with a dot, which the walk skips; walk a plain child.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("root");
+        std::fs::create_dir(&root).unwrap();
         for d in 0..5 {
-            let sub = dir.path().join(format!("d{d}"));
+            let sub = root.join(format!("d{d}"));
             std::fs::create_dir(&sub).unwrap();
             for f in 0..5 {
                 std::fs::write(sub.join(format!("f{f}.txt")), "x").unwrap();
             }
         }
-        let base = dir.path().to_string_lossy().to_string();
+        let base = root.to_string_lossy().to_string();
         let big = GlobWalkBudget { max_entries: 1_000, deadline: std::time::Duration::from_secs(60) };
         let (all, cut) = glob_with_globset(&base, "**/*.txt", 100, big);
         assert_eq!((all.len(), cut), (25, false));
