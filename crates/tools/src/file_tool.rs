@@ -81,6 +81,45 @@ struct FileInput {
     steps: Vec<serde_json::Value>,
 }
 
+/// What an empty glob says to do next.
+///
+/// The old sentence always offered the parent of the folder just searched,
+/// and the model took the offer every time: in the gate's
+/// `os-file-discovery-spiral` two hints in a row walked `/home/<bot>/` up to
+/// `/home` and then to `/`, and the root walk ran until the harness cancelled
+/// the run. The widening offered here never leaves the bot's own area
+/// (`walk_bounds::widen_within_own_area`), so `path: "/"` is not a sentence
+/// this tool can produce. At the edge of that area the next move is a
+/// different tool, not a wider walk: look the name up in the index, grep the
+/// contents, or ask the owner where the file lives.
+fn nothing_matched(pattern: &str, base_path: &str, cwd: Option<&str>) -> String {
+    let recursive = if pattern.starts_with("**/") {
+        pattern.to_string()
+    } else {
+        format!("**/{pattern}")
+    };
+    let head = format!(
+        "No files found matching \"{pattern}\" in {base_path}. This is not an error; nothing here matches."
+    );
+    let tail = "(Hidden dirs, node_modules, vendor, target, __pycache__ are not searched.)";
+
+    match walk_bounds::widen_within_own_area(Path::new(base_path), cwd) {
+        Some(wider) => format!(
+            "{head} Next: widen the search one folder with os(resource: \"file\", action: \"glob\", \
+             pattern: \"{recursive}\", path: \"{}\"), or search file contents with action: \"grep\". {tail}",
+            wider.display()
+        ),
+        None => format!(
+            "{head} {base_path} is the edge of this bot's own area, so there is no wider folder to \
+             glob: a walk above it covers the whole machine and is stopped before it finds anything. \
+             Next: look the file up by name with os(resource: \"search\", action: \"search\", \
+             query: \"<name>\", dir: \"{base_path}\"), or search file contents with \
+             os(resource: \"file\", action: \"grep\", pattern: \"<text>\", path: \"{base_path}\"). \
+             If the file is not under this bot's area, ask the owner where it lives. {tail}"
+        ),
+    }
+}
+
 impl FileTool {
     pub fn new() -> Self {
         Self {
@@ -126,7 +165,7 @@ impl FileTool {
 
         let session = ctx.session_key.as_str();
         match fi.action.as_str() {
-            "read" => self.handle_read(session, &fi),
+            "read" => self.handle_read(ctx, &fi),
             "write" => self.handle_write(session, &fi),
             // append IS write with append: true (live 2026-09-05: the call
             // carried path and content and was told the action was unknown).
@@ -148,7 +187,7 @@ impl FileTool {
             // versioned like any other. plan_check lives on OsTool (it needs
             // the shell).
             "plan" => self.handle_plan(session, &fi),
-            "glob" => self.handle_glob(&fi),
+            "glob" => self.handle_glob(ctx, &fi),
             "grep" => self.handle_grep(&fi),
             // Hand an EXISTING file to the user as a download card. Synonyms the
             // model reaches for map to the one implementation.
@@ -156,7 +195,7 @@ impl FileTool {
             // Prior-redirect ("ls ~/Desktop"): a directory listing IS glob with
             // its defaulted "*" pattern — route to the one implementation. Not
             // advertised in the schema; glob stays the single documented way.
-            "list" | "ls" => self.handle_glob(&fi),
+            "list" | "ls" => self.handle_glob(ctx, &fi),
             "screenshot" | "capture" => ToolResult::error(format!(
                 "screenshot is not a file action. To take one: os(resource: \"desktop\", action: \"screenshot\"). \
                  To find existing screenshots: os(resource: \"file\", action: \"glob\", \
@@ -351,7 +390,8 @@ impl FileTool {
         }
     }
 
-    fn handle_read(&self, session: &str, input: &FileInput) -> ToolResult {
+    fn handle_read(&self, ctx: &ToolContext, input: &FileInput) -> ToolResult {
+        let session = ctx.session_key.as_str();
         if input.path.is_empty() {
             return ToolResult::error(errors::missing_param("read", "path", "os(resource: \"file\", action: \"read\", path: \"/tmp/file.txt\")"));
         }
@@ -390,7 +430,7 @@ impl FileTool {
         if metadata.is_dir() {
             // A read of a directory is a listing; the model asked for what is
             // there, and glob with the defaulted "*" is the one implementation.
-            return self.handle_glob(input);
+            return self.handle_glob(ctx, input);
         }
 
         // NOTE: A read MUST always return the file's content. We deliberately do NOT
@@ -980,7 +1020,7 @@ impl FileTool {
         .with_image_url(path)
     }
 
-    fn handle_glob(&self, input: &FileInput) -> ToolResult {
+    fn handle_glob(&self, ctx: &ToolContext, input: &FileInput) -> ToolResult {
         // The expression goes in `pattern`. But the action is *named* "glob", so models
         // predictably pass it as `glob:` and then waste a call recovering from the error.
         // Accept `glob` as a synonym here (input tolerance — same precedent as memory
@@ -1069,20 +1109,7 @@ impl FileTool {
                     &[],
                 ));
             }
-            return ToolResult::ok(format!(
-                "No files found matching \"{}\" in {}. This is not an error; nothing here matches. \
-                 Next: widen the search with os(resource: \"file\", action: \"glob\", pattern: \"{}\", path: \"{}\"), \
-                 or search file contents with action: \"grep\". \
-                 (Hidden dirs, node_modules, vendor, target, __pycache__ are not searched.)",
-                pattern,
-                base_path,
-                if pattern.starts_with("**/") { pattern.to_string() } else { format!("**/{pattern}") },
-                Path::new(&base_path)
-                    .parent()
-                    .map(|p| p.to_string_lossy().into_owned())
-                    .filter(|p| !p.is_empty())
-                    .unwrap_or_else(|| base_path.clone())
-            ));
+            return ToolResult::ok(nothing_matched(pattern, &base_path, ctx.cwd.as_deref()));
         }
 
         let display_base = &base_path;
@@ -1834,6 +1861,95 @@ pub fn edit_snippet(old: &str, new: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The path a hint offers to glob next, if it offers one at all.
+    fn widening_offered(hint: &str) -> Option<String> {
+        let rest = &hint[hint.find("action: \"glob\"")?..];
+        let start = rest.find("path: \"")? + "path: \"".len();
+        let end = rest[start..].find('"')?;
+        Some(rest[start..start + end].to_string())
+    }
+
+    /// The widening an empty glob offers must never leave the bot's own area.
+    /// The defect (gate fixture `os-file-discovery-spiral`): the hint always
+    /// named the parent of the folder just searched, the model took the offer
+    /// every time, and two hints in a row walked `/home/<bot>/` up to `/home`
+    /// and then to `/`, where the walk ran until the harness cancelled the
+    /// run. Widening from inside home must climb to home and stop there,
+    /// offering a different tool rather than a bigger walk.
+    #[test]
+    fn the_empty_glob_hint_never_widens_past_the_bots_own_area() {
+        let _g = crate::TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let home = tempfile::tempdir().unwrap();
+        let previous_home = std::env::var_os("HOME");
+        // SAFETY: serialized by the crate-wide lock, and put back below.
+        unsafe {
+            std::env::set_var("HOME", home.path());
+            std::env::set_var("NEBO_HOME", home.path().join("nebo"));
+        }
+        let cwd = home.path().join("work").to_string_lossy().into_owned();
+
+        let mut at = home.path().join("Desktop").join("archive").join("2026");
+        let mut offered: Vec<PathBuf> = Vec::new();
+        let mut hints: Vec<String> = Vec::new();
+        for _ in 0..16 {
+            let hint = nothing_matched("image.png", &at.to_string_lossy(), Some(&cwd));
+            hints.push(hint.clone());
+            match widening_offered(&hint) {
+                Some(next) => {
+                    let next = PathBuf::from(next);
+                    offered.push(next.clone());
+                    at = next;
+                }
+                None => break,
+            }
+        }
+
+        // SAFETY: same lock; the process gets its own home back.
+        unsafe {
+            match previous_home {
+                Some(h) => std::env::set_var("HOME", h),
+                None => std::env::remove_var("HOME"),
+            }
+        }
+
+        for hint in &hints {
+            assert!(
+                !hint.contains("path: \"/\""),
+                "a hint offered the whole machine: {hint}"
+            );
+        }
+        for path in &offered {
+            assert!(
+                path.starts_with(home.path()),
+                "a hint widened out of the bot's own area: {}",
+                path.display()
+            );
+        }
+        assert_eq!(
+            offered,
+            vec![
+                home.path().join("Desktop").join("archive"),
+                home.path().join("Desktop"),
+                home.path().to_path_buf(),
+            ],
+            "the widening must climb to the area's root and stop there"
+        );
+
+        let edge = hints.last().expect("a hint was produced");
+        assert!(
+            edge.contains("edge of this bot's own area"),
+            "the last hint must say why it stops: {edge}"
+        );
+        assert!(
+            edge.contains("action: \"search\"") && edge.contains("action: \"grep\""),
+            "the edge must offer a lookup by name and a content search: {edge}"
+        );
+        assert!(
+            edge.contains("ask the owner where it lives"),
+            "the edge must offer asking the owner: {edge}"
+        );
+    }
 
     /// A walk that hits its entry budget stops and says so; one that does not
     /// finishes clean. Both on the same tree, so only the budget differs.

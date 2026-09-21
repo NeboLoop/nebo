@@ -154,6 +154,50 @@ pub(crate) fn skip_paths(root: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
+/// The roots that make up the bot's own area: the folder it is working in,
+/// the owner's home folder, and Nebo's data folder. These are the same three
+/// places, in the same order, that a file search with no `dir` starts from.
+///
+/// A walk that came up empty may widen up to one of these roots and no
+/// further. Widening past one is how the gate's glob spiral happened
+/// (fixture `os-file-discovery-spiral`): the tool's own "widen the search"
+/// hint proposed the parent of the folder just searched, twice, and walked
+/// `/home/<bot>/` up to `/home` and then to `/`, where the walk ran until
+/// the harness cancelled the run. `/` is never a root of the bot's own area,
+/// whatever a caller passes.
+pub(crate) fn own_area(cwd: Option<&str>) -> Vec<PathBuf> {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    match cwd.map(str::trim).filter(|c| !c.is_empty()) {
+        Some(cwd) => candidates.push(PathBuf::from(cwd)),
+        None => candidates.extend(std::env::current_dir()),
+    }
+    candidates.extend(dirs::home_dir());
+    candidates.extend(config::data_dir());
+
+    let mut roots: Vec<PathBuf> = Vec::new();
+    for root in candidates {
+        // A root with no parent is `/` (or a drive root): the whole machine,
+        // never the bot's own area.
+        if root.parent().is_some() && !roots.contains(&root) {
+            roots.push(root);
+        }
+    }
+    roots
+}
+
+/// The one folder a walk of `path` may widen to when it found nothing: the
+/// parent of `path`, as long as that parent is still inside the bot's own
+/// area. `None` when `path` is already at the edge of the area — or outside
+/// it altogether — because there is no wider folder this bot should walk:
+/// the next step up is the machine.
+pub(crate) fn widen_within_own_area(path: &Path, cwd: Option<&str>) -> Option<PathBuf> {
+    let parent = path.parent().filter(|p| !p.as_os_str().is_empty())?;
+    own_area(cwd)
+        .iter()
+        .any(|root| parent.starts_with(root))
+        .then(|| parent.to_path_buf())
+}
+
 /// The scope and the clock an in-process walk runs under. `find` takes the
 /// same `skip` list as `-path … -prune` arguments and the same deadline as the
 /// moment it is killed; a `walkdir` caller carries the whole thing.

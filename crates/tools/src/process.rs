@@ -53,18 +53,90 @@ pub fn kill_group(pid: u32) {
     }
 }
 
-/// Owns a foreground command's process group: dropping it, on completion,
-/// timeout or a cancelled turn, kills the group.
-struct GroupGuard(u32);
-impl Drop for GroupGuard {
+/// How long this module waits for a killed child to be reaped before it stops
+/// waiting.
+///
+/// A process in uninterruptible sleep — `D` state, typically blocked inside a
+/// directory read on a FUSE or virtiofs mount — cannot be killed by anyone,
+/// root included: the SIGKILL is recorded and only lands if the kernel ever
+/// returns from that call, which it may never do. Waiting on such a child
+/// therefore never ends, so every kill here is "signal the group, reap with
+/// this bound, move on": the tool gives its answer, and the stuck process
+/// stays until the mount answers or the box reboots. Not walking into such a
+/// mount in the first place is the only thing that prevents it; that is what
+/// `walk_bounds::FOREIGN_FS` and `find -xdev` are for.
+const REAP_BOUND: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// A child spawned as the leader of its own process group, so that killing it
+/// kills the whole tree it started.
+///
+/// This is the one way a tool starts a child it intends to stop on a deadline.
+/// The gate ran `sh -c 'find / -name "image.png" | head -10'` through the
+/// shell door; killing the `sh` alone left the `find` running, reparented to
+/// init, still walking — and on the CI VM stuck for good in `D` state on a
+/// virtiofs mount, sixteen of them at a load average near 22. The group is
+/// what gets signalled, so an ordinary grandchild dies with the wrapper.
+pub struct GroupChild {
+    child: Child,
+    /// The group id, which is the leader's pid, kept separately: `Child::id`
+    /// goes to `None` the moment the leader is reaped.
+    pgid: u32,
+}
+
+impl GroupChild {
+    /// Spawn `cmd` as a process-group leader. The caller sets the stdio it
+    /// wants first; everything else about killing the child is handled here.
+    pub fn spawn(mut cmd: Command) -> std::io::Result<Self> {
+        in_own_group(&mut cmd);
+        cmd.kill_on_drop(true);
+        let child = cmd.spawn()?;
+        let pgid = child.id().unwrap_or(0);
+        Ok(Self { child, pgid })
+    }
+
+    /// The leader's pid while it is still running.
+    pub fn id(&self) -> Option<u32> {
+        self.child.id()
+    }
+
+    pub fn stdout(&mut self) -> Option<tokio::process::ChildStdout> {
+        self.child.stdout.take()
+    }
+
+    pub fn stderr(&mut self) -> Option<tokio::process::ChildStderr> {
+        self.child.stderr.take()
+    }
+
+    /// Wait for the leader to exit on its own.
+    pub async fn wait(&mut self) -> std::io::Result<std::process::ExitStatus> {
+        self.child.wait().await
+    }
+
+    /// Kill the whole group and reap the leader, waiting no longer than
+    /// `REAP_BOUND` for it. A leader that cannot be reaped in that time is
+    /// one nothing can kill (see `REAP_BOUND`); the caller must not hang on
+    /// it, so this returns either way.
+    pub async fn kill_and_reap(&mut self) {
+        kill_group(self.pgid);
+        let _ = self.child.start_kill();
+        let _ = tokio::time::timeout(REAP_BOUND, self.child.wait()).await;
+    }
+}
+
+impl Drop for GroupChild {
     fn drop(&mut self) {
-        kill_group(self.0);
+        // Completion, timeout or a cancelled turn all land here. `killpg`
+        // never blocks, not even on a child that cannot die.
+        kill_group(self.pgid);
     }
 }
 
 /// Run `cmd` to completion or `timeout`. `Ok(None)` is a timeout. Either way
-/// the command's whole process group is gone when this returns; a server the
-/// model wants kept alive belongs in a background session.
+/// the command's whole process group has been signalled by the time this
+/// returns, so an ordinary grandchild — the `find` behind a `find … | head`,
+/// a `&` job, a watcher — dies with the wrapper rather than outliving it. The
+/// one thing that survives is a process nothing can kill; see `REAP_BOUND`.
+/// A server the model wants kept alive belongs in a background session.
 /// What a bounded command produced: its full output, or, when the timeout
 /// killed it, everything it had printed by then. Discarding that output
 /// turned a five-minute wait loop into "killed, partial output discarded",
@@ -78,17 +150,14 @@ pub async fn output_within(
     mut cmd: Command,
     timeout: std::time::Duration,
 ) -> std::io::Result<Outcome> {
-    in_own_group(&mut cmd);
-    cmd.kill_on_drop(true);
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
-    let mut child = cmd.spawn()?;
-    let _group = GroupGuard(child.id().unwrap_or(0));
+    let mut child = GroupChild::spawn(cmd)?;
     let stdout_buf: Arc<Mutex<Vec<u8>>> = Arc::default();
     let stderr_buf: Arc<Mutex<Vec<u8>>> = Arc::default();
     let readers = [
-        (child.stdout.take().map(|s| Box::pin(s) as std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>>), stdout_buf.clone()),
-        (child.stderr.take().map(|s| Box::pin(s) as std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>>), stderr_buf.clone()),
+        (child.stdout().map(|s| Box::pin(s) as std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>>), stdout_buf.clone()),
+        (child.stderr().map(|s| Box::pin(s) as std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>>), stderr_buf.clone()),
     ]
     .into_iter()
     .filter_map(|(pipe, buf)| {
@@ -106,11 +175,15 @@ pub async fn output_within(
     .collect::<Vec<_>>();
     let status = tokio::time::timeout(timeout, child.wait()).await;
     if status.is_err() {
-        let _ = child.kill().await;
+        child.kill_and_reap().await;
     }
-    // Readers end at EOF once the process (group) is gone.
+    // Readers end at EOF once the process (group) is gone. One shared bound
+    // across both, because a child the kill never reached — one in
+    // uninterruptible sleep, one that escaped the group — holds the pipe open
+    // and would otherwise hold up the answer.
+    let drained_by = tokio::time::Instant::now() + REAP_BOUND;
     for r in readers {
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), r).await;
+        let _ = tokio::time::timeout_at(drained_by, r).await;
     }
     let stdout = std::mem::take(&mut *stdout_buf.lock().await);
     let stderr = std::mem::take(&mut *stderr_buf.lock().await);
@@ -668,6 +741,43 @@ mod group_tests {
         let pid = grandchild_pid(&file).await;
         settle().await;
         assert!(!alive(pid), "the backgrounded grandchild outlived the timeout");
+        let _ = std::fs::remove_file(file);
+    }
+
+    /// A child the kill cannot reach must not hold up the answer.
+    ///
+    /// The gate's shell door went silent for the harness's whole 180 s under a
+    /// 120 s timeout (`os-shell-retry-spiral`, run 3): the `find` grandchild
+    /// was in uninterruptible sleep on a virtiofs mount, and the kill-and-wait
+    /// waited on it. Nothing in this module may block on a process that will
+    /// not exit — it signals the group, reaps with a bound, and answers
+    /// anyway. A real `D`-state process cannot be made on demand, so the
+    /// stand-in is a grandchild in its own process group (`set -m`), which the
+    /// group kill does not reach and which keeps the output pipe open.
+    #[tokio::test]
+    async fn a_child_the_kill_cannot_reach_does_not_hold_up_the_answer() {
+        let file = pid_file();
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c")
+            .arg(format!("set -m; sleep 30 & echo $! > {}; wait", file.display()));
+
+        let started = std::time::Instant::now();
+        let out = output_within(cmd, Duration::from_millis(300)).await.unwrap();
+        let waited = started.elapsed();
+
+        assert!(matches!(out, Outcome::TimedOut { .. }), "expected a timeout");
+        assert!(
+            waited < Duration::from_secs(10),
+            "the answer waited on a process that would not die ({waited:?})"
+        );
+
+        let escaped = grandchild_pid(&file).await;
+        assert!(
+            alive(escaped),
+            "the stand-in needs a grandchild the group kill misses; pid {escaped} died"
+        );
+        // SAFETY: a pid this test created, killed so the test leaves nothing behind.
+        unsafe { libc::kill(escaped, libc::SIGKILL) };
         let _ = std::fs::remove_file(file);
     }
 
