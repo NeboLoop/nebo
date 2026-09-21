@@ -75,6 +75,7 @@ pub mod skills;
 pub mod spotlight_tool;
 pub mod tool_search;
 pub mod vm_tool;
+pub mod walk_bounds;
 pub mod web_tool;
 pub mod team;
 pub mod team_tool;
