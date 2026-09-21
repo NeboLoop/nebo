@@ -171,6 +171,7 @@
     {placeholder}
     allAgents={chat.allAgents}
     activityStatus={chat.activityStatus}
+    askQueueLength={chat.askQueueLength}
     hasMore={chat.hasMore}
     isLoadingMore={chat.isLoadingMore}
     onloadmore={() => chat.loadHistory(sessionKey, { older: true })}

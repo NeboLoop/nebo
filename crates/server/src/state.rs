@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
 use tokio::sync::Mutex;
@@ -104,10 +104,11 @@ pub struct AppState {
     /// Pending ask requests: question_id -> sender
     pub ask_channels: tools::AskChannels,
     /// Asks forwarded to a loop/channel conversation, keyed by session key →
-    /// request_id. The user's NEXT inbound message in that conversation
-    /// resolves the pending ask (conversational answer) instead of starting
-    /// a new run — without this, an agent question over comm blocks forever.
-    pub pending_comm_asks: Arc<Mutex<HashMap<String, String>>>,
+    /// FIFO queue of request ids. The user's NEXT inbound message resolves the
+    /// head of the queue (conversational answer) instead of starting a new run
+    /// — without this, an agent question over comm blocks forever. A queue
+    /// (not a single id) keeps stacked asks from overwriting each other.
+    pub pending_comm_asks: Arc<Mutex<HashMap<String, VecDeque<String>>>>,
     /// Approvals relayed to a loop conversation, keyed by session key →
     /// request_id (tool_call id). The owner's NEXT inbound message in that
     /// conversation resolves the pending approval ("approve"/"approve always"/

@@ -254,6 +254,7 @@
   quotaWarning={chat.quotaWarning}
   chatError={chat.chatError}
   activityStatus={chat.activityStatus}
+  askQueueLength={chat.askQueueLength}
   hasMore={chat.hasMore}
   isLoadingMore={chat.isLoadingMore}
   onloadmore={() => chat.loadHistory(threadId ?? '', { older: true })}
