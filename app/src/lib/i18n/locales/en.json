@@ -233,7 +233,7 @@
 		"newChat": "New chat",
 		"searchChats": "Search chats…",
 		"upgrade": "Upgrade",
-		"restarted": "Restarted",
+		"restarted": "Interrupted",
 		"working": "Working"
 	},
 	"chat": {
@@ -446,7 +446,7 @@
 	"browserExtension": {
 		"title": "Browser Extension Required",
 		"notConnected": "The Nebo browser extension is not installed or not running.",
-		"reconnecting": "The browser extension lost connection. It may reconnect shortly.",
+		"reconnecting": "The browser extension is not connected. Make sure your browser is open, then retry.",
 		"instructions": "Install the Nebo browser extension for Chrome or Brave to enable web browsing. After installing, make sure your browser is open.",
 		"install": "Install Extension",
 		"retry": "Retry Connection"
@@ -2084,7 +2084,7 @@
 		"state": "State",
 		"waitingFor": "Waiting for",
 		"waitSince": "Wait since",
-		"wakeAt": "Wake at",
+		"wakeAt": "Resumes at",
 		"lastInbound": "Last inbound",
 		"lastOutbound": "Last outbound",
 		"lastTransition": "Last transition",
@@ -2189,7 +2189,7 @@
 		"readOnly": "Read-only",
 		"configManagedPrefix": "This agent's configuration is managed by its",
 		"configManagedSuffix": "and cannot be edited directly. Duplicate it to create an editable copy.",
-		"identityManagedNote": "This employee came from a package. Name, voice and color are yours to change and stay changed. The role is written in the package's AGENT.md and resets when Nebo restarts — duplicate the employee to make it fully yours.",
+		"identityManagedNote": "This employee came from a package. Name, voice and color are yours to change and stay changed. The role is written in the package's AGENT.md and the package restores it each time Nebo starts — duplicate the employee to make it fully yours.",
 		"packageManagedNote": "This comes from the package this employee was installed from, so it can't be edited here. Duplicate the employee to get a copy you can rewrite.",
 		"fromPackage": "from the package",
 		"model": "Model",
@@ -2985,7 +2985,7 @@
 	},
 	"voice": {
 		"startConversation": "Voice conversation",
-		"reconnecting": "Reconnecting…",
+		"reconnecting": "Rejoining the call…",
 		"consentTitle": "Voice uses a cloud service",
 		"consentBody": "Voice conversation streams your microphone audio to a cloud voice service for processing while a call is active. Audio leaves this computer. Typing in chat stays local as always.",
 		"consentAccept": "Enable voice",

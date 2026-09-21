@@ -106,9 +106,30 @@ const RESUME_WINDOW_MS = 30 * 60_000;
 const RECONNECT_BASE_MS = 500;
 const RECONNECT_MAX_MS = 8_000;
 const RECONNECT_JITTER = 0.25;
-/** Close 1012 — the server said it is restarting, so it answers again shortly. */
+/** Close 1012 — service restart, so the far end answers again shortly. */
 const SERVER_RESTART_CODE = 1012;
 const SERVER_RESTART_DELAY_MS = 250;
+
+/**
+ * How long an outage stays off the screen.
+ *
+ * Nearly every drop is rejoined inside a second, and a line that appears and
+ * disappears in that time reads as a product that flaps. So the call keeps the
+ * status it had while the redial runs behind it, and only an outage that
+ * outlasts this window says anything — one line, once.
+ */
+const RECONNECT_QUIET_MS = 4_000;
+
+/**
+ * Everything a lost call tells the owner: that it is over, and what to do
+ * about it. Never the close code, never the reason text the far end sent with
+ * it, never how long the rejoin window was — none of that is his to act on,
+ * and all of it describes machinery he did not ask about.
+ */
+const CALL_LOST_MESSAGE = 'The call dropped and could not be rejoined. Start it again.';
+
+/** A failure that arrived with nothing to say: the one thing still true. */
+const CALL_ENDED_MESSAGE = 'The call ended. Start it again.';
 
 // --- Store ---
 
@@ -131,6 +152,12 @@ function createVoiceSessionStore() {
 	let reconnectAttempt = 0;
 	let resumeDeadline = 0;
 	let socketPending = false;
+	// Whether the call is between sockets. This is not the same thing as the
+	// status the store publishes: for the first RECONNECT_QUIET_MS of an
+	// outage the screen still reads as the call did, and `quietTimer` is what
+	// eventually says otherwise.
+	let redialing = false;
+	let quietTimer: ReturnType<typeof setTimeout> | null = null;
 
 	// TTS playback resources
 	let playbackCtx: AudioContext | null = null;
@@ -204,6 +231,10 @@ function createVoiceSessionStore() {
 		if (reconnectTimer) {
 			clearTimeout(reconnectTimer);
 			reconnectTimer = null;
+		}
+		if (quietTimer) {
+			clearTimeout(quietTimer);
+			quietTimer = null;
 		}
 	}
 
@@ -289,6 +320,7 @@ function createVoiceSessionStore() {
 		// Nulling ws above is what keeps a closing socket from redialing: every
 		// close handler bails on a socket the store no longer holds.
 		socketPending = false;
+		redialing = false;
 
 		if (playbackCtx) {
 			playbackCtx.close();
@@ -386,10 +418,18 @@ function createVoiceSessionStore() {
 		// Audio spoken into a dead line belongs to no session — dropped, never
 		// replayed into the rejoined one.
 		preOpenAudio = [];
-		if (status !== 'reconnecting') {
+		if (!redialing) {
+			redialing = true;
 			resumeDeadline = Date.now() + RESUME_WINDOW_MS;
+			// The screen keeps the status the call had. Only an outage that
+			// lasts longer than the quiet window is worth a word.
+			quietTimer = setTimeout(() => {
+				quietTimer = null;
+				if (redialing) update((s) => ({ ...s, status: 'reconnecting' }));
+			}, RECONNECT_QUIET_MS);
 		}
-		update((s) => ({ ...s, status: 'reconnecting', interimTranscript: '', audioLevel: 0 }));
+		// The half-heard sentence goes either way: it belongs to a dead socket.
+		update((s) => ({ ...s, interimTranscript: '', audioLevel: 0 }));
 		scheduleReconnect(ev.code === SERVER_RESTART_CODE);
 	}
 
@@ -398,9 +438,7 @@ function createVoiceSessionStore() {
 		// Never a second socket: one retry armed, one dial in flight.
 		if (reconnectTimer || socketPending) return;
 		if (Date.now() >= resumeDeadline) {
-			transitionToError(
-				'The call dropped and could not be rejoined within the 30-minute window. Everything said before that is saved in the thread.'
-			);
+			transitionToError(CALL_LOST_MESSAGE);
 			return;
 		}
 		reconnectAttempt++;
@@ -417,11 +455,10 @@ function createVoiceSessionStore() {
 	}
 
 	async function attemptReconnect() {
-		const status = readState().status;
-		if (status !== 'reconnecting' || socketPending) return;
+		if (!redialing || socketPending) return;
 		try {
 			await openSocket();
-			// Still 'reconnecting' until the server answers with
+			// Still redialing until the server answers with
 			// session_initialized — an open socket is not yet a rejoined call.
 		} catch {
 			scheduleReconnect(false);
@@ -462,10 +499,15 @@ function createVoiceSessionStore() {
 				case 'session_initialized':
 					// The call is live again (or for the first time) — the backoff
 					// starts from scratch for whatever the next outage is.
-					if (readState().status === 'reconnecting') {
+					if (redialing) {
 						log.info('Voice session rejoined after ' + reconnectAttempt + ' redial(s)');
 					} else {
 						log.info('Voice session initialized');
+					}
+					redialing = false;
+					if (quietTimer) {
+						clearTimeout(quietTimer);
+						quietTimer = null;
 					}
 					reconnectAttempt = 0;
 					update((s) => ({
@@ -563,13 +605,16 @@ function createVoiceSessionStore() {
 					break;
 
 				case 'Error':
-					// A refusal that lands mid-redial is the end of the resuming:
-					// the server has told us why it will not take this call back.
-					transitionToError(
-						readState().status === 'reconnecting'
-							? 'Could not rejoin the call: ' + (msg.message || 'the bot refused the session')
-							: msg.message || 'Unknown server error'
-					);
+					// A refusal that lands mid-redial ends the resuming. Why the
+					// far end would not take the call back is a wire detail: the
+					// owner gets the one sentence he can act on, and the reason
+					// goes to the log.
+					if (redialing) {
+						if (msg.message) log.warn('Voice session resume refused: ' + msg.message);
+						transitionToError(CALL_LOST_MESSAGE);
+					} else {
+						transitionToError(msg.message || CALL_ENDED_MESSAGE);
+					}
 					break;
 
 				default:
@@ -618,6 +663,7 @@ function createVoiceSessionStore() {
 			sessionTeamId = teamId;
 			reconnectAttempt = 0;
 			resumeDeadline = 0;
+			redialing = false;
 
 			update((s) => ({
 				...s,
@@ -655,7 +701,7 @@ function createVoiceSessionStore() {
 					if (state.isMuted) return;
 					if (ws && ws.readyState === WebSocket.OPEN) {
 						ws.send(buffer);
-					} else if (state.status !== 'reconnecting' && preOpenAudio.length < 50) {
+					} else if (!redialing && preOpenAudio.length < 50) {
 						// ≤ ~5s of early audio; beyond that the connection is the problem
 						preOpenAudio.push(buffer);
 					}
