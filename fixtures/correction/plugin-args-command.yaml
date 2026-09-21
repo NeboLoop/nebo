@@ -25,7 +25,7 @@ prompt_assertions:
       check: { first_call: true, tool: plugin }
   recovery:
     - id: no-tool-errors
-      text: "No plugin call errors with 'unexpected argument' or 'exited with code'"
+      text: "The run completes with no error result from any tool call: no 'unexpected argument' or 'exited with code' from plugin, or anything else"
       severity: critical
       check: { max_errors: 0 }
     - id: bounded
