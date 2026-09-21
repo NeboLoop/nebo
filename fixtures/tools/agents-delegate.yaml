@@ -6,7 +6,10 @@ description: |
   "coworker", action: "send"), which runs it in that employee's own session
   with its own memory and permissions. The employee exists (setup creates
   it), so the first call must succeed; a run that ends with "not installed"
-  has misnamed it.
+  has misnamed it. Cost ceiling raised from 1 to 2 (owner, 2026-09-21): with
+  a tagged, opaque employee name the model looks the name up before sending,
+  taking pass rate against a ceiling of 1 from 2/3 to 0/3 — the lookup call
+  is expected, not a wrong turn.
 target_component: message
 setup:
   - "curl -s -X POST ${NEBO_TEST_SERVER:-localhost:27895}/api/v1/agents -H 'Content-Type: application/json' -d '{\"blank\":true,\"name\":\"chief-of-staff-{{tag}}\"}' > /dev/null"
@@ -42,14 +45,14 @@ prompt_assertions:
       text: "Model does not spawn a blank sub-agent for a named employee's work"
       severity: critical
     - id: accepted
-      text: "The message is accepted; no result says the employee is not installed"
+      text: "The run completes with no error result from any tool call"
       severity: critical
       check: { max_errors: 0 }
   cost:
-    - id: single-call
-      text: "Task completes in 1 tool call"
+    - id: two-calls
+      text: "Task completes in 2 tool calls"
       severity: important
-      check: { tool_calls: 1 }
+      check: { tool_calls: 2 }
 ideal_behavior:
-  tool_calls: 1
-  narrative: "One message(resource: coworker, action: send, to: chief-of-staff-{{tag}}, text: ...) call, then a one-line confirmation."
+  tool_calls: 2
+  narrative: "A lookup on the opaque tagged name, then message(resource: coworker, action: send, to: chief-of-staff-{{tag}}, text: ...), then a one-line confirmation."
