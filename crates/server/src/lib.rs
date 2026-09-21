@@ -2198,13 +2198,15 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
                 *state.pending_layers.write().await = layers_update::load_pending();
                 layers_update::first_read_for_unstamped_seats(&state, &packs);
             }
-            layers_update::detect_changes(&state, current).await;
+            layers_update::detect_changes(&state, &dir).await;
             let watch_state = state.clone();
+            let watch_dir = dir.clone();
             let handle = tokio::runtime::Handle::current();
-            let _detached = napp::watch_packs(dir, move |packs| {
+            let _detached = napp::watch_packs(dir, move || {
                 let st = watch_state.clone();
+                let dir = watch_dir.clone();
                 handle.spawn(async move {
-                    layers_update::detect_changes(&st, packs).await;
+                    layers_update::detect_changes(&st, &dir).await;
                 });
             });
         }

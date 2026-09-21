@@ -79,18 +79,11 @@ jobs:
   harness:
     name: ${{ github.event_name == 'schedule' && 'Nightly judged suites' || 'Program-check gate' }}
     runs-on: [self-hosted, Linux, ARM64, neboloop] # the Mac mini's Lima VM, see CLAUDE.md "Release builds"
-    # One gate job on the VM at a time. Both neboloop runners live in the
-    # same VM and the fixtures share /tmp/nebo-test: two engines running
-    # os-file-edit at once wrote "draft"/"final" over each other's file
-    # (2026-09-20 06:16–06:37, jobs 35474673976 and 35481278899 — a 5-call
-    # trace that read as a model failure). A separate port per runner
-    # keeps the servers apart; this keeps the files apart. Queued jobs
-    # wait; a newer queued job replaces an older queued one (GitHub keeps
-    # one pending per group), so a PR run can be superseded by a push to
-    # main and must then be re-run.
-    concurrency:
-      group: harness-gate-vm
-      cancel-in-progress: false
+    # Two gate jobs may run on the VM at once: each has its own port (#147,
+    # #166) and its own fixture scratch dir (#157). A job-level concurrency
+    # group was tried (#151) and dropped: GitHub keeps ONE pending job per
+    # group, so a PR's queued run was silently replaced by the next PR's —
+    # 35589080672 never ran. Queueing is the runners' job, not a group's.
     timeout-minutes: ${{ github.event_name == 'schedule' && 120 || 60 }}
     env:
       RUSTC_WRAPPER: ""
@@ -157,8 +150,24 @@ jobs:
           test -n "$NEBO_BOT_ID" && test -n "$NEBO_BOT_TOKEN" \
             || { echo "HARNESS_NEBO_BOT_ID and HARNESS_NEBO_BOT_TOKEN are not set"; exit 1; }
           mkdir -p "$NEBO_HOME"
+          # A job cancelled mid-suite leaves its server on this runner's port
+          # (the runner's orphan sweep does not always reach a nohup'd child):
+          # 35582848373 died on "port 27891 is already in use" behind the
+          # cancelled 35582523046. Whatever listens there is a leftover of
+          # this runner's own earlier job; free the port before starting.
+          fuser -k -TERM "$GATE_PORT/tcp" 2>/dev/null && sleep 2 || true
+          # A listener the job cannot kill (35585471453: port held with no
+          # owning pid visible even to root) must not block the job: step
+          # past it. The port is this job's for the rest of the run.
+          while ss -ltn 2>/dev/null | grep -q ":$GATE_PORT "; do
+            echo "port $GATE_PORT is held by something this job cannot stop; trying the next"
+            GATE_PORT=$((GATE_PORT + 10))
+          done
+          echo "GATE_PORT=$GATE_PORT" >> "$GITHUB_ENV"
+          export NEBO_PORT="$GATE_PORT"
           nohup ./target/debug/nebo-cli agent > "${{ runner.temp }}/server.log" 2>&1 &
           server=$!
+          echo "server=$server" >> "$GITHUB_ENV"
           for i in $(seq 1 60); do
             curl -sf -m 2 "http://localhost:$GATE_PORT/health" >/dev/null && break
             sleep 2
@@ -210,6 +219,12 @@ jobs:
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.HARNESS_CLAUDE_OAUTH_TOKEN }}
         run: ./target/debug/nebo-cli test run --suite suites/smoke.yaml --grader claude-opus-5 --runs 3 --model "$GATE_MODEL" --server "localhost:$GATE_PORT" --output traces/smoke
+
+      - name: Stop this job's server
+        if: always()
+        run: |
+          [ -n "${server:-}" ] && kill "$server" 2>/dev/null || true
+          fuser -k -TERM "$GATE_PORT/tcp" 2>/dev/null || true
 
       - name: Keep the traces and the server log on the VM
         if: always()

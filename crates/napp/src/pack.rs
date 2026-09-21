@@ -971,12 +971,18 @@ impl Pack {
     }
 }
 
-/// Watch `packs_dir` and call `on_change` with the full rescan after a burst
-/// of file changes settles (same coalescing debounce as the agent loader).
-/// Returns the task handle; dropping it stops the watch.
+/// Watch `packs_dir` and call `on_change` after a burst of file changes
+/// settles (same coalescing debounce as the agent loader).
+///
+/// It reports THAT the folder changed, never what it now holds: the reader
+/// scans, so what a reader records is the directory as it stands when it
+/// records it. A scan handed over here is already a description of the past
+/// by the time anyone takes a lock on it.
+///
+/// Returns the task handle; dropping it detaches the watch.
 pub fn watch_packs(
     packs_dir: PathBuf,
-    on_change: impl Fn(Vec<Pack>) + Send + 'static,
+    on_change: impl Fn() + Send + 'static,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         use notify::{Event, EventKind, RecursiveMode, Watcher};
@@ -1004,14 +1010,21 @@ pub fn watch_packs(
             return;
         }
 
+        // A write: something in the folder changed and the packs must be read
+        // again. The watch also reports reads — on Linux, an open and an
+        // access for every file anyone looks at — and those change nothing.
+        let is_write = |event: &Event| {
+            matches!(
+                event.kind,
+                EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_)
+            )
+        };
+
         let debounce = std::time::Duration::from_secs(1);
         while let Some(result) = rx.recv().await {
             match result {
                 Ok(event) => {
-                    if !matches!(
-                        event.kind,
-                        EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_)
-                    ) {
+                    if !is_write(&event) {
                         continue;
                     }
                     // A pack arrives as a burst: a folder copied in, a pack
@@ -1019,19 +1032,30 @@ pub fn watch_packs(
                     // and reading the disk on it parks half a pack — a company
                     // layer missing the laws that had not landed yet. Wait for
                     // the burst to stop before reading, and only then read.
+                    //
+                    // Only a WRITE says the burst is still going. Counting
+                    // every message here counted the reads too, and the loudest
+                    // reader is whoever is waiting for this rescan: the layers
+                    // screen scanning the folder on each `GET /layers`. On
+                    // Linux that is ~480 events a second, so the burst never
+                    // ended, every change ran the full 30 rounds, and the
+                    // rescan landed at 30.03s — just past the 30s the waiter
+                    // allowed it. (macOS has no read events, which is why this
+                    // only ever showed on the Linux CI runner.)
                     for _ in 0..30 {
                         tokio::time::sleep(debounce).await;
                         let mut more = false;
-                        while rx.try_recv().is_ok() {
-                            more = true;
+                        while let Ok(next) = rx.try_recv() {
+                            if next.as_ref().is_ok_and(is_write) {
+                                more = true;
+                            }
                         }
                         if !more {
                             break;
                         }
                     }
-                    let packs = scan_packs(&packs_dir);
-                    info!(count = packs.len(), "packs directory changed, rescanned");
-                    on_change(packs);
+                    info!("packs directory changed");
+                    on_change();
                 }
                 Err(e) => warn!(error = %e, "filesystem watch error (packs)"),
             }

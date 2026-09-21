@@ -26,7 +26,43 @@ fn repo_root() -> PathBuf {
     p
 }
 
-/// Every `.rs` file under `crates/`, excluding test files.
+/// Is this module declared `#[cfg(test)]` by the module above it?
+///
+/// A `tests/` directory is not the only test code in the tree. A module can be
+/// declared `#[cfg(test)] mod name;` and live under `src/` beside the thing it
+/// proves — `crates/server/src/staffed_proof/` is exactly that, a suite of
+/// scenarios that boots the real server and is compiled only by `cargo test`.
+/// These gates police what SHIPS: a `Client::builder()` that reaches no
+/// released binary is in no outage's path and must not spend the ratchet.
+fn declared_cfg_test(module: &Path) -> bool {
+    let Some(name) = module.file_stem().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    let Some(parent) = module.parent() else {
+        return false;
+    };
+    let decl = format!("mod {name};");
+    for owner in ["mod.rs", "lib.rs", "main.rs"] {
+        let Ok(text) = std::fs::read_to_string(parent.join(owner)) else {
+            continue;
+        };
+        let mut cfg_test_pending = false;
+        for line in text.lines() {
+            let t = line.trim();
+            if t.is_empty() || t.starts_with("//") {
+                continue;
+            }
+            if t.ends_with(&decl) && (cfg_test_pending || t.contains("#[cfg(test)]")) {
+                return true;
+            }
+            cfg_test_pending = t.contains("#[cfg(test)]");
+        }
+    }
+    false
+}
+
+/// Every `.rs` file under `crates/` that ships — no `tests/` directory, and no
+/// module the crate declares `#[cfg(test)]`.
 fn source_files() -> Vec<PathBuf> {
     fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
         let Ok(entries) = std::fs::read_dir(dir) else {
@@ -36,11 +72,13 @@ fn source_files() -> Vec<PathBuf> {
             let path = entry.path();
             if path.is_dir() {
                 let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                if name == "target" || name == "tests" {
+                if name == "target" || name == "tests" || declared_cfg_test(&path) {
                     continue;
                 }
                 walk(&path, out);
-            } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+            } else if path.extension().and_then(|e| e.to_str()) == Some("rs")
+                && !declared_cfg_test(&path)
+            {
                 out.push(path);
             }
         }
@@ -109,6 +147,10 @@ fn plugin_launches_go_through_plugin_runtime() {
 /// bundled fallback, and a loud warning when the OS returns nothing). Until that
 /// migration lands, this gate stops the count from climbing — a new
 /// `Client::builder()` is a new place the trust-store fix will not reach.
+///
+/// Shipped code only: `source_files` skips `#[cfg(test)]` modules, so a client
+/// a proof harness builds against 127.0.0.1 does not spend the ratchet. The
+/// gate is about certificates a released binary has to verify.
 ///
 /// See docs/plans/nebo-tls-rustls-migration.md. Lower this number as sites are
 /// migrated; it must never be raised.
