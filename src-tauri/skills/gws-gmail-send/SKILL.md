@@ -57,6 +57,7 @@ gws gmail +send --to alice@example.com --subject 'Hello' --body 'Hi!' --draft
 - Use -a/--attach to add file attachments. Can be specified multiple times. Total size limit: 25MB.
 - With --html, use fragment tags (<p>, <b>, <a>, <br>, etc.) — no <html>/<body> wrapper needed.
 - Use --draft to save the message as a draft instead of sending it immediately.
+- **Drive links / new Drive files:** if the body or attachments include a Google Drive/Docs/Sheets file you just created or uploaded, grant access to every `--to` and `--cc` recipient **before** sending — Drive files stay private by default. Use `gws drive permissions create` with `type=user` and each recipient's `emailAddress` (see `gws-drive`).
 
 > [!CAUTION]
 > This is a **write** command — confirm with the user before executing.
