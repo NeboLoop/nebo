@@ -880,6 +880,21 @@ async fn run_test_command(cfg: &config::Config, command: TestCommands) -> anyhow
                     Err(e) => {
                         eprintln!("  FAILED: {}", e);
                         failed_fixtures.push(fix.id.clone());
+                        // A failed fixture still gets the traces it managed
+                        // to collect on disk — including the run that
+                        // failed, named with why — instead of leaving only
+                        // the server log as a witness.
+                        if let Some(ref output_dir) = output {
+                            let dir = Path::new(output_dir);
+                            for trace in &e.traces {
+                                if let Err(save_err) = trace.save(dir) {
+                                    eprintln!("  save failed: {}", save_err);
+                                }
+                            }
+                            if !e.traces.is_empty() {
+                                println!("  Traces saved to {}", dir.display());
+                            }
+                        }
                         continue;
                     }
                 };

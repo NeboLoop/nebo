@@ -45,6 +45,7 @@
     "@tiptap/suggestion": "^3.22.5",
     "daisyui": "^5.5.19",
     "docx-preview": "^0.3.7",
+    "katex": "^0.18.7",
     "lucide-svelte": "^1.0.1",
     "marked": "^18.0.3",
     "pdfjs-dist": "^6.3.289",
